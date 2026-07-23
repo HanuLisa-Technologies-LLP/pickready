@@ -1,0 +1,22 @@
+# Secrets — never commit
+.env
+api-keys.txt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+.vercel
+
+# Misc
+*.log
+.DS_Store
