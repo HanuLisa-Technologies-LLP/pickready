@@ -6,13 +6,20 @@ import type { NextRequest } from "next/server";
 
 const PUBLIC_PREFIXES = [
   "/login",
-  "/portal/login",
   "/portal/outreach", // public tokenized outreach completion
   "/verify-employment", // public employer verification form
 ];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // ONE login page for every role (contract rev 2) — the old candidate
+  // login URL permanently redirects to /login.
+  if (pathname === "/portal/login" || pathname.startsWith("/portal/login/")) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/login";
+    return NextResponse.redirect(url);
+  }
 
   const isPublic = PUBLIC_PREFIXES.some(
     (p) => pathname === p || pathname.startsWith(p + "/")
@@ -21,12 +28,12 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
+  // /admin, /org and /portal all require an auth cookie.
   const hasSession =
     request.cookies.has("pr_access") || request.cookies.has("pr_refresh");
   if (!hasSession) {
-    const login = pathname.startsWith("/portal") ? "/portal/login" : "/login";
     const url = request.nextUrl.clone();
-    url.pathname = login;
+    url.pathname = "/login";
     url.searchParams.set("next", pathname);
     return NextResponse.redirect(url);
   }

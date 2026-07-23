@@ -68,5 +68,6 @@ async def matching_results(
             match_score=link.match_score,
             tier=link.tier,
             rationale=link.match_rationale,
+            breakdown=link.match_breakdown_json,
         ))
     return MatchResultsOut(job_id=job.id, results=results)

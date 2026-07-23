@@ -1,9 +1,12 @@
 "use client";
 
-// Tenants list + create + staff assignment (FR-11.1).
+// Owner console — tenant onboarding only (contract rev 2). The Owner does NOT
+// create staff; staff are created by the Client (or an HR Manager with
+// `manage_staff`) in the client-org portal. The old "Assign staff" modal and
+// its POST /admin/tenants/{id}/staff call have been removed.
 
 import * as React from "react";
-import { Plus, UserPlus } from "lucide-react";
+import { Plus } from "lucide-react";
 
 import { apiGet, apiPost } from "@/lib/api";
 import type { Tenant } from "@/lib/types";
@@ -21,13 +24,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -51,16 +47,6 @@ export default function TenantsPage() {
     client_phone: "",
   });
   const [creating, setCreating] = React.useState(false);
-
-  // Staff assignment dialog
-  const [staffTenant, setStaffTenant] = React.useState<Tenant | null>(null);
-  const [staffForm, setStaffForm] = React.useState({
-    email: "",
-    full_name: "",
-    role: "recruiter" as "hr_manager" | "recruiter",
-    phone: "",
-  });
-  const [assigning, setAssigning] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -108,33 +94,6 @@ export default function TenantsPage() {
     }
   };
 
-  const assignStaff = async () => {
-    if (!staffTenant) return;
-    setAssigning(true);
-    try {
-      await apiPost(`/admin/tenants/${staffTenant.id}/staff`, {
-        email: staffForm.email,
-        full_name: staffForm.full_name,
-        role: staffForm.role,
-        ...(staffForm.phone ? { phone: staffForm.phone } : {}),
-      });
-      toast({
-        title: "Staff assigned",
-        description: `${staffForm.full_name} → ${staffTenant.name}`,
-      });
-      setStaffTenant(null);
-      setStaffForm({ email: "", full_name: "", role: "recruiter", phone: "" });
-    } catch (e) {
-      toast({
-        title: "Could not assign staff",
-        description: e instanceof Error ? e.message : undefined,
-        variant: "destructive",
-      });
-    } finally {
-      setAssigning(false);
-    }
-  };
-
   return (
     <div>
       <PageHeader
@@ -152,7 +111,8 @@ export default function TenantsPage() {
                 <DialogTitle>Onboard a new client tenant</DialogTitle>
                 <DialogDescription>
                   Creates the tenant and its Client account. The Client signs
-                  in via OTP (dual email+mobile on first login).
+                  in via OTP (dual email+mobile on first login) and manages
+                  their own staff.
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4">
@@ -224,19 +184,18 @@ export default function TenantsPage() {
             <TableHead>Name</TableHead>
             <TableHead>Domain</TableHead>
             <TableHead>Client email</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {loading ? (
             <TableRow>
-              <TableCell colSpan={4} className="text-center text-muted-foreground">
+              <TableCell colSpan={3} className="text-center text-muted-foreground">
                 Loading…
               </TableCell>
             </TableRow>
           ) : tenants.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={4} className="text-center text-muted-foreground">
+              <TableCell colSpan={3} className="text-center text-muted-foreground">
                 No tenants yet.
               </TableCell>
             </TableRow>
@@ -246,97 +205,11 @@ export default function TenantsPage() {
                 <TableCell className="font-medium">{t.name}</TableCell>
                 <TableCell>{t.domain}</TableCell>
                 <TableCell>{t.client_email ?? "—"}</TableCell>
-                <TableCell className="text-right">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="gap-2"
-                    onClick={() => setStaffTenant(t)}
-                  >
-                    <UserPlus className="h-4 w-4" /> Assign staff
-                  </Button>
-                </TableCell>
               </TableRow>
             ))
           )}
         </TableBody>
       </Table>
-
-      <Dialog
-        open={staffTenant !== null}
-        onOpenChange={(open) => {
-          if (!open) setStaffTenant(null);
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              Assign Hanulisa staff{staffTenant ? ` — ${staffTenant.name}` : ""}
-            </DialogTitle>
-            <DialogDescription>
-              HR Managers and Recruiters are Hanulisa staff assigned per tenant.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <FormField label="Full name" htmlFor="s-name" required>
-              <Input
-                id="s-name"
-                value={staffForm.full_name}
-                onChange={(e) =>
-                  setStaffForm({ ...staffForm, full_name: e.target.value })
-                }
-              />
-            </FormField>
-            <FormField label="Email" htmlFor="s-email" required>
-              <Input
-                id="s-email"
-                type="email"
-                value={staffForm.email}
-                onChange={(e) =>
-                  setStaffForm({ ...staffForm, email: e.target.value })
-                }
-              />
-            </FormField>
-            <FormField label="Role" required>
-              <Select
-                value={staffForm.role}
-                onValueChange={(v) =>
-                  setStaffForm({
-                    ...staffForm,
-                    role: v as "hr_manager" | "recruiter",
-                  })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="hr_manager">HR Manager</SelectItem>
-                  <SelectItem value="recruiter">Recruiter</SelectItem>
-                </SelectContent>
-              </Select>
-            </FormField>
-            <FormField label="Phone (optional)" htmlFor="s-phone">
-              <Input
-                id="s-phone"
-                type="tel"
-                value={staffForm.phone}
-                onChange={(e) =>
-                  setStaffForm({ ...staffForm, phone: e.target.value })
-                }
-              />
-            </FormField>
-          </div>
-          <DialogFooter>
-            <Button
-              onClick={() => void assignStaff()}
-              disabled={assigning || !staffForm.email || !staffForm.full_name}
-            >
-              {assigning ? "Assigning…" : "Assign"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

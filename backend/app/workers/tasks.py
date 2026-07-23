@@ -112,7 +112,7 @@ async def _audit(
 
 async def _resend_send(
     from_addr: str,
-    reply_to: str,
+    reply_to: str | None,
     to: str,
     subject: str,
     body: str,
@@ -121,11 +121,12 @@ async def _resend_send(
     """POST to the Resend API. Returns the Resend message id."""
     payload: dict = {
         "from": from_addr,
-        "reply_to": reply_to,
         "to": [to],
         "subject": subject,
         "text": body,
     }
+    if reply_to:
+        payload["reply_to"] = reply_to
     if attachments:
         payload["attachments"] = [
             {"filename": a["filename"], "content": a["content"]} for a in attachments
@@ -142,7 +143,7 @@ async def _resend_send(
 
 async def _send_email_async(
     session: AsyncSession,
-    tenant_id: str,
+    tenant_id: str | None,
     to: str,
     template_name: str,
     context: dict,
@@ -150,16 +151,60 @@ async def _send_email_async(
 ) -> None:
     from app.services import email_render
 
-    tenant = await session.get(Tenant, uuid.UUID(str(tenant_id)))
-    if tenant is None:
-        raise ValueError(f"Tenant {tenant_id} not found")
+    settings = get_settings()
 
-    # Client-domain email ONLY via the tenant's verified Resend sending domain
-    # (claude.md rule 5) — From/Reply-To are derived from tenants.domain.
-    from_addr = f"recruitment@{tenant.domain}"
-    reply_to = f"recruitment@{tenant.domain}"
+    # ROOT-CAUSE FIX (2026-07-23): tenant_id is None for platform-level
+    # emails — the Owner/super_admin OTP has no tenant — and this path used to
+    # crash with ValueError('badly formed hexadecimal UUID string') from
+    # uuid.UUID(str(None)) before any email was sent (the actual cause of
+    # "Resend key present but no email sent"). No tenant → skip the tenant
+    # lookup entirely: default templates + the dev sender as From.
+    tenant: Tenant | None = None
+    if tenant_id:
+        try:
+            tenant = await session.get(Tenant, uuid.UUID(str(tenant_id)))
+        except (ValueError, TypeError):
+            tenant = None  # invalid id → dev-sender path, never a crash
+        if tenant is None:
+            logger.warning(
+                "email.tenant_missing template=%s tenant_id=%s — using dev sender",
+                template_name, tenant_id,
+            )
 
-    subject, body = await email_render.render(session, tenant.id, template_name, context)
+    # Sender selection (claude.md rule 5): the tenant's domain may ONLY be
+    # used as From once its Resend sending domain is SPF/DKIM-verified —
+    # an unverified From silently fails/bounces. In development, or whenever
+    # the domain is not verified (or there is no tenant), fall back to
+    # settings.resend_dev_sender; the tenant address is kept as Reply-To only
+    # when the domain IS verified.
+    tenant_from = f"recruitment@{tenant.domain}" if tenant is not None else None
+    domain_verified = (
+        tenant is not None and (tenant.spf_dkim_status or "").lower() == "verified"
+    )
+    if domain_verified and settings.environment != "development":
+        from_addr = tenant_from
+        reply_to = tenant_from
+        sender_path = "tenant_domain"
+    else:
+        from_addr = settings.resend_dev_sender
+        reply_to = tenant_from if domain_verified else None
+        sender_path = "dev_fallback"
+
+    # Structured, secret-free log so delivery failures are diagnosable —
+    # never the message body/context (may carry OTP codes, ESD §16).
+    logger.info(
+        "email.sender path=%s template=%s tenant_id=%s spf_dkim=%s env=%s reply_to_set=%s",
+        sender_path,
+        template_name,
+        str(tenant.id) if tenant is not None else "-",
+        tenant.spf_dkim_status if tenant is not None else "-",
+        settings.environment,
+        reply_to is not None,
+    )
+
+    subject, body = await email_render.render(
+        session, tenant.id if tenant is not None else None, template_name, context
+    )
     delivery_status = "sent"
     message_id = ""
     try:
@@ -172,11 +217,16 @@ async def _send_email_async(
         # carry OTP codes. Template name + recipient + status only.
         await _audit(
             session,
-            str(tenant.id),
+            str(tenant.id) if tenant is not None else None,  # platform-level email
             "email.delivery",
             "email",
             message_id or None,
-            {"to": to, "template": template_name, "status": delivery_status},
+            {
+                "to": to,
+                "template": template_name,
+                "status": delivery_status,
+                "sender_path": sender_path,
+            },
         )
 
 
@@ -187,13 +237,17 @@ async def _send_email_async(
     max_retries=5,
 )
 def send_email(
-    tenant_id: str,
+    tenant_id: str | None,
     to: str,
     template_name: str,
     context: dict,
     attachments: list[dict] | None = None,
 ):
-    """attachments: [{"filename": str, "content": <base64 str>}] (Resend shape)."""
+    """attachments: [{"filename": str, "content": <base64 str>}] (Resend shape).
+
+    tenant_id None = platform-level email (e.g. Owner OTP): default template,
+    dev sender. Interview invites and verification emails also route through
+    here, so they inherit the verified-domain/dev-sender selection."""
     async def _task():
         async with _worker_session() as session:
             await _send_email_async(

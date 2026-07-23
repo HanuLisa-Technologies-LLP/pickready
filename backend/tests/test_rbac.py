@@ -3,10 +3,11 @@ from app.models.enums import Role
 from app.services.capabilities import (
     ALL_CAPABILITIES,
     DEFAULT_PERMISSION_MATRIX,
+    MANAGE_STAFF,
     SEND_OUTREACH,
     VIEW_DATABANK,
 )
-from app.services.rbac import resolve_permission
+from app.services.rbac import resolve_capability_set, resolve_permission
 
 
 def test_tenant_override_beats_global_allow() -> None:
@@ -49,3 +50,45 @@ def test_default_matrix_matches_prd_seed() -> None:
     assert DEFAULT_PERMISSION_MATRIX[Role.hr_manager][SEND_OUTREACH] is True
     assert SEND_OUTREACH not in DEFAULT_PERMISSION_MATRIX[Role.recruiter]
     assert DEFAULT_PERMISSION_MATRIX[Role.recruiter][VIEW_DATABANK] is True
+
+
+def test_staff_management_is_client_owned_in_default_matrix() -> None:
+    # Contract rev 2: the Client owns staff creation (grantable to HR via the
+    # dynamic engine, never an Owner function).
+    assert DEFAULT_PERMISSION_MATRIX[Role.client][MANAGE_STAFF] is True
+    assert MANAGE_STAFF not in DEFAULT_PERMISSION_MATRIX.get(Role.hr_manager, {})
+
+
+# ── Bulk resolver (contract rev 2: capabilities in auth responses) ───────────
+
+def test_bulk_resolver_agrees_with_single_resolution() -> None:
+    tenant_rows = {VIEW_DATABANK: False, SEND_OUTREACH: True}
+    global_rows = {VIEW_DATABANK: True, MANAGE_STAFF: True}
+    resolved = resolve_capability_set(tenant_rows, global_rows)
+    for cap in ALL_CAPABILITIES:
+        assert (cap in resolved) == resolve_permission(tenant_rows, global_rows, cap), cap
+
+
+def test_bulk_resolver_applies_tenant_override_both_ways() -> None:
+    resolved = resolve_capability_set(
+        {VIEW_DATABANK: False, SEND_OUTREACH: True},
+        {VIEW_DATABANK: True, SEND_OUTREACH: False},
+    )
+    assert VIEW_DATABANK not in resolved  # tenant revoke beats global allow
+    assert SEND_OUTREACH in resolved      # tenant grant beats global deny
+
+
+def test_bulk_resolver_empty_rows_deny_everything() -> None:
+    assert resolve_capability_set({}, {}) == []
+
+
+def test_bulk_resolver_preserves_canonical_order() -> None:
+    global_rows = {c: True for c in ALL_CAPABILITIES}
+    assert resolve_capability_set({}, global_rows) == ALL_CAPABILITIES
+
+
+def test_bulk_resolver_ignores_unknown_capabilities_in_rows() -> None:
+    # Stray/legacy rows (e.g. a retired capability name) never leak into the
+    # resolved list — only ALL_CAPABILITIES entries are considered.
+    resolved = resolve_capability_set({}, {"create_hiring_managers": True})
+    assert resolved == []

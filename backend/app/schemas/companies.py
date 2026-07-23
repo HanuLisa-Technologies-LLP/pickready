@@ -26,14 +26,18 @@ class CompanyPageOut(BaseModel):
     approval_levels_config: dict | None
 
 
-class HiringManagerCreateIn(BaseModel):
+class StaffCreateIn(BaseModel):
+    """POST /companies/me/staff (contract rev 2). `role` is a plain string so
+    unknown/forbidden roles surface as an explicit 400 in the handler (the
+    contract mandates 400, not a 422 validation error)."""
     email: EmailStr
     full_name: str = Field(min_length=1, max_length=255)
     phone: str | None = Field(default=None, max_length=20)
-    approval_level: str | None = None  # a JobStatus value if pre-assigned
+    role: str = Field(min_length=1, max_length=30)
+    approval_level: str | None = None  # a JobStatus value if pre-assigned (HMs only)
 
     @model_validator(mode="after")
-    def _valid_level(self) -> "HiringManagerCreateIn":
+    def _valid_level(self) -> "StaffCreateIn":
         if self.approval_level is not None:
             valid = {s.value for s in APPROVAL_CHAIN}
             if self.approval_level not in valid:
@@ -41,14 +45,14 @@ class HiringManagerCreateIn(BaseModel):
         return self
 
 
-class HiringManagerOut(BaseModel):
-    id: uuid.UUID
-    user_id: uuid.UUID
+class StaffOut(BaseModel):
+    id: uuid.UUID  # user id
     email: str
     full_name: str | None
     phone: str | None
-    approval_level: str | None
+    role: str
     status: str
+    approval_level: str | None = None  # hiring managers only
 
 
 class ApprovalLevelEntry(BaseModel):

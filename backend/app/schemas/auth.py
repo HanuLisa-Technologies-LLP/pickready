@@ -1,4 +1,4 @@
-"""Auth request/response schemas (API_CONTRACT.md `/auth`)."""
+"""Auth request/response schemas (API_CONTRACT.md `/auth`, rev 2)."""
 import uuid
 from typing import Literal
 
@@ -9,6 +9,9 @@ from app.models.enums import Role
 
 class OTPRequestIn(BaseModel):
     identifier: str = Field(min_length=3, max_length=320)  # email or phone
+    # `audience` is accepted for backward compat; it no longer routes the
+    # lookup (unified login, rev 2) — it only signals candidate
+    # self-registration intent on unknown identifiers.
     channel: Literal["email", "sms"]
     audience: Literal["internal", "candidate"] = "internal"
 
@@ -38,12 +41,34 @@ class UserOut(BaseModel):
     phone_verified: bool
 
 
+class ContextOut(BaseModel):
+    """One selectable workspace when an identifier matches multiple users
+    (three portals, ONE login — contract rev 2)."""
+    user_id: uuid.UUID
+    role: Role
+    tenant_id: uuid.UUID | None
+    tenant_name: str | None
+    portal: Literal["owner", "org", "candidate"]
+
+
 class OTPVerifyOut(BaseModel):
-    user: UserOut
+    # Exactly one matching user: `user` + `capabilities` (cookies set).
+    user: UserOut | None = None
+    capabilities: list[str] | None = None
     # Non-empty on client first login when the second channel is still
     # unverified (dual OTP, FR-1.2) — no cookies are set in that case.
     pending_channels: list[str] = []
+    # Multiple matching users: workspace chooser — no cookies until
+    # /auth/select-context.
+    contexts: list[ContextOut] | None = None
+    context_token: str | None = None
+
+
+class SelectContextIn(BaseModel):
+    context_token: str = Field(min_length=10)
+    user_id: uuid.UUID
 
 
 class MeOut(BaseModel):
     user: UserOut
+    capabilities: list[str] = []

@@ -1,14 +1,27 @@
 "use client";
 
-// OTP-only login (FR-1.1). Handles the first-client-login dual OTP:
-// after a successful email verify, if the client's phone is not yet verified
-// we immediately run a second OTP round on the registered mobile (FR-1.2).
+// Single OTP-only login for ALL roles — Owner, client-org roles and
+// candidates (contract rev 2, FR-1.1). Handles:
+//  - single-user verify → {user, capabilities} → route by portal
+//  - multi-user verify → {contexts, context_token} → "Choose your workspace"
+//    step, then POST /auth/select-context
+//  - first-client-login dual OTP: after a successful email verify, if the
+//    client's phone is not yet verified we run a second OTP round on the
+//    registered mobile (FR-1.2).
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
 
 import { apiPost } from "@/lib/api";
-import type { OtpRequestResponse, OtpVerifyResponse, User } from "@/lib/types";
+import {
+  isContextsResponse,
+  type AuthContextOption,
+  type AuthSession,
+  type Capability,
+  type OtpRequestResponse,
+  type OtpVerifyResponse,
+  type User,
+} from "@/lib/types";
 import { useAuth, homePathForRole } from "@/lib/auth-context";
 import { useToast } from "@/components/ui/toast";
 import { OtpInput } from "@/components/otp-input";
@@ -31,19 +44,36 @@ import {
 } from "@/components/ui/select";
 
 type Channel = "email" | "sms";
-type Step = "identifier" | "otp" | "phone-identifier" | "phone-otp";
+type Step =
+  | "identifier"
+  | "otp"
+  | "choose-context"
+  | "phone-identifier"
+  | "phone-otp";
+
+const ROLE_LABELS: Record<string, string> = {
+  super_admin: "Owner",
+  client: "Client",
+  hr_manager: "HR Manager",
+  recruiter: "Recruiter",
+  hiring_manager: "Hiring Manager",
+  candidate: "Candidate",
+};
+
+function contextLabel(ctx: AuthContextOption): string {
+  const role = ROLE_LABELS[ctx.role] ?? ctx.role.replace(/_/g, " ");
+  return ctx.tenant_name ? `${role} — ${ctx.tenant_name}` : role;
+}
 
 export function LoginFlow({
-  audience,
   title,
   description,
 }: {
-  audience: "internal" | "candidate";
   title: string;
   description: string;
 }) {
   const router = useRouter();
-  const { setUser, refresh } = useAuth();
+  const { setSession, refresh } = useAuth();
   const { toast } = useToast();
 
   const [step, setStep] = React.useState<Step>("identifier");
@@ -53,24 +83,52 @@ export function LoginFlow({
   const [challengeId, setChallengeId] = React.useState("");
   const [code, setCode] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const [pendingUser, setPendingUser] = React.useState<User | null>(null);
+  const [pendingSession, setPendingSession] =
+    React.useState<AuthSession | null>(null);
+
+  // Multi-context ("Choose your workspace") state — rendered ONLY when the
+  // identifier matched multiple users (rev 2).
+  const [contexts, setContexts] = React.useState<AuthContextOption[]>([]);
+  const [contextToken, setContextToken] = React.useState("");
 
   const finish = React.useCallback(
-    async (user: User) => {
-      setUser(user);
+    async (user: User, capabilities: Capability[]) => {
+      setSession(user, capabilities);
       await refresh();
       router.replace(homePathForRole(user.role));
     },
-    [setUser, refresh, router]
+    [setSession, refresh, router]
+  );
+
+  /** Common post-auth handling: dual-OTP for first client login, else route. */
+  const handleSession = React.useCallback(
+    async (session: AuthSession, isPhoneRound: boolean) => {
+      const { user } = session;
+      if (!isPhoneRound && user.role === "client" && !user.phone_verified) {
+        // First client login: dual OTP — validate mobile too (FR-1.2).
+        setPendingSession(session);
+        setStep("phone-identifier");
+        toast({
+          title: "Phone verification required",
+          description:
+            "First login requires validating your registered mobile number as well.",
+        });
+      } else {
+        await finish(user, session.capabilities ?? []);
+      }
+    },
+    [finish, toast]
   );
 
   const requestOtp = async (id: string, ch: Channel, nextStep: Step) => {
     setBusy(true);
     try {
+      // ASSUMPTION: with a single login page for every role the client cannot
+      // know the audience upfront; `audience` is optional per the contract, so
+      // it is omitted and the backend resolves matching users itself.
       const res = await apiPost<OtpRequestResponse>("/auth/otp/request", {
         identifier: id,
         channel: ch,
-        audience,
       });
       setChallengeId(res.challenge_id);
       setCode("");
@@ -97,22 +155,13 @@ export function LoginFlow({
         challenge_id: challengeId,
         code,
       });
-      const user = res.user;
-      if (
-        !isPhoneRound &&
-        user.role === "client" &&
-        !user.phone_verified
-      ) {
-        // First client login: dual OTP — validate mobile too (FR-1.2).
-        setPendingUser(user);
-        setStep("phone-identifier");
-        toast({
-          title: "Phone verification required",
-          description:
-            "First login requires validating your registered mobile number as well.",
-        });
+      if (isContextsResponse(res)) {
+        // Multiple matching users — no cookies yet; choose a workspace first.
+        setContexts(res.contexts);
+        setContextToken(res.context_token);
+        setStep("choose-context");
       } else {
-        await finish(user);
+        await handleSession(res, isPhoneRound);
       }
     } catch (e) {
       toast({
@@ -126,12 +175,37 @@ export function LoginFlow({
     }
   };
 
+  const selectContext = async (ctx: AuthContextOption) => {
+    setBusy(true);
+    try {
+      const res = await apiPost<AuthSession>("/auth/select-context", {
+        context_token: contextToken,
+        user_id: ctx.user_id,
+      });
+      await handleSession(res, false);
+    } catch (e) {
+      toast({
+        title: "Could not open workspace",
+        description: e instanceof Error ? e.message : "Please sign in again.",
+        variant: "destructive",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle className="text-xl">{title}</CardTitle>
-          <CardDescription>{description}</CardDescription>
+          <CardTitle className="text-xl">
+            {step === "choose-context" ? "Choose your workspace" : title}
+          </CardTitle>
+          <CardDescription>
+            {step === "choose-context"
+              ? "Your identifier matches more than one account. Pick where to sign in."
+              : description}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {step === "identifier" ? (
@@ -223,6 +297,47 @@ export function LoginFlow({
             </form>
           ) : null}
 
+          {step === "choose-context" ? (
+            <div className="space-y-2">
+              {contexts.map((ctx) => (
+                <button
+                  key={ctx.user_id}
+                  type="button"
+                  disabled={busy}
+                  className="flex w-full items-center justify-between rounded-md border p-3 text-left text-sm transition-colors hover:bg-accent disabled:opacity-50"
+                  onClick={() => void selectContext(ctx)}
+                >
+                  <span>
+                    <span className="block font-medium">
+                      {contextLabel(ctx)}
+                    </span>
+                    <span className="block text-xs text-muted-foreground capitalize">
+                      {ctx.portal === "admin"
+                        ? "Owner portal"
+                        : ctx.portal === "portal"
+                          ? "Candidate portal"
+                          : "Client-org portal"}
+                    </span>
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {busy ? "…" : "Open →"}
+                  </span>
+                </button>
+              ))}
+              <button
+                type="button"
+                className="w-full text-center text-xs text-muted-foreground underline-offset-2 hover:underline"
+                onClick={() => {
+                  setContexts([]);
+                  setContextToken("");
+                  setStep("identifier");
+                }}
+              >
+                Sign in with a different identifier
+              </button>
+            </div>
+          ) : null}
+
           {step === "phone-identifier" ? (
             <form
               className="space-y-4"
@@ -273,11 +388,16 @@ export function LoginFlow({
               >
                 {busy ? "Verifying…" : "Verify phone & continue"}
               </Button>
-              {pendingUser ? (
+              {pendingSession ? (
                 <button
                   type="button"
                   className="w-full text-center text-xs text-muted-foreground underline-offset-2 hover:underline"
-                  onClick={() => void finish(pendingUser)}
+                  onClick={() =>
+                    void finish(
+                      pendingSession.user,
+                      pendingSession.capabilities ?? []
+                    )
+                  }
                 >
                   Skip for now (phone stays unverified)
                 </button>

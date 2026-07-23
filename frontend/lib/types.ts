@@ -22,8 +22,37 @@ export interface OtpRequestResponse {
   challenge_id: string;
 }
 
-export interface OtpVerifyResponse {
+/** Capability strings resolved by the RBAC engine ("*" = owner/all). */
+export type Capability = string;
+
+/** Single-user auth success: cookies set, user + capabilities returned. */
+export interface AuthSession {
   user: User;
+  capabilities: Capability[];
+}
+
+/** One selectable workspace when an identifier matches multiple users. */
+export interface AuthContextOption {
+  user_id: string;
+  role: Role;
+  tenant_id: string | null;
+  tenant_name: string | null;
+  portal: "admin" | "org" | "portal" | string;
+}
+
+/** Multi-user auth: NO cookies yet — pick a context, then select-context. */
+export interface AuthContextsResponse {
+  contexts: AuthContextOption[];
+  context_token: string;
+}
+
+/** POST /auth/otp/verify — single user OR multiple matching users (rev 2). */
+export type OtpVerifyResponse = AuthSession | AuthContextsResponse;
+
+export function isContextsResponse(
+  res: OtpVerifyResponse
+): res is AuthContextsResponse {
+  return "contexts" in res;
 }
 
 // ---- Admin ----
@@ -62,11 +91,17 @@ export interface CompanyPage {
   benefits: string;
 }
 
-export interface HiringManager {
+/** Roles creatable through the staff page (contract rev 2). */
+export type StaffRole = "hr_manager" | "recruiter" | "hiring_manager";
+
+/** Row from GET /companies/me/staff (contract rev 2). */
+export interface StaffMember {
   id: string;
   email: string;
   full_name: string;
   phone?: string | null;
+  role: StaffRole;
+  status: string;
   approval_level?: string | null;
 }
 
@@ -163,6 +198,25 @@ export interface CandidateSummary {
   phone?: string | null;
 }
 
+/** One ranking parameter: 1–10 score + LLM comment (rev 2). */
+export interface ParameterScore {
+  score: number;
+  comment: string;
+}
+
+/**
+ * 4-parameter ranking breakdown (contract rev 2), stored in
+ * job_candidate_links.match_breakdown_json. `overall` is the weighted
+ * average (1 decimal) with a holistic 5th comment.
+ */
+export interface MatchBreakdown {
+  skills_match: ParameterScore;
+  experience_relevance: ParameterScore;
+  role_alignment: ParameterScore;
+  education_fit: ParameterScore;
+  overall: ParameterScore;
+}
+
 export interface CandidateLink {
   link_id: string;
   candidate: CandidateSummary;
@@ -173,6 +227,7 @@ export interface CandidateLink {
   hm_access_granted?: boolean;
   rationale?: string | null;
   profile_id?: string | null;
+  breakdown?: MatchBreakdown | null;
 }
 
 export interface MatchingResult {
@@ -182,6 +237,7 @@ export interface MatchingResult {
   match_score: number;
   tier: Tier;
   rationale?: string | null;
+  breakdown?: MatchBreakdown | null;
 }
 
 export interface AspectResponse {

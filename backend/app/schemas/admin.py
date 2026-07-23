@@ -1,7 +1,6 @@
 """Super Admin console schemas (API_CONTRACT.md `/admin`)."""
 import uuid
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -41,13 +40,6 @@ class AdminUserOut(BaseModel):
 class TenantCreateOut(BaseModel):
     tenant: TenantOut
     client_user: AdminUserOut
-
-
-class StaffCreateIn(BaseModel):
-    email: EmailStr
-    full_name: str = Field(min_length=1, max_length=255)
-    role: Literal["hr_manager", "recruiter"]
-    phone: str | None = Field(default=None, max_length=20)
 
 
 class PermissionEntry(BaseModel):

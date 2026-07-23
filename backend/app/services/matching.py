@@ -1,12 +1,24 @@
-"""Hybrid ranking pipeline (ESD §8.2):
+"""Hybrid ranking pipeline (ESD §8.2, scoring per API contract REVISION 2):
 
 1. Semantic stage    — pgvector cosine (`<=>`, HNSW) JD-vs-profile, top-N.
 2. Keyword stage     — Postgres ts_rank over profiles.resume_tsv using the
                        JD's skills/keywords, over the same eligible pool.
-3. LLM re-rank stage — union of (1)+(2), batch-scored 0-100 with rationale via
-                       the llm_router `rerank` chain (Groq-first).
-4. Tier assignment   — app.services.tiers.assign_tier (inclusive-upward
-                       boundaries, claude.md rule 8).
+3. 4-parameter LLM scoring — union of (1)+(2): the LLM (rerank chain,
+                       Groq-first) rates each profile on skills_match (0.35),
+                       experience_relevance (0.30), role_alignment (0.20) and
+                       education_fit (0.15), each an integer 1-10 + comment,
+                       plus a genuinely holistic 5th overall comment. The
+                       overall score is a PYTHON-computed weighted average —
+                       never trusted from the LLM. Retrieval stages (1)+(2)
+                       are prior signal only; embeddings never become the score.
+4. Tier assignment   — app.services.tiers.assign_tier over overall×10
+                       (inclusive-upward boundaries, claude.md rule 8).
+
+The full breakdown JSON is stored in job_candidate_links.match_breakdown_json
+(column added in migration 0002; written via raw SQL like jobs.embedding —
+intentionally not on the SQLAlchemy model). match_score stays populated as
+overall×10 so sorting/dashboard are unchanged; match_rationale = the overall
+comment.
 
 Eligible pool: profiles of candidates already linked to the job, plus Databank
 candidates with consent_databank = true (Aspect 40 / FR-4.2). Consenting
@@ -20,6 +32,7 @@ parsed resume fields before prompting.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any, Sequence
 
@@ -32,9 +45,32 @@ from app.services.embeddings import embed
 # Track A owns tier assignment (signature: assign_tier(score: float) -> Tier).
 from app.services.tiers import assign_tier
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_TOP_N = 50
 _RERANK_BATCH_SIZE = 10
 _RESUME_SNIPPET_CHARS = 1500
+
+# ── 4-parameter scoring (API contract rev 2) ────────────────────────────────
+WEIGHTS: dict[str, float] = {
+    "skills_match": 0.35,
+    "experience_relevance": 0.30,
+    "role_alignment": 0.20,
+    "education_fit": 0.15,
+}
+PARAMETERS: tuple[str, ...] = tuple(WEIGHTS)
+
+# Aspect-numbering contract (API_CONTRACT.md rev 2): aspect 23 = current/most
+# recent designation and core duties; aspects 8-13 = education & qualifications.
+_ASPECT_ROLE_KEY = "23"
+_EDUCATION_ASPECT_KEYS: dict[str, str] = {
+    "8": "highest_degree_level",
+    "9": "specialization",
+    "10": "institution",
+    "11": "year_of_completion",
+    "12": "professional_certifications",
+    "13": "additional_qualifications",
+}
 
 # ESD §16: strip anything compensation-shaped before it reaches the LLM.
 _COMPENSATION_KEY_MARKERS = ("ctc", "salary", "compensation", "gross", "pay", "remuneration")
@@ -149,21 +185,91 @@ async def _keyword_stage(
     return [r.profile_id for r in rows]
 
 
+def compute_overall_score(scores: dict[str, int | float]) -> float:
+    """Weighted average of the four 1-10 parameter scores, rounded to 1 decimal.
+
+    Pure Python math (banker's rounding over IEEE-754 doubles) — the overall
+    score is NEVER taken from the LLM. Unit-tested in tests/test_scoring.py.
+    """
+    return round(sum(WEIGHTS[p] * float(scores[p]) for p in PARAMETERS), 1)
+
+
+def _coerce_param_score(value: Any) -> int | None:
+    """A parameter score must be an integer 1-10 (integral JSON floats like
+    8.0 are accepted; bools, fractions, and out-of-range values are not)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        score = value
+    elif isinstance(value, float) and value.is_integer():
+        score = int(value)
+    else:
+        return None
+    return score if 1 <= score <= 10 else None
+
+
+def _validate_entry(entry: Any) -> dict | None:
+    """Validate one LLM result entry into the contract's breakdown shape
+    (overall computed in Python). Returns None when malformed."""
+    if not isinstance(entry, dict):
+        return None
+    breakdown: dict[str, Any] = {}
+    for param in PARAMETERS:
+        block = entry.get(param)
+        if not isinstance(block, dict):
+            return None
+        score = _coerce_param_score(block.get("score"))
+        if score is None:
+            return None
+        breakdown[param] = {
+            "score": score,
+            "comment": str(block.get("comment") or "").strip(),
+        }
+    # The 5th, holistic comment is required — it becomes match_rationale.
+    overall_comment = entry.get("overall_comment")
+    if not isinstance(overall_comment, str) or not overall_comment.strip():
+        return None
+    breakdown["overall"] = {
+        "score": compute_overall_score({p: breakdown[p]["score"] for p in PARAMETERS}),
+        "comment": overall_comment.strip(),
+    }
+    return breakdown
+
+
 def _profile_summary(profile: Profile) -> dict:
-    """Compact, compensation-stripped candidate summary for the re-rank prompt."""
+    """Compact, compensation-stripped candidate summary for the scoring prompt.
+
+    Aspect 23 (current designation + core duties) and aspects 8-13 (education)
+    are surfaced as dedicated fields when present — resume text is fallback
+    only (API contract rev 2 aspect-numbering block).
+    """
     parsed = _strip_compensation(profile.parsed_fields_json or {})
-    snippet = (profile.resume_text or "")[:_RESUME_SNIPPET_CHARS]
-    return {
+    aspects_raw = profile.aspects_json if isinstance(profile.aspects_json, dict) else {}
+    aspects = _strip_compensation(aspects_raw)
+    summary: dict[str, Any] = {
         "profile_id": str(profile.id),
         "skills": parsed.get("skills", []),
         "total_experience_years": parsed.get("total_experience_years"),
         "education": parsed.get("education", []),
         "employment_history": parsed.get("employment_history", []),
-        "resume_excerpt": snippet,
+        "resume_excerpt": (profile.resume_text or "")[:_RESUME_SNIPPET_CHARS],
     }
+    if aspects.get(_ASPECT_ROLE_KEY):
+        # role_alignment's primary signal: the candidate's self-reported
+        # current/most recent designation and duties (catches title
+        # inflation/deflation that resume text can mask).
+        summary["current_designation_and_duties"] = aspects[_ASPECT_ROLE_KEY]
+    education_aspects = {
+        label: aspects[key]
+        for key, label in _EDUCATION_ASPECT_KEYS.items()
+        if aspects.get(key)
+    }
+    if education_aspects:
+        summary["education_aspects"] = education_aspects
+    return summary
 
 
-def _parse_rerank_response(raw: str) -> list[dict]:
+def _parse_scoring_response(raw: str) -> list[dict]:
     """Accept either a bare JSON array or {"results": [...]} (json_object
     response modes require an object at the top level on some providers)."""
     data = json.loads(raw)
@@ -173,57 +279,123 @@ def _parse_rerank_response(raw: str) -> list[dict]:
                 data = data[key]
                 break
         else:
-            raise ValueError("re-rank response object has no results array")
+            raise ValueError("scoring response object has no results array")
     if not isinstance(data, list):
-        raise ValueError("re-rank response is not a list")
+        raise ValueError("scoring response is not a list")
     return data
 
 
-async def _llm_rerank(
-    session: AsyncSession, jd_text: str, profiles: list[Profile]
-) -> dict[uuid.UUID, tuple[float, str]]:
-    """Batch-score profiles against the JD. Returns {profile_id: (score, rationale)}."""
-    results: dict[uuid.UUID, tuple[float, str]] = {}
-    system = (
-        "You are a recruitment matching engine. Score each candidate profile "
-        "against the job description on a 0-100 scale for contextual fit "
-        "(skills, seniority, domain, education). Respond with JSON only: "
-        '{"results": [{"profile_id": "<uuid>", "score": <0-100 number>, '
-        '"rationale": "<one or two sentences>"}]} — one entry per candidate, '
-        "no extra keys, no prose outside the JSON."
-    )
-    for i in range(0, len(profiles), _RERANK_BATCH_SIZE):
-        batch = profiles[i : i + _RERANK_BATCH_SIZE]
-        user = json.dumps(
-            {
-                "job_description": jd_text,
-                "candidates": [_profile_summary(p) for p in batch],
-            },
-            default=str,
-        )
-        raw = await llm_router.chat_completion(
-            "rerank",
-            [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            response_format_json=True,
-            session=session,
-        )
-        try:
-            entries = _parse_rerank_response(raw)
-        except (json.JSONDecodeError, ValueError):
-            # One malformed batch response shouldn't sink the whole run —
-            # profiles in this batch simply keep no score this round.
+_SCORING_SYSTEM_PROMPT = (
+    "You are a recruitment matching engine. For EACH candidate, rate fit "
+    "against the job description on exactly four parameters, each an INTEGER "
+    "score from 1 (very poor fit) to 10 (excellent fit) plus a short comment:\n"
+    "1. skills_match — the JD's Skills requirements vs the candidate's "
+    "experience, education, and certifications. Judge semantic skill "
+    "equivalence (comparable tools/frameworks count), not literal keyword "
+    "overlap.\n"
+    "2. experience_relevance — not just years of experience: has the candidate "
+    "performed the same function, at a comparable seniority/level?\n"
+    "3. role_alignment — the candidate's ACTUAL most recent designation and "
+    "core duties (use the 'current_designation_and_duties' field when present; "
+    "otherwise fall back to the resume) vs the JD's Role, Responsibilities, "
+    "and Accountabilities. Judge duties over titles — penalize title inflation "
+    "or deflation.\n"
+    "4. education_fit — degree level and specialization (use the "
+    "'education_aspects' field when present; otherwise fall back to resume "
+    "education) vs the JD's Education requirement.\n"
+    "Also write overall_comment: a genuinely holistic 1-3 sentence assessment "
+    "of the candidate for this job. It must be a fresh synthesis, NOT a "
+    "concatenation or restatement of the four parameter comments. Do NOT "
+    "compute or output any overall score — it is computed elsewhere.\n"
+    'Respond with JSON only: {"results": [{"profile_id": "<uuid>", '
+    '"skills_match": {"score": <int 1-10>, "comment": "<short>"}, '
+    '"experience_relevance": {"score": <int 1-10>, "comment": "<short>"}, '
+    '"role_alignment": {"score": <int 1-10>, "comment": "<short>"}, '
+    '"education_fit": {"score": <int 1-10>, "comment": "<short>"}, '
+    '"overall_comment": "<holistic>"}]} — one entry per candidate, no extra '
+    "keys, no prose outside the JSON."
+)
+
+
+def _extract_valid(
+    raw: str, wanted_ids: set[uuid.UUID]
+) -> tuple[dict[uuid.UUID, dict], set[uuid.UUID]]:
+    """Pull validated breakdowns out of one LLM response. Returns
+    (valid breakdowns by profile id, ids still missing/malformed)."""
+    got: dict[uuid.UUID, dict] = {}
+    try:
+        entries = _parse_scoring_response(raw)
+    except (json.JSONDecodeError, ValueError):
+        return {}, set(wanted_ids)
+    for entry in entries:
+        if not isinstance(entry, dict):
             continue
-        valid_ids = {p.id for p in batch}
-        for entry in entries:
-            try:
-                pid = uuid.UUID(str(entry["profile_id"]))
-                score = float(entry["score"])
-            except (KeyError, ValueError, TypeError):
-                continue
-            if pid not in valid_ids:
-                continue
-            score = max(0.0, min(100.0, score))
-            results[pid] = (score, str(entry.get("rationale") or ""))
+        try:
+            pid = uuid.UUID(str(entry.get("profile_id")))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if pid not in wanted_ids or pid in got:
+            continue
+        breakdown = _validate_entry(entry)
+        if breakdown is not None:
+            got[pid] = breakdown
+    return got, wanted_ids - set(got)
+
+
+async def _score_batch(
+    session: AsyncSession, jd_text: str, batch: list[Profile]
+) -> dict[uuid.UUID, dict]:
+    """Score one batch, retrying malformed entries once with a corrective
+    message; profiles still malformed after the retry are skipped with a
+    logged warning — a bad LLM response never crashes the batch."""
+    user = json.dumps(
+        {"job_description": jd_text, "candidates": [_profile_summary(p) for p in batch]},
+        default=str,
+    )
+    messages = [
+        {"role": "system", "content": _SCORING_SYSTEM_PROMPT},
+        {"role": "user", "content": user},
+    ]
+    raw = await llm_router.chat_completion(
+        "rerank", messages, response_format_json=True, session=session
+    )
+    results, missing = _extract_valid(raw, {p.id for p in batch})
+    if missing:
+        corrective = (
+            "Your previous response was missing or malformed for these "
+            f"profile_ids: {sorted(str(p) for p in missing)}. Every parameter "
+            "score MUST be an integer between 1 and 10, every parameter needs "
+            "a comment, and overall_comment must be a non-empty holistic "
+            "sentence. Re-emit a complete, valid JSON response in the exact "
+            "schema for ONLY those profile_ids."
+        )
+        retry_messages = messages + [
+            {"role": "assistant", "content": raw},
+            {"role": "user", "content": corrective},
+        ]
+        raw_retry = await llm_router.chat_completion(
+            "rerank", retry_messages, response_format_json=True, session=session
+        )
+        retried, still_missing = _extract_valid(raw_retry, missing)
+        results.update(retried)
+        for pid in still_missing:
+            logger.warning(
+                "matching.profile_skipped profile_id=%s reason=malformed_llm_scores",
+                pid,
+            )
+    return results
+
+
+async def _llm_score(
+    session: AsyncSession, jd_text: str, profiles: list[Profile]
+) -> dict[uuid.UUID, dict]:
+    """4-parameter scoring for all shortlisted profiles.
+
+    Returns {profile_id: breakdown} where breakdown matches the contract's
+    "Matching results" JSON block (overall.score computed in Python)."""
+    results: dict[uuid.UUID, dict] = {}
+    for i in range(0, len(profiles), _RERANK_BATCH_SIZE):
+        results.update(await _score_batch(session, jd_text, profiles[i : i + _RERANK_BATCH_SIZE]))
     return results
 
 
@@ -262,9 +434,10 @@ async def run_matching(
     # keep union order
     profiles = [profiles_by_id[pid] for pid in profile_ids if pid in profiles_by_id]
 
-    # ── Stage 3: LLM re-rank (raises LLMUnavailableError only if the whole
-    #    chain is exhausted — the Celery task's retry policy handles that) ──
-    scores = await _llm_rerank(session, jd_text, profiles)
+    # ── Stage 3: 4-parameter LLM scoring (raises LLMUnavailableError only if
+    #    the whole chain is exhausted — the Celery task's retry policy handles
+    #    that; individual malformed profiles are skipped with a warning) ──
+    breakdowns = await _llm_score(session, jd_text, profiles)
 
     # ── Ensure links exist for consenting Databank candidates (FR-4.2/4.4) ──
     existing_links = (
@@ -290,6 +463,7 @@ async def run_matching(
     }
 
     scored = 0
+    scored_links: list[tuple[JobCandidateLink, dict]] = []
     for profile in profiles:
         link = links_by_candidate.get(profile.candidate_id)
         if link is None:
@@ -308,12 +482,31 @@ async def run_matching(
         if link.profile_id is None:
             link.profile_id = profile.id
 
-        if profile.id in scores:
-            score, rationale = scores[profile.id]
-            link.match_score = score
-            link.match_rationale = rationale  # HR-visible, never candidate-visible
-            link.tier = assign_tier(score)
+        if profile.id in breakdowns:
+            breakdown = breakdowns[profile.id]
+            overall = breakdown["overall"]["score"]
+            # match_score stays 0-100 (overall × 10) so sorting/dashboard and
+            # the tier boundary rule are unchanged.
+            link.match_score = round(overall * 10, 1)
+            # HR-visible, never candidate-visible — the holistic 5th comment.
+            link.match_rationale = breakdown["overall"]["comment"]
+            link.tier = assign_tier(link.match_score)
+            scored_links.append((link, breakdown))
             scored += 1
+
+    # match_breakdown_json is intentionally NOT on the SQLAlchemy model (same
+    # pattern as jobs.embedding) — flush so new links get ids, then write the
+    # breakdown via raw SQL.
+    await session.flush()
+    for link, breakdown in scored_links:
+        await session.execute(
+            text(
+                "UPDATE job_candidate_links "
+                "SET match_breakdown_json = CAST(:breakdown AS jsonb) "
+                "WHERE id = :id"
+            ),
+            {"breakdown": json.dumps(breakdown), "id": str(link.id)},
+        )
 
     await session.commit()
     return scored

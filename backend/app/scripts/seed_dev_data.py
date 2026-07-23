@@ -3,8 +3,9 @@
 Seeds:
 - global role_permissions template rows (tenant_id NULL) from
   DEFAULT_PERMISSION_MATRIX — every capability x role, default False
-- super admin user (admin@hanulisa.com)
+- the platform Owner (manjuchro@gmail.com) — the SOLE super_admin (rev 2)
 - demo tenant "Acme Corp" with client, 2 hiring managers, 1 HR, 1 recruiter
+  (all client-org members — staff emails live on the tenant's domain)
 - company page + approval_levels_config (recommended level inactive)
 - llm_provider_keys rows encrypted from settings (empties skipped)
 - default email templates for the demo tenant
@@ -306,15 +307,14 @@ async def seed() -> None:
 
             print("Seeding global data...")
             await _seed_permission_template(session)
-            # Primary platform super admin — ultimate access. Any email domain
-            # (incl. gmail) and any mobile number are permitted identifiers;
-            # auth only requires the user row to exist.
+            # Platform Owner — the ONLY super_admin account permitted (rev 2:
+            # settings.owner_email; the API layer rejects any other identity
+            # holding the owner role). Any email domain (incl. gmail) and any
+            # mobile number are permitted identifiers; auth only requires the
+            # user row to exist.
             await _get_or_create_user(
                 session, "manjuchro@gmail.com", Role.super_admin, None,
                 "Manju (Platform Admin)", phone="9652802233",
-            )
-            await _get_or_create_user(
-                session, "admin@hanulisa.com", Role.super_admin, None, "Platform Admin"
             )
             await _seed_llm_keys(session)
 
@@ -330,8 +330,11 @@ async def seed() -> None:
                 await session.flush()
                 print(f"  + tenant {DEMO_TENANT_NAME} ({DEMO_TENANT_DOMAIN})")
 
+            # Client carries a mobile so first-login dual-OTP (FR-1.2) can
+            # complete in dev; onboarding (Image 1 flow) always captures both.
             client = await _get_or_create_user(
-                session, "client@acme.example.com", Role.client, tenant.id, "Acme Client"
+                session, "client@acme.example.com", Role.client, tenant.id,
+                "Acme Client", phone="9000000001",
             )
             hm1 = await _get_or_create_user(
                 session, "hm1@acme.example.com", Role.hiring_manager, tenant.id, "HM One"
@@ -339,11 +342,14 @@ async def seed() -> None:
             hm2 = await _get_or_create_user(
                 session, "hm2@acme.example.com", Role.hiring_manager, tenant.id, "HM Two"
             )
+            # HR Manager / Recruiter are client-org staff (rev 2 role model) —
+            # their emails live on the tenant's domain, never hanulisa.com.
             await _get_or_create_user(
-                session, "hr1@hanulisa.com", Role.hr_manager, tenant.id, "HR One"
+                session, "hr1@acme.example.com", Role.hr_manager, tenant.id,
+                "HR One", phone="9000000002",
             )
             await _get_or_create_user(
-                session, "rec1@hanulisa.com", Role.recruiter, tenant.id, "Recruiter One"
+                session, "rec1@acme.example.com", Role.recruiter, tenant.id, "Recruiter One"
             )
 
             for hm_user in (hm1, hm2):

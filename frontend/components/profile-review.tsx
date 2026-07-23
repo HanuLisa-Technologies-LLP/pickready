@@ -12,6 +12,7 @@ import { apiGet } from "@/lib/api";
 import type { CandidateLink, CandidateProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { AspectsReadout } from "@/components/aspects-form";
+import { MatchBreakdownView } from "@/components/matching-results";
 import { TierBadge } from "@/components/tier-badge";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -135,9 +136,19 @@ export function ProfileReview({
               <Tabs defaultValue="aspects">
                 <TabsList>
                   <TabsTrigger value="aspects">40 Aspects</TabsTrigger>
+                  <TabsTrigger value="scores">Match scores</TabsTrigger>
                   <TabsTrigger value="resume">Resume</TabsTrigger>
                   <TabsTrigger value="verification">Verification</TabsTrigger>
                 </TabsList>
+
+                <TabsContent value="scores">
+                  {/* 4-parameter ranking breakdown (rev 2): 5 scores + 5
+                      comments for this candidate on the selected job. */}
+                  <MatchBreakdownView
+                    breakdown={selected.breakdown}
+                    rationale={selected.rationale}
+                  />
+                </TabsContent>
 
                 <TabsContent value="aspects">
                   {profile.aspects && profile.aspects.length > 0 ? (

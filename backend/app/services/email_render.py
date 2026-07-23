@@ -25,6 +25,15 @@ _PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}")
 # yet (PRD §5 says no fixed templates are *shipped*; an outreach/verification
 # email still has to say something before the tenant edits theirs).
 DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
+    # OTP delivery must work for EVERY user — including platform-level users
+    # (Owner/super_admin) who have no tenant and therefore no tenant-authored
+    # templates. The body carries the code; it is never logged (ESD §16).
+    "otp": (
+        "Your PickReady verification code",
+        "Your PickReady one-time password is {{code}}. It is valid for "
+        "{{ttl_minutes}} minutes.\n\n"
+        "If you did not request this code, you can ignore this email.",
+    ),
     "outreach": (
         "Information request regarding a role at {{company_name}}",
         "Dear {{candidate_name}},\n\n"
@@ -61,7 +70,7 @@ def substitute(template: str, context: dict[str, Any]) -> str:
 
 async def render(
     session: AsyncSession,
-    tenant_id: uuid.UUID | str,
+    tenant_id: uuid.UUID | str | None,
     template_name: str,
     context: dict[str, Any],
 ) -> tuple[str, str]:
@@ -69,19 +78,35 @@ async def render(
 
     Uses the highest active version of the tenant's template; falls back to
     the minimal default when the tenant has none.
+
+    ROOT-CAUSE FIX (2026-07-23): tenant_id may legitimately be None —
+    platform-level emails (e.g. the Owner/super_admin OTP) have no tenant.
+    This used to crash with ValueError('badly formed hexadecimal UUID string')
+    from uuid.UUID(str(None)), which was the real reason "Resend key present
+    but no email sent". None/unparseable tenant_id now skips the tenant
+    template lookup and renders the built-in default instead of crashing.
     """
-    row = (
-        await session.execute(
-            select(EmailTemplate)
-            .where(
-                EmailTemplate.tenant_id == uuid.UUID(str(tenant_id)),
-                EmailTemplate.name == template_name,
-                EmailTemplate.is_active.is_(True),
+    parsed_tenant_id: uuid.UUID | None = None
+    if tenant_id is not None:
+        try:
+            parsed_tenant_id = uuid.UUID(str(tenant_id))
+        except (ValueError, AttributeError, TypeError):
+            parsed_tenant_id = None  # invalid id → default template, no crash
+
+    row = None
+    if parsed_tenant_id is not None:
+        row = (
+            await session.execute(
+                select(EmailTemplate)
+                .where(
+                    EmailTemplate.tenant_id == parsed_tenant_id,
+                    EmailTemplate.name == template_name,
+                    EmailTemplate.is_active.is_(True),
+                )
+                .order_by(EmailTemplate.version.desc())
+                .limit(1)
             )
-            .order_by(EmailTemplate.version.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+        ).scalar_one_or_none()
 
     if row is not None:
         subject_tmpl, body_tmpl = row.subject, row.body

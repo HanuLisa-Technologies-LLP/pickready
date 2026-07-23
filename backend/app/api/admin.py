@@ -1,6 +1,11 @@
-"""Super Admin console (FR-11.x). Every request runs through
-`get_superadmin_db`, which enforces the super_admin audience, uses the RLS
-bypass scope, and writes an audit_log row for the cross-tenant access."""
+"""Owner console (contract rev 2, formerly "Super Admin"). Every request runs
+through `get_superadmin_db`, which enforces the super_admin audience, uses the
+RLS bypass scope, and writes an audit_log row for the cross-tenant access.
+
+The Owner ONLY onboards tenants, lists them, edits permission templates, and
+reads the audit log. Staff creation lives in the client portal
+(/companies/me/staff) — the whole staff hierarchy belongs to the client
+organization, not the platform (Pickready.docx §2)."""
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -16,13 +21,13 @@ from app.schemas.admin import (
     AuditLogOut,
     PermissionOut,
     PermissionsUpdateIn,
-    StaffCreateIn,
     TenantCreateIn,
     TenantCreateOut,
     TenantOut,
 )
 from app.services.audit import audit
 from app.services.capabilities import DEFAULT_PERMISSION_MATRIX
+from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
 from app.workers.celery_app import celery_app
 
 router = APIRouter()
@@ -49,6 +54,13 @@ async def create_tenant(
     ).scalars().first()
     if existing is not None:
         raise HTTPException(status_code=409, detail="A tenant with this domain already exists")
+
+    # Defensive owner invariant: no user-creating path may ever mint a
+    # super_admin identity other than settings.owner_email (contract rev 2).
+    try:
+        ensure_owner_invariant(Role.client, str(body.client_email))
+    except OwnerRoleViolation as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     tenant = Tenant(name=body.name, domain=body.domain)
     session.add(tenant)
@@ -89,53 +101,6 @@ async def list_tenants(
 ) -> list[TenantOut]:
     rows = (await session.execute(select(Tenant).order_by(Tenant.created_at))).scalars().all()
     return [TenantOut.model_validate(t) for t in rows]
-
-
-@router.post(
-    "/tenants/{tenant_id}/staff",
-    response_model=AdminUserOut,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_staff(
-    tenant_id: uuid.UUID,
-    body: StaffCreateIn,
-    user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_superadmin_db),
-) -> AdminUserOut:
-    """Assign Hanulisa HR Manager / Recruiter staff to a tenant (FR-11.1)."""
-    tenant = await session.get(Tenant, tenant_id)
-    if tenant is None:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-
-    role = Role(body.role)
-    dup = (
-        await session.execute(
-            select(User).where(
-                User.tenant_id == tenant_id, User.email == str(body.email), User.role == role
-            )
-        )
-    ).scalars().first()
-    if dup is not None:
-        raise HTTPException(status_code=409, detail="User already exists for this tenant/role")
-
-    staff = User(
-        tenant_id=tenant_id, role=role, email=str(body.email), phone=body.phone,
-        full_name=body.full_name, status=UserStatus.invited,
-    )
-    session.add(staff)
-    await session.flush()
-
-    await audit(
-        session, tenant_id=tenant_id, actor_user_id=user.user_id,
-        action="staff_created", target_type="user", target_id=staff.id,
-        metadata={"role": role.value, "email": str(body.email)},
-    )
-    celery_app.send_task(
-        "pickready.send_email",
-        args=[str(tenant_id), str(body.email), "staff_invite",
-              {"tenant_name": tenant.name, "role": role.value}],
-    )
-    return AdminUserOut.model_validate(staff)
 
 
 @router.get("/permissions", response_model=list[PermissionOut])

@@ -100,5 +100,7 @@ export const apiPost = <T>(path: string, body?: unknown) =>
   api<T>(path, { method: "POST", body });
 export const apiPut = <T>(path: string, body?: unknown) =>
   api<T>(path, { method: "PUT", body });
+export const apiDelete = <T = void>(path: string) =>
+  api<T>(path, { method: "DELETE" });
 export const apiUpload = <T>(path: string, formData: FormData) =>
   api<T>(path, { method: "POST", formData });

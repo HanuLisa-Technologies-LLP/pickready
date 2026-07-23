@@ -73,8 +73,11 @@ class JobCandidateLink(Base, UUIDPKMixin, CreatedAtMixin):
     source: Mapped[LinkSource] = mapped_column(
         Enum(LinkSource, native_enum=False, length=10), nullable=False
     )
-    match_score: Mapped[float | None] = mapped_column(Float)  # 0–100 LLM contextual score
+    match_score: Mapped[float | None] = mapped_column(Float)  # overall × 10 (0–100), for sorting/tiers
     match_rationale: Mapped[str | None] = mapped_column(Text)  # HR-visible, never candidate-visible
+    # 4-parameter weighted breakdown (rev 2): skills_match/experience_relevance/
+    # role_alignment/education_fit + overall, each {score 1-10, comment}.
+    match_breakdown_json: Mapped[dict | None] = mapped_column(JSONB)
     tier: Mapped[Tier | None] = mapped_column(Enum(Tier, native_enum=False, length=25))
     # HR grants Hiring Manager access per profile (FR-8.1)
     hm_access_granted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

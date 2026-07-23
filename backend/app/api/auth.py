@@ -1,4 +1,7 @@
-"""OTP auth endpoints (FR-1.x / ESD §5). No passwords, anywhere."""
+"""OTP auth endpoints (FR-1.x / ESD §5 / contract rev 2). No passwords,
+anywhere. Unified login: one identifier may resolve to several users across
+roles/tenants — verify then returns a workspace chooser finalized by
+/auth/select-context."""
 import uuid
 
 import jwt as pyjwt
@@ -12,7 +15,7 @@ from app.api.deps import (
     get_current_any,
 )
 from app.core.config import get_settings
-from app.core.db import get_session
+from app.core.db import get_session, tenant_scope
 from app.core.security import (
     ALGORITHM,
     AUDIENCE_CANDIDATE,
@@ -22,14 +25,17 @@ from app.core.security import (
 from app.models.enums import OTPChannel
 from app.models.user import User
 from app.schemas.auth import (
+    ContextOut,
     MeOut,
     OTPRequestIn,
     OTPRequestOut,
     OTPVerifyIn,
     OTPVerifyOut,
+    SelectContextIn,
     UserOut,
 )
 from app.services import otp as otp_service
+from app.services import rbac
 
 router = APIRouter()
 
@@ -44,6 +50,19 @@ def _user_out(user: User) -> UserOut:
         email_verified=user.email_verified_at is not None,
         phone_verified=user.phone_verified_at is not None,
     )
+
+
+async def _capabilities(session: AsyncSession, user: User) -> list[str]:
+    """Capability list for auth responses. Tenant-scoped so the RLS policy on
+    role_permissions exposes this tenant's override rows (claude.md rule 1)."""
+    if user.tenant_id is None:
+        return await rbac.capabilities_for_user(
+            session, role=user.role, tenant_id=None
+        )
+    async with tenant_scope(session, user.tenant_id):
+        return await rbac.capabilities_for_user(
+            session, role=user.role, tenant_id=user.tenant_id
+        )
 
 
 def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
@@ -87,6 +106,13 @@ async def request_otp(
     )
 
 
+def _context_out(ctx: otp_service.LoginContext) -> ContextOut:
+    return ContextOut(
+        user_id=ctx.user_id, role=ctx.role, tenant_id=ctx.tenant_id,
+        tenant_name=ctx.tenant_name, portal=ctx.portal,
+    )
+
+
 @router.post("/otp/verify", response_model=OTPVerifyOut)
 async def verify_otp(
     body: OTPVerifyIn, response: Response, session: AsyncSession = Depends(get_session)
@@ -109,8 +135,51 @@ async def verify_otp(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     await session.commit()
+    if result.multi_context:
+        # NO cookies — the caller picks a workspace via /auth/select-context.
+        return OTPVerifyOut(
+            contexts=[_context_out(c) for c in result.contexts],
+            context_token=result.context_token,
+        )
     if result.authenticated:
         _set_auth_cookies(response, result.access_token, result.refresh_token)
+        return OTPVerifyOut(
+            user=_user_out(result.user),
+            capabilities=await _capabilities(session, result.user),
+        )
+    # Client first-login dual OTP still pending — no cookies yet (FR-1.2).
+    return OTPVerifyOut(
+        user=_user_out(result.user), pending_channels=result.pending_channels
+    )
+
+
+@router.post("/select-context", response_model=OTPVerifyOut)
+async def select_context(
+    body: SelectContextIn, response: Response, session: AsyncSession = Depends(get_session)
+) -> OTPVerifyOut:
+    """Exchange a context_token (proof of OTP success) for cookies as one of
+    the identifier's users (contract rev 2). Single-use."""
+    try:
+        result = await otp_service.select_context(
+            session, context_token=body.context_token, user_id=body.user_id
+        )
+    except otp_service.ContextTokenConsumed as exc:
+        raise HTTPException(status_code=410, detail="Context token already used") from exc
+    except otp_service.ContextTokenInvalid as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except otp_service.ContextUserMismatch as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except otp_service.UserNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    await session.commit()
+    if result.authenticated:
+        _set_auth_cookies(response, result.access_token, result.refresh_token)
+        return OTPVerifyOut(
+            user=_user_out(result.user),
+            capabilities=await _capabilities(session, result.user),
+        )
+    # Client first-login dual OTP still pending for this workspace.
     return OTPVerifyOut(
         user=_user_out(result.user), pending_channels=result.pending_channels
     )
@@ -167,4 +236,4 @@ async def me(
     user = await session.get(User, current.user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown user")
-    return MeOut(user=_user_out(user))
+    return MeOut(user=_user_out(user), capabilities=await _capabilities(session, user))

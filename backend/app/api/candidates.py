@@ -391,6 +391,7 @@ async def list_job_links(
             source=link.source,
             match_score=link.match_score,
             tier=link.tier,
+            breakdown=link.match_breakdown_json,
             hm_access_granted=link.hm_access_granted,
             current_status=entry.status if entry else None,
             status_remarks=entry.remarks if entry else None,

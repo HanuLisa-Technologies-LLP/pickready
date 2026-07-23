@@ -103,6 +103,7 @@ class LinkOut(BaseModel):
     source: LinkSource
     match_score: float | None
     tier: Tier | None
+    breakdown: dict | None = None  # 4-param scoring (rev 2), for HR Review Screen
     hm_access_granted: bool
     current_status: PipelineStatus | None
     status_remarks: str | None = None
