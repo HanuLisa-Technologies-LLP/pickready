@@ -22,6 +22,7 @@ Seeded dev logins (OTP prints to the backend log in development):
 
 | Role | Email |
 |---|---|
+| Super Admin (primary) | manjuchro@gmail.com (SMS OTP: 9652802233) |
 | Super Admin | admin@hanulisa.com |
 | Client | client@acme.example.com |
 | HR Manager | hr1@hanulisa.com |

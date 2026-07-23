@@ -85,6 +85,7 @@ async def _get_or_create_user(
     role: Role,
     tenant_id: uuid.UUID | None,
     full_name: str,
+    phone: str | None = None,
 ) -> User:
     user = (
         await session.execute(
@@ -99,11 +100,15 @@ async def _get_or_create_user(
             role=role,
             tenant_id=tenant_id,
             full_name=full_name,
+            phone=phone,
             status=UserStatus.active,
         )
         session.add(user)
         await session.flush()
         print(f"  + user {email} ({role.value})")
+    elif phone and user.phone != phone:
+        user.phone = phone
+        print(f"  ~ user {email}: phone updated")
     return user
 
 
@@ -301,6 +306,13 @@ async def seed() -> None:
 
             print("Seeding global data...")
             await _seed_permission_template(session)
+            # Primary platform super admin — ultimate access. Any email domain
+            # (incl. gmail) and any mobile number are permitted identifiers;
+            # auth only requires the user row to exist.
+            await _get_or_create_user(
+                session, "manjuchro@gmail.com", Role.super_admin, None,
+                "Manju (Platform Admin)", phone="9652802233",
+            )
             await _get_or_create_user(
                 session, "admin@hanulisa.com", Role.super_admin, None, "Platform Admin"
             )
