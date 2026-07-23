@@ -72,3 +72,19 @@ class SelectContextIn(BaseModel):
 class MeOut(BaseModel):
     user: UserOut
     capabilities: list[str] = []
+
+
+class CandidateRegisterIn(BaseModel):
+    """Candidate self-service sign-up (register first, log in later). OTP-only —
+    no password is collected; the account is verified by OTP at first login."""
+    full_name: str = Field(min_length=1, max_length=255)
+    email: str = Field(min_length=3, max_length=320)
+    phone: str | None = Field(default=None, max_length=20)
+
+
+class CandidateRegisterOut(BaseModel):
+    candidate_id: uuid.UUID
+    email: str
+    # Guidance for the client: registration creates the account only; the
+    # candidate now signs in from the unified login via OTP.
+    next: Literal["login"] = "login"

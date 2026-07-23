@@ -11,9 +11,11 @@ import { UserCheck } from "lucide-react";
 
 import { apiGet, apiPost } from "@/lib/api";
 import type { CandidateLink, Job } from "@/lib/types";
+import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
 import { ProfileReview } from "@/components/profile-review";
+import { HmDecisionActions } from "@/components/hm-decision-actions";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -26,6 +28,10 @@ import {
 
 export default function OrgReviewScreen() {
   const { toast } = useToast();
+  const { hasCapability } = useAuth();
+  // A Hiring Manager acts on profiles (FR-8.2); HR grants access (FR-8.1).
+  const canDecide = hasCapability("decide_profile");
+  const canGrant = hasCapability("view_review_screen") && !canDecide;
   const [jobs, setJobs] = React.useState<Job[]>([]);
   const [jobId, setJobId] = React.useState<string>("");
   const [links, setLinks] = React.useState<CandidateLink[]>([]);
@@ -108,20 +114,32 @@ export default function OrgReviewScreen() {
         <ProfileReview
           links={links}
           emptyMessage="No candidates linked to this job yet."
-          renderActions={(link) =>
-            link.hm_access_granted ? (
-              <Badge variant="secondary">HM access granted</Badge>
-            ) : (
-              <Button
-                size="sm"
-                className="gap-2"
-                disabled={busy}
-                onClick={() => void grantAccess(link)}
-              >
-                <UserCheck className="h-4 w-4" /> Grant Hiring Manager access
-              </Button>
-            )
-          }
+          renderActions={(link) => {
+            // Hiring Manager: act on profiles they've been granted (FR-8.2).
+            if (canDecide) {
+              return link.hm_access_granted ? (
+                <HmDecisionActions link={link} onDecided={() => void loadLinks()} />
+              ) : (
+                <Badge variant="outline">Awaiting HR access</Badge>
+              );
+            }
+            // HR: grant Hiring Manager access to a reviewed profile (FR-8.1).
+            if (canGrant) {
+              return link.hm_access_granted ? (
+                <Badge variant="secondary">HM access granted</Badge>
+              ) : (
+                <Button
+                  size="sm"
+                  className="gap-2"
+                  disabled={busy}
+                  onClick={() => void grantAccess(link)}
+                >
+                  <UserCheck className="h-4 w-4" /> Grant Hiring Manager access
+                </Button>
+              );
+            }
+            return null;
+          }}
         />
       )}
     </div>

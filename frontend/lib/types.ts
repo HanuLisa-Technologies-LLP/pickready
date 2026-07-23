@@ -49,10 +49,21 @@ export interface AuthContextsResponse {
 /** POST /auth/otp/verify — single user OR multiple matching users (rev 2). */
 export type OtpVerifyResponse = AuthSession | AuthContextsResponse;
 
+/** POST /auth/register-candidate — candidate self sign-up (register → login). */
+export interface CandidateRegisterResponse {
+  candidate_id: string;
+  email: string;
+  next: "login";
+}
+
 export function isContextsResponse(
   res: OtpVerifyResponse
 ): res is AuthContextsResponse {
-  return "contexts" in res;
+  // The single-user response carries `contexts: null` (not an absent key), so
+  // test the value, not key presence — otherwise every single-user login is
+  // wrongly routed into the empty "choose workspace" step and never navigates.
+  return Array.isArray((res as AuthContextsResponse).contexts)
+    && (res as AuthContextsResponse).contexts.length > 0;
 }
 
 // ---- Admin ----
@@ -224,6 +235,8 @@ export interface CandidateLink {
   match_score?: number | null;
   tier?: Tier | null;
   status?: PipelineStatus | null;
+  current_status?: PipelineStatus | null;  // backend LinkOut field name
+  status_remarks?: string | null;
   hm_access_granted?: boolean;
   rationale?: string | null;
   profile_id?: string | null;

@@ -86,6 +86,9 @@ Base URL: `/api/v1`. Auth: JWT access token in an httpOnly cookie `pr_access` (+
 | POST | `/verification/form/{token}` | PUBLIC — `{designation, doj, doe, last_drawn_ctc, last_drawn_gross, noc_status, exit_formalities_complete, bgv_status, proofs_details, prior_experience_details}` |
 | POST | `/verification/inbound-email` | webhook (Resend inbound) → enqueue LLM reply parsing |
 
+## Candidate self sign-up (`/auth`)
+| POST | `/auth/register-candidate` | PUBLIC — `{full_name, email, phone?}` → creates a candidate account (role=candidate, tenant_id NULL) + Candidate record, then the candidate signs in via the unified OTP login. 409 if a candidate already exists for that email. No password (OTP-only). A previously-sourced Candidate row with the same email is reused/linked rather than duplicated. |
+
 ## Candidate portal (`/portal`) — candidate audience
 | GET | `/portal/outreach/{token}` | PUBLIC — what's requested (fields to fill, 40 aspects minus already-covered) |
 | POST | `/portal/outreach/{token}` | multipart: personal fields, `aspects` JSON, `resume` file, `employer_emails: []` (≤3) |

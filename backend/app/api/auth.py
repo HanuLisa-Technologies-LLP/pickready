@@ -25,6 +25,8 @@ from app.core.security import (
 from app.models.enums import OTPChannel
 from app.models.user import User
 from app.schemas.auth import (
+    CandidateRegisterIn,
+    CandidateRegisterOut,
     ContextOut,
     MeOut,
     OTPRequestIn,
@@ -76,6 +78,30 @@ def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
         REFRESH_COOKIE, refresh, httponly=True, secure=secure, samesite="lax",
         max_age=settings.jwt_refresh_ttl_days * 86400, path="/api/v1/auth",
     )
+
+
+@router.post(
+    "/register-candidate",
+    response_model=CandidateRegisterOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def register_candidate(
+    body: CandidateRegisterIn, session: AsyncSession = Depends(get_session)
+) -> CandidateRegisterOut:
+    """Candidate self sign-up (FR-9.1, register first / log in later). Creates
+    the account only — the candidate then signs in from the unified login via
+    OTP. No password anywhere (claude.md rule 2)."""
+    try:
+        candidate = await otp_service.register_candidate(
+            session,
+            full_name=body.full_name,
+            email=body.email,
+            phone=body.phone,
+        )
+    except otp_service.AlreadyRegistered as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await session.commit()
+    return CandidateRegisterOut(candidate_id=candidate.id, email=candidate.email)
 
 
 @router.post("/otp/request", response_model=OTPRequestOut)

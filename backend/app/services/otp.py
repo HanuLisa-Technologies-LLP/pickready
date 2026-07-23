@@ -98,6 +98,10 @@ class ContextUserMismatch(OTPError):
     """The selected user_id is not one of the token's login contexts."""
 
 
+class AlreadyRegistered(OTPError):
+    """A candidate account already exists for this email — sign in instead."""
+
+
 # ── Rate limiter (Redis with in-memory fallback) ─────────────────────────────
 
 class RateLimiter:
@@ -370,6 +374,71 @@ def _issue_tokens(user: User) -> tuple[str, str]:
     )
     refresh = security.create_refresh_token(user.id, audience=audience)
     return access, refresh
+
+
+async def register_candidate(
+    session: AsyncSession,
+    *,
+    full_name: str,
+    email: str,
+    phone: str | None = None,
+) -> "Candidate":  # noqa: F821 — forward ref, imported lazily below
+    """Candidate self-service sign-up (register first, log in later).
+
+    Creates a candidate `User` (role=candidate, tenant_id NULL — candidates are
+    external actors) plus the shared `Candidate` record so the portal has a
+    profile to attach to at first login. OTP-only: no password is taken; the
+    account is created active and the OTP at first login proves email ownership.
+
+    If a candidate was already sourced by an employer (a `Candidate` row with
+    that email and no linked user), we reuse and link it rather than creating a
+    duplicate — the portal matches candidates by email OR user_id.
+
+    Raises AlreadyRegistered if a candidate account already exists for the email.
+    """
+    from app.models.candidate import Candidate  # local import avoids a cycle
+
+    email = email.strip().lower()
+    phone = phone.strip() if phone else None
+
+    existing_user = (
+        await session.execute(
+            select(User).where(User.email == email, User.role == Role.candidate)
+        )
+    ).scalars().first()
+    if existing_user is not None:
+        raise AlreadyRegistered("a candidate account already exists for this email")
+
+    user = User(
+        role=Role.candidate,
+        email=email,
+        phone=phone,
+        full_name=full_name.strip(),
+        tenant_id=None,
+        status=UserStatus.active,  # OTP at first login is the ownership proof
+    )
+    session.add(user)
+    await session.flush()
+
+    # Reuse a previously-sourced (employer-created) candidate record if present.
+    candidate = (
+        await session.execute(
+            select(Candidate).where(Candidate.email == email)
+        )
+    ).scalars().first()
+    if candidate is None:
+        candidate = Candidate(
+            tenant_id=None, user_id=user.id, full_name=full_name.strip(),
+            email=email, phone=phone, consent_databank=False,
+        )
+        session.add(candidate)
+    else:
+        if candidate.user_id is None:
+            candidate.user_id = user.id
+        candidate.full_name = candidate.full_name or full_name.strip()
+        candidate.phone = candidate.phone or phone
+    await session.flush()
+    return candidate
 
 
 async def request_otp(

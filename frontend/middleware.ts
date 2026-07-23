@@ -6,6 +6,7 @@ import type { NextRequest } from "next/server";
 
 const PUBLIC_PREFIXES = [
   "/login",
+  "/register", // candidate self sign-up (register first, log in later)
   "/portal/outreach", // public tokenized outreach completion
   "/verify-employment", // public employer verification form
 ];

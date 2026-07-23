@@ -10,7 +10,8 @@
 //    registered mobile (FR-1.2).
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { apiPost } from "@/lib/api";
 import {
@@ -73,12 +74,16 @@ export function LoginFlow({
   description: string;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { setSession, refresh } = useAuth();
   const { toast } = useToast();
 
   const [step, setStep] = React.useState<Step>("identifier");
   const [channel, setChannel] = React.useState<Channel>("email");
-  const [identifier, setIdentifier] = React.useState("");
+  // Pre-fill the identifier when arriving from candidate sign-up (?identifier=).
+  const [identifier, setIdentifier] = React.useState(
+    () => searchParams.get("identifier") ?? ""
+  );
   const [phone, setPhone] = React.useState("");
   const [challengeId, setChallengeId] = React.useState("");
   const [code, setCode] = React.useState("");
@@ -254,6 +259,15 @@ export function LoginFlow({
               </Button>
               <p className="text-center text-xs text-muted-foreground">
                 No passwords — PickReady uses one-time codes only.
+              </p>
+              <p className="text-center text-xs text-muted-foreground">
+                New candidate?{" "}
+                <Link
+                  href="/register"
+                  className="underline underline-offset-2 hover:text-foreground"
+                >
+                  Create an account
+                </Link>
               </p>
             </form>
           ) : null}
