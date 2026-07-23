@@ -17,6 +17,9 @@ out/
 *.tsbuildinfo
 .vercel
 
+# Runtime artifacts
+celerybeat-schedule*
+
 # Misc
 *.log
 .DS_Store
