@@ -1,0 +1,96 @@
+# Local dev stack (ESD §15): postgres+pgvector, redis, backend API, celery
+# worker, celery beat, frontend dev server. Run from repo root:
+#   docker compose -f infra/docker-compose.yml up --build
+name: pickready
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: pickready
+      POSTGRES_PASSWORD: pickready
+      POSTGRES_DB: pickready
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pickready -d pickready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ../backend
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
+      REDIS_URL: redis://redis:6379/0
+      FRONTEND_URL: http://localhost:3000
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  worker:
+    build: ../backend
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../backend:/app
+    command: celery -A app.workers.celery_app:celery_app worker --loglevel=info --concurrency=2
+
+  beat:
+    build: ../backend
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../backend:/app
+    command: celery -A app.workers.celery_app:celery_app beat --loglevel=info
+
+  frontend:
+    build:
+      context: ../frontend
+      target: deps
+    working_dir: /app
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+      NEXT_TELEMETRY_DISABLED: "1"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../frontend:/app
+      - frontend_node_modules:/app/node_modules
+    command: sh -c "npm install --no-audit --no-fund && npm run dev"
+
+volumes:
+  pgdata:
+  frontend_node_modules:

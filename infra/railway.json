@@ -1,0 +1,27 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "services": {
+    "backend": {
+      "build": { "builder": "DOCKERFILE", "dockerfilePath": "backend/Dockerfile" },
+      "deploy": {
+        "startCommand": "sh -c 'alembic upgrade head && gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:$PORT'",
+        "healthcheckPath": "/health",
+        "restartPolicyType": "ON_FAILURE"
+      }
+    },
+    "worker": {
+      "build": { "builder": "DOCKERFILE", "dockerfilePath": "backend/Dockerfile" },
+      "deploy": {
+        "startCommand": "celery -A app.workers.celery_app:celery_app worker --loglevel=info",
+        "restartPolicyType": "ON_FAILURE"
+      }
+    },
+    "beat": {
+      "build": { "builder": "DOCKERFILE", "dockerfilePath": "backend/Dockerfile" },
+      "deploy": {
+        "startCommand": "celery -A app.workers.celery_app:celery_app beat --loglevel=info",
+        "restartPolicyType": "ON_FAILURE"
+      }
+    }
+  }
+}

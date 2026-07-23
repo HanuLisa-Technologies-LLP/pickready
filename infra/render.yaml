@@ -1,0 +1,40 @@
+# Render blueprint — backend API + worker + beat as Docker services,
+# managed Postgres (pgvector) + Redis. Frontend deploys to Vercel natively.
+services:
+  - type: web
+    name: pickready-backend
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    healthCheckPath: /health
+    dockerCommand: sh -c 'alembic upgrade head && gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:$PORT'
+    envVars:
+      - fromGroup: pickready-secrets
+
+  - type: worker
+    name: pickready-worker
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    dockerCommand: celery -A app.workers.celery_app:celery_app worker --loglevel=info
+    envVars:
+      - fromGroup: pickready-secrets
+
+  - type: worker
+    name: pickready-beat
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    dockerCommand: celery -A app.workers.celery_app:celery_app beat --loglevel=info
+    envVars:
+      - fromGroup: pickready-secrets
+
+  - type: redis
+    name: pickready-redis
+    plan: free
+    ipAllowList: []
+
+databases:
+  - name: pickready-db
+    plan: free
+    postgresMajorVersion: "16"
