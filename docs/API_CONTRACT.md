@@ -1,5 +1,33 @@
 # PickReady — Internal Build Contract (API routes, task names, file ownership)
 
+> **REVISION 2 (2026-07-23) — role model correction, unified login, 4-parameter ranking.**
+> Pickready.docx is the source of truth. Key corrections over ESD.md §4/PRD §4:
+> - **Owner** (formerly "Super Admin"): the platform itself (Hanulisa). Exactly ONE account — `manjuchro@gmail.com` (settings.owner_email). API layer rejects any other identity holding the owner role. Owner only onboards tenants and edits permission templates; Owner does NOT create staff.
+> - **Client-org hierarchy**: Client → HR Manager → Recruiter → Hiring Manager, ALL members of the client organization (none are Hanulisa staff). The Client (or an HR Manager granted `manage_staff`) creates staff of any of the 3 sub-roles. Only Hiring Manager is capped at 5; HR/Recruiter uncapped.
+> - **Three portals, ONE login**: Owner portal (`/admin`), Client-org portal (`/org` — shared URL space for all 4 org roles, nav/actions driven by capabilities), Candidate portal (`/portal`). Single login flow with a "choose your workspace" step ONLY when an identifier matches multiple users.
+> - **4-parameter ranking** replaces the plain 0–100 re-rank (retrieval stages unchanged): skills_match 35% / experience_relevance 30% / role_alignment 20% / education_fit 15%, each 1–10 + comment, plus a holistic overall (weighted avg, 1 decimal) + 5th comment. Tier = assign_tier(overall × 10), boundary rule unchanged. Stored in `job_candidate_links.match_breakdown_json`.
+> - **Aspect numbering contract** (aspects_json keys, portal questionnaire): **8–13 = education & qualifications** (8 highest degree level, 9 specialization, 10 institution, 11 year of completion, 12 professional certifications, 13 additional qualifications), **23 = current/most recent designation and core duties**, **40 = Databank matching consent**. Backend scoring pulls aspects 23 and 8–13 specifically when present; resume text is fallback only.
+
+## Auth contract changes (rev 2)
+| POST | `/auth/otp/verify` | single matching user → cookies + `{user, capabilities: [...]}`. MULTIPLE matching users (cross-tenant/role) → NO cookies, returns `{contexts: [{user_id, role, tenant_id, tenant_name, portal}], context_token}` |
+| POST | `/auth/select-context` | `{context_token, user_id}` → cookies + `{user, capabilities}` (context_token: short-TTL signed JWT proving OTP success; single-use) |
+| GET | `/auth/me` | → `{user, capabilities: [...]}` — capabilities resolved from RBAC engine (owner gets `["*"]`) |
+
+## Staff management (rev 2 — replaces `/companies/me/hiring-managers` and `/admin/tenants/{id}/staff`, both REMOVED)
+| GET | `/companies/me/staff` | all staff users of the tenant `[{id, email, full_name, phone, role, status, approval_level?}]` |
+| POST | `/companies/me/staff` | `{email, full_name, phone?, role: "hr_manager"\|"recruiter"\|"hiring_manager", approval_level?}` — capability `manage_staff`; server-side 409 when adding a 6th hiring_manager; hiring_manager rows still mirrored into `hiring_managers` table |
+| DELETE | `/companies/me/staff/{user_id}` | deactivate staff account (status=disabled), capability `manage_staff` |
+
+## Matching results (rev 2)
+`GET /matching/jobs/{job_id}/results` entries add `breakdown`:
+```json
+{"skills_match": {"score": 8, "comment": "..."}, "experience_relevance": {"score": 7, "comment": "..."},
+ "role_alignment": {"score": 9, "comment": "..."}, "education_fit": {"score": 6, "comment": "..."},
+ "overall": {"score": 7.7, "comment": "holistic — not a concatenation"}}
+```
+`match_score` column stays populated as `overall × 10` (sorting/dashboard unchanged); `match_rationale` = overall comment.
+
+
 This is the coordination contract between parallel build tracks. Backend routers MUST expose exactly these routes; the frontend API client MUST call exactly these routes. Deviations require updating this file.
 
 Base URL: `/api/v1`. Auth: JWT access token in an httpOnly cookie `pr_access` (+ `pr_refresh`); backend also accepts `Authorization: Bearer <token>`. Candidate-portal sessions use a distinct JWT audience (`pickready:candidate`).

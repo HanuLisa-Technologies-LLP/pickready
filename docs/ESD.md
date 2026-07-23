@@ -1,5 +1,15 @@
 # PickReady — Engineering Design Document (ESD)
 
+> **CORRECTION (Rev 2, 2026-07-23)**: the role model that placed HR Managers and
+> Recruiters as Hanulisa staff "assigned per tenant" is WRONG. Per
+> Pickready.docx (source of truth) and owner direction: the entire staff
+> hierarchy (Client → HR Manager → Recruiter → Hiring Manager) belongs to the
+> client organization; Hanulisa (the sole platform **Owner**,
+> manjuchro@gmail.com) only onboards tenants and tunes permission templates.
+> The LLM re-rank stage in §8.2 step 3 is superseded by the 4-parameter
+> weighted scoring defined in docs/API_CONTRACT.md Rev 2. Do not build to the
+> superseded sections.
+
 | | |
 |---|---|
 | **Product** | PickReady |

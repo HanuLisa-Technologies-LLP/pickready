@@ -8,7 +8,12 @@ from app.models.enums import Role
 
 # Capability constants — use these everywhere, never string literals inline.
 CREATE_COMPANY_PAGE = "create_company_page"
-CREATE_HIRING_MANAGERS = "create_hiring_managers"
+# Client-org staff management (HR Manager / Recruiter / Hiring Manager
+# accounts). Owned by the Client role; grantable to HR Managers per tenant via
+# the dynamic permission engine. NOT an Owner/Super Admin function — the
+# corrected role model (Pickready.docx §2) puts the whole staff hierarchy
+# inside the client organization.
+MANAGE_STAFF = "manage_staff"
 CONFIGURE_APPROVAL_LEVELS = "configure_approval_levels"
 EDIT_JOB_DESCRIPTION = "edit_job_description"          # HR, post-ratification
 CREATE_JOB = "create_job"                              # Hiring Manager JD creation (FR-3.1)
@@ -27,7 +32,7 @@ EDIT_ROLE_PERMISSIONS = "edit_role_permissions"        # Super Admin only
 MANAGE_EMAIL_TEMPLATES = "manage_email_templates"
 
 ALL_CAPABILITIES = [
-    CREATE_COMPANY_PAGE, CREATE_HIRING_MANAGERS, CONFIGURE_APPROVAL_LEVELS,
+    CREATE_COMPANY_PAGE, MANAGE_STAFF, CONFIGURE_APPROVAL_LEVELS,
     EDIT_JOB_DESCRIPTION, CREATE_JOB, APPROVE_JOB, ADD_COMPENSATION,
     VIEW_DATABANK, UPLOAD_RESUMES, TRIGGER_MATCHING, SEND_OUTREACH,
     VIEW_REVIEW_SCREEN, DECIDE_PROFILE, SCHEDULE_INTERVIEWS,
@@ -65,7 +70,7 @@ DEFAULT_PERMISSION_MATRIX: dict[Role, dict[str, bool]] = {
     },
     Role.client: {
         CREATE_COMPANY_PAGE: True,
-        CREATE_HIRING_MANAGERS: True,
+        MANAGE_STAFF: True,
         CONFIGURE_APPROVAL_LEVELS: True,
         APPROVE_JOB: True,          # if assigned a level
         MANAGE_EMAIL_TEMPLATES: True,

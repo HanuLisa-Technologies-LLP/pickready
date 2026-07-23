@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     environment: str = "development"
     frontend_url: str = "http://localhost:3000"
 
+    # Platform Owner — the ONLY identity permitted to hold the owner
+    # (super_admin) role. Enforced in the API layer, not just seed/UI.
+    owner_email: str = "manjuchro@gmail.com"
+
+    # Dev/fallback sender identity used until a tenant's own domain is
+    # SPF/DKIM-verified in Resend (unverified From silently fails/bounces).
+    resend_dev_sender: str = "onboarding@resend.dev"
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
