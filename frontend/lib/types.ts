@@ -218,7 +218,7 @@ export interface CandidateSummary {
   phone?: string | null;
 }
 
-/** One ranking parameter: 1–10 score + LLM comment (rev 2). */
+/** Stored ranking value + LLM comment (rev 2). Scores are never rendered in the UI. */
 export interface ParameterScore {
   score: number;
   comment: string;

@@ -25,7 +25,7 @@
  "role_alignment": {"score": 9, "comment": "..."}, "education_fit": {"score": 6, "comment": "..."},
  "overall": {"score": 7.7, "comment": "holistic — not a concatenation"}}
 ```
-`match_score` column stays populated as `overall × 10` (sorting/dashboard unchanged); `match_rationale` = overall comment.
+`match_score` column stays populated as `overall × 10` (sorting/dashboard unchanged); `match_rationale` = overall comment. Numerical values remain API/audit data and are not rendered in the frontend.
 
 
 This is the coordination contract between parallel build tracks. Backend routers MUST expose exactly these routes; the frontend API client MUST call exactly these routes. Deviations require updating this file.
@@ -77,6 +77,10 @@ Base URL: `/api/v1`. Auth: JWT access token in an httpOnly cookie `pr_access` (+
 ## Matching (`/matching`)
 | POST | `/matching/jobs/{job_id}/run` | enqueue `pickready.run_matching` → `{task: "queued"}` |
 | GET | `/matching/jobs/{job_id}/results` | links ordered by score: `[{link_id, candidate, source, match_score, tier, rationale}]` |
+
+## Telemetry (`/telemetry`)
+| POST | `/telemetry/landing-view` | public, anonymous, rate-limited landing-page audit event; no request body or visitor PII retained |
+| POST | `/telemetry/rating-comments-view/{link_id}` | authenticated review-screen audit event; capability and profile-access checks apply |
 
 ## Outreach & employer verification (`/verification`)
 | POST | `/verification/outreach` | `{job_id, candidate_ids: []}` → sends 40-aspect outreach emails (fresh candidates only) |

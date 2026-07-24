@@ -1,10 +1,10 @@
 "use client";
 
 // HR Review Screen (FR-7.1, nav-gated by `view_review_screen`): candidate
-// names on the left; the selected candidate's 40 aspects + match-score
-// breakdown + verification + resume on the right, with grant-HM-access.
+// names on the left; the selected candidate's 40 aspects + AI comments +
+// verification + resume on the right, with grant-HM-access.
 // The candidate links (from GET /candidates/jobs/{job_id}) now carry the
-// 4-parameter `breakdown` (rev 2), surfaced in the "Match scores" tab.
+// 4-parameter `breakdown` (rev 2), surfaced as comments only.
 
 import * as React from "react";
 import { UserCheck } from "lucide-react";
@@ -91,7 +91,7 @@ export default function OrgReviewScreen() {
     <div>
       <PageHeader
         title="HR Review Screen"
-        description="Review each candidate's complete Profile — resume, 40 aspects, match scores and employer verification."
+        description="Review each candidate's complete Profile — resume, 40 aspects, AI comments and employer verification."
         actions={
           <Select value={jobId} onValueChange={setJobId}>
             <SelectTrigger className="w-64">

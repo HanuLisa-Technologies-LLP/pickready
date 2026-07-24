@@ -90,11 +90,6 @@ export function ProfileReview({
             <span className="truncate font-medium">
               {link.candidate.full_name || link.candidate.email}
             </span>
-            {typeof link.match_score === "number" ? (
-              <span className="ml-2 shrink-0 text-xs opacity-80">
-                {Math.round(link.match_score)}%
-              </span>
-            ) : null}
           </button>
         ))}
       </div>
@@ -136,17 +131,18 @@ export function ProfileReview({
               <Tabs defaultValue="aspects">
                 <TabsList>
                   <TabsTrigger value="aspects">40 Aspects</TabsTrigger>
-                  <TabsTrigger value="scores">Match scores</TabsTrigger>
+                  <TabsTrigger value="scores">AI comments</TabsTrigger>
                   <TabsTrigger value="resume">Resume</TabsTrigger>
                   <TabsTrigger value="verification">Verification</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="scores">
-                  {/* 4-parameter ranking breakdown (rev 2): 5 scores + 5
-                      comments for this candidate on the selected job. */}
+                  {/* Stored ranking values support matching/audit; reviewers see
+                      only the five human-readable AI comments. */}
                   <MatchBreakdownView
                     breakdown={selected.breakdown}
                     rationale={selected.rationale}
+                    linkId={selected.link_id}
                   />
                 </TabsContent>
 

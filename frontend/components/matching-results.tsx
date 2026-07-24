@@ -1,9 +1,8 @@
 "use client";
 
-// Matching results table (FR-4.5, contract rev 2): overall score (X.X/10) +
-// tier badge, with an expandable per-row breakdown showing all 4 ranking
-// parameters (1–10 + comment) PLUS the holistic overall comment.
-// Ordered by score. Optional row selection for outreach.
+// Matching results table (FR-4.5, contract rev 2): tier badge plus an
+// expandable, comments-only AI explanation. Stored scores remain available to
+// the backend for ranking and audit purposes but are never rendered here.
 
 import * as React from "react";
 import { ChevronDown, ChevronRight, RefreshCw, Sparkles } from "lucide-react";
@@ -26,23 +25,35 @@ import {
 const BREAKDOWN_PARAMS: {
   key: keyof Omit<MatchBreakdown, "overall">;
   label: string;
-  weight: string;
 }[] = [
-  { key: "skills_match", label: "Skills match", weight: "35%" },
-  { key: "experience_relevance", label: "Experience relevance", weight: "30%" },
-  { key: "role_alignment", label: "Role alignment", weight: "20%" },
-  { key: "education_fit", label: "Education fit", weight: "15%" },
+  { key: "skills_match", label: "Skills Match" },
+  { key: "experience_relevance", label: "Experience Relevance" },
+  { key: "role_alignment", label: "Role & Responsibility" },
+  { key: "education_fit", label: "Education & Qualification" },
 ];
 
-/** All 5 scores + all 5 comments of the 4-parameter breakdown (rev 2). */
+/** Five labelled AI comments. Numeric ranking values are intentionally hidden. */
 export function MatchBreakdownView({
   breakdown,
   rationale,
+  linkId,
 }: {
   breakdown?: MatchBreakdown | null;
   /** Fallback overall comment (match_rationale) when breakdown is absent. */
   rationale?: string | null;
+  /** Logged server-side after the comments are rendered. */
+  linkId?: string;
 }) {
+  const telemetrySentFor = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    if (!linkId || telemetrySentFor.current === linkId) return;
+    telemetrySentFor.current = linkId;
+    void apiPost(`/telemetry/rating-comments-view/${linkId}`).catch(() => {
+      // Telemetry failures must never interrupt a candidate review.
+    });
+  }, [linkId]);
+
   if (!breakdown) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -51,48 +62,32 @@ export function MatchBreakdownView({
     );
   }
   return (
-    <div className="space-y-2">
+    <section className="space-y-3" aria-label="AI match comments">
       <div className="grid gap-2 sm:grid-cols-2">
-        {BREAKDOWN_PARAMS.map(({ key, label, weight }) => {
+        {BREAKDOWN_PARAMS.map(({ key, label }) => {
           const p = breakdown[key];
           return (
-            <div key={key} className="rounded-md border p-3">
-              <div className="mb-1 flex items-center justify-between">
-                <span className="text-sm font-medium">{label}</span>
-                <span className="font-mono text-sm">
-                  {p ? `${p.score}/10` : "—"}
-                  <span className="ml-1 text-xs text-muted-foreground">
-                    ({weight})
-                  </span>
-                </span>
-              </div>
-              <p className="text-xs text-muted-foreground">
+            <section key={key} className="rounded-md border p-3" aria-labelledby={`match-comment-${key}`}>
+              <h3 id={`match-comment-${key}`} className="mb-1 text-sm font-medium">
+                {label}
+              </h3>
+              <p className="text-sm leading-6 text-muted-foreground">
                 {p?.comment || "—"}
               </p>
-            </div>
+            </section>
           );
         })}
       </div>
-      <div className="rounded-md border bg-muted/50 p-3">
-        <div className="mb-1 flex items-center justify-between">
-          <span className="text-sm font-semibold">Overall</span>
-          <span className="font-mono text-sm font-semibold">
-            {breakdown.overall ? breakdown.overall.score.toFixed(1) : "—"}/10
-          </span>
-        </div>
-        <p className="text-xs text-muted-foreground">
+      <section className="rounded-md border bg-muted/50 p-3" aria-labelledby="match-comment-overall">
+        <h3 id="match-comment-overall" className="mb-1 text-sm font-semibold">
+          Overall Recommendation
+        </h3>
+        <p className="text-sm leading-6 text-muted-foreground">
           {breakdown.overall?.comment || rationale || "—"}
         </p>
-      </div>
-    </div>
+      </section>
+    </section>
   );
-}
-
-/** Overall score for display: prefer breakdown.overall, else match_score/10. */
-function overallScore(r: { match_score?: number | null; breakdown?: MatchBreakdown | null }): string {
-  if (r.breakdown?.overall) return r.breakdown.overall.score.toFixed(1);
-  if (typeof r.match_score === "number") return (r.match_score / 10).toFixed(1);
-  return "—";
 }
 
 export function MatchingResults({
@@ -163,7 +158,7 @@ export function MatchingResults({
     });
   };
 
-  const colSpan = selectable ? 6 : 5;
+  const colSpan = selectable ? 5 : 4;
 
   return (
     <div className="space-y-4">
@@ -194,9 +189,8 @@ export function MatchingResults({
             {selectable ? <TableHead className="w-10" /> : null}
             <TableHead>Candidate</TableHead>
             <TableHead>Source</TableHead>
-            <TableHead className="text-right">Overall</TableHead>
             <TableHead>Tier</TableHead>
-            <TableHead className="w-32">Breakdown</TableHead>
+            <TableHead className="w-32">AI comments</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -249,9 +243,6 @@ export function MatchingResults({
                       {r.source}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-right font-mono">
-                    {overallScore(r)}/10
-                  </TableCell>
                   <TableCell>
                     <TierBadge tier={r.tier} />
                   </TableCell>
@@ -267,7 +258,7 @@ export function MatchingResults({
                       ) : (
                         <ChevronRight className="h-4 w-4" />
                       )}
-                      Scores
+                      AI comments
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -277,6 +268,7 @@ export function MatchingResults({
                       <MatchBreakdownView
                         breakdown={r.breakdown}
                         rationale={r.rationale}
+                        linkId={r.link_id}
                       />
                     </TableCell>
                   </TableRow>

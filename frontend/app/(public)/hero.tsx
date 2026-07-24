@@ -1,7 +1,5 @@
 import Link from "next/link";
 
-import { Button } from "@/components/ui/button";
-
 export function Hero() {
   return (
     <section
@@ -30,12 +28,18 @@ export function Hero() {
             and move every role through accountable approvals in one workspace.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
-            <Button asChild size="lg">
-              <Link href="/register?role=candidate">Sign Up as Candidate</Link>
-            </Button>
-            <Button asChild variant="outline" size="lg">
-              <Link href="/login?initial_context=all">Log In</Link>
-            </Button>
+            <Link
+              href="/register?role=candidate"
+              className="inline-flex h-11 items-center justify-center rounded-md bg-primary px-8 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              Sign Up as Candidate
+            </Link>
+            <Link
+              href="/login?initial_context=all"
+              className="inline-flex h-11 items-center justify-center rounded-md border border-input bg-background px-8 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              Log In
+            </Link>
           </div>
         </div>
       </div>

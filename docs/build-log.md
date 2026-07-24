@@ -26,6 +26,7 @@
 ### Current Sprint — Landing Page
 
 - `feat: add public PickReady landing page` — public hero, feature overview, candidate sign-up/login routes, safe portal redirect hints, and non-blocking landing-view audit telemetry.
+- `refactor: show AI match comments without numerical ratings` — comments-only matching and HR review UI, with authenticated rating-comment view auditing.
 
 ---
 
@@ -35,7 +36,7 @@
 
 **Known Blocker**: Resend requires a verified domain before sending to non-owner recipients.
 
-**Remaining in Current Sprint**: Comments-only AI rating display and its review-view telemetry.
+**Current Sprint**: Landing and comments-only AI review display shipped; production verification remains.
 
 ## Product Status & Feature Summary
 
@@ -48,6 +49,7 @@
 - ✅ Settings, profile details, and theme toggle
 - ✅ Append-only audit trail for key protected actions
 - ✅ Public landing page with candidate sign-up and login routes
+- ✅ AI match explanations display comments only; numerical ratings remain audit data
 
 #### Super Admin
 
@@ -75,7 +77,6 @@
 
 ### Coming Soon
 
-- [ ] Comments-only AI match breakdowns (remove all numerical ratings from the UI)
 - [ ] Domain verification onboarding guide for Resend SPF/DKIM
 - [ ] Tenant-editable email templates and delivery webhook monitoring
 - [ ] Audit-log UI, advanced filters, and bulk operations

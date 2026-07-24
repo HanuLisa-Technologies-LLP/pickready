@@ -1,7 +1,5 @@
 import Link from "next/link";
 
-import { Button } from "@/components/ui/button";
-
 export default function PublicLayout({
   children,
 }: Readonly<{
@@ -14,9 +12,12 @@ export default function PublicLayout({
           <Link href="/" className="text-lg font-bold tracking-tight">
             PickReady
           </Link>
-          <Button asChild variant="outline" size="sm">
-            <Link href="/login?initial_context=all">Log In</Link>
-          </Button>
+          <Link
+            href="/login?initial_context=all"
+            className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-3 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            Log In
+          </Link>
         </div>
       </header>
       {children}
