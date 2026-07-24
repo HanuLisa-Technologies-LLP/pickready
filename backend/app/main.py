@@ -19,6 +19,7 @@ from app.api import (
     jobs,
     matching,
     portal,
+    telemetry,
     verification,
 )
 from app.core.config import get_settings
@@ -66,6 +67,7 @@ app.include_router(matching.router, prefix=f"{API_PREFIX}/matching", tags=["matc
 app.include_router(verification.router, prefix=f"{API_PREFIX}/verification", tags=["verification"])
 app.include_router(dashboard.router, prefix=f"{API_PREFIX}/dashboard", tags=["dashboard"])
 app.include_router(portal.router, prefix=f"{API_PREFIX}/portal", tags=["portal"])
+app.include_router(telemetry.router, prefix=f"{API_PREFIX}/telemetry", tags=["telemetry"])
 
 
 @app.get("/health")

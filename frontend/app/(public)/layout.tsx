@@ -1,0 +1,25 @@
+import Link from "next/link";
+
+import { Button } from "@/components/ui/button";
+
+export default function PublicLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  return (
+    <div className="min-h-screen bg-background text-foreground">
+      <header className="border-b" aria-label="Public site header">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6 lg:px-8">
+          <Link href="/" className="text-lg font-bold tracking-tight">
+            PickReady
+          </Link>
+          <Button asChild variant="outline" size="sm">
+            <Link href="/login?initial_context=all">Log In</Link>
+          </Button>
+        </div>
+      </header>
+      {children}
+    </div>
+  );
+}
