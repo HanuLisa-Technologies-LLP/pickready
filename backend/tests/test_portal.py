@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy import select, text
 from starlette.datastructures import Headers, UploadFile
+from app.services.resume_storage import ResumeAsset
 
 
 def _upload(
@@ -31,6 +32,15 @@ def _upload(
         file=io.BytesIO(data),
         filename=filename,
         headers=Headers({"content-type": content_type}),
+    )
+
+
+def _asset(url: str) -> ResumeAsset:
+    return ResumeAsset(
+        public_id=f"pickready/resumes/{uuid.uuid4().hex}", secure_url=url,
+        original_filename="cv.pdf", mime_type="application/pdf", size_bytes=24,
+        uploaded_at=datetime.now(timezone.utc), sha256=uuid.uuid4().hex * 2,
+        metadata={"resource_type": "raw"},
     )
 
 
@@ -121,9 +131,10 @@ async def test_open_apply_with_no_prior_contact_succeeds(monkeypatch) -> None:
     from app.models import JobCandidateLink, Profile
 
     async def fake_store(_resume):
-        return "https://res.cloudinary.com/x/raw/upload/fresh.pdf"
+        return _asset("https://res.cloudinary.com/x/raw/upload/fresh.pdf")
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
+    monkeypatch.setattr(portal_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
@@ -171,9 +182,10 @@ async def test_reuse_previous_copies_last_resume(monkeypatch) -> None:
     async def fake_store(_resume):
         url = f"https://res.cloudinary.com/x/raw/upload/{uuid.uuid4().hex}.pdf"
         uploads.append(url)
-        return url
+        return _asset(url)
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
+    monkeypatch.setattr(portal_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
@@ -221,9 +233,10 @@ async def test_fresh_upload_creates_a_new_profile(monkeypatch) -> None:
     from app.models import Profile
 
     async def fake_store(_resume):
-        return f"https://res.cloudinary.com/x/raw/upload/{uuid.uuid4().hex}.pdf"
+        return _asset(f"https://res.cloudinary.com/x/raw/upload/{uuid.uuid4().hex}.pdf")
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
+    monkeypatch.setattr(portal_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()

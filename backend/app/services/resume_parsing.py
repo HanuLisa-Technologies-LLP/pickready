@@ -13,12 +13,12 @@ import logging
 import uuid
 from typing import Any
 
-import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Profile
 from app.services import llm_router
 from app.services.embeddings import embed
+from app.services.resume_storage import ResumeStorageError, fetch_resume_bytes, profile_has_resume
 
 logger = logging.getLogger(__name__)
 
@@ -172,16 +172,17 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
 
     resume_text = profile.resume_text
     if not resume_text:
-        if not profile.resume_url:
+        if not profile_has_resume(profile):
             raise ResumeParsingError(
-                f"Profile {profile_id} has neither resume_text nor resume_url"
+                f"Profile {profile_id} has no complete Cloudinary resume metadata"
             )
         # Download failures (network/5xx) propagate so the task retries — only
         # *content* problems (below) are swallowed.
-        async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
-            resp = await client.get(profile.resume_url)
-            resp.raise_for_status()
-        resume_text = extract_text(resp.content, profile.resume_url.split("?")[0])
+        try:
+            data = await fetch_resume_bytes(profile)
+        except ResumeStorageError as exc:
+            raise ResumeParsingError(str(exc)) from exc
+        resume_text = extract_text(data, profile.resume_original_filename)
 
     if not resume_text or not resume_text.strip():
         # Empty/garbage/scanned resume — persist an empty profile and stop.

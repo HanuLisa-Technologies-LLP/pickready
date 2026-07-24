@@ -17,7 +17,7 @@ import * as React from "react";
 import { useParams } from "next/navigation";
 import { CheckCircle2, Loader2 } from "lucide-react";
 
-import { apiGet, apiUpload } from "@/lib/api";
+import { apiGet, apiUploadWithProgress } from "@/lib/api";
 import type { JobJD } from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/ui/toast";
@@ -28,6 +28,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { FormField, FormSection } from "@/components/ui/form";
+import { ResumeFileInput } from "@/components/resume-file-input";
 import {
   Card,
   CardContent,
@@ -90,6 +91,8 @@ export default function PublicApplyPage() {
   );
   const [resume, setResume] = React.useState<File | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [uploadProgress, setUploadProgress] = React.useState(0);
+  const [resumeError, setResumeError] = React.useState<string | null>(null);
   const [submitted, setSubmitted] = React.useState(false);
 
   // Prefill the applicant's name once the candidate session is known.
@@ -149,6 +152,8 @@ export default function PublicApplyPage() {
       return;
     }
     setBusy(true);
+    setUploadProgress(0);
+    setResumeError(null);
     try {
       const fd = new FormData();
       fd.append("full_name", personal.full_name);
@@ -158,10 +163,7 @@ export default function PublicApplyPage() {
       fd.append(
         "aspects",
         JSON.stringify(
-          Object.entries(answers).map(([id, answer]) => ({
-            aspect_id: Number(id),
-            answer,
-          }))
+          answers
         )
       );
       if (resumeMode === "reuse") {
@@ -169,15 +171,14 @@ export default function PublicApplyPage() {
       } else if (resume) {
         fd.append("resume", resume);
       }
-      await apiUpload(`/portal/jobs/${jobUuid}/apply`, fd);
+      await apiUploadWithProgress(`/portal/jobs/${jobUuid}/apply`, fd, setUploadProgress);
       setSubmitted(true);
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Something went wrong. Please try again.";
+      setResumeError(message);
       toast({
         title: "Application failed",
-        description:
-          err instanceof Error
-            ? err.message
-            : "Something went wrong. Please try again.",
+        description: message,
         variant: "destructive",
       });
     } finally {
@@ -414,13 +415,20 @@ export default function PublicApplyPage() {
                       label="Resume file"
                       htmlFor="ap-resume"
                       required
-                      hint="PDF, DOC or DOCX."
+                      hint="PDF or DOCX, up to 10 MB."
                     >
-                      <Input
+                      <ResumeFileInput
                         id="ap-resume"
-                        type="file"
-                        accept=".pdf,.doc,.docx"
-                        onChange={(e) => setResume(e.target.files?.[0] ?? null)}
+                        file={resume}
+                        progress={uploadProgress}
+                        error={resumeError}
+                        disabled={busy}
+                        onFileChange={(file, error) => {
+                          setResume(file);
+                          setResumeError(error);
+                          setUploadProgress(0);
+                        }}
+                        onRetry={() => void (document.querySelector("form") as HTMLFormElement | null)?.requestSubmit()}
                       />
                     </FormField>
                   ) : (

@@ -40,6 +40,11 @@ class ProfileOut(BaseModel):
     id: uuid.UUID
     candidate: CandidateOut
     resume_url: str | None
+    resume_public_id: str | None
+    resume_original_filename: str | None
+    resume_mime_type: str | None
+    resume_size_bytes: int | None
+    resume_uploaded_at: datetime | None
     aspects_json: dict | None
     parsed_fields_json: dict | None
     aspects_completed_at: datetime | None
@@ -52,6 +57,8 @@ class UploadResumeOut(BaseModel):
     link_id: uuid.UUID
     source: LinkSource
     parse_task: str = "queued"
+    resume_public_id: str | None = None
+    resume_url: str | None = None
 
 
 class DecisionIn(BaseModel):

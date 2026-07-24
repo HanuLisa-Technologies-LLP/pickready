@@ -45,7 +45,16 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
     )
     source_tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    resume_url: Mapped[str | None] = mapped_column(String(1000))  # Cloudinary
+    # Every binary lives in Cloudinary. These fields are deliberately kept on
+    # the profile so one application is an immutable snapshot of its resume.
+    resume_url: Mapped[str | None] = mapped_column(String(1000))  # Cloudinary secure URL
+    resume_public_id: Mapped[str | None] = mapped_column(String(512), index=True)
+    resume_original_filename: Mapped[str | None] = mapped_column(String(255))
+    resume_mime_type: Mapped[str | None] = mapped_column(String(255))
+    resume_size_bytes: Mapped[int | None] = mapped_column(Integer)
+    resume_uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resume_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
+    resume_metadata_json: Mapped[dict | None] = mapped_column(JSONB)
     resume_text: Mapped[str | None] = mapped_column(Text)  # extracted; tsvector col in migration
     aspects_json: Mapped[dict | None] = mapped_column(JSONB)  # {"1": {...}, ..., "40": {...}}
     parsed_fields_json: Mapped[dict | None] = mapped_column(JSONB)  # skills, experience, education, employment_history

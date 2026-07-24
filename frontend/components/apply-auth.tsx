@@ -8,7 +8,6 @@
 
 import * as React from "react";
 import {
-  GoogleAuthProvider,
   RecaptchaVerifier,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -18,7 +17,7 @@ import {
   type ConfirmationResult,
 } from "firebase/auth";
 
-import { firebaseAuth } from "@/lib/firebase";
+import { createCandidateGoogleProvider, firebaseAuth } from "@/lib/firebase";
 import {
   exchangeFirebaseSession,
   friendlyAuthError,
@@ -103,7 +102,10 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
 
   const google = () =>
     run(async () => {
-      const cred = await signInWithPopup(firebaseAuth, new GoogleAuthProvider());
+      const cred = await signInWithPopup(
+        firebaseAuth,
+        createCandidateGoogleProvider()
+      );
       handleExchange(await exchangeFirebaseSession(cred.user));
     });
 

@@ -9,13 +9,14 @@ import * as React from "react";
 import { useParams } from "next/navigation";
 import { CheckCircle2 } from "lucide-react";
 
-import { apiGet, apiUpload } from "@/lib/api";
+import { apiGet, apiUploadWithProgress } from "@/lib/api";
 import type { OutreachRequestInfo } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { AspectsForm, type AspectAnswers } from "@/components/aspects-form";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField, FormSection } from "@/components/ui/form";
+import { ResumeFileInput } from "@/components/resume-file-input";
 import {
   Card,
   CardContent,
@@ -54,6 +55,8 @@ export default function OutreachCompletionPage() {
   const [answers, setAnswers] = React.useState<AspectAnswers>({});
   const [employerEmails, setEmployerEmails] = React.useState(["", "", ""]);
   const [resume, setResume] = React.useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = React.useState(0);
+  const [resumeError, setResumeError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     apiGet<OutreachRequestInfo>(`/portal/outreach/${token}`)
@@ -72,6 +75,8 @@ export default function OutreachCompletionPage() {
       return;
     }
     setBusy(true);
+    setUploadProgress(0);
+    setResumeError(null);
     try {
       const fd = new FormData();
       fd.append("full_name", personal.full_name);
@@ -81,18 +86,17 @@ export default function OutreachCompletionPage() {
       fd.append(
         "aspects",
         JSON.stringify(
-          Object.entries(answers).map(([id, answer]) => ({
-            aspect_id: Number(id),
-            answer,
-          }))
+          answers
         )
       );
-      const emails = employerEmails.map((s) => s.trim()).filter(Boolean);
-      fd.append("employer_emails", JSON.stringify(emails));
+      for (const email of employerEmails.map((s) => s.trim()).filter(Boolean)) {
+        fd.append("employer_emails", email);
+      }
       fd.append("resume", resume);
-      await apiUpload(`/portal/outreach/${token}`, fd);
+      await apiUploadWithProgress(`/portal/outreach/${token}`, fd, setUploadProgress);
       setSubmitted(true);
     } catch (err) {
+      setResumeError(err instanceof Error ? err.message : "Submission failed. Please retry.");
       toast({
         title: "Submission failed",
         description: err instanceof Error ? err.message : undefined,
@@ -211,12 +215,18 @@ export default function OutreachCompletionPage() {
               description="A fresh upload is required — previous resumes are not reused."
             >
               <FormField label="Resume file" htmlFor="p-resume" required>
-                <Input
+                <ResumeFileInput
                   id="p-resume"
-                  type="file"
-                  accept=".pdf,.doc,.docx"
-                  onChange={(e) => setResume(e.target.files?.[0] ?? null)}
-                  required
+                  file={resume}
+                  progress={uploadProgress}
+                  error={resumeError}
+                  disabled={busy}
+                  onFileChange={(file, error) => {
+                    setResume(file);
+                    setResumeError(error);
+                    setUploadProgress(0);
+                  }}
+                  onRetry={() => void (document.querySelector("form") as HTMLFormElement | null)?.requestSubmit()}
                 />
               </FormField>
             </FormSection>

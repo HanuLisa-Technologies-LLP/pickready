@@ -20,7 +20,7 @@ import {
   UserCheck,
 } from "lucide-react";
 
-import { apiGet, apiPost, apiPut, apiUpload } from "@/lib/api";
+import { apiGet, apiPost, apiPut, apiUploadWithProgress } from "@/lib/api";
 import type { CandidateLink, Job, VerificationRequest } from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/ui/toast";
@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { FormField, FormSection } from "@/components/ui/form";
+import { ResumeFileInput } from "@/components/resume-file-input";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -114,7 +115,8 @@ export default function OrgJobDetailPage() {
     phone: "",
   });
   const [uploading, setUploading] = React.useState(false);
-  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [uploadProgress, setUploadProgress] = React.useState(0);
+  const [uploadError, setUploadError] = React.useState<string | null>(null);
 
   // Outreach selection (fresh candidates only)
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
@@ -239,13 +241,15 @@ export default function OrgJobDetailPage() {
     e.preventDefault();
     if (!file || !uploadForm.email) return;
     setUploading(true);
+    setUploadProgress(0);
+    setUploadError(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("email", uploadForm.email);
       if (uploadForm.full_name) fd.append("full_name", uploadForm.full_name);
       if (uploadForm.phone) fd.append("phone", uploadForm.phone);
-      await apiUpload(`/candidates/jobs/${jobId}/upload-resume`, fd);
+      await apiUploadWithProgress(`/candidates/jobs/${jobId}/upload-resume`, fd, setUploadProgress);
       toast({
         title: "Resume uploaded",
         description:
@@ -253,9 +257,9 @@ export default function OrgJobDetailPage() {
       });
       setFile(null);
       setUploadForm({ email: "", full_name: "", phone: "" });
-      if (fileInputRef.current) fileInputRef.current.value = "";
       void loadLinks();
     } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Upload failed. Please retry.");
       toast({
         title: "Upload failed",
         description: err instanceof Error ? err.message : undefined,
@@ -616,13 +620,22 @@ export default function OrgJobDetailPage() {
                   <CardContent>
                     <form className="space-y-4" onSubmit={upload}>
                       <FormField label="Resume file" htmlFor="resume-file" required>
-                        <Input
+                        <ResumeFileInput
                           id="resume-file"
-                          type="file"
-                          accept=".pdf,.doc,.docx"
-                          ref={fileInputRef}
-                          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-                          required
+                          file={file}
+                          progress={uploadProgress}
+                          error={uploadError}
+                          disabled={uploading}
+                          onFileChange={(nextFile, validationError) => {
+                            setFile(nextFile);
+                            setUploadError(validationError);
+                            setUploadProgress(0);
+                          }}
+                          onRetry={() => {
+                            if (file && uploadForm.email) {
+                              void upload({ preventDefault() {} } as React.FormEvent);
+                            }
+                          }}
                         />
                       </FormField>
                       <FormField label="Candidate email" htmlFor="cand-email" required>

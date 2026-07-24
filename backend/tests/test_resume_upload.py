@@ -11,11 +11,14 @@ from __future__ import annotations
 
 import io
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 from starlette.datastructures import Headers, UploadFile
 
 from app.api import candidates as cand_mod
+from app.services import resume_storage
+from app.services.resume_storage import ResumeAsset
 
 
 def _upload(
@@ -35,34 +38,51 @@ class _FakeSettings:
         self.cloudinary_url = cloudinary_url
 
 
+def _asset() -> ResumeAsset:
+    return ResumeAsset(
+        public_id="pickready/resumes/test",
+        secure_url="https://res.cloudinary.com/x/raw/upload/cv.pdf",
+        original_filename="cv.pdf",
+        mime_type="application/pdf",
+        size_bytes=24,
+        uploaded_at=datetime.now(timezone.utc),
+        sha256="a" * 64,
+        metadata={"resource_type": "raw"},
+    )
+
+
 # ── store_resume: URL on success, None when unconfigured ─────────────────────
 
-async def test_store_resume_returns_url_on_success(monkeypatch) -> None:
-    monkeypatch.setattr(cand_mod, "get_settings",
+async def test_store_resume_returns_metadata_on_success(monkeypatch) -> None:
+    monkeypatch.setattr(resume_storage, "get_settings",
                         lambda: _FakeSettings("cloudinary://key:secret@cloud"))
+    monkeypatch.setattr(resume_storage, "_cloudinary_resource", lambda _public_id: None)
 
     import cloudinary.uploader
 
     def fake_upload(data, **kwargs):
         assert kwargs["resource_type"] == "raw"
-        assert kwargs["folder"] == "pickready/resumes"
-        return {"secure_url": "https://res.cloudinary.com/x/raw/upload/cv.pdf"}
+        assert kwargs["public_id"].startswith("pickready/resumes/")
+        return {"public_id": kwargs["public_id"], "secure_url": "https://res.cloudinary.com/x/raw/upload/cv.pdf", "bytes": len(data)}
 
     monkeypatch.setattr(cloudinary.uploader, "upload", fake_upload)
 
-    url = await cand_mod.store_resume(_upload())
-    assert url == "https://res.cloudinary.com/x/raw/upload/cv.pdf"
+    asset = await cand_mod.store_resume(_upload())
+    assert asset.secure_url == "https://res.cloudinary.com/x/raw/upload/cv.pdf"
+    assert asset.original_filename == "cv.pdf"
 
 
-async def test_store_resume_returns_none_when_cloudinary_unconfigured(monkeypatch) -> None:
-    monkeypatch.setattr(cand_mod, "get_settings", lambda: _FakeSettings(""))
-    # Even a valid file yields None (parse task tolerates a missing URL).
-    assert await cand_mod.store_resume(_upload()) is None
+async def test_store_resume_rejects_unconfigured_storage(monkeypatch) -> None:
+    monkeypatch.setattr(resume_storage, "get_settings", lambda: _FakeSettings(""))
+    with pytest.raises(cand_mod.HTTPException) as exc:
+        await cand_mod.store_resume(_upload())
+    assert exc.value.status_code == 503
 
 
-async def test_store_resume_returns_none_when_upload_raises(monkeypatch) -> None:
-    monkeypatch.setattr(cand_mod, "get_settings",
+async def test_store_resume_reports_cloudinary_failure(monkeypatch) -> None:
+    monkeypatch.setattr(resume_storage, "get_settings",
                         lambda: _FakeSettings("cloudinary://key:secret@cloud"))
+    monkeypatch.setattr(resume_storage, "_cloudinary_resource", lambda _public_id: None)
 
     import cloudinary.uploader
 
@@ -71,7 +91,9 @@ async def test_store_resume_returns_none_when_upload_raises(monkeypatch) -> None
 
     monkeypatch.setattr(cloudinary.uploader, "upload", boom)
     # Storage failure must not propagate — the upload flow degrades to no URL.
-    assert await cand_mod.store_resume(_upload()) is None
+    with pytest.raises(cand_mod.HTTPException) as exc:
+        await cand_mod.store_resume(_upload())
+    assert exc.value.status_code == 503
 
 
 # ── Validation: type / size / empty ──────────────────────────────────────────
@@ -99,11 +121,13 @@ async def test_upload_rejects_empty_file() -> None:
 
 async def test_upload_accepts_docx_by_extension() -> None:
     # Some browsers send application/octet-stream for .docx — extension wins.
-    data = await cand_mod.read_validated_resume(
+    data, filename, mime_type = await cand_mod.read_validated_resume(
         _upload(data=b"PK\x03\x04 docx", filename="resume.docx",
                 content_type="application/octet-stream")
     )
     assert data == b"PK\x03\x04 docx"
+    assert filename == "resume.docx"
+    assert mime_type.endswith("wordprocessingml.document")
 
 
 # ── seed identity derivation (DB-free) ───────────────────────────────────────
@@ -155,9 +179,10 @@ async def test_apply_creates_a_fresh_profile_each_time(monkeypatch) -> None:
 
     # Never touch Cloudinary or Celery from the test.
     async def fake_store(_resume):
-        return "https://res.cloudinary.com/x/raw/upload/fresh.pdf"
+        return _asset()
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
+    monkeypatch.setattr(portal_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
 
     tenant_id = uuid.uuid4()

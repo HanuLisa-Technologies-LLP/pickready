@@ -6,10 +6,10 @@ this:
 1. derives a realistic, distinct candidate identity from the filename
    (`Resume_01_Akash_Rao.docx` -> "Akash Rao",
    `akash.rao01@candidates.pickready.test`, phone `9100000001`);
-2. uploads the raw file to Cloudinary under a DETERMINISTIC public_id
-   (`pickready/resumes/resume_01_akash_rao`) so re-runs never duplicate the
-   asset;
-3. creates a shared-Databank Candidate + Profile row carrying the resume_url;
+2. uploads the raw file through the shared content-addressed Cloudinary
+   pipeline, so re-runs never duplicate the asset;
+3. creates a shared-Databank Candidate + Profile row carrying all Cloudinary
+   metadata;
 4. enqueues `pickready.parse_resume` so the AI pipeline (text extraction +
    embedding + LLM parse — owned by another module) has data to work on.
 
@@ -18,9 +18,8 @@ re-upload, no duplicate row). Cloudinary uploads additionally pass
 `overwrite=False`, so even a forced re-upload against the same public_id
 returns the existing asset instead of creating a copy.
 
-FAILS SOFT: if Cloudinary is unconfigured or unreachable, the candidate/profile
-rows are still created with `resume_url=None` (the parse task tolerates a
-missing URL) and a clear warning is logged — the seed never crashes.
+Cloudinary is mandatory: a file that cannot be stored is not seeded. This
+prevents a demo candidate with a broken or missing resume reference.
 
 The resume files are NOT part of the backend image. Point the seed at them
 with the `SEED_RESUMES_DIR` env var, or copy them into the container first
@@ -33,13 +32,16 @@ import logging
 import os
 import re
 import uuid
+import io
 from pathlib import Path
 
+from starlette.datastructures import Headers, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models import Candidate, Profile
+from app.services.resume_storage import apply_resume_asset, store_resume
 from app.workers.celery_app import celery_app
 
 log = logging.getLogger(__name__)
@@ -48,8 +50,7 @@ log = logging.getLogger(__name__)
 # most providers reject example.com with a 422). Every seeded candidate lives
 # here so the corpus can never accidentally email a real person.
 CANDIDATE_EMAIL_DOMAIN = "candidates.pickready.test"
-CLOUDINARY_FOLDER = "pickready/resumes"
-RESUME_EXTENSIONS = {".pdf", ".doc", ".docx"}
+RESUME_EXTENSIONS = {".pdf", ".docx"}
 
 
 def resumes_dir() -> Path | None:
@@ -81,9 +82,8 @@ def _slug(value: str) -> str:
 def derive_identity(filename: str) -> dict[str, str]:
     """Map `Resume_07_Vikramaditya_Verma.docx` to a stable identity.
 
-    Returns name, email, phone and the deterministic Cloudinary public_id. The
-    sequence number keeps emails/phones/public_ids unique even if two files
-    ever share a name."""
+    Returns a stable name, email, phone and seed reference. The sequence keeps
+    generated identities unique even if two files ever share a name."""
     stem = Path(filename).stem
     parts = stem.split("_")
     # Expected shape: ["Resume", "07", "Vikramaditya", "Verma"]. Be tolerant:
@@ -113,29 +113,6 @@ def derive_identity(filename: str) -> dict[str, str]:
     }
 
 
-def _upload_to_cloudinary(data: bytes, public_id: str) -> str | None:
-    """Upload raw bytes under a deterministic public_id. Returns the secure_url
-    or None (unconfigured or any failure) — never raises."""
-    if not get_settings().cloudinary_url:
-        return None
-    try:
-        import cloudinary.uploader  # lazy: keep import cost out of the hot path
-
-        result = cloudinary.uploader.upload(
-            data,
-            resource_type="raw",
-            folder=CLOUDINARY_FOLDER,
-            public_id=public_id,
-            overwrite=False,  # deterministic id + no-overwrite => no duplicates
-            unique_filename=False,
-            use_filename=False,
-        )
-        return result.get("secure_url")
-    except Exception as exc:  # noqa: BLE001 — storage failure must not crash seed
-        log.warning("seed_resumes: Cloudinary upload failed for %s: %s", public_id, exc)
-        return None
-
-
 async def seed_resume_corpus(session: AsyncSession, source_tenant_id: uuid.UUID) -> int:
     """Seed the resume corpus. Returns the number of NEW candidates created.
 
@@ -161,10 +138,6 @@ async def seed_resume_corpus(session: AsyncSession, source_tenant_id: uuid.UUID)
         print(f"  ! no resume files in {directory} — skipping resume seed")
         return 0
 
-    cloud_ok = bool(get_settings().cloudinary_url)
-    if not cloud_ok:
-        print("  ! CLOUDINARY_URL unset — seeding candidates with resume_url=None")
-
     created = 0
     uploaded = 0
     for path in files:
@@ -183,9 +156,18 @@ async def seed_resume_corpus(session: AsyncSession, source_tenant_id: uuid.UUID)
             log.warning("seed_resumes: cannot read %s: %s", path.name, exc)
             continue
 
-        resume_url = _upload_to_cloudinary(data, ident["public_id"])
-        if resume_url:
-            uploaded += 1
+        mime_type = (
+            "application/pdf" if path.suffix.lower() == ".pdf"
+            else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        upload = UploadFile(file=io.BytesIO(data), filename=path.name,
+                            headers=Headers({"content-type": mime_type}))
+        try:
+            asset = await store_resume(upload)
+        except Exception as exc:
+            log.error("seed_resumes: Cloudinary upload failed for %s: %s", path.name, exc)
+            continue
+        uploaded += 1
 
         candidate = Candidate(
             tenant_id=None,  # shared Databank row (spans tenants)
@@ -201,10 +183,8 @@ async def seed_resume_corpus(session: AsyncSession, source_tenant_id: uuid.UUID)
         profile = Profile(
             candidate_id=candidate.id,
             source_tenant_id=source_tenant_id,
-            resume_url=resume_url,
-            # resume_text / embedding / parsed_fields are filled by
-            # pickready.parse_resume (owned elsewhere) — enqueued below.
         )
+        apply_resume_asset(profile, asset)
         session.add(profile)
         await session.flush()
 
@@ -212,7 +192,7 @@ async def seed_resume_corpus(session: AsyncSession, source_tenant_id: uuid.UUID)
         celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
         created += 1
         print(f"  + resume candidate {ident['full_name']} <{ident['email']}> "
-              f"(url={'yes' if resume_url else 'none'})")
+              f"(cloudinary_public_id={asset.public_id})")
 
     print(f"  = resume corpus: {created} new candidate(s), "
           f"{uploaded} uploaded to Cloudinary, {len(files)} file(s) scanned")

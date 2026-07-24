@@ -3,7 +3,6 @@
 import * as React from "react";
 import Link from "next/link";
 import {
-  GoogleAuthProvider,
   RecaptchaVerifier,
   signInWithEmailAndPassword,
   signInWithPhoneNumber,
@@ -12,7 +11,7 @@ import {
 } from "firebase/auth";
 import { useRouter } from "next/navigation";
 
-import { firebaseAuth } from "@/lib/firebase";
+import { createCandidateGoogleProvider, firebaseAuth } from "@/lib/firebase";
 import {
   exchangeFirebaseSession,
   friendlyAuthError,
@@ -132,7 +131,7 @@ export function LoginFlow({
     run(async () => {
       const cred = await signInWithPopup(
         firebaseAuth,
-        new GoogleAuthProvider()
+        createCandidateGoogleProvider()
       );
       handleExchange(await exchangeFirebaseSession(cred.user));
     });

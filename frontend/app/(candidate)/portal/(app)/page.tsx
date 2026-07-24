@@ -7,13 +7,13 @@
 import * as React from "react";
 import { Upload } from "lucide-react";
 
-import { apiGet, apiUpload } from "@/lib/api";
+import { apiGet, apiUploadWithProgress } from "@/lib/api";
 import type { PortalJob } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { FormField } from "@/components/ui/form";
+import { ResumeFileInput } from "@/components/resume-file-input";
 import {
   Card,
   CardContent,
@@ -39,6 +39,8 @@ export default function PortalJobsPage() {
   const [resumeMode, setResumeMode] = React.useState<"upload" | "reuse">("upload");
   const [resume, setResume] = React.useState<File | null>(null);
   const [applying, setApplying] = React.useState(false);
+  const [uploadProgress, setUploadProgress] = React.useState(0);
+  const [resumeError, setResumeError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     apiGet<PortalJob[] | { jobs: PortalJob[] }>("/portal/jobs")
@@ -51,14 +53,17 @@ export default function PortalJobsPage() {
     if (!applyJob) return;
     if (resumeMode === "upload" && !resume) return;
     setApplying(true);
+    setUploadProgress(0);
+    setResumeError(null);
     try {
       const fd = new FormData();
+      fd.append("aspects", "{}");
       if (resumeMode === "reuse") {
         fd.append("reuse_previous", "true");
       } else if (resume) {
         fd.append("resume", resume);
       }
-      await apiUpload(`/portal/jobs/${applyJob.id}/apply`, fd);
+      await apiUploadWithProgress(`/portal/jobs/${applyJob.id}/apply`, fd, setUploadProgress);
       toast({
         title: "Application submitted",
         description: applyJob.title,
@@ -67,6 +72,7 @@ export default function PortalJobsPage() {
       setResume(null);
       setResumeMode("upload");
     } catch (e) {
+      setResumeError(e instanceof Error ? e.message : "Application failed. Please retry.");
       toast({
         title: "Application failed",
         description: e instanceof Error ? e.message : undefined,
@@ -164,11 +170,18 @@ export default function PortalJobsPage() {
           </div>
           {resumeMode === "upload" ? (
             <FormField label="Resume file" htmlFor="apply-resume" required>
-              <Input
+              <ResumeFileInput
                 id="apply-resume"
-                type="file"
-                accept=".pdf,.doc,.docx"
-                onChange={(e) => setResume(e.target.files?.[0] ?? null)}
+                file={resume}
+                progress={uploadProgress}
+                error={resumeError}
+                disabled={applying}
+                onFileChange={(file, error) => {
+                  setResume(file);
+                  setResumeError(error);
+                  setUploadProgress(0);
+                }}
+                onRetry={() => void apply()}
               />
             </FormField>
           ) : (

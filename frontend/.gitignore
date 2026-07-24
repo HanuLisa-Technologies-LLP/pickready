@@ -1,5 +1,7 @@
 node_modules/
 .next/
+.next-dev/
+.next.broken-*/
 out/
 .env*.local
 *.tsbuildinfo

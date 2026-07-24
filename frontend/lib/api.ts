@@ -76,11 +76,13 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     } catch {
       /* non-JSON error body */
     }
-    const message =
-      detail && typeof detail === "object" && "detail" in (detail as object)
-        ? typeof (detail as { detail: unknown }).detail === "string"
-          ? ((detail as { detail: string }).detail as string)
-          : `Request failed (${res.status})`
+    const problem = detail && typeof detail === "object" && "detail" in (detail as object)
+      ? (detail as { detail: unknown }).detail
+      : null;
+    const message = typeof problem === "string"
+      ? problem
+      : problem && typeof problem === "object" && "message" in problem
+        ? String((problem as { message: unknown }).message)
         : `Request failed (${res.status})`;
     throw new ApiError(res.status, detail, message);
   }
@@ -104,3 +106,44 @@ export const apiDelete = <T = void>(path: string) =>
   api<T>(path, { method: "DELETE" });
 export const apiUpload = <T>(path: string, formData: FormData) =>
   api<T>(path, { method: "POST", formData });
+
+/** Multipart upload with byte-level progress. Cookies remain the auth source. */
+export function apiUploadWithProgress<T>(
+  path: string,
+  formData: FormData,
+  onProgress: (percent: number) => void,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `${API_BASE}${path}`);
+    request.withCredentials = true;
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+      }
+    };
+    request.onerror = () => reject(new ApiError(0, null, "Network error. Check your connection and retry."));
+    request.onabort = () => reject(new ApiError(0, null, "Upload cancelled. Please retry."));
+    request.onload = () => {
+      let payload: unknown = null;
+      try {
+        payload = request.responseText ? JSON.parse(request.responseText) : undefined;
+      } catch {
+        payload = null;
+      }
+      if (request.status < 200 || request.status >= 300) {
+        const detail = payload && typeof payload === "object" && "detail" in payload
+          ? (payload as { detail: unknown }).detail
+          : null;
+        const message = detail && typeof detail === "object" && "message" in detail
+          ? String((detail as { message: unknown }).message)
+          : typeof detail === "string" ? detail : `Request failed (${request.status})`;
+        reject(new ApiError(request.status, payload, message));
+        return;
+      }
+      onProgress(100);
+      resolve(payload as T);
+    };
+    request.send(formData);
+  });
+}

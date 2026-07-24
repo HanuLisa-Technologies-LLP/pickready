@@ -1,16 +1,13 @@
 """Candidate sourcing, review-screen, decisions, pipeline status and
 interview scheduling (FR-4.3/4.4, FR-7.x, FR-8.x)."""
-import os
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import CurrentUser, get_tenant_db, require_capability
-from app.core.config import get_settings
 from app.models.candidate import (
     Candidate,
     Interview,
@@ -39,71 +36,19 @@ from app.schemas.candidates import (
 from app.services import capabilities as caps
 from app.services import rbac
 from app.services.audit import audit
+from app.services.resume_storage import (
+    ALLOWED_RESUME_CONTENT_TYPES,
+    ALLOWED_RESUME_EXTENSIONS as ALLOWED_RESUME_EXTS,
+    MAX_RESUME_BYTES,
+    apply_resume_asset,
+    read_validated_resume,
+    store_resume,
+)
 from app.workers.celery_app import celery_app
 
 router = APIRouter()
 
 FORWARD_STATUSES = {PipelineStatus.shortlisted, PipelineStatus.offered, PipelineStatus.joined}
-
-
-# Candidate self-upload guardrails (claude.md rule 6 — a fresh resume per
-# application). Accept only resume document types; cap the size so an
-# oversized/garbage upload is rejected cheaply, before it reaches Cloudinary.
-ALLOWED_RESUME_EXTS = {".pdf", ".doc", ".docx"}
-ALLOWED_RESUME_CONTENT_TYPES = {
-    "application/pdf",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/octet-stream",  # some browsers send this for .docx
-}
-MAX_RESUME_BYTES = 10 * 1024 * 1024  # 10 MB
-
-
-async def read_validated_resume(file: UploadFile) -> bytes:
-    """Validate an uploaded resume and return its bytes.
-
-    Enforces type (.pdf/.doc/.docx by extension or content-type) and a 10 MB
-    ceiling. Raises 422 for a wrong-type or empty file, 413 for an oversized
-    one. Text extraction is NOT done here — that is the parse Celery task."""
-    name = (file.filename or "").lower()
-    ext = os.path.splitext(name)[1]
-    ctype = (file.content_type or "").split(";")[0].strip().lower()
-    if ext not in ALLOWED_RESUME_EXTS and ctype not in ALLOWED_RESUME_CONTENT_TYPES:
-        raise HTTPException(
-            status_code=422, detail="Resume must be a PDF, DOC, or DOCX file"
-        )
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=422, detail="Resume file is empty")
-    if len(data) > MAX_RESUME_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Resume exceeds the {MAX_RESUME_BYTES // (1024 * 1024)} MB limit",
-        )
-    return data
-
-
-async def store_resume(file: UploadFile) -> str | None:
-    """Validate then upload the resume to Cloudinary (ESD §2). The blocking
-    upload I/O runs in a threadpool; the heavy work (text extraction + LLM
-    parsing) is always the `pickready.parse_resume` Celery task — never inline.
-
-    Raises 413/422 on an invalid file. Returns None when Cloudinary is not
-    configured (local dev) or the upload fails — the parse task tolerates a
-    missing URL."""
-    data = await read_validated_resume(file)
-    if not get_settings().cloudinary_url:
-        return None
-    try:
-        import cloudinary.uploader  # lazy: not needed at import time
-
-        result = await run_in_threadpool(
-            cloudinary.uploader.upload, data, resource_type="raw",
-            folder="pickready/resumes",
-        )
-        return result.get("secure_url")
-    except Exception:  # noqa: BLE001 — storage failure must not 500 the upload flow
-        return None
 
 
 async def _get_link(
@@ -177,10 +122,9 @@ async def upload_resume(
     if dup is not None:
         raise HTTPException(status_code=409, detail="Candidate is already linked to this job")
 
-    resume_url = await store_resume(file)
-    profile = Profile(
-        candidate_id=candidate.id, source_tenant_id=user.tenant_id, resume_url=resume_url
-    )
+    asset = await store_resume(file)
+    profile = Profile(candidate_id=candidate.id, source_tenant_id=user.tenant_id)
+    apply_resume_asset(profile, asset)
     session.add(profile)
     await session.flush()
 
@@ -194,10 +138,11 @@ async def upload_resume(
     celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
                 action="resume_uploaded", target_type="profile", target_id=profile.id,
-                metadata={"job_id": str(job.id), "candidate_id": str(candidate.id)})
+                metadata={"job_id": str(job.id), "candidate_id": str(candidate.id),
+                          "resume_public_id": asset.public_id, "resume_sha256": asset.sha256})
     return UploadResumeOut(
         candidate_id=candidate.id, profile_id=profile.id, link_id=link.id,
-        source=LinkSource.fresh,
+        source=LinkSource.fresh, resume_public_id=asset.public_id, resume_url=asset.secure_url,
     )
 
 
@@ -255,6 +200,11 @@ async def get_profile(
         id=profile.id,
         candidate=CandidateOut.model_validate(candidate),
         resume_url=profile.resume_url,
+        resume_public_id=profile.resume_public_id,
+        resume_original_filename=profile.resume_original_filename,
+        resume_mime_type=profile.resume_mime_type,
+        resume_size_bytes=profile.resume_size_bytes,
+        resume_uploaded_at=profile.resume_uploaded_at,
         aspects_json=profile.aspects_json,
         parsed_fields_json=profile.parsed_fields_json,
         aspects_completed_at=profile.aspects_completed_at,

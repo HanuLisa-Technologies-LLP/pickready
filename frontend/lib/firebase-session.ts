@@ -66,6 +66,16 @@ export function friendlyAuthError(err: unknown): string | null {
   // Backend rejection (e.g. staff attempting Google sign-in → 403).
   if (err instanceof ApiError) {
     if (err.status === 403) {
+      const detail =
+        err.detail && typeof err.detail === "object" && "detail" in err.detail
+          ? String((err.detail as { detail: unknown }).detail)
+          : "";
+      if (detail === "Google sign-in is available to candidates only") {
+        return "That Google account belongs to a team member. Choose the candidate's Google account instead.";
+      }
+      if (detail === "Account unavailable") {
+        return "This account is unavailable. Contact support if you think this is a mistake.";
+      }
       return "This sign-in method isn't available for your account.";
     }
     if (err.status === 429) {

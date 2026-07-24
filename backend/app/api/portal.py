@@ -39,6 +39,7 @@ from app.schemas.portal import (
     PortalJobsOut,
 )
 from app.workers.celery_app import celery_app
+from app.services.resume_storage import apply_resume_asset, copy_resume_metadata, store_resume
 
 router = APIRouter()
 
@@ -147,9 +148,8 @@ async def outreach_submit(
     consent = aspects_data.get("40")
     candidate.consent_databank = bool(consent) and str(consent).lower() not in ("false", "no", "0")
 
-    from app.api.candidates import store_resume  # shared helper (Track A file)
-
-    profile.resume_url = await store_resume(resume)
+    asset = await store_resume(resume)
+    apply_resume_asset(profile, asset)
     profile.aspects_json = aspects_data
     profile.aspects_completed_at = datetime.now(timezone.utc)
 
@@ -216,22 +216,21 @@ async def _published_job_or_404(session: AsyncSession, job_id: uuid.UUID) -> Job
     return job
 
 
-async def _previous_resume_url(
+async def _previous_resume(
     session: AsyncSession, candidate: Candidate
-) -> str | None:
+) -> Profile | None:
     """The candidate's most recent stored resume, reused across applications
     (FR-6.2 / FR-9.2 / claude.md rule 6, reversed 2026-07-24).
 
-    # ASSUMPTION: with no dedicated `candidates.last_resume_url` column yet, the
-    # newest Profile carrying a resume_url IS the "last resume". If the main
-    # agent adds `Candidate.last_resume_url` (see report), swap this to read it.
+    # The latest profile with complete Cloudinary metadata is the reusable
+    # resume snapshot. A new application copies that immutable metadata.
     """
     return (
         await session.execute(
-            select(Profile.resume_url)
+            select(Profile)
             .where(
                 Profile.candidate_id == candidate.id,
-                Profile.resume_url.isnot(None),
+                Profile.resume_public_id.isnot(None),
             )
             .order_by(Profile.created_at.desc())
         )
@@ -329,12 +328,10 @@ async def apply_to_job(
     # Resolve the resume: a fresh upload wins; otherwise carry over the last one.
     resume_reused = False
     if resume is not None and resume.filename:
-        from app.api.candidates import store_resume  # shared helper (Track A file)
-
-        resume_url = await store_resume(resume)  # 413/422 on a bad file
+        asset = await store_resume(resume)
     elif reuse_previous:
-        resume_url = await _previous_resume_url(session, candidate)
-        if resume_url is None:
+        previous_profile = await _previous_resume(session, candidate)
+        if previous_profile is None:
             raise HTTPException(
                 status_code=422,
                 detail="No previous resume to reuse — upload one with this application",
@@ -351,9 +348,13 @@ async def apply_to_job(
     candidate.consent_databank = bool(consent) and str(consent).lower() not in ("false", "no", "0")
 
     profile = Profile(
-        candidate_id=candidate.id, source_tenant_id=job.tenant_id, resume_url=resume_url,
+        candidate_id=candidate.id, source_tenant_id=job.tenant_id,
         aspects_json=aspects_data, aspects_completed_at=datetime.now(timezone.utc),
     )
+    if resume_reused:
+        copy_resume_metadata(previous_profile, profile)
+    else:
+        apply_resume_asset(profile, asset)
     session.add(profile)
     await session.flush()
     link = JobCandidateLink(
