@@ -18,6 +18,11 @@ class OTPRequestIn(BaseModel):
 
 class OTPRequestOut(BaseModel):
     challenge_id: uuid.UUID
+    # Channels the single code was actually dispatched to. When the resolved
+    # account exposes both an email and a phone, one challenge is sent to BOTH
+    # in parallel and the user may enter whichever code arrives — so the UI can
+    # say "Check your email and SMS". Order: requested/primary channel first.
+    channels_sent: list[Literal["email", "sms"]] = []
     # Dev-only convenience: the plaintext code, returned ONLY when
     # ENVIRONMENT=development so local testing works without real email/SMS.
     # Never populated in production; never logged (ESD §16).

@@ -35,9 +35,13 @@ from app.models.tenant import Tenant
 from app.models.user import OTPChallenge, User
 
 # Max OTP *requests* per identifier per hour (abuse guard, FR-1.4).
-# ASSUMPTION: PRD sets no explicit request cap; 10/hour is a sensible default.
-REQUEST_CAP_PER_HOUR = 10
+REQUEST_CAP_PER_HOUR = 5
 _REQUEST_WINDOW_SECONDS = 3600
+
+# Minimum gap between two OTP requests for the same identifier. Distinct from
+# the hourly cap so the UI can show "please wait 30 seconds" rather than the
+# harsher hourly message.
+RESEND_THROTTLE_SECONDS = 30
 
 # Context tokens (multi-workspace login, contract rev 2): short-TTL proof of a
 # successful OTP, exchanged for cookies via /auth/select-context. Single-use.
@@ -83,7 +87,11 @@ class OTPLocked(OTPError):
 
 
 class OTPRateLimited(OTPError):
-    """Too many OTP requests for this identifier."""
+    """Too many OTP requests for this identifier (hourly cap)."""
+
+
+class OTPResendThrottled(OTPError):
+    """A code was already sent to this identifier within the last 30 seconds."""
 
 
 class ContextTokenInvalid(OTPError):
@@ -175,6 +183,10 @@ def _lock_key(identifier: str) -> str:
 
 def _request_key(identifier: str) -> str:
     return f"otp:req:{identifier}"
+
+
+def _resend_key(identifier: str) -> str:
+    return f"otp:resend:{identifier}"
 
 
 def _context_key(jti: str) -> str:
@@ -274,6 +286,46 @@ def pending_channels_for(user: User) -> list[str]:
     return pending
 
 
+# ── Dual-channel dispatch decision (pure, DB-free) ───────────────────────────
+
+@dataclass(frozen=True)
+class DispatchTarget:
+    """One delivery of the SINGLE challenge code."""
+    channel: OTPChannel
+    destination: str
+
+
+def _distinct(values) -> str | None:
+    """The one non-empty value shared by every candidate, else None."""
+    seen = {v.strip() for v in values if v and v.strip()}
+    return seen.pop() if len(seen) == 1 else None
+
+
+def dispatch_targets(
+    identifier: str, users: Sequence[User], requested: OTPChannel
+) -> list[DispatchTarget]:
+    """Decide where ONE challenge code is delivered.
+
+    The requested channel is always the primary target and always addresses the
+    identifier the caller typed. When the resolved user(s) also expose the OTHER
+    contact method, the same code is dispatched there too, so the user may enter
+    whichever code arrives first (a single challenge, two deliveries).
+
+    # ASSUMPTION: when several users share the identifier but disagree on the
+    # alternate contact, we do NOT fan the code out to every candidate address
+    # (that would leak an OTP to accounts the requester may not control) — the
+    # alternate is used only when all matched users agree on a single value.
+    """
+    targets = [DispatchTarget(requested, identifier)]
+    other = OTPChannel.sms if requested == OTPChannel.email else OTPChannel.email
+    alternate = _distinct(
+        (u.phone if other == OTPChannel.sms else u.email) for u in users
+    )
+    if alternate and alternate.strip().lower() != (identifier or "").strip().lower():
+        targets.append(DispatchTarget(other, alternate))
+    return targets
+
+
 # ── Context tokens (signed, single-use) ──────────────────────────────────────
 
 def make_context_token(
@@ -317,6 +369,9 @@ class RequestResult:
     # Plaintext code, held in memory only so the API layer can expose it as a
     # dev-only `debug_code` field (never logged, never returned in production).
     code: str
+    # Which channels the single code was actually dispatched to, so the UI can
+    # say "Check your email and SMS" (dual-channel simultaneous send).
+    channels_sent: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -368,7 +423,11 @@ async def _find_users(session: AsyncSession, identifier: str) -> list[User]:
 
 
 def _issue_tokens(user: User) -> tuple[str, str]:
-    audience = AUDIENCE_CANDIDATE if user.role == Role.candidate else AUDIENCE_INTERNAL
+    # Role-aware audience so the token is scoped to exactly one portal
+    # (owner / org / candidate) — cross-portal reuse is rejected. The owner
+    # (super_admin) MUST get AUDIENCE_OWNER, else the /admin console 403s its
+    # own valid login.
+    audience = security.audience_for_role(user.role)
     access = security.create_access_token(
         user.id, user.role.value, user.tenant_id, audience=audience
     )
@@ -450,14 +509,18 @@ async def request_otp(
     limiter: RateLimiter | None = None,
     now: datetime | None = None,
 ) -> RequestResult:
-    """Generate + store (hashed) a challenge and enqueue delivery.
+    """Generate + store (hashed) ONE challenge and enqueue delivery on every
+    channel the resolved user(s) expose (dual-channel simultaneous send).
 
-    One challenge per identifier regardless of how many users share it —
-    context selection happens at verify time. `audience` is accepted for
-    backward compat but no longer routes the lookup (contract rev 2); it only
-    still gates candidate self-registration below.
+    One challenge per identifier regardless of how many users share it or how
+    many channels it is delivered on — the code hash is bound to the identifier,
+    not the channel, so entering the code received on EITHER channel verifies
+    the same challenge. Context selection happens at verify time. `audience` is
+    accepted for backward compat but no longer routes the lookup (contract
+    rev 2); it only still gates candidate self-registration below.
 
-    Raises OTPLocked (cooldown active), OTPRateLimited, UserNotFound.
+    Raises OTPLocked (cooldown active), OTPResendThrottled (30s), OTPRateLimited
+    (5/hour), UserNotFound.
     """
     settings = get_settings()
     limiter = limiter or get_limiter()
@@ -465,8 +528,13 @@ async def request_otp(
 
     if await limiter.is_set(_lock_key(identifier)):
         raise OTPLocked("identifier is in cooldown")
+    if await limiter.is_set(_resend_key(identifier)):
+        raise OTPResendThrottled("a code was sent moments ago")
     if await limiter.incr(_request_key(identifier), _REQUEST_WINDOW_SECONDS) > REQUEST_CAP_PER_HOUR:
         raise OTPRateLimited("too many OTP requests")
+    # Armed before the user lookup so an unknown identifier is throttled too
+    # (otherwise the 30s gate doubles as an account-enumeration oracle).
+    await limiter.set_flag(_resend_key(identifier), RESEND_THROTTLE_SECONDS)
 
     users = eligible_login_users(
         await _find_users(session, identifier), owner_email=settings.owner_email
@@ -501,29 +569,46 @@ async def request_otp(
     session.add(challenge)
     await session.flush()
 
-    # Delivery is always a Celery task — never inline (claude.md rule 4).
+    # Delivery is always a Celery task — never inline (claude.md rule 4). Both
+    # sends are enqueued back-to-back and run in parallel on the workers; the
+    # request handler never blocks on either.
     from app.workers.celery_app import celery_app
 
-    if channel == OTPChannel.email:
-        celery_app.send_task(
-            "pickready.send_email",
-            args=[
-                str(single.tenant_id) if single is not None and single.tenant_id else None,
-                identifier,
-                "otp",
-                {"code": code, "ttl_minutes": settings.otp_ttl_minutes},
-            ],
-        )
-    else:
-        celery_app.send_task(
-            "pickready.send_sms",
-            args=[identifier, f"Your PickReady OTP is {code}. Valid for "
-                              f"{settings.otp_ttl_minutes} minutes."],
-        )
-    return RequestResult(challenge=challenge, code=code)
+    tenant_id = (
+        str(single.tenant_id) if single is not None and single.tenant_id else None
+    )
+    channels_sent: list[str] = []
+    for target in dispatch_targets(identifier, users, channel):
+        if target.channel == OTPChannel.email:
+            celery_app.send_task(
+                "pickready.send_email",
+                args=[
+                    tenant_id,
+                    target.destination,
+                    "otp",
+                    {"code": code, "ttl_minutes": settings.otp_ttl_minutes},
+                ],
+            )
+        else:
+            celery_app.send_task(
+                "pickready.send_sms",
+                args=[target.destination,
+                      f"Your PickReady OTP is {code}. Valid for "
+                      f"{settings.otp_ttl_minutes} minutes."],
+            )
+        channels_sent.append(target.channel.value)
+    return RequestResult(challenge=challenge, code=code, channels_sent=channels_sent)
 
 
 def _stamp_channel(user: User, channel: OTPChannel, now: datetime) -> None:
+    """Stamp ONLY the challenge's own (requested/primary) channel.
+
+    # ASSUMPTION: with dual-channel dispatch we cannot know which delivery the
+    # user actually read the code from, so a dual-sent challenge still proves
+    # ownership of the requested channel only. This is what keeps FR-1.2 intact:
+    # a client's first login cannot satisfy both channels from one request — the
+    # second channel needs its own request with channel=<other>.
+    """
     if channel == OTPChannel.email:
         user.email_verified_at = user.email_verified_at or now
     else:

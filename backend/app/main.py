@@ -29,6 +29,13 @@ log = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("startup", environment=get_settings().environment)
+    # Delivery-credential preflight: log a loud WARNING (not a hard crash — dev
+    # without keys must still boot) if Resend/MSG91 config is missing.
+    from app.core.config import preflight_delivery_config
+
+    missing = preflight_delivery_config()
+    if missing:
+        log.warning("delivery.preflight_missing_keys", missing=missing)
     yield
     from app.core.db import get_engine
     await get_engine().dispose()

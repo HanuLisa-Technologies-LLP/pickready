@@ -9,18 +9,21 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
-    ACCESS_COOKIE,
     REFRESH_COOKIE,
     CurrentUser,
+    clear_auth_cookies,
     get_current_any,
+    set_auth_cookies,
 )
 from app.core.config import get_settings
 from app.core.db import get_session, tenant_scope
 from app.core.security import (
     ALGORITHM,
     AUDIENCE_CANDIDATE,
-    AUDIENCE_INTERNAL,
+    AUDIENCE_ORG,
+    AUDIENCE_OWNER,
     create_access_token,
+    create_refresh_token,
 )
 from app.models.enums import OTPChannel
 from app.models.user import User
@@ -38,6 +41,12 @@ from app.schemas.auth import (
 )
 from app.services import otp as otp_service
 from app.services import rbac
+from app.services.audit import (
+    AUTH_CONTEXT_SELECTED,
+    AUTH_LOGIN_SUCCEEDED,
+    AUTH_OTP_FAILED,
+    record_auth_event,
+)
 
 router = APIRouter()
 
@@ -67,17 +76,10 @@ async def _capabilities(session: AsyncSession, user: User) -> list[str]:
         )
 
 
-def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
-    settings = get_settings()
-    secure = settings.is_production
-    response.set_cookie(
-        ACCESS_COOKIE, access, httponly=True, secure=secure, samesite="lax",
-        max_age=settings.jwt_access_ttl_minutes * 60, path="/",
-    )
-    response.set_cookie(
-        REFRESH_COOKIE, refresh, httponly=True, secure=secure, samesite="lax",
-        max_age=settings.jwt_refresh_ttl_days * 86400, path="/api/v1/auth",
-    )
+# Cookie writing is centralized in deps.set_auth_cookies / clear_auth_cookies
+# (SameSite=Strict, httponly, secure-in-prod, refresh path-scoped) — a single
+# source of truth next to the cookie-name constants.
+_set_auth_cookies = set_auth_cookies
 
 
 @router.post(
@@ -108,7 +110,7 @@ async def register_candidate(
 async def request_otp(
     body: OTPRequestIn, session: AsyncSession = Depends(get_session)
 ) -> OTPRequestOut:
-    audience = AUDIENCE_CANDIDATE if body.audience == "candidate" else AUDIENCE_INTERNAL
+    audience = AUDIENCE_CANDIDATE if body.audience == "candidate" else AUDIENCE_ORG
     try:
         result = await otp_service.request_otp(
             session,
@@ -117,15 +119,27 @@ async def request_otp(
             audience=audience,
         )
     except otp_service.UserNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail="No account found for this email or phone") from exc
     except otp_service.OTPLocked as exc:
-        raise HTTPException(status_code=429, detail="Too many failed attempts — try again later") from exc
+        raise HTTPException(
+            status_code=429,
+            detail="Too many attempts — please try again in 15 minutes",
+        ) from exc
+    except otp_service.OTPResendThrottled as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Please wait 30 seconds before requesting another code",
+        ) from exc
     except otp_service.OTPRateLimited as exc:
-        raise HTTPException(status_code=429, detail="Too many OTP requests — try again later") from exc
+        raise HTTPException(
+            status_code=429,
+            detail="Too many code requests — please try again later",
+        ) from exc
     await session.commit()
     settings = get_settings()
     return OTPRequestOut(
         challenge_id=result.challenge.id,
+        channels_sent=result.channels_sent,
         # Dev-only: expose the code in the response so local flows are testable
         # without a mail/SMS provider. NEVER in production, never logged.
         debug_code=result.code if settings.environment == "development" else None,
@@ -151,15 +165,37 @@ async def verify_otp(
         raise HTTPException(status_code=404, detail="Unknown challenge") from exc
     except otp_service.OTPLocked as exc:
         await session.commit()  # persist any attempt counter written before lock
-        raise HTTPException(status_code=429, detail="Too many failed attempts — try again later") from exc
-    except (otp_service.OTPExpired, otp_service.OTPConsumed) as exc:
-        raise HTTPException(status_code=410, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=429,
+            detail="Too many attempts — please try again in 15 minutes",
+        ) from exc
+    except otp_service.OTPExpired as exc:
+        raise HTTPException(
+            status_code=410, detail="This code has expired — request a new one"
+        ) from exc
+    except otp_service.OTPConsumed as exc:
+        raise HTTPException(
+            status_code=410, detail="This code has already been used"
+        ) from exc
     except otp_service.OTPInvalid as exc:
+        await record_auth_event(
+            session, action=AUTH_OTP_FAILED,
+            metadata={"challenge_id": str(body.challenge_id),
+                      "attempts_remaining": exc.attempts_remaining},
+        )
         await session.commit()  # persist the incremented attempt count
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        raise HTTPException(status_code=401, detail="Invalid code") from exc
     except otp_service.UserNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=404, detail="No account found for this email or phone"
+        ) from exc
 
+    if result.authenticated:
+        await record_auth_event(
+            session, action=AUTH_LOGIN_SUCCEEDED,
+            actor_user_id=result.user.id, tenant_id=result.user.tenant_id,
+            metadata={"role": result.user.role.value},
+        )
     await session.commit()
     if result.multi_context:
         # NO cookies — the caller picks a workspace via /auth/select-context.
@@ -198,13 +234,19 @@ async def select_context(
     except otp_service.UserNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    await session.commit()
     if result.authenticated:
+        await record_auth_event(
+            session, action=AUTH_CONTEXT_SELECTED,
+            actor_user_id=result.user.id, tenant_id=result.user.tenant_id,
+            metadata={"role": result.user.role.value},
+        )
+        await session.commit()
         _set_auth_cookies(response, result.access_token, result.refresh_token)
         return OTPVerifyOut(
             user=_user_out(result.user),
             capabilities=await _capabilities(session, result.user),
         )
+    await session.commit()
     # Client first-login dual OTP still pending for this workspace.
     return OTPVerifyOut(
         user=_user_out(result.user), pending_channels=result.pending_channels
@@ -219,7 +261,10 @@ async def refresh(
     if not token:
         raise HTTPException(status_code=401, detail="Missing refresh token")
     payload = None
-    for audience in (AUDIENCE_INTERNAL, AUDIENCE_CANDIDATE):
+    # A refresh token is minted for exactly one portal audience (owner / org /
+    # candidate); try each so any valid session refreshes, but the reissued
+    # tokens keep the SAME audience — no cross-portal escalation.
+    for audience in (AUDIENCE_OWNER, AUDIENCE_ORG, AUDIENCE_CANDIDATE):
         try:
             payload = pyjwt.decode(
                 token, get_settings().jwt_secret, algorithms=[ALGORITHM], audience=audience
@@ -236,21 +281,19 @@ async def refresh(
     if user is None or user.status.value == "disabled":
         raise HTTPException(status_code=401, detail="Account unavailable")
 
+    # Rotate BOTH tokens on every refresh (refresh-token rotation), preserving
+    # the token's audience.
     access = create_access_token(
         user.id, user.role.value, user.tenant_id, audience=payload["aud"]
     )
-    settings = get_settings()
-    response.set_cookie(
-        ACCESS_COOKIE, access, httponly=True, secure=settings.is_production,
-        samesite="lax", max_age=settings.jwt_access_ttl_minutes * 60, path="/",
-    )
+    refresh_token = create_refresh_token(user.id, audience=payload["aud"])
+    set_auth_cookies(response, access, refresh_token)
     return {"refreshed": True}
 
 
 @router.post("/logout")
 async def logout(response: Response) -> dict:
-    response.delete_cookie(ACCESS_COOKIE, path="/")
-    response.delete_cookie(REFRESH_COOKIE, path="/api/v1/auth")
+    clear_auth_cookies(response)
     return {"logged_out": True}
 
 

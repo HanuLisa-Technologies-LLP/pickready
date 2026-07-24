@@ -19,10 +19,41 @@ from cryptography.fernet import Fernet
 
 from app.core.config import get_settings
 
-AUDIENCE_INTERNAL = "pickready:internal"   # super_admin, client, hr_manager, recruiter, hiring_manager
+# Three distinct token audiences — ONE per portal, so a token minted for one
+# portal can never be replayed against another (cross-portal reuse must be
+# impossible). The decoding dependencies (deps.py) reject any audience mismatch
+# with 401/403.
+AUDIENCE_OWNER = "pickready:owner"          # super_admin (platform owner) console
+AUDIENCE_ORG = "pickready:org"              # client / hr_manager / recruiter / hiring_manager
 AUDIENCE_CANDIDATE = "pickready:candidate"  # candidate portal — separate session scope
 
+# Deprecated alias. The single "internal" audience was split into OWNER + ORG.
+# Kept only so existing imports (auth.py, otp.py) don't raise ImportError during
+# the transition — it now points at the ORG audience. New code must select the
+# audience via `audience_for_role`, never this constant.
+AUDIENCE_INTERNAL = AUDIENCE_ORG
+
+# Roles that live in the org (tenant) portal. super_admin is deliberately NOT
+# here — it is the owner portal; candidate is its own portal.
+_ORG_ROLES = frozenset({"client", "hr_manager", "recruiter", "hiring_manager"})
+
 ALGORITHM = "HS256"
+
+
+def audience_for_role(role: "str | Any") -> str:
+    """Map a role to the ONE audience its tokens may carry.
+
+    super_admin -> owner portal, candidate -> candidate portal, every other
+    (tenant) role -> org portal. Accepts a Role enum or its string value.
+    """
+    value = getattr(role, "value", role)
+    if value == "super_admin":
+        return AUDIENCE_OWNER
+    if value == "candidate":
+        return AUDIENCE_CANDIDATE
+    if value in _ORG_ROLES:
+        return AUDIENCE_ORG
+    raise ValueError(f"no audience defined for role {value!r}")
 
 
 # ── OTP ──────────────────────────────────────────────────────────────────────
@@ -49,7 +80,7 @@ def create_access_token(
     user_id: uuid.UUID | str,
     role: str,
     tenant_id: uuid.UUID | str | None,
-    audience: str = AUDIENCE_INTERNAL,
+    audience: str = AUDIENCE_ORG,
 ) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
@@ -65,7 +96,7 @@ def create_access_token(
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
-def create_refresh_token(user_id: uuid.UUID | str, audience: str = AUDIENCE_INTERNAL) -> str:
+def create_refresh_token(user_id: uuid.UUID | str, audience: str = AUDIENCE_ORG) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
     payload = {

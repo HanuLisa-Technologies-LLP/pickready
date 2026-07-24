@@ -29,10 +29,21 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import httpx
+from celery.signals import worker_ready
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.core.config import get_settings
+from app.core.config import get_settings, preflight_delivery_config
+from app.services.sms_service import (
+    RETRY_BACKOFF_MAX_SECONDS,
+    DeliveryError,
+    PermanentDeliveryError,
+    TransientDeliveryError,
+    classify_exception,
+    classify_response,
+    log_delivery_error,
+    send_sms_async,
+)
 from app.models import (
     Candidate,
     Profile,
@@ -46,8 +57,17 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 _RESEND_URL = "https://api.resend.com/emails"
-_MSG91_URL = "https://control.msg91.com/api/v2/sendsms"
 _HTTP_TIMEOUT = 30.0
+
+
+# ── Startup preflight ────────────────────────────────────────────────────────
+
+@worker_ready.connect
+def _delivery_preflight(**_kwargs) -> None:
+    """Log a loud WARNING at worker boot if any Resend/MSG91 credential is
+    missing (sprint brief: a missing key must not fail silently). Never a hard
+    crash — see preflight_delivery_config's ASSUMPTION."""
+    preflight_delivery_config()
 
 
 # ── Per-task engine/session helper ───────────────────────────────────────────
@@ -108,6 +128,34 @@ async def _audit(
     await session.commit()
 
 
+async def _audit_delivery_exhausted(
+    tenant_id: str | None, to: str, template_name: str, channel: str
+) -> None:
+    """Write a terminal-failure audit row when transient retries are exhausted.
+
+    Opens its own session because the per-task session used for the send has
+    already unwound by the time Celery reports the final failure.
+    """
+    try:
+        async with _worker_session() as session:
+            await _audit(
+                session,
+                tenant_id if tenant_id else None,
+                f"{channel}.delivery",
+                channel,
+                None,
+                {
+                    "to": to,
+                    "template": template_name,
+                    "status": "failed_exhausted",
+                    "reason": "transient retries exhausted",
+                },
+            )
+    except Exception:
+        # Audit is best-effort here; never mask the real delivery failure.
+        logger.exception("%s.audit_exhausted_failed to=%s", channel, to)
+
+
 # ── Email ────────────────────────────────────────────────────────────────────
 
 async def _resend_send(
@@ -131,14 +179,28 @@ async def _resend_send(
         payload["attachments"] = [
             {"filename": a["filename"], "content": a["content"]} for a in attachments
         ]
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        resp = await client.post(
-            _RESEND_URL,
-            headers={"Authorization": f"Bearer {get_settings().resend_api_key}"},
-            json=payload,
+    if not get_settings().resend_api_key:
+        # No key at all is permanent for this call — fail fast, don't POST.
+        raise PermanentDeliveryError(
+            "resend", None, "config_missing", "RESEND_API_KEY not configured",
+            hint="Set RESEND_API_KEY in the environment and restart the worker.",
         )
-        resp.raise_for_status()
-        return str(resp.json().get("id", ""))
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+            resp = await client.post(
+                _RESEND_URL,
+                headers={"Authorization": f"Bearer {get_settings().resend_api_key}"},
+                json=payload,
+            )
+    except Exception as exc:  # network layer (DNS/connect/timeout) → transient
+        raise classify_exception("resend", exc) from exc
+
+    if resp.status_code >= 400:
+        # THE high-value fix: surface Resend's JSON body (status/name/message)
+        # instead of the opaque HTTPStatusError string. classify_response maps
+        # it onto the permanent/transient taxonomy with an operator hint.
+        raise classify_response("resend", resp)
+    return str(resp.json().get("id", ""))
 
 
 async def _send_email_async(
@@ -207,14 +269,28 @@ async def _send_email_async(
     )
     delivery_status = "sent"
     message_id = ""
+    err_meta: dict = {}
     try:
         message_id = await _resend_send(from_addr, reply_to, to, subject, body, attachments)
-    except Exception:
+    except DeliveryError as err:
         delivery_status = "failed"
-        raise  # let Celery retry with backoff
+        err_meta = err.as_audit_metadata()
+        log_delivery_error(
+            "email", err,
+            template=template_name, to=to, sender_path=sender_path,
+        )
+        raise  # task decides: permanent → no retry, transient → backoff
+    except Exception as exc:  # unexpected (e.g. template/render error)
+        delivery_status = "failed"
+        err_meta = {"error_name": type(exc).__name__, "provider_message": str(exc)[:500]}
+        logger.exception(
+            "email.delivery_failed kind=unexpected template=%s sender_path=%s",
+            template_name, sender_path,
+        )
+        raise
     finally:
         # Log delivery to audit_log (ESD §11). NEVER include `context` — it may
-        # carry OTP codes. Template name + recipient + status only.
+        # carry OTP codes. Template name + recipient + status + failure taxonomy.
         await _audit(
             session,
             str(tenant.id) if tenant is not None else None,  # platform-level email
@@ -226,17 +302,25 @@ async def _send_email_async(
                 "template": template_name,
                 "status": delivery_status,
                 "sender_path": sender_path,
+                **({"failure": err_meta} if err_meta else {}),
             },
         )
 
 
 @celery_app.task(
+    bind=True,
     name="pickready.send_email",
-    autoretry_for=(Exception,),
+    # Only TRANSIENT failures auto-retry, with EXPONENTIAL backoff. Permanent
+    # failures (unverified domain, invalid recipient, bad key) are handled in
+    # the body and NOT retried — retrying them just floods the logs.
+    autoretry_for=(TransientDeliveryError,),
     retry_backoff=True,
-    max_retries=5,
+    retry_backoff_max=RETRY_BACKOFF_MAX_SECONDS,
+    retry_jitter=True,
+    max_retries=None,  # actual cap comes from settings.delivery_max_retries
 )
 def send_email(
+    self,
     tenant_id: str | None,
     to: str,
     template_name: str,
@@ -247,42 +331,72 @@ def send_email(
 
     tenant_id None = platform-level email (e.g. Owner OTP): default template,
     dev sender. Interview invites and verification emails also route through
-    here, so they inherit the verified-domain/dev-sender selection."""
+    here, so they inherit the verified-domain/dev-sender selection.
+
+    Failure handling:
+      * PermanentDeliveryError → swallowed after logging + audit (no retry).
+      * TransientDeliveryError → exponential backoff, capped at
+        settings.delivery_max_retries; audited when retries are exhausted.
+    """
+    self.max_retries = get_settings().delivery_max_retries
+
     async def _task():
         async with _worker_session() as session:
             await _send_email_async(
                 session, tenant_id, to, template_name, context, attachments
             )
-    _run(_task())
+
+    try:
+        _run(_task())
+    except PermanentDeliveryError as err:
+        # Already logged + audited inside _send_email_async. Do NOT re-raise —
+        # a permanent failure must not consume the retry budget.
+        logger.error(
+            "email.permanent_failure_final template=%s to=%s — not retrying. "
+            "ACTION: %s", template_name, to, err.hint,
+        )
+        return
+    except TransientDeliveryError:
+        # autoretry_for handles the backoff/retry. When retries are exhausted
+        # Celery re-raises here; record the terminal failure to the audit log.
+        if self.request.retries >= self.max_retries:
+            _run(
+                _audit_delivery_exhausted(
+                    tenant_id, to, template_name, "email"
+                )
+            )
+        raise
 
 
 # ── SMS ──────────────────────────────────────────────────────────────────────
 
 @celery_app.task(
+    bind=True,
     name="pickready.send_sms",
-    autoretry_for=(Exception,),
+    # Same taxonomy as email: only transient failures back off + retry.
+    autoretry_for=(TransientDeliveryError,),
     retry_backoff=True,
-    max_retries=5,
+    retry_backoff_max=RETRY_BACKOFF_MAX_SECONDS,
+    retry_jitter=True,
+    max_retries=None,
 )
-def send_sms(phone: str, message: str):
-    """Send an SMS via the MSG91 REST API. `message` content (which may be an
-    OTP) is never logged."""
-    async def _task():
-        settings = get_settings()
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-            resp = await client.post(
-                _MSG91_URL,
-                headers={"authkey": settings.msg91_api_key},
-                json={
-                    "sender": settings.msg91_sender_id,
-                    "route": "4",  # transactional
-                    "country": "91",
-                    "sms": [{"message": message, "to": [phone]}],
-                },
-            )
-            resp.raise_for_status()
-        logger.info("sms.delivery status=sent")  # no phone, no message body
-    _run(_task())
+def send_sms(self, phone: str, message: str):
+    """Send an SMS via the MSG91 REST API. `phone` and `message` content (which
+    may be an OTP) are never logged — only status + the provider error body on
+    failure. Permanent failures (bad sender id / recipient / missing key) are
+    not retried; transient ones use exponential backoff."""
+    self.max_retries = get_settings().delivery_max_retries
+    try:
+        _run(send_sms_async(phone, message))
+    except PermanentDeliveryError as err:
+        log_delivery_error("sms", err)
+        logger.error(
+            "sms.permanent_failure_final — not retrying. ACTION: %s", err.hint
+        )
+        return
+    except TransientDeliveryError as err:
+        log_delivery_error("sms", err)
+        raise
 
 
 # ── Matching / parsing pipelines ────────────────────────────────────────────

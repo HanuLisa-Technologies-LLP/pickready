@@ -20,6 +20,15 @@ export interface User {
 
 export interface OtpRequestResponse {
   challenge_id: string;
+  /**
+   * Channels the single code was actually dispatched to (e.g. ["email","sms"]).
+   * When an account exposes both an email and a phone the one code is sent to
+   * BOTH in parallel. Optional for backward-compat with older backends — the UI
+   * falls back to the currently-requested channel when it is absent.
+   */
+  channels_sent?: ("email" | "sms")[];
+  /** Dev-only plaintext code (ENVIRONMENT=development). Never shown in the UI. */
+  debug_code?: string | null;
 }
 
 /** Capability strings resolved by the RBAC engine ("*" = owner/all). */

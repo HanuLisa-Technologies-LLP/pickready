@@ -59,9 +59,52 @@ class Settings(BaseSettings):
     # SPF/DKIM-verified in Resend (unverified From silently fails/bounces).
     resend_dev_sender: str = "onboarding@resend.dev"
 
+    # Outbound-delivery retry policy (email + SMS). Transient failures (429 /
+    # 5xx / network) retry with EXPONENTIAL backoff up to this many attempts;
+    # permanent failures (unverified domain, invalid recipient, bad key) never
+    # retry. See app/services/sms_service.py for the failure taxonomy.
+    delivery_max_retries: int = 2  # 1 initial attempt + 2 retries = 3 total
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    def missing_delivery_keys(self) -> list[str]:
+        """Names of unset outbound-delivery credentials (for startup preflight)."""
+        checks = {
+            "RESEND_API_KEY": self.resend_api_key,
+            "MSG91_API_KEY": self.msg91_api_key,
+            "MSG91_SENDER_ID": self.msg91_sender_id,
+        }
+        return [name for name, value in checks.items() if not value]
+
+
+def preflight_delivery_config() -> list[str]:
+    """Log a loud WARNING for any missing email/SMS credential at startup.
+
+    ASSUMPTION: a missing key must NOT hard-crash the container in development
+    — local dev without Resend/MSG91 keys has to remain possible (the sprint
+    brief only requires that a missing key not fail *silently*). In production
+    the same warning is emitted; enforcement/alerting on it is an ops concern,
+    not a process-exit here. Returns the list of missing key names so callers
+    (or tests) can assert on it.
+    """
+    import logging
+
+    settings = get_settings()
+    missing = settings.missing_delivery_keys()
+    if missing:
+        logging.getLogger(__name__).warning(
+            "delivery.preflight MISSING outbound credentials: %s — emails/SMS "
+            "using these will fail. Set them in the environment. env=%s",
+            ", ".join(missing),
+            settings.environment,
+        )
+    else:
+        logging.getLogger(__name__).info(
+            "delivery.preflight ok — Resend + MSG91 credentials present"
+        )
+    return missing
 
 
 @lru_cache

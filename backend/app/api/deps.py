@@ -24,7 +24,8 @@ from app.core.db import get_session_factory, superadmin_scope, tenant_scope
 from app.core.security import (
     ALGORITHM,
     AUDIENCE_CANDIDATE,
-    AUDIENCE_INTERNAL,
+    AUDIENCE_ORG,
+    AUDIENCE_OWNER,
     decode_token,
 )
 from app.models.enums import Role
@@ -33,10 +34,52 @@ from app.services.audit import audit
 
 ACCESS_COOKIE = "pr_access"
 REFRESH_COOKIE = "pr_refresh"
+# The refresh cookie is scoped to the auth router so it is never sent to (and
+# can't leak from) ordinary API calls.
+REFRESH_COOKIE_PATH = "/api/v1/auth"
 
 # Outreach links stay valid this long (candidate must respond within it).
 # ASSUMPTION: 14 days — PRD sets no explicit outreach-link TTL.
 OUTREACH_TOKEN_TTL_DAYS = 14
+
+
+# ── Cookie hardening (single source of truth) ────────────────────────────────
+# SameSite=Strict + httponly + secure-in-prod for both auth cookies.
+# ASSUMPTION: secure is disabled in development so the cookies work over plain
+# http://localhost; it is forced on in production. SameSite=Strict is acceptable
+# because this is a first-party SPA (no cross-site POST-back flow needs the
+# cookie). Access token lives `jwt_access_ttl_minutes` (15), refresh lives
+# `jwt_refresh_ttl_days`. Refresh tokens MUST be rotated on every use — the
+# refresh handler should mint a NEW refresh token and call set_auth_cookies,
+# not just reissue the access cookie.
+
+
+def set_access_cookie(response, access: str) -> None:
+    from app.core.config import get_settings  # local: avoid import cycle at module load
+
+    settings = get_settings()
+    response.set_cookie(
+        ACCESS_COOKIE, access, httponly=True, secure=settings.is_production,
+        samesite="strict", max_age=settings.jwt_access_ttl_minutes * 60, path="/",
+    )
+
+
+def set_auth_cookies(response, access: str, refresh: str) -> None:
+    """Set BOTH cookies. Call on login and on every refresh (rotation)."""
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    set_access_cookie(response, access)
+    response.set_cookie(
+        REFRESH_COOKIE, refresh, httponly=True, secure=settings.is_production,
+        samesite="strict", max_age=settings.jwt_refresh_ttl_days * 86400,
+        path=REFRESH_COOKIE_PATH,
+    )
+
+
+def clear_auth_cookies(response) -> None:
+    response.delete_cookie(ACCESS_COOKIE, path="/")
+    response.delete_cookie(REFRESH_COOKIE, path=REFRESH_COOKIE_PATH)
 
 
 @dataclass(frozen=True)
@@ -44,6 +87,10 @@ class CurrentUser:
     user_id: uuid.UUID
     tenant_id: uuid.UUID | None
     role: Role
+    # The audience the presented token carried — the portal it was minted for.
+    # The DB-session dependencies gate on this so a token minted for one portal
+    # can't be replayed against another (owner vs org vs candidate).
+    audience: str | None = None
 
 
 def _extract_token(request: Request) -> str | None:
@@ -66,10 +113,12 @@ def _payload_to_user(payload: dict) -> CurrentUser:
         user_id=uuid.UUID(payload["sub"]),
         tenant_id=uuid.UUID(tenant) if tenant else None,
         role=Role(payload["role"]),
+        audience=payload.get("aud"),
     )
 
 
-def _decode_or_401(token: str, audience: str) -> dict:
+def _decode_or_401(token: str, audience: str | list[str]) -> dict:
+    """Decode against one audience, or a list (PyJWT accepts any match)."""
     try:
         payload = decode_token(token, audience=audience)
     except pyjwt.PyJWTError as exc:
@@ -79,13 +128,22 @@ def _decode_or_401(token: str, audience: str) -> dict:
     return payload
 
 
+# The two "internal" (staff-facing) audiences. get_current_user authenticates
+# either; the DB-session dependencies below then gate the specific portal so an
+# owner token can't act on org endpoints and vice versa.
+_INTERNAL_AUDIENCES = [AUDIENCE_OWNER, AUDIENCE_ORG]
+
+
 async def get_current_user(request: Request) -> CurrentUser:
-    """Internal audience (super_admin / client / hr_manager / recruiter /
-    hiring_manager)."""
+    """Staff-facing authentication: accepts an owner (super_admin) OR an org
+    token. This only proves the token is a valid internal access token — it does
+    NOT decide the portal. Portal separation is enforced downstream:
+    `get_superadmin_db` requires the OWNER audience, `get_tenant_db` requires the
+    ORG audience. Candidate tokens are rejected here (different audience)."""
     token = _extract_token(request)
     if not token:
         raise _unauthorized()
-    return _payload_to_user(_decode_or_401(token, AUDIENCE_INTERNAL))
+    return _payload_to_user(_decode_or_401(token, _INTERNAL_AUDIENCES))
 
 
 async def get_current_candidate(request: Request) -> CurrentUser:
@@ -100,14 +158,16 @@ async def get_current_candidate(request: Request) -> CurrentUser:
 
 
 async def get_current_any(request: Request) -> CurrentUser:
-    """Either audience — used only by /auth/me and /auth/logout."""
+    """Any portal — used only by /auth/me and /auth/logout."""
     token = _extract_token(request)
     if not token:
         raise _unauthorized()
     try:
-        return _payload_to_user(_decode_or_401(token, AUDIENCE_INTERNAL))
+        return _payload_to_user(
+            _decode_or_401(token, [AUDIENCE_OWNER, AUDIENCE_ORG, AUDIENCE_CANDIDATE])
+        )
     except HTTPException:
-        return _payload_to_user(_decode_or_401(token, AUDIENCE_CANDIDATE))
+        raise _unauthorized("invalid session")
 
 
 # ── DB sessions ──────────────────────────────────────────────────────────────
@@ -116,7 +176,15 @@ async def get_tenant_db(
     user: CurrentUser = Depends(get_current_user),
 ) -> AsyncIterator[AsyncSession]:
     """Tenant-scoped session: RLS var set for the whole request transaction.
-    Commits on success, rolls back on exception."""
+    Commits on success, rolls back on exception.
+
+    Org portal only: an owner (or any non-org) token is rejected here so a
+    cross-portal token can't reach tenant data (returns 403, never 500)."""
+    if user.audience != AUDIENCE_ORG:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Org-portal session required",
+        )
     if user.tenant_id is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -134,8 +202,11 @@ async def get_superadmin_db(
     """Dedicated Super Admin path: RLS bypass scope + an audit_log row for
     every cross-tenant access (FR-11.3 / ESD §3). This is auth plumbing, not
     business logic — the role check here is the audience gate, not an RBAC
-    shortcut."""
-    if user.role != Role.super_admin:
+    shortcut.
+
+    Owner portal only: requires BOTH the owner audience (so an org/candidate
+    token can never reach the RLS-bypass scope) AND the super_admin role."""
+    if user.audience != AUDIENCE_OWNER or user.role != Role.super_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
                             detail="Super Admin only")
     async with get_session_factory()() as session:

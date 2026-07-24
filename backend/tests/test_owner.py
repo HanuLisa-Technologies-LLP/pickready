@@ -60,3 +60,35 @@ def test_ensure_allows_the_real_owner() -> None:
 def test_ensure_allows_ordinary_staff_creation() -> None:
     ensure_owner_invariant(Role.hr_manager, "hr@client.example")
     ensure_owner_invariant(Role.client, "boss@client.example")
+
+
+# ── ORM mapper guard (airtight layer — fires on any User insert/update) ───────
+# This is the layer that protects code paths which FORGET to call
+# ensure_owner_invariant explicitly: the before_insert/before_update listeners
+# reject a non-owner super_admin no matter how the row was built.
+
+from app.models.user import User  # noqa: E402
+from app.services.owner import _guard_user_row  # noqa: E402
+
+
+def test_orm_guard_rejects_impostor_super_admin() -> None:
+    impostor = User(role=Role.super_admin, email="evil@pickready.test", tenant_id=None)
+    with pytest.raises(OwnerRoleViolation):
+        _guard_user_row(impostor)
+
+
+def test_orm_guard_allows_the_real_owner() -> None:
+    owner = User(role=Role.super_admin, email=OWNER, tenant_id=None)
+    _guard_user_row(owner)  # must not raise
+
+
+def test_orm_guard_ignores_non_super_admin_rows() -> None:
+    for role in (Role.client, Role.hr_manager, Role.recruiter,
+                 Role.hiring_manager, Role.candidate):
+        _guard_user_row(User(role=role, email="anyone@pickready.test"))
+
+
+def test_orm_guard_listeners_are_registered() -> None:
+    """A future endpoint that forgets the explicit check is still covered
+    because the guard is wired at the mapper level (idempotent registration)."""
+    assert getattr(User, "_owner_guard_registered", False) is True

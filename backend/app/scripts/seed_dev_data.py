@@ -49,6 +49,25 @@ from app.services.embeddings import embed
 DEMO_TENANT_NAME = "Acme Corp"
 DEMO_TENANT_DOMAIN = "acme.example.com"
 
+# Second tenant so the "choose your workspace" flow and cross-tenant data
+# isolation are testable. `.test` is a reserved non-deliverable TLD.
+TECHSTART_TENANT_NAME = "TechStart Inc."
+TECHSTART_TENANT_DOMAIN = "techstart.test"
+
+# The multi-context identifier: ONE email (and one phone) attached to users in
+# two different contexts — a hiring_manager at Acme AND a recruiter at
+# TechStart. This is the ONLY fixture that exercises the multi-role
+# "choose your workspace" screen (contract rev 2, /auth/select-context).
+MULTI_CONTEXT_EMAIL = "multi.role@pickready.test"
+MULTI_CONTEXT_PHONE = "9000000030"
+
+# NOTE ON EMAIL DELIVERY (dev/test): do NOT use @example.com for any fixture
+# you expect to receive mail — Resend rejects example.com with a 422. Use the
+# reserved @acme.test / @techstart.test / @pickready.test domains for
+# non-deliverable fixtures. Also: in THIS environment the Resend key is
+# restricted with no verified sending domain, so outbound email can ONLY be
+# delivered to manjuchro@gmail.com regardless of the recipient here.
+
 _DEMO_RESUMES = [
     (
         "Priya Sharma",
@@ -111,6 +130,23 @@ async def _get_or_create_user(
         user.phone = phone
         print(f"  ~ user {email}: phone updated")
     return user
+
+
+async def _ensure_hiring_manager(
+    session: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UUID
+) -> None:
+    """Idempotently mirror a hiring_manager User into the hiring_managers table
+    (approval assignments key off it, mirroring the /companies/me/staff path)."""
+    exists = (
+        await session.execute(
+            select(HiringManager).where(
+                HiringManager.tenant_id == tenant_id,
+                HiringManager.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if exists is None:
+        session.add(HiringManager(tenant_id=tenant_id, user_id=user_id))
 
 
 async def _seed_permission_template(session: AsyncSession) -> None:
@@ -336,8 +372,10 @@ async def seed() -> None:
                 session, "client@acme.example.com", Role.client, tenant.id,
                 "Acme Client", phone="9000000001",
             )
+            # Each Acme member gets a DISTINCT phone so SMS OTP is testable.
             hm1 = await _get_or_create_user(
-                session, "hm1@acme.example.com", Role.hiring_manager, tenant.id, "HM One"
+                session, "hm1@acme.example.com", Role.hiring_manager, tenant.id,
+                "HM One", phone="9000000004",
             )
             hm2 = await _get_or_create_user(
                 session, "hm2@acme.example.com", Role.hiring_manager, tenant.id, "HM Two"
@@ -349,20 +387,12 @@ async def seed() -> None:
                 "HR One", phone="9000000002",
             )
             await _get_or_create_user(
-                session, "rec1@acme.example.com", Role.recruiter, tenant.id, "Recruiter One"
+                session, "rec1@acme.example.com", Role.recruiter, tenant.id,
+                "Recruiter One", phone="9000000003",
             )
 
             for hm_user in (hm1, hm2):
-                exists = (
-                    await session.execute(
-                        select(HiringManager).where(
-                            HiringManager.tenant_id == tenant.id,
-                            HiringManager.user_id == hm_user.id,
-                        )
-                    )
-                ).scalar_one_or_none()
-                if exists is None:
-                    session.add(HiringManager(tenant_id=tenant.id, user_id=hm_user.id))
+                await _ensure_hiring_manager(session, tenant.id, hm_user.id)
 
             company = (
                 await session.execute(
@@ -392,6 +422,82 @@ async def seed() -> None:
             await _seed_email_templates(session, tenant.id)
             await _seed_candidates(session, tenant.id)
             await _seed_jobs(session, tenant.id, hm1.id)
+
+            # Multi-context identifier, part 1: the same person is a Recruiter
+            # at Acme. Part 2 (hiring_manager at TechStart) is seeded below.
+            # Recruiter (uncapped) is used here rather than hiring_manager so
+            # the fixture never collides with the FR-2.2 max-5 HM cap on Acme.
+            await _get_or_create_user(
+                session, MULTI_CONTEXT_EMAIL, Role.recruiter, tenant.id,
+                "Dev Multi-Context", phone=MULTI_CONTEXT_PHONE,
+            )
+
+            print("Seeding second tenant (TechStart Inc.)...")
+            techstart = (
+                await session.execute(
+                    select(Tenant).where(Tenant.domain == TECHSTART_TENANT_DOMAIN)
+                )
+            ).scalar_one_or_none()
+            if techstart is None:
+                techstart = Tenant(
+                    name=TECHSTART_TENANT_NAME, domain=TECHSTART_TENANT_DOMAIN
+                )
+                session.add(techstart)
+                await session.flush()
+                print(f"  + tenant {TECHSTART_TENANT_NAME} ({TECHSTART_TENANT_DOMAIN})")
+
+            ts_client = await _get_or_create_user(
+                session, "client@techstart.test", Role.client, techstart.id,
+                "TechStart Client", phone="9000000010",
+            )
+            ts_hm = await _get_or_create_user(
+                session, "hm@techstart.test", Role.hiring_manager, techstart.id,
+                "TechStart HM", phone="9000000011",
+            )
+            await _ensure_hiring_manager(session, techstart.id, ts_hm.id)
+
+            # Multi-context identifier, part 2: hiring_manager at TechStart. Now
+            # the single email/phone resolves to 2 users across 2 tenants (a
+            # recruiter at Acme and a hiring_manager at TechStart) — this is what
+            # drives the "choose your workspace" screen.
+            multi_hm_ts = await _get_or_create_user(
+                session, MULTI_CONTEXT_EMAIL, Role.hiring_manager, techstart.id,
+                "Dev Multi-Context", phone=MULTI_CONTEXT_PHONE,
+            )
+            await _ensure_hiring_manager(session, techstart.id, multi_hm_ts.id)
+
+            # A minimal company page for TechStart so its org portal renders.
+            ts_company = (
+                await session.execute(
+                    select(Company).where(Company.tenant_id == techstart.id)
+                )
+            ).scalar_one_or_none()
+            if ts_company is None:
+                session.add(
+                    Company(
+                        tenant_id=techstart.id,
+                        brief="TechStart Inc. is an early-stage SaaS company.",
+                        culture="Fast-moving, generalist, remote-first.",
+                        policies="Fully remote; flexible hours.",
+                        benefits="Equity, home-office stipend.",
+                        approval_levels_config={
+                            "requested": {"active": True, "approver_user_id": str(ts_client.id)},
+                            "recommended": {"active": False, "approver_user_id": None},
+                            "approved": {"active": False, "approver_user_id": None},
+                            "ratified": {"active": True, "approver_user_id": str(ts_hm.id)},
+                        },
+                    )
+                )
+                print("  + TechStart company page + approval levels config")
+            await _seed_email_templates(session, techstart.id)
+
+            # A candidate LOGIN account (role=candidate, tenant_id NULL) with
+            # BOTH email and mobile so candidate-portal SMS/email OTP is testable.
+            # Distinct from the Databank Candidate rows above (those have no User).
+            await _get_or_create_user(
+                session, "candidate.demo@pickready.test", Role.candidate, None,
+                "Candidate Demo", phone="9000000020",
+            )
 
             await session.commit()
             print("Seed complete.")
