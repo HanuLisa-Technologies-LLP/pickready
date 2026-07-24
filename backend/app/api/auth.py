@@ -6,6 +6,7 @@ import uuid
 
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -31,6 +32,7 @@ from app.schemas.auth import (
     CandidateRegisterIn,
     CandidateRegisterOut,
     ContextOut,
+    FirebaseSessionIn,
     MeOut,
     OTPRequestIn,
     OTPRequestOut,
@@ -40,6 +42,7 @@ from app.schemas.auth import (
     UserOut,
 )
 from app.services import otp as otp_service
+from app.services.firebase_auth import assert_provider_allowed, verify_id_token
 from app.services import rbac
 from app.services.audit import (
     AUTH_CONTEXT_SELECTED,
@@ -49,6 +52,50 @@ from app.services.audit import (
 )
 
 router = APIRouter()
+
+
+@router.post("/firebase/session", response_model=OTPVerifyOut)
+async def firebase_session(
+    body: FirebaseSessionIn, response: Response, session: AsyncSession = Depends(get_session)
+) -> OTPVerifyOut:
+    """Exchange a verified Firebase ID token for the existing scoped app session."""
+    identity = verify_id_token(body.id_token)
+    users = (await session.execute(select(User).where(or_(
+        User.firebase_uid == identity.uid,
+        User.email == identity.email if identity.email else False,
+        User.phone == identity.phone if identity.phone else False,
+    )))).scalars().all()
+    if not users:
+        if not identity.email:
+            raise HTTPException(status_code=422, detail="An email address is required to create a candidate profile")
+        user = User(role="candidate", email=identity.email, phone=identity.phone,
+                    full_name=identity.name, status="active", firebase_uid=identity.uid,
+                    auth_providers=[identity.provider])
+        session.add(user)
+        await session.flush()
+        from app.models.candidate import Candidate
+        session.add(Candidate(user_id=user.id, email=user.email, phone=user.phone, full_name=user.full_name))
+        users = [user]
+    for user in users:
+        assert_provider_allowed(identity, user.role.value)
+    if len(users) != 1:
+        raise HTTPException(status_code=409, detail="This identity has multiple workspaces; contact support to select one")
+    user = users[0]
+    if user.status.value == "disabled":
+        raise HTTPException(status_code=403, detail="Account unavailable")
+    user.firebase_uid = identity.uid
+    user.auth_providers = sorted(set((user.auth_providers or []) + [identity.provider]))
+    if identity.email_verified:
+        from datetime import datetime, timezone
+        user.email_verified_at = datetime.now(timezone.utc)
+    await record_auth_event(session, action=AUTH_LOGIN_SUCCEEDED, actor_user_id=user.id,
+                             tenant_id=user.tenant_id, metadata={"provider": identity.provider})
+    await session.commit()
+    access = create_access_token(user.id, user.role.value, user.tenant_id,
+                                 audience={"super_admin": AUDIENCE_OWNER, "candidate": AUDIENCE_CANDIDATE}.get(user.role.value, AUDIENCE_ORG))
+    refresh_token = create_refresh_token(user.id, audience={"super_admin": AUDIENCE_OWNER, "candidate": AUDIENCE_CANDIDATE}.get(user.role.value, AUDIENCE_ORG))
+    _set_auth_cookies(response, access, refresh_token)
+    return OTPVerifyOut(user=_user_out(user), capabilities=await _capabilities(session, user))
 
 
 def _user_out(user: User) -> UserOut:

@@ -79,6 +79,10 @@ class MeOut(BaseModel):
     capabilities: list[str] = []
 
 
+class FirebaseSessionIn(BaseModel):
+    id_token: str = Field(min_length=20)
+
+
 class CandidateRegisterIn(BaseModel):
     """Candidate self-service sign-up (register first, log in later). OTP-only —
     no password is collected; the account is verified by OTP at first login."""

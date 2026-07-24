@@ -1,4 +1,5 @@
 fastapi>=0.115
+firebase-admin>=6.5
 uvicorn[standard]>=0.30
 gunicorn>=22.0
 pydantic>=2.8

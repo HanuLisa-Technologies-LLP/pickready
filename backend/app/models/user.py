@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
@@ -31,6 +31,8 @@ class User(Base, UUIDPKMixin, CreatedAtMixin):
     # First client login must dual-verify email AND mobile (FR-1.2/1.3)
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     phone_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    firebase_uid: Mapped[str | None] = mapped_column(String(128), unique=True)
+    auth_providers: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
 
 
 class OTPChallenge(Base, UUIDPKMixin, CreatedAtMixin):

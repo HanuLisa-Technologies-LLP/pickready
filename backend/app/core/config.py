@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-only-secret-change-me"
     jwt_access_ttl_minutes: int = 15
     jwt_refresh_ttl_days: int = 7
+    firebase_service_account_json: str = ""
 
     # OTP
     otp_ttl_minutes: int = 5
