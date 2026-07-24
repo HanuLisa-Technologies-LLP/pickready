@@ -40,12 +40,27 @@ class Settings(BaseSettings):
     # Embeddings
     bge_m3_endpoint: str = ""
 
-    # Email (Mailtrap Sending API) / SMS (MSG91)
+    # Email (provider-agnostic SMTP) / SMS (MSG91)
     #
-    # Mailtrap replaced Resend for ALL outbound email (claude.md rule 5).
-    # MAILTRAP_API_TOKEN is read from the environment (.env) — never hardcoded.
-    # By default we call the Sending API (real delivery). Set mailtrap_inbox_id
-    # to route through a Testing/sandbox inbox in dev instead.
+    # Outbound email now goes over SMTP from the backend (claude.md rule 5, as
+    # of 2026-07-24 — replaces the Mailtrap HTTP API). Configured entirely by
+    # env, so the same code works with Mailtrap SMTP, Gmail SMTP (app password),
+    # or any provider. All SMTP_* values are read from the environment (.env) —
+    # never hardcoded.
+    #   * STARTTLS (the common case) → smtp_port=587, smtp_starttls=True.
+    #   * Implicit TLS/SSL → smtp_port=465, smtp_ssl=True, smtp_starttls=False.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = "noreply@pickready.app"
+    smtp_from_name: str = "PickReady"
+    smtp_starttls: bool = True
+    smtp_ssl: bool = False
+
+    # Legacy Mailtrap HTTP-API settings — retained so services/mailtrap_service.py
+    # still imports cleanly (kept for its shared taxonomy), but the email task no
+    # longer calls it. Not part of the delivery preflight anymore.
     mailtrap_api_token: str = ""
     mailtrap_sender_email: str = "noreply@pickready.app"
     mailtrap_sender_name: str = "PickReady"
@@ -65,9 +80,9 @@ class Settings(BaseSettings):
     # (super_admin) role. Enforced in the API layer, not just seed/UI.
     owner_email: str = "manjuchro@gmail.com"
 
-    # NOTE: settings.mailtrap_sender_email is the default/fallback From used
-    # until a tenant's own domain is SPF/DKIM-verified in Mailtrap (an
-    # unverified From is rejected/bounces).
+    # NOTE: settings.smtp_from_email is the default/fallback From used until a
+    # tenant's own domain is SPF/DKIM-verified (an unverified From is rejected
+    # or bounces by the receiving side / SMTP relay).
 
     # Outbound-delivery retry policy (email + SMS). Transient failures (429 /
     # 5xx / network) retry with EXPONENTIAL backoff up to this many attempts;
@@ -80,9 +95,15 @@ class Settings(BaseSettings):
         return self.environment == "production"
 
     def missing_delivery_keys(self) -> list[str]:
-        """Names of unset outbound-delivery credentials (for startup preflight)."""
+        """Names of unset outbound-delivery credentials (for startup preflight).
+
+        SMTP (host/user/password) replaced the Mailtrap token as the email
+        credential set; MSG91 remains the SMS credential set.
+        """
         checks = {
-            "MAILTRAP_API_TOKEN": self.mailtrap_api_token,
+            "SMTP_HOST": self.smtp_host,
+            "SMTP_USER": self.smtp_user,
+            "SMTP_PASSWORD": self.smtp_password,
             "MSG91_API_KEY": self.msg91_api_key,
             "MSG91_SENDER_ID": self.msg91_sender_id,
         }
@@ -93,7 +114,7 @@ def preflight_delivery_config() -> list[str]:
     """Log a loud WARNING for any missing email/SMS credential at startup.
 
     ASSUMPTION: a missing key must NOT hard-crash the container in development
-    — local dev without Resend/MSG91 keys has to remain possible (the sprint
+    — local dev without SMTP/MSG91 keys has to remain possible (the sprint
     brief only requires that a missing key not fail *silently*). In production
     the same warning is emitted; enforcement/alerting on it is an ops concern,
     not a process-exit here. Returns the list of missing key names so callers
@@ -112,7 +133,7 @@ def preflight_delivery_config() -> list[str]:
         )
     else:
         logging.getLogger(__name__).info(
-            "delivery.preflight ok — Mailtrap + MSG91 credentials present"
+            "delivery.preflight ok — SMTP + MSG91 credentials present"
         )
     return missing
 

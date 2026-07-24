@@ -2,10 +2,13 @@
 from app.models.enums import Role
 from app.services.capabilities import (
     ALL_CAPABILITIES,
+    CREATE_JOB,
     DEFAULT_PERMISSION_MATRIX,
+    EDIT_ROLE_PERMISSIONS,
     MANAGE_STAFF,
     SEND_OUTREACH,
     VIEW_DATABANK,
+    _STAFF_OPERATIONAL,
 )
 from app.services.rbac import resolve_capability_set, resolve_permission
 
@@ -45,18 +48,38 @@ def test_default_matrix_uses_known_capabilities_only() -> None:
             assert capability in ALL_CAPABILITIES, capability
 
 
-def test_default_matrix_matches_prd_seed() -> None:
-    # Spot-check the PRD §6 template rows most of the product hangs off.
-    assert DEFAULT_PERMISSION_MATRIX[Role.hr_manager][SEND_OUTREACH] is True
-    assert SEND_OUTREACH not in DEFAULT_PERMISSION_MATRIX[Role.recruiter]
-    assert DEFAULT_PERMISSION_MATRIX[Role.recruiter][VIEW_DATABANK] is True
+def test_flat_staff_model_all_three_roles_identical() -> None:
+    # PRD v1.0 §4 (FINAL): HR Manager, Recruiter, Hiring Manager are EQUAL.
+    hr = DEFAULT_PERMISSION_MATRIX[Role.hr_manager]
+    rec = DEFAULT_PERMISSION_MATRIX[Role.recruiter]
+    hm = DEFAULT_PERMISSION_MATRIX[Role.hiring_manager]
+    assert hr == rec == hm
+    # ...and each grants the full operational set (all True).
+    assert hr == _STAFF_OPERATIONAL
+    assert all(v is True for v in hr.values())
+
+
+def test_flat_staff_all_create_and_share_operational_caps() -> None:
+    # Every staff role can create+publish jobs and reach the shared pipeline.
+    for role in (Role.hr_manager, Role.recruiter, Role.hiring_manager):
+        grants = DEFAULT_PERMISSION_MATRIX[role]
+        assert grants[CREATE_JOB] is True
+        assert grants[SEND_OUTREACH] is True   # was recruiter-denied pre-flatten
+        assert grants[VIEW_DATABANK] is True
 
 
 def test_staff_management_is_client_owned_in_default_matrix() -> None:
-    # Contract rev 2: the Client owns staff creation (grantable to HR via the
-    # dynamic engine, never an Owner function).
+    # Contract rev 2: the Client (Company Admin) owns staff creation — never a
+    # staff-role capability even under the flat model.
     assert DEFAULT_PERMISSION_MATRIX[Role.client][MANAGE_STAFF] is True
     assert MANAGE_STAFF not in DEFAULT_PERMISSION_MATRIX.get(Role.hr_manager, {})
+    assert MANAGE_STAFF not in _STAFF_OPERATIONAL
+
+
+def test_edit_role_permissions_stays_owner_only() -> None:
+    # No default-matrix role may hold EDIT_ROLE_PERMISSIONS (Super Admin only).
+    for grants in DEFAULT_PERMISSION_MATRIX.values():
+        assert EDIT_ROLE_PERMISSIONS not in grants
 
 
 # ── Bulk resolver (contract rev 2: capabilities in auth responses) ───────────

@@ -205,19 +205,37 @@ async def _candidate_for_user(
     return candidate
 
 
-async def _contacted_tenant_ids(
+async def _published_job_or_404(session: AsyncSession, job_id: uuid.UUID) -> Job:
+    """A job is publicly applyable once it is published (FR-3.5). The FSM's
+    terminal state is `ratified` (there is no separate 'published' state), so
+    `ratified_at is not None` is the published gate — matching the rest of the
+    codebase (candidates.upload_resume, etc.)."""
+    job = await session.get(Job, job_id)
+    if job is None or job.ratified_at is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+async def _previous_resume_url(
     session: AsyncSession, candidate: Candidate
-) -> set[uuid.UUID]:
-    """Tenants that have contacted this candidate (ESD §13): any existing
-    job link (outreach/sourcing always creates one first)."""
-    rows = (
+) -> str | None:
+    """The candidate's most recent stored resume, reused across applications
+    (FR-6.2 / FR-9.2 / claude.md rule 6, reversed 2026-07-24).
+
+    # ASSUMPTION: with no dedicated `candidates.last_resume_url` column yet, the
+    # newest Profile carrying a resume_url IS the "last resume". If the main
+    # agent adds `Candidate.last_resume_url` (see report), swap this to read it.
+    """
+    return (
         await session.execute(
-            select(JobCandidateLink.tenant_id).where(
-                JobCandidateLink.candidate_id == candidate.id
+            select(Profile.resume_url)
+            .where(
+                Profile.candidate_id == candidate.id,
+                Profile.resume_url.isnot(None),
             )
+            .order_by(Profile.created_at.desc())
         )
-    ).all()
-    return {r.tenant_id for r in rows}
+    ).scalars().first()
 
 
 @router.get("/jobs", response_model=PortalJobsOut)
@@ -225,24 +243,23 @@ async def portal_jobs(
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> PortalJobsOut:
-    """New Jobs — only from tenants that have previously contacted this
-    candidate (FR-9.1); this is not a public job board."""
-    candidate = await _candidate_for_user(session, user)
-    tenant_ids = await _contacted_tenant_ids(session, candidate)
-    if not tenant_ids:
-        return PortalJobsOut(jobs=[])
+    """Open job board (FR-3.5/9.1): every published (ratified) job, across all
+    tenants — an authenticated candidate can apply to any of them via its public
+    link `picready.com/{job_uuid}`. No longer outreach-gated (user decision,
+    PRD v1.0)."""
+    _ = await _candidate_for_user(session, user)  # ensure a candidate record exists
     jobs = (
         await session.execute(
-            select(Job).where(
-                Job.tenant_id.in_(tenant_ids), Job.ratified_at.isnot(None)
-            ).order_by(Job.created_at.desc())
+            select(Job).where(Job.ratified_at.isnot(None))
+            .order_by(Job.created_at.desc())
         )
     ).scalars().all()
+    tenant_ids = {j.tenant_id for j in jobs}
     tenants = {
         t.id: t for t in (
             await session.execute(select(Tenant).where(Tenant.id.in_(tenant_ids)))
         ).scalars().all()
-    }
+    } if tenant_ids else {}
     return PortalJobsOut(jobs=[
         PortalJobOut(
             id=j.id, title=j.title, department=j.department, level=j.level,
@@ -253,24 +270,43 @@ async def portal_jobs(
     ])
 
 
+@router.get("/jobs/{job_id}", response_model=PortalJobOut)
+async def portal_job(
+    job_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> PortalJobOut:
+    """View a single published job by id — the public job link target
+    (`picready.com/{job_uuid}`). Any authenticated candidate may view it
+    regardless of prior contact (FR-3.5, open application)."""
+    _ = await _candidate_for_user(session, user)
+    job = await _published_job_or_404(session, job_id)
+    tenant = await session.get(Tenant, job.tenant_id)
+    return PortalJobOut(
+        id=job.id, title=job.title, department=job.department, level=job.level,
+        company_name=tenant.name if tenant else None, status=job.status,
+    )
+
+
 @router.post(
     "/jobs/{job_id}/apply", response_model=ApplyOut, status_code=status.HTTP_201_CREATED
 )
 async def apply_to_job(
     job_id: uuid.UUID,
-    resume: UploadFile = File(...),
+    aspects: str = Form(...),  # JSON object {"5": "...", ..., "40": true}
+    resume: UploadFile | None = File(default=None),
+    reuse_previous: bool = Form(default=False),
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> ApplyOut:
-    """Apply with a FRESH resume — resumes are never persisted on the portal
-    between applications (FR-9.2 / claude.md rule 6), so a new Profile is
-    created per application and nothing is pre-filled from a previous one."""
+    """Open application to any published job (FR-3.5/6.1/9.2). The candidate
+    fills the 40-aspect questionnaire and either uploads a fresh resume OR
+    reuses their last stored resume (`reuse_previous=true`). Each application
+    still mints its OWN Profile (+ aspects); only the resume FILE is carried
+    over when reused. No prior-contact gate — any authenticated candidate may
+    apply."""
     candidate = await _candidate_for_user(session, user)
-    job = await session.get(Job, job_id)
-    if job is None or job.ratified_at is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-    if job.tenant_id not in await _contacted_tenant_ids(session, candidate):
-        raise HTTPException(status_code=403, detail="This employer has not contacted you yet (FR-9.1)")
+    job = await _published_job_or_404(session, job_id)
 
     dup = (
         await session.execute(
@@ -283,11 +319,40 @@ async def apply_to_job(
     if dup is not None:
         raise HTTPException(status_code=409, detail="You have already applied to this job")
 
-    from app.api.candidates import store_resume
+    try:
+        aspects_data = json.loads(aspects)
+        if not isinstance(aspects_data, dict):
+            raise ValueError
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="aspects must be a JSON object") from exc
 
-    resume_url = await store_resume(resume)
+    # Resolve the resume: a fresh upload wins; otherwise carry over the last one.
+    resume_reused = False
+    if resume is not None and resume.filename:
+        from app.api.candidates import store_resume  # shared helper (Track A file)
+
+        resume_url = await store_resume(resume)  # 413/422 on a bad file
+    elif reuse_previous:
+        resume_url = await _previous_resume_url(session, candidate)
+        if resume_url is None:
+            raise HTTPException(
+                status_code=422,
+                detail="No previous resume to reuse — upload one with this application",
+            )
+        resume_reused = True
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="Attach a resume file or set reuse_previous=true (FR-6.2)",
+        )
+
+    # Aspect 40 is the Databank re-use consent (PRD §10 / FR-4.2).
+    consent = aspects_data.get("40")
+    candidate.consent_databank = bool(consent) and str(consent).lower() not in ("false", "no", "0")
+
     profile = Profile(
-        candidate_id=candidate.id, source_tenant_id=job.tenant_id, resume_url=resume_url
+        candidate_id=candidate.id, source_tenant_id=job.tenant_id, resume_url=resume_url,
+        aspects_json=aspects_data, aspects_completed_at=datetime.now(timezone.utc),
     )
     session.add(profile)
     await session.flush()
@@ -298,7 +363,10 @@ async def apply_to_job(
     session.add(link)
     await session.flush()
     celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
-    return ApplyOut(link_id=link.id, job_id=job.id)
+    return ApplyOut(
+        link_id=link.id, job_id=job.id, profile_id=profile.id,
+        resume_reused=resume_reused, aspects_received=len(aspects_data),
+    )
 
 
 @router.get("/applications", response_model=ApplicationsOut)

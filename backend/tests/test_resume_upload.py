@@ -192,12 +192,18 @@ async def test_apply_creates_a_fresh_profile_each_time(monkeypatch) -> None:
                            audience=AUDIENCE_CANDIDATE)
 
         # ── Apply to two DIFFERENT jobs; each must mint a new Profile ──
+        import json as _json
+
+        aspects = _json.dumps({str(n): f"a{n}" for n in range(5, 41)})
         profile_ids: list[uuid.UUID] = []
         for jid in jobs[1:]:
             async with factory() as s:
                 async with s.begin():
                     async with superadmin_scope(s):
-                        out = await portal_mod.apply_to_job(jid, _upload(), user, s)
+                        # New signature: (job_id, aspects, resume, reuse_previous, user, session)
+                        out = await portal_mod.apply_to_job(
+                            jid, aspects, _upload(), False, user, s
+                        )
                         link = (await s.execute(
                             select(JobCandidateLink).where(
                                 JobCandidateLink.id == out.link_id)

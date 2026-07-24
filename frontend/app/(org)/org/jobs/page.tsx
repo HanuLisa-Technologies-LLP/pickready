@@ -1,14 +1,15 @@
 "use client";
 
-// Shared org jobs list. Visible to every org user (the backend scopes
-// GET /jobs by role — HR/Recruiter only see ratified). The create-JD and
-// submit-for-approval actions are gated by capability `create_job`.
+// Shared org jobs list (PRD v1.0 — flat staff roles). Visible to every staff
+// member; all staff share one candidate pool. Creating a JD is gated by the
+// data-driven capability `create_job` (granted to every staff role), and a
+// created job is published directly — there is no approval chain to submit into.
 
 import * as React from "react";
 import Link from "next/link";
-import { Plus, Send } from "lucide-react";
+import { Plus } from "lucide-react";
 
-import { apiGet, apiPost } from "@/lib/api";
+import { apiGet } from "@/lib/api";
 import type { Job } from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/ui/toast";
@@ -52,23 +53,6 @@ export default function OrgJobsPage() {
     void load();
   }, [load]);
 
-  const submit = async (job: Job) => {
-    try {
-      await apiPost(`/jobs/${job.id}/submit`);
-      toast({
-        title: "Submitted for approval",
-        description: `${job.title} entered the approval chain.`,
-      });
-      void load();
-    } catch (e) {
-      toast({
-        title: "Submit failed",
-        description: e instanceof Error ? e.message : undefined,
-        variant: "destructive",
-      });
-    }
-  };
-
   return (
     <div>
       <PageHeader
@@ -92,19 +76,18 @@ export default function OrgJobsPage() {
             <TableHead>Level</TableHead>
             <TableHead>Requirement period</TableHead>
             <TableHead>Status</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {loading ? (
             <TableRow>
-              <TableCell colSpan={6} className="text-center text-muted-foreground">
+              <TableCell colSpan={5} className="text-center text-muted-foreground">
                 Loading…
               </TableCell>
             </TableRow>
           ) : jobs.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={6} className="text-center text-muted-foreground">
+              <TableCell colSpan={5} className="text-center text-muted-foreground">
                 No jobs visible to you yet.
               </TableCell>
             </TableRow>
@@ -124,18 +107,6 @@ export default function OrgJobsPage() {
                 <TableCell>{job.requirement_period}</TableCell>
                 <TableCell>
                   <StatusBadge status={job.status} />
-                </TableCell>
-                <TableCell className="text-right">
-                  {canCreate && job.status === "draft" ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-2"
-                      onClick={() => void submit(job)}
-                    >
-                      <Send className="h-4 w-4" /> Submit
-                    </Button>
-                  ) : null}
                 </TableCell>
               </TableRow>
             ))

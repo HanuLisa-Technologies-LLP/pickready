@@ -40,11 +40,45 @@ class JobOut(BaseModel):
     created_by: uuid.UUID | None
     ratified_at: datetime | None
     created_at: datetime
+    # Public application link (FR-3.4) — picready.com/{job_uuid}. Populated by
+    # the endpoint (not a DB column); None when the job isn't published.
+    public_url: str | None = None
 
 
 class JobDetailOut(JobOut):
     jd_json: dict
     compensation_json: dict | None
+
+
+class PublicJobOut(BaseModel):
+    """The canonical PUBLIC (unauthenticated) read of a published job — only
+    the fields safe to show on the open application page. No internal ATS
+    fields (status, created_by, compensation, approvals) leak here."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    title: str
+    department: str | None
+    level: str | None
+    jd_json: dict
+    company_name: str | None = None
+    created_at: datetime
+
+
+# ── AI JD generation (FR-3.3 Path A) ─────────────────────────────────────────
+
+class JDGenerateIn(BaseModel):
+    """Brief the recruiter provides; the LLM expands it into a full JD.
+
+    Passed straight to services.jd_generation.generate_job_description(brief);
+    the generated JD dict is returned to the client to drop into
+    JobCreateIn.jd (the endpoint returns the generator's dict as-is, so it
+    stays decoupled from the exact JD field set that service produces)."""
+    title: str = Field(min_length=1, max_length=255)
+    key_requirements: list[str] | str | None = None
+    skills: list[str] = []
+    experience: str | None = None
+    company_context: str | None = None
 
 
 class ApproveIn(BaseModel):

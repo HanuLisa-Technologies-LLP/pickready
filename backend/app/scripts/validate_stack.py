@@ -5,7 +5,7 @@
 
 Prints a PASS / FAIL / WARN line per check plus a summary table, and exits
 non-zero if any HARD check FAILED. WARN never fails the run — it flags a known,
-expected gap (e.g. the Mailtrap token the user hasn't added yet).
+expected gap (e.g. the SMTP credentials the user hasn't added yet).
 
 Checks
 ------
@@ -15,12 +15,19 @@ Checks
   4. Required env present in the backend process
        - FIREBASE_SERVICE_ACCOUNT_JSON  (hard)
        - CLOUDINARY_URL                 (hard)
-       - MAILTRAP_API_TOKEN             (WARN only — user hasn't added it yet)
+       - SMTP_HOST / SMTP_USER / SMTP_PASSWORD (WARN only — user hasn't set them yet)
   5. Seeded data sane
        - exactly one super_admin, and it is the configured Owner
        - >= 25 candidates with a resume_url set (Cloudinary seed)
        - the multi-context identifier resolves to 2+ users
   6. A matching run has persisted a 4-parameter breakdown for >= 1 job
+  7. PRD v1.0 alignment
+       - >= 1 PUBLISHED job with a resolvable public link/id (`/{job_uuid}`)
+       - the flattened permission matrix: hr_manager / recruiter / hiring_manager
+         all resolve to the SAME allowed-capability set (direct-publish, shared
+         pool — no per-role divergence)
+       - >= 1 candidate can be resolved for open application (published jobs exist,
+         so the public register→apply flow has a target)
 
 Every check is isolated — one failure (or crash) never aborts the run. Checks
 are DISCOVERY-based (query the live DB), never hardcoded, so they survive seed
@@ -218,6 +225,107 @@ async def _run_db_checks(report: Report) -> None:
                 return PASS, f"{links} scored links across {jobs} job(s); breakdown shape ok"
 
             await _acheck(report, "matching_breakdowns_persisted", breakdowns_persisted)
+
+            # 7a) At least one PUBLISHED job with a resolvable public link/id.
+            #     PRD v1.0 replaces the multi-level approval FSM with direct
+            #     publish + a public job link `/{job_uuid}`. "Published" is
+            #     discovered tolerantly so this survives the rename: a job counts
+            #     as publicly linkable if status is a published/terminal value OR
+            #     it carries a ratified_at marker (the pre-rename terminal state).
+            #     The public link/id is the job's own UUID `id`.
+            async def published_job_public_link():
+                row = (
+                    await s.execute(
+                        text(
+                            "SELECT id, status FROM jobs "
+                            "WHERE lower(CAST(status AS text)) IN "
+                            "        ('published', 'ratified', 'open', 'live') "
+                            "   OR ratified_at IS NOT NULL "
+                            "ORDER BY created_at DESC LIMIT 1"
+                        )
+                    )
+                ).first()
+                if row is None:
+                    return FAIL, (
+                        "no published/terminal job found — the public job link "
+                        "`/{job_uuid}` has no target (publish a job / seed one)"
+                    )
+                job_id, job_status = row[0], row[1]
+                if not job_id:
+                    return FAIL, f"published job (status={job_status}) has no id for a public link"
+                return PASS, f"published job {job_id} (status={job_status}) → public link /{job_id}"
+
+            await _acheck(report, "published_job_has_public_link", published_job_public_link)
+
+            # 7b) Flattened permission matrix (PRD v1.0 §4 FINAL): the three staff
+            #     roles are EQUAL — hr_manager, recruiter, hiring_manager must
+            #     resolve to the SAME allowed-capability set. Query the global
+            #     template rows (tenant_id IS NULL) and compare the allowed sets.
+            async def flat_permission_matrix():
+                staff_roles = ("hr_manager", "recruiter", "hiring_manager")
+                rows = (
+                    await s.execute(
+                        text(
+                            "SELECT role, capability FROM role_permissions "
+                            "WHERE tenant_id IS NULL AND allowed IS TRUE "
+                            "  AND role IN ('hr_manager','recruiter','hiring_manager')"
+                        )
+                    )
+                ).all()
+                caps_by_role: dict[str, set[str]] = {r: set() for r in staff_roles}
+                for role, cap in rows:
+                    caps_by_role.setdefault(role, set()).add(cap)
+                present = [r for r in staff_roles if caps_by_role.get(r)]
+                if len(present) < len(staff_roles):
+                    missing = [r for r in staff_roles if not caps_by_role.get(r)]
+                    return FAIL, (
+                        f"no allowed capabilities for role(s) {missing} in the global "
+                        "template — cannot verify the flattened matrix"
+                    )
+                sets = [frozenset(caps_by_role[r]) for r in staff_roles]
+                if sets[0] == sets[1] == sets[2]:
+                    return PASS, (
+                        f"all 3 staff roles share an identical {len(sets[0])}-capability "
+                        "set (flat matrix)"
+                    )
+                # Report the pairwise differences so the divergence is actionable.
+                union = set().union(*sets)
+                diffs = {
+                    r: sorted(union - caps_by_role[r]) for r in staff_roles
+                    if union - caps_by_role[r]
+                }
+                return FAIL, (
+                    "staff roles resolve to DIFFERENT capability sets (matrix not "
+                    f"flattened) — per-role missing vs union: {diffs}"
+                )
+
+            await _acheck(report, "flat_staff_permission_matrix", flat_permission_matrix)
+
+            # 7c) A candidate can be resolved for open application. The PRD v1.0
+            #     open flow is public register → 40-aspect questionnaire → resume
+            #     (upload OR reuse) → apply against a published job. That flow needs
+            #     BOTH a published job (a target) and at least one candidate row.
+            async def candidate_for_open_application():
+                jobs = (
+                    await s.execute(
+                        text(
+                            "SELECT count(*) FROM jobs "
+                            "WHERE lower(CAST(status AS text)) IN "
+                            "        ('published', 'ratified', 'open', 'live') "
+                            "   OR ratified_at IS NOT NULL"
+                        )
+                    )
+                ).scalar_one()
+                cands = (
+                    await s.execute(text("SELECT count(*) FROM candidates"))
+                ).scalar_one()
+                if jobs < 1:
+                    return FAIL, "no published job — nothing for an open application to target"
+                if cands < 1:
+                    return FAIL, "no candidate rows — open application flow has no subject"
+                return PASS, f"{cands} candidate(s) resolvable against {jobs} published job(s)"
+
+            await _acheck(report, "candidate_resolvable_for_open_application", candidate_for_open_application)
     finally:
         await engine.dispose()
 
@@ -273,7 +381,7 @@ def _celery_check():
 
 
 def _env_check():
-    """Hard-required backend env present; Mailtrap token is WARN-only."""
+    """Hard-required backend env present; SMTP credentials are WARN-only."""
     settings = get_settings()
     hard = {
         "FIREBASE_SERVICE_ACCOUNT_JSON": settings.firebase_service_account_json,
@@ -285,11 +393,23 @@ def _env_check():
     return PASS, "FIREBASE_SERVICE_ACCOUNT_JSON + CLOUDINARY_URL present"
 
 
-def _mailtrap_env_check():
+def _smtp_env_check():
+    """Outbound email now goes over SMTP from the backend (PRD v1.0, replaces the
+    Mailtrap HTTP API). WARN-only: the user hasn't added SMTP credentials yet, and
+    dev must still boot without them (missing keys warn, never hard-crash)."""
     settings = get_settings()
-    if not settings.mailtrap_api_token:
-        return WARN, "MAILTRAP_API_TOKEN not set — email delivery disabled (known gap)"
-    return PASS, "MAILTRAP_API_TOKEN present"
+    required = {
+        "SMTP_HOST": settings.smtp_host,
+        "SMTP_USER": settings.smtp_user,
+        "SMTP_PASSWORD": settings.smtp_password,
+    }
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        return WARN, (
+            f"{', '.join(missing)} not set — email delivery disabled (known gap; "
+            "SMTP can point at Mailtrap SMTP or Gmail SMTP app-password)"
+        )
+    return PASS, f"SMTP configured (host={settings.smtp_host}, port={settings.smtp_port})"
 
 
 def _firebase_admin_initializes():
@@ -326,7 +446,7 @@ def main() -> int:
     report.check("celery_worker_responsive", _celery_check)
     report.check("required_env_present", _env_check)
     report.check("firebase_service_account_valid", _firebase_admin_initializes)
-    report.check("mailtrap_token_present", _mailtrap_env_check)
+    report.check("smtp_credentials_present", _smtp_env_check)
 
     # DB + seed sanity.
     try:

@@ -1,8 +1,8 @@
 "use client";
 
-// New Jobs (FR-9.1): only jobs from tenants that have contacted this
-// candidate. Applying requires a FRESH resume upload every time (FR-9.2) —
-// nothing is prefilled or reused.
+// New Jobs (FR-9.1): jobs from tenants that have contacted this candidate.
+// Applying accepts either a fresh resume upload or reuse of the last resume on
+// record (FR-6.2). A public link (/apply/{job_uuid}) is the outreach-free path.
 
 import * as React from "react";
 import { Upload } from "lucide-react";
@@ -36,6 +36,7 @@ export default function PortalJobsPage() {
   const [loading, setLoading] = React.useState(true);
 
   const [applyJob, setApplyJob] = React.useState<PortalJob | null>(null);
+  const [resumeMode, setResumeMode] = React.useState<"upload" | "reuse">("upload");
   const [resume, setResume] = React.useState<File | null>(null);
   const [applying, setApplying] = React.useState(false);
 
@@ -47,11 +48,16 @@ export default function PortalJobsPage() {
   }, []);
 
   const apply = async () => {
-    if (!applyJob || !resume) return;
+    if (!applyJob) return;
+    if (resumeMode === "upload" && !resume) return;
     setApplying(true);
     try {
       const fd = new FormData();
-      fd.append("resume", resume);
+      if (resumeMode === "reuse") {
+        fd.append("reuse_previous", "true");
+      } else if (resume) {
+        fd.append("resume", resume);
+      }
       await apiUpload(`/portal/jobs/${applyJob.id}/apply`, fd);
       toast({
         title: "Application submitted",
@@ -59,6 +65,7 @@ export default function PortalJobsPage() {
       });
       setApplyJob(null);
       setResume(null);
+      setResumeMode("upload");
     } catch (e) {
       toast({
         title: "Application failed",
@@ -101,6 +108,7 @@ export default function PortalJobsPage() {
                   className="gap-2"
                   onClick={() => {
                     setResume(null);
+                    setResumeMode("upload");
                     setApplyJob(job);
                   }}
                 >
@@ -118,6 +126,7 @@ export default function PortalJobsPage() {
           if (!open) {
             setApplyJob(null);
             setResume(null);
+            setResumeMode("upload");
           }
         }}
       >
@@ -125,21 +134,51 @@ export default function PortalJobsPage() {
           <DialogHeader>
             <DialogTitle>Apply — {applyJob?.title}</DialogTitle>
             <DialogDescription>
-              A fresh resume upload is required for every application — we never
-              store your resume between applications.
+              Upload a fresh resume, or reuse the last one on your record.
             </DialogDescription>
           </DialogHeader>
-          <FormField label="Resume (fresh upload)" htmlFor="apply-resume" required>
-            <Input
-              id="apply-resume"
-              type="file"
-              accept=".pdf,.doc,.docx"
-              onChange={(e) => setResume(e.target.files?.[0] ?? null)}
-            />
-          </FormField>
+          <div
+            className="grid gap-2 sm:grid-cols-2"
+            role="radiogroup"
+            aria-label="Resume option"
+          >
+            <Button
+              type="button"
+              variant={resumeMode === "upload" ? "secondary" : "outline"}
+              aria-pressed={resumeMode === "upload"}
+              onClick={() => setResumeMode("upload")}
+            >
+              Upload a new resume
+            </Button>
+            <Button
+              type="button"
+              variant={resumeMode === "reuse" ? "secondary" : "outline"}
+              aria-pressed={resumeMode === "reuse"}
+              onClick={() => {
+                setResumeMode("reuse");
+                setResume(null);
+              }}
+            >
+              Reuse my last resume
+            </Button>
+          </div>
+          {resumeMode === "upload" ? (
+            <FormField label="Resume file" htmlFor="apply-resume" required>
+              <Input
+                id="apply-resume"
+                type="file"
+                accept=".pdf,.doc,.docx"
+                onChange={(e) => setResume(e.target.files?.[0] ?? null)}
+              />
+            </FormField>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              We&apos;ll attach the most recent resume on your record.
+            </p>
+          )}
           <DialogFooter>
             <Button
-              disabled={applying || !resume}
+              disabled={applying || (resumeMode === "upload" && !resume)}
               onClick={() => void apply()}
             >
               {applying ? "Submitting…" : "Submit application"}

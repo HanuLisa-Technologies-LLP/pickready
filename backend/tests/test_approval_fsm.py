@@ -4,6 +4,7 @@ import uuid
 import pytest
 
 from app.models.enums import ApprovalDecision, JobStatus
+from app.models.enums import APPROVAL_CHAIN
 from app.services.approval_fsm import (
     AlreadyTerminal,
     ApprovalConfigError,
@@ -11,6 +12,7 @@ from app.services.approval_fsm import (
     NotSubmitted,
     PriorLevelPending,
     next_active_level,
+    plan_direct_publish,
     plan_submit,
     validate_transition,
 )
@@ -88,6 +90,28 @@ def test_submit_without_config_errors() -> None:
         plan_submit(None)
     with pytest.raises(ApprovalConfigError):
         plan_submit({})
+
+
+# ── direct publish (flat staff model, PRD v1.0 §4) ───────────────────────────
+
+def test_direct_publish_ratifies_immediately() -> None:
+    result = plan_direct_publish()
+    assert result.new_status == JobStatus.ratified
+    assert result.ratified is True
+
+
+def test_direct_publish_logs_every_level_as_skipped() -> None:
+    result = plan_direct_publish()
+    # Bypass is auditable: all 4 chain levels logged skipped, never silent.
+    assert [r.level for r in result.rows] == list(APPROVAL_CHAIN)
+    assert all(r.decision == ApprovalDecision.skipped for r in result.rows)
+    assert all(r.approver_user_id is None for r in result.rows)
+    assert all("direct publish" in (r.remarks or "") for r in result.rows)
+
+
+def test_direct_publish_needs_no_config() -> None:
+    # Unlike plan_submit, the flat path is config-free (never raises).
+    assert plan_direct_publish().ratified is True
 
 
 # ── full all-active chain ────────────────────────────────────────────────────

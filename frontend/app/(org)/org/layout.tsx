@@ -1,14 +1,19 @@
 "use client";
 
-// Unified client-org portal shell (contract rev 2): ONE URL space (/org) for
-// Client, HR Manager, Recruiter and Hiring Manager. Nav items are shown per
-// CAPABILITY (from auth context), never per role.
+// Unified client-org portal shell (PRD v1.0 — FLAT STAFF ROLES). HR Manager,
+// Recruiter and Hiring Manager are equal: they all share ONE nav, all can
+// create jobs, and all share a single candidate pool. There is NO per-staff-
+// role nav gating and NO approval-level configuration (the approval FSM was
+// removed — staff-created jobs are published directly).
+//
+// The only capability-gated items are the two CLIENT-ADMIN functions (Company
+// Page, Staff management), which belong to the company owner ("client") rather
+// than to the three interchangeable staff roles. Everything staff actually work
+// with — Jobs, Review Screen, Dashboard — is shown to every staff member.
 
 import {
   Briefcase,
   Building,
-  CheckSquare,
-  GitBranch,
   LayoutDashboard,
   ListChecks,
   Mail,
@@ -27,29 +32,20 @@ export default function OrgLayout({
   const { hasCapability } = useAuth();
 
   const nav = [
+    // Client-admin functions (company owner), not part of the flat staff nav.
     hasCapability("create_company_page")
       ? { href: "/org/company", label: "Company Page", icon: Building }
       : null,
     hasCapability("manage_staff")
       ? { href: "/org/staff", label: "Staff", icon: Users }
       : null,
-    hasCapability("configure_approval_levels")
-      ? { href: "/org/approval-levels", label: "Approval Levels", icon: GitBranch }
-      : null,
     hasCapability("manage_email_templates")
       ? { href: "/org/templates", label: "Email Templates", icon: Mail }
       : null,
-    // Jobs are visible to every org user; the create action inside is gated.
+    // Shared staff surface — identical for every staff role (flat).
     { href: "/org/jobs", label: "Jobs", icon: Briefcase },
-    hasCapability("approve_job")
-      ? { href: "/org/approvals", label: "Approvals", icon: CheckSquare }
-      : null,
-    hasCapability("view_review_screen")
-      ? { href: "/org/review", label: "Review Screen", icon: ListChecks }
-      : null,
-    hasCapability("view_dashboard")
-      ? { href: "/org/dashboard", label: "Dashboard", icon: LayoutDashboard }
-      : null,
+    { href: "/org/review", label: "Review Screen", icon: ListChecks },
+    { href: "/org/dashboard", label: "Dashboard", icon: LayoutDashboard },
     // Settings is always available; the theme toggle lives ONLY here.
     { href: "/org/settings", label: "Settings", icon: Settings },
   ].filter((item) => item !== null) as NavItem[];

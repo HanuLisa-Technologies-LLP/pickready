@@ -141,6 +141,24 @@ def plan_submit(config: dict[str, Any] | None) -> TransitionResult:
     return TransitionResult(new_status=first, rows=rows)
 
 
+def plan_direct_publish() -> TransitionResult:
+    """Flat staff model (PRD v1.0 §4, FINAL): a job publishes DIRECTLY on
+    creation — the requested→recommended→approved→ratified chain is bypassed.
+
+    Every level is logged as an explicit `skipped` row (never silently
+    auto-approved, ESD §7) and the job lands terminal at `ratified`, so all
+    downstream `ratified_at IS NOT NULL` visibility/HR checks keep working
+    unchanged. The FSM is dormant, not deleted — restoring the chain is just a
+    matter of routing create() back through `plan_submit`.
+    """
+    rows = [
+        ApprovalRow(level=level, decision=ApprovalDecision.skipped,
+                    remarks="approval chain bypassed (direct publish)")
+        for level in APPROVAL_CHAIN
+    ]
+    return TransitionResult(new_status=JobStatus.ratified, rows=rows, ratified=True)
+
+
 def validate_transition(
     config: dict[str, Any] | None,
     current_status: JobStatus,
@@ -234,6 +252,15 @@ async def _persist(session: AsyncSession, job, result: TransitionResult) -> None
 
 async def apply_submit(session: AsyncSession, job, config: dict[str, Any] | None) -> TransitionResult:
     result = plan_submit(config)
+    await _persist(session, job, result)
+    return result
+
+
+async def apply_direct_publish(session: AsyncSession, job) -> TransitionResult:
+    """Persist a direct publish: stamp `ratified` + `ratified_at` and log the
+    four bypassed levels as skipped rows. Config-free — the flat model needs no
+    approval_levels_config."""
+    result = plan_direct_publish()
     await _persist(session, job, result)
     return result
 

@@ -152,9 +152,15 @@ async def _ensure_hiring_manager(
 
 async def _seed_permission_template(session: AsyncSession) -> None:
     """Global template rows (tenant_id NULL): every capability per role,
-    allowed only where DEFAULT_PERMISSION_MATRIX says so."""
+    allowed only where DEFAULT_PERMISSION_MATRIX says so.
+
+    Idempotent AND reconciling: inserts missing (role, capability) rows and
+    UPDATES the `allowed` flag on existing rows to match the current matrix.
+    The flat-staff-model change (PRD v1.0 §4) flips many defaults (e.g.
+    recruiter now has CREATE_JOB), so a plain insert-if-missing would leave
+    stale template rows — re-seeding must bring them into line."""
     existing = {
-        (r.role, r.capability)
+        (r.role, r.capability): r
         for r in (
             await session.execute(
                 select(RolePermission).where(RolePermission.tenant_id.is_(None))
@@ -162,21 +168,28 @@ async def _seed_permission_template(session: AsyncSession) -> None:
         ).scalars()
     }
     added = 0
+    updated = 0
     for role, grants in DEFAULT_PERMISSION_MATRIX.items():
         for capability in ALL_CAPABILITIES:
-            if (role, capability) in existing:
-                continue
-            session.add(
-                RolePermission(
-                    tenant_id=None,
-                    role=role,
-                    capability=capability,
-                    allowed=grants.get(capability, False),
+            allowed = grants.get(capability, False)
+            row = existing.get((role, capability))
+            if row is None:
+                session.add(
+                    RolePermission(
+                        tenant_id=None,
+                        role=role,
+                        capability=capability,
+                        allowed=allowed,
+                    )
                 )
-            )
-            added += 1
+                added += 1
+            elif row.allowed != allowed:
+                row.allowed = allowed
+                updated += 1
     if added:
         print(f"  + {added} global role_permission template rows")
+    if updated:
+        print(f"  ~ {updated} global role_permission rows reconciled to matrix")
 
 
 async def _seed_llm_keys(session: AsyncSession) -> None:

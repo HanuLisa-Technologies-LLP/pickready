@@ -33,7 +33,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings, preflight_delivery_config
-from app.services.mailtrap_service import send_email_async as mailtrap_send
+from app.services.smtp_service import send_email_async as smtp_send
 from app.services.sms_service import (
     RETRY_BACKOFF_MAX_SECONDS,
     DeliveryError,
@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 @worker_ready.connect
 def _delivery_preflight(**_kwargs) -> None:
-    """Log a loud WARNING at worker boot if any Mailtrap/MSG91 credential is
+    """Log a loud WARNING at worker boot if any SMTP/MSG91 credential is
     missing (sprint brief: a missing key must not fail silently). Never a hard
     crash — see preflight_delivery_config's ASSUMPTION."""
     preflight_delivery_config()
@@ -169,7 +169,7 @@ async def _send_email_async(
     # emails — the Owner/super_admin OTP has no tenant — and this path used to
     # crash with ValueError('badly formed hexadecimal UUID string') from
     # uuid.UUID(str(None)) before any email was sent. No tenant → skip the
-    # tenant lookup entirely: default templates + the default Mailtrap sender.
+    # tenant lookup entirely: default templates + the default SMTP sender.
     tenant: Tenant | None = None
     if tenant_id:
         try:
@@ -183,10 +183,10 @@ async def _send_email_async(
             )
 
     # Sender selection (claude.md rule 5): the tenant's own domain may ONLY be
-    # used as From once its sending domain is SPF/DKIM-verified AND Mailtrap has
-    # that domain verified — an unverified From is rejected/bounces. In
+    # used as From once its sending domain is SPF/DKIM-verified AND the SMTP
+    # relay accepts that domain — an unverified From is rejected/bounces. In
     # development, or whenever the domain is not verified (or there is no
-    # tenant), fall back to settings.mailtrap_sender_email.
+    # tenant), fall back to settings.smtp_from_email.
     tenant_from = f"recruitment@{tenant.domain}" if tenant is not None else None
     domain_verified = (
         tenant is not None and (tenant.spf_dkim_status or "").lower() == "verified"
@@ -195,13 +195,13 @@ async def _send_email_async(
         from_addr = tenant_from
         sender_path = "tenant_domain"
     else:
-        from_addr = settings.mailtrap_sender_email
+        from_addr = settings.smtp_from_email
         sender_path = "default_sender"
 
     # Structured, secret-free log so delivery failures are diagnosable —
     # never the message body/context (may carry OTP codes, ESD §16).
     logger.info(
-        "email.sender provider=mailtrap path=%s template=%s tenant_id=%s spf_dkim=%s env=%s",
+        "email.sender provider=smtp path=%s template=%s tenant_id=%s spf_dkim=%s env=%s",
         sender_path,
         template_name,
         str(tenant.id) if tenant is not None else "-",
@@ -217,15 +217,15 @@ async def _send_email_async(
     message_id = ""
     err_meta: dict = {}
     try:
-        message_id = await mailtrap_send(
+        message_id = await smtp_send(
             from_email=from_addr,
-            from_name=settings.mailtrap_sender_name,
+            from_name=settings.smtp_from_name,
             to=to,
             subject=subject,
             html=html_body,
             text=body,
             attachments=attachments,
-        )
+        ) or ""
     except DeliveryError as err:
         delivery_status = "failed"
         err_meta = err.as_audit_metadata()
@@ -281,12 +281,11 @@ def send_email(
     context: dict,
     attachments: list[dict] | None = None,
 ):
-    """attachments: [{"filename": str, "content": <base64 str>}] (Mailtrap shape).
+    """attachments: [{"filename": str, "content": <base64 str>}] (SMTP MIME part).
 
     tenant_id None = platform-level email (e.g. Owner OTP): default template,
-    default Mailtrap sender. Interview invites and verification emails also
-    route through here, so they inherit the verified-domain/default-sender
-    selection.
+    default SMTP sender. Interview invites and verification emails also route
+    through here, so they inherit the verified-domain/default-sender selection.
 
     Failure handling:
       * PermanentDeliveryError → swallowed after logging + audit (no retry).

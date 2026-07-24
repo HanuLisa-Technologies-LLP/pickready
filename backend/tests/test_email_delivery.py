@@ -3,14 +3,15 @@
 Covers:
   * sender-path selection: tenant verified vs unverified vs tenant_id=None,
     and the development-environment override;
-  * permanent-vs-transient classification of Mailtrap/MSG91 responses;
-  * the Mailtrap Sending API path: success returns a message id, a permanent
-    failure (401/unverified sender) is not retried, a transient one (429/5xx)
-    is retried;
+  * permanent-vs-transient classification of provider/MSG91 responses;
+  * the SMTP send path: success returns a message id, an auth failure is
+    permanent (not retried), a connection/timeout failure is transient
+    (retried), and missing SMTP creds fail fast as permanent;
   * that a permanent failure is NOT retried while a transient one IS;
-  * the missing-key startup preflight (MAILTRAP_API_TOKEN).
+  * the missing-key startup preflight (SMTP_HOST/USER/PASSWORD).
 
-The HTTP layer is mocked throughout — these tests must never hit the network.
+The network layer (aiosmtplib / httpx) is mocked throughout — these tests must
+never hit the network.
 """
 import uuid
 from contextlib import asynccontextmanager
@@ -183,7 +184,7 @@ async def _capture_sender(monkeypatch, *, tenant, environment):
 
     captured = {}
 
-    async def _fake_mailtrap(
+    async def _fake_smtp(
         from_email, from_name, to, subject, html, text=None, attachments=None
     ):
         captured["from"] = from_email
@@ -199,13 +200,13 @@ async def _capture_sender(monkeypatch, *, tenant, environment):
         captured["audit"] = meta
         return None
 
-    monkeypatch.setattr(tasks, "mailtrap_send", _fake_mailtrap)
+    monkeypatch.setattr(tasks, "smtp_send", _fake_smtp)
     monkeypatch.setattr(
         tasks, "get_settings",
         lambda: SimpleNamespace(
             environment=environment,
-            mailtrap_sender_email="noreply@pickready.app",
-            mailtrap_sender_name="PickReady",
+            smtp_from_email="noreply@pickready.app",
+            smtp_from_name="PickReady",
         ),
     )
     monkeypatch.setattr(tasks, "_audit", _fake_audit)
@@ -265,142 +266,196 @@ async def test_sender_tenant_none_does_not_crash(monkeypatch):
     assert "body" in captured["html"]
 
 
-# ── Mailtrap Sending API path (mocked HTTP, no network) ──────────────────────
+# ── SMTP send path (mocked aiosmtplib, no network) ───────────────────────────
 
-def _mailtrap_settings(**overrides):
+def _smtp_settings(**overrides):
     base = dict(
-        mailtrap_api_token="mt_token",
-        mailtrap_sender_email="noreply@pickready.app",
-        mailtrap_sender_name="PickReady",
-        mailtrap_api_host="send.api.mailtrap.io",
-        mailtrap_inbox_id="",
+        smtp_host="smtp.example.test",
+        smtp_port=587,
+        smtp_user="apikey",
+        smtp_password="secret",
+        smtp_from_email="noreply@pickready.app",
+        smtp_from_name="PickReady",
+        smtp_starttls=True,
+        smtp_ssl=False,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
 
 
-def _mailtrap_client(response):
-    class _Client:
-        def __init__(self, *a, **k): ...
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, url, *a, **k):
-            _Client.last_url = url
-            return response
-    return _Client
-
-
 @pytest.mark.asyncio
-async def test_mailtrap_success_returns_message_id(monkeypatch):
-    from app.services import mailtrap_service
+async def test_smtp_success_returns_message_id(monkeypatch):
+    from app.services import smtp_service
 
-    monkeypatch.setattr(mailtrap_service, "get_settings", _mailtrap_settings)
-    monkeypatch.setattr(
-        mailtrap_service.httpx, "AsyncClient",
-        _mailtrap_client(_resp(200, {"success": True, "message_ids": ["mt_abc"]})),
-    )
-    mid = await mailtrap_service.send_email_async(
+    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
+
+    async def _fake_send(message, **kwargs):
+        _fake_send.kwargs = kwargs
+        return ({}, "250 OK")
+
+    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
+    mid = await smtp_service.send_email_async(
         "noreply@pickready.app", "PickReady", "hr@corp.test", "subj", "<p>hi</p>", "hi"
     )
-    assert mid == "mt_abc"
+    # A Message-ID is generated for every sent message.
+    assert mid and mid.startswith("<") and mid.endswith(">")
+    # STARTTLS on 587, implicit SSL off.
+    assert _fake_send.kwargs["start_tls"] is True
+    assert _fake_send.kwargs["use_tls"] is False
+    assert _fake_send.kwargs["hostname"] == "smtp.example.test"
+    assert _fake_send.kwargs["port"] == 587
 
 
 @pytest.mark.asyncio
-async def test_mailtrap_sandbox_uses_inbox_path(monkeypatch):
-    from app.services import mailtrap_service
+async def test_smtp_ssl_465_disables_starttls(monkeypatch):
+    from app.services import smtp_service
 
     monkeypatch.setattr(
-        mailtrap_service, "get_settings",
-        lambda: _mailtrap_settings(mailtrap_inbox_id="99887"),
+        smtp_service, "get_settings",
+        lambda: _smtp_settings(smtp_port=465, smtp_ssl=True, smtp_starttls=True),
     )
-    client = _mailtrap_client(_resp(200, {"success": True, "message_ids": ["x"]}))
-    monkeypatch.setattr(mailtrap_service.httpx, "AsyncClient", client)
-    await mailtrap_service.send_email_async(
+
+    async def _fake_send(message, **kwargs):
+        _fake_send.kwargs = kwargs
+        return ({}, "250 OK")
+
+    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
+    await smtp_service.send_email_async(
         "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
     )
-    assert client.last_url == "https://sandbox.api.mailtrap.io/api/send/99887"
+    # Implicit TLS from the start; STARTTLS must NOT be attempted on top of it.
+    assert _fake_send.kwargs["use_tls"] is True
+    assert _fake_send.kwargs["start_tls"] is False
 
 
 @pytest.mark.asyncio
-async def test_mailtrap_401_unverified_sender_is_permanent(monkeypatch):
-    from app.services import mailtrap_service
+async def test_smtp_attachment_is_included(monkeypatch):
+    import base64
 
-    monkeypatch.setattr(mailtrap_service, "get_settings", _mailtrap_settings)
-    body = {"errors": ["Sender is not verified"]}
-    monkeypatch.setattr(
-        mailtrap_service.httpx, "AsyncClient", _mailtrap_client(_resp(401, body))
+    from app.services import smtp_service
+
+    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
+
+    async def _fake_send(message, **kwargs):
+        _fake_send.message = message
+        return ({}, "250 OK")
+
+    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
+    ics = base64.b64encode(b"BEGIN:VCALENDAR").decode()
+    await smtp_service.send_email_async(
+        "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>", "h",
+        attachments=[{"filename": "invite.ics", "content": ics}],
     )
+    # A multipart/mixed envelope carrying the attachment part.
+    assert _fake_send.message.is_multipart()
+    payload = _fake_send.message.as_string()
+    assert "invite.ics" in payload
+
+
+@pytest.mark.asyncio
+async def test_smtp_auth_error_is_permanent(monkeypatch):
+    import aiosmtplib
+
+    from app.services import smtp_service
+
+    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
+
+    async def _fake_send(message, **kwargs):
+        raise aiosmtplib.SMTPAuthenticationError(535, "Authentication failed")
+
+    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
     with pytest.raises(PermanentDeliveryError) as ei:
-        await mailtrap_service.send_email_async(
+        await smtp_service.send_email_async(
             "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
         )
-    assert "MAILTRAP_API_TOKEN" in ei.value.hint
+    assert "SMTP_USER" in ei.value.hint and "SMTP_PASSWORD" in ei.value.hint
 
 
 @pytest.mark.asyncio
-async def test_mailtrap_200_success_false_is_permanent(monkeypatch):
-    from app.services import mailtrap_service
+async def test_smtp_5xx_recipient_reject_is_permanent(monkeypatch):
+    import aiosmtplib
 
-    monkeypatch.setattr(mailtrap_service, "get_settings", _mailtrap_settings)
-    body = {"success": False, "errors": ["'from' address is not verified"]}
-    monkeypatch.setattr(
-        mailtrap_service.httpx, "AsyncClient", _mailtrap_client(_resp(200, body))
-    )
+    from app.services import smtp_service
+
+    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
+
+    async def _fake_send(message, **kwargs):
+        raise aiosmtplib.SMTPResponseException(550, "Sender address rejected")
+
+    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
     with pytest.raises(PermanentDeliveryError):
-        await mailtrap_service.send_email_async(
+        await smtp_service.send_email_async(
             "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
         )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [429, 500, 503])
-async def test_mailtrap_transient_statuses_retry(monkeypatch, status):
-    from app.services import mailtrap_service
+async def test_smtp_4xx_greylist_is_transient(monkeypatch):
+    import aiosmtplib
 
-    monkeypatch.setattr(mailtrap_service, "get_settings", _mailtrap_settings)
-    monkeypatch.setattr(
-        mailtrap_service.httpx, "AsyncClient",
-        _mailtrap_client(_resp(status, {"message": "later"})),
-    )
+    from app.services import smtp_service
+
+    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
+
+    async def _fake_send(message, **kwargs):
+        raise aiosmtplib.SMTPResponseException(451, "Greylisted, try again later")
+
+    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
     with pytest.raises(TransientDeliveryError):
-        await mailtrap_service.send_email_async(
+        await smtp_service.send_email_async(
             "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
         )
 
 
 @pytest.mark.asyncio
-async def test_mailtrap_network_error_is_transient(monkeypatch):
-    from app.services import mailtrap_service
+async def test_smtp_connect_error_is_transient(monkeypatch):
+    import aiosmtplib
 
-    monkeypatch.setattr(mailtrap_service, "get_settings", _mailtrap_settings)
+    from app.services import smtp_service
 
-    class _Boom:
-        def __init__(self, *a, **k): ...
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, *a, **k):
-            raise httpx.ConnectError("dns fail")
+    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
 
-    monkeypatch.setattr(mailtrap_service.httpx, "AsyncClient", _Boom)
+    async def _fake_send(message, **kwargs):
+        raise aiosmtplib.SMTPConnectError("cannot connect to host")
+
+    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
     with pytest.raises(TransientDeliveryError):
-        await mailtrap_service.send_email_async(
+        await smtp_service.send_email_async(
             "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
         )
 
 
 @pytest.mark.asyncio
-async def test_mailtrap_missing_token_is_permanent(monkeypatch):
-    from app.services import mailtrap_service
+async def test_smtp_timeout_is_transient(monkeypatch):
+    import aiosmtplib
+
+    from app.services import smtp_service
+
+    monkeypatch.setattr(smtp_service, "get_settings", _smtp_settings)
+
+    async def _fake_send(message, **kwargs):
+        raise aiosmtplib.SMTPTimeoutError("timed out")
+
+    monkeypatch.setattr(smtp_service.aiosmtplib, "send", _fake_send)
+    with pytest.raises(TransientDeliveryError):
+        await smtp_service.send_email_async(
+            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
+        )
+
+
+@pytest.mark.asyncio
+async def test_smtp_missing_creds_is_permanent(monkeypatch):
+    from app.services import smtp_service
 
     monkeypatch.setattr(
-        mailtrap_service, "get_settings",
-        lambda: _mailtrap_settings(mailtrap_api_token=""),
+        smtp_service, "get_settings",
+        lambda: _smtp_settings(smtp_host="", smtp_user="", smtp_password=""),
     )
     with pytest.raises(PermanentDeliveryError) as ei:
-        await mailtrap_service.send_email_async(
+        await smtp_service.send_email_async(
             "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
         )
-    assert "MAILTRAP_API_TOKEN" in ei.value.hint
+    assert "SMTP_HOST" in ei.value.hint or "SMTP" in ei.value.hint
 
 
 # ── permanent failure is not retried; transient is ──────────────────────────
@@ -448,12 +503,16 @@ def test_preflight_reports_missing_keys(monkeypatch):
     from app.core import config
 
     config.get_settings.cache_clear()
-    monkeypatch.setenv("MAILTRAP_API_TOKEN", "")
+    monkeypatch.setenv("SMTP_HOST", "")
+    monkeypatch.setenv("SMTP_USER", "")
+    monkeypatch.setenv("SMTP_PASSWORD", "")
     monkeypatch.setenv("MSG91_API_KEY", "")
     monkeypatch.setenv("MSG91_SENDER_ID", "")
     config.get_settings.cache_clear()
     missing = config.preflight_delivery_config()
-    assert "MAILTRAP_API_TOKEN" in missing
+    assert "SMTP_HOST" in missing
+    assert "SMTP_USER" in missing
+    assert "SMTP_PASSWORD" in missing
     assert "MSG91_API_KEY" in missing
     config.get_settings.cache_clear()
 
@@ -462,7 +521,9 @@ def test_preflight_ok_when_keys_present(monkeypatch):
     from app.core import config
 
     config.get_settings.cache_clear()
-    monkeypatch.setenv("MAILTRAP_API_TOKEN", "mt_x")
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.test")
+    monkeypatch.setenv("SMTP_USER", "apikey")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
     monkeypatch.setenv("MSG91_API_KEY", "mk_x")
     monkeypatch.setenv("MSG91_SENDER_ID", "PCKRDY")
     config.get_settings.cache_clear()

@@ -48,6 +48,11 @@ class PortalJobsOut(BaseModel):
 class ApplyOut(BaseModel):
     link_id: uuid.UUID
     job_id: uuid.UUID
+    profile_id: uuid.UUID
+    # True when the resume was carried over from a previous application
+    # (reuse_previous) rather than freshly uploaded (FR-6.2 / FR-9.2).
+    resume_reused: bool = False
+    aspects_received: int = 0
     parse_task: str = "queued"
 
 

@@ -33,10 +33,13 @@ services:
   backend:
     build: ../backend
     # env_file delivers the ENTIRE ../.env into the container, so all secrets —
-    # FIREBASE_SERVICE_ACCOUNT_JSON, MAILTRAP_API_TOKEN / MAILTRAP_SENDER_EMAIL /
-    # MAILTRAP_SENDER_NAME, CLOUDINARY_URL, MSG91_API_KEY / MSG91_SENDER_ID,
-    # JWT_*, LLM keys — reach the API. The `environment` block below only
-    # overrides the two hostnames that differ inside the compose network.
+    # FIREBASE_SERVICE_ACCOUNT_JSON, SMTP_HOST / SMTP_PORT / SMTP_USER /
+    # SMTP_PASSWORD / SMTP_FROM_EMAIL / SMTP_FROM_NAME / SMTP_STARTTLS / SMTP_SSL
+    # (backend SMTP email, replaces the Mailtrap HTTP API), CLOUDINARY_URL,
+    # MSG91_API_KEY / MSG91_SENDER_ID, JWT_*, LLM keys — reach the API. The
+    # `environment` block below only overrides the two hostnames that differ
+    # inside the compose network; do NOT add SMTP_*/secret overrides here — an
+    # explicit key with an empty value would MASK the real one from ../.env.
     env_file: ../.env
     environment:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
@@ -57,8 +60,8 @@ services:
     build: ../backend
     # Same as backend: env_file carries all secrets into the worker. The worker
     # is what actually SENDS mail/SMS and uploads to Cloudinary, so it must have
-    # MAILTRAP_API_TOKEN / MAILTRAP_SENDER_EMAIL, CLOUDINARY_URL, MSG91_* and the
-    # LLM keys — all provided via ../.env below.
+    # the SMTP_* email credentials, CLOUDINARY_URL, MSG91_* and the LLM keys —
+    # all provided via ../.env below. Same caution: no SMTP_* override here.
     env_file: ../.env
     environment:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready

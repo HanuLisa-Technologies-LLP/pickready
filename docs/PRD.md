@@ -1,5 +1,18 @@
 # PickReady — Product Requirements Document (PRD)
 
+> **⚠️ SUPERSEDED IN PART BY PRD v1.0 (2026-07-24).** The role/approval model and
+> several flows below are overridden by PRD v1.0 §4 (FINAL) and the user's four
+> settlements — see `docs/API_CONTRACT.md` (REVISION 3) and `build-log.md`. In
+> effect now: **flat staff roles** (HR Manager / Recruiter / Hiring Manager equal,
+> all create jobs, one shared candidate pool), **direct job publish** (no
+> multi-level approval chain), **public job link** `picready.com/{job_uuid}` +
+> **open candidate application** (register → 40-question questionnaire → resume
+> upload-or-**reuse**), **SMTP email** (replaces Mailtrap HTTP), and **Firebase
+> auth** (Google / email-password / phone). The multi-level approval FSM and the
+> per-role permission matrix described below remain in the codebase but are
+> bypassed. Sections describing OTP-only auth, no-Gmail, resume-never-stored, and
+> the granular permission matrix are historical.
+
 | | |
 |---|---|
 | **Product** | PickReady |

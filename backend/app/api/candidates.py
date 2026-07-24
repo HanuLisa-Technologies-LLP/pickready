@@ -19,7 +19,7 @@ from app.models.candidate import (
     Profile,
     VerificationRequest,
 )
-from app.models.enums import LinkSource, PipelineStatus, VerificationStatus
+from app.models.enums import LinkSource, PipelineStatus
 from app.models.job import Job
 from app.models.tenant import Tenant
 from app.schemas.candidates import (
@@ -318,27 +318,16 @@ async def update_pipeline_status(
     link = await _get_link(session, user, link_id)
     new_status = PipelineStatus(body.status)
 
+    # PRD v1.0: employer verification is out of scope (§5 non-goal). A candidate
+    # applies openly and completes the 40-aspect questionnaire AT application, so
+    # the only forward-gate is that the questionnaire is complete — the old
+    # VerificationRequest requirement is removed so open applicants aren't blocked.
     if new_status in FORWARD_STATUSES and link.source == LinkSource.fresh:
         profile = await session.get(Profile, link.profile_id) if link.profile_id else None
         if profile is None or profile.aspects_completed_at is None:
             raise HTTPException(
                 status_code=409,
-                detail="Candidate outreach (40 aspects) is not complete (FR-5.5)",
-            )
-        vrs = (
-            await session.execute(
-                select(VerificationRequest).where(VerificationRequest.profile_id == profile.id)
-            )
-        ).scalars().all()
-        if not vrs:
-            raise HTTPException(
-                status_code=409,
-                detail="No employer verification requests exist yet (FR-5.2/5.5)",
-            )
-        if any(v.status == VerificationStatus.pending for v in vrs):
-            raise HTTPException(
-                status_code=409,
-                detail="Employer verification is still pending — submit or override first (FR-5.5)",
+                detail="Candidate has not completed the 40-question application yet",
             )
 
     entry = PipelineStatusEntry(
