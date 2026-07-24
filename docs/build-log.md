@@ -35,6 +35,11 @@
 - Google sign-in is enforced as candidate-only at both the interface and backend verification boundary; Owner and every internal role use Firebase email/password or a uniquely assigned phone identity.
 - Shared imported phone numbers are rejected for phone sign-in rather than becoming a cross-person workspace chooser; those accounts use their provisioned email/password credentials until distinct mobile numbers are assigned.
 
+### Current Sprint — MVP Jobs Catalogue
+
+- `feat: import permanent MVP jobs catalogue` — 30 supplied open roles are stored through an idempotent Alembic migration, with 10 ratified and portal-visible jobs each for Sarkar Corp, ACRM Corp, and Specter & Co.
+- Source job IDs, descriptions, skills, education, experience, location, remote status, openings, deadline, and INR LPA salary ranges are mapped into existing `jobs`, `jd_json`, and `compensation_json` fields; no new temporary data loader is required.
+
 ---
 
 ## Current Status (As of 2026-07-24)
@@ -46,6 +51,8 @@
 **Current Sprint**: Landing and comments-only AI review display shipped; production verification remains.
 
 **Firebase Auth Verification**: The permanent development roster can sign in through Firebase email/password and exchange into the correct PickReady portal session. Google is limited to candidates.
+
+**MVP Jobs Verification**: 30 imported jobs are ratified and visible to the appropriate tenant portals.
 
 ## Product Status & Feature Summary
 
