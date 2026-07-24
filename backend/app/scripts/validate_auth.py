@@ -306,7 +306,7 @@ def main() -> int:
             return False, f"owner-portal /admin/tenants returned {adm.status_code}"
         return True, "role=super_admin, caps=['*'], /admin/tenants=200"
 
-    report.check("owner_login_super_admin_star_and_portal", owner_check)
+    report.check("[legacy-otp] owner_login_super_admin_star_and_portal", owner_check)
 
     # 2) Each client-org role -> correct role + scoped (non-"*") capabilities.
     for role in ORG_ROLES:
@@ -329,7 +329,7 @@ def main() -> int:
                 return False, "capability list is empty"
             return True, f"role={role}, {len(caps)} scoped caps"
 
-        report.check(f"role_login_{role}", role_check)
+        report.check(f"[legacy-otp] role_login_{role}", role_check)
 
     # 3) Candidate -> role=candidate.
     def candidate_check():
@@ -344,7 +344,7 @@ def main() -> int:
             return False, f"role={user.get('role')} (expected candidate)"
         return True, "role=candidate"
 
-    report.check("candidate_login", candidate_check)
+    report.check("[legacy-otp] candidate_login", candidate_check)
 
     # 4) Multi-context identifier -> contexts + context_token, NO cookies;
     #    select-context then issues cookies.
@@ -381,7 +381,7 @@ def main() -> int:
             return False, "select-context returned no user"
         return True, f"{len(contexts)} contexts, no cookies pre-select, cookies after select"
 
-    report.check("multi_context_login", multi_check)
+    report.check("[legacy-otp] multi_context_login", multi_check)
 
     # 5) Wrong OTP rejected + repeated wrong OTPs trigger the attempt limit.
     def wrong_and_lock_check():
@@ -416,7 +416,7 @@ def main() -> int:
             return False, "attempt limit never triggered a 429 lockout"
         return True, "first wrong=401, lockout=429 after repeated failures"
 
-    report.check("wrong_otp_and_attempt_limit", wrong_and_lock_check)
+    report.check("[legacy-otp] wrong_otp_and_attempt_limit", wrong_and_lock_check)
 
     # 6) Cross-portal token reuse blocked (owner<->candidate audience split).
     def cross_owner_on_candidate():
@@ -432,7 +432,7 @@ def main() -> int:
             return True, f"owner token rejected on candidate portal ({r.status_code})"
         return False, f"ISOLATION BROKEN: candidate portal accepted owner token ({r.status_code})"
 
-    report.check("cross_portal_owner_token_on_candidate_endpoint", cross_owner_on_candidate)
+    report.check("[legacy-otp] cross_portal_owner_token_on_candidate_endpoint", cross_owner_on_candidate)
 
     def cross_candidate_on_internal():
         tok = state.get("candidate_token")
@@ -447,16 +447,57 @@ def main() -> int:
             return True, f"candidate token rejected on internal endpoint ({r.status_code})"
         return False, f"ISOLATION BROKEN: internal endpoint accepted candidate token ({r.status_code})"
 
-    report.check("cross_portal_candidate_token_on_internal_endpoint", cross_candidate_on_internal)
+    report.check("[legacy-otp] cross_portal_candidate_token_on_internal_endpoint", cross_candidate_on_internal)
 
-    # 7) Protected endpoint rejects an unauthenticated request.
+    # 7) Protected endpoint rejects an unauthenticated request. [legacy/common]
     def unauth_check():
         r = httpx.get(f"{base}{API_PREFIX}/auth/me", timeout=TIMEOUT)
         if r.status_code == 401:
             return True, "/auth/me -> 401 without credentials"
         return False, f"/auth/me returned {r.status_code} (expected 401)"
 
-    report.check("protected_endpoint_requires_auth", unauth_check)
+    report.check("[legacy-otp] protected_endpoint_requires_auth", unauth_check)
+
+    # ── Firebase auth (primary login for ALL roles) ──────────────────────────
+    # A real Firebase ID token can't be minted from a script, so we prove the
+    # verify path is WIRED: the route must exist and reject a bogus token with
+    # 401 (verify_id_token → HTTPException 401). A 404 would mean the route is
+    # missing; a 500 would mean the verify path errored instead of rejecting.
+
+    # 8) Route exists and rejects a syntactically-plausible bogus token → 401.
+    def firebase_route_rejects_bogus():
+        # id_token has min_length=20 in the schema; use a >=20-char junk string
+        # so we exercise verify_id_token (401), not schema validation (422).
+        bogus = "not-a-real-firebase-id-token-xxxxxxxx"
+        r = httpx.post(
+            f"{base}{API_PREFIX}/auth/firebase/session",
+            json={"id_token": bogus},
+            timeout=TIMEOUT,
+        )
+        if r.status_code == 404:
+            return False, "route /auth/firebase/session missing (404) — Firebase login not wired"
+        if r.status_code == 401:
+            return True, "bogus Firebase token rejected with 401 (verify path wired)"
+        return False, f"expected 401 for bogus token, got {r.status_code}: {r.text[:200]}"
+
+    report.check("[firebase] session_route_rejects_bogus_token", firebase_route_rejects_bogus)
+
+    # 9) Schema validation guards the token field (empty/too-short → 422),
+    #    proving the endpoint is a real validated route, not a catch-all.
+    def firebase_rejects_empty_token():
+        r = httpx.post(
+            f"{base}{API_PREFIX}/auth/firebase/session",
+            json={"id_token": ""},
+            timeout=TIMEOUT,
+        )
+        if r.status_code == 422:
+            return True, "empty id_token rejected with 422 (schema validation active)"
+        # 401 is acceptable too (still rejected, just deeper); 404/2xx is not.
+        if r.status_code == 401:
+            return True, "empty id_token rejected with 401"
+        return False, f"expected 422/401 for empty token, got {r.status_code}"
+
+    report.check("[firebase] session_route_validates_token", firebase_rejects_empty_token)
 
     report.summary()
     return 1 if report.failed else 0

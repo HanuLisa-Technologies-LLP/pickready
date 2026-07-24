@@ -8,10 +8,13 @@ same structured schema as the form, so both paths write identical
 from __future__ import annotations
 
 import json
+import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import llm_router
+
+logger = logging.getLogger(__name__)
 
 #: Canonical response schema — identical to the public form fields
 #: (POST /verification/form/{token} in API_CONTRACT.md).
@@ -57,9 +60,12 @@ async def parse_reply(
 ) -> dict:
     """Extract the verification schema from a raw employer email reply.
 
-    Returns a dict containing exactly VERIFICATION_FIELDS (missing values
-    are None). Raises VerificationParsingError on unusable LLM output and
-    llm_router.LLMUnavailableError if the whole provider chain is down.
+    Returns a dict containing exactly VERIFICATION_FIELDS. When the reply is
+    unparseable (the LLM returns non-JSON / a non-object — e.g. an out-of-band
+    prose reply), every field degrades to None and a warning is logged rather
+    than raising, so a junk reply never crash-loops the Celery task. Only truly
+    empty input raises VerificationParsingError; llm_router.LLMUnavailableError
+    (whole provider chain down) propagates so the task's retry policy applies.
     """
     if not raw_email_text or not raw_email_text.strip():
         raise VerificationParsingError("Empty email reply text")
@@ -75,10 +81,12 @@ async def parse_reply(
     )
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise VerificationParsingError("LLM returned non-JSON output") from exc
+    except json.JSONDecodeError:
+        logger.warning("verification_parsing.non_json_output — all fields null")
+        parsed = {}
     if not isinstance(parsed, dict):
-        raise VerificationParsingError("LLM output was not a JSON object")
+        logger.warning("verification_parsing.non_object_output — all fields null")
+        parsed = {}
 
     # Normalize to exactly the canonical schema — both submission paths
     # (form and email reply) must produce identical shapes.

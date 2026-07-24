@@ -32,6 +32,11 @@ services:
 
   backend:
     build: ../backend
+    # env_file delivers the ENTIRE ../.env into the container, so all secrets —
+    # FIREBASE_SERVICE_ACCOUNT_JSON, MAILTRAP_API_TOKEN / MAILTRAP_SENDER_EMAIL /
+    # MAILTRAP_SENDER_NAME, CLOUDINARY_URL, MSG91_API_KEY / MSG91_SENDER_ID,
+    # JWT_*, LLM keys — reach the API. The `environment` block below only
+    # overrides the two hostnames that differ inside the compose network.
     env_file: ../.env
     environment:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
@@ -50,6 +55,10 @@ services:
 
   worker:
     build: ../backend
+    # Same as backend: env_file carries all secrets into the worker. The worker
+    # is what actually SENDS mail/SMS and uploads to Cloudinary, so it must have
+    # MAILTRAP_API_TOKEN / MAILTRAP_SENDER_EMAIL, CLOUDINARY_URL, MSG91_* and the
+    # LLM keys — all provided via ../.env below.
     env_file: ../.env
     environment:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready

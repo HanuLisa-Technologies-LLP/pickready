@@ -3,9 +3,12 @@
 Covers:
   * sender-path selection: tenant verified vs unverified vs tenant_id=None,
     and the development-environment override;
-  * permanent-vs-transient classification of Resend/MSG91 responses;
+  * permanent-vs-transient classification of Mailtrap/MSG91 responses;
+  * the Mailtrap Sending API path: success returns a message id, a permanent
+    failure (401/unverified sender) is not retried, a transient one (429/5xx)
+    is retried;
   * that a permanent failure is NOT retried while a transient one IS;
-  * the missing-key startup preflight.
+  * the missing-key startup preflight (MAILTRAP_API_TOKEN).
 
 The HTTP layer is mocked throughout — these tests must never hit the network.
 """
@@ -175,14 +178,18 @@ class _FakeSession:
 
 async def _capture_sender(monkeypatch, *, tenant, environment):
     """Run _send_email_async with everything stubbed; return the captured
-    (from_addr, reply_to) passed to the Resend client."""
+    fields passed to the Mailtrap client (from_email, from_name, html, text)."""
     from app.workers import tasks
 
     captured = {}
 
-    async def _fake_resend(from_addr, reply_to, to, subject, body, attachments):
-        captured["from"] = from_addr
-        captured["reply_to"] = reply_to
+    async def _fake_mailtrap(
+        from_email, from_name, to, subject, html, text=None, attachments=None
+    ):
+        captured["from"] = from_email
+        captured["from_name"] = from_name
+        captured["html"] = html
+        captured["text"] = text
         return "msg_123"
 
     async def _fake_render(session, tid, name, ctx):
@@ -192,11 +199,13 @@ async def _capture_sender(monkeypatch, *, tenant, environment):
         captured["audit"] = meta
         return None
 
-    monkeypatch.setattr(tasks, "_resend_send", _fake_resend)
+    monkeypatch.setattr(tasks, "mailtrap_send", _fake_mailtrap)
     monkeypatch.setattr(
         tasks, "get_settings",
         lambda: SimpleNamespace(
-            environment=environment, resend_dev_sender="onboarding@resend.dev"
+            environment=environment,
+            mailtrap_sender_email="noreply@pickready.app",
+            mailtrap_sender_name="PickReady",
         ),
     )
     monkeypatch.setattr(tasks, "_audit", _fake_audit)
@@ -220,40 +229,178 @@ async def test_sender_tenant_verified_uses_tenant_domain(monkeypatch):
     )
     captured = await _capture_sender(monkeypatch, tenant=tenant, environment="production")
     assert captured["from"] == "recruitment@acme.com"
-    assert captured["reply_to"] == "recruitment@acme.com"
+    assert captured["from_name"] == "PickReady"
     assert captured["audit"]["sender_path"] == "tenant_domain"
 
 
 @pytest.mark.asyncio
-async def test_sender_tenant_unverified_uses_dev_fallback(monkeypatch):
+async def test_sender_tenant_unverified_uses_default_sender(monkeypatch):
     tenant = SimpleNamespace(
         id=uuid.uuid4(), domain="acme.com", spf_dkim_status="pending"
     )
     captured = await _capture_sender(monkeypatch, tenant=tenant, environment="production")
-    assert captured["from"] == "onboarding@resend.dev"
-    assert captured["reply_to"] is None
-    assert captured["audit"]["sender_path"] == "dev_fallback"
+    assert captured["from"] == "noreply@pickready.app"
+    assert captured["audit"]["sender_path"] == "default_sender"
 
 
 @pytest.mark.asyncio
-async def test_sender_verified_but_development_uses_dev_fallback(monkeypatch):
+async def test_sender_verified_but_development_uses_default_sender(monkeypatch):
     tenant = SimpleNamespace(
         id=uuid.uuid4(), domain="acme.com", spf_dkim_status="verified"
     )
     captured = await _capture_sender(monkeypatch, tenant=tenant, environment="development")
     # Even a verified domain must not send from the tenant in development.
-    assert captured["from"] == "onboarding@resend.dev"
-    assert captured["reply_to"] == "recruitment@acme.com"  # kept as reply-to
-    assert captured["audit"]["sender_path"] == "dev_fallback"
+    assert captured["from"] == "noreply@pickready.app"
+    assert captured["audit"]["sender_path"] == "default_sender"
 
 
 @pytest.mark.asyncio
 async def test_sender_tenant_none_does_not_crash(monkeypatch):
     # Platform users (Owner OTP) have tenant_id=None — this was a real past bug.
     captured = await _capture_sender(monkeypatch, tenant=None, environment="production")
-    assert captured["from"] == "onboarding@resend.dev"
-    assert captured["reply_to"] is None
-    assert captured["audit"]["sender_path"] == "dev_fallback"
+    assert captured["from"] == "noreply@pickready.app"
+    assert captured["audit"]["sender_path"] == "default_sender"
+    # html body is derived from the plain-text body and sent alongside text.
+    assert captured["text"] == "body"
+    assert "body" in captured["html"]
+
+
+# ── Mailtrap Sending API path (mocked HTTP, no network) ──────────────────────
+
+def _mailtrap_settings(**overrides):
+    base = dict(
+        mailtrap_api_token="mt_token",
+        mailtrap_sender_email="noreply@pickready.app",
+        mailtrap_sender_name="PickReady",
+        mailtrap_api_host="send.api.mailtrap.io",
+        mailtrap_inbox_id="",
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _mailtrap_client(response):
+    class _Client:
+        def __init__(self, *a, **k): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, *a, **k):
+            _Client.last_url = url
+            return response
+    return _Client
+
+
+@pytest.mark.asyncio
+async def test_mailtrap_success_returns_message_id(monkeypatch):
+    from app.services import mailtrap_service
+
+    monkeypatch.setattr(mailtrap_service, "get_settings", _mailtrap_settings)
+    monkeypatch.setattr(
+        mailtrap_service.httpx, "AsyncClient",
+        _mailtrap_client(_resp(200, {"success": True, "message_ids": ["mt_abc"]})),
+    )
+    mid = await mailtrap_service.send_email_async(
+        "noreply@pickready.app", "PickReady", "hr@corp.test", "subj", "<p>hi</p>", "hi"
+    )
+    assert mid == "mt_abc"
+
+
+@pytest.mark.asyncio
+async def test_mailtrap_sandbox_uses_inbox_path(monkeypatch):
+    from app.services import mailtrap_service
+
+    monkeypatch.setattr(
+        mailtrap_service, "get_settings",
+        lambda: _mailtrap_settings(mailtrap_inbox_id="99887"),
+    )
+    client = _mailtrap_client(_resp(200, {"success": True, "message_ids": ["x"]}))
+    monkeypatch.setattr(mailtrap_service.httpx, "AsyncClient", client)
+    await mailtrap_service.send_email_async(
+        "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
+    )
+    assert client.last_url == "https://sandbox.api.mailtrap.io/api/send/99887"
+
+
+@pytest.mark.asyncio
+async def test_mailtrap_401_unverified_sender_is_permanent(monkeypatch):
+    from app.services import mailtrap_service
+
+    monkeypatch.setattr(mailtrap_service, "get_settings", _mailtrap_settings)
+    body = {"errors": ["Sender is not verified"]}
+    monkeypatch.setattr(
+        mailtrap_service.httpx, "AsyncClient", _mailtrap_client(_resp(401, body))
+    )
+    with pytest.raises(PermanentDeliveryError) as ei:
+        await mailtrap_service.send_email_async(
+            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
+        )
+    assert "MAILTRAP_API_TOKEN" in ei.value.hint
+
+
+@pytest.mark.asyncio
+async def test_mailtrap_200_success_false_is_permanent(monkeypatch):
+    from app.services import mailtrap_service
+
+    monkeypatch.setattr(mailtrap_service, "get_settings", _mailtrap_settings)
+    body = {"success": False, "errors": ["'from' address is not verified"]}
+    monkeypatch.setattr(
+        mailtrap_service.httpx, "AsyncClient", _mailtrap_client(_resp(200, body))
+    )
+    with pytest.raises(PermanentDeliveryError):
+        await mailtrap_service.send_email_async(
+            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [429, 500, 503])
+async def test_mailtrap_transient_statuses_retry(monkeypatch, status):
+    from app.services import mailtrap_service
+
+    monkeypatch.setattr(mailtrap_service, "get_settings", _mailtrap_settings)
+    monkeypatch.setattr(
+        mailtrap_service.httpx, "AsyncClient",
+        _mailtrap_client(_resp(status, {"message": "later"})),
+    )
+    with pytest.raises(TransientDeliveryError):
+        await mailtrap_service.send_email_async(
+            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
+        )
+
+
+@pytest.mark.asyncio
+async def test_mailtrap_network_error_is_transient(monkeypatch):
+    from app.services import mailtrap_service
+
+    monkeypatch.setattr(mailtrap_service, "get_settings", _mailtrap_settings)
+
+    class _Boom:
+        def __init__(self, *a, **k): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k):
+            raise httpx.ConnectError("dns fail")
+
+    monkeypatch.setattr(mailtrap_service.httpx, "AsyncClient", _Boom)
+    with pytest.raises(TransientDeliveryError):
+        await mailtrap_service.send_email_async(
+            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
+        )
+
+
+@pytest.mark.asyncio
+async def test_mailtrap_missing_token_is_permanent(monkeypatch):
+    from app.services import mailtrap_service
+
+    monkeypatch.setattr(
+        mailtrap_service, "get_settings",
+        lambda: _mailtrap_settings(mailtrap_api_token=""),
+    )
+    with pytest.raises(PermanentDeliveryError) as ei:
+        await mailtrap_service.send_email_async(
+            "noreply@pickready.app", "PickReady", "hr@corp.test", "s", "<p>h</p>"
+        )
+    assert "MAILTRAP_API_TOKEN" in ei.value.hint
 
 
 # ── permanent failure is not retried; transient is ──────────────────────────
@@ -301,12 +448,12 @@ def test_preflight_reports_missing_keys(monkeypatch):
     from app.core import config
 
     config.get_settings.cache_clear()
-    monkeypatch.setenv("RESEND_API_KEY", "")
+    monkeypatch.setenv("MAILTRAP_API_TOKEN", "")
     monkeypatch.setenv("MSG91_API_KEY", "")
     monkeypatch.setenv("MSG91_SENDER_ID", "")
     config.get_settings.cache_clear()
     missing = config.preflight_delivery_config()
-    assert "RESEND_API_KEY" in missing
+    assert "MAILTRAP_API_TOKEN" in missing
     assert "MSG91_API_KEY" in missing
     config.get_settings.cache_clear()
 
@@ -315,7 +462,7 @@ def test_preflight_ok_when_keys_present(monkeypatch):
     from app.core import config
 
     config.get_settings.cache_clear()
-    monkeypatch.setenv("RESEND_API_KEY", "re_x")
+    monkeypatch.setenv("MAILTRAP_API_TOKEN", "mt_x")
     monkeypatch.setenv("MSG91_API_KEY", "mk_x")
     monkeypatch.setenv("MSG91_SENDER_ID", "PCKRDY")
     config.get_settings.cache_clear()

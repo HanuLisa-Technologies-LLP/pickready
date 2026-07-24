@@ -25,7 +25,9 @@ class Candidate(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     full_name: Mapped[str | None] = mapped_column(String(255))  # as per PF records / Class X memorandum
-    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    # Nullable: a phone-only candidate (Firebase phone provider) has no email
+    # (migration 0004).
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20))
     city: Mapped[str | None] = mapped_column(String(120))
     age: Mapped[int | None] = mapped_column(Integer)

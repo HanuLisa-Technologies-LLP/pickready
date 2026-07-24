@@ -41,7 +41,8 @@ class UserOut(BaseModel):
     role: Role
     tenant_id: uuid.UUID | None
     full_name: str | None
-    email: str
+    # Optional: a phone-only candidate (Firebase phone provider) has no email.
+    email: str | None
     email_verified: bool
     phone_verified: bool
 

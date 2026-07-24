@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { apiGet, apiPost } from "@/lib/api";
+import { firebaseAuth } from "@/lib/firebase";
 import type { Capability, Role, User } from "@/lib/types";
 
 interface AuthContextValue {
@@ -69,6 +70,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = React.useCallback(async () => {
     try {
       await apiPost("/auth/logout");
+    } catch {
+      /* ignore */
+    }
+    // Also clear the Firebase session so a subsequent login starts clean.
+    try {
+      await firebaseAuth.signOut();
     } catch {
       /* ignore */
     }

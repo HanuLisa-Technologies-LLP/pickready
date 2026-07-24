@@ -42,6 +42,7 @@ from app.models import (
     User,
     UserStatus,
 )
+from app.scripts.seed_resumes import seed_resume_corpus
 from app.services.capabilities import ALL_CAPABILITIES, DEFAULT_PERMISSION_MATRIX
 from app.services.email_render import DEFAULT_TEMPLATES
 from app.services.embeddings import embed
@@ -421,6 +422,10 @@ async def seed() -> None:
 
             await _seed_email_templates(session, tenant.id)
             await _seed_candidates(session, tenant.id)
+            # The real sample-resume corpus -> Cloudinary + Databank (dev only,
+            # idempotent, fails soft). Source dir resolved via SEED_RESUMES_DIR
+            # or /resumes (see seed_resumes.py).
+            await seed_resume_corpus(session, tenant.id)
             await _seed_jobs(session, tenant.id, hm1.id)
 
             # Multi-context identifier, part 1: the same person is a Recruiter

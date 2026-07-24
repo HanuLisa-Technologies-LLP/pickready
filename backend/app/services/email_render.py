@@ -9,6 +9,7 @@ the defaults below are bare functional placeholders, not branded copy).
 """
 from __future__ import annotations
 
+import html as _html
 import re
 import uuid
 from datetime import datetime, timedelta
@@ -66,6 +67,18 @@ def substitute(template: str, context: dict[str, Any]) -> str:
     return _PLACEHOLDER_RE.sub(
         lambda m: str(context.get(m.group(1), "")), template
     )
+
+
+def text_to_html(body: str) -> str:
+    """Wrap a rendered plain-text body as minimal, safe HTML for Mailtrap.
+
+    Mailtrap's Sending API expects an ``html`` field; our templates are authored
+    as plain text (ESD §11), so we HTML-escape and convert newlines to <br> to
+    preserve layout without introducing an HTML templating layer. The plain-text
+    body is still sent alongside as ``text``.
+    """
+    escaped = _html.escape(body).replace("\n", "<br>\n")
+    return f'<div style="font-family:sans-serif;white-space:normal">{escaped}</div>'
 
 
 async def render(

@@ -3,10 +3,12 @@ anywhere. Unified login: one identifier may resolve to several users across
 roles/tenants — verify then returns a workspace chooser finalized by
 /auth/select-context."""
 import uuid
+from datetime import datetime, timezone
 
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -23,10 +25,11 @@ from app.core.security import (
     AUDIENCE_CANDIDATE,
     AUDIENCE_ORG,
     AUDIENCE_OWNER,
+    audience_for_role,
     create_access_token,
     create_refresh_token,
 )
-from app.models.enums import OTPChannel
+from app.models.enums import OTPChannel, Role, UserStatus
 from app.models.user import User
 from app.schemas.auth import (
     CandidateRegisterIn,
@@ -42,7 +45,7 @@ from app.schemas.auth import (
     UserOut,
 )
 from app.services import otp as otp_service
-from app.services.firebase_auth import assert_provider_allowed, verify_id_token
+from app.services import firebase_auth
 from app.services import rbac
 from app.services.audit import (
     AUTH_CONTEXT_SELECTED,
@@ -54,48 +57,153 @@ from app.services.audit import (
 router = APIRouter()
 
 
-@router.post("/firebase/session", response_model=OTPVerifyOut)
-async def firebase_session(
-    body: FirebaseSessionIn, response: Response, session: AsyncSession = Depends(get_session)
+def _is_owner_email(email: str | None, owner_email: str) -> bool:
+    return bool(email) and (email or "").strip().lower() == (owner_email or "").strip().lower()
+
+
+async def _finalize_single(
+    session: AsyncSession,
+    response: Response,
+    user: User,
+    identity: firebase_auth.FirebaseIdentity,
 ) -> OTPVerifyOut:
-    """Exchange a verified Firebase ID token for the existing scoped app session."""
-    identity = verify_id_token(body.id_token)
-    users = (await session.execute(select(User).where(or_(
-        User.firebase_uid == identity.uid,
-        User.email == identity.email if identity.email else False,
-        User.phone == identity.phone if identity.phone else False,
-    )))).scalars().all()
-    if not users:
-        if not identity.email:
-            raise HTTPException(status_code=422, detail="An email address is required to create a candidate profile")
-        user = User(role="candidate", email=identity.email, phone=identity.phone,
-                    full_name=identity.name, status="active", firebase_uid=identity.uid,
-                    auth_providers=[identity.provider])
-        session.add(user)
-        await session.flush()
-        from app.models.candidate import Candidate
-        session.add(Candidate(user_id=user.id, email=user.email, phone=user.phone, full_name=user.full_name))
-        users = [user]
-    for user in users:
-        assert_provider_allowed(identity, user.role.value)
-    if len(users) != 1:
-        raise HTTPException(status_code=409, detail="This identity has multiple workspaces; contact support to select one")
-    user = users[0]
-    if user.status.value == "disabled":
+    """Link a proven Firebase identity to ONE resolved user and issue that
+    user's portal-scoped session cookies. Firebase proves the identity; the
+    database role/permissions stay authoritative (claude.md rule 2)."""
+    if user.status == UserStatus.disabled:
         raise HTTPException(status_code=403, detail="Account unavailable")
     user.firebase_uid = identity.uid
     user.auth_providers = sorted(set((user.auth_providers or []) + [identity.provider]))
     if identity.email_verified:
-        from datetime import datetime, timezone
-        user.email_verified_at = datetime.now(timezone.utc)
-    await record_auth_event(session, action=AUTH_LOGIN_SUCCEEDED, actor_user_id=user.id,
-                             tenant_id=user.tenant_id, metadata={"provider": identity.provider})
-    await session.commit()
-    access = create_access_token(user.id, user.role.value, user.tenant_id,
-                                 audience={"super_admin": AUDIENCE_OWNER, "candidate": AUDIENCE_CANDIDATE}.get(user.role.value, AUDIENCE_ORG))
-    refresh_token = create_refresh_token(user.id, audience={"super_admin": AUDIENCE_OWNER, "candidate": AUDIENCE_CANDIDATE}.get(user.role.value, AUDIENCE_ORG))
-    _set_auth_cookies(response, access, refresh_token)
+        user.email_verified_at = user.email_verified_at or datetime.now(timezone.utc)
+    # Invited staff/candidates activate on first proven login, mirroring the OTP
+    # path (proving identifier ownership is what flips invited -> active).
+    if user.status == UserStatus.invited:
+        user.status = UserStatus.active
+    await record_auth_event(
+        session, action=AUTH_LOGIN_SUCCEEDED, actor_user_id=user.id,
+        tenant_id=user.tenant_id,
+        metadata={"provider": identity.provider, "via": "firebase"},
+    )
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        # e.g. this firebase_uid is already bound to a different (filtered-out)
+        # row — never surface a 500.
+        await session.rollback()
+        raise HTTPException(
+            status_code=409, detail="This sign-in could not be linked to an account"
+        ) from exc
+    audience = audience_for_role(user.role)
+    _set_auth_cookies(
+        response,
+        create_access_token(user.id, user.role.value, user.tenant_id, audience=audience),
+        create_refresh_token(user.id, audience=audience),
+    )
     return OTPVerifyOut(user=_user_out(user), capabilities=await _capabilities(session, user))
+
+
+@router.post("/firebase/session", response_model=OTPVerifyOut)
+async def firebase_session(
+    body: FirebaseSessionIn, response: Response, session: AsyncSession = Depends(get_session)
+) -> OTPVerifyOut:
+    """Exchange a verified Firebase ID token for a portal-scoped app session.
+
+    Firebase is identity-only; DB roles/permissions remain authoritative
+    (claude.md rule 2). Behaviour matrix:
+
+    - **owner email** (settings.owner_email) -> ALWAYS the seeded super_admin,
+      owner-portal cookies, never a new candidate, not subject to the
+      candidates-only Google gate (fixed, client-controlled identity);
+    - **single match** -> link firebase_uid, issue that user's portal cookies;
+    - **staff pre-seed match by email** -> linked in place, role preserved (no
+      duplicate candidate row);
+    - **multiple matches** -> workspace chooser: contexts + context_token, NO
+      cookies, finalized by /auth/select-context (same as the OTP path);
+    - **no match** -> create a candidate (email and/or phone), candidate cookies.
+
+    Google sign-in is candidates-only; phone-only signup (email null) is allowed.
+    Every failure is a clean 401/403/409/422 — never a 500.
+    """
+    settings = get_settings()
+    identity = firebase_auth.verify_id_token(body.id_token)
+
+    # ── Owner invariant (claude.md rule 2 + services/owner.py) ──────────────
+    # The platform-owner email resolves ONLY to the seeded super_admin. It is
+    # never created as a candidate here, and no NON-owner can reach super_admin
+    # via this endpoint (the general lookup below only ever creates candidates,
+    # and eligible_login_users / the ORM guard reject any impostor super_admin).
+    if _is_owner_email(identity.email, settings.owner_email):
+        owner = (await session.execute(
+            select(User).where(
+                User.role == Role.super_admin,
+                func.lower(User.email) == identity.email.strip().lower(),
+            )
+        )).scalars().first()
+        if owner is None:
+            # Never fabricate the owner from a Firebase login — the account is
+            # provisioned by the seed, not by self-service.
+            raise HTTPException(status_code=403, detail="Owner account is not provisioned")
+        return await _finalize_single(session, response, owner, identity)
+
+    # ── Resolve the identity to existing users (unified login, rev 2) ───────
+    matched = (await session.execute(select(User).where(or_(
+        User.firebase_uid == identity.uid,
+        User.email == identity.email if identity.email else False,
+        User.phone == identity.phone if identity.phone else False,
+    )).order_by(User.created_at, User.id))).scalars().all()
+
+    if matched:
+        eligible = otp_service.eligible_login_users(
+            matched, owner_email=settings.owner_email
+        )
+        if not eligible:
+            # Every match is disabled or an impostor super_admin — do NOT mint a
+            # duplicate candidate over the top of an existing (unusable) account.
+            raise HTTPException(status_code=403, detail="Account unavailable")
+    else:
+        # First-ever sign-in for this identity -> a fresh candidate (rule 2:
+        # candidates may use Google / email / phone). Phone-only signup allowed.
+        firebase_auth.assert_provider_allowed(identity, Role.candidate.value)
+        if not identity.email and not identity.phone:
+            raise HTTPException(
+                status_code=422,
+                detail="An email address or phone number is required to create a candidate profile",
+            )
+        user = User(
+            role=Role.candidate, email=identity.email, phone=identity.phone,
+            full_name=identity.name, tenant_id=None, status=UserStatus.active,
+            firebase_uid=identity.uid, auth_providers=[identity.provider],
+        )
+        session.add(user)
+        await session.flush()
+        from app.models.candidate import Candidate
+        session.add(Candidate(
+            tenant_id=None, user_id=user.id, email=user.email, phone=user.phone,
+            full_name=user.full_name,
+        ))
+        eligible = [user]
+
+    # ── Provider gate on every resolved context (Google = candidates only) ──
+    for user in eligible:
+        firebase_auth.assert_provider_allowed(identity, user.role.value)
+
+    if len(eligible) == 1:
+        return await _finalize_single(session, response, eligible[0], identity)
+
+    # ── Multiple workspaces -> chooser, NO cookies (same as the OTP path) ───
+    # firebase_uid is unique, so it can bind to only one user; it is NOT linked
+    # here — the chosen workspace is finalized via /auth/select-context, which
+    # (after this proven verification) mints cookies for the picked user_id.
+    contexts = await otp_service._build_contexts(session, eligible)
+    token = otp_service.make_context_token(
+        identity.email or identity.phone, [c.user_id for c in contexts]
+    )
+    await session.commit()
+    return OTPVerifyOut(
+        contexts=[_context_out(c) for c in contexts],
+        context_token=token,
+    )
 
 
 def _user_out(user: User) -> UserOut:

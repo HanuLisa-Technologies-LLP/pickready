@@ -28,19 +28,17 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-import httpx
 from celery.signals import worker_ready
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings, preflight_delivery_config
+from app.services.mailtrap_service import send_email_async as mailtrap_send
 from app.services.sms_service import (
     RETRY_BACKOFF_MAX_SECONDS,
     DeliveryError,
     PermanentDeliveryError,
     TransientDeliveryError,
-    classify_exception,
-    classify_response,
     log_delivery_error,
     send_sms_async,
 )
@@ -56,15 +54,12 @@ from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-_RESEND_URL = "https://api.resend.com/emails"
-_HTTP_TIMEOUT = 30.0
-
 
 # ── Startup preflight ────────────────────────────────────────────────────────
 
 @worker_ready.connect
 def _delivery_preflight(**_kwargs) -> None:
-    """Log a loud WARNING at worker boot if any Resend/MSG91 credential is
+    """Log a loud WARNING at worker boot if any Mailtrap/MSG91 credential is
     missing (sprint brief: a missing key must not fail silently). Never a hard
     crash — see preflight_delivery_config's ASSUMPTION."""
     preflight_delivery_config()
@@ -158,51 +153,6 @@ async def _audit_delivery_exhausted(
 
 # ── Email ────────────────────────────────────────────────────────────────────
 
-async def _resend_send(
-    from_addr: str,
-    reply_to: str | None,
-    to: str,
-    subject: str,
-    body: str,
-    attachments: list[dict] | None,
-) -> str:
-    """POST to the Resend API. Returns the Resend message id."""
-    payload: dict = {
-        "from": from_addr,
-        "to": [to],
-        "subject": subject,
-        "text": body,
-    }
-    if reply_to:
-        payload["reply_to"] = reply_to
-    if attachments:
-        payload["attachments"] = [
-            {"filename": a["filename"], "content": a["content"]} for a in attachments
-        ]
-    if not get_settings().resend_api_key:
-        # No key at all is permanent for this call — fail fast, don't POST.
-        raise PermanentDeliveryError(
-            "resend", None, "config_missing", "RESEND_API_KEY not configured",
-            hint="Set RESEND_API_KEY in the environment and restart the worker.",
-        )
-    try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-            resp = await client.post(
-                _RESEND_URL,
-                headers={"Authorization": f"Bearer {get_settings().resend_api_key}"},
-                json=payload,
-            )
-    except Exception as exc:  # network layer (DNS/connect/timeout) → transient
-        raise classify_exception("resend", exc) from exc
-
-    if resp.status_code >= 400:
-        # THE high-value fix: surface Resend's JSON body (status/name/message)
-        # instead of the opaque HTTPStatusError string. classify_response maps
-        # it onto the permanent/transient taxonomy with an operator hint.
-        raise classify_response("resend", resp)
-    return str(resp.json().get("id", ""))
-
-
 async def _send_email_async(
     session: AsyncSession,
     tenant_id: str | None,
@@ -218,60 +168,64 @@ async def _send_email_async(
     # ROOT-CAUSE FIX (2026-07-23): tenant_id is None for platform-level
     # emails — the Owner/super_admin OTP has no tenant — and this path used to
     # crash with ValueError('badly formed hexadecimal UUID string') from
-    # uuid.UUID(str(None)) before any email was sent (the actual cause of
-    # "Resend key present but no email sent"). No tenant → skip the tenant
-    # lookup entirely: default templates + the dev sender as From.
+    # uuid.UUID(str(None)) before any email was sent. No tenant → skip the
+    # tenant lookup entirely: default templates + the default Mailtrap sender.
     tenant: Tenant | None = None
     if tenant_id:
         try:
             tenant = await session.get(Tenant, uuid.UUID(str(tenant_id)))
         except (ValueError, TypeError):
-            tenant = None  # invalid id → dev-sender path, never a crash
+            tenant = None  # invalid id → default-sender path, never a crash
         if tenant is None:
             logger.warning(
-                "email.tenant_missing template=%s tenant_id=%s — using dev sender",
+                "email.tenant_missing template=%s tenant_id=%s — using default sender",
                 template_name, tenant_id,
             )
 
-    # Sender selection (claude.md rule 5): the tenant's domain may ONLY be
-    # used as From once its Resend sending domain is SPF/DKIM-verified —
-    # an unverified From silently fails/bounces. In development, or whenever
-    # the domain is not verified (or there is no tenant), fall back to
-    # settings.resend_dev_sender; the tenant address is kept as Reply-To only
-    # when the domain IS verified.
+    # Sender selection (claude.md rule 5): the tenant's own domain may ONLY be
+    # used as From once its sending domain is SPF/DKIM-verified AND Mailtrap has
+    # that domain verified — an unverified From is rejected/bounces. In
+    # development, or whenever the domain is not verified (or there is no
+    # tenant), fall back to settings.mailtrap_sender_email.
     tenant_from = f"recruitment@{tenant.domain}" if tenant is not None else None
     domain_verified = (
         tenant is not None and (tenant.spf_dkim_status or "").lower() == "verified"
     )
     if domain_verified and settings.environment != "development":
         from_addr = tenant_from
-        reply_to = tenant_from
         sender_path = "tenant_domain"
     else:
-        from_addr = settings.resend_dev_sender
-        reply_to = tenant_from if domain_verified else None
-        sender_path = "dev_fallback"
+        from_addr = settings.mailtrap_sender_email
+        sender_path = "default_sender"
 
     # Structured, secret-free log so delivery failures are diagnosable —
     # never the message body/context (may carry OTP codes, ESD §16).
     logger.info(
-        "email.sender path=%s template=%s tenant_id=%s spf_dkim=%s env=%s reply_to_set=%s",
+        "email.sender provider=mailtrap path=%s template=%s tenant_id=%s spf_dkim=%s env=%s",
         sender_path,
         template_name,
         str(tenant.id) if tenant is not None else "-",
         tenant.spf_dkim_status if tenant is not None else "-",
         settings.environment,
-        reply_to is not None,
     )
 
     subject, body = await email_render.render(
         session, tenant.id if tenant is not None else None, template_name, context
     )
+    html_body = email_render.text_to_html(body)
     delivery_status = "sent"
     message_id = ""
     err_meta: dict = {}
     try:
-        message_id = await _resend_send(from_addr, reply_to, to, subject, body, attachments)
+        message_id = await mailtrap_send(
+            from_email=from_addr,
+            from_name=settings.mailtrap_sender_name,
+            to=to,
+            subject=subject,
+            html=html_body,
+            text=body,
+            attachments=attachments,
+        )
     except DeliveryError as err:
         delivery_status = "failed"
         err_meta = err.as_audit_metadata()
@@ -327,11 +281,12 @@ def send_email(
     context: dict,
     attachments: list[dict] | None = None,
 ):
-    """attachments: [{"filename": str, "content": <base64 str>}] (Resend shape).
+    """attachments: [{"filename": str, "content": <base64 str>}] (Mailtrap shape).
 
     tenant_id None = platform-level email (e.g. Owner OTP): default template,
-    dev sender. Interview invites and verification emails also route through
-    here, so they inherit the verified-domain/dev-sender selection.
+    default Mailtrap sender. Interview invites and verification emails also
+    route through here, so they inherit the verified-domain/default-sender
+    selection.
 
     Failure handling:
       * PermanentDeliveryError → swallowed after logging + audit (no retry).

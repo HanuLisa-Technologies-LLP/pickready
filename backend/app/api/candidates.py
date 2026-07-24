@@ -1,5 +1,6 @@
 """Candidate sourcing, review-screen, decisions, pipeline status and
 interview scheduling (FR-4.3/4.4, FR-7.x, FR-8.x)."""
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -45,14 +46,52 @@ router = APIRouter()
 FORWARD_STATUSES = {PipelineStatus.shortlisted, PipelineStatus.offered, PipelineStatus.joined}
 
 
-async def store_resume(file: UploadFile) -> str | None:
-    """Upload the resume to Cloudinary (ESD §2). The upload itself is quick
-    I/O and runs in a threadpool; the heavy work (text extraction + LLM
-    parsing) is always the `pickready.parse_resume` Celery task.
+# Candidate self-upload guardrails (claude.md rule 6 — a fresh resume per
+# application). Accept only resume document types; cap the size so an
+# oversized/garbage upload is rejected cheaply, before it reaches Cloudinary.
+ALLOWED_RESUME_EXTS = {".pdf", ".doc", ".docx"}
+ALLOWED_RESUME_CONTENT_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/octet-stream",  # some browsers send this for .docx
+}
+MAX_RESUME_BYTES = 10 * 1024 * 1024  # 10 MB
 
-    Returns None when Cloudinary is not configured (local dev) — the parse
-    task tolerates a missing URL."""
+
+async def read_validated_resume(file: UploadFile) -> bytes:
+    """Validate an uploaded resume and return its bytes.
+
+    Enforces type (.pdf/.doc/.docx by extension or content-type) and a 10 MB
+    ceiling. Raises 422 for a wrong-type or empty file, 413 for an oversized
+    one. Text extraction is NOT done here — that is the parse Celery task."""
+    name = (file.filename or "").lower()
+    ext = os.path.splitext(name)[1]
+    ctype = (file.content_type or "").split(";")[0].strip().lower()
+    if ext not in ALLOWED_RESUME_EXTS and ctype not in ALLOWED_RESUME_CONTENT_TYPES:
+        raise HTTPException(
+            status_code=422, detail="Resume must be a PDF, DOC, or DOCX file"
+        )
     data = await file.read()
+    if not data:
+        raise HTTPException(status_code=422, detail="Resume file is empty")
+    if len(data) > MAX_RESUME_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Resume exceeds the {MAX_RESUME_BYTES // (1024 * 1024)} MB limit",
+        )
+    return data
+
+
+async def store_resume(file: UploadFile) -> str | None:
+    """Validate then upload the resume to Cloudinary (ESD §2). The blocking
+    upload I/O runs in a threadpool; the heavy work (text extraction + LLM
+    parsing) is always the `pickready.parse_resume` Celery task — never inline.
+
+    Raises 413/422 on an invalid file. Returns None when Cloudinary is not
+    configured (local dev) or the upload fails — the parse task tolerates a
+    missing URL."""
+    data = await read_validated_resume(file)
     if not get_settings().cloudinary_url:
         return None
     try:

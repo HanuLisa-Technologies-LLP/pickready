@@ -22,7 +22,9 @@ class User(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True
     )
     role: Mapped[Role] = mapped_column(Enum(Role, native_enum=False, length=30), nullable=False)
-    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    # Nullable: a phone-only candidate (Firebase phone provider) has no email
+    # (migration 0004). RLS/owner invariant unaffected.
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20))
     full_name: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[UserStatus] = mapped_column(

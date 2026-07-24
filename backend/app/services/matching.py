@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Job, JobCandidateLink, LinkSource, Profile
 from app.services import llm_router
-from app.services.embeddings import embed
+from app.services.embeddings import EmbeddingError, embed
 # Track A owns tier assignment (signature: assign_tier(score: float) -> Tier).
 from app.services.tiers import assign_tier
 
@@ -50,6 +50,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOP_N = 50
 _RERANK_BATCH_SIZE = 10
 _RESUME_SNIPPET_CHARS = 1500
+
+# Deterministic-fallback band (used when the LLM chain is fully unavailable):
+# retrieval rank is mapped into [_FALLBACK_MIN, _FALLBACK_MAX] so ordering is
+# preserved but the ceiling stays below the "Highly Matching" boundary — a
+# fallback score never fabricates a top-tier match (8×10 = 80 = Moderately).
+_FALLBACK_MIN = 4
+_FALLBACK_MAX = 8
+_AI_UNAVAILABLE_COMMENT = "AI scoring unavailable — deterministic retrieval-based score."
 
 # ── 4-parameter scoring (API contract rev 2) ────────────────────────────────
 WEIGHTS: dict[str, float] = {
@@ -192,6 +200,36 @@ def compute_overall_score(scores: dict[str, int | float]) -> float:
     score is NEVER taken from the LLM. Unit-tested in tests/test_scoring.py.
     """
     return round(sum(WEIGHTS[p] * float(scores[p]) for p in PARAMETERS), 1)
+
+
+def _fallback_param_score(rank_index: int, total: int) -> int:
+    """Map a 0-based retrieval rank into the deterministic fallback band.
+
+    Best-ranked profile → _FALLBACK_MAX, worst → _FALLBACK_MIN, linear in
+    between. Deterministic and monotonic so ordering follows the semantic +
+    keyword retrieval signal when no LLM score is available.
+    """
+    if total <= 1:
+        return _FALLBACK_MAX
+    frac = rank_index / (total - 1)  # 0.0 (best) .. 1.0 (worst)
+    span = _FALLBACK_MAX - _FALLBACK_MIN
+    return int(round(_FALLBACK_MAX - span * frac))
+
+
+def _fallback_breakdown(rank_index: int, total: int) -> dict:
+    """A full breakdown in the contract shape from retrieval rank alone, with
+    every comment flagged so HR knows the LLM was unavailable (claude.md rule
+    9 — degrade, never crash)."""
+    score = _fallback_param_score(rank_index, total)
+    breakdown: dict[str, Any] = {
+        param: {"score": score, "comment": _AI_UNAVAILABLE_COMMENT}
+        for param in PARAMETERS
+    }
+    breakdown["overall"] = {
+        "score": compute_overall_score({p: score for p in PARAMETERS}),
+        "comment": _AI_UNAVAILABLE_COMMENT,
+    }
+    return breakdown
 
 
 def _coerce_param_score(value: Any) -> int | None:
@@ -342,23 +380,52 @@ def _extract_valid(
     return got, wanted_ids - set(got)
 
 
+def _safe_profile_summary(profile: Profile) -> dict:
+    """_profile_summary, but a single malformed profile never aborts the batch
+    — it falls back to a minimal id-only summary and is scored on what's there.
+    """
+    try:
+        return _profile_summary(profile)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "matching.profile_summary_failed profile_id=%s error=%s",
+            profile.id, type(exc).__name__,
+        )
+        return {"profile_id": str(profile.id)}
+
+
 async def _score_batch(
-    session: AsyncSession, jd_text: str, batch: list[Profile]
+    session: AsyncSession,
+    jd_text: str,
+    batch: list[Profile],
+    rank_by_id: dict[uuid.UUID, int],
+    total: int,
 ) -> dict[uuid.UUID, dict]:
     """Score one batch, retrying malformed entries once with a corrective
     message; profiles still malformed after the retry are skipped with a
-    logged warning — a bad LLM response never crashes the batch."""
+    logged warning — a bad LLM response never crashes the batch. If the whole
+    LLM provider chain is unavailable, every profile in the batch gets a
+    deterministic retrieval-rank fallback breakdown instead of crashing."""
     user = json.dumps(
-        {"job_description": jd_text, "candidates": [_profile_summary(p) for p in batch]},
+        {"job_description": jd_text, "candidates": [_safe_profile_summary(p) for p in batch]},
         default=str,
     )
     messages = [
         {"role": "system", "content": _SCORING_SYSTEM_PROMPT},
         {"role": "user", "content": user},
     ]
-    raw = await llm_router.chat_completion(
-        "rerank", messages, response_format_json=True, session=session
-    )
+    try:
+        raw = await llm_router.chat_completion(
+            "rerank", messages, response_format_json=True, session=session
+        )
+    except llm_router.LLMUnavailableError:
+        logger.warning(
+            "matching.llm_unavailable — deterministic fallback for %d profiles", len(batch)
+        )
+        return {
+            p.id: _fallback_breakdown(rank_by_id.get(p.id, total - 1), total)
+            for p in batch
+        }
     results, missing = _extract_valid(raw, {p.id for p in batch})
     if missing:
         corrective = (
@@ -373,9 +440,14 @@ async def _score_batch(
             {"role": "assistant", "content": raw},
             {"role": "user", "content": corrective},
         ]
-        raw_retry = await llm_router.chat_completion(
-            "rerank", retry_messages, response_format_json=True, session=session
-        )
+        try:
+            raw_retry = await llm_router.chat_completion(
+                "rerank", retry_messages, response_format_json=True, session=session
+            )
+        except llm_router.LLMUnavailableError:
+            # Chain went down on the corrective retry — skip the still-missing
+            # profiles (the ones that DID score keep their real scores).
+            raw_retry = ""
         retried, still_missing = _extract_valid(raw_retry, missing)
         results.update(retried)
         for pid in still_missing:
@@ -392,10 +464,17 @@ async def _llm_score(
     """4-parameter scoring for all shortlisted profiles.
 
     Returns {profile_id: breakdown} where breakdown matches the contract's
-    "Matching results" JSON block (overall.score computed in Python)."""
+    "Matching results" JSON block (overall.score computed in Python). When the
+    LLM chain is unavailable, breakdowns are the deterministic retrieval-rank
+    fallback (comments flagged "AI scoring unavailable")."""
+    total = len(profiles)
+    # profiles arrive in retrieval-union order (semantic-first, then keyword) —
+    # position is the fallback rank signal.
+    rank_by_id = {p.id: i for i, p in enumerate(profiles)}
     results: dict[uuid.UUID, dict] = {}
-    for i in range(0, len(profiles), _RERANK_BATCH_SIZE):
-        results.update(await _score_batch(session, jd_text, profiles[i : i + _RERANK_BATCH_SIZE]))
+    for i in range(0, total, _RERANK_BATCH_SIZE):
+        batch = profiles[i : i + _RERANK_BATCH_SIZE]
+        results.update(await _score_batch(session, jd_text, batch, rank_by_id, total))
     return results
 
 
@@ -408,17 +487,28 @@ async def run_matching(
     if job is None:
         raise ValueError(f"Job {job_id} not found")
 
-    # ── JD embedding (stored on the jobs row for reuse; column added in migration) ──
+    # ── JD embedding (stored on the jobs row for reuse; column added in
+    #    migration). If the embedding service is unavailable, the semantic
+    #    stage is skipped and matching degrades to keyword-only ranking rather
+    #    than crashing the whole run. ──
     jd_text = _jd_text(job)
-    jd_embedding = (await embed([jd_text]))[0]
-    jd_vec = _vector_literal(jd_embedding)
-    await session.execute(
-        text("UPDATE jobs SET embedding = CAST(:v AS vector) WHERE id = :id"),
-        {"v": jd_vec, "id": str(job_id)},
-    )
+    jd_vec: str | None = None
+    try:
+        jd_embedding = (await embed([jd_text]))[0]
+        jd_vec = _vector_literal(jd_embedding)
+        await session.execute(
+            text("UPDATE jobs SET embedding = CAST(:v AS vector) WHERE id = :id"),
+            {"v": jd_vec, "id": str(job_id)},
+        )
+    except EmbeddingError:
+        logger.warning(
+            "matching.embeddings_unavailable job_id=%s — keyword-only ranking", job_id
+        )
 
     # ── Stages 1 + 2, deduplicated union ──
-    semantic_ids = await _semantic_stage(session, job_id, jd_vec, top_n)
+    semantic_ids = (
+        await _semantic_stage(session, job_id, jd_vec, top_n) if jd_vec else []
+    )
     keyword_ids = await _keyword_stage(session, job_id, _keyword_query_terms(job), top_n)
     profile_ids: list[uuid.UUID] = list(dict.fromkeys([*semantic_ids, *keyword_ids]))
     if not profile_ids:

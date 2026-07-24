@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import uuid
 from typing import Any
 
@@ -19,7 +20,19 @@ from app.models import Profile
 from app.services import llm_router
 from app.services.embeddings import embed
 
+logger = logging.getLogger(__name__)
+
 _DOWNLOAD_TIMEOUT = 60.0
+
+#: An empty parsed-fields document in the fixed schema (used when a resume has
+#: no extractable text or the LLM extraction can't be parsed — the profile is
+#: still stored so nothing crashes the Celery task).
+_EMPTY_PARSED_FIELDS: dict[str, Any] = {
+    "skills": [],
+    "total_experience_years": None,
+    "education": [],
+    "employment_history": [],
+}
 
 #: The fixed extraction schema (ESD §9): keep in sync with the prompt below.
 PARSED_FIELDS_SCHEMA: dict[str, Any] = {
@@ -35,45 +48,64 @@ class ResumeParsingError(RuntimeError):
 
 
 # ── Text extraction ──────────────────────────────────────────────────────────
+#
+# Extraction is defensive: a corrupt, empty, image-only, or wrong-format file
+# yields "" rather than raising, so the Celery `parse_resume` task never
+# crash-loops on unparseable content (a genuinely transient failure — e.g. the
+# Cloudinary download — still propagates from `parse_resume` and is retried).
+
 
 def extract_text(data: bytes, filename: str) -> str:
-    """Extract plain text from a PDF or DOCX resume."""
-    lowered = filename.lower()
+    """Extract plain text from a PDF or DOCX resume.
+
+    Returns clean text, or "" when nothing extractable is found (empty file,
+    corrupt archive, scanned/image-only PDF, unknown format). Never raises on
+    content problems — the caller decides how to handle an empty result.
+    """
+    if not data:
+        return ""
+    lowered = (filename or "").lower()
     if lowered.endswith(".pdf"):
         return _extract_pdf(data)
     if lowered.endswith(".docx"):
         return _extract_docx(data)
-    # ASSUMPTION: unknown extensions are tried as PDF first, then DOCX —
-    # Cloudinary URLs may not preserve the original extension.
-    try:
+    # ASSUMPTION: unknown extensions (Cloudinary raw URLs may drop the original
+    # extension) — sniff the magic bytes: PDFs start with "%PDF", DOCX is a ZIP
+    # ("PK"). Fall back to trying both.
+    if data[:4] == b"%PDF":
         return _extract_pdf(data)
-    except Exception:  # noqa: BLE001
+    if data[:2] == b"PK":
         return _extract_docx(data)
+    return _extract_pdf(data) or _extract_docx(data)
 
 
 def _extract_pdf(data: bytes) -> str:
-    from pypdf import PdfReader
+    """Best-effort PDF text extraction; "" on empty/corrupt/scanned input."""
+    try:
+        from pypdf import PdfReader
 
-    reader = PdfReader(io.BytesIO(data))
-    pages = [page.extract_text() or "" for page in reader.pages]
-    text = "\n".join(pages).strip()
-    if not text:
-        raise ResumeParsingError("PDF contained no extractable text (scanned image?)")
-    return text
+        reader = PdfReader(io.BytesIO(data))
+        pages = [(page.extract_text() or "") for page in reader.pages]
+    except Exception as exc:  # noqa: BLE001 — corrupt/encrypted PDF, not a crash
+        logger.warning("resume_parsing.pdf_extract_failed error=%s", type(exc).__name__)
+        return ""
+    return "\n".join(pages).strip()
 
 
 def _extract_docx(data: bytes) -> str:
-    import docx  # python-docx
+    """Best-effort DOCX text extraction (paragraphs + tables); "" on failure."""
+    try:
+        import docx  # python-docx
 
-    document = docx.Document(io.BytesIO(data))
-    parts = [p.text for p in document.paragraphs if p.text]
-    for table in document.tables:
-        for row in table.rows:
-            parts.extend(cell.text for cell in row.cells if cell.text)
-    text = "\n".join(parts).strip()
-    if not text:
-        raise ResumeParsingError("DOCX contained no extractable text")
-    return text
+        document = docx.Document(io.BytesIO(data))
+        parts = [p.text for p in document.paragraphs if p.text]
+        for table in document.tables:
+            for row in table.rows:
+                parts.extend(cell.text for cell in row.cells if cell.text)
+    except Exception as exc:  # noqa: BLE001 — not a real .docx / corrupt archive
+        logger.warning("resume_parsing.docx_extract_failed error=%s", type(exc).__name__)
+        return ""
+    return "\n".join(parts).strip()
 
 
 # ── LLM structured extraction ────────────────────────────────────────────────
@@ -93,7 +125,16 @@ _EXTRACTION_SYSTEM = (
 async def extract_structured_fields(
     resume_text: str, session: AsyncSession | None = None
 ) -> dict:
-    """Run the LLM extraction chain over resume text -> parsed_fields dict."""
+    """Run the LLM extraction chain over resume text -> parsed_fields dict.
+
+    Degrades gracefully: empty text short-circuits to the empty schema without
+    an LLM call, and unparseable LLM output logs a warning and returns the
+    empty schema rather than raising — the raw resume text stays as the
+    matcher's fallback signal. `llm_router.LLMUnavailableError` (whole provider
+    chain down) still propagates so the Celery task's retry policy handles it.
+    """
+    if not resume_text or not resume_text.strip():
+        return dict(_EMPTY_PARSED_FIELDS)
     raw = await llm_router.chat_completion(
         "extraction",
         [
@@ -105,10 +146,12 @@ async def extract_structured_fields(
     )
     try:
         parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ResumeParsingError("LLM returned non-JSON extraction output") from exc
+    except json.JSONDecodeError:
+        logger.warning("resume_parsing.extraction_non_json — storing empty parsed fields")
+        return dict(_EMPTY_PARSED_FIELDS)
     if not isinstance(parsed, dict):
-        raise ResumeParsingError("LLM extraction output was not a JSON object")
+        logger.warning("resume_parsing.extraction_not_object — storing empty parsed fields")
+        return dict(_EMPTY_PARSED_FIELDS)
     # Normalize to the fixed schema — never store surprise keys.
     return {
         "skills": parsed.get("skills") or [],
@@ -133,10 +176,25 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
             raise ResumeParsingError(
                 f"Profile {profile_id} has neither resume_text nor resume_url"
             )
+        # Download failures (network/5xx) propagate so the task retries — only
+        # *content* problems (below) are swallowed.
         async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
             resp = await client.get(profile.resume_url)
             resp.raise_for_status()
         resume_text = extract_text(resp.content, profile.resume_url.split("?")[0])
+
+    if not resume_text or not resume_text.strip():
+        # Empty/garbage/scanned resume — persist an empty profile and stop.
+        # Leaving embedding NULL excludes it from the semantic matching pool
+        # (WHERE embedding IS NOT NULL) rather than polluting it with noise.
+        logger.warning(
+            "resume_parsing.no_extractable_text profile_id=%s — stored empty parsed fields",
+            profile_id,
+        )
+        profile.resume_text = ""
+        profile.parsed_fields_json = dict(_EMPTY_PARSED_FIELDS)
+        await session.commit()
+        return
 
     parsed = await extract_structured_fields(resume_text, session=session)
 

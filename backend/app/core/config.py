@@ -40,8 +40,17 @@ class Settings(BaseSettings):
     # Embeddings
     bge_m3_endpoint: str = ""
 
-    # Email / SMS
-    resend_api_key: str = ""
+    # Email (Mailtrap Sending API) / SMS (MSG91)
+    #
+    # Mailtrap replaced Resend for ALL outbound email (claude.md rule 5).
+    # MAILTRAP_API_TOKEN is read from the environment (.env) — never hardcoded.
+    # By default we call the Sending API (real delivery). Set mailtrap_inbox_id
+    # to route through a Testing/sandbox inbox in dev instead.
+    mailtrap_api_token: str = ""
+    mailtrap_sender_email: str = "noreply@pickready.app"
+    mailtrap_sender_name: str = "PickReady"
+    mailtrap_api_host: str = "send.api.mailtrap.io"
+    mailtrap_inbox_id: str = ""  # when set → use sandbox host + /api/send/<id>
     msg91_api_key: str = ""
     msg91_sender_id: str = "PCKRDY"
 
@@ -56,9 +65,9 @@ class Settings(BaseSettings):
     # (super_admin) role. Enforced in the API layer, not just seed/UI.
     owner_email: str = "manjuchro@gmail.com"
 
-    # Dev/fallback sender identity used until a tenant's own domain is
-    # SPF/DKIM-verified in Resend (unverified From silently fails/bounces).
-    resend_dev_sender: str = "onboarding@resend.dev"
+    # NOTE: settings.mailtrap_sender_email is the default/fallback From used
+    # until a tenant's own domain is SPF/DKIM-verified in Mailtrap (an
+    # unverified From is rejected/bounces).
 
     # Outbound-delivery retry policy (email + SMS). Transient failures (429 /
     # 5xx / network) retry with EXPONENTIAL backoff up to this many attempts;
@@ -73,7 +82,7 @@ class Settings(BaseSettings):
     def missing_delivery_keys(self) -> list[str]:
         """Names of unset outbound-delivery credentials (for startup preflight)."""
         checks = {
-            "RESEND_API_KEY": self.resend_api_key,
+            "MAILTRAP_API_TOKEN": self.mailtrap_api_token,
             "MSG91_API_KEY": self.msg91_api_key,
             "MSG91_SENDER_ID": self.msg91_sender_id,
         }
@@ -103,7 +112,7 @@ def preflight_delivery_config() -> list[str]:
         )
     else:
         logging.getLogger(__name__).info(
-            "delivery.preflight ok — Resend + MSG91 credentials present"
+            "delivery.preflight ok — Mailtrap + MSG91 credentials present"
         )
     return missing
 
