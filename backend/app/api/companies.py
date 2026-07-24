@@ -201,8 +201,8 @@ async def create_staff(
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
                 action="staff_created", target_type="user", target_id=staff_user.id,
                 metadata={"role": role.value, "email": str(body.email)})
-    # OTP-based invite: new staff are `invited` and activate on first OTP
-    # login (the OTP flow accepts invited users and flips them to active).
+    # New staff activate on their first verified Firebase sign-in. The invite
+    # contains onboarding guidance; PickReady never generates an app OTP.
     celery_app.send_task(
         "pickready.send_email",
         args=[str(user.tenant_id), str(body.email), "staff_invite",

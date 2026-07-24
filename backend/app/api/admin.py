@@ -83,7 +83,8 @@ async def create_tenant(
         action="tenant_created", target_type="tenant", target_id=tenant.id,
         metadata={"name": body.name, "domain": body.domain},
     )
-    # Invite the client via the OTP-based flow (email delivery is async).
+    # Deliver the existing client invite; Firebase password setup is handled by
+    # the sign-in recovery/onboarding flow, never by an app-generated OTP.
     celery_app.send_task(
         "pickready.send_email",
         args=[str(tenant.id), str(body.client_email), "client_invite",

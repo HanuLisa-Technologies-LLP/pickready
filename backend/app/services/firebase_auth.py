@@ -1,10 +1,13 @@
 """Firebase identity verification; database roles and permissions remain authoritative."""
 import json
+import logging
 from dataclasses import dataclass
 
 from fastapi import HTTPException, status
 
 from app.core.config import get_settings
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -17,7 +20,7 @@ class FirebaseIdentity:
     email_verified: bool
 
 
-def verify_id_token(id_token: str) -> FirebaseIdentity:
+def firebase_client():
     try:
         import firebase_admin
         from firebase_admin import auth, credentials
@@ -26,8 +29,22 @@ def verify_id_token(id_token: str) -> FirebaseIdentity:
             if not raw:
                 raise RuntimeError("FIREBASE_SERVICE_ACCOUNT_JSON is not configured")
             firebase_admin.initialize_app(credentials.Certificate(json.loads(raw)))
-        claims = auth.verify_id_token(id_token, check_revoked=True)
+        return auth
+    except RuntimeError:
+        raise
     except Exception as exc:
+        raise RuntimeError("Firebase Admin could not be initialized") from exc
+
+
+def verify_id_token(id_token: str) -> FirebaseIdentity:
+    try:
+        claims = firebase_client().verify_id_token(id_token, check_revoked=True)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Operators need the verification cause; callers get only the generic
+        # response and no token/claims are ever written to the log.
+        log.warning("firebase_id_token_rejected", exc_info=exc)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Firebase session") from exc
     data = claims.get("firebase") or {}
     return FirebaseIdentity(claims["uid"], claims.get("email"), claims.get("phone_number"), claims.get("name"), data.get("sign_in_provider", "unknown"), bool(claims.get("email_verified")))

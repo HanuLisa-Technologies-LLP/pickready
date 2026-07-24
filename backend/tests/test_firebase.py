@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.api.auth import firebase_session, select_context
+from app.api.auth import _phone_aliases, firebase_session, select_context
 from app.api.deps import ACCESS_COOKIE
 from app.core.config import get_settings
 from app.models.candidate import Candidate
@@ -45,7 +45,7 @@ def test_google_allowed_for_candidate() -> None:
     assert_provider_allowed(_identity(provider="google.com"), "candidate")  # no raise
 
 
-@pytest.mark.parametrize("role", ["hr_manager", "recruiter", "hiring_manager", "client"])
+@pytest.mark.parametrize("role", ["super_admin", "hr_manager", "recruiter", "hiring_manager", "client"])
 def test_google_rejected_for_staff_roles(role: str) -> None:
     with pytest.raises(HTTPException) as exc:
         assert_provider_allowed(_identity(provider="google.com"), role)
@@ -53,7 +53,7 @@ def test_google_rejected_for_staff_roles(role: str) -> None:
 
 
 @pytest.mark.parametrize("provider", ["password", "phone"])
-@pytest.mark.parametrize("role", ["candidate", "hr_manager", "recruiter", "client"])
+@pytest.mark.parametrize("role", ["candidate", "super_admin", "hr_manager", "recruiter", "client"])
 def test_password_and_phone_allowed_for_all_roles(provider: str, role: str) -> None:
     assert_provider_allowed(_identity(provider=provider), role)  # no raise
 
@@ -62,6 +62,11 @@ def test_unknown_provider_rejected() -> None:
     with pytest.raises(HTTPException) as exc:
         assert_provider_allowed(_identity(provider="apple.com"), "candidate")
     assert exc.value.status_code == 403
+
+
+def test_phone_aliases_cover_firebase_e164_and_legacy_indian_numbers() -> None:
+    assert "9652802233" in _phone_aliases("+919652802233")
+    assert "+919652802233" in _phone_aliases("9652802233")
 
 
 # ── Live integration (skips if the database is unreachable) ──────────────────
@@ -122,29 +127,18 @@ async def _get_or_create_owner(factory) -> uuid.UUID:
 
 # ── 1. OWNER INVARIANT ───────────────────────────────────────────────────────
 
-async def test_owner_google_login_yields_super_admin_with_wildcard() -> None:
-    """A Firebase login as the owner email resolves to the seeded super_admin
-    (never a candidate) and gets capabilities ["*"] — even via Google, which is
-    otherwise candidates-only."""
+async def test_owner_google_login_is_403() -> None:
+    """The Owner is internal, so Google never receives an owner cookie."""
     engine = await _db_or_skip()
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    owner_id = await _get_or_create_owner(factory)
+    await _get_or_create_owner(factory)
     monkeypatch = pytest.MonkeyPatch()
     try:
         ident = _identity(provider="google.com", email=get_settings().owner_email.upper())
         async with factory() as session:
-            response, out = await _call(session, ident, monkeypatch)
-        assert out.user is not None
-        assert out.user.role == Role.super_admin
-        assert out.user.id == owner_id
-        assert out.capabilities == ["*"]
-        assert ACCESS_COOKIE in _cookie_names(response)
-        # No impostor super_admin was created.
-        async with factory() as session:
-            admins = (await session.execute(
-                select(User).where(User.role == Role.super_admin)
-            )).scalars().all()
-            assert len(admins) == 1
+            with pytest.raises(HTTPException) as exc:
+                await _call(session, ident, monkeypatch)
+        assert exc.value.status_code == 403
     finally:
         monkeypatch.undo()
         await engine.dispose()

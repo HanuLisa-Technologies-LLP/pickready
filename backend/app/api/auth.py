@@ -1,7 +1,8 @@
-"""OTP auth endpoints (FR-1.x / ESD §5 / contract rev 2). No passwords,
-anywhere. Unified login: one identifier may resolve to several users across
-roles/tenants — verify then returns a workspace chooser finalized by
-/auth/select-context."""
+"""Firebase identity exchange and legacy context-selection endpoints.
+
+Firebase proves identity; PickReady remains authoritative for application
+roles, tenant isolation, capabilities, and its portal-scoped sessions.
+"""
 import uuid
 from datetime import datetime, timezone
 
@@ -61,6 +62,25 @@ def _is_owner_email(email: str | None, owner_email: str) -> bool:
     return bool(email) and (email or "").strip().lower() == (owner_email or "").strip().lower()
 
 
+def _phone_aliases(phone: str | None) -> set[str]:
+    """Return safe equivalent forms for matching legacy local phone values.
+
+    Firebase supplies E.164 (``+919...``), while existing development rows
+    may contain a ten-digit Indian national number.  This is deliberately a
+    lookup aid only; a matched user is normalized to the Firebase E.164 value
+    after successful sign-in.
+    """
+    if not phone:
+        return set()
+    digits = "".join(char for char in phone if char.isdigit())
+    aliases = {phone.strip(), digits}
+    if len(digits) == 10:
+        aliases.update({f"91{digits}", f"+91{digits}"})
+    elif len(digits) == 12 and digits.startswith("91"):
+        aliases.update({digits[2:], f"+{digits}"})
+    return {value for value in aliases if value}
+
+
 async def _finalize_single(
     session: AsyncSession,
     response: Response,
@@ -76,6 +96,9 @@ async def _finalize_single(
     user.auth_providers = sorted(set((user.auth_providers or []) + [identity.provider]))
     if identity.email_verified:
         user.email_verified_at = user.email_verified_at or datetime.now(timezone.utc)
+    if identity.provider == "phone" and identity.phone:
+        user.phone = identity.phone
+        user.phone_verified_at = user.phone_verified_at or datetime.now(timezone.utc)
     # Invited staff/candidates activate on first proven login, mirroring the OTP
     # path (proving identifier ownership is what flips invited -> active).
     if user.status == UserStatus.invited:
@@ -134,6 +157,9 @@ async def firebase_session(
     # via this endpoint (the general lookup below only ever creates candidates,
     # and eligible_login_users / the ORM guard reject any impostor super_admin).
     if _is_owner_email(identity.email, settings.owner_email):
+        # Owner is an internal role: only Firebase password/phone identities
+        # are eligible. A Google token must never reach the owner portal.
+        firebase_auth.assert_provider_allowed(identity, Role.super_admin.value)
         owner = (await session.execute(
             select(User).where(
                 User.role == Role.super_admin,
@@ -147,11 +173,14 @@ async def firebase_session(
         return await _finalize_single(session, response, owner, identity)
 
     # ── Resolve the identity to existing users (unified login, rev 2) ───────
-    matched = (await session.execute(select(User).where(or_(
-        User.firebase_uid == identity.uid,
-        User.email == identity.email if identity.email else False,
-        User.phone == identity.phone if identity.phone else False,
-    )).order_by(User.created_at, User.id))).scalars().all()
+    match_filters = [User.firebase_uid == identity.uid]
+    if identity.email:
+        match_filters.append(func.lower(User.email) == identity.email.strip().lower())
+    if aliases := _phone_aliases(identity.phone):
+        match_filters.append(User.phone.in_(aliases))
+    matched = (await session.execute(
+        select(User).where(or_(*match_filters)).order_by(User.created_at, User.id)
+    )).scalars().all()
 
     if matched:
         eligible = otp_service.eligible_login_users(
@@ -187,6 +216,14 @@ async def firebase_session(
     # ── Provider gate on every resolved context (Google = candidates only) ──
     for user in eligible:
         firebase_auth.assert_provider_allowed(identity, user.role.value)
+
+    # Phone numbers are a single-person credential.  A reused phone number in
+    # imported data must never become a cross-person workspace chooser.
+    if identity.provider == "phone" and len(eligible) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="This phone number is linked to multiple accounts. Sign in with email and password.",
+        )
 
     if len(eligible) == 1:
         return await _finalize_single(session, response, eligible[0], identity)

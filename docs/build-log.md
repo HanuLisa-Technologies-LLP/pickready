@@ -28,6 +28,13 @@
 - `feat: add public PickReady landing page` — public hero, feature overview, candidate sign-up/login routes, safe portal redirect hints, and non-blocking landing-view audit telemetry.
 - `refactor: show AI match comments without numerical ratings` — comments-only matching and HR review UI, with authenticated rating-comment view auditing.
 
+### Current Sprint — Firebase Authentication
+
+- `feat: Firebase auth (all roles)` — Firebase verifies identity while PickReady keeps database-backed RBAC, tenant scope, and portal sessions.
+- `fix: provision permanent Firebase development accounts` — idempotent Alembic migration provisions Sarkar Corp, ACRM Corp, Specter & Co., and the requested active team roster in PostgreSQL; matching Firebase email/password identities are provisioned without storing passwords in the database.
+- Google sign-in is enforced as candidate-only at both the interface and backend verification boundary; Owner and every internal role use Firebase email/password or a uniquely assigned phone identity.
+- Shared imported phone numbers are rejected for phone sign-in rather than becoming a cross-person workspace chooser; those accounts use their provisioned email/password credentials until distinct mobile numbers are assigned.
+
 ---
 
 ## Current Status (As of 2026-07-24)
@@ -37,6 +44,8 @@
 **Known Blocker**: Resend requires a verified domain before sending to non-owner recipients.
 
 **Current Sprint**: Landing and comments-only AI review display shipped; production verification remains.
+
+**Firebase Auth Verification**: The permanent development roster can sign in through Firebase email/password and exchange into the correct PickReady portal session. Google is limited to candidates.
 
 ## Product Status & Feature Summary
 
