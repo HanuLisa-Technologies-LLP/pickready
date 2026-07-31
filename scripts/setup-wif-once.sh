@@ -96,13 +96,20 @@ fi
 log "Project roles for the deployer"
 # run.admin              deploy services, worker pools and jobs, shift traffic
 # artifactregistry.writer push images
-# cloudsql.client        attach the Cloud SQL instance to a revision
-# secretmanager.secretAccessor read POSTGRES_PASSWORD to build DATABASE_URL,
-#                        and list the secret names that become --set-secrets
+# cloudsql.client        describe + attach the Cloud SQL instance to a revision
+# redis.viewer           describe the Memorystore instance for host:port, which
+#                        deploy.sh resolves into REDIS_URL at deploy time
+# secretmanager.viewer   LIST the secret names that become --set-secrets
+# secretmanager.secretAccessor  read a secret VALUE (POSTGRES_PASSWORD) to
+#                        compose DATABASE_URL. viewer lists, accessor reads;
+#                        neither implies the other and deploy.sh needs BOTH
+#                        (omitting viewer fails at `gcloud secrets list`).
 for role in \
   roles/run.admin \
   roles/artifactregistry.writer \
   roles/cloudsql.client \
+  roles/redis.viewer \
+  roles/secretmanager.viewer \
   roles/secretmanager.secretAccessor
 do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
