@@ -111,15 +111,14 @@ _RESEND_HINTS: dict[str, str] = {
     ),
     "invalid_recipient": (
         "Resend rejected the recipient address outright (reserved/invalid "
-        "domain, e.g. example.com). Fix the recipient — retrying cannot help."
+        "domain, e.g. example.com). Fix the recipient, retrying cannot help."
     ),
     "bad_credentials": (
-        "RESEND_API_KEY is missing, revoked, or too restricted for this call "
-        "(a send-only 'restricted' key cannot read /domains). Issue a full "
-        "key at https://resend.com/api-keys and redeploy."
+        "MSG91_AUTH_KEY is missing, revoked, or too restricted for this call. "
+        "Create or rotate the key in MSG91 and redeploy."
     ),
     "bad_request": (
-        "Provider rejected the request as malformed — inspect the payload "
+        "Provider rejected the request as malformed, inspect the payload "
         "(from/to/subject/attachments). Retrying cannot help."
     ),
 }
@@ -165,7 +164,7 @@ def classify_response(provider: str, resp: httpx.Response) -> DeliveryError:
             status,
             name,
             message,
-            hint="Transient provider failure — retrying with exponential backoff.",
+            hint="Transient provider failure, retrying with exponential backoff.",
         )
 
     if status in (401, 407) or "restricted_api_key" in lowered or "api key" in lowered:
@@ -189,7 +188,7 @@ def classify_exception(provider: str, exc: Exception) -> DeliveryError:
             None,
             type(exc).__name__,
             str(exc) or repr(exc),
-            hint="Network error reaching the provider — retrying with backoff.",
+            hint="Network error reaching the provider, retrying with backoff.",
         )
     return TransientDeliveryError(
         provider, None, type(exc).__name__, str(exc) or repr(exc)
@@ -271,6 +270,6 @@ async def send_sms_async(phone: str, message: str) -> None:
         raise PermanentDeliveryError(
             "msg91", resp.status_code, name or "error", msg,
             hint="MSG91 rejected the request (sender id / template / number). "
-                 "Retrying cannot help — fix the sender id or recipient.",
+                 "Retrying cannot help, fix the sender id or recipient.",
         )
     logger.info("sms.delivery status=sent provider=msg91")  # no phone, no body

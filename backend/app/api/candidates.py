@@ -1,24 +1,32 @@
 """Candidate sourcing, review-screen, decisions, pipeline status and
 interview scheduling (FR-4.3/4.4, FR-7.x, FR-8.x)."""
+import html
+import io
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import select
+from docx import Document
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import HTMLResponse, Response
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_tenant_db, require_capability
 from app.models.candidate import (
     Candidate,
+    CandidateTeamReview,
     Interview,
     JobCandidateLink,
     PipelineStatusEntry,
     Profile,
+    SOURCE_TYPE_SOURCED,
     VerificationRequest,
+    source_type_label,
 )
 from app.models.enums import LinkSource, PipelineStatus
 from app.models.job import Job
 from app.models.tenant import Tenant
+from app.models.user import User
 from app.schemas.candidates import (
     CandidateOut,
     DecisionIn,
@@ -26,22 +34,33 @@ from app.schemas.candidates import (
     InterviewIn,
     InterviewOut,
     JobLinksOut,
+    LinkArchiveOut,
     LinkOut,
     ProfileOut,
+    RankingCommentsOut,
     StatusIn,
     StatusOut,
+    TeamReviewIn,
+    TeamReviewOut,
+    TeamReviewRewriteIn,
+    TeamReviewRewriteOut,
+    TeamReviewsOut,
     UploadResumeOut,
     VerificationRequestSummary,
 )
 from app.services import capabilities as caps
 from app.services import rbac
 from app.services.audit import audit
+from app.services.matching import client_breakdown, ranking_payload
+from app.services import llm_router
 from app.services.resume_storage import (
     ALLOWED_RESUME_CONTENT_TYPES,
     ALLOWED_RESUME_EXTENSIONS as ALLOWED_RESUME_EXTS,
     MAX_RESUME_BYTES,
     apply_resume_asset,
+    fetch_resume_bytes,
     read_validated_resume,
+    ResumeStorageError,
     store_resume,
 )
 from app.workers.celery_app import celery_app
@@ -131,6 +150,12 @@ async def upload_resume(
     link = JobCandidateLink(
         tenant_id=user.tenant_id, job_id=job.id, candidate_id=candidate.id,
         profile_id=profile.id, source=LinkSource.fresh,
+        # ASSUMPTION (2026-07-28): a recruiter uploading ONE resume they found
+        # elsewhere is `sourced`, not `databank`. Databank is specifically the
+        # bulk upload (POST /jobs/{id}/candidates/databank, up to 25 files);
+        # this single-file route predates it and describes a candidate the
+        # recruiter procured from outside PickReady.
+        source_type=SOURCE_TYPE_SOURCED,
     )
     session.add(link)
     await session.flush()
@@ -149,6 +174,7 @@ async def upload_resume(
 @router.get("/{candidate_id}/profile", response_model=ProfileOut)
 async def get_profile(
     candidate_id: uuid.UUID,
+    profile_id: uuid.UUID | None = Query(default=None),
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> ProfileOut:
@@ -180,14 +206,34 @@ async def get_profile(
         if granted is None:
             raise HTTPException(status_code=403, detail="Profile access not granted")
 
-    profile = (
-        await session.execute(
-            select(Profile).where(Profile.candidate_id == candidate_id)
-            .order_by(Profile.created_at.desc())
-        )
-    ).scalars().first()
+    profile_query = select(Profile).where(Profile.candidate_id == candidate_id)
+    if profile_id is not None:
+        profile_query = profile_query.where(Profile.id == profile_id)
+    else:
+        profile_query = profile_query.order_by(Profile.created_at.desc())
+    profile = (await session.execute(profile_query)).scalars().first()
     if profile is None:
         raise HTTPException(status_code=404, detail="No profile for this candidate")
+    if profile_id is not None:
+        # EXISTENCE check only. The same (candidate, tenant, profile) triple
+        # legitimately appears on many rows — one per job the candidate is
+        # linked to in this tenant, and a reused resume keeps the same profile
+        # — so `scalar_one_or_none()` here raised MultipleResultsFound (500)
+        # for any candidate linked to more than one job, which the review
+        # screen surfaced as "Could not load this candidate's profile".
+        scoped_profile_link = (
+            await session.execute(
+                select(JobCandidateLink.id)
+                .where(
+                    JobCandidateLink.candidate_id == candidate_id,
+                    JobCandidateLink.tenant_id == user.tenant_id,
+                    JobCandidateLink.profile_id == profile_id,
+                )
+                .limit(1)
+            )
+        ).scalars().first()
+        if scoped_profile_link is None:
+            raise HTTPException(status_code=404, detail="No profile for this candidate")
 
     vrs = (
         await session.execute(
@@ -212,6 +258,167 @@ async def get_profile(
     )
 
 
+@router.get("/profiles/{profile_id}/resume-preview", response_class=HTMLResponse)
+async def preview_resume(
+    profile_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> HTMLResponse:
+    """Render a DOCX resume inside PickReady as safe, monochrome HTML.
+
+    Browsers cannot natively display Word documents. The server downloads only
+    the trusted Cloudinary asset already stored on the profile, extracts
+    paragraphs and tables with python-docx, HTML-escapes every value, and
+    returns a same-app preview. PDF/image previews continue to use the browser's
+    native viewer.
+    """
+    profile = await session.get(Profile, profile_id)
+    if profile is None or not profile.resume_url:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    link = (
+        await session.execute(
+            select(JobCandidateLink).where(
+                JobCandidateLink.profile_id == profile.id,
+                JobCandidateLink.tenant_id == user.tenant_id,
+            )
+        )
+    ).scalars().first()
+    if link is None:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    full_access = await rbac.has_capability(
+        session, user.tenant_id, user.role, caps.SEND_OUTREACH
+    )
+    if not full_access and not link.hm_access_granted:
+        raise HTTPException(status_code=403, detail="Profile access not granted")
+
+    try:
+        resume_bytes = await fetch_resume_bytes(profile)
+    except ResumeStorageError as exc:
+        raise HTTPException(status_code=502, detail="Resume could not be loaded") from exc
+    try:
+        document = Document(io.BytesIO(resume_bytes))
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Resume is not a readable DOCX file") from exc
+
+    blocks: list[str] = []
+    for paragraph in document.paragraphs:
+        text_value = paragraph.text.strip()
+        if not text_value:
+            continue
+        safe = html.escape(text_value)
+        style_name = (paragraph.style.name if paragraph.style else "").lower()
+        if style_name.startswith("heading"):
+            blocks.append(f"<h2>{safe}</h2>")
+        else:
+            blocks.append(f"<p>{safe}</p>")
+    for table in document.tables:
+        rows: list[str] = []
+        for row in table.rows:
+            cells = "".join(
+                f"<td>{html.escape(cell.text.strip())}</td>" for cell in row.cells
+            )
+            rows.append(f"<tr>{cells}</tr>")
+        if rows:
+            blocks.append(f"<table>{''.join(rows)}</table>")
+
+    filename = html.escape(profile.resume_original_filename or "Resume")
+    body = "\n".join(blocks) or "<p>No readable text was found in this document.</p>"
+    return HTMLResponse(
+        content=f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>{filename}</title><style>
+html{{background:#f5f5f5;color:#111;font-family:Arial,sans-serif}}
+body{{box-sizing:border-box;max-width:850px;margin:24px auto;padding:56px;background:#fff;
+box-shadow:0 1px 8px rgba(0,0,0,.14);line-height:1.55}}
+h2{{font-size:1.1rem;margin:1.5rem 0 .5rem;border-bottom:1px solid #bbb;padding-bottom:.25rem}}
+p{{margin:.55rem 0;white-space:pre-wrap}}table{{width:100%;border-collapse:collapse;margin:1rem 0}}
+td{{border:1px solid #bbb;padding:.45rem;vertical-align:top}}
+@media(max-width:700px){{body{{margin:0;padding:24px;box-shadow:none}}}}
+</style></head><body>{body}</body></html>"""
+    )
+
+
+@router.get("/profiles/{profile_id}/resume-file")
+async def resume_file(
+    profile_id: uuid.UUID,
+    download: bool = Query(default=False),
+    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> Response:
+    """Proxy an authorized resume without exposing a raw storage URL."""
+    profile = await session.get(Profile, profile_id)
+    if profile is None or not profile.resume_url:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    link = (
+        await session.execute(
+            select(JobCandidateLink).where(
+                JobCandidateLink.profile_id == profile.id,
+                JobCandidateLink.tenant_id == user.tenant_id,
+            )
+        )
+    ).scalars().first()
+    if link is None:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    full_access = await rbac.has_capability(
+        session, user.tenant_id, user.role, caps.SEND_OUTREACH
+    )
+    if not full_access and not link.hm_access_granted:
+        raise HTTPException(status_code=403, detail="Profile access not granted")
+    try:
+        content = await fetch_resume_bytes(profile)
+    except ResumeStorageError as exc:
+        raise HTTPException(status_code=502, detail="Resume could not be loaded") from exc
+    filename = (profile.resume_original_filename or "resume").replace('"', "")
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=content,
+        media_type=profile.resume_mime_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/{candidate_id}/ranking", response_model=RankingCommentsOut)
+async def get_candidate_ranking(
+    candidate_id: uuid.UUID,
+    job_id: uuid.UUID | None = Query(default=None),
+    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> RankingCommentsOut:
+    """Return only the five human-readable ranking comments for a candidate.
+
+    A candidate may be ranked for several jobs. Callers should pass `job_id`;
+    when omitted, the newest ranking in the current tenant is returned for
+    backwards compatibility with the path-only contract.
+    """
+    filters = [
+        JobCandidateLink.candidate_id == candidate_id,
+        JobCandidateLink.tenant_id == user.tenant_id,
+    ]
+    if job_id is not None:
+        filters.append(JobCandidateLink.job_id == job_id)
+    link = (
+        await session.execute(
+            select(JobCandidateLink)
+            .where(*filters)
+            .order_by(JobCandidateLink.created_at.desc())
+        )
+    ).scalars().first()
+    if link is None:
+        raise HTTPException(status_code=404, detail="Ranking not found")
+    payload = ranking_payload(link.match_breakdown_json)
+    return RankingCommentsOut(
+        skills_match_comment=payload["skills_match_comment"],
+        experience_comment=payload["experience_comment"],
+        role_alignment_comment=payload["role_alignment_comment"],
+        education_comment=payload["education_comment"],
+        overall_comment=payload["overall_comment"],
+    )
+
+
 @router.post("/links/{link_id}/grant-access", response_model=GrantAccessOut)
 async def grant_access(
     link_id: uuid.UUID,
@@ -228,6 +435,49 @@ async def grant_access(
                 action="hm_access_granted", target_type="job_candidate_link",
                 target_id=link.id)
     return GrantAccessOut(link_id=link.id)
+
+
+@router.delete("/links/{link_id}", response_model=LinkArchiveOut)
+async def archive_candidate_application(
+    link_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.UPDATE_PIPELINE_STATUS)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> LinkArchiveOut:
+    """Archive this job application without deleting the shared candidate."""
+    link = await _get_link(session, user, link_id)
+    if link.archived_at is None:
+        link.archived_at = datetime.now(timezone.utc)
+        await session.flush()
+        await audit(
+            session,
+            tenant_id=user.tenant_id,
+            actor_user_id=user.user_id,
+            action="candidate_application_archived",
+            target_type="job_candidate_link",
+            target_id=link.id,
+        )
+    return LinkArchiveOut(link_id=link.id, archived=True)
+
+
+@router.post("/links/{link_id}/restore", response_model=LinkArchiveOut)
+async def restore_candidate_application(
+    link_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.UPDATE_PIPELINE_STATUS)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> LinkArchiveOut:
+    link = await _get_link(session, user, link_id)
+    if link.archived_at is not None:
+        link.archived_at = None
+        await session.flush()
+        await audit(
+            session,
+            tenant_id=user.tenant_id,
+            actor_user_id=user.user_id,
+            action="candidate_application_restored",
+            target_type="job_candidate_link",
+            target_id=link.id,
+        )
+    return LinkArchiveOut(link_id=link.id, archived=False)
 
 
 @router.post("/links/{link_id}/decision", response_model=StatusOut)
@@ -253,6 +503,186 @@ async def decide_profile(
                 target_id=link.id, metadata={"status": body.status, "remarks": body.remarks})
     return StatusOut(link_id=link.id, status=entry.status, remarks=entry.remarks,
                      at=entry.at or datetime.now(timezone.utc))
+
+
+_TEAM_RATING_ORDER = ["very_high", "high", "medium", "low", "developing"]
+
+
+def _clean_review_text(value: str) -> str:
+    text_value = " ".join(value.strip().split())
+    if not text_value:
+        return text_value
+    text_value = text_value[0].upper() + text_value[1:]
+    if text_value[-1] not in ".!?":
+        text_value += "."
+    return text_value.replace(chr(8212), " - ")
+
+
+async def _team_reviews_out(
+    session: AsyncSession,
+    link_id: uuid.UUID,
+    current_user_id: uuid.UUID,
+) -> TeamReviewsOut:
+    rows = (
+        await session.execute(
+            select(CandidateTeamReview, User.full_name, User.email)
+            .join(User, User.id == CandidateTeamReview.reviewer_user_id)
+            .where(CandidateTeamReview.job_candidate_link_id == link_id)
+            .order_by(CandidateTeamReview.updated_at.desc(), CandidateTeamReview.id)
+        )
+    ).all()
+    reviews = [
+        TeamReviewOut(
+            id=review.id,
+            reviewer_user_id=review.reviewer_user_id,
+            reviewer_name=full_name or email or "Team member",
+            rating=review.rating,
+            remarks=review.remarks,
+            ai_rewritten_remarks=review.ai_rewritten_remarks,
+            is_current_user=review.reviewer_user_id == current_user_id,
+            created_at=review.created_at,
+            updated_at=review.updated_at,
+        )
+        for review, full_name, email in rows
+    ]
+    if not reviews:
+        return TeamReviewsOut(
+            reviews=[], overall_rating=None, overall_remarks=None, review_count=0
+        )
+
+    ordered = sorted(_TEAM_RATING_ORDER.index(review.rating) for review in reviews)
+    overall_rating = _TEAM_RATING_ORDER[ordered[(len(ordered) - 1) // 2]]
+    observations = []
+    for review in reviews:
+        source = review.ai_rewritten_remarks or review.remarks
+        first_sentence = source.split(". ", 1)[0].strip().rstrip(".")
+        observations.append(f"{review.reviewer_name}: {first_sentence}")
+    overall_remarks = (
+        f"Team consensus from {len(reviews)} "
+        f"{'review' if len(reviews) == 1 else 'reviews'}. "
+        + "; ".join(observations)
+    )[:1800]
+    if not overall_remarks.endswith("."):
+        overall_remarks += "."
+    return TeamReviewsOut(
+        reviews=reviews,
+        overall_rating=overall_rating,
+        overall_remarks=overall_remarks,
+        review_count=len(reviews),
+    )
+
+
+@router.get("/links/{link_id}/team-reviews", response_model=TeamReviewsOut)
+async def team_reviews(
+    link_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> TeamReviewsOut:
+    await _get_link(session, user, link_id)
+    return await _team_reviews_out(session, link_id, user.user_id)
+
+
+@router.put("/links/{link_id}/team-reviews", response_model=TeamReviewsOut)
+async def save_team_review(
+    link_id: uuid.UUID,
+    body: TeamReviewIn,
+    user: CurrentUser = Depends(require_capability(caps.DECIDE_PROFILE)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> TeamReviewsOut:
+    link = await _get_link(session, user, link_id)
+    existing = (
+        await session.execute(
+            select(CandidateTeamReview).where(
+                CandidateTeamReview.job_candidate_link_id == link.id,
+                CandidateTeamReview.reviewer_user_id == user.user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        existing = CandidateTeamReview(
+            tenant_id=user.tenant_id,
+            job_candidate_link_id=link.id,
+            reviewer_user_id=user.user_id,
+            rating=body.rating,
+            remarks=_clean_review_text(body.remarks),
+            ai_rewritten_remarks=(
+                _clean_review_text(body.ai_rewritten_remarks)
+                if body.ai_rewritten_remarks
+                else None
+            ),
+        )
+        session.add(existing)
+    else:
+        existing.rating = body.rating
+        existing.remarks = _clean_review_text(body.remarks)
+        existing.ai_rewritten_remarks = (
+            _clean_review_text(body.ai_rewritten_remarks)
+            if body.ai_rewritten_remarks
+            else None
+        )
+        existing.updated_at = datetime.now(timezone.utc)
+    await session.flush()
+    await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="candidate_team_review_saved",
+        target_type="job_candidate_link",
+        target_id=link.id,
+        metadata={"rating": body.rating, "used_ai_rewrite": bool(body.ai_rewritten_remarks)},
+    )
+    return await _team_reviews_out(session, link.id, user.user_id)
+
+
+@router.post(
+    "/links/{link_id}/team-reviews/rewrite",
+    response_model=TeamReviewRewriteOut,
+)
+async def rewrite_team_review(
+    link_id: uuid.UUID,
+    body: TeamReviewRewriteIn,
+    user: CurrentUser = Depends(require_capability(caps.DECIDE_PROFILE)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> TeamReviewRewriteOut:
+    await _get_link(session, user, link_id)
+    fallback = _clean_review_text(body.remarks)
+    used_ai = False
+    rewritten = fallback
+    try:
+        raw = await llm_router.invoke_llm(
+            "report_synthesis",
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Rewrite a hiring-team observation for clarity and professionalism. "
+                        "Preserve every factual claim and the reviewer's meaning. Do not add "
+                        "a decision, score, protected characteristic or new evidence. Return "
+                        "only the revised remark in 25 to 80 words."
+                    ),
+                },
+                {"role": "user", "content": body.remarks},
+            ],
+            session=session,
+            timeout=8,
+            total_budget=12,
+        )
+        candidate = _clean_review_text(raw.strip().strip("\"'"))
+        if 10 <= len(candidate.split()) <= 120:
+            rewritten = candidate
+            used_ai = True
+    except (llm_router.LLMUnavailableError, ValueError):
+        pass
+    await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="candidate_team_review_rewritten",
+        target_type="job_candidate_link",
+        target_id=link_id,
+        metadata={"used_ai": used_ai},
+    )
+    return TeamReviewRewriteOut(rewritten_remarks=rewritten, used_ai=used_ai)
 
 
 @router.post("/links/{link_id}/status", response_model=StatusOut)
@@ -343,35 +773,75 @@ async def schedule_interview(
 @router.get("/jobs/{job_id}", response_model=JobLinksOut)
 async def list_job_links(
     job_id: uuid.UUID,
+    include_archived: bool = Query(default=False),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
     user: CurrentUser = Depends(require_capability(caps.VIEW_DATABANK)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> JobLinksOut:
-    """All candidate links for a job with score/tier/current status."""
+    """One page of candidate links for a job, with score/tier/current status.
+
+    Joined and paginated: this used to load every link for the job and then
+    fetch each candidate individually, so a job with 400 applicants was 401
+    queries and a response nobody could render.
+    """
     job = await session.get(Job, job_id)
     if job is None or job.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    links = (
+    filters = [JobCandidateLink.job_id == job.id]
+    if not include_archived:
+        filters.append(JobCandidateLink.archived_at.is_(None))
+
+    total = (
         await session.execute(
-            select(JobCandidateLink).where(JobCandidateLink.job_id == job.id)
-            .order_by(JobCandidateLink.match_score.desc().nulls_last())
+            select(func.count()).select_from(JobCandidateLink).where(*filters)
         )
-    ).scalars().all()
-    latest = await _latest_status(session, [l.id for l in links])
+    ).scalar_one()
+    rows = (
+        await session.execute(
+            select(JobCandidateLink, Candidate)
+            .join(Candidate, Candidate.id == JobCandidateLink.candidate_id)
+            .where(*filters)
+            # `id` makes the order total, so page boundaries are stable when
+            # two links share a score.
+            .order_by(
+                JobCandidateLink.match_score.desc().nulls_last(),
+                JobCandidateLink.id,
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    latest = await _latest_status(session, [link.id for link, _ in rows])
     out: list[LinkOut] = []
-    for link in links:
-        candidate = await session.get(Candidate, link.candidate_id)
+    for link, candidate in rows:
         entry = latest.get(link.id)
         out.append(LinkOut(
             link_id=link.id,
             candidate=CandidateOut.model_validate(candidate),
             profile_id=link.profile_id,
             source=link.source,
-            match_score=link.match_score,
+            source_type=link.source_type,
+            source_type_label=source_type_label(link.source_type),
             tier=link.tier,
-            breakdown=link.match_breakdown_json,
+            # Numeric parameter scores are internal ranking data and never
+            # cross this boundary (claude.md) — comments + scoring_mode only.
+            breakdown=client_breakdown(link.match_breakdown_json),
+            # Comments-only projection (always present; see services.matching).
+            **ranking_payload(link.match_breakdown_json),
             hm_access_granted=link.hm_access_granted,
+            archived_at=link.archived_at,
             current_status=entry.status if entry else None,
             status_remarks=entry.remarks if entry else None,
         ))
-    return JobLinksOut(job_id=job.id, links=out)
+    total_pages = max(1, (int(total) + page_size - 1) // page_size)
+    return JobLinksOut(
+        job_id=job.id,
+        links=out,
+        total=int(total),
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        has_next=page < total_pages,
+    )

@@ -1,0 +1,30 @@
+# Build context exclusions. Without this file the builder stage's `COPY . .`
+# copies node_modules built on the HOST, which on a Windows machine means
+# platform-specific binaries (esbuild, sharp, swc) that cannot execute in a
+# linux/amd64 image, and a multi-gigabyte context on every build.
+
+node_modules
+.next
+.next-dev
+out
+
+# Secrets never belong in an image layer. The frontend deliberately holds no
+# .env at all: the Razorpay Key ID reaches the browser from GET /billing/config
+# at runtime, so RAZORPAY_KEY_SECRET has no path into the bundle.
+.env
+.env.*
+
+# VCS and tooling
+.git
+.gitignore
+.vercel
+*.log
+npm-debug.log*
+
+# Not needed to build or run the server
+Dockerfile
+.dockerignore
+README.md
+playwright-report
+test-results
+coverage

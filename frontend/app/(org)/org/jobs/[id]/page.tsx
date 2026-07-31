@@ -1,55 +1,50 @@
 "use client";
 
-// Unified org job workspace (contract rev 2) — merges the former HR and
-// Recruiter job pages into one, with individual actions capability-gated:
-//  - Detail tab: JD summary + compensation editor + JD edits (FR-4.1)
-//  - Matching & Sourcing tab: resume upload (upload_resumes), trigger
-//    matching (trigger_matching), 4-parameter results, outreach send
-//    (send_outreach) — Databank candidates skip outreach
-//  - Candidates tab: pipeline status (update_pipeline_status), interview
-//    scheduling (schedule_interviews), HM access grant, verification view
-//    + HR override
+// The job detail page (2026-07-27 spec §2/§3/§7). This IS the review screen, 
+// there is no separate one any more.
+//
+//   [ JD, with About Company / Work Life / Benefits, Edit button top-right ]
+//   [ RUN AI MATCHING ]
+//   [ Assessment setup review: PPI framework + technical questions ]
+//   [ Inline candidate table: Name | Level | PPI Report | Resume | 4 comments ]
+//
+// Deliberately absent, per the spec: the "Added by HR after ratification"
+// metadata, the notes textbox, the approval-status display, and the separate
+// JD-edits card. Editing happens in place, in one form.
 
 import * as React from "react";
+import { Loader2, Pencil, Send, Sparkles } from "lucide-react";
 import { useParams } from "next/navigation";
-import {
-  CalendarPlus,
-  Send,
-  ShieldQuestion,
-  Upload,
-  UserCheck,
-} from "lucide-react";
 
-import { apiGet, apiPost, apiPut, apiUploadWithProgress } from "@/lib/api";
-import type { CandidateLink, Job, VerificationRequest } from "@/lib/types";
+import { apiGet, apiPatch, apiPost } from "@/lib/api";
+import {
+  JOB_GRADES,
+  jobGradeLabel,
+  jobJd,
+  type CompanyProfile,
+  type Job,
+  type JobGrade,
+  type RankedCandidate,
+} from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
+import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
-import { MatchingResults } from "@/components/matching-results";
-import { StatusBadge } from "@/components/status-badge";
-import { TierBadge } from "@/components/tier-badge";
+import { LoadingRows } from "@/components/page-primitives";
+import { asJdLines } from "@/components/job-description";
+import { CandidateRankingTable } from "@/components/candidate-ranking-table";
+import { DatabankUpload } from "@/components/databank-upload";
+import { PipelineFunnel } from "@/components/pipeline-status";
+import { PostingWindowBanner } from "@/components/posting-window";
+import { EmailCompositionModal } from "@/components/email-composition-modal";
+import { JobSetupReview } from "@/components/job-setup-review";
+import { PPIReportModal } from "@/components/ppi-report-modal";
+import { ResumeViewer } from "@/components/resume-viewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { FormField, FormSection } from "@/components/ui/form";
-import { ResumeFileInput } from "@/components/resume-file-input";
+import { FormField } from "@/components/ui/form";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -58,15 +53,106 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
-const PIPELINE_STATUSES = ["rejected", "shortlisted", "offered", "joined"] as const;
+/** One labelled JD paragraph; hidden entirely when the field is empty. */
+function JdField({ label, value }: { label: string; value: unknown }) {
+  const lines = asJdLines(value);
+  if (lines.length === 0) return null;
+  return (
+    <div>
+      <h4 className="mb-1 font-semibold">{label}</h4>
+      {lines.length === 1 ? (
+        <p className="whitespace-pre-line">{lines[0]}</p>
+      ) : (
+        <ul className="list-disc space-y-1 pl-5">
+          {lines.map((line, index) => (
+            <li key={`${label}-${index}`}>{line}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** A narrative section, with a note when it is inherited from the company. */
+function NarrativeSection({
+  label,
+  value,
+  inherited,
+}: {
+  label: string;
+  value?: string | null;
+  inherited: boolean;
+}) {
+  if (!value || !value.trim()) return null;
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2">
+        <h4 className="font-semibold">{label}</h4>
+        {inherited ? (
+          <Badge variant="secondary" className="text-[10px]">
+            From company profile
+          </Badge>
+        ) : null}
+      </div>
+      <p className="whitespace-pre-line">{value}</p>
+    </div>
+  );
+}
+
+function experienceLabel(value: unknown): string | null {
+  const text = asJdLines(value)[0];
+  if (!text) return null;
+  if (typeof value === "number") return `${text}+ years`;
+  return /years?/i.test(text) ? text : `${text} years`;
+}
+
+type Draft = {
+  title: string;
+  department: string;
+  level: string;
+  grade: JobGrade | "";
+  role: string;
+  responsibilities: string;
+  accountabilities: string;
+  education: string;
+  skills: string;
+  experience_years: string;
+  about_company: string;
+  work_life: string;
+  benefits: string;
+};
+
+function draftFromJob(job: Job): Draft {
+  const jd = jobJd(job);
+  return {
+    title: job.title ?? "",
+    department: job.department ?? "",
+    level: job.level ?? "",
+    grade: job.grade ?? "",
+    role: asJdLines(jd.role).join("\n"),
+    responsibilities: asJdLines(jd.responsibilities).join("\n"),
+    accountabilities: asJdLines(jd.accountabilities).join("\n"),
+    education: asJdLines(jd.education).join("\n"),
+    skills: (jd.skills ?? []).join(", "),
+    experience_years:
+      jd.experience_years !== undefined && jd.experience_years !== null
+        ? String(jd.experience_years)
+        : "",
+    // Pre-filled with the RESOLVED value (spec §3.1): opening the editor shows
+    // the company's text rather than an empty box, so a recruiter who only
+    // wanted to tweak a sentence does not have to retype the paragraph.
+    about_company: job.about_company ?? "",
+    work_life: job.work_life ?? "",
+    benefits: job.benefits ?? "",
+  };
+}
 
 export default function OrgJobDetailPage() {
   const params = useParams<{ id: string }>();
@@ -74,91 +160,70 @@ export default function OrgJobDetailPage() {
   const { toast } = useToast();
   const { hasCapability } = useAuth();
 
-  const canUpload = hasCapability("upload_resumes");
-  const canTrigger = hasCapability("trigger_matching");
-  const canOutreach = hasCapability("send_outreach");
-  const canViewDatabank = hasCapability("view_databank");
-  const canUpdatePipeline = hasCapability("update_pipeline_status");
-  const canScheduleInterviews = hasCapability("schedule_interviews");
-  // ASSUMPTION: granting Hiring-Manager access and verification overrides are
-  // HR actions; `view_review_screen` is the closest contract capability. The
-  // server enforces the real RBAC either way.
-  const canGrantAccess = hasCapability("view_review_screen");
-  const showMatchingTab =
-    canViewDatabank || canUpload || canTrigger || canOutreach;
+  const canEditJd = hasCapability("edit_job_description");
+  const canRunMatching = hasCapability("trigger_matching");
+  const canEmail = hasCapability("send_outreach");
+  const canDecide = hasCapability("decide_profile");
+  const canUploadDatabank = hasCapability("upload_resumes");
+  const canRenew = hasCapability("publish_job");
+
+  // Which of the two top-level screens is showing. The JD opens first: a
+  // recruiter arriving at a job usually wants to check the posting before the
+  // applicants.
+  const [tab, setTab] = React.useState<"jd" | "candidates">("jd");
 
   const [job, setJob] = React.useState<Job | null>(null);
-  const [links, setLinks] = React.useState<CandidateLink[]>([]);
+  const [company, setCompany] = React.useState<CompanyProfile | null>(null);
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState<Draft | null>(null);
+  const [saving, setSaving] = React.useState(false);
 
-  // Compensation + JD edit state
-  const [compensation, setCompensation] = React.useState({
-    ctc_min: "",
-    ctc_max: "",
-    currency: "INR",
-    notes: "",
-  });
-  const [jdDraft, setJdDraft] = React.useState({
-    responsibilities: "",
-    accountabilities: "",
-    education: "",
-    skills: "",
-    experience_years: "",
-  });
-  const [savingComp, setSavingComp] = React.useState(false);
-  const [savingJd, setSavingJd] = React.useState(false);
+  const [matchingBusy, setMatchingBusy] = React.useState(false);
+  const [reloadKey, setReloadKey] = React.useState(0);
 
-  // Resume upload
-  const [file, setFile] = React.useState<File | null>(null);
-  const [uploadForm, setUploadForm] = React.useState({
-    email: "",
-    full_name: "",
-    phone: "",
-  });
-  const [uploading, setUploading] = React.useState(false);
-  const [uploadProgress, setUploadProgress] = React.useState(0);
-  const [uploadError, setUploadError] = React.useState<string | null>(null);
+  const [reportRow, setReportRow] = React.useState<RankedCandidate | null>(null);
+  const [resumeRow, setResumeRow] = React.useState<RankedCandidate | null>(null);
+  const [emailRows, setEmailRows] = React.useState<RankedCandidate[]>([]);
+  const [selectedRows, setSelectedRows] = React.useState<RankedCandidate[]>([]);
+  const [inviting, setInviting] = React.useState(false);
+  const [renewing, setRenewing] = React.useState(false);
 
-  // Outreach selection (fresh candidates only)
-  const [selected, setSelected] = React.useState<Set<string>>(new Set());
-  const [sendingOutreach, setSendingOutreach] = React.useState(false);
 
-  // Interview scheduling
-  const [interviewLink, setInterviewLink] = React.useState<CandidateLink | null>(null);
-  const [interviewForm, setInterviewForm] = React.useState({
-    scheduled_at: "",
-    notes: "",
-  });
-  const [scheduling, setScheduling] = React.useState(false);
-
-  // Verification dialog
-  const [verifLink, setVerifLink] = React.useState<CandidateLink | null>(null);
-  const [verifRequests, setVerifRequests] = React.useState<VerificationRequest[]>([]);
-  const [overrideTarget, setOverrideTarget] =
-    React.useState<VerificationRequest | null>(null);
-  const [overrideReason, setOverrideReason] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
+  /**
+   * Re-open an expired posting for another fixed 30-day window.
+   *
+   * Everyone who applied to the previous run keeps their application and stays
+   * in the candidate table; they simply read as Old Profiles from here on. The
+   * table is reloaded alongside the job so that relabelling is visible at once
+   * rather than on the next navigation.
+   */
+  const renewPosting = React.useCallback(async () => {
+    setRenewing(true);
+    try {
+      const updated = await apiPost<Job>(`/jobs/${jobId}/renew`);
+      setJob(updated);
+      setDraft(draftFromJob(updated));
+      setReloadKey((key) => key + 1);
+      toast({
+        title: "Posting renewed",
+        description: "This job is live again for another 30 days.",
+      });
+    } catch (e) {
+      toast({
+        title: "Could not renew this posting",
+        description: e instanceof Error ? e.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setRenewing(false);
+    }
+  }, [jobId, toast]);
 
   const loadJob = React.useCallback(async () => {
     try {
-      const res = await apiGet<Job | { job: Job }>(`/jobs/${jobId}`);
-      const j = "job" in (res as object) && (res as { job?: Job }).job
-        ? (res as { job: Job }).job
-        : (res as Job);
-      setJob(j);
-      const comp = (j.compensation ?? {}) as Record<string, unknown>;
-      setCompensation({
-        ctc_min: comp.ctc_min !== undefined ? String(comp.ctc_min) : "",
-        ctc_max: comp.ctc_max !== undefined ? String(comp.ctc_max) : "",
-        currency: typeof comp.currency === "string" ? comp.currency : "INR",
-        notes: typeof comp.notes === "string" ? comp.notes : "",
-      });
-      setJdDraft({
-        responsibilities: j.jd?.responsibilities ?? "",
-        accountabilities: j.jd?.accountabilities ?? "",
-        education: j.jd?.education ?? "",
-        skills: (j.jd?.skills ?? []).join(", "),
-        experience_years: String(j.jd?.experience_years ?? ""),
-      });
+      const res = await apiGet<Job>(`/jobs/${jobId}`);
+      setJob(res);
+      setDraft(draftFromJob(res));
     } catch (e) {
       toast({
         title: "Failed to load job",
@@ -168,814 +233,512 @@ export default function OrgJobDetailPage() {
     }
   }, [jobId, toast]);
 
-  const loadLinks = React.useCallback(async () => {
-    try {
-      const res = await apiGet<CandidateLink[] | { links: CandidateLink[] }>(
-        `/candidates/jobs/${jobId}`
-      );
-      setLinks(Array.isArray(res) ? res : res.links ?? []);
-    } catch {
-      setLinks([]);
-    }
-  }, [jobId]);
-
   React.useEffect(() => {
     void loadJob();
-    void loadLinks();
-  }, [loadJob, loadLinks]);
-
-  const saveCompensation = async () => {
-    setSavingComp(true);
-    try {
-      await apiPut(`/jobs/${jobId}/compensation`, {
-        compensation: {
-          ctc_min: compensation.ctc_min ? Number(compensation.ctc_min) : null,
-          ctc_max: compensation.ctc_max ? Number(compensation.ctc_max) : null,
-          currency: compensation.currency,
-          notes: compensation.notes,
-        },
-      });
-      toast({ title: "Compensation saved" });
-    } catch (e) {
-      toast({
-        title: "Save failed",
-        description: e instanceof Error ? e.message : undefined,
-        variant: "destructive",
-      });
-    } finally {
-      setSavingComp(false);
-    }
-  };
+    // The company name is needed for the email placeholders. A failure here is
+    // not worth a toast, the modal falls back to a neutral phrase.
+    apiGet<CompanyProfile>("/companies/me/profile")
+      .then(setCompany)
+      .catch(() => setCompany(null));
+  }, [loadJob]);
 
   const saveJd = async () => {
-    if (!job) return;
-    setSavingJd(true);
+    if (!draft || !job) return;
+    setSaving(true);
     try {
-      await apiPut(`/jobs/${jobId}/jd`, {
+      const updated = await apiPatch<Job>(`/jobs/${jobId}`, {
+        title: draft.title.trim(),
+        department: draft.department.trim() || null,
+        level: draft.level.trim() || null,
+        ...(draft.grade ? { grade: draft.grade } : {}),
         jd: {
-          ...job.jd,
-          responsibilities: jdDraft.responsibilities,
-          accountabilities: jdDraft.accountabilities,
-          education: jdDraft.education,
-          skills: jdDraft.skills
+          ...jobJd(job),
+          role: draft.role,
+          responsibilities: draft.responsibilities,
+          accountabilities: draft.accountabilities,
+          education: draft.education,
+          skills: draft.skills
             .split(",")
             .map((s) => s.trim())
             .filter(Boolean),
-          experience_years: Number(jdDraft.experience_years) || 0,
+          experience_years: (() => {
+            const value = draft.experience_years.trim();
+            if (!value) return null;
+            const numeric = Number(value);
+            return Number.isFinite(numeric) ? numeric : value;
+          })(),
         },
+        // Sending null (not "") clears the per-job override so the section
+        // falls back to the company profile, the two mean different things.
+        about_company: draft.about_company.trim() || null,
+        work_life: draft.work_life.trim() || null,
+        benefits: draft.benefits.trim() || null,
       });
-      toast({ title: "JD updated" });
-      void loadJob();
+      setJob(updated);
+      setDraft(draftFromJob(updated));
+      setEditing(false);
+      toast({ title: "Job description updated" });
     } catch (e) {
       toast({
-        title: "JD update failed",
+        title: "Couldn't save the job description",
         description: e instanceof Error ? e.message : undefined,
         variant: "destructive",
       });
     } finally {
-      setSavingJd(false);
+      setSaving(false);
     }
   };
 
-  const upload = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!file || !uploadForm.email) return;
-    setUploading(true);
-    setUploadProgress(0);
-    setUploadError(null);
+  // Only applicants still at `applied` can be invited; the backend refuses the
+  // rest and reports them, but filtering here keeps the button honest about
+  // how many it will actually send.
+  const invitable = selectedRows.filter((r) => r.status === "applied");
+
+  const sendInvitations = async () => {
+    setInviting(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("email", uploadForm.email);
-      if (uploadForm.full_name) fd.append("full_name", uploadForm.full_name);
-      if (uploadForm.phone) fd.append("phone", uploadForm.phone);
-      await apiUploadWithProgress(`/candidates/jobs/${jobId}/upload-resume`, fd, setUploadProgress);
+      const res = await apiPost<{ invited: number; skipped: unknown[] }>(
+        `/pipeline/jobs/${jobId}/select-candidates`,
+        { link_ids: selectedRows.map((r) => r.link_id) }
+      );
       toast({
-        title: "Resume uploaded",
+        title: `${res.invited} assessment invitation${res.invited === 1 ? "" : "s"} sent`,
         description:
-          "Candidate linked as freshly sourced; parsing has been queued.",
+          res.skipped.length > 0
+            ? `${res.skipped.length} skipped, already past this stage.`
+            : "Only invited candidates can take the assessment.",
       });
-      setFile(null);
-      setUploadForm({ email: "", full_name: "", phone: "" });
-      void loadLinks();
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Upload failed. Please retry.");
-      toast({
-        title: "Upload failed",
-        description: err instanceof Error ? err.message : undefined,
-        variant: "destructive",
-      });
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const toggleSelect = (candidateId: string, source: string) => {
-    if (source !== "fresh") return; // Databank candidates skip outreach
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(candidateId)) next.delete(candidateId);
-      else next.add(candidateId);
-      return next;
-    });
-  };
-
-  const sendOutreach = async () => {
-    setSendingOutreach(true);
-    try {
-      await apiPost("/verification/outreach", {
-        job_id: jobId,
-        candidate_ids: Array.from(selected),
-      });
-      toast({
-        title: "Outreach sent",
-        description: `${selected.size} candidate(s) will receive the 40-aspect + verification request.`,
-      });
-      setSelected(new Set());
+      setReloadKey((k) => k + 1);
     } catch (e) {
       toast({
-        title: "Outreach failed",
+        title: "Couldn't send the invitations",
         description: e instanceof Error ? e.message : undefined,
         variant: "destructive",
       });
     } finally {
-      setSendingOutreach(false);
+      setInviting(false);
     }
   };
 
-  const grantAccess = async (link: CandidateLink) => {
-    setBusy(true);
+  const runMatching = async () => {
+    setMatchingBusy(true);
     try {
-      await apiPost(`/candidates/links/${link.link_id}/grant-access`);
+      const res = await apiPost<{ candidate_count: number }>(
+        `/jobs/${jobId}/run-matching`
+      );
       toast({
-        title: "Hiring Manager access granted",
-        description: link.candidate.full_name || link.candidate.email,
+        title: "AI matching started",
+        description: `Scoring ${res.candidate_count} candidate${
+          res.candidate_count === 1 ? "" : "s"
+        }. Results appear here as they finish.`,
       });
-      void loadLinks();
+      // Matching runs as a background task; refresh shortly so early results
+      // land without the recruiter having to reload the page.
+      window.setTimeout(() => setReloadKey((k) => k + 1), 4000);
     } catch (e) {
       toast({
-        title: "Grant failed",
+        title: "Could not start matching",
         description: e instanceof Error ? e.message : undefined,
         variant: "destructive",
       });
     } finally {
-      setBusy(false);
+      setMatchingBusy(false);
     }
   };
 
-  const updateStatus = async (link: CandidateLink, status: string) => {
-    try {
-      await apiPost(`/candidates/links/${link.link_id}/status`, { status });
-      toast({
-        title: "Status updated",
-        description: `${link.candidate.full_name || link.candidate.email} → ${status}`,
-      });
-      void loadLinks();
-    } catch (e) {
-      toast({
-        title: "Status update failed",
-        description: e instanceof Error ? e.message : undefined,
-        variant: "destructive",
-      });
-    }
-  };
-
-  const schedule = async () => {
-    if (!interviewLink || !interviewForm.scheduled_at) return;
-    setScheduling(true);
-    try {
-      await apiPost(`/candidates/links/${interviewLink.link_id}/interviews`, {
-        scheduled_at: new Date(interviewForm.scheduled_at).toISOString(),
-        ...(interviewForm.notes ? { notes: interviewForm.notes } : {}),
-      });
-      toast({
-        title: "Interview scheduled",
-        description:
-          "The invite (.ics) is sent from the client's verified domain.",
-      });
-      setInterviewLink(null);
-      setInterviewForm({ scheduled_at: "", notes: "" });
-    } catch (e) {
-      toast({
-        title: "Scheduling failed",
-        description: e instanceof Error ? e.message : undefined,
-        variant: "destructive",
-      });
-    } finally {
-      setScheduling(false);
-    }
-  };
-
-  const openVerification = async (link: CandidateLink) => {
-    setVerifLink(link);
-    setVerifRequests([]);
-    if (!link.profile_id) return;
-    try {
-      const res = await apiGet<
-        VerificationRequest[] | { requests: VerificationRequest[] }
-      >(`/verification/profile/${link.profile_id}`);
-      setVerifRequests(Array.isArray(res) ? res : res.requests ?? []);
-    } catch {
-      setVerifRequests([]);
-    }
-  };
-
-  const submitOverride = async () => {
-    if (!overrideTarget || !overrideReason.trim()) return;
-    setBusy(true);
-    try {
-      await apiPost(`/verification/requests/${overrideTarget.id}/override`, {
-        reason: overrideReason.trim(),
-      });
-      toast({ title: "Verification overridden", description: "Audit-logged." });
-      setOverrideTarget(null);
-      setOverrideReason("");
-      if (verifLink) void openVerification(verifLink);
-    } catch (e) {
-      toast({
-        title: "Override failed",
-        description: e instanceof Error ? e.message : undefined,
-        variant: "destructive",
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
+  const overridden = new Set(job?.overridden_sections ?? []);
+  const jd = job ? jobJd(job) : {};
 
   return (
     <div>
       <PageHeader
+        eyebrow="Customer Portal"
         title={job?.title ?? "Job"}
         description={
           job
-            ? `${job.department} · ${job.level} · ${job.requirement_period}`
+            ? [
+                job.department,
+                // The experience band replaced the old free-text level.
+                job.experience_min_years !== null &&
+                job.experience_min_years !== undefined &&
+                job.experience_max_years !== null &&
+                job.experience_max_years !== undefined
+                  ? `${job.experience_min_years} to ${job.experience_max_years} years`
+                  : job.level,
+                job.requirement_period,
+              ]
+                .filter(Boolean)
+                .join(" · ")
             : undefined
         }
-        actions={job ? <StatusBadge status={job.status} /> : undefined}
+        actions={
+          job ? (
+            <Badge variant="secondary">Level: {jobGradeLabel(job.grade)}</Badge>
+          ) : undefined
+        }
       />
 
-      <Tabs defaultValue="detail">
-        <TabsList>
-          <TabsTrigger value="detail">Detail & JD</TabsTrigger>
-          {showMatchingTab ? (
-            <TabsTrigger value="matching">Matching & Sourcing</TabsTrigger>
+      {job ? (
+        <PostingWindowBanner
+          job={job}
+          className="mb-6"
+          onRenew={canRenew ? () => void renewPosting() : undefined}
+          renewing={renewing}
+        />
+      ) : null}
+
+      {/* Two buttons at the top of the page (client change, 2026-07-28): the
+          job description and the candidate list are separate screens now
+          rather than one very long scroll. */}
+      <div
+        role="tablist"
+        aria-label="Job sections"
+        className="mb-6 inline-flex rounded-xl border border-border bg-secondary p-1"
+      >
+        {(["jd", "candidates"] as const).map((key) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={tab === key}
+            onClick={() => setTab(key)}
+            className={cn(
+              "rounded-lg px-4 py-2 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              tab === key
+                ? "bg-brand-600 font-semibold text-white shadow-brand"
+                : "font-medium hover:bg-brand-100/70 hover:text-accent-foreground"
+            )}
+          >
+            {key === "jd" ? "Job description" : "Candidates"}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Job description ─────────────────────────────────────────────── */}
+      <Card className={cn("mb-6", tab !== "jd" && "hidden")}>
+        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+          <div>
+            <CardTitle>Job description</CardTitle>
+            <CardDescription>
+              Reporting to {String(jd.reporting_to || "-")}
+              {jd.reportees ? ` · Reportees: ${jd.reportees}` : ""}
+            </CardDescription>
+          </div>
+          {canEditJd && !editing ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setEditing(true)}
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit
+            </Button>
           ) : null}
-          <TabsTrigger value="candidates">Candidates</TabsTrigger>
-        </TabsList>
+        </CardHeader>
 
-        <TabsContent value="detail">
-          <div className="space-y-6">
-            {job ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Job description</CardTitle>
-                  <CardDescription>
-                    Reporting to {job.jd?.reporting_to || "—"}
-                    {job.jd?.reportees ? ` · Reportees: ${job.jd.reportees}` : ""}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3 text-sm">
-                  <div>
-                    <h4 className="mb-1 font-semibold">Role</h4>
-                    <p className="text-muted-foreground">{job.jd?.role || "—"}</p>
-                  </div>
-                  <div>
-                    <h4 className="mb-1 font-semibold">Skills</h4>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(job.jd?.skills ?? []).length > 0 ? (
-                        (job.jd?.skills ?? []).map((s) => (
-                          <Badge key={s} variant="secondary">
-                            {s}
-                          </Badge>
-                        ))
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            ) : null}
-
-            {/* ASSUMPTION: no dedicated capability exists in the contract for
-                compensation/JD edits; the editors are shown to org users and
-                the backend enforces the real permission (HR, post-ratification). */}
-            <div className="grid gap-6 lg:grid-cols-2">
-              <Card>
-                <CardContent className="space-y-4 pt-6">
-                  <FormSection
-                    title="Compensation"
-                    description="Added by HR after ratification (FR-4.1)."
-                  >
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <FormField label="CTC min" htmlFor="ctc-min">
-                        <Input
-                          id="ctc-min"
-                          type="number"
-                          value={compensation.ctc_min}
-                          onChange={(e) =>
-                            setCompensation({
-                              ...compensation,
-                              ctc_min: e.target.value,
-                            })
-                          }
-                        />
-                      </FormField>
-                      <FormField label="CTC max" htmlFor="ctc-max">
-                        <Input
-                          id="ctc-max"
-                          type="number"
-                          value={compensation.ctc_max}
-                          onChange={(e) =>
-                            setCompensation({
-                              ...compensation,
-                              ctc_max: e.target.value,
-                            })
-                          }
-                        />
-                      </FormField>
-                    </div>
-                    <FormField label="Currency" htmlFor="currency">
-                      <Input
-                        id="currency"
-                        value={compensation.currency}
-                        onChange={(e) =>
-                          setCompensation({
-                            ...compensation,
-                            currency: e.target.value,
-                          })
-                        }
-                      />
-                    </FormField>
-                    <FormField label="Notes" htmlFor="comp-notes">
-                      <Textarea
-                        id="comp-notes"
-                        rows={2}
-                        value={compensation.notes}
-                        onChange={(e) =>
-                          setCompensation({
-                            ...compensation,
-                            notes: e.target.value,
-                          })
-                        }
-                      />
-                    </FormField>
-                    <Button
-                      onClick={() => void saveCompensation()}
-                      disabled={savingComp}
-                    >
-                      {savingComp ? "Saving…" : "Save compensation"}
-                    </Button>
-                  </FormSection>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardContent className="space-y-4 pt-6">
-                  <FormSection
-                    title="JD edits"
-                    description="Resolve JD ambiguity post-ratification."
-                  >
-                    <FormField label="Responsibilities" htmlFor="jd-resp">
-                      <Textarea
-                        id="jd-resp"
-                        rows={3}
-                        value={jdDraft.responsibilities}
-                        onChange={(e) =>
-                          setJdDraft({
-                            ...jdDraft,
-                            responsibilities: e.target.value,
-                          })
-                        }
-                      />
-                    </FormField>
-                    <FormField label="Accountabilities" htmlFor="jd-acc">
-                      <Textarea
-                        id="jd-acc"
-                        rows={3}
-                        value={jdDraft.accountabilities}
-                        onChange={(e) =>
-                          setJdDraft({
-                            ...jdDraft,
-                            accountabilities: e.target.value,
-                          })
-                        }
-                      />
-                    </FormField>
-                    <FormField label="Education" htmlFor="jd-edu">
-                      <Input
-                        id="jd-edu"
-                        value={jdDraft.education}
-                        onChange={(e) =>
-                          setJdDraft({ ...jdDraft, education: e.target.value })
-                        }
-                      />
-                    </FormField>
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <FormField label="Skills (comma-separated)" htmlFor="jd-skills">
-                        <Input
-                          id="jd-skills"
-                          value={jdDraft.skills}
-                          onChange={(e) =>
-                            setJdDraft({ ...jdDraft, skills: e.target.value })
-                          }
-                        />
-                      </FormField>
-                      <FormField label="Experience (years)" htmlFor="jd-exp">
-                        <Input
-                          id="jd-exp"
-                          type="number"
-                          value={jdDraft.experience_years}
-                          onChange={(e) =>
-                            setJdDraft({
-                              ...jdDraft,
-                              experience_years: e.target.value,
-                            })
-                          }
-                        />
-                      </FormField>
-                    </div>
-                    <Button onClick={() => void saveJd()} disabled={savingJd}>
-                      {savingJd ? "Saving…" : "Save JD"}
-                    </Button>
-                  </FormSection>
-                </CardContent>
-              </Card>
-            </div>
-          </div>
-        </TabsContent>
-
-        {showMatchingTab ? (
-          <TabsContent value="matching">
-            <div className="space-y-6">
-              {canUpload ? (
-                <Card className="max-w-xl">
-                  <CardHeader>
-                    <CardTitle>Upload freshly sourced resume</CardTitle>
-                    <CardDescription>
-                      Creates the candidate + profile, links it to this job as
-                      fresh-sourced, and queues LLM resume parsing.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <form className="space-y-4" onSubmit={upload}>
-                      <FormField label="Resume file" htmlFor="resume-file" required>
-                        <ResumeFileInput
-                          id="resume-file"
-                          file={file}
-                          progress={uploadProgress}
-                          error={uploadError}
-                          disabled={uploading}
-                          onFileChange={(nextFile, validationError) => {
-                            setFile(nextFile);
-                            setUploadError(validationError);
-                            setUploadProgress(0);
-                          }}
-                          onRetry={() => {
-                            if (file && uploadForm.email) {
-                              void upload({ preventDefault() {} } as React.FormEvent);
-                            }
-                          }}
-                        />
-                      </FormField>
-                      <FormField label="Candidate email" htmlFor="cand-email" required>
-                        <Input
-                          id="cand-email"
-                          type="email"
-                          value={uploadForm.email}
-                          onChange={(e) =>
-                            setUploadForm({ ...uploadForm, email: e.target.value })
-                          }
-                          required
-                        />
-                      </FormField>
-                      <FormField label="Candidate name" htmlFor="cand-name">
-                        <Input
-                          id="cand-name"
-                          value={uploadForm.full_name}
-                          onChange={(e) =>
-                            setUploadForm({
-                              ...uploadForm,
-                              full_name: e.target.value,
-                            })
-                          }
-                        />
-                      </FormField>
-                      <FormField label="Phone" htmlFor="cand-phone">
-                        <Input
-                          id="cand-phone"
-                          type="tel"
-                          value={uploadForm.phone}
-                          onChange={(e) =>
-                            setUploadForm({ ...uploadForm, phone: e.target.value })
-                          }
-                        />
-                      </FormField>
-                      <Button
-                        type="submit"
-                        disabled={uploading || !file || !uploadForm.email}
-                        className="gap-2"
-                      >
-                        <Upload className="h-4 w-4" />
-                        {uploading ? "Uploading…" : "Upload & link"}
-                      </Button>
-                    </form>
-                  </CardContent>
-                </Card>
-              ) : null}
-
-              {canOutreach ? (
-                <div className="flex items-center justify-between">
-                  <p className="text-sm text-muted-foreground">
-                    Select fresh candidates below and send the 40-aspect +
-                    employer-verification outreach. Databank matches skip this
-                    flow.
-                  </p>
-                  <Button
-                    className="gap-2"
-                    disabled={selected.size === 0 || sendingOutreach}
-                    onClick={() => void sendOutreach()}
-                  >
-                    <Send className="h-4 w-4" />
-                    {sendingOutreach
-                      ? "Sending…"
-                      : `Send outreach (${selected.size})`}
-                  </Button>
-                </div>
-              ) : null}
-              <MatchingResults
-                jobId={jobId}
-                selectable={canOutreach}
-                selected={selected}
-                onToggleSelect={toggleSelect}
-                canTrigger={canTrigger}
-              />
-            </div>
-          </TabsContent>
-        ) : null}
-
-        <TabsContent value="candidates">
-          <p className="mb-4 text-sm text-muted-foreground">
-            Keeping every profile&apos;s status current is mandatory (FR-8.4).
-          </p>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Candidate</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead>Tier</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Verification</TableHead>
-                {canUpdatePipeline ? <TableHead>Pipeline update</TableHead> : null}
-                {canScheduleInterviews ? (
-                  <TableHead>Interview</TableHead>
-                ) : null}
-                {canGrantAccess ? (
-                  <TableHead className="text-right">HM access</TableHead>
-                ) : null}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {links.length === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={8}
-                    className="text-center text-muted-foreground"
-                  >
-                    No candidates linked to this job yet.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                links.map((link) => (
-                  <TableRow key={link.link_id}>
-                    <TableCell className="font-medium">
-                      {link.candidate.full_name || link.candidate.email}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="capitalize">
-                        {link.source}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <TierBadge tier={link.tier} />
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge status={link.status} />
-                    </TableCell>
-                    <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="gap-1"
-                        onClick={() => void openVerification(link)}
-                      >
-                        <ShieldQuestion className="h-4 w-4" /> View
-                      </Button>
-                    </TableCell>
-                    {canUpdatePipeline ? (
-                      <TableCell>
-                        <Select
-                          onValueChange={(v) => void updateStatus(link, v)}
-                        >
-                          <SelectTrigger className="h-8 w-36">
-                            <SelectValue placeholder="Set status" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {PIPELINE_STATUSES.map((s) => (
-                              <SelectItem key={s} value={s} className="capitalize">
-                                {s}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </TableCell>
-                    ) : null}
-                    {canScheduleInterviews ? (
-                      <TableCell>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="gap-1"
-                          onClick={() => setInterviewLink(link)}
-                        >
-                          <CalendarPlus className="h-4 w-4" /> Schedule
-                        </Button>
-                      </TableCell>
-                    ) : null}
-                    {canGrantAccess ? (
-                      <TableCell className="text-right">
-                        {link.hm_access_granted ? (
-                          <Badge variant="secondary">Granted</Badge>
-                        ) : (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="gap-1"
-                            disabled={busy}
-                            onClick={() => void grantAccess(link)}
-                          >
-                            <UserCheck className="h-4 w-4" /> Grant
-                          </Button>
-                        )}
-                      </TableCell>
-                    ) : null}
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </TabsContent>
-      </Tabs>
-
-      {/* Interview scheduling dialog */}
-      <Dialog
-        open={interviewLink !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setInterviewLink(null);
-            setInterviewForm({ scheduled_at: "", notes: "" });
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              Schedule interview —{" "}
-              {interviewLink?.candidate.full_name ||
-                interviewLink?.candidate.email}
-            </DialogTitle>
-            <DialogDescription>
-              The invite with an .ics attachment is sent from the client&apos;s
-              own verified email domain — never Gmail/Outlook.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <FormField label="Date & time" htmlFor="int-dt" required>
-              <Input
-                id="int-dt"
-                type="datetime-local"
-                value={interviewForm.scheduled_at}
-                onChange={(e) =>
-                  setInterviewForm({
-                    ...interviewForm,
-                    scheduled_at: e.target.value,
-                  })
-                }
-              />
-            </FormField>
-            <FormField label="Notes" htmlFor="int-notes">
-              <Textarea
-                id="int-notes"
-                rows={3}
-                placeholder="Round details, panel, meeting link…"
-                value={interviewForm.notes}
-                onChange={(e) =>
-                  setInterviewForm({ ...interviewForm, notes: e.target.value })
-                }
-              />
-            </FormField>
-          </div>
-          <DialogFooter>
-            <Button
-              disabled={scheduling || !interviewForm.scheduled_at}
-              onClick={() => void schedule()}
-            >
-              {scheduling ? "Scheduling…" : "Schedule & send invite"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Verification status dialog */}
-      <Dialog
-        open={verifLink !== null}
-        onOpenChange={(open) => {
-          if (!open) setVerifLink(null);
-        }}
-      >
-        <DialogContent className="max-w-xl">
-          <DialogHeader>
-            <DialogTitle>
-              Employer verification —{" "}
-              {verifLink?.candidate.full_name || verifLink?.candidate.email}
-            </DialogTitle>
-            <DialogDescription>
-              Up to 3 previous employers. Overrides require a reason and are
-              audit-logged.
-            </DialogDescription>
-          </DialogHeader>
-          {!verifLink?.profile_id ? (
-            <p className="text-sm text-muted-foreground">
-              No profile / verification data for this candidate yet.
-            </p>
-          ) : verifRequests.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No verification requests found.
-            </p>
-          ) : (
-            <div className="space-y-3">
-              {verifRequests.map((v) => (
-                <div
-                  key={v.id}
-                  className="flex items-center justify-between rounded-md border p-3"
+        <CardContent className="space-y-4 text-sm">
+          {!job ? (
+            <LoadingRows rows={4} label="Loading the job description" />
+          ) : editing && draft ? (
+            <div className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <FormField label="Title" htmlFor="jd-title" required>
+                  <Input
+                    id="jd-title"
+                    value={draft.title}
+                    onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+                  />
+                </FormField>
+                <FormField label="Department" htmlFor="jd-dept">
+                  <Input
+                    id="jd-dept"
+                    value={draft.department}
+                    onChange={(e) =>
+                      setDraft({ ...draft, department: e.target.value })
+                    }
+                  />
+                </FormField>
+                <FormField
+                  label="Level"
+                  htmlFor="jd-grade"
+                  hint="Decides which assessment applicants receive."
                 >
-                  <div>
-                    <p className="text-sm font-medium">{v.employer_email}</p>
-                    <StatusBadge
-                      status={v.overridden ? "overridden" : v.status}
-                    />
-                  </div>
-                  {canGrantAccess &&
-                  !v.overridden &&
-                  v.status?.toLowerCase() !== "completed" ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setOverrideTarget(v)}
-                    >
-                      Override
-                    </Button>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+                  <Select
+                    value={draft.grade}
+                    onValueChange={(v) => setDraft({ ...draft, grade: v as JobGrade })}
+                  >
+                    <SelectTrigger id="jd-grade">
+                      <SelectValue placeholder="Select a level" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {JOB_GRADES.map((g) => (
+                        <SelectItem key={g.value} value={g.value}>
+                          {g.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </FormField>
+              </div>
 
-      {/* Override dialog — reason required */}
-      <Dialog
-        open={overrideTarget !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setOverrideTarget(null);
-            setOverrideReason("");
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Override verification</DialogTitle>
-            <DialogDescription>
-              A reason is required. The override is written to the audit log.
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            placeholder="Reason for overriding this verification requirement"
-            rows={3}
-            value={overrideReason}
-            onChange={(e) => setOverrideReason(e.target.value)}
-          />
-          <DialogFooter>
-            <Button
-              disabled={busy || overrideReason.trim().length === 0}
-              onClick={() => void submitOverride()}
-            >
-              {busy ? "Submitting…" : "Confirm override"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              <FormField label="Role" htmlFor="jd-role">
+                <Textarea
+                  id="jd-role"
+                  rows={2}
+                  value={draft.role}
+                  onChange={(e) => setDraft({ ...draft, role: e.target.value })}
+                />
+              </FormField>
+              <FormField label="Responsibilities" htmlFor="jd-resp">
+                <Textarea
+                  id="jd-resp"
+                  rows={4}
+                  value={draft.responsibilities}
+                  onChange={(e) =>
+                    setDraft({ ...draft, responsibilities: e.target.value })
+                  }
+                />
+              </FormField>
+              <FormField label="Accountabilities" htmlFor="jd-acc">
+                <Textarea
+                  id="jd-acc"
+                  rows={3}
+                  value={draft.accountabilities}
+                  onChange={(e) =>
+                    setDraft({ ...draft, accountabilities: e.target.value })
+                  }
+                />
+              </FormField>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <FormField label="Education" htmlFor="jd-edu">
+                  <Input
+                    id="jd-edu"
+                    value={draft.education}
+                    onChange={(e) =>
+                      setDraft({ ...draft, education: e.target.value })
+                    }
+                  />
+                </FormField>
+                <FormField label="Skills (comma-separated)" htmlFor="jd-skills">
+                  <Input
+                    id="jd-skills"
+                    value={draft.skills}
+                    onChange={(e) => setDraft({ ...draft, skills: e.target.value })}
+                  />
+                </FormField>
+                <FormField label="Experience (years)" htmlFor="jd-exp">
+                  <Input
+                    id="jd-exp"
+                    placeholder="e.g. 3 or 3-5"
+                    value={draft.experience_years}
+                    onChange={(e) =>
+                      setDraft({ ...draft, experience_years: e.target.value })
+                    }
+                  />
+                </FormField>
+              </div>
+
+              <FormField
+                label="About company"
+                htmlFor="jd-about"
+                hint="Defaults to your company profile. Editing it here changes this job only."
+              >
+                <Textarea
+                  id="jd-about"
+                  rows={4}
+                  value={draft.about_company}
+                  onChange={(e) =>
+                    setDraft({ ...draft, about_company: e.target.value })
+                  }
+                />
+              </FormField>
+              <FormField
+                label="Work life"
+                htmlFor="jd-worklife"
+                hint="Defaults to your company profile. Editing it here changes this job only."
+              >
+                <Textarea
+                  id="jd-worklife"
+                  rows={4}
+                  value={draft.work_life}
+                  onChange={(e) => setDraft({ ...draft, work_life: e.target.value })}
+                />
+              </FormField>
+              <FormField
+                label="Benefits"
+                htmlFor="jd-benefits"
+                hint="Defaults to your company profile. Editing it here changes this job only."
+              >
+                <Textarea
+                  id="jd-benefits"
+                  rows={4}
+                  value={draft.benefits}
+                  onChange={(e) => setDraft({ ...draft, benefits: e.target.value })}
+                />
+              </FormField>
+
+              <div className="flex gap-2">
+                <Button
+                  disabled={saving || !draft.title.trim()}
+                  onClick={() => void saveJd()}
+                >
+                  {saving ? "Saving" : "Save changes"}
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={saving}
+                  onClick={() => {
+                    setDraft(draftFromJob(job));
+                    setEditing(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <JdField label="Description" value={jd.description} />
+              <JdField label="Role" value={jd.role} />
+              <JdField label="Responsibilities" value={jd.responsibilities} />
+              <JdField label="Accountabilities" value={jd.accountabilities} />
+              <JdField label="Education" value={jd.education} />
+              <JdField label="Experience" value={experienceLabel(jd.experience_years)} />
+              <div>
+                <h4 className="mb-1 font-semibold">Skills</h4>
+                <div className="flex flex-wrap gap-1.5">
+                  {(jd.skills ?? []).length > 0 ? (
+                    (jd.skills ?? []).map((s) => (
+                      <Badge key={s} variant="secondary">
+                        {s}
+                      </Badge>
+                    ))
+                  ) : (
+                    <span>-</span>
+                  )}
+                </div>
+              </div>
+              <NarrativeSection
+                label="About company"
+                value={job.about_company}
+                inherited={!overridden.has("about_company")}
+              />
+              <NarrativeSection
+                label="Work life"
+                value={job.work_life}
+                inherited={!overridden.has("work_life")}
+              />
+              <NarrativeSection
+                label="Benefits"
+                value={job.benefits}
+                inherited={!overridden.has("benefits")}
+              />
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Everything below is the Candidates screen. Hidden rather than
+          unmounted so switching tabs does not refetch the table or lose a
+          recruiter's tick-box selection. */}
+      <div className={cn(tab !== "candidates" && "hidden")}>
+
+      {/* ── Databank upload (up to 25 resumes at once) ──────────────────── */}
+      {canUploadDatabank ? (
+        <DatabankUpload
+          jobId={jobId}
+          onUploaded={() => setReloadKey((k) => k + 1)}
+          className="mb-6"
+        />
+      ) : null}
+
+      {/* ── Run AI matching ─────────────────────────────────────────────── */}
+      {canRunMatching ? (
+        <div className="mb-6 flex flex-wrap items-center gap-3">
+          <Button
+            variant="secondary"
+            disabled={matchingBusy || !job}
+            onClick={() => void runMatching()}
+          >
+            {matchingBusy ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Sparkles className="h-4 w-4" aria-hidden="true" />
+            )}
+            {matchingBusy ? "Starting" : "Run AI matching"}
+          </Button>
+          <p className="text-xs leading-5">
+            Rates every candidate linked to this job and refreshes the list
+            below.
+          </p>
+        </div>
+      ) : null}
+
+      {/* ── Assessment selection (spec §3.1) ─────────────────────────────── */}
+      {canEmail ? (
+        <div className="mb-6 flex flex-wrap items-center gap-3">
+          <Button
+            disabled={inviting || invitable.length === 0}
+            onClick={() => void sendInvitations()}
+          >
+            {inviting ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Send className="h-4 w-4" aria-hidden="true" />
+            )}
+            Send assessment invitations
+            {invitable.length > 0 ? ` (${invitable.length})` : ""}
+          </Button>
+          <p className="text-xs leading-5">
+            {selectedRows.length === 0
+              ? "Tick the candidates worth assessing. Only those you invite can take the assessment, and only they get a PPI Assessment Report."
+              : `${invitable.length} of ${selectedRows.length} selected can be invited; the rest are already past this stage.`}
+          </p>
+        </div>
+      ) : null}
+
+      {/* The one manual step (spec §11): both halves of the assessment setup
+          are reviewed and finalised here before any candidate can be invited. */}
+      {job ? <JobSetupReview jobId={jobId} /> : null}
+
+      {job ? <PipelineFunnel jobId={jobId} reloadKey={reloadKey} /> : null}
+
+      {/* ── Inline candidate table ──────────────────────────────────────── */}
+      <CandidateRankingTable
+        jobId={jobId}
+        reloadKey={reloadKey}
+        onOpenReport={setReportRow}
+        onOpenResume={setResumeRow}
+        onEmail={canEmail ? setEmailRows : undefined}
+        onSelectionChange={setSelectedRows}
+        canDecide={canDecide}
+      />
+
+      </div>
+
+      <PPIReportModal
+        open={reportRow !== null}
+        onOpenChange={(open) => !open && setReportRow(null)}
+        linkId={reportRow?.link_id ?? null}
+        candidateName={reportRow?.full_name ?? ""}
+        jobTitle={job?.title}
+      />
+
+      <ResumeViewer
+        open={resumeRow !== null}
+        onOpenChange={(open) => !open && setResumeRow(null)}
+        resumeUrl={resumeRow?.resume_url}
+        resumeFileName={resumeRow?.resume_filename}
+        candidateName={resumeRow?.full_name ?? ""}
+      />
+
+      <EmailCompositionModal
+        open={emailRows.length > 0}
+        onOpenChange={(open) => !open && setEmailRows([])}
+        candidates={emailRows}
+        jobTitle={job?.title ?? ""}
+        companyName={company?.company_name ?? "our team"}
+        onSent={() => setReloadKey((k) => k + 1)}
+      />
     </div>
   );
 }

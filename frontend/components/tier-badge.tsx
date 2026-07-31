@@ -1,45 +1,37 @@
 import { Badge } from "@/components/ui/badge";
 import type { Tier } from "@/lib/types";
 
-// Monochrome tier badges — differentiated by weight/fill, not color.
+/**
+ * The match tier, rendered as one of the five WORD labels and nothing else.
+ *
+ * No score, no percentage, no rank reaches a client (CLAUDE.md), so the
+ * underlying number never appears here in any form, not even as a tooltip or a
+ * bar width. The chip uses the shared rating ramp, and the label alone carries
+ * the meaning so it survives being read in greyscale.
+ */
 const TIER_STYLES: Record<Tier, { label: string; className: string }> = {
   highly_matching: {
     label: "Highly Matching",
-    className: "bg-foreground text-background border-transparent",
-  },
-  moderately_matching: {
-    label: "Moderately Matching",
-    className: "bg-muted-foreground/80 text-background border-transparent",
+    className: "border-transparent bg-rating-1-bg text-rating-1",
   },
   matching: {
     label: "Matching",
-    className: "bg-muted text-foreground border-border",
+    className: "border-transparent bg-rating-2-bg text-rating-2",
+  },
+  moderately_matching: {
+    label: "Moderately Matching",
+    className: "border-transparent bg-rating-3-bg text-rating-3",
   },
   not_matching: {
     label: "Not Matching",
-    className: "bg-transparent text-muted-foreground border-border border-dashed",
+    className: "border-transparent bg-rating-5-bg text-rating-5",
   },
 };
 
 export function TierBadge({ tier }: { tier: Tier | null | undefined }) {
-  if (!tier) {
-    return (
-      <Badge variant="outline" className="text-muted-foreground">
-        Unrated
-      </Badge>
-    );
-  }
+  if (!tier) return null;
   const style = TIER_STYLES[tier] ?? TIER_STYLES.not_matching;
-  return <Badge className={style.className}>{style.label}</Badge>;
-}
-
-/**
- * Tier assignment mirror of backend rule (claude.md rule 8): boundaries are
- * inclusive upward, evaluated top-down — exactly 90 is Highly Matching.
- */
-export function tierForScore(score: number): Tier {
-  if (score >= 90) return "highly_matching";
-  if (score >= 70) return "moderately_matching";
-  if (score >= 50) return "matching";
-  return "not_matching";
+  return (
+    <Badge className={`font-semibold ${style.className}`}>{style.label}</Badge>
+  );
 }

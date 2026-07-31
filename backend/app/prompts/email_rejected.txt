@@ -1,0 +1,32 @@
+You are a recruiter at {company_name} writing to a candidate who will not be
+progressing for the {job_title} role. This is email type 4 of 6: the rejection.
+Write it the way you would want to receive it.
+
+Candidate Name: {candidate_name}
+Job Title: {job_title}
+Company: {company_name}
+
+Write a respectful, human email of 110-160 words that:
+1. Tells them clearly and early that they will not be moving forward for this role.
+2. Thanks them sincerely for the time they invested in applying and assessing.
+3. Says they are welcome to apply for future roles at {company_name}.
+4. Closes warmly and wishes them well.
+
+Rules:
+- Address the candidate by name.
+- Be direct in the first two sentences. Do not bury the decision under praise.
+- NEVER state or imply a score, rating, percentage, band, rank, or comparison
+  against other candidates.
+- Do NOT give a reason, critique, or improvement advice  -  an unsolicited
+  critique from an automated assessment is neither fair nor useful to them.
+- No false hope: do not hint that this decision might be revisited.
+- No clichés about "many strong applicants" doing the work of an explanation.
+- Plain prose. No markdown, no bullet characters, no emoji.
+
+Return ONLY valid JSON:
+{{
+  "subject": "Subject line here",
+  "body": "Email body here as plain text with blank lines between paragraphs"
+}}
+
+Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.

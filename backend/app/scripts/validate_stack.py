@@ -4,7 +4,7 @@
         python -m app.scripts.validate_stack
 
 Prints a PASS / FAIL / WARN line per check plus a summary table, and exits
-non-zero if any HARD check FAILED. WARN never fails the run — it flags a known,
+non-zero if any HARD check FAILED. WARN never fails the run  -  it flags a known,
 expected gap (e.g. the SMTP credentials the user hasn't added yet).
 
 Checks
@@ -15,21 +15,21 @@ Checks
   4. Required env present in the backend process
        - FIREBASE_SERVICE_ACCOUNT_JSON  (hard)
        - CLOUDINARY_URL                 (hard)
-       - SMTP_HOST / SMTP_USER / SMTP_PASSWORD (WARN only — user hasn't set them yet)
+       - SMTP_HOST / SMTP_USER / SMTP_PASSWORD (WARN only  -  user hasn't set them yet)
   5. Seeded data sane
        - exactly one super_admin, and it is the configured Owner
        - >= 25 candidates with a resume_url set (Cloudinary seed)
        - the multi-context identifier resolves to 2+ users
   6. A matching run has persisted a 4-parameter breakdown for >= 1 job
   7. PRD v1.0 alignment
-       - >= 1 PUBLISHED job with a resolvable public link/id (`/{job_uuid}`)
+       - >= 1 PUBLISHED job with a resolvable public link/id (`/apply/{job_uuid}`)
        - the flattened permission matrix: hr_manager / recruiter / hiring_manager
          all resolve to the SAME allowed-capability set (direct-publish, shared
-         pool — no per-role divergence)
+         pool  -  no per-role divergence)
        - >= 1 candidate can be resolved for open application (published jobs exist,
          so the public register→apply flow has a target)
 
-Every check is isolated — one failure (or crash) never aborts the run. Checks
+Every check is isolated  -  one failure (or crash) never aborts the run. Checks
 are DISCOVERY-based (query the live DB), never hardcoded, so they survive seed
 changes.
 """
@@ -62,14 +62,14 @@ class Report:
     results: list[Result] = field(default_factory=list)
 
     def record(self, name: str, status: str, detail: str = "") -> None:
-        print(f"[{status}] {name}" + (f" — {detail}" if detail else ""))
+        print(f"[{status}] {name}" + (f"  -  {detail}" if detail else ""))
         self.results.append(Result(name, status, detail))
 
     def check(self, name: str, fn) -> None:
         """`fn()` returns (status, detail); a raised exception is a hard FAIL."""
         try:
             status, detail = fn()
-        except Exception as exc:  # noqa: BLE001 — a check crash is just a FAIL
+        except Exception as exc:  # noqa: BLE001  -  a check crash is just a FAIL
             status, detail = FAIL, f"exception: {exc!r}"
             traceback.print_exc()
         self.record(name, status, detail)
@@ -114,7 +114,7 @@ async def _run_db_checks(report: Report) -> None:
 
             await _acheck(report, "db_reachable", db_reachable)
 
-            # 1b) Migrations at head — compare alembic_version to the script head.
+            # 1b) Migrations at head  -  compare alembic_version to the script head.
             async def migrations_at_head():
                 current = (
                     await s.execute(text("SELECT version_num FROM alembic_version"))
@@ -125,7 +125,7 @@ async def _run_db_checks(report: Report) -> None:
                 if head is None:
                     return WARN, f"current={current}; could not resolve script head to compare"
                 if current != head:
-                    return FAIL, f"DB at {current}, script head is {head} — run alembic upgrade head"
+                    return FAIL, f"DB at {current}, script head is {head}, run alembic upgrade head"
                 return PASS, f"at head {current}"
 
             await _acheck(report, "migrations_at_head", migrations_at_head)
@@ -228,7 +228,7 @@ async def _run_db_checks(report: Report) -> None:
 
             # 7a) At least one PUBLISHED job with a resolvable public link/id.
             #     PRD v1.0 replaces the multi-level approval FSM with direct
-            #     publish + a public job link `/{job_uuid}`. "Published" is
+            #     publish + a public job link `/apply/{job_uuid}`. "Published" is
             #     discovered tolerantly so this survives the rename: a job counts
             #     as publicly linkable if status is a published/terminal value OR
             #     it carries a ratified_at marker (the pre-rename terminal state).
@@ -247,18 +247,21 @@ async def _run_db_checks(report: Report) -> None:
                 ).first()
                 if row is None:
                     return FAIL, (
-                        "no published/terminal job found — the public job link "
-                        "`/{job_uuid}` has no target (publish a job / seed one)"
+                        "no published/terminal job found, the public job link "
+                        "`/apply/{job_uuid}` has no target (publish a job / seed one)"
                     )
                 job_id, job_status = row[0], row[1]
                 if not job_id:
                     return FAIL, f"published job (status={job_status}) has no id for a public link"
-                return PASS, f"published job {job_id} (status={job_status}) → public link /{job_id}"
+                return PASS, (
+                    f"published job {job_id} (status={job_status}) "
+                    f"→ public link /apply/{job_id}"
+                )
 
             await _acheck(report, "published_job_has_public_link", published_job_public_link)
 
             # 7b) Flattened permission matrix (PRD v1.0 §4 FINAL): the three staff
-            #     roles are EQUAL — hr_manager, recruiter, hiring_manager must
+            #     roles are EQUAL  -  hr_manager, recruiter, hiring_manager must
             #     resolve to the SAME allowed-capability set. Query the global
             #     template rows (tenant_id IS NULL) and compare the allowed sets.
             async def flat_permission_matrix():
@@ -280,7 +283,7 @@ async def _run_db_checks(report: Report) -> None:
                     missing = [r for r in staff_roles if not caps_by_role.get(r)]
                     return FAIL, (
                         f"no allowed capabilities for role(s) {missing} in the global "
-                        "template — cannot verify the flattened matrix"
+                        "template, cannot verify the flattened matrix"
                     )
                 sets = [frozenset(caps_by_role[r]) for r in staff_roles]
                 if sets[0] == sets[1] == sets[2]:
@@ -296,7 +299,7 @@ async def _run_db_checks(report: Report) -> None:
                 }
                 return FAIL, (
                     "staff roles resolve to DIFFERENT capability sets (matrix not "
-                    f"flattened) — per-role missing vs union: {diffs}"
+                    f"flattened), per-role missing vs union: {diffs}"
                 )
 
             await _acheck(report, "flat_staff_permission_matrix", flat_permission_matrix)
@@ -320,9 +323,9 @@ async def _run_db_checks(report: Report) -> None:
                     await s.execute(text("SELECT count(*) FROM candidates"))
                 ).scalar_one()
                 if jobs < 1:
-                    return FAIL, "no published job — nothing for an open application to target"
+                    return FAIL, "no published job, nothing for an open application to target"
                 if cands < 1:
-                    return FAIL, "no candidate rows — open application flow has no subject"
+                    return FAIL, "no candidate rows, open application flow has no subject"
                 return PASS, f"{cands} candidate(s) resolvable against {jobs} published job(s)"
 
             await _acheck(report, "candidate_resolvable_for_open_application", candidate_for_open_application)
@@ -331,7 +334,7 @@ async def _run_db_checks(report: Report) -> None:
 
 
 async def _acheck(report: Report, name: str, coro_fn) -> None:
-    """Async analogue of Report.check — isolates each DB check."""
+    """Async analogue of Report.check  -  isolates each DB check."""
     try:
         status, detail = await coro_fn()
     except Exception as exc:  # noqa: BLE001
@@ -351,7 +354,7 @@ def _script_head() -> str | None:
         cfg = Config("alembic.ini")
         heads = ScriptDirectory.from_config(cfg).get_heads()
         return heads[0] if len(heads) == 1 else None
-    except Exception:  # noqa: BLE001 — fall back to WARN in the caller
+    except Exception:  # noqa: BLE001  -  fall back to WARN in the caller
         return None
 
 
@@ -395,7 +398,7 @@ def _env_check():
 
 def _smtp_env_check():
     """Outbound email now goes over SMTP from the backend (PRD v1.0, replaces the
-    Mailtrap HTTP API). WARN-only: the user hasn't added SMTP credentials yet, and
+    Gmail SMTP). Missing credentials are warning-only so
     dev must still boot without them (missing keys warn, never hard-crash)."""
     settings = get_settings()
     required = {
@@ -406,8 +409,8 @@ def _smtp_env_check():
     missing = [k for k, v in required.items() if not v]
     if missing:
         return WARN, (
-            f"{', '.join(missing)} not set — email delivery disabled (known gap; "
-            "SMTP can point at Mailtrap SMTP or Gmail SMTP app-password)"
+            f"{', '.join(missing)} not set, email delivery disabled (known gap; "
+            "configure Gmail SMTP with a Google app password)"
         )
     return PASS, f"SMTP configured (host={settings.smtp_host}, port={settings.smtp_port})"
 
@@ -451,7 +454,7 @@ def main() -> int:
     # DB + seed sanity.
     try:
         asyncio.run(_run_db_checks(report))
-    except Exception as exc:  # noqa: BLE001 — never let DB setup abort the summary
+    except Exception as exc:  # noqa: BLE001  -  never let DB setup abort the summary
         report.record("db_checks_bootstrap", FAIL, f"could not run DB checks: {exc!r}")
         traceback.print_exc()
 

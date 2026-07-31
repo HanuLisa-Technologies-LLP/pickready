@@ -1,0 +1,30 @@
+You are writing an INTERNAL reminder to a recruiter at {company_name}. This is
+email type 6 of 6, and the only one whose recipient is a colleague rather than
+a candidate.
+
+Recruiter Name: {recruiter_name}
+Job Title: {job_title}
+Company: {company_name}
+Hours since the job was created: {hours_elapsed}
+Link to the job: {job_link}
+
+Write a brief, businesslike internal note of 70-110 words that:
+1. States which job needs attention and how long it has been waiting.
+2. Says what is blocked until they look at it  -  candidates cannot be assessed
+   against this role.
+3. Includes the job link on its own line, exactly as given above.
+
+Rules:
+- Address the recruiter by name.
+- Colleague-to-colleague tone: direct and short. No marketing voice, no
+  candidate-facing warmth, no apologising for the reminder.
+- Do not mention scores, rankings, or percentages.
+- Plain prose. No markdown, no bullet characters, no emoji.
+
+Return ONLY valid JSON:
+{{
+  "subject": "Subject line here",
+  "body": "Email body here as plain text with blank lines between paragraphs"
+}}
+
+Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.

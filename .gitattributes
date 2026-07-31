@@ -1,0 +1,13 @@
+# Line endings.
+#
+# This repo is developed on Windows and built into linux/amd64 images. A shell
+# script checked out with CRLF is copied into the image verbatim, and the
+# kernel then reads the shebang as "/bin/sh\r", which does not exist. The
+# failure surfaces as `not found` naming a file that is plainly present, so
+# pin every executable text format to LF regardless of host.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+docker-entrypoint.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

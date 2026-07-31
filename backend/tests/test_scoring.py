@@ -17,7 +17,6 @@ import pytest
 from app.models.enums import Tier
 from app.services.matching import (
     PARAMETERS,
-    WEIGHTS,
     _coerce_param_score,
     _validate_entry,
     compute_overall_score,
@@ -34,25 +33,26 @@ def scores(skills: int, experience: int, role: int, education: int) -> dict[str,
     }
 
 
-# ── Weights contract ─────────────────────────────────────────────────────────
+# ── Parameter contract ───────────────────────────────────────────────────────
 
-def test_weights_match_contract():
-    assert WEIGHTS == {
-        "skills_match": 0.35,
-        "experience_relevance": 0.30,
-        "role_alignment": 0.20,
-        "education_fit": 0.15,
-    }
+def test_the_four_parameters_are_the_contract():
     assert PARAMETERS == (
         "skills_match", "experience_relevance", "role_alignment", "education_fit",
     )
 
 
-def test_weights_sum_to_one():
-    assert round(sum(WEIGHTS.values()), 10) == 1.0
+def test_no_weighting_module_survives():
+    """The four parameters carry NO mathematical weightage (spec 2026-07-30).
+
+    Asserted by absence: a reintroduced WEIGHTS table is exactly how the old
+    "35% role-fit weighting" copy would come back.
+    """
+    import app.services.matching as matching
+
+    assert not hasattr(matching, "WEIGHTS")
 
 
-# ── Weighted average ─────────────────────────────────────────────────────────
+# ── Unweighted mean ──────────────────────────────────────────────────────────
 
 def test_all_tens_is_ten():
     assert compute_overall_score(scores(10, 10, 10, 10)) == 10.0
@@ -67,42 +67,30 @@ def test_uniform_scores_pass_through():
     assert compute_overall_score(scores(9, 9, 9, 9)) == 9.0
 
 
-def test_skills_ten_others_one():
-    # 10*.35 + 1*.30 + 1*.20 + 1*.15 = 4.15 exactly in decimal; the nearest
-    # double is slightly above 4.15, so round(..., 1) gives 4.2.
-    assert compute_overall_score(scores(10, 1, 1, 1)) == 4.2
+def test_one_high_parameter_moves_the_mean_by_its_own_share():
+    # Unweighted: raising one parameter from 1 to 10 adds 9/4 = 2.25 to the
+    # mean of 1.0. The nearest double rounds to 3.2 at one decimal.
+    assert compute_overall_score(scores(10, 1, 1, 1)) == 3.2
 
 
-def test_each_single_high_parameter_reflects_its_weight():
-    assert compute_overall_score(scores(1, 10, 1, 1)) == 3.7   # 1 + 9*.30
-    assert compute_overall_score(scores(1, 1, 10, 1)) == 2.8   # 1 + 9*.20
-    # 2.35 in decimal — nearest double is slightly above, rounds to 2.4.
-    assert compute_overall_score(scores(1, 1, 1, 10)) == 2.4   # 1 + 9*.15
-
-
-def test_weight_ordering_skills_dominates():
-    # Raising one parameter from 1 to 10 moves the overall by ~9×its weight —
-    # the ordering skills > experience > role > education must hold (a
-    # single-point step is invisible at 1-decimal rounding, so use the full
-    # 1→10 swing).
-    base = compute_overall_score(scores(1, 1, 1, 1))  # 1.0
+def test_every_parameter_moves_the_overall_identically():
+    """No parameter outranks another (spec 2026-07-30). This is the assertion
+    that would have caught the old 0.35/0.30/0.20/0.15 table."""
+    base = compute_overall_score(scores(1, 1, 1, 1))
     deltas = {
-        "skills_match": compute_overall_score(scores(10, 1, 1, 1)) - base,        # 3.2
-        "experience_relevance": compute_overall_score(scores(1, 10, 1, 1)) - base,  # 2.7
-        "role_alignment": compute_overall_score(scores(1, 1, 10, 1)) - base,       # 1.8
-        "education_fit": compute_overall_score(scores(1, 1, 1, 10)) - base,        # 1.4
+        "skills_match": compute_overall_score(scores(10, 1, 1, 1)) - base,
+        "experience_relevance": compute_overall_score(scores(1, 10, 1, 1)) - base,
+        "role_alignment": compute_overall_score(scores(1, 1, 10, 1)) - base,
+        "education_fit": compute_overall_score(scores(1, 1, 1, 10)) - base,
     }
-    assert (
-        deltas["skills_match"]
-        > deltas["experience_relevance"]
-        > deltas["role_alignment"]
-        > deltas["education_fit"]
-    )
+    assert len({round(value, 6) for value in deltas.values()}) == 1
 
 
 def test_mixed_scores_round_to_one_decimal():
-    assert compute_overall_score(scores(8, 7, 9, 6)) == 7.6
-    assert compute_overall_score(scores(7, 8, 6, 9)) == 7.4
+    assert compute_overall_score(scores(8, 7, 9, 6)) == 7.5
+    # The same four numbers in any order now give the same overall, which is
+    # precisely what "no weightage" means.
+    assert compute_overall_score(scores(7, 8, 6, 9)) == 7.5
 
 
 def test_result_always_one_decimal():
@@ -168,7 +156,7 @@ def test_validate_entry_builds_breakdown_with_python_overall():
     assert breakdown is not None
     assert breakdown["overall"]["score"] == compute_overall_score(
         scores(8, 7, 9, 6)
-    ) == 7.6
+    ) == 7.5
     assert breakdown["overall"]["comment"] == (
         "A credible fit overall with minor education gaps."
     )
@@ -178,11 +166,11 @@ def test_validate_entry_builds_breakdown_with_python_overall():
 
 
 def test_validate_entry_ignores_llm_supplied_overall_score():
-    # Even if the LLM volunteers an overall block, the Python-computed
-    # weighted average wins — the LLM's number is never trusted.
+    # Even if the LLM volunteers an overall block, the Python-computed mean
+    # wins — the LLM's number is never trusted.
     breakdown = _validate_entry(_entry(overall={"score": 1, "comment": "lies"}))
     assert breakdown is not None
-    assert breakdown["overall"]["score"] == 7.6
+    assert breakdown["overall"]["score"] == 7.5
     assert breakdown["overall"]["comment"] != "lies"
 
 

@@ -1,23 +1,67 @@
-# Shared base image for backend API, Celery worker, and beat — one image,
-# different entrypoints (ESD §15), so dependency drift is impossible.
-FROM python:3.12-slim AS base
+# Shared image for the backend API, the Celery worker, beat and migrations
+# (ESD 15). One image, four entrypoints, so dependency drift between them is
+# impossible. The role is chosen by the container args: see
+# docker-entrypoint.sh.
+
+# ---------------------------------------------------------------------------
+# builder: compiles wheels. build-essential and libpq-dev are ~300 MB of
+# toolchain that production must never ship, so they stay in this stage and
+# only the built wheels cross into the runtime.
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS builder
+
+ENV PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip wheel --wheel-dir /wheels -r requirements.txt
+
+# ---------------------------------------------------------------------------
+# runtime
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
-WORKDIR /app
-
+# libpq5 is the runtime half of libpq-dev; curl is kept for container-level
+# health probing. Neither pulls in a compiler.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev curl \
+    libpq5 curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+WORKDIR /app
+
+COPY --from=builder /wheels /wheels
+RUN pip install --no-index --find-links=/wheels /wheels/* \
+    && rm -rf /wheels
 
 COPY . .
 
+# Normalise the entrypoint's line endings before it is ever executed. The repo
+# is developed on Windows, and a CRLF shebang fails as "/bin/sh\r: not found",
+# which reads as a missing file rather than a line-ending problem. .gitattributes
+# pins LF at checkout; this makes the image correct even from a stray context.
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh \
+    && chmod +x /app/docker-entrypoint.sh
+
+# Celery refuses to run happily as root, and it is right to: a task that
+# executes anything derived from a job description or an uploaded resume should
+# not do it as uid 0. Cloud Run has no compose file to select a user, so the
+# image selects one itself.
+RUN useradd --create-home --uid 10001 pickready \
+    && chown -R pickready:pickready /app
+
+USER pickready
+
+# Documentation only. The real port is $PORT, injected by Cloud Run and honoured
+# by the entrypoint; compose keeps publishing 8000.
 EXPOSE 8000
 
-# API by default; compose overrides command for worker/beat.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["api"]

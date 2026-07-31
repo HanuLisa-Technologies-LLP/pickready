@@ -28,9 +28,31 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def get_engine():
+    """Process-wide async engine.
+
+    Pool sizing matters more than it looks. SQLAlchemy's default is
+    ``pool_size=5, max_overflow=10``; with a handful of concurrent browser tabs
+    each firing several parallel calls, requests queue waiting for a connection
+    and every one of them looks slow even though the SQL is instant. The sizes
+    below are settings-driven so a small production instance can lower them.
+
+    ``pool_recycle`` retires a connection before a managed Postgres (or a proxy)
+    silently drops it; ``pool_pre_ping`` still catches the ones that die early.
+    ``pool_use_lifo`` hands back the most recently used connection, which keeps
+    the idle tail of the pool closeable instead of round-robining every socket.
+    """
     global _engine
     if _engine is None:
-        _engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
+        settings = get_settings()
+        _engine = create_async_engine(
+            settings.database_url,
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            pool_timeout=settings.db_pool_timeout_seconds,
+            pool_recycle=settings.db_pool_recycle_seconds,
+            pool_pre_ping=True,
+            pool_use_lifo=True,
+        )
     return _engine
 
 

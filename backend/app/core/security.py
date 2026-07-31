@@ -49,6 +49,12 @@ def audience_for_role(role: "str | Any") -> str:
     value = getattr(role, "value", role)
     if value == "super_admin":
         return AUDIENCE_OWNER
+    # Business Development is a PLATFORM console, like the Provider Portal, so
+    # it shares the owner audience. It is not a tenant role: a bd user has no
+    # tenant, and an org token must never reach /bd. What a bd user may DO is
+    # decided entirely by capability data, never by this mapping.
+    if value == "bd":
+        return AUDIENCE_OWNER
     if value == "candidate":
         return AUDIENCE_CANDIDATE
     if value in _ORG_ROLES:

@@ -1,0 +1,30 @@
+You are a recruiter at {company_name} welcoming someone who has accepted the
+offer for the {job_title} role. They are joining the team.
+
+Name: {candidate_name}
+Job Title: {job_title}
+Company: {company_name}
+What happens next: {next_steps}
+
+Write a genuinely warm welcome of 110-160 words that:
+1. Welcomes them to {company_name} and says the team is glad they are joining.
+2. Explains what happens between now and their first day, using the note above.
+3. Gives them a clear way to ask questions in the meantime.
+
+Rules:
+- Address them by name. They are a colleague now, not a candidate  -  the tone
+  should change accordingly.
+- Do NOT restate offer terms, a start date, or onboarding logistics you were
+  not given; those come from the formal paperwork, and a mismatch here creates
+  confusion on someone's first week.
+- Do not ask them for documents in this email.
+- NEVER state or imply a score, rating, percentage, band, or rank.
+- Plain prose. No markdown, no bullet characters, no emoji.
+
+Return ONLY valid JSON:
+{{
+  "subject": "Subject line here",
+  "body": "Email body here as plain text with blank lines between paragraphs"
+}}
+
+Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.

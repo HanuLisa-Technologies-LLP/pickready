@@ -46,16 +46,19 @@ def test_google_allowed_for_candidate() -> None:
 
 
 @pytest.mark.parametrize("role", ["super_admin", "hr_manager", "recruiter", "hiring_manager", "client"])
-def test_google_rejected_for_staff_roles(role: str) -> None:
-    with pytest.raises(HTTPException) as exc:
-        assert_provider_allowed(_identity(provider="google.com"), role)
-    assert exc.value.status_code == 403
+def test_google_allowed_for_all_roles(role: str) -> None:
+    assert_provider_allowed(_identity(provider="google.com"), role)
 
 
-@pytest.mark.parametrize("provider", ["password", "phone"])
 @pytest.mark.parametrize("role", ["candidate", "super_admin", "hr_manager", "recruiter", "client"])
-def test_password_and_phone_allowed_for_all_roles(provider: str, role: str) -> None:
-    assert_provider_allowed(_identity(provider=provider), role)  # no raise
+def test_password_allowed_for_all_roles(role: str) -> None:
+    assert_provider_allowed(_identity(provider="password"), role)
+
+
+def test_phone_provider_rejected() -> None:
+    with pytest.raises(HTTPException) as exc:
+        assert_provider_allowed(_identity(provider="phone"), "candidate")
+    assert exc.value.status_code == 403
 
 
 def test_unknown_provider_rejected() -> None:
@@ -127,8 +130,8 @@ async def _get_or_create_owner(factory) -> uuid.UUID:
 
 # ── 1. OWNER INVARIANT ───────────────────────────────────────────────────────
 
-async def test_owner_google_login_is_403() -> None:
-    """The Owner is internal, so Google never receives an owner cookie."""
+async def test_owner_google_login_succeeds_for_configured_email() -> None:
+    """The configured Owner email may use Google without changing its role."""
     engine = await _db_or_skip()
     factory = async_sessionmaker(engine, expire_on_commit=False)
     await _get_or_create_owner(factory)
@@ -136,9 +139,9 @@ async def test_owner_google_login_is_403() -> None:
     try:
         ident = _identity(provider="google.com", email=get_settings().owner_email.upper())
         async with factory() as session:
-            with pytest.raises(HTTPException) as exc:
-                await _call(session, ident, monkeypatch)
-        assert exc.value.status_code == 403
+            response, out = await _call(session, ident, monkeypatch)
+        assert out.user.role == Role.super_admin
+        assert "pr_access" in _cookie_names(response)
     finally:
         monkeypatch.undo()
         await engine.dispose()
@@ -255,36 +258,6 @@ async def test_multi_context_returns_chooser_then_select_issues_cookies() -> Non
 
 # ── 4. PROVIDER GATE + EDGE CASES ────────────────────────────────────────────
 
-async def test_phone_only_candidate_signup_allowed() -> None:
-    """A phone-provider identity with no email creates a candidate with a phone
-    and a NULL email (email is optional for phone signups)."""
-    engine = await _db_or_skip()
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    monkeypatch = pytest.MonkeyPatch()
-    phone = f"91{uuid.uuid4().int % 10**9:09d}"
-    created: list[uuid.UUID] = []
-    try:
-        ident = _identity(provider="phone", email=None, phone=phone,
-                          name=None, email_verified=False)
-        async with factory() as session:
-            response, out = await _call(session, ident, monkeypatch)
-        assert out.user is not None
-        assert out.user.role == Role.candidate
-        assert out.user.email is None
-        created.append(out.user.id)
-        assert ACCESS_COOKIE in _cookie_names(response)
-        async with factory() as session:
-            cand = (await session.execute(
-                select(Candidate).where(Candidate.user_id == created[0])
-            )).scalars().first()
-            assert cand is not None
-            assert cand.phone == phone
-    finally:
-        monkeypatch.undo()
-        await _cleanup_users(factory, created)
-        await engine.dispose()
-
-
 async def test_no_email_and_no_phone_is_422() -> None:
     engine = await _db_or_skip()
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -331,8 +304,8 @@ async def test_disabled_user_gets_403() -> None:
         await engine.dispose()
 
 
-async def test_google_staff_login_is_403() -> None:
-    """Staff exist but signed in with Google (candidates-only) -> 403, no link."""
+async def test_google_staff_login_succeeds() -> None:
+    """A pre-seeded staff identity may prove its invited email with Google."""
     engine = await _db_or_skip()
     factory = async_sessionmaker(engine, expire_on_commit=False)
     monkeypatch = pytest.MonkeyPatch()
@@ -349,9 +322,9 @@ async def test_google_staff_login_is_403() -> None:
 
         ident = _identity(provider="google.com", email=email)
         async with factory() as session:
-            with pytest.raises(HTTPException) as exc:
-                await _call(session, ident, monkeypatch)
-        assert exc.value.status_code == 403
+            response, out = await _call(session, ident, monkeypatch)
+        assert out.user.role == Role.recruiter
+        assert "pr_access" in _cookie_names(response)
     finally:
         monkeypatch.undo()
         await _cleanup_users(factory, created, [tid])
@@ -374,3 +347,91 @@ async def test_email_verified_is_stamped() -> None:
         monkeypatch.undo()
         await _cleanup_users(factory, created)
         await engine.dispose()
+
+
+# ── Clock skew: the bug that broke every sign-in (killer-spec) ───────────────
+#
+# A Docker Desktop VM whose clock sits one second behind Google's signing
+# servers makes EVERY freshly minted ID token look like it was used before it
+# was issued, and firebase-admin rejects it outright:
+#
+#   InvalidIdTokenError: Token used too early, 1785249345 < 1785249346
+#
+# Email/password and Google sign-in both 401 on a perfectly valid token, and
+# nothing about the request looks wrong. These tests pin the fix, because it is
+# a single keyword argument that a refactor could silently drop.
+
+class _RecordingClient:
+    """Stand-in for firebase_admin.auth, capturing how it was called."""
+
+    def __init__(self, raises: Exception | None = None) -> None:
+        self.calls: list[dict] = []
+        self._raises = raises
+
+    def verify_id_token(self, token, **kwargs):
+        self.calls.append(kwargs)
+        if self._raises is not None:
+            raise self._raises
+        return {
+            "uid": "fbuid-clock",
+            "email": "clock@test.local",
+            "email_verified": True,
+            "firebase": {"sign_in_provider": "password"},
+        }
+
+
+def test_verification_allows_a_minute_of_clock_skew(monkeypatch) -> None:
+    client = _RecordingClient()
+    monkeypatch.setattr(firebase_auth, "firebase_client", lambda: client)
+
+    identity = firebase_auth.verify_id_token("any-token")
+
+    assert identity.uid == "fbuid-clock"
+    assert client.calls, "verify_id_token was never called"
+    kwargs = client.calls[0]
+    # 60s is the maximum firebase-admin accepts, and what the official docs
+    # recommend for exactly this failure.
+    assert kwargs.get("clock_skew_seconds") == 60
+    # Revocation checking must NOT be traded away for the skew tolerance.
+    assert kwargs.get("check_revoked") is True
+
+
+def test_a_clock_skew_rejection_says_so(monkeypatch) -> None:
+    """Every failure returning the same "Invalid Firebase session" is what
+    turned a one-line bug into an afternoon of guessing. The message names the
+    CATEGORY of failure, and never the token or the claims."""
+    error = ValueError("Token used too early, 1785249345 < 1785249346.")
+    monkeypatch.setattr(
+        firebase_auth, "firebase_client", lambda: _RecordingClient(raises=error)
+    )
+    with pytest.raises(HTTPException) as caught:
+        firebase_auth.verify_id_token("any-token")
+    assert caught.value.status_code == 401
+    assert "clock" in caught.value.detail.lower()
+    assert "1785249345" not in caught.value.detail
+
+
+def test_an_unconfigured_server_is_503_not_401(monkeypatch) -> None:
+    """A missing service account is a SERVER fault. Answering 401 sends an
+    operator round the login screen chasing a credential problem that is not
+    theirs."""
+    def _unavailable():
+        raise RuntimeError("FIREBASE_SERVICE_ACCOUNT_JSON is not configured")
+
+    monkeypatch.setattr(firebase_auth, "firebase_client", _unavailable)
+    with pytest.raises(HTTPException) as caught:
+        firebase_auth.verify_id_token("any-token")
+    assert caught.value.status_code == 503
+
+
+def test_an_expired_token_is_distinguishable_from_a_revoked_one(monkeypatch) -> None:
+    for error, expected in (
+        (ValueError("The Firebase ID token has expired."), "expired"),
+        (ValueError("The Firebase ID token has been revoked."), "revoked"),
+    ):
+        monkeypatch.setattr(
+            firebase_auth, "firebase_client", lambda e=error: _RecordingClient(raises=e)
+        )
+        with pytest.raises(HTTPException) as caught:
+            firebase_auth.verify_id_token("any-token")
+        assert expected in caught.value.detail.lower(), caught.value.detail

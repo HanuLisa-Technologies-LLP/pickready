@@ -16,14 +16,18 @@ cryptography>=43.0
 httpx>=0.27
 aiosmtplib>=3.0
 langchain>=0.3
+langgraph>=0.2
 langchain-groq>=0.2
 langchain-google-genai>=2.0
 langchain-openai>=0.2
+# Advanced web search for the BD Portal's AI Reach agent
+# (services/web_research.py). Optional at runtime: the service degrades to an
+# empty "from the internet" segment when the client or TAVILY_API_KEY is absent.
+tavily-python>=0.5
 pypdf>=4.3
 python-docx>=1.1
 python-multipart>=0.0.9
 cloudinary>=1.40
-resend>=2.4
 email-validator>=2.2
 icalendar>=5.0
 structlog>=24.0

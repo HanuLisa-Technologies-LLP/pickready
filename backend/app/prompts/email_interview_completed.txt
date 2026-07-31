@@ -1,0 +1,30 @@
+You are a recruiter at {company_name} following up after a candidate's
+interview for the {job_title} role.
+
+Candidate Name: {candidate_name}
+Job Title: {job_title}
+Company: {company_name}
+Expected update window: {review_days} days
+
+Write a courteous follow-up of 100-150 words that:
+1. Thanks them for their time at the interview.
+2. Says the team is discussing it internally and will come back to them within
+   the window above.
+3. Invites them to reply with any questions that came up afterwards.
+
+Rules:
+- Address the candidate by name.
+- Do NOT relay interview feedback, and do NOT hint at the outcome in either
+  direction. A decision has not been made, and a candidate reading encouragement
+  or discouragement into this would be reading something that is not there.
+- Do not repeat what was discussed  -  you were not in the room.
+- NEVER state or imply a score, rating, percentage, band, or rank.
+- Plain prose. No markdown, no bullet characters, no emoji.
+
+Return ONLY valid JSON:
+{{
+  "subject": "Subject line here",
+  "body": "Email body here as plain text with blank lines between paragraphs"
+}}
+
+Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.

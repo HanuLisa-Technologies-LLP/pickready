@@ -4,13 +4,14 @@
 2. Keyword stage     — Postgres ts_rank over profiles.resume_tsv using the
                        JD's skills/keywords, over the same eligible pool.
 3. 4-parameter LLM scoring — union of (1)+(2): the LLM (rerank chain,
-                       Groq-first) rates each profile on skills_match (0.35),
-                       experience_relevance (0.30), role_alignment (0.20) and
-                       education_fit (0.15), each an integer 1-10 + comment,
-                       plus a genuinely holistic 5th overall comment. The
-                       overall score is a PYTHON-computed weighted average —
-                       never trusted from the LLM. Retrieval stages (1)+(2)
-                       are prior signal only; embeddings never become the score.
+                       Groq-first) rates each profile on skills_match,
+                       experience_relevance, role_alignment and education_fit,
+                       each an integer 1-10 + comment, plus a genuinely
+                       holistic 5th overall comment. There is NO weighting
+                       between the four (spec 2026-07-30): the internal overall
+                       is their plain mean, computed in Python and never
+                       trusted from the LLM. Retrieval stages (1)+(2) are prior
+                       signal only; embeddings never become the score.
 4. Tier assignment   — app.services.tiers.assign_tier over overall×10
                        (inclusive-upward boundaries, claude.md rule 8).
 
@@ -33,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from typing import Any, Sequence
 
@@ -40,7 +42,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Job, JobCandidateLink, LinkSource, Profile
-from app.services import llm_router
+from app.services import llm_router, rating
 from app.services.embeddings import EmbeddingError, embed
 # Track A owns tier assignment (signature: assign_tier(score: float) -> Tier).
 from app.services.tiers import assign_tier
@@ -57,16 +59,214 @@ _RESUME_SNIPPET_CHARS = 1500
 # fallback score never fabricates a top-tier match (8×10 = 80 = Moderately).
 _FALLBACK_MIN = 4
 _FALLBACK_MAX = 8
-_AI_UNAVAILABLE_COMMENT = "AI scoring unavailable — deterministic retrieval-based score."
 
-# ── 4-parameter scoring (API contract rev 2) ────────────────────────────────
-WEIGHTS: dict[str, float] = {
-    "skills_match": 0.35,
-    "experience_relevance": 0.30,
-    "role_alignment": 0.20,
-    "education_fit": 0.15,
+# ── Comment word-range contract ─────────────────────────────────────────────
+# Every stored comment (the four parameters + the holistic overall) must be
+# 25-30 words. The LLM is *asked* for that range, the response is validated in
+# Python, one corrective regeneration pass is made, and anything still outside
+# the range is deterministically repaired before storage. A comment outside
+# 25-30 words is never persisted.
+COMMENT_MIN_WORDS = 25
+COMMENT_MAX_WORDS = 30
+
+# A "word" is any whitespace-delimited token containing at least one
+# alphanumeric character — bare dashes, bullets and stray punctuation don't
+# count, which matches how a human counts the words in a sentence.
+_WORD_TOKEN_RE = re.compile(r"[0-9A-Za-z]")
+
+# Deterministic, neutral continuation clauses used to repair an under-length
+# comment when the model will not cooperate. Ordered; appended whole so the
+# result still reads as English, then trimmed back to COMMENT_MAX_WORDS.
+_PAD_CLAUSES: tuple[str, ...] = (
+    "Confirm remaining details during structured screening.",
+    "Reviewers should confirm this evidence during a structured screening conversation.",
+    "Reviewers should read the full resume alongside the job description before "
+    "deciding on next steps.",
+    "Reviewers should examine the full resume alongside this job description, "
+    "then validate role-specific evidence during a structured screening conversation.",
+    "This assessment reflects the submitted profile only; reviewers should confirm "
+    "role-specific evidence, recent outcomes, working context, and career motivation "
+    "during a structured screening conversation.",
+)
+
+# Deterministic retrieval-only comments, used when the whole LLM chain is
+# unavailable. They are honest about being similarity-derived, are each 25-30
+# words, and deliberately avoid any "unavailable" placeholder wording — the
+# machine-readable signal is breakdown["scoring_mode"] == "retrieval_fallback".
+_FALLBACK_COMMENTS: dict[str, str] = {
+    "skills_match": (
+        "Skill overlap here is inferred from resume and job-description similarity "
+        "rather than a detailed reading, so treat it as a preliminary signal and "
+        "confirm the specific tools against the resume."
+    ),
+    "experience_relevance": (
+        "Experience relevance is estimated from overall document similarity rather "
+        "than a function-by-function comparison, so please confirm seniority, scope, "
+        "and comparable delivery directly from the candidate's employment history."
+    ),
+    "role_alignment": (
+        "Role alignment is derived from retrieval similarity between the job "
+        "description and this profile, so verify the candidate's actual designation, "
+        "reporting line, and core duties before advancing them to the next stage."
+    ),
+    "education_fit": (
+        "Education fit is approximated from retrieval similarity and has not been "
+        "checked qualification by qualification, so confirm degree level, "
+        "specialisation, and any certifications the role requires against the resume."
+    ),
+    "overall": (
+        "This candidate was ranked by resume and job-description similarity alone, "
+        "so the placement is a preliminary retrieval signal; review the resume in "
+        "full before shortlisting, rejecting, or scheduling any interview."
+    ),
 }
-PARAMETERS: tuple[str, ...] = tuple(WEIGHTS)
+
+# Retained for backwards compatibility with older stored rows / callers that
+# look for the historical placeholder. It is NEVER written any more.
+_AI_UNAVAILABLE_COMMENT = "AI scoring unavailable, deterministic retrieval-based score."
+
+
+def word_count(text: str | None) -> int:
+    """Count words in `text` — whitespace-delimited tokens with a letter/digit.
+
+    Pure and side-effect free; unit-tested in tests/test_matching.py.
+    """
+    if not text:
+        return 0
+    return sum(1 for tok in str(text).split() if _WORD_TOKEN_RE.search(tok))
+
+
+def _tokens_word_count(tokens: Sequence[str]) -> int:
+    return sum(1 for tok in tokens if _WORD_TOKEN_RE.search(tok))
+
+
+def _tidy(text: str) -> str:
+    """Normalise whitespace and make sure the comment ends as a sentence."""
+    out = " ".join(text.split()).rstrip(" ,;:-,–")
+    if out and out[-1] not in ".!?":
+        out += "."
+    return out
+
+
+def _trim_to(tokens: list[str], min_words: int, max_words: int) -> list[str]:
+    """Cut `tokens` down to at most `max_words`, preferring a clause boundary.
+
+    Walks forward until the next word would exceed `max_words`, then looks back
+    for the last token that ends a clause (`. , ; : — –`) at or after
+    `min_words` and cuts there instead, so the repaired comment ends cleanly.
+    """
+    kept: list[str] = []
+    for tok in tokens:
+        if _WORD_TOKEN_RE.search(tok) and _tokens_word_count(kept) + 1 > max_words:
+            break
+        kept.append(tok)
+    for i in range(len(kept) - 1, -1, -1):
+        if kept[i].rstrip('"\')')[-1:] in ".,;:,–" and _tokens_word_count(kept[: i + 1]) >= min_words:
+            return kept[: i + 1]
+    return kept
+
+
+def enforce_word_range(
+    text: str | None,
+    min_words: int = COMMENT_MIN_WORDS,
+    max_words: int = COMMENT_MAX_WORDS,
+    filler: Sequence[str] | None = None,
+) -> str:
+    """Return `text` deterministically coerced to `min_words`-`max_words` words.
+
+    Too long  -> trimmed at the latest clause boundary that still satisfies the
+                 minimum (hard word cut if there is no boundary).
+    Too short -> extended with whole neutral clauses from `filler`, then trimmed.
+
+    Pure and side-effect free; unit-tested in tests/test_matching.py.
+    """
+    if min_words < 1 or max_words < min_words:
+        raise ValueError("invalid word range")
+    tokens = " ".join((text or "").split()).split()
+    clauses = list(filler if filler is not None else _PAD_CLAUSES)
+    current_words = _tokens_word_count(tokens)
+    if current_words < min_words:
+        # Prefer ONE complete sentence whose length lands inside the band. This
+        # preserves readable prose; the old append-until-long-enough approach
+        # could trim the second sentence halfway through.
+        candidates = [
+            clause
+            for clause in clauses
+            if min_words
+            <= current_words + word_count(clause)
+            <= max_words
+        ]
+        if candidates:
+            best = min(
+                candidates,
+                key=lambda clause: current_words + word_count(clause),
+            )
+            return _tidy(" ".join(tokens + best.split()))
+    i = 0
+    while _tokens_word_count(tokens) < min_words and i < len(clauses):
+        tokens = tokens + clauses[i].split()
+        i += 1
+    if _tokens_word_count(tokens) > max_words:
+        tokens = _trim_to(tokens, min_words, max_words)
+    if _tokens_word_count(tokens) < min_words:
+        # Filler exhausted (caller passed a short custom filler) — recycle the
+        # built-in clauses so the guarantee still holds.
+        j = 0
+        while _tokens_word_count(tokens) < min_words:
+            tokens = tokens + _PAD_CLAUSES[j % len(_PAD_CLAUSES)].split()
+            j += 1
+            if j > 2 * len(_PAD_CLAUSES):  # pragma: no cover — defensive
+                break
+        if _tokens_word_count(tokens) > max_words:
+            tokens = _trim_to(tokens, min_words, max_words)
+    return _tidy(" ".join(tokens))
+
+
+def comment_fields_out_of_range(breakdown: dict) -> dict[str, int]:
+    """{field: word_count} for every comment outside the 25-30 word contract."""
+    bad: dict[str, int] = {}
+    for field in (*PARAMETERS, "overall"):
+        block = breakdown.get(field)
+        comment = block.get("comment") if isinstance(block, dict) else None
+        n = word_count(comment)
+        if not (COMMENT_MIN_WORDS <= n <= COMMENT_MAX_WORDS):
+            bad[field] = n
+    return bad
+
+
+def enforce_breakdown_comments(breakdown: dict) -> dict:
+    """Coerce all five comments in a breakdown into the 25-30 word contract.
+
+    The last line of defence: called on every breakdown — LLM-scored or
+    deterministic-fallback — immediately before it is persisted.
+    """
+    for field in (*PARAMETERS, "overall"):
+        block = breakdown.get(field)
+        if not isinstance(block, dict):
+            continue
+        block["comment"] = enforce_word_range(block.get("comment"))
+    return breakdown
+
+# ── 4-parameter scoring ─────────────────────────────────────────────────────
+# NO WEIGHTS (client decision, 2026-07-30: "make sure there are no mathematical
+# weightage for giving these AI comments").
+#
+# The four parameters previously carried 0.35 / 0.30 / 0.20 / 0.15. Two things
+# were wrong with that. The weights were shown to the client as "35% role-fit
+# weighting" beside each remark, which is a number reaching a client. And a
+# fixed weighting asserts that skills matter 2.3x more than education for
+# EVERY role in the product, which is an arithmetic the four AI comments do not
+# perform and cannot defend when a customer asks why.
+#
+# Each parameter is now judged, graded and commented entirely on its own terms.
+# The internal overall is their plain mean, and exists only to order a
+# candidate list and assign a tier -- it is never displayed, weighted or not.
+PARAMETERS: tuple[str, ...] = (
+    "skills_match",
+    "experience_relevance",
+    "role_alignment",
+    "education_fit",
+)
 
 # Aspect-numbering contract (API_CONTRACT.md rev 2): aspect 23 = current/most
 # recent designation and core duties; aspects 8-13 = education & qualifications.
@@ -158,6 +358,102 @@ async def _semantic_stage(
     return [r.profile_id for r in rows]
 
 
+async def _linked_stage(session: AsyncSession, job_id: uuid.UUID) -> list[uuid.UUID]:
+    """Profile ids of EVERY candidate explicitly linked to this job.
+
+    Stages 1 and 2 are *retrieval* — they are capped at top_n and they silently
+    drop any profile whose `embedding` is NULL or whose `resume_tsv` does not
+    match the JD terms (an unparsed resume matches neither). A candidate who
+    was explicitly linked to the job — they applied, or a recruiter uploaded
+    them — must never be left unscored because retrieval could not see them,
+    so their profile is always added to the scoring pool. No top_n cap here:
+    the pool is bounded by the job's own applicant count.
+    """
+    rows = await session.execute(
+        text(
+            """
+            SELECT DISTINCT ON (l.candidate_id) p.id AS profile_id
+            FROM job_candidate_links l
+            JOIN profiles p ON p.id = l.profile_id
+            WHERE l.job_id = :job_id AND l.archived_at IS NULL
+            ORDER BY l.candidate_id, l.created_at DESC
+            """
+        ),
+        {"job_id": str(job_id)},
+    )
+    return [r.profile_id for r in rows]
+
+
+async def _backfill_missing_embeddings(
+    session: AsyncSession, profile_ids: Sequence[uuid.UUID]
+) -> None:
+    """Repair the semantic stage's input for profiles it would otherwise skip.
+
+    Two distinct causes of a NULL `profiles.embedding`:
+      * resume text IS present (parsing ran) but the embedding was never
+        written — embed it here; `embed()` is cheap and already degrades to a
+        deterministic dev vector when BGE_M3_ENDPOINT is unset.
+      * no resume text at all — re-queue the EXISTING `pickready.parse_resume`
+        task (never a new one) for profiles whose Cloudinary metadata is
+        complete enough for it to succeed. A profile with an incomplete asset
+        is logged, not re-queued, so the task does not crash-loop.
+
+    Never raises: a backfill failure must not abort a matching run.
+    """
+    if not profile_ids:
+        return
+    from app.services.resume_storage import profile_has_resume
+
+    rows = (
+        (
+            await session.execute(
+                select(Profile).where(
+                    Profile.id.in_(list(profile_ids)),
+                    Profile.embedding.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return
+    embeddable = [p for p in rows if (p.resume_text or "").strip()]
+    if embeddable:
+        try:
+            vectors = await embed([p.resume_text for p in embeddable])
+            for profile, vector in zip(embeddable, vectors):
+                profile.embedding = vector
+            await session.flush()
+            logger.info("matching.embeddings_backfilled count=%d", len(embeddable))
+        except Exception as exc:  # noqa: BLE001 — never abort a run
+            logger.warning(
+                "matching.embedding_backfill_failed error=%s", type(exc).__name__
+            )
+
+    unparsed = [p for p in rows if not (p.resume_text or "").strip()]
+    if not unparsed:
+        return
+    from app.workers.celery_app import celery_app
+
+    for profile in unparsed:
+        if not profile_has_resume(profile):
+            logger.warning(
+                "matching.profile_unparseable profile_id=%s, no complete resume "
+                "asset; it can be scored only from its questionnaire aspects",
+                profile.id,
+            )
+            continue
+        try:
+            celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
+            logger.info("matching.parse_resume_requeued profile_id=%s", profile.id)
+        except Exception as exc:  # noqa: BLE001 — broker down must not abort a run
+            logger.warning(
+                "matching.parse_resume_enqueue_failed profile_id=%s error=%s",
+                profile.id, type(exc).__name__,
+            )
+
+
 async def _keyword_stage(
     session: AsyncSession, job_id: uuid.UUID, query_terms: str, top_n: int
 ) -> list[uuid.UUID]:
@@ -194,12 +490,14 @@ async def _keyword_stage(
 
 
 def compute_overall_score(scores: dict[str, int | float]) -> float:
-    """Weighted average of the four 1-10 parameter scores, rounded to 1 decimal.
+    """Unweighted mean of the four 1-10 parameter scores, rounded to 1 decimal.
 
-    Pure Python math (banker's rounding over IEEE-754 doubles) — the overall
-    score is NEVER taken from the LLM. Unit-tested in tests/test_scoring.py.
+    Pure Python math (banker's rounding over IEEE-754 doubles) -- the overall
+    score is NEVER taken from the LLM. Internal only: it orders the candidate
+    list and assigns a tier, and never crosses the API boundary.
+    Unit-tested in tests/test_scoring.py.
     """
-    return round(sum(WEIGHTS[p] * float(scores[p]) for p in PARAMETERS), 1)
+    return round(sum(float(scores[p]) for p in PARAMETERS) / len(PARAMETERS), 1)
 
 
 def _fallback_param_score(rank_index: int, total: int) -> int:
@@ -217,19 +515,24 @@ def _fallback_param_score(rank_index: int, total: int) -> int:
 
 
 def _fallback_breakdown(rank_index: int, total: int) -> dict:
-    """A full breakdown in the contract shape from retrieval rank alone, with
-    every comment flagged so HR knows the LLM was unavailable (claude.md rule
-    9 — degrade, never crash)."""
+    """A full breakdown in the contract shape from retrieval rank alone.
+
+    Comments are real, readable 25-30 word notes that state plainly that the
+    ranking is similarity-derived; `scoring_mode` carries the machine-readable
+    flag so the UI/audit can tell an LLM score from a degraded one (claude.md
+    rule 9 — degrade, never crash).
+    """
     score = _fallback_param_score(rank_index, total)
     breakdown: dict[str, Any] = {
-        param: {"score": score, "comment": _AI_UNAVAILABLE_COMMENT}
+        param: {"score": score, "comment": _FALLBACK_COMMENTS[param]}
         for param in PARAMETERS
     }
     breakdown["overall"] = {
         "score": compute_overall_score({p: score for p in PARAMETERS}),
-        "comment": _AI_UNAVAILABLE_COMMENT,
+        "comment": _FALLBACK_COMMENTS["overall"],
     }
-    return breakdown
+    breakdown["scoring_mode"] = "retrieval_fallback"
+    return enforce_breakdown_comments(breakdown)
 
 
 def _coerce_param_score(value: Any) -> int | None:
@@ -271,7 +574,116 @@ def _validate_entry(entry: Any) -> dict | None:
         "score": compute_overall_score({p: breakdown[p]["score"] for p in PARAMETERS}),
         "comment": overall_comment.strip(),
     }
+    breakdown["scoring_mode"] = "llm"
     return breakdown
+
+
+# ── Comments-only view for the UI (numbers never leak to the review screen) ──
+# The API keeps returning `breakdown` (scores included) for internal/audit use,
+# but the five comments are ALSO surfaced under these exact, flat keys so the
+# frontend can render text without ever touching a number.
+RANKING_COMMENT_KEYS: dict[str, str] = {
+    "skills_match": "skills_match_comment",
+    "experience_relevance": "experience_comment",
+    "role_alignment": "role_alignment_comment",
+    "education_fit": "education_comment",
+    "overall": "overall_comment",
+}
+
+RANKING_STATUS_READY = "ready"
+RANKING_STATUS_NOT_SCORED = "not_scored"
+
+#: Where each comment's word LABEL is published. Same five fields as
+#: RANKING_COMMENT_KEYS, so the UI reads `<field>_label` beside `<field>_comment`.
+RANKING_LABEL_KEYS: dict[str, str] = {
+    "skills_match": "skills_match_label",
+    "experience_relevance": "experience_label",
+    "role_alignment": "role_alignment_label",
+    "education_fit": "education_label",
+    "overall": "overall_label",
+}
+
+# ── The four client-facing grades (spec §10.2) ───────────────────────────────
+# claude.md's hard rule is that rated output is WORDS ONLY and stored numeric
+# scores never reach a client. This is the projection that makes that possible:
+# the internal 1-10 parameter score is converted to a grade HERE, server-side,
+# and only the grade crosses the API boundary.
+#
+# The scale itself lives in `services/rating.py`, which the PPI Assessment
+# reads from too. Two parallel five-label scales used to be maintained here and
+# in functional_assessment, kept in step by hand and by comment; there is now
+# one scale, and "Matching" means exactly the same thing wherever it appears.
+MATCHING_LABELS: tuple[str, ...] = rating.GRADES
+
+MATCHING_LABEL_HIGHLY = rating.GRADE_HIGHLY
+MATCHING_LABEL_MATCHING = rating.GRADE_MATCHING
+MATCHING_LABEL_MODERATE = rating.GRADE_MODERATELY
+MATCHING_LABEL_NONE = rating.GRADE_NOT
+
+
+def matching_label(score: float | int | None) -> str | None:
+    """Grade for a parameter score. `score` is the internal 1-10 value (or the
+    1-10-scaled overall mean); None in, None out.
+
+    Delegates to `services.rating`, which owns the one four-grade scale the
+    whole product reads. Kept as a name here because a good deal of the
+    codebase already imports it from this module.
+    """
+    return rating.grade_for_ten(score)
+
+
+def ranking_payload(breakdown: dict | None) -> dict[str, Any]:
+    """Flat, comments-only projection of a stored breakdown for API responses.
+
+    Always returns every key. When the link has not been scored yet the five
+    comments and labels are null and `ranking_status` is "not_scored" — an
+    explicit state the UI can distinguish from "scored but empty", instead of a
+    silent null. Comments are re-checked against the 25-30 word contract on the
+    way out, so even a legacy row can never render out of range.
+
+    Each comment is accompanied by its WORD LABEL, derived here from the
+    internal score. The score itself is deliberately not in the output: this is
+    the boundary at which numbers stop (claude.md hard rule).
+    """
+    out: dict[str, Any] = {
+        "ranking_status": RANKING_STATUS_NOT_SCORED,
+        **{key: None for key in RANKING_COMMENT_KEYS.values()},
+        **{key: None for key in RANKING_LABEL_KEYS.values()},
+    }
+    if not isinstance(breakdown, dict) or not breakdown:
+        return out
+    for field, out_key in RANKING_COMMENT_KEYS.items():
+        block = breakdown.get(field)
+        comment = block.get("comment") if isinstance(block, dict) else None
+        out[out_key] = enforce_word_range(comment)
+        out[RANKING_LABEL_KEYS[field]] = matching_label(
+            block.get("score") if isinstance(block, dict) else None
+        )
+    out["ranking_status"] = RANKING_STATUS_READY
+    return out
+
+
+def client_breakdown(breakdown: dict | None) -> dict | None:
+    """The stored breakdown with every internal numeric score removed.
+
+    claude.md hard rule: stored numeric scores are internal ranking data and
+    must never be returned by a client-facing API. The review screen needs the
+    five comments (and `scoring_mode`, so the UI/audit can tell an LLM score
+    from a degraded retrieval one) — it never needs 1-10 parameter scores or
+    the internal overall. The `breakdown` key is kept in the response shape for
+    backwards compatibility; only the numbers are stripped out of it.
+    """
+    if not isinstance(breakdown, dict) or not breakdown:
+        return None
+    out: dict[str, Any] = {}
+    for key, value in breakdown.items():
+        if isinstance(value, dict):
+            block = {k: v for k, v in value.items() if k != "score"}
+            if block:
+                out[key] = block
+        elif not isinstance(value, (int, float)) or isinstance(value, bool):
+            out[key] = value
+    return out or None
 
 
 def _profile_summary(profile: Profile) -> dict:
@@ -323,35 +735,50 @@ def _parse_scoring_response(raw: str) -> list[dict]:
     return data
 
 
+_WORD_RULE = (
+    f"EVERY comment you write, all four parameter comments AND overall_comment "
+    f", MUST be between {COMMENT_MIN_WORDS} and {COMMENT_MAX_WORDS} words. Not "
+    f"fewer than {COMMENT_MIN_WORDS}, not more than {COMMENT_MAX_WORDS}. Count "
+    "the words before you emit each comment. Write full, specific sentences "
+    "naming concrete skills, employers, titles or qualifications from the "
+    "candidate's profile, do not pad with filler, and do not truncate."
+)
+
 _SCORING_SYSTEM_PROMPT = (
     "You are a recruitment matching engine. For EACH candidate, rate fit "
     "against the job description on exactly four parameters, each an INTEGER "
-    "score from 1 (very poor fit) to 10 (excellent fit) plus a short comment:\n"
-    "1. skills_match — the JD's Skills requirements vs the candidate's "
+    "score from 1 (very poor fit) to 10 (excellent fit) plus a comment:\n"
+    "1. skills_match, the JD's Skills requirements vs the candidate's "
     "experience, education, and certifications. Judge semantic skill "
     "equivalence (comparable tools/frameworks count), not literal keyword "
     "overlap.\n"
-    "2. experience_relevance — not just years of experience: has the candidate "
+    "2. experience_relevance, not just years of experience: has the candidate "
     "performed the same function, at a comparable seniority/level?\n"
-    "3. role_alignment — the candidate's ACTUAL most recent designation and "
+    "3. role_alignment, the candidate's ACTUAL most recent designation and "
     "core duties (use the 'current_designation_and_duties' field when present; "
     "otherwise fall back to the resume) vs the JD's Role, Responsibilities, "
-    "and Accountabilities. Judge duties over titles — penalize title inflation "
+    "and Accountabilities. Judge duties over titles, penalize title inflation "
     "or deflation.\n"
-    "4. education_fit — degree level and specialization (use the "
+    "4. education_fit, degree level and specialization (use the "
     "'education_aspects' field when present; otherwise fall back to resume "
     "education) vs the JD's Education requirement.\n"
-    "Also write overall_comment: a genuinely holistic 1-3 sentence assessment "
-    "of the candidate for this job. It must be a fresh synthesis, NOT a "
+    "When customer_success_patterns are supplied, use them only as a weak "
+    "calibration signal for what has previously progressed at this customer. "
+    "The current job description remains authoritative. Never infer or reuse "
+    "names, identity, protected traits, compensation, or historical bias, and "
+    "do not penalize a candidate merely for differing from earlier profiles.\n"
+    "Also write overall_comment: a genuinely holistic assessment of the "
+    "candidate for this job. It must be a fresh synthesis, NOT a "
     "concatenation or restatement of the four parameter comments. Do NOT "
-    "compute or output any overall score — it is computed elsewhere.\n"
+    "compute or output any overall score, it is computed elsewhere.\n"
+    f"WORD-COUNT RULE (mandatory): {_WORD_RULE}\n"
     'Respond with JSON only: {"results": [{"profile_id": "<uuid>", '
-    '"skills_match": {"score": <int 1-10>, "comment": "<short>"}, '
-    '"experience_relevance": {"score": <int 1-10>, "comment": "<short>"}, '
-    '"role_alignment": {"score": <int 1-10>, "comment": "<short>"}, '
-    '"education_fit": {"score": <int 1-10>, "comment": "<short>"}, '
-    '"overall_comment": "<holistic>"}]} — one entry per candidate, no extra '
-    "keys, no prose outside the JSON."
+    f'"skills_match": {{"score": <int 1-10>, "comment": "<{COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} words>"}}, '
+    f'"experience_relevance": {{"score": <int 1-10>, "comment": "<{COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} words>"}}, '
+    f'"role_alignment": {{"score": <int 1-10>, "comment": "<{COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} words>"}}, '
+    f'"education_fit": {{"score": <int 1-10>, "comment": "<{COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} words>"}}, '
+    f'"overall_comment": "<holistic, {COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} words>"}}]}}, one entry per '
+    "candidate, no extra keys, no prose outside the JSON."
 )
 
 
@@ -400,16 +827,27 @@ async def _score_batch(
     batch: list[Profile],
     rank_by_id: dict[uuid.UUID, int],
     total: int,
+    customer_success_patterns: list[dict[str, Any]] | None = None,
 ) -> dict[uuid.UUID, dict]:
-    """Score one batch, retrying malformed entries once with a corrective
-    message; profiles still malformed after the retry are skipped with a
-    logged warning — a bad LLM response never crashes the batch. If the whole
-    LLM provider chain is unavailable, every profile in the batch gets a
-    deterministic retrieval-rank fallback breakdown instead of crashing."""
-    user = json.dumps(
-        {"job_description": jd_text, "candidates": [_safe_profile_summary(p) for p in batch]},
-        default=str,
-    )
+    """Score one batch, with ONE corrective regeneration pass.
+
+    The corrective pass covers both failure modes together: entries that were
+    missing/malformed, and entries whose comments broke the
+    25-30 word contract (the model is told exactly which fields were wrong and
+    the word count it produced). Anything still out of range afterwards is
+    repaired deterministically by `enforce_breakdown_comments` — a comment
+    outside 25-30 words is never returned from here. Profiles still malformed
+    after the retry are skipped with a logged warning; if the whole LLM
+    provider chain is unavailable, every profile gets a deterministic
+    retrieval-rank fallback breakdown instead of crashing.
+    """
+    payload: dict[str, Any] = {
+        "job_description": jd_text,
+        "candidates": [_safe_profile_summary(p) for p in batch],
+    }
+    if customer_success_patterns:
+        payload["customer_success_patterns"] = customer_success_patterns
+    user = json.dumps(payload, default=str)
     messages = [
         {"role": "system", "content": _SCORING_SYSTEM_PROMPT},
         {"role": "user", "content": user},
@@ -420,21 +858,50 @@ async def _score_batch(
         )
     except llm_router.LLMUnavailableError:
         logger.warning(
-            "matching.llm_unavailable — deterministic fallback for %d profiles", len(batch)
+            "matching.llm_unavailable, deterministic fallback for %d profiles", len(batch)
         )
         return {
             p.id: _fallback_breakdown(rank_by_id.get(p.id, total - 1), total)
             for p in batch
         }
     results, missing = _extract_valid(raw, {p.id for p in batch})
-    if missing:
+
+    # Which scored entries broke the word contract? {profile_id: {field: count}}
+    bad_words = {
+        pid: bad
+        for pid, bd in results.items()
+        if (bad := comment_fields_out_of_range(bd))
+    }
+
+    if missing or bad_words:
+        parts: list[str] = []
+        if missing:
+            parts.append(
+                "These profile_ids were missing or malformed: "
+                f"{sorted(str(p) for p in missing)}. Every parameter score MUST "
+                "be an integer between 1 and 10, every parameter needs a "
+                "comment, and overall_comment must be a non-empty holistic "
+                "sentence."
+            )
+        if bad_words:
+            detail = "; ".join(
+                f"{pid}: "
+                + ", ".join(f"{field} was {n} words" for field, n in sorted(bad.items()))
+                for pid, bad in sorted(bad_words.items(), key=lambda kv: str(kv[0]))
+            )
+            parts.append(
+                "These comments broke the mandatory "
+                f"{COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} word rule, {detail}. "
+                "Rewrite each listed comment so it is between "
+                f"{COMMENT_MIN_WORDS} and {COMMENT_MAX_WORDS} words, keeping the "
+                "same score and the same substance; add concrete detail from the "
+                "candidate's profile rather than filler."
+            )
+        wanted_again = set(missing) | set(bad_words)
         corrective = (
-            "Your previous response was missing or malformed for these "
-            f"profile_ids: {sorted(str(p) for p in missing)}. Every parameter "
-            "score MUST be an integer between 1 and 10, every parameter needs "
-            "a comment, and overall_comment must be a non-empty holistic "
-            "sentence. Re-emit a complete, valid JSON response in the exact "
-            "schema for ONLY those profile_ids."
+            " ".join(parts)
+            + " Re-emit a complete, valid JSON response in the exact schema for "
+            f"ONLY these profile_ids: {sorted(str(p) for p in wanted_again)}."
         )
         retry_messages = messages + [
             {"role": "assistant", "content": raw},
@@ -448,18 +915,40 @@ async def _score_batch(
             # Chain went down on the corrective retry — skip the still-missing
             # profiles (the ones that DID score keep their real scores).
             raw_retry = ""
-        retried, still_missing = _extract_valid(raw_retry, missing)
-        results.update(retried)
-        for pid in still_missing:
+        retried, still_missing = _extract_valid(raw_retry, wanted_again)
+        for pid, bd in retried.items():
+            # Only accept a regenerated entry if it is no worse on the word
+            # contract than what we already had (a first-pass entry is never
+            # replaced by a more broken one).
+            if pid in results and len(comment_fields_out_of_range(bd)) >= len(
+                bad_words.get(pid, {})
+            ):
+                continue
+            results[pid] = bd
+        for pid in still_missing & set(missing):
             logger.warning(
                 "matching.profile_skipped profile_id=%s reason=malformed_llm_scores",
                 pid,
             )
+
+    # Last line of defence: deterministic repair so a stored comment is ALWAYS
+    # 25-30 words, whatever the model did.
+    for pid, bd in results.items():
+        remaining = comment_fields_out_of_range(bd)
+        if remaining:
+            logger.warning(
+                "matching.comment_word_count_repaired profile_id=%s fields=%s",
+                pid, remaining,
+            )
+            enforce_breakdown_comments(bd)
     return results
 
 
 async def _llm_score(
-    session: AsyncSession, jd_text: str, profiles: list[Profile]
+    session: AsyncSession,
+    jd_text: str,
+    profiles: list[Profile],
+    customer_success_patterns: list[dict[str, Any]] | None = None,
 ) -> dict[uuid.UUID, dict]:
     """4-parameter scoring for all shortlisted profiles.
 
@@ -474,8 +963,98 @@ async def _llm_score(
     results: dict[uuid.UUID, dict] = {}
     for i in range(0, total, _RERANK_BATCH_SIZE):
         batch = profiles[i : i + _RERANK_BATCH_SIZE]
-        results.update(await _score_batch(session, jd_text, batch, rank_by_id, total))
+        results.update(
+            await _score_batch(
+                session,
+                jd_text,
+                batch,
+                rank_by_id,
+                total,
+                customer_success_patterns,
+            )
+        )
     return results
+
+
+def _success_pattern(profile: Profile, job_title: str, department: str | None) -> dict:
+    """A PII-minimized calibration summary from a profile that progressed.
+
+    Only job-relevant evidence is retained. Names, contact details, resume
+    prose, compensation and every unrecognized parsed field are excluded.
+    """
+    parsed = _strip_compensation(profile.parsed_fields_json or {})
+    aspects = (
+        _strip_compensation(profile.aspects_json)
+        if isinstance(profile.aspects_json, dict)
+        else {}
+    )
+    pattern: dict[str, Any] = {
+        "prior_job_title": job_title,
+        "prior_job_department": department,
+        "skills": parsed.get("skills", []),
+        "total_experience_years": parsed.get("total_experience_years"),
+        "education": parsed.get("education", []),
+        "employment_history": parsed.get("employment_history", []),
+    }
+    if aspects.get(_ASPECT_ROLE_KEY):
+        pattern["current_designation_and_duties"] = aspects[_ASPECT_ROLE_KEY]
+    return pattern
+
+
+async def _customer_success_patterns(
+    session: AsyncSession,
+    job: Job,
+    *,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    """Return recent same-customer profiles that reached a positive stage.
+
+    The latest status per link is considered, so a later rejection cannot
+    remain a positive example. This signal is deliberately optional and
+    fail-soft; matching still works when no history exists.
+    """
+    try:
+        rows = await session.execute(
+            text(
+                """
+                SELECT p.id AS profile_id, j.title, j.department
+                FROM job_candidate_links l
+                JOIN profiles p ON p.id = l.profile_id
+                JOIN jobs j ON j.id = l.job_id
+                JOIN LATERAL (
+                    SELECT ps.status, ps.at
+                    FROM pipeline_status ps
+                    WHERE ps.job_candidate_link_id = l.id
+                    ORDER BY ps.at DESC
+                    LIMIT 1
+                ) latest ON true
+                WHERE l.tenant_id = :tenant_id
+                  AND l.job_id <> :job_id
+                  AND l.archived_at IS NULL
+                  AND latest.status IN ('shortlisted', 'offered', 'joined')
+                ORDER BY latest.at DESC
+                LIMIT :limit
+                """
+            ),
+            {
+                "tenant_id": str(job.tenant_id),
+                "job_id": str(job.id),
+                "limit": limit,
+            },
+        )
+        result = []
+        for row in rows:
+            profile = await session.get(Profile, row.profile_id)
+            if profile is not None:
+                result.append(_success_pattern(profile, row.title, row.department))
+        return result
+    except Exception as exc:  # noqa: BLE001 - calibration must never block matching
+        logger.warning(
+            "matching.customer_patterns_unavailable tenant_id=%s error=%s",
+            job.tenant_id,
+            type(exc).__name__,
+        )
+        return []
 
 
 async def run_matching(
@@ -502,15 +1081,26 @@ async def run_matching(
         )
     except EmbeddingError:
         logger.warning(
-            "matching.embeddings_unavailable job_id=%s — keyword-only ranking", job_id
+            "matching.embeddings_unavailable job_id=%s, keyword-only ranking", job_id
         )
 
-    # ── Stages 1 + 2, deduplicated union ──
+    # ── Repair the retrieval input before running the stages: a profile with a
+    #    NULL embedding is invisible to stage 1, and an unparsed resume has an
+    #    empty resume_tsv so it is invisible to stage 2 as well. ──
+    linked_ids = await _linked_stage(session, job_id)
+    await _backfill_missing_embeddings(session, linked_ids)
+
+    # ── Stages 1 + 2, deduplicated union, then EVERY explicitly-linked
+    #    candidate (retrieval is a ranking prior, never an eligibility gate). ──
     semantic_ids = (
         await _semantic_stage(session, job_id, jd_vec, top_n) if jd_vec else []
     )
     keyword_ids = await _keyword_stage(session, job_id, _keyword_query_terms(job), top_n)
-    profile_ids: list[uuid.UUID] = list(dict.fromkeys([*semantic_ids, *keyword_ids]))
+    # Union order is the deterministic-fallback rank signal: retrieval hits
+    # first (best first), then linked candidates retrieval never surfaced.
+    profile_ids: list[uuid.UUID] = list(
+        dict.fromkeys([*semantic_ids, *keyword_ids, *linked_ids])
+    )
     if not profile_ids:
         await session.commit()
         return 0
@@ -527,7 +1117,8 @@ async def run_matching(
     # ── Stage 3: 4-parameter LLM scoring (raises LLMUnavailableError only if
     #    the whole chain is exhausted — the Celery task's retry policy handles
     #    that; individual malformed profiles are skipped with a warning) ──
-    breakdowns = await _llm_score(session, jd_text, profiles)
+    customer_patterns = await _customer_success_patterns(session, job)
+    breakdowns = await _llm_score(session, jd_text, profiles, customer_patterns)
 
     # ── Ensure links exist for consenting Databank candidates (FR-4.2/4.4) ──
     existing_links = (
@@ -573,7 +1164,8 @@ async def run_matching(
             link.profile_id = profile.id
 
         if profile.id in breakdowns:
-            breakdown = breakdowns[profile.id]
+            # Belt and braces: nothing reaches storage outside 25-30 words.
+            breakdown = enforce_breakdown_comments(breakdowns[profile.id])
             overall = breakdown["overall"]["score"]
             # match_score stays 0-100 (overall × 10) so sorting/dashboard and
             # the tier boundary rule are unchanged.

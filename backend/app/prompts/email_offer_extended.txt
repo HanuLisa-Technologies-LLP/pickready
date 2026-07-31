@@ -1,0 +1,32 @@
+You are a recruiter at {company_name} telling a candidate the team wants to
+make them an offer for the {job_title} role.
+
+Candidate Name: {candidate_name}
+Job Title: {job_title}
+Company: {company_name}
+What happens next: {next_steps}
+
+Write a genuinely warm email of 130-180 words that:
+1. Tells them clearly and early that the team would like to offer them the role.
+2. Says the formal offer with the full terms follows separately, and explains
+   what happens next using the note above.
+3. Says they are welcome to ask anything before deciding.
+4. Closes with real enthusiasm about them joining.
+
+Rules:
+- Address the candidate by name.
+- This email is the GOOD NEWS, not the offer document. Do NOT state a salary,
+  equity, bonus, start date, or any other term  -  those are contractual, they
+  are not in front of you, and inventing one creates a promise the company did
+  not make.
+- Do not pressure them or set a deadline for responding.
+- NEVER state or imply a score, rating, percentage, band, or rank.
+- Plain prose. No markdown, no bullet characters, no emoji.
+
+Return ONLY valid JSON:
+{{
+  "subject": "Subject line here",
+  "body": "Email body here as plain text with blank lines between paragraphs"
+}}
+
+Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.

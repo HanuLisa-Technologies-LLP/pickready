@@ -1,0 +1,260 @@
+"""Cloudinary-backed storage for customer compliance documents.
+
+The sibling of `services/resume_storage`, and deliberately a separate module
+rather than a parameter on it: a resume is a candidate artefact with its own
+PDF/DOCX-only rule and its own folder, while a compliance record is a scan a
+finance team produces — a photographed PAN card is a JPEG, and accepting one
+must never widen what a resume upload will take.
+
+Everything else mirrors resume_storage on purpose, because those behaviours
+were chosen for good reasons and diverging would be a silent regression:
+
+  * bytes never touch the application filesystem;
+  * the Cloudinary public id is CONTENT-ADDRESSED (sha256), so a retry after a
+    lost response resolves to the asset already stored instead of creating a
+    second one;
+  * a lost response is re-checked against the deterministic id before the
+    upload is declared failed.
+
+Never name the vendor in user-facing copy (claude.md, 2026-07-26): every
+message below states the limits, not where the bytes land.
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any
+
+from fastapi import HTTPException, UploadFile, status
+from starlette.concurrency import run_in_threadpool
+
+from app.core.config import get_settings
+
+#: Scans and exports a finance team actually produces. DOCX is deliberately
+#: absent — a compliance record is a signed/issued artefact, not an editable
+#: document, and accepting one would invite an unsigned draft being filed as
+#: the agreement.
+ALLOWED_DOCUMENT_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+ALLOWED_DOCUMENT_CONTENT_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+    # Some browsers send this for a file picked from a file manager.
+    "application/octet-stream",
+}
+MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+CLOUDINARY_FOLDER = "pickready/compliance"
+
+_MIME_BY_EXTENSION = {
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+}
+
+#: Human-readable limits, used in the API description and the UI hint so the
+#: two cannot drift apart.
+UPLOAD_LIMITS_HINT = "PDF, JPG or PNG, up to 10 MB."
+
+
+def attachment_url(file_url: str) -> str:
+    """Turn a stored asset URL into a force-download one.
+
+    Without this a PDF opens in the browser tab for both View and Download, so
+    the two buttons the spec asks for would do the same thing. The flag is
+    inserted into the delivery path; a URL that does not have that shape is
+    returned UNCHANGED rather than mangled, so an asset stored by some other
+    means still resolves instead of 404ing.
+    """
+    marker = "/raw/upload/"
+    if marker in file_url and "fl_attachment" not in file_url:
+        return file_url.replace(marker, f"{marker}fl_attachment/", 1)
+    return file_url
+
+
+@dataclass(frozen=True)
+class StoredDocument:
+    public_id: str
+    secure_url: str
+    original_filename: str
+    mime_type: str
+    size_bytes: int
+    uploaded_at: datetime
+    sha256: str
+
+
+def _error(code: int, message: str, *, retryable: bool = False) -> HTTPException:
+    return HTTPException(
+        status_code=code, detail={"message": message, "retryable": retryable}
+    )
+
+
+def _normalise_filename(filename: str | None) -> str:
+    name = os.path.basename((filename or "").strip())
+    if not name or len(name) > 255:
+        raise _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Choose a document file with a valid filename.",
+        )
+    return name
+
+
+def _assert_signature(data: bytes, extension: str) -> None:
+    """Check the magic bytes, not just the extension.
+
+    A renamed file is the ordinary case here (someone exports a scan and types
+    a filename), and filing a corrupt PAN card that only reveals itself when
+    the Provider clicks View is worse than refusing it at upload.
+    """
+    if extension == ".pdf" and not data.startswith(b"%PDF-"):
+        raise _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "The selected file is not a valid PDF.",
+        )
+    if extension in {".jpg", ".jpeg"} and not data.startswith(b"\xff\xd8\xff"):
+        raise _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "The selected file is not a valid JPEG image.",
+        )
+    if extension == ".png" and not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "The selected file is not a valid PNG image.",
+        )
+
+
+async def read_validated_document(file: UploadFile) -> tuple[bytes, str, str]:
+    """Read one upload into memory after strict format and size validation."""
+    filename = _normalise_filename(file.filename)
+    extension = os.path.splitext(filename.lower())[1]
+    content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+    if extension not in ALLOWED_DOCUMENT_EXTENSIONS:
+        raise _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Compliance documents must be {UPLOAD_LIMITS_HINT}",
+        )
+    if content_type and content_type not in ALLOWED_DOCUMENT_CONTENT_TYPES:
+        raise _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "The selected file type does not match a PDF, JPG or PNG document.",
+        )
+
+    data = await file.read(MAX_DOCUMENT_BYTES + 1)
+    if not data:
+        raise _error(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "The selected document is empty."
+        )
+    if len(data) > MAX_DOCUMENT_BYTES:
+        raise _error(
+            status.HTTP_413_CONTENT_TOO_LARGE,
+            "Compliance documents must be 10 MB or smaller.",
+        )
+    _assert_signature(data, extension)
+    return data, filename, _MIME_BY_EXTENSION[extension]
+
+
+def _configure_cloudinary() -> None:
+    settings = get_settings()
+    if not settings.cloudinary_url:
+        raise _error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Document storage is not configured. Please try again shortly or "
+            "contact support.",
+            retryable=True,
+        )
+    import cloudinary
+
+    cloudinary.config(cloudinary_url=settings.cloudinary_url, secure=True)
+
+
+def _resource(public_id: str) -> dict[str, Any] | None:
+    import cloudinary.api
+
+    try:
+        return cloudinary.api.resource(public_id, resource_type="raw")
+    except Exception:
+        # A missing asset and an unavailable admin API both fall through to
+        # the upload path, which is idempotent on the same public id.
+        return None
+
+
+def _upload_or_get_existing(
+    data: bytes, sha256: str, filename: str, mime_type: str
+) -> dict[str, Any]:
+    _configure_cloudinary()
+    public_id = f"{CLOUDINARY_FOLDER}/{sha256}"
+    existing = _resource(public_id)
+    if existing:
+        return existing
+
+    import cloudinary.uploader
+
+    try:
+        return cloudinary.uploader.upload(
+            data,
+            resource_type="raw",
+            public_id=public_id,
+            overwrite=False,
+            unique_filename=False,
+            use_filename=False,
+            filename_override=filename,
+            context={
+                "original_filename": filename,
+                "mime_type": mime_type,
+                "sha256": sha256,
+            },
+        )
+    except Exception as exc:
+        existing = _resource(public_id)
+        if existing:
+            return existing
+        raise _error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "We could not securely store this document. Nothing was saved; "
+            "please retry.",
+            retryable=True,
+        ) from exc
+
+
+def _as_utc(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc) if value.tzinfo else value.replace(
+            tzinfo=timezone.utc
+        )
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc)
+
+
+async def store_document(file: UploadFile) -> StoredDocument:
+    """Validate and persist a compliance document, returning DB-ready metadata."""
+    data, filename, mime_type = await read_validated_document(file)
+    sha256 = hashlib.sha256(data).hexdigest()
+    result = await run_in_threadpool(
+        _upload_or_get_existing, data, sha256, filename, mime_type
+    )
+    secure_url = result.get("secure_url")
+    public_id = result.get("public_id")
+    if not secure_url or not public_id:
+        raise _error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Document storage returned an incomplete response. Please retry.",
+            retryable=True,
+        )
+    return StoredDocument(
+        public_id=str(public_id),
+        secure_url=str(secure_url),
+        original_filename=filename,
+        mime_type=mime_type,
+        size_bytes=int(result.get("bytes") or len(data)),
+        uploaded_at=_as_utc(result.get("created_at")),
+        sha256=sha256,
+    )

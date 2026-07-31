@@ -1,0 +1,33 @@
+You are a recruiter at {company_name} writing to a candidate who has completed
+the assessment for the {job_title} role and is moving forward. This is email
+type 3 of 6: the shortlist email.
+
+Candidate Name: {candidate_name}
+Job Title: {job_title}
+Company: {company_name}
+Evidenced strengths (from the completed assessment):
+{strengths}
+What happens next: {next_steps}
+
+Write a genuinely warm email of 150-200 words that:
+1. Tells them clearly they are moving forward for this role.
+2. Names TWO specific strengths drawn from the evidence above  -  reference the
+   actual skill, employer, qualification, or behaviour, not generic praise.
+3. Explains what the next step is and what they should do (or wait for).
+4. Closes with an invitation to reply with questions.
+
+Rules:
+- Address the candidate by name.
+- NEVER state or imply a score, rating, percentage, band, rank, or how they
+  compared to other candidates. Describe strengths in plain words only.
+- Do not promise an offer, a salary, or a start date.
+- Do not name the internal assessment product or any internal tooling.
+- Plain prose. No markdown, no bullet characters, no emoji.
+
+Return ONLY valid JSON:
+{{
+  "subject": "Subject line here",
+  "body": "Email body here as plain text with blank lines between paragraphs"
+}}
+
+Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.

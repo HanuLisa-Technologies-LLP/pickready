@@ -30,6 +30,38 @@ UPDATE_PIPELINE_STATUS = "update_pipeline_status"
 VIEW_DASHBOARD = "view_dashboard"
 EDIT_ROLE_PERMISSIONS = "edit_role_permissions"        # Super Admin only
 MANAGE_EMAIL_TEMPLATES = "manage_email_templates"
+# Company Portal -> Profile: the About / Work Life / Benefits sections every
+# new job snapshots (spec §3.2/§7.1). Distinct from CREATE_COMPANY_PAGE, which
+# governs the legacy candidate-facing company page.
+EDIT_COMPANY_PROFILE = "edit_company_profile"
+# Publishing is bundled into CREATE_JOB on the flat model (jobs publish
+# directly on create), but the spec's permission matrix lists it separately so
+# an HR Head can grant JD authorship without publishing rights.
+PUBLISH_JOB = "publish_job"
+# Customer Portal -> Compliance: uploading the customer's own tax and
+# commercial records (Provider Portal spec §3.3). Granted to the Company Admin
+# (HR Head) alone by default — the three staff roles are otherwise identical,
+# so this is the one place the flat model deliberately does NOT flatten:
+# a GSTIN certificate and a signed agreement are the company's legal
+# instruments, not recruitment data. Still a grant, not a role branch, so an
+# HR Head can delegate it to a specific person via the per-user overlay.
+MANAGE_COMPLIANCE_DOCUMENTS = "manage_compliance_documents"
+
+# Customer Portal -> Billing: choosing a plan, opening Razorpay Checkout, and
+# changing or cancelling the subscription. Granted to the Company Admin (HR
+# Head) alone by default, for the same reason as the compliance documents above:
+# committing the company to a recurring charge is a financial act, not
+# recruitment work. Reading the credit balance is separate (VIEW_BILLING) so a
+# recruiter can see why invitations are paused without being able to spend.
+MANAGE_BILLING = "manage_billing"
+VIEW_BILLING = "view_billing"
+
+# Business Development Portal (the fourth portal, /bd). Three grants, one per
+# area of the console, so a BD lead can be given the customer database and the
+# AI Reach search without the ability to edit anyone's pipeline.
+MANAGE_BD_LEADS = "manage_bd_leads"        # Personal Reach + Social Reach
+VIEW_BD_CUSTOMERS = "view_bd_customers"    # Customers page + CSV export
+USE_AI_REACH = "use_ai_reach"              # AI Reach search
 
 ALL_CAPABILITIES = [
     CREATE_COMPANY_PAGE, MANAGE_STAFF, CONFIGURE_APPROVAL_LEVELS,
@@ -37,7 +69,10 @@ ALL_CAPABILITIES = [
     VIEW_DATABANK, UPLOAD_RESUMES, TRIGGER_MATCHING, SEND_OUTREACH,
     VIEW_REVIEW_SCREEN, DECIDE_PROFILE, SCHEDULE_INTERVIEWS,
     UPDATE_PIPELINE_STATUS, VIEW_DASHBOARD, EDIT_ROLE_PERMISSIONS,
-    MANAGE_EMAIL_TEMPLATES,
+    MANAGE_EMAIL_TEMPLATES, EDIT_COMPANY_PROFILE, PUBLISH_JOB,
+    MANAGE_COMPLIANCE_DOCUMENTS,
+    MANAGE_BD_LEADS, VIEW_BD_CUSTOMERS, USE_AI_REACH,
+    MANAGE_BILLING, VIEW_BILLING,
 ]
 
 # Flattened staff model (PRD v1.0 §4, FINAL — 2026-07-24). HR Manager,
@@ -49,6 +84,8 @@ ALL_CAPABILITIES = [
 # This stays data (require_capability), never a role branch (claude.md rule 3).
 _STAFF_OPERATIONAL: dict[str, bool] = {
     CREATE_JOB: True,               # create → published directly (no approval chain)
+    PUBLISH_JOB: True,
+    EDIT_COMPANY_PROFILE: True,
     EDIT_JOB_DESCRIPTION: True,
     ADD_COMPENSATION: True,
     VIEW_DATABANK: True,
@@ -61,6 +98,9 @@ _STAFF_OPERATIONAL: dict[str, bool] = {
     UPDATE_PIPELINE_STATUS: True,
     VIEW_DASHBOARD: True,
     MANAGE_EMAIL_TEMPLATES: True,
+    # Read-only. A recruiter whose invitations stop sending must be able to see
+    # that the credit pool is in deficit; they still cannot change the plan.
+    VIEW_BILLING: True,
 }
 
 # Default template. {role: {capability: allowed}} — capabilities not listed
@@ -77,7 +117,27 @@ DEFAULT_PERMISSION_MATRIX: dict[Role, dict[str, bool]] = {
         MANAGE_STAFF: True,
         CONFIGURE_APPROVAL_LEVELS: True,   # dormant (FSM bypassed) but kept grantable
         CREATE_JOB: True,
+        PUBLISH_JOB: True,
+        EDIT_COMPANY_PROFILE: True,
         MANAGE_EMAIL_TEMPLATES: True,
+        # The company's legal/tax records. Not in _STAFF_OPERATIONAL: a
+        # recruiter has no business filing the signed agreement, and the
+        # Provider Portal shows these to the platform owner.
+        MANAGE_COMPLIANCE_DOCUMENTS: True,
+        # Subscribing, upgrading and cancelling. Same reasoning as the
+        # compliance documents directly above: a recurring charge against the
+        # company card is not recruitment work.
+        MANAGE_BILLING: True,
+        VIEW_BILLING: True,
+    },
+    # Business Development. Deliberately NOT given any recruitment capability:
+    # a BD rep sells the platform, they do not run a customer's hiring. The set
+    # here must match migration 0023's seeded rows exactly, or the engine (which
+    # reads the rows, not this dict) and this template will disagree.
+    Role.bd: {
+        MANAGE_BD_LEADS: True,
+        VIEW_BD_CUSTOMERS: True,
+        USE_AI_REACH: True,
     },
     # EDIT_ROLE_PERMISSIONS stays Owner-only (granted to no role here).
     # super_admin bypasses require_capability via its dedicated audit-logged

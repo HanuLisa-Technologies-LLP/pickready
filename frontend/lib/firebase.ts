@@ -24,12 +24,12 @@ export const firebaseApp = getApps().length ? getApp() : initializeApp(config);
 // getAuth() (lazy resolver) together with React StrictMode + Next.js Fast Refresh
 // is the known trigger for the SDK assertion
 // "INTERNAL ASSERTION FAILED: Pending promise was never set" during
-// signInWithPopup — the popup event arrives before a resolver is registered.
+// signInWithPopup, the popup event arrives before a resolver is registered.
 // Binding browserPopupRedirectResolver at init fixes it.
 //
 // SSR-safe: on the server we must not touch window/indexedDB, so fall back to the
 // lazy getAuth there (never used for a popup on the server). initializeAuth throws
-// if called twice (HMR re-eval) — reuse the existing instance in that case.
+// if called twice (HMR re-eval), reuse the existing instance in that case.
 function resolveAuth(): Auth {
   if (typeof window === "undefined") {
     return getAuth(firebaseApp);
@@ -41,7 +41,7 @@ function resolveAuth(): Auth {
     });
   } catch {
     // Already initialized on a previous module evaluation (Fast Refresh / a
-    // second import) — reuse the single existing instance.
+    // second import), reuse the single existing instance.
     return getAuth(firebaseApp);
   }
 }

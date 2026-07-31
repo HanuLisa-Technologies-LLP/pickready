@@ -19,25 +19,44 @@ import pytest
 from app.models.enums import Tier
 from app.services import matching
 from app.services.matching import (
-    _AI_UNAVAILABLE_COMMENT,
+    COMMENT_MAX_WORDS,
+    COMMENT_MIN_WORDS,
     PARAMETERS,
-    WEIGHTS,
+    RANKING_COMMENT_KEYS,
     _extract_valid,
     _fallback_breakdown,
     _fallback_param_score,
+    comment_fields_out_of_range,
     compute_overall_score,
+    enforce_breakdown_comments,
+    enforce_word_range,
+    ranking_payload,
+    word_count,
 )
 from app.services.tiers import assign_tier
+
+
+def _in_range(text: str) -> bool:
+    return COMMENT_MIN_WORDS <= word_count(text) <= COMMENT_MAX_WORDS
+
+
+# A 28-word comment — inside the 25-30 word contract, so fixtures using it do
+# not accidentally trigger the corrective regeneration pass.
+GOOD_COMMENT = (
+    "Candidate demonstrates strong practical command of the core technologies this "
+    "role requires, with directly comparable delivery experience, though a few "
+    "secondary tools remain unevidenced in the submitted resume."
+)
 
 
 def _valid_entry(pid: str, **overrides) -> dict:
     entry = {
         "profile_id": pid,
-        "skills_match": {"score": 8, "comment": "strong"},
-        "experience_relevance": {"score": 7, "comment": "relevant"},
-        "role_alignment": {"score": 9, "comment": "aligned"},
-        "education_fit": {"score": 6, "comment": "adjacent"},
-        "overall_comment": "Solid overall fit.",
+        "skills_match": {"score": 8, "comment": GOOD_COMMENT},
+        "experience_relevance": {"score": 7, "comment": GOOD_COMMENT},
+        "role_alignment": {"score": 9, "comment": GOOD_COMMENT},
+        "education_fit": {"score": 6, "comment": GOOD_COMMENT},
+        "overall_comment": GOOD_COMMENT,
     }
     entry.update(overrides)
     return entry
@@ -112,9 +131,14 @@ def test_fallback_param_score_band_and_monotonicity():
 def test_fallback_breakdown_shape_and_flagged_comments():
     bd = _fallback_breakdown(0, 1)
     for param in PARAMETERS:
-        assert bd[param]["comment"] == _AI_UNAVAILABLE_COMMENT
+        # Real, readable, in-contract text — never the old placeholder.
+        assert _in_range(bd[param]["comment"])
+        assert "AI scoring unavailable" not in bd[param]["comment"]
         assert 1 <= bd[param]["score"] <= 10
-    assert bd["overall"]["comment"] == _AI_UNAVAILABLE_COMMENT
+    assert _in_range(bd["overall"]["comment"])
+    assert "AI scoring unavailable" not in bd["overall"]["comment"]
+    # the degraded mode is flagged in a machine-readable way instead
+    assert bd["scoring_mode"] == "retrieval_fallback"
     # overall is the Python-computed weighted average of the fallback scores
     assert bd["overall"]["score"] == compute_overall_score(
         {p: bd[p]["score"] for p in PARAMETERS}
@@ -156,9 +180,8 @@ async def test_score_batch_falls_back_when_llm_unavailable(monkeypatch):
     # Every profile still gets a (fallback) breakdown — the batch never aborts.
     assert set(result) == {p.id for p in batch}
     for pid, bd in result.items():
-        assert bd["overall"]["comment"] == _AI_UNAVAILABLE_COMMENT
-        for param in PARAMETERS:
-            assert bd[param]["comment"] == _AI_UNAVAILABLE_COMMENT
+        assert bd["scoring_mode"] == "retrieval_fallback"
+        assert comment_fields_out_of_range(bd) == {}
     # Rank ordering preserved: earlier profile scores >= later profile.
     assert (
         result[batch[0].id]["overall"]["score"]
@@ -183,11 +206,247 @@ async def test_score_batch_malformed_then_skipped(monkeypatch):
     assert result == {}  # skipped, not crashed
 
 
-def test_weights_still_locked():
-    # Guard against accidental weight drift in this file's neighbourhood.
-    assert WEIGHTS == {
-        "skills_match": 0.35,
-        "experience_relevance": 0.30,
-        "role_alignment": 0.20,
-        "education_fit": 0.15,
+# ── word_count / enforce_word_range (pure helpers) ──────────────────────────
+
+def test_word_count_ignores_punctuation_only_tokens():
+    assert word_count("one two three") == 3
+    assert word_count("one — two – three") == 3       # bare dashes are not words
+    assert word_count("  spaced   out  ") == 2
+    assert word_count("") == 0
+    assert word_count(None) == 0
+    assert word_count("Python, FastAPI; Redis.") == 3
+
+
+def test_enforce_word_range_leaves_in_range_text_alone():
+    assert word_count(GOOD_COMMENT) == 28
+    out = enforce_word_range(GOOD_COMMENT)
+    assert out == GOOD_COMMENT
+    assert _in_range(out)
+
+
+def test_enforce_word_range_pads_too_short():
+    short = "Strong Python match."
+    assert word_count(short) < COMMENT_MIN_WORDS
+    out = enforce_word_range(short)
+    assert _in_range(out)
+    assert out.startswith("Strong Python match.")
+    assert out.endswith((".", "!", "?"))
+
+
+def test_enforce_word_range_pads_empty_input():
+    for empty in ("", "   ", None):
+        out = enforce_word_range(empty)
+        assert _in_range(out), out
+
+
+def test_enforce_word_range_trims_too_long_at_a_boundary():
+    long = (
+        "The candidate has deep experience with Python, FastAPI, PostgreSQL and "
+        "Redis; they have also shipped Dockerised services, mentored engineers, "
+        "run incident response, and owned migrations across several teams over "
+        "the last decade of professional work."
+    )
+    assert word_count(long) > COMMENT_MAX_WORDS
+    out = enforce_word_range(long)
+    assert _in_range(out)
+    assert long.startswith(out[:40])          # a prefix of the original, not a rewrite
+    assert out.endswith((".", "!", "?"))
+
+
+def test_enforce_word_range_hard_cut_when_no_boundary_exists():
+    # 60 punctuation-free words: no clause boundary to fall back to.
+    out = enforce_word_range(" ".join(["alpha"] * 60))
+    assert _in_range(out)
+
+
+def test_enforce_word_range_boundaries_are_inclusive():
+    for n in (COMMENT_MIN_WORDS, COMMENT_MAX_WORDS):
+        text = " ".join(["alpha"] * n)
+        assert word_count(enforce_word_range(text)) == n
+
+
+def test_enforce_word_range_rejects_a_nonsense_range():
+    with pytest.raises(ValueError):
+        enforce_word_range("x", 30, 25)
+
+
+def test_comment_fields_out_of_range_reports_field_and_count():
+    bd = {
+        **{p: {"score": 5, "comment": GOOD_COMMENT} for p in PARAMETERS},
+        "overall": {"score": 5.0, "comment": "too short"},
     }
+    bd["skills_match"] = {"score": 5, "comment": "also short"}
+    bad = comment_fields_out_of_range(bd)
+    assert bad == {"skills_match": 2, "overall": 2}
+
+
+def test_enforce_breakdown_comments_fixes_every_field():
+    bd = {
+        **{p: {"score": 5, "comment": "short"} for p in PARAMETERS},
+        "overall": {"score": 5.0, "comment": ""},
+    }
+    enforce_breakdown_comments(bd)
+    assert comment_fields_out_of_range(bd) == {}
+
+
+# ── _score_batch enforces the word contract ─────────────────────────────────
+
+def _raw(*entries) -> str:
+    import json
+
+    return json.dumps({"results": list(entries)})
+
+
+@pytest.mark.asyncio
+async def test_score_batch_regenerates_when_comments_are_out_of_range(monkeypatch):
+    """First response is in-schema but the comments are too short -> exactly one
+    corrective pass is made, and the corrective prompt names the bad fields and
+    their word counts."""
+    profile = _FakeProfile()
+    pid = str(profile.id)
+    calls: list[list[dict]] = []
+
+    async def _fake(role_hint, messages, **kwargs):
+        calls.append(messages)
+        if len(calls) == 1:
+            return _raw(_valid_entry(pid, skills_match={"score": 8, "comment": "too short"}))
+        return _raw(_valid_entry(pid))
+
+    monkeypatch.setattr(matching.llm_router, "chat_completion", _fake)
+
+    result = await matching._score_batch(
+        session=None, jd_text="JD", batch=[profile],
+        rank_by_id={profile.id: 0}, total=1,
+    )
+    assert len(calls) == 2, "expected exactly one corrective regeneration pass"
+    corrective = calls[1][-1]["content"]
+    assert "skills_match was 2 words" in corrective
+    assert f"{COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} word rule" in corrective
+    assert comment_fields_out_of_range(result[profile.id]) == {}
+    assert result[profile.id]["skills_match"]["comment"] == GOOD_COMMENT
+
+
+@pytest.mark.asyncio
+async def test_score_batch_repairs_deterministically_when_retry_also_fails(monkeypatch):
+    """The model never complies -> the stored comments are still 25-30 words."""
+    profile = _FakeProfile()
+    pid = str(profile.id)
+    too_long = " ".join(["alpha"] * 80)
+
+    async def _fake(role_hint, messages, **kwargs):
+        return _raw(
+            _valid_entry(
+                pid,
+                skills_match={"score": 8, "comment": "nope"},
+                education_fit={"score": 4, "comment": too_long},
+            )
+        )
+
+    monkeypatch.setattr(matching.llm_router, "chat_completion", _fake)
+
+    result = await matching._score_batch(
+        session=None, jd_text="JD", batch=[profile],
+        rank_by_id={profile.id: 0}, total=1,
+    )
+    bd = result[profile.id]
+    assert comment_fields_out_of_range(bd) == {}
+    for field in (*PARAMETERS, "overall"):
+        assert _in_range(bd[field]["comment"])
+
+
+@pytest.mark.asyncio
+async def test_score_batch_no_retry_when_everything_is_in_range(monkeypatch):
+    profile = _FakeProfile()
+    calls: list[int] = []
+
+    async def _fake(role_hint, messages, **kwargs):
+        calls.append(1)
+        return _raw(_valid_entry(str(profile.id)))
+
+    monkeypatch.setattr(matching.llm_router, "chat_completion", _fake)
+    result = await matching._score_batch(
+        session=None, jd_text="JD", batch=[profile],
+        rank_by_id={profile.id: 0}, total=1,
+    )
+    assert len(calls) == 1
+    assert comment_fields_out_of_range(result[profile.id]) == {}
+
+
+# ── ranking_payload: the comments-only shape the UI consumes ────────────────
+
+def test_ranking_payload_keys_are_exactly_the_contract():
+    assert set(RANKING_COMMENT_KEYS.values()) == {
+        "skills_match_comment",
+        "experience_comment",
+        "role_alignment_comment",
+        "education_comment",
+        "overall_comment",
+    }
+
+
+def test_ranking_payload_ready_has_all_five_in_range_comments():
+    bd = _fallback_breakdown(0, 1)
+    payload = ranking_payload(bd)
+    assert payload["ranking_status"] == "ready"
+    for key in RANKING_COMMENT_KEYS.values():
+        assert _in_range(payload[key]), (key, payload[key])
+
+
+def test_ranking_payload_not_scored_is_explicit_not_silent():
+    for empty in (None, {}):
+        payload = ranking_payload(empty)
+        assert payload["ranking_status"] == "not_scored"
+        # every key is still present — the UI branches on status, not on KeyError
+        for key in RANKING_COMMENT_KEYS.values():
+            assert key in payload and payload[key] is None
+
+
+def test_ranking_payload_repairs_legacy_out_of_range_comments():
+    legacy = {
+        **{p: {"score": 5, "comment": "AI scoring unavailable."} for p in PARAMETERS},
+        "overall": {"score": 5.0, "comment": None},
+    }
+    payload = ranking_payload(legacy)
+    assert payload["ranking_status"] == "ready"
+    for key in RANKING_COMMENT_KEYS.values():
+        assert _in_range(payload[key])
+
+
+def test_parameters_still_locked_and_unweighted():
+    # Guard against drift in this file's neighbourhood: the four parameters are
+    # the contract, and none of them outranks another (spec 2026-07-30).
+    assert matching.PARAMETERS == (
+        "skills_match", "experience_relevance", "role_alignment", "education_fit",
+    )
+    assert not hasattr(matching, "WEIGHTS")
+
+
+# ── Numbers never cross the client boundary ─────────────────────────────────
+
+def test_client_breakdown_strips_every_numeric_score():
+    """Stored numeric scores are internal ranking data (claude.md) — the review
+    screen gets the comments and the scoring_mode, never a number."""
+    from app.services.matching import client_breakdown
+
+    stored = matching._fallback_breakdown(0, 4)
+    out = client_breakdown(stored)
+    assert out is not None
+    assert out["scoring_mode"] == "retrieval_fallback"
+    for field in (*matching.PARAMETERS, "overall"):
+        assert "score" not in out[field]
+        assert out[field]["comment"] == stored[field]["comment"]
+    # Nothing numeric survives anywhere in the projection.
+    assert not [
+        v for block in out.values() if isinstance(block, dict)
+        for v in block.values() if isinstance(v, (int, float)) and not isinstance(v, bool)
+    ]
+    # The stored breakdown itself is not mutated — audit data stays intact.
+    assert stored["overall"]["score"] > 0
+
+
+def test_client_breakdown_passes_through_empty_and_null():
+    from app.services.matching import client_breakdown
+
+    assert client_breakdown(None) is None
+    assert client_breakdown({}) is None
+    assert client_breakdown({"scoring_mode": "llm"}) == {"scoring_mode": "llm"}

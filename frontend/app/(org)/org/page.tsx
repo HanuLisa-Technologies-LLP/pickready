@@ -1,9 +1,11 @@
 "use client";
 
-// /org home — jobs are the shared entry point for every org role.
+// /org home, jobs are the shared entry point for every org role.
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+
+import { LoadingRows } from "@/components/page-primitives";
 
 export default function OrgHomePage() {
   const router = useRouter();
@@ -12,7 +14,5 @@ export default function OrgHomePage() {
     router.replace("/org/jobs");
   }, [router]);
 
-  return (
-    <p className="text-sm text-muted-foreground">Loading your workspace…</p>
-  );
+  return <LoadingRows rows={3} label="Opening your workspace" />;
 }

@@ -2,12 +2,12 @@
 
 // Outreach completion (FR-5.1/5.2, FR-6.1): personal fields, the 40-aspect
 // questionnaire (minus aspects already covered), up to 3 previous-employer
-// HR emails, and a fresh resume upload — submitted as multipart to the
+// HR emails, and a fresh resume upload, submitted as multipart to the
 // public tokenized endpoint.
 
 import * as React from "react";
 import { useParams } from "next/navigation";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, LinkIcon } from "lucide-react";
 
 import { apiGet, apiUploadWithProgress } from "@/lib/api";
 import type { OutreachRequestInfo } from "@/lib/types";
@@ -17,13 +17,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField, FormSection } from "@/components/ui/form";
 import { ResumeFileInput } from "@/components/resume-file-input";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { PublicNotice, PublicShell } from "@/components/public-shell";
+import { Section } from "@/components/page-primitives";
 import {
   Select,
   SelectContent,
@@ -109,40 +104,44 @@ export default function OutreachCompletionPage() {
 
   if (notFound) {
     return (
-      <CenteredCard
+      <PublicNotice
+        tone="error"
+        icon={<LinkIcon className="h-7 w-7" aria-hidden="true" />}
         title="Link not valid"
-        description="This outreach link has expired or was already used. Please contact the HR team that reached out to you."
+        description="This outreach link has expired or was already used. Contact the HR team that reached out to you."
       />
     );
   }
 
   if (submitted) {
     return (
-      <CenteredCard
-        title="Thank you!"
+      <PublicNotice
+        tone="success"
+        icon={<CheckCircle2 className="h-7 w-7" aria-hidden="true" />}
+        title="Thank you"
         description="Your details, questionnaire and resume were submitted. The HR team will verify your previous employment and get back to you."
-        icon={<CheckCircle2 className="h-10 w-10" />}
       />
     );
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-10">
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-xl">
-            Complete your candidate profile
-            {info?.job_title ? ` — ${info.job_title}` : ""}
-          </CardTitle>
-          <CardDescription>
-            {info?.tenant_name
-              ? `Requested by ${info.tenant_name} via PickReady. `
-              : ""}
-            Please fill everything below — all sections are required before your
-            profile can move forward.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+    <PublicShell>
+      <div className="mb-8">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-brand-600">
+          {info?.tenant_name
+            ? `Requested by ${info.tenant_name}`
+            : "Candidate profile"}
+        </p>
+        <h1 className="mt-2 text-balance text-2xl font-bold tracking-tight">
+          Complete your profile
+          {info?.job_title ? `: ${info.job_title}` : ""}
+        </h1>
+        <p className="mt-2 text-pretty text-sm leading-6">
+          Every section below is required before your profile moves forward.
+        </p>
+      </div>
+
+      <Section>
           <form className="space-y-10" onSubmit={submit}>
             <FormSection
               title="Personal details"
@@ -212,7 +211,7 @@ export default function OutreachCompletionPage() {
 
             <FormSection
               title="Updated resume"
-              description="A fresh upload is required — previous resumes are not reused."
+              description="A fresh upload is required. Previous resumes are not reused."
             >
               <FormField label="Resume file" htmlFor="p-resume" required>
                 <ResumeFileInput
@@ -274,33 +273,10 @@ export default function OutreachCompletionPage() {
             </FormSection>
 
             <Button type="submit" size="lg" disabled={busy} className="w-full">
-              {busy ? "Submitting…" : "Submit profile"}
+              {busy ? "Submitting" : "Submit profile"}
             </Button>
           </form>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function CenteredCard({
-  title,
-  description,
-  icon,
-}: {
-  title: string;
-  description: string;
-  icon?: React.ReactNode;
-}) {
-  return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-md text-center">
-        <CardHeader className="items-center">
-          {icon ? <div className="mb-2 flex justify-center">{icon}</div> : null}
-          <CardTitle>{title}</CardTitle>
-          <CardDescription>{description}</CardDescription>
-        </CardHeader>
-      </Card>
-    </div>
+      </Section>
+    </PublicShell>
   );
 }

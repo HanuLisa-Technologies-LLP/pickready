@@ -316,3 +316,165 @@ async def test_apply_rejects_bad_resume_file(monkeypatch) -> None:
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
+
+
+async def test_apply_context_reports_stored_resume_and_duplicate(monkeypatch) -> None:
+    """The apply page asks for this BEFORE showing 40 questions: is there a
+    resume to reuse, and has this candidate already applied? (FR-6.2/9.2.)"""
+    from app.api import portal as portal_mod
+    from app.core.db import superadmin_scope
+
+    async def fake_store(_resume):
+        return _asset("https://res.cloudinary.test/ctx.pdf")
+
+    monkeypatch.setattr(portal_mod, "store_resume", fake_store)
+    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+
+    engine, factory = await _factory_or_skip()
+    fx = _Fixture()
+    try:
+        await _seed(factory, fx)
+        user = _user(fx)
+
+        # Nothing on file yet, and not applied.
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    before = await portal_mod.apply_context(
+                        fx.jobs[0], user=user, session=s
+                    )
+        assert before.already_applied is False
+        assert before.resume.has_resume is False
+
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    await portal_mod.apply_to_job(
+                        fx.jobs[0], _ASPECTS, _upload(), False, user=user, session=s
+                    )
+
+        # Now: applied to job 0, and a reusable resume exists for job 1.
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    same = await portal_mod.apply_context(
+                        fx.jobs[0], user=user, session=s
+                    )
+                    other = await portal_mod.apply_context(
+                        fx.jobs[1], user=user, session=s
+                    )
+                    stored = await portal_mod.my_stored_resume(user=user, session=s)
+        assert same.already_applied is True
+        assert same.applied_at is not None
+        assert other.already_applied is False
+        assert other.resume.has_resume is True
+        assert other.resume.filename == "cv.pdf"
+        assert stored.has_resume is True
+    finally:
+        await _cleanup(factory, fx)
+        await engine.dispose()
+
+
+async def test_apply_persists_personal_details_on_the_candidate(monkeypatch) -> None:
+    """The apply form's personal fields (FR-5.1 a–d) land on the Candidate, not
+    only inside aspects_json — otherwise the ATS shows a nameless applicant."""
+    from app.api import portal as portal_mod
+    from app.core.db import superadmin_scope
+    from app.models import Candidate
+
+    async def fake_store(_resume):
+        return _asset("https://res.cloudinary.test/personal.pdf")
+
+    monkeypatch.setattr(portal_mod, "store_resume", fake_store)
+    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+
+    engine, factory = await _factory_or_skip()
+    fx = _Fixture()
+    try:
+        await _seed(factory, fx)
+        user = _user(fx)
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    await portal_mod.apply_to_job(
+                        fx.jobs[0], _ASPECTS, _upload(), False,
+                        full_name="Renamed Applicant", residing_city="Chennai",
+                        age=31, gender="female", user=user, session=s,
+                    )
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    cand = await s.get(Candidate, fx.cand_id)
+                    assert cand is not None
+                    assert cand.full_name == "Renamed Applicant"
+                    assert cand.city == "Chennai"
+                    assert cand.age == 31
+                    assert cand.gender == "female"
+    finally:
+        await _cleanup(factory, fx)
+        await engine.dispose()
+
+
+# ── Job description on the portal job read (client review, page 1) ───────────
+
+_SEEDED_JD = {
+    "description": "Own the ingestion pipeline end to end.",
+    "role": "Data Engineer",
+    "responsibilities": ["Build ETL", "Own data quality"],
+    "accountabilities": ["Pipeline uptime"],
+    "reporting_to": "Head of Data",
+    "education": "B.E. / B.Tech",
+    "skills": ["Python", "SQL"],
+}
+
+
+async def test_portal_job_read_carries_the_job_description() -> None:
+    """The candidate apply dialog reads the JD from the SAME response that
+    lists/serves the job — no second round-trip to /jobs/public/{id}."""
+    from app.api import portal as portal_mod
+    from app.core.db import superadmin_scope
+    from app.models import Job
+
+    engine, factory = await _factory_or_skip()
+    fx = _Fixture()
+    try:
+        await _seed(factory, fx)
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    job = await s.get(Job, fx.jobs[0])
+                    job.jd_json = dict(_SEEDED_JD)
+                    job.assessment_grade = "managerial"
+
+        user = _user(fx)
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    detail = await portal_mod.portal_job(
+                        fx.jobs[0], user=user, session=s
+                    )
+                    listing = await portal_mod.portal_jobs(user=user, session=s)
+
+        assert detail.jd_json == _SEEDED_JD
+        # The `jd` mirror is computed from the canonical column, so the two can
+        # never drift apart.
+        assert detail.jd == detail.jd_json
+        assert detail.grade == "managerial"
+
+        listed = {j.id: j for j in listing.jobs}
+        assert listed[fx.jobs[0]].jd == _SEEDED_JD
+        assert listed[fx.jobs[0]].jd == listed[fx.jobs[0]].jd_json
+        assert listed[fx.jobs[0]].grade == "managerial"
+        # A job with no stored grade still reads as a concrete grade, never null.
+        assert listed[fx.jobs[1]].grade == "non_managerial"
+
+        # No internal ATS field leaks into the candidate-facing payload.
+        emitted = detail.model_dump()
+        for forbidden in (
+            "compensation", "compensation_json", "created_by", "match_score",
+            "approval_levels_config", "requirement_period",
+        ):
+            assert forbidden not in emitted
+    finally:
+        await _cleanup(factory, fx)
+        await engine.dispose()

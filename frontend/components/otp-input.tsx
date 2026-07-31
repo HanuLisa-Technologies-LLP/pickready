@@ -17,7 +17,7 @@ export function OtpInput({
   value: string;
   onChange: (v: string) => void;
   disabled?: boolean;
-  /** Render the boxes in an error state (red border) — invalid/expired code. */
+  /** Render the boxes in an error state (red border), invalid/expired code. */
   invalid?: boolean;
   /** Focus the first empty box on mount. */
   autoFocus?: boolean;
@@ -32,7 +32,7 @@ export function OtpInput({
     if (!autoFocus || disabled) return;
     const firstEmpty = Math.min(value.length, length - 1);
     refs.current[firstEmpty]?.focus();
-    // Run only on mount — later focus moves are driven by typing.
+    // Run only on mount, later focus moves are driven by typing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -93,7 +93,7 @@ export function OtpInput({
                 // Clear the current box in place.
                 setDigit(i, "");
               } else if (i > 0) {
-                // Already empty — clear and step back to the previous box.
+                // Already empty, clear and step back to the previous box.
                 setDigit(i - 1, "");
                 refs.current[i - 1]?.focus();
               }

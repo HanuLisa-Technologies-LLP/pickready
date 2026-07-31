@@ -1,7 +1,7 @@
 "use client";
 
-// Hiring Manager profile decision (FR-8.2): three actions — Shortlisted,
-// Rejected, Hold — on a profile the HM has been granted access to. Hold
+// Hiring Manager profile decision (FR-8.2): three actions, Shortlisted,
+// Rejected, Hold, on a profile the HM has been granted access to. Hold
 // requires a mandatory remarks field (backend returns 422 without it).
 // Capability-gated by the caller on `decide_profile`.
 
@@ -100,7 +100,7 @@ export function HmDecisionActions({
       <Dialog open={holdOpen} onOpenChange={setHoldOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Hold — remarks required</DialogTitle>
+            <DialogTitle>Hold, remarks required</DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
             <Label htmlFor="hold-remarks">
@@ -110,7 +110,7 @@ export function HmDecisionActions({
               id="hold-remarks"
               value={remarks}
               onChange={(e) => setRemarks(e.target.value)}
-              placeholder="Mandatory — e.g. awaiting reference check, revisit next quarter…"
+              placeholder="Mandatory, e.g. awaiting reference check, revisit next quarter…"
               rows={4}
               autoFocus
             />

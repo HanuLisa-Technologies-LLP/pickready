@@ -38,6 +38,26 @@ REFRESH_COOKIE = "pr_refresh"
 # can't leak from) ordinary API calls.
 REFRESH_COOKIE_PATH = "/api/v1/auth"
 
+# ── Session-presence hint ────────────────────────────────────────────────────
+# `pr_session` carries NO token material. Its only job is to answer one
+# question, for anything that can see cookies at path "/": "is there still a
+# refresh token behind this browser?"
+#
+# It exists because of a real defect. The access cookie is deleted by the
+# browser the moment its 15-minute Max-Age lapses, and the refresh cookie is
+# path-scoped to /api/v1/auth, so it is NOT sent to a page request like
+# /org/jobs. The Next.js middleware, which gates every portal route on cookie
+# presence, therefore saw an idle-but-perfectly-refreshable user as signed out
+# and redirected them to /login before a single API call was made. No amount of
+# silent refresh in the API client can rescue that, because the bounce happens
+# during navigation, above the API client.
+#
+# The hint cookie lives exactly as long as the refresh token, is path "/", stays
+# HttpOnly (Next middleware reads request cookies server-side, so it never needs
+# JavaScript access), and its value is a constant. Knowing it grants nothing.
+SESSION_HINT_COOKIE = "pr_session"
+SESSION_HINT_VALUE = "1"
+
 # Outreach links stay valid this long (candidate must respond within it).
 # ASSUMPTION: 14 days — PRD sets no explicit outreach-link TTL.
 OUTREACH_TOKEN_TTL_DAYS = 14
@@ -54,32 +74,71 @@ OUTREACH_TOKEN_TTL_DAYS = 14
 # not just reissue the access cookie.
 
 
-def set_access_cookie(response, access: str) -> None:
+def _cookie_kwargs() -> dict:
+    """Shared attributes for every auth cookie, from settings (one source)."""
     from app.core.config import get_settings  # local: avoid import cycle at module load
 
     settings = get_settings()
+    kwargs = {
+        "httponly": True,
+        "secure": settings.is_production,
+        "samesite": settings.cookie_samesite,
+    }
+    if settings.cookie_domain:
+        kwargs["domain"] = settings.cookie_domain
+    return kwargs
+
+
+def set_access_cookie(response, access: str) -> None:
+    from app.core.config import get_settings
+
+    settings = get_settings()
     response.set_cookie(
-        ACCESS_COOKIE, access, httponly=True, secure=settings.is_production,
-        samesite="strict", max_age=settings.jwt_access_ttl_minutes * 60, path="/",
+        ACCESS_COOKIE, access, max_age=settings.jwt_access_ttl_minutes * 60,
+        path="/", **_cookie_kwargs(),
     )
 
 
 def set_auth_cookies(response, access: str, refresh: str) -> None:
-    """Set BOTH cookies. Call on login and on every refresh (rotation)."""
+    """Set all THREE cookies. Call on login and on every refresh (rotation).
+
+    The hint cookie is rewritten alongside the refresh token so its lifetime
+    slides forward exactly as the refresh token's does. If it ever outlived the
+    refresh token the middleware would let a genuinely dead session through, and
+    the user would land on a portal page that immediately fails to load.
+    """
     from app.core.config import get_settings
 
     settings = get_settings()
     set_access_cookie(response, access)
+    refresh_max_age = settings.jwt_refresh_ttl_days * 86400
     response.set_cookie(
-        REFRESH_COOKIE, refresh, httponly=True, secure=settings.is_production,
-        samesite="strict", max_age=settings.jwt_refresh_ttl_days * 86400,
-        path=REFRESH_COOKIE_PATH,
+        REFRESH_COOKIE, refresh, max_age=refresh_max_age,
+        path=REFRESH_COOKIE_PATH, **_cookie_kwargs(),
+    )
+    response.set_cookie(
+        SESSION_HINT_COOKIE, SESSION_HINT_VALUE, max_age=refresh_max_age,
+        path="/", **_cookie_kwargs(),
     )
 
 
 def clear_auth_cookies(response) -> None:
-    response.delete_cookie(ACCESS_COOKIE, path="/")
-    response.delete_cookie(REFRESH_COOKIE, path=REFRESH_COOKIE_PATH)
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    # The deletion must repeat the ORIGINAL attributes. A browser matches a
+    # cookie by name + domain + path, so those three have to be identical;
+    # samesite/secure are carried through so the deletion is not itself dropped
+    # by a policy the original cookie satisfied.
+    common = {
+        "domain": settings.cookie_domain or None,
+        "secure": settings.is_production,
+        "samesite": settings.cookie_samesite,
+        "httponly": True,
+    }
+    response.delete_cookie(ACCESS_COOKIE, path="/", **common)
+    response.delete_cookie(REFRESH_COOKIE, path=REFRESH_COOKIE_PATH, **common)
+    response.delete_cookie(SESSION_HINT_COOKIE, path="/", **common)
 
 
 @dataclass(frozen=True)
@@ -256,15 +315,21 @@ async def get_candidate_db(
 # ── Capability gate (RBAC) ───────────────────────────────────────────────────
 
 def require_capability(capability: str):
-    """Dependency factory: 403 unless the caller's (tenant, role) grants the
-    capability per the role_permissions data (tenant override > global
-    template > deny)."""
+    """Dependency factory: 403 unless the caller grants the capability per the
+    permission data (user overlay > tenant override > global template > deny).
+
+    Resolved on EVERY privileged request, not cached from login: an HR Head who
+    revokes someone's access expects it to take effect now, not whenever that
+    person's session happens to expire.
+    """
 
     async def dependency(
         user: CurrentUser = Depends(get_current_user),
         session: AsyncSession = Depends(get_tenant_db),
     ) -> CurrentUser:
-        if not await rbac.has_capability(session, user.tenant_id, user.role, capability):
+        if not await rbac.has_capability(
+            session, user.tenant_id, user.role, capability, user.user_id
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Missing capability: {capability}",

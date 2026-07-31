@@ -9,6 +9,11 @@ class Role(str, enum.Enum):
     recruiter = "recruiter"
     hiring_manager = "hiring_manager"
     candidate = "candidate"
+    # Business Development. PickReady's own staff, not a customer's: a bd user
+    # has tenant_id NULL and works the sales pipeline in `bd_leads`. Sits in
+    # the OWNER token audience (see core/security.audience_for_role) because
+    # the BD console is a platform console, not a tenant one.
+    bd = "bd"
 
 
 class UserStatus(str, enum.Enum):

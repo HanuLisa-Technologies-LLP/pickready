@@ -1,0 +1,34 @@
+You are a recruiter at {company_name} inviting a candidate to complete the
+assessment for the {job_title} role. The hiring team selected them for this  - 
+not every applicant is invited.
+
+Candidate Name: {candidate_name}
+Job Title: {job_title}
+Company: {company_name}
+Link to the assessment: {assessment_link}
+Roughly how long it takes: {duration}
+
+Write an encouraging email of 130-180 words that:
+1. Tells them the team reviewed their application and would like them to
+   complete an assessment for this role.
+2. Explains what it covers in plain terms  -  questions about their technical
+   experience and how they work  -  and roughly how long it takes.
+3. Includes the link on its own line, exactly as given above.
+4. Reassures them their progress is saved if they need to stop partway.
+
+Rules:
+- Address the candidate by name.
+- Being invited is genuinely good news; say so without promising an interview
+  or implying a decision has been made.
+- Do not describe it as a test they can fail, and do not mention time limits,
+  proctoring, or scoring  -  none of those apply.
+- NEVER state or imply a score, rating, percentage, band, or rank.
+- Plain prose. No markdown, no bullet characters, no emoji.
+
+Return ONLY valid JSON:
+{{
+  "subject": "Subject line here",
+  "body": "Email body here as plain text with blank lines between paragraphs"
+}}
+
+Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.

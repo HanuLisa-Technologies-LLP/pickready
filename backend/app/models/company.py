@@ -29,6 +29,20 @@ class Company(Base, UUIDPKMixin, CreatedAtMixin):
     benefits: Mapped[str | None] = mapped_column(Text)
     approval_levels_config: Mapped[dict | None] = mapped_column(JSONB)
 
+    # ── Company Profile (migration 0016) ─────────────────────────────────────
+    # The company-wide defaults edited on Company Portal -> Profile. Every new
+    # job SNAPSHOTS these three onto its own columns at creation; editing them
+    # here therefore affects future jobs only, never a job already published
+    # (2026-07-27 spec §3.2).
+    #
+    # `benefits_text` is deliberately distinct from the older `benefits` column
+    # above: that one is already populated by the legacy company-page form, so
+    # reusing it would have silently rewritten existing copy. 0016 seeds this
+    # from it, and this is the one the Profile page reads and writes.
+    about_company: Mapped[str | None] = mapped_column(Text)
+    work_life: Mapped[str | None] = mapped_column(Text)
+    benefits_text: Mapped[str | None] = mapped_column(Text)
+
 
 class HiringManager(Base, UUIDPKMixin, CreatedAtMixin):
     """Max 5 per tenant — enforced in the service layer AND by a DB trigger

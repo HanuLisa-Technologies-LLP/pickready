@@ -1,7 +1,7 @@
 "use client";
 
 // Class-based dark mode via CSS variables. Per claude.md rule 10, the toggle
-// is exposed ONLY on Settings/Profile pages — never in the navbar.
+// is exposed ONLY on Settings/Profile pages, never in the navbar.
 
 import * as React from "react";
 

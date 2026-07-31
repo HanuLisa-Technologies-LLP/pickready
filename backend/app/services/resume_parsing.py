@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 _DOWNLOAD_TIMEOUT = 60.0
 
 #: An empty parsed-fields document in the fixed schema (used when a resume has
-#: no extractable text or the LLM extraction can't be parsed — the profile is
+#: no extractable text or the LLM extraction can't be parsed  -  the profile is
 #: still stored so nothing crashes the Celery task).
 _EMPTY_PARSED_FIELDS: dict[str, Any] = {
     "skills": [],
@@ -51,8 +52,8 @@ class ResumeParsingError(RuntimeError):
 #
 # Extraction is defensive: a corrupt, empty, image-only, or wrong-format file
 # yields "" rather than raising, so the Celery `parse_resume` task never
-# crash-loops on unparseable content (a genuinely transient failure — e.g. the
-# Cloudinary download — still propagates from `parse_resume` and is retried).
+# crash-loops on unparseable content (a genuinely transient failure  -  e.g. the
+# Cloudinary download  -  still propagates from `parse_resume` and is retried).
 
 
 def extract_text(data: bytes, filename: str) -> str:
@@ -60,7 +61,7 @@ def extract_text(data: bytes, filename: str) -> str:
 
     Returns clean text, or "" when nothing extractable is found (empty file,
     corrupt archive, scanned/image-only PDF, unknown format). Never raises on
-    content problems — the caller decides how to handle an empty result.
+    content problems  -  the caller decides how to handle an empty result.
     """
     if not data:
         return ""
@@ -70,7 +71,7 @@ def extract_text(data: bytes, filename: str) -> str:
     if lowered.endswith(".docx"):
         return _extract_docx(data)
     # ASSUMPTION: unknown extensions (Cloudinary raw URLs may drop the original
-    # extension) — sniff the magic bytes: PDFs start with "%PDF", DOCX is a ZIP
+    # extension)  -  sniff the magic bytes: PDFs start with "%PDF", DOCX is a ZIP
     # ("PK"). Fall back to trying both.
     if data[:4] == b"%PDF":
         return _extract_pdf(data)
@@ -86,7 +87,7 @@ def _extract_pdf(data: bytes) -> str:
 
         reader = PdfReader(io.BytesIO(data))
         pages = [(page.extract_text() or "") for page in reader.pages]
-    except Exception as exc:  # noqa: BLE001 — corrupt/encrypted PDF, not a crash
+    except Exception as exc:  # noqa: BLE001  -  corrupt/encrypted PDF, not a crash
         logger.warning("resume_parsing.pdf_extract_failed error=%s", type(exc).__name__)
         return ""
     return "\n".join(pages).strip()
@@ -102,10 +103,105 @@ def _extract_docx(data: bytes) -> str:
         for table in document.tables:
             for row in table.rows:
                 parts.extend(cell.text for cell in row.cells if cell.text)
-    except Exception as exc:  # noqa: BLE001 — not a real .docx / corrupt archive
+    except Exception as exc:  # noqa: BLE001  -  not a real .docx / corrupt archive
         logger.warning("resume_parsing.docx_extract_failed error=%s", type(exc).__name__)
         return ""
     return "\n".join(parts).strip()
+
+
+# ── Cheap contact identity (databank bulk upload, 2026-07-28) ────────────────
+#
+# The databank uploader has to create or find a candidate row BEFORE it can
+# create the job link, and it must not wait for the real parse to happen (that
+# is a Celery task, claude.md rule 4, and it calls an LLM). So it needs one
+# cheap, local, deterministic answer to "whose resume is this".
+#
+# These are pure regex/heuristic functions over already-extracted text. They do
+# NO network I/O and NO LLM call, and they never replace `parse_resume`, which
+# still runs asynchronously afterwards and fills in skills, experience,
+# education, employment history and the embedding.
+
+_EMAIL_RE = re.compile(
+    r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,24}"
+)
+# Deliberately loose: resumes write phone numbers every way imaginable.
+_PHONE_RE = re.compile(r"(?:\+?\d[\d\s\-().]{7,17}\d)")
+
+#: Words that mean a line is a section heading, not somebody's name.
+_NON_NAME_TOKENS = frozenset(
+    {
+        "resume", "curriculum", "vitae", "cv", "profile", "summary", "objective",
+        "contact", "address", "phone", "email", "experience", "education",
+        "skills", "projects", "certifications", "linkedin", "github",
+    }
+)
+
+
+def extract_email(text: str) -> str | None:
+    """First plausible email address in the text, lowercased."""
+    if not text:
+        return None
+    match = _EMAIL_RE.search(text)
+    return match.group(0).strip().lower() if match else None
+
+
+def extract_phone(text: str) -> str | None:
+    """First plausible phone number, digits and a leading + only.
+
+    Truncated to the column width (20) rather than dropped, because a partially
+    captured number is still a lead a recruiter can act on.
+    """
+    if not text:
+        return None
+    match = _PHONE_RE.search(text)
+    if not match:
+        return None
+    cleaned = re.sub(r"[^\d+]", "", match.group(0))
+    return cleaned[:20] or None
+
+
+def extract_full_name(text: str) -> str | None:
+    """Best-effort candidate name from the first few lines of a resume.
+
+    Heuristic and openly so: resumes overwhelmingly put the person's name on
+    the first non-empty line. A line is rejected when it is too long, contains
+    an email or a digit, or reads as a section heading. Returns None rather
+    than a guess it does not believe, and the caller falls back to a clearly
+    marked placeholder identity.
+    """
+    if not text:
+        return None
+    for raw in text.splitlines()[:12]:
+        line = re.sub(r"\s+", " ", raw).strip(" \t|,-·•")
+        if not (2 <= len(line) <= 60):
+            continue
+        if "@" in line or any(ch.isdigit() for ch in line):
+            continue
+        words = line.split(" ")
+        if not (1 < len(words) <= 5):
+            continue
+        if any(word.lower().strip(":") in _NON_NAME_TOKENS for word in words):
+            continue
+        if not all(word[0].isalpha() for word in words if word):
+            continue
+        return line
+    return None
+
+
+def extract_contact_identity(data: bytes, filename: str) -> dict[str, str | None]:
+    """`{full_name, email, phone}` from raw resume bytes. Never raises."""
+    try:
+        text = extract_text(data, filename)
+    except Exception as exc:  # noqa: BLE001  -  identity is best effort
+        logger.warning(
+            "resume_parsing.identity_extract_failed error=%s", type(exc).__name__
+        )
+        return {"full_name": None, "email": None, "phone": None}
+    return {
+        "full_name": extract_full_name(text),
+        "email": extract_email(text),
+        "phone": extract_phone(text),
+    }
 
 
 # ── LLM structured extraction ────────────────────────────────────────────────
@@ -129,7 +225,7 @@ async def extract_structured_fields(
 
     Degrades gracefully: empty text short-circuits to the empty schema without
     an LLM call, and unparseable LLM output logs a warning and returns the
-    empty schema rather than raising — the raw resume text stays as the
+    empty schema rather than raising  -  the raw resume text stays as the
     matcher's fallback signal. `llm_router.LLMUnavailableError` (whole provider
     chain down) still propagates so the Celery task's retry policy handles it.
     """
@@ -147,12 +243,12 @@ async def extract_structured_fields(
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("resume_parsing.extraction_non_json — storing empty parsed fields")
+        logger.warning("resume_parsing.extraction_non_json  -  storing empty parsed fields")
         return dict(_EMPTY_PARSED_FIELDS)
     if not isinstance(parsed, dict):
-        logger.warning("resume_parsing.extraction_not_object — storing empty parsed fields")
+        logger.warning("resume_parsing.extraction_not_object  -  storing empty parsed fields")
         return dict(_EMPTY_PARSED_FIELDS)
-    # Normalize to the fixed schema — never store surprise keys.
+    # Normalize to the fixed schema  -  never store surprise keys.
     return {
         "skills": parsed.get("skills") or [],
         "total_experience_years": parsed.get("total_experience_years"),
@@ -176,7 +272,7 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
             raise ResumeParsingError(
                 f"Profile {profile_id} has no complete Cloudinary resume metadata"
             )
-        # Download failures (network/5xx) propagate so the task retries — only
+        # Download failures (network/5xx) propagate so the task retries  -  only
         # *content* problems (below) are swallowed.
         try:
             data = await fetch_resume_bytes(profile)
@@ -185,11 +281,11 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
         resume_text = extract_text(data, profile.resume_original_filename)
 
     if not resume_text or not resume_text.strip():
-        # Empty/garbage/scanned resume — persist an empty profile and stop.
+        # Empty/garbage/scanned resume  -  persist an empty profile and stop.
         # Leaving embedding NULL excludes it from the semantic matching pool
         # (WHERE embedding IS NOT NULL) rather than polluting it with noise.
         logger.warning(
-            "resume_parsing.no_extractable_text profile_id=%s — stored empty parsed fields",
+            "resume_parsing.no_extractable_text profile_id=%s, stored empty parsed fields",
             profile_id,
         )
         profile.resume_text = ""
@@ -197,7 +293,18 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
         await session.commit()
         return
 
-    parsed = await extract_structured_fields(resume_text, session=session)
+    try:
+        parsed = await extract_structured_fields(resume_text, session=session)
+    except llm_router.LLMUnavailableError:
+        # Indexing the resume must not depend on optional structured extraction.
+        # Preserve the raw text + embedding so keyword/semantic matching works,
+        # and let a later parse retry enrich the structured fields.
+        logger.warning(
+            "resume_parsing.extraction_unavailable profile_id=%s, "
+            "storing text-only fallback",
+            profile_id,
+        )
+        parsed = dict(_EMPTY_PARSED_FIELDS)
 
     profile.resume_text = resume_text
     profile.parsed_fields_json = parsed

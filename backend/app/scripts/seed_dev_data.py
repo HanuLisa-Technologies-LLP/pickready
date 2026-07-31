@@ -1,18 +1,18 @@
-"""Idempotent dev seed — run with `python -m app.scripts.seed_dev_data`.
+"""Idempotent dev seed  -  run with `python -m app.scripts.seed_dev_data`.
 
 Seeds:
 - global role_permissions template rows (tenant_id NULL) from
-  DEFAULT_PERMISSION_MATRIX — every capability x role, default False
-- the platform Owner (manjuchro@gmail.com) — the SOLE super_admin (rev 2)
+  DEFAULT_PERMISSION_MATRIX  -  every capability x role, default False
+- the platform Owner (manjuchro@gmail.com)  -  the SOLE super_admin (rev 2)
 - demo tenant "Acme Corp" with client, 2 hiring managers, 1 HR, 1 recruiter
-  (all client-org members — staff emails live on the tenant's domain)
+  (all client-org members  -  staff emails live on the tenant's domain)
 - company page + approval_levels_config (recommended level inactive)
 - llm_provider_keys rows encrypted from settings (empties skipped)
 - default email templates for the demo tenant
 - 3 demo candidates with profiles (2 consenting to the Databank) + embeddings
 - 1 draft job + 1 ratified job
 
-Safe to run repeatedly — every entity is looked up by its natural key first.
+Safe to run repeatedly  -  every entity is looked up by its natural key first.
 The session runs with app.bypass_rls='on' since seeding is a trusted,
 cross-tenant operation and the tables FORCE row-level security.
 """
@@ -56,14 +56,14 @@ TECHSTART_TENANT_NAME = "TechStart Inc."
 TECHSTART_TENANT_DOMAIN = "techstart.test"
 
 # The multi-context identifier: ONE email (and one phone) attached to users in
-# two different contexts — a hiring_manager at Acme AND a recruiter at
+# two different contexts  -  a hiring_manager at Acme AND a recruiter at
 # TechStart. This is the ONLY fixture that exercises the multi-role
 # "choose your workspace" screen (contract rev 2, /auth/select-context).
 MULTI_CONTEXT_EMAIL = "multi.role@pickready.test"
 MULTI_CONTEXT_PHONE = "9000000030"
 
 # NOTE ON EMAIL DELIVERY (dev/test): do NOT use @example.com for any fixture
-# you expect to receive mail — Resend rejects example.com with a 422. Use the
+# you expect to receive mail  -  Resend rejects example.com with a 422. Use the
 # reserved @acme.test / @techstart.test / @pickready.test domains for
 # non-deliverable fixtures. Also: in THIS environment the Resend key is
 # restricted with no verified sending domain, so outbound email can ONLY be
@@ -74,7 +74,7 @@ _DEMO_RESUMES = [
         "Priya Sharma",
         "priya.sharma@example.com",
         True,
-        "Priya Sharma — Senior Backend Engineer. 8 years of experience building "
+        "Priya Sharma, Senior Backend Engineer. 8 years of experience building "
         "distributed systems in Python (FastAPI, Django), PostgreSQL, Redis, "
         "Celery, and AWS. Led a team of 5 engineers at a fintech startup. "
         "B.Tech in Computer Science, IIT Madras, 2016. Certifications: AWS "
@@ -84,7 +84,7 @@ _DEMO_RESUMES = [
         "Arjun Mehta",
         "arjun.mehta@example.com",
         True,
-        "Arjun Mehta — Full-Stack Developer. 5 years across React, TypeScript, "
+        "Arjun Mehta, Full-Stack Developer. 5 years across React, TypeScript, "
         "Next.js, Node.js, and Python. Built multi-tenant SaaS dashboards and "
         "design systems with Tailwind and shadcn/ui. B.E. in Information "
         "Technology, Pune University, 2019.",
@@ -93,7 +93,7 @@ _DEMO_RESUMES = [
         "Sneha Reddy",
         "sneha.reddy@example.com",
         False,
-        "Sneha Reddy — Data Engineer. 6 years with Spark, Airflow, dbt, "
+        "Sneha Reddy, Data Engineer. 6 years with Spark, Airflow, dbt, "
         "PostgreSQL, and Kafka; ML feature pipelines with pgvector and "
         "embedding models. M.Sc. in Data Science, BITS Pilani, 2018.",
     ),
@@ -158,7 +158,7 @@ async def _seed_permission_template(session: AsyncSession) -> None:
     UPDATES the `allowed` flag on existing rows to match the current matrix.
     The flat-staff-model change (PRD v1.0 §4) flips many defaults (e.g.
     recruiter now has CREATE_JOB), so a plain insert-if-missing would leave
-    stale template rows — re-seeding must bring them into line."""
+    stale template rows  -  re-seeding must bring them into line."""
     existing = {
         (r.role, r.capability): r
         for r in (
@@ -195,7 +195,7 @@ async def _seed_permission_template(session: AsyncSession) -> None:
 async def _seed_llm_keys(session: AsyncSession) -> None:
     settings = get_settings()
     if not settings.llm_key_encryption_secret:
-        print("  ! LLM_KEY_ENCRYPTION_SECRET unset — skipping llm_provider_keys seed")
+        print("  ! LLM_KEY_ENCRYPTION_SECRET unset  -  skipping llm_provider_keys seed")
         return
     existing = (await session.execute(select(LLMProviderKey))).scalars().first()
     if existing is not None:
@@ -272,7 +272,7 @@ async def _seed_candidates(session: AsyncSession, tenant_id: uuid.UUID) -> None:
         session.add(candidate)
         await session.flush()
         # embed() uses the deterministic dev fallback when BGE_M3_ENDPOINT is
-        # unset — no GPU service needed to seed locally.
+        # unset  -  no GPU service needed to seed locally.
         embedding = (await embed([resume_text]))[0]
         session.add(
             Profile(
@@ -349,7 +349,7 @@ async def seed() -> None:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory() as session:
-            # Trusted cross-tenant seeding path — tables FORCE RLS, so opt into
+            # Trusted cross-tenant seeding path  -  tables FORCE RLS, so opt into
             # the bypass clause the policies define (session-level setting).
             await session.execute(
                 text("SELECT set_config('app.bypass_rls', 'on', false)")
@@ -357,7 +357,7 @@ async def seed() -> None:
 
             print("Seeding global data...")
             await _seed_permission_template(session)
-            # Platform Owner — the ONLY super_admin account permitted (rev 2:
+            # Platform Owner  -  the ONLY super_admin account permitted (rev 2:
             # settings.owner_email; the API layer rejects any other identity
             # holding the owner role). Any email domain (incl. gmail) and any
             # mobile number are permitted identifiers; auth only requires the
@@ -394,7 +394,7 @@ async def seed() -> None:
             hm2 = await _get_or_create_user(
                 session, "hm2@acme.example.com", Role.hiring_manager, tenant.id, "HM Two"
             )
-            # HR Manager / Recruiter are client-org staff (rev 2 role model) —
+            # HR Manager / Recruiter are client-org staff (rev 2 role model)  - 
             # their emails live on the tenant's domain, never hanulisa.com.
             await _get_or_create_user(
                 session, "hr1@acme.example.com", Role.hr_manager, tenant.id,
@@ -476,7 +476,7 @@ async def seed() -> None:
 
             # Multi-context identifier, part 2: hiring_manager at TechStart. Now
             # the single email/phone resolves to 2 users across 2 tenants (a
-            # recruiter at Acme and a hiring_manager at TechStart) — this is what
+            # recruiter at Acme and a hiring_manager at TechStart)  -  this is what
             # drives the "choose your workspace" screen.
             multi_hm_ts = await _get_or_create_user(
                 session, MULTI_CONTEXT_EMAIL, Role.hiring_manager, techstart.id,

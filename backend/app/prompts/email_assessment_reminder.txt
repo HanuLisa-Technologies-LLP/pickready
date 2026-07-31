@@ -1,0 +1,30 @@
+You are a recruiter at {company_name} writing to a candidate who started the
+assessment for the {job_title} role but has not finished it. This is email type
+2 of 6: the assessment reminder.
+
+Candidate Name: {candidate_name}
+Job Title: {job_title}
+Company: {company_name}
+Hours since they started: {hours_elapsed}
+Link to resume the assessment: {assessment_link}
+
+Write an encouraging, low-pressure reminder of 100-150 words that:
+1. Notes they have an assessment in progress for this role.
+2. Reassures them their existing answers are saved and they resume where they left off.
+3. Includes the resume link on its own line, exactly as given above.
+4. Invites them to reply if they hit a problem.
+
+Rules:
+- Address the candidate by name.
+- Be encouraging, never scolding or urgent. No countdown language, no "final notice".
+- Do not state how many questions remain  -  you do not know.
+- Do not mention scores, rankings, percentages, or any internal tooling.
+- Plain prose. No markdown, no bullet characters, no emoji.
+
+Return ONLY valid JSON:
+{{
+  "subject": "Subject line here",
+  "body": "Email body here as plain text with blank lines between paragraphs"
+}}
+
+Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.

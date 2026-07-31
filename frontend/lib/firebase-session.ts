@@ -16,24 +16,27 @@ import { isContextsResponse } from "@/lib/types";
  * OR a multi-workspace identity that still needs `select-context`.
  */
 export type FirebaseExchangeResult = AuthSession | AuthContextsResponse;
+export type RequestedPortal = "candidate" | "org" | "bd" | "owner";
 
 export { isContextsResponse };
 
 /**
- * POST /auth/firebase/session — trade a freshly minted Firebase ID token for a
+ * POST /auth/firebase/session, trade a freshly minted Firebase ID token for a
  * PickReady session. Single-user → {user, capabilities} (cookies set).
  * Multi-workspace → {contexts, context_token} (no cookies yet).
  */
 export async function exchangeFirebaseSession(
-  user: FirebaseUser
+  user: FirebaseUser,
+  requestedPortal?: RequestedPortal | null
 ): Promise<FirebaseExchangeResult> {
   return apiPost<FirebaseExchangeResult>("/auth/firebase/session", {
     id_token: await user.getIdToken(),
+    requested_portal: requestedPortal ?? null,
   });
 }
 
 /**
- * POST /auth/select-context — finalize a multi-workspace identity by choosing
+ * POST /auth/select-context, finalize a multi-workspace identity by choosing
  * one context. Returns the single-user session (cookies set).
  */
 export async function selectContext(
@@ -54,10 +57,11 @@ export const ROLE_LABEL: Record<Role, string> = {
   recruiter: "Recruiter",
   hiring_manager: "Hiring manager",
   candidate: "Candidate",
+  bd: "Business development",
 };
 
 /**
- * Map a Firebase / backend auth failure to clean, user-facing copy — never a
+ * Map a Firebase / backend auth failure to clean, user-facing copy, never a
  * stack trace or raw error code. Returns `null` for user-initiated
  * cancellations (e.g. closing the Google popup), where showing an error would
  * be noise rather than signal.
@@ -76,6 +80,9 @@ export function friendlyAuthError(err: unknown): string | null {
       if (detail === "Account unavailable") {
         return "This account is unavailable. Contact support if you think this is a mistake.";
       }
+      if (detail.startsWith("No ") && detail.includes(" workspace is linked")) {
+        return "That account does not have access to the workspace you selected. Choose another workspace or ask its administrator for an invite.";
+      }
       return "This sign-in method isn't available for your account.";
     }
     if (err.status === 429) {
@@ -93,7 +100,7 @@ export function friendlyAuthError(err: unknown): string | null {
       : "";
 
   switch (code) {
-    // User cancelled — stay silent.
+    // User cancelled, stay silent.
     case "auth/popup-closed-by-user":
     case "auth/cancelled-popup-request":
     case "auth/user-cancelled":
@@ -117,16 +124,6 @@ export function friendlyAuthError(err: unknown): string | null {
       return "An account with this email already exists. Sign in instead.";
     case "auth/weak-password":
       return "Choose a password with at least 8 characters.";
-
-    case "auth/invalid-phone-number":
-    case "auth/missing-phone-number":
-      return "Enter a valid phone number, including the country code (e.g. +91…).";
-    case "auth/invalid-verification-code":
-      return "That code is incorrect. Check the digits and try again.";
-    case "auth/code-expired":
-      return "That code has expired. Request a new one.";
-    case "auth/missing-verification-code":
-      return "Enter the 6-digit code we sent you.";
 
     case "auth/too-many-requests":
       return "Too many attempts. Please wait a few minutes and try again.";

@@ -1,5 +1,5 @@
 // The 40-aspect questionnaire (PRD §7.5 / §7.6, numbering per API_CONTRACT.md rev 2).
-// CONTRACT-FIXED slots (aspects_json keys — backend scoring reads these):
+// CONTRACT-FIXED slots (aspects_json keys, backend scoring reads these):
 //   8–13 = education & qualifications (8 highest degree level, 9 specialization,
 //          10 institution, 11 year of completion, 12 professional certifications,
 //          13 additional qualifications)
@@ -38,7 +38,7 @@ export const ASPECTS: AspectDef[] = [
   { id: 6, category: "Background", question: "Date of birth", type: "date" },
   { id: 7, category: "Background", question: "Gender", type: "select", options: ["Male", "Female", "Other", "Prefer not to say"] },
 
-  // ---- Education & Qualifications (8–13 — contract-fixed numbering) ----
+  // ---- Education & Qualifications (8–13, contract-fixed numbering) ----
   { id: 8, category: "Education & Qualifications", question: "Highest degree level attained", type: "select", options: ["Doctorate", "Master's", "Bachelor's", "Diploma", "Higher Secondary", "Other"] },
   { id: 9, category: "Education & Qualifications", question: "Specialization / major of your highest degree", type: "text" },
   { id: 10, category: "Education & Qualifications", question: "Institution / university of your highest degree", type: "text" },

@@ -1,5 +1,4 @@
-"""Outbound email over provider-agnostic SMTP (claude.md rule 5, 2026-07-24 —
-SMTP replaced the Mailtrap HTTP API for ALL outbound mail).
+"""Outbound email over Gmail SMTP.
 
 This module owns ONLY the SMTP transport + SMTP-specific failure
 classification. The resilience taxonomy itself is shared with the SMS path and
@@ -8,11 +7,8 @@ PermanentDeliveryError / TransientDeliveryError here, we reuse them so the
 Celery task's ``autoretry_for`` and audit logic behave identically for email
 and SMS.
 
-Configured entirely by env (``SMTP_*`` in config.Settings), so the same code
-path works with Mailtrap SMTP, Gmail SMTP (app password), or any provider:
-  * STARTTLS (the usual case, port 587): ``smtp_starttls=True``, ``smtp_ssl=False``.
-  * Implicit TLS/SSL (port 465): ``smtp_ssl=True`` (aiosmtplib connects wrapped
-    in TLS from the start); STARTTLS is not attempted on top of it.
+Configured entirely by ``SMTP_*`` environment variables and permanently
+validated as Gmail on port 587 with STARTTLS and an app password.
 
 Failure taxonomy (same permanent/transient split as SMS):
   * PermanentDeliveryError — the same message will fail forever: SMTP auth
@@ -57,7 +53,7 @@ _SMTP_HINTS: dict[str, str] = {
     "sender_recipient": (
         "The SMTP server permanently rejected the sender or every recipient "
         "(5xx). ACTION: check SMTP_USER / SMTP_PASSWORD / verified sender and "
-        "the recipient address — retrying cannot help."
+        "the recipient address, retrying cannot help."
     ),
     "config_missing": (
         "SMTP is not configured. ACTION: set SMTP_HOST, SMTP_USER and "
@@ -186,7 +182,7 @@ async def send_email_async(
         if code is not None and 400 <= code < 500:
             raise TransientDeliveryError(
                 "smtp", code, type(exc).__name__, _smtp_message(exc),
-                hint="Transient SMTP failure (4xx) — retrying with backoff.",
+                hint="Transient SMTP failure (4xx), retrying with backoff.",
             ) from exc
         raise PermanentDeliveryError(
             "smtp", code, type(exc).__name__, _smtp_message(exc),
@@ -196,7 +192,7 @@ async def send_email_async(
         # Connect/DNS/timeout at the transport layer → may succeed later.
         raise TransientDeliveryError(
             "smtp", None, type(exc).__name__, str(exc) or repr(exc),
-            hint="Network/connection error reaching the SMTP server — "
+            hint="Network/connection error reaching the SMTP server, "
                  "retrying with backoff.",
         ) from exc
     except aiosmtplib.SMTPException as exc:
@@ -205,7 +201,7 @@ async def send_email_async(
         raise TransientDeliveryError(
             "smtp", getattr(exc, "code", None), type(exc).__name__,
             _smtp_message(exc),
-            hint="Unclassified SMTP error — retrying with backoff.",
+            hint="Unclassified SMTP error, retrying with backoff.",
         ) from exc
 
     logger.info("email.delivery status=sent provider=smtp")  # no to, no body

@@ -4,7 +4,7 @@
         python -m app.scripts.validate_auth
 
 Exercises the real HTTP auth surface (never imports the app in-process for the
-flows — it hits the API the way a browser would) and prints a PASS/FAIL line
+flows  -  it hits the API the way a browser would) and prints a PASS/FAIL line
 per check plus a summary table. Exits non-zero if ANY check FAILED, so it is
 usable as a CI / smoke gate.
 
@@ -19,7 +19,7 @@ Design notes
   endpoint returns the code in `debug_code`, and that is what we verify with
   (the Resend key only delivers to the Owner; MSG91 SMS works but we don't
   need it here).
-* Resilient: every check is isolated — one failure never aborts the run.
+* Resilient: every check is isolated  -  one failure never aborts the run.
 * Rate-limit friendly: the OTP resend/lock/request counters (Redis) for an
   identifier are cleared right before a positive-path login so back-to-back
   logins in one run don't trip the 30s resend throttle or the hourly cap. The
@@ -60,7 +60,7 @@ class Report:
 
     def record(self, name: str, passed: bool, detail: str = "") -> None:
         status = "PASS" if passed else "FAIL"
-        print(f"[{status}] {name}" + (f" — {detail}" if detail else ""))
+        print(f"[{status}] {name}" + (f"  -  {detail}" if detail else ""))
         self.results.append(Result(name, passed, detail))
 
     def check(self, name: str, fn) -> None:
@@ -68,7 +68,7 @@ class Report:
         FAIL, never an abort."""
         try:
             passed, detail = fn()
-        except Exception as exc:  # noqa: BLE001 — a check crash is just a FAIL
+        except Exception as exc:  # noqa: BLE001  -  a check crash is just a FAIL
             passed, detail = False, f"exception: {exc!r}"
             traceback.print_exc()
         self.record(name, passed, detail)
@@ -207,7 +207,7 @@ def _clear_rate_limits(identifier: str) -> None:
         ):
             c.delete(key)
         c.close()
-    except Exception:  # noqa: BLE001 — best effort; redis may be unreachable
+    except Exception:  # noqa: BLE001  -  best effort; redis may be unreachable
         pass
 
 
@@ -262,20 +262,65 @@ def _login(base: str, identifier: str, phone: str | None = None) -> Login:
 
 # ── Checks ───────────────────────────────────────────────────────────────────
 
+def _firebase_only_report(base: str) -> int:
+    """Validate the active Google/email-password contract without real credentials."""
+    report = Report()
+
+    def retired_routes():
+        removed = ("/auth/otp/request", "/auth/otp/verify", "/auth/register-candidate")
+        results = {
+            path: httpx.post(f"{base}{API_PREFIX}{path}", json={}, timeout=TIMEOUT).status_code
+            for path in removed
+        }
+        if all(code == 404 for code in results.values()):
+            return True, "legacy code-based auth routes are not mounted"
+        return False, f"retired auth route status codes: {results}"
+
+    report.check("[firebase] legacy_code_routes_removed", retired_routes)
+
+    def protected_endpoint():
+        response = httpx.get(f"{base}{API_PREFIX}/auth/me", timeout=TIMEOUT)
+        if response.status_code == 401:
+            return True, "/auth/me -> 401 without credentials"
+        return False, f"/auth/me returned {response.status_code}"
+
+    report.check("[firebase] protected_endpoint_requires_auth", protected_endpoint)
+
+    def bogus_token():
+        response = httpx.post(
+            f"{base}{API_PREFIX}/auth/firebase/session",
+            json={"id_token": "not-a-real-firebase-id-token-xxxxxxxx"},
+            timeout=TIMEOUT,
+        )
+        if response.status_code == 401:
+            return True, "bogus Firebase token rejected with 401"
+        return False, f"expected 401, got {response.status_code}"
+
+    report.check("[firebase] session_route_rejects_bogus_token", bogus_token)
+
+    def schema_validation():
+        response = httpx.post(
+            f"{base}{API_PREFIX}/auth/firebase/session",
+            json={"id_token": ""},
+            timeout=TIMEOUT,
+        )
+        if response.status_code == 422:
+            return True, "empty id_token rejected with 422"
+        return False, f"expected 422, got {response.status_code}"
+
+    report.check("[firebase] session_route_validates_token", schema_validation)
+    report.summary()
+    return 1 if report.failed else 0
+
+
 def main() -> int:
     settings = get_settings()
     print("PickReady auth validation harness")
     print(f"  environment = {settings.environment}")
 
-    if settings.environment != "development":
-        print(
-            "FATAL: this harness requires ENVIRONMENT=development so the OTP "
-            "request endpoint returns debug_code. Aborting."
-        )
-        return 2
-
     base = _pick_base_url()
     print(f"  base_url    = {base}")
+    return _firebase_only_report(base)
 
     fx = asyncio.run(_discover())
     print(f"  owner       = {fx.owner_email}")
@@ -475,7 +520,7 @@ def main() -> int:
             timeout=TIMEOUT,
         )
         if r.status_code == 404:
-            return False, "route /auth/firebase/session missing (404) — Firebase login not wired"
+            return False, "route /auth/firebase/session missing (404), Firebase login not wired"
         if r.status_code == 401:
             return True, "bogus Firebase token rejected with 401 (verify path wired)"
         return False, f"expected 401 for bogus token, got {r.status_code}: {r.text[:200]}"

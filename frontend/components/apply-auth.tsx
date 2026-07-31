@@ -1,20 +1,12 @@
 "use client";
 
-// Inline candidate auth for the PUBLIC job-application flow (PRD v1.0
-// FR-3.4/3.5/9.1). Reuses the existing Firebase auth (Google / email+password /
-// phone) but — unlike LoginFlow/RegisterFlow — does NOT redirect on success.
-// Instead it stores the session and calls onAuthed(), so the applicant stays on
-// the public job page and continues straight into the questionnaire.
-
 import * as React from "react";
+import { Check, Eye, EyeOff } from "lucide-react";
 import {
-  RecaptchaVerifier,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
-  signInWithPhoneNumber,
   signInWithPopup,
   updateProfile,
-  type ConfirmationResult,
 } from "firebase/auth";
 
 import { createCandidateGoogleProvider, firebaseAuth } from "@/lib/firebase";
@@ -22,169 +14,125 @@ import {
   exchangeFirebaseSession,
   friendlyAuthError,
   isContextsResponse,
+  selectContext,
   type FirebaseExchangeResult,
 } from "@/lib/firebase-session";
 import { useAuth } from "@/lib/auth-context";
-import { ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { OtpInput } from "@/components/otp-input";
 
 type Mode = "signin" | "register";
-type Method = "password" | "phone";
-
-const RECAPTCHA_CONTAINER_ID = "firebase-recaptcha-apply";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MIN_PASSWORD = 8;
+const passwordRules = (password: string) => ({
+  length: password.length >= 8,
+  lower: /[a-z]/.test(password),
+  upper: /[A-Z]/.test(password),
+  number: /\d/.test(password),
+});
 
 export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
   const { setSession } = useAuth();
-
   const [mode, setMode] = React.useState<Mode>("signin");
-  const [method, setMethod] = React.useState<Method>("password");
   const [name, setName] = React.useState("");
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
-  const [phone, setPhone] = React.useState("");
-  const [code, setCode] = React.useState("");
-  const [confirmation, setConfirmation] =
-    React.useState<ConfirmationResult | null>(null);
+  const [showPassword, setShowPassword] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  const verifier = React.useRef<RecaptchaVerifier | null>(null);
+  const rules = passwordRules(password);
+  const passwordValid = Object.values(rules).every(Boolean);
 
-  React.useEffect(
-    () => () => {
-      verifier.current?.clear();
-      verifier.current = null;
-    },
-    []
-  );
-
-  // Only a candidate identity may apply. Anything else already belongs to a
-  // staff/owner account — sign it back out and steer them to normal sign-in.
   const handleExchange = React.useCallback(
-    (result: FirebaseExchangeResult) => {
-      if (isContextsResponse(result) || result.user.role !== "candidate") {
-        void firebaseAuth.signOut().catch(() => {});
-        setError(
-          "That account isn't a candidate account. Please use a candidate sign-in."
+    async (result: FirebaseExchangeResult) => {
+      let session;
+      if (isContextsResponse(result)) {
+        const candidate = result.contexts.find(
+          (context) => context.role === "candidate"
         );
-        return;
+        if (!candidate) {
+          await firebaseAuth.signOut();
+          throw new Error(
+            "That account does not have a candidate profile. Use a different email."
+          );
+        }
+        session = await selectContext(result.context_token, candidate.user_id);
+      } else {
+        session = result;
       }
-      setSession(result.user, result.capabilities ?? []);
+      if (session.user.role !== "candidate") {
+        await firebaseAuth.signOut();
+        throw new Error(
+          "That account is a company account. Use a candidate account to apply."
+        );
+      }
+      setSession(session.user, session.capabilities ?? []);
       onAuthed();
     },
     [onAuthed, setSession]
   );
 
-  const run = React.useCallback((action: () => Promise<void>) => {
-    setBusy((current) => {
-      if (current) return current;
-      setError(null);
-      void (async () => {
-        try {
-          await action();
-        } catch (err) {
-          if (err instanceof ApiError) {
-            void firebaseAuth.signOut().catch(() => {});
-          }
-          const message = friendlyAuthError(err);
-          if (message) setError(message);
-        } finally {
-          setBusy(false);
-        }
-      })();
-      return true;
-    });
-  }, []);
+  const run = (action: () => Promise<void>) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    void action()
+      .catch((authError) => {
+        const direct =
+          authError instanceof Error &&
+          (authError.message.startsWith("That account") ||
+            authError.message.startsWith("That account does"))
+            ? authError.message
+            : friendlyAuthError(authError);
+        if (direct) setError(direct);
+      })
+      .finally(() => setBusy(false));
+  };
 
   const google = () =>
     run(async () => {
-      const cred = await signInWithPopup(
+      const credential = await signInWithPopup(
         firebaseAuth,
         createCandidateGoogleProvider()
       );
-      handleExchange(await exchangeFirebaseSession(cred.user));
+      await handleExchange(await exchangeFirebaseSession(credential.user));
     });
 
-  const submitPassword = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmedEmail = email.trim();
-    if (!EMAIL_RE.test(trimmedEmail)) {
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!EMAIL_RE.test(email.trim())) {
       setError("Enter a valid email address.");
       return;
     }
-    if (mode === "register") {
-      if (!name.trim()) {
-        setError("Enter your full name.");
-        return;
-      }
-      if (password.length < MIN_PASSWORD) {
-        setError(`Choose a password with at least ${MIN_PASSWORD} characters.`);
-        return;
-      }
-      run(async () => {
-        const cred = await createUserWithEmailAndPassword(
-          firebaseAuth,
-          trimmedEmail,
-          password
-        );
-        await updateProfile(cred.user, { displayName: name.trim() });
-        handleExchange(await exchangeFirebaseSession(cred.user));
-      });
+    if (mode === "register" && (!name.trim() || !passwordValid)) {
+      setError(
+        "Enter your name and use 8+ characters with uppercase, lowercase, and a number."
+      );
       return;
     }
     run(async () => {
-      const cred = await signInWithEmailAndPassword(
-        firebaseAuth,
-        trimmedEmail,
-        password
-      );
-      handleExchange(await exchangeFirebaseSession(cred.user));
-    });
-  };
-
-  const sendPhoneCode = () =>
-    run(async () => {
-      verifier.current?.clear();
-      verifier.current = new RecaptchaVerifier(
-        firebaseAuth,
-        RECAPTCHA_CONTAINER_ID,
-        { size: "invisible" }
-      );
-      setCode("");
-      setConfirmation(
-        await signInWithPhoneNumber(firebaseAuth, phone.trim(), verifier.current)
-      );
-    });
-
-  const confirmPhoneCode = (e: React.FormEvent) => {
-    e.preventDefault();
-    run(async () => {
-      if (!confirmation) return;
-      const cred = await confirmation.confirm(code);
-      if (mode === "register" && name.trim() && !cred.user.displayName) {
-        await updateProfile(cred.user, { displayName: name.trim() });
+      const credential =
+        mode === "register"
+          ? await createUserWithEmailAndPassword(
+              firebaseAuth,
+              email.trim(),
+              password
+            )
+          : await signInWithEmailAndPassword(
+              firebaseAuth,
+              email.trim(),
+              password
+            );
+      if (mode === "register") {
+        await updateProfile(credential.user, { displayName: name.trim() });
       }
-      handleExchange(await exchangeFirebaseSession(cred.user));
+      await handleExchange(await exchangeFirebaseSession(credential.user));
     });
-  };
-
-  const resetPhone = () => {
-    setConfirmation(null);
-    setCode("");
-    setError(null);
   };
 
   return (
     <div className="space-y-4">
-      <div
-        className="grid grid-cols-2 gap-2"
-        role="group"
-        aria-label="Account action"
-      >
+      <div className="grid grid-cols-2 gap-2" role="group" aria-label="Account action">
         <Button
           type="button"
           variant={mode === "signin" ? "default" : "outline"}
@@ -202,7 +150,6 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
           Create account
         </Button>
       </div>
-
       <Button
         type="button"
         variant="outline"
@@ -212,149 +159,99 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
       >
         Continue with Google
       </Button>
-
       <div className="flex items-center gap-3">
         <span className="h-px flex-1 bg-border" />
-        <span className="text-xs text-muted-foreground">or</span>
+        <span className="text-xs">or</span>
         <span className="h-px flex-1 bg-border" />
       </div>
-
-      <div
-        className="grid grid-cols-2 gap-2"
-        role="group"
-        aria-label="Method"
-      >
-        <Button
-          type="button"
-          variant={method === "password" ? "secondary" : "outline"}
-          aria-pressed={method === "password"}
-          onClick={() => setMethod("password")}
-        >
-          Email &amp; password
-        </Button>
-        <Button
-          type="button"
-          variant={method === "phone" ? "secondary" : "outline"}
-          aria-pressed={method === "phone"}
-          onClick={() => setMethod("phone")}
-        >
-          Phone
-        </Button>
-      </div>
-
-      {mode === "register" ? (
-        <div className="space-y-1">
-          <Label htmlFor="apply-name">Full name</Label>
-          <Input
-            id="apply-name"
-            autoComplete="name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
-      ) : null}
-
-      {method === "password" ? (
-        <form className="space-y-3" onSubmit={submitPassword}>
+      <form className="space-y-3" onSubmit={submit}>
+        {mode === "register" ? (
           <div className="space-y-1">
-            <Label htmlFor="apply-email">Email address</Label>
+            <Label htmlFor="apply-name">Full name</Label>
             <Input
-              id="apply-email"
-              type="email"
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              id="apply-name"
+              autoComplete="name"
+              value={name}
+              disabled={busy}
+              onChange={(event) => setName(event.target.value)}
               required
             />
           </div>
-          <div className="space-y-1">
-            <Label htmlFor="apply-password">Password</Label>
+        ) : null}
+        <div className="space-y-1">
+          <Label htmlFor="apply-email">Email address</Label>
+          <Input
+            id="apply-email"
+            type="email"
+            autoComplete="email"
+            value={email}
+            disabled={busy}
+            onChange={(event) => setEmail(event.target.value)}
+            required
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="apply-password">Password</Label>
+          <div className="relative">
             <Input
               id="apply-password"
-              type="password"
+              type={showPassword ? "text" : "password"}
               autoComplete={
                 mode === "register" ? "new-password" : "current-password"
               }
-              minLength={mode === "register" ? MIN_PASSWORD : undefined}
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              disabled={busy}
+              className="pr-10"
+              onChange={(event) => setPassword(event.target.value)}
               required
             />
-            {mode === "register" ? (
-              <p className="text-xs text-muted-foreground">
-                At least {MIN_PASSWORD} characters.
-              </p>
-            ) : null}
+            <button
+              type="button"
+              className="absolute inset-y-0 right-0 flex w-10 items-center justify-center"
+              onClick={() => setShowPassword((visible) => !visible)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+            >
+              {showPassword ? (
+                <EyeOff className="h-4 w-4" />
+              ) : (
+                <Eye className="h-4 w-4" />
+              )}
+            </button>
           </div>
-          <Button className="w-full" disabled={busy}>
-            {busy
-              ? "Please wait…"
-              : mode === "register"
-                ? "Create account & continue"
-                : "Sign in & continue"}
-          </Button>
-        </form>
-      ) : !confirmation ? (
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <Label htmlFor="apply-phone">Mobile number</Label>
-            <Input
-              id="apply-phone"
-              type="tel"
-              autoComplete="tel"
-              placeholder="+91 98765 43210"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-            />
-            <p className="text-xs text-muted-foreground">
-              Include your country code. We&apos;ll text you a 6-digit code.
-            </p>
-          </div>
-          <Button
-            type="button"
-            className="w-full"
-            onClick={sendPhoneCode}
-            disabled={busy || !phone.trim()}
-          >
-            {busy ? "Sending…" : "Send verification code"}
-          </Button>
+          {mode === "register" ? (
+            <ul className="grid grid-cols-2 gap-1 pt-1 text-xs">
+              <Rule ok={rules.length}>8+ characters</Rule>
+              <Rule ok={rules.upper}>Uppercase</Rule>
+              <Rule ok={rules.lower}>Lowercase</Rule>
+              <Rule ok={rules.number}>Number</Rule>
+            </ul>
+          ) : null}
         </div>
-      ) : (
-        <form className="space-y-3" onSubmit={confirmPhoneCode}>
-          <div className="space-y-1">
-            <Label htmlFor="apply-sms-code">Verification code</Label>
-            <OtpInput
-              length={6}
-              value={code}
-              onChange={setCode}
-              disabled={busy}
-              invalid={Boolean(error)}
-              autoFocus
-            />
-          </div>
-          <Button className="w-full" disabled={busy || code.length < 6}>
-            {busy ? "Verifying…" : "Verify & continue"}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            className="w-full"
-            disabled={busy}
-            onClick={resetPhone}
-          >
-            Use a different number
-          </Button>
-        </form>
-      )}
-
+        <Button
+          className="w-full"
+          disabled={busy || (mode === "register" && !passwordValid)}
+        >
+          {busy
+            ? "Please wait"
+            : mode === "register"
+              ? "Create account and continue"
+              : "Sign in and continue"}
+        </Button>
+      </form>
       {error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}
         </p>
       ) : null}
-
-      {/* Invisible reCAPTCHA host for Firebase Phone Auth. */}
-      <div id={RECAPTCHA_CONTAINER_ID} aria-hidden="true" />
     </div>
+  );
+}
+
+function Rule({ ok, children }: { ok: boolean; children: React.ReactNode }) {
+  return (
+    <li className="flex items-center gap-1">
+      <Check className={`h-3 w-3 ${ok ? "opacity-100" : "opacity-30"}`} />
+      {children}
+    </li>
   );
 }

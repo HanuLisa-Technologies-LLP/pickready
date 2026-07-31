@@ -36,5 +36,17 @@ celery_app.conf.update(
             "task": "pickready.refresh_dashboard_views",
             "schedule": 300.0,  # every 5 minutes (ESD §14)
         },
+        "remind-unapproved-technical-questions": {
+            "task": "pickready.remind_unapproved_technical_questions",
+            "schedule": 3600.0,
+        },
+        # Credit reconciliation for abandoned assessments (killer-spec §3.2).
+        # Hourly rather than once a day: the sweep is idempotent, and an hourly
+        # cadence means a reminder goes out near its 24h/72h mark instead of
+        # whenever the daily run happens to land.
+        "reconcile-assessment-credits": {
+            "task": "pickready.reconcile_assessment_credits",
+            "schedule": 3600.0,
+        },
     },
 )

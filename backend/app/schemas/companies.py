@@ -26,6 +26,70 @@ class CompanyPageOut(BaseModel):
     approval_levels_config: dict | None
 
 
+# ── Company Profile (spec §3.2 — the page formerly called Settings) ──────────
+# The three narrative sections every new job snapshots. Read-only company
+# identity travels alongside so the page can render without a second request.
+
+_PROFILE_MAX = 4000
+
+
+class CompanyProfileIn(BaseModel):
+    """PATCH body. Every field optional — an ABSENT field is left untouched,
+    an explicit null clears the section. `model_fields_set` distinguishes them
+    (the endpoint reads that, not `is None`)."""
+    about_company: str | None = Field(default=None, max_length=_PROFILE_MAX)
+    work_life: str | None = Field(default=None, max_length=_PROFILE_MAX)
+    benefits: str | None = Field(default=None, max_length=_PROFILE_MAX)
+
+
+class CompanyProfileOut(BaseModel):
+    """The Company Profile page's read model.
+
+    `company_name` and `industry` are read-only identity, sourced from the
+    tenant rather than the company row — they are not editable here.
+    """
+    tenant_id: uuid.UUID
+    company_name: str
+    industry: str | None = None
+    about_company: str | None = None
+    work_life: str | None = None
+    benefits: str | None = None
+    #: Advisory only — the UI shows a soft hint, the API does not reject short
+    #: or long text. Blocking a save because a paragraph is 480 characters
+    #: would lose the recruiter's work for no real benefit.
+    recommended_min_chars: int = 500
+    recommended_max_chars: int = 1000
+
+
+# ── Per-user permission matrix (spec §7.1) ───────────────────────────────────
+
+class StaffPermissionsIn(BaseModel):
+    """The FULL set of capability pins for this person.
+
+    Replaces the stored overlay rather than merging into it: omitting a
+    capability returns it to the role default, which is what unticking a box on
+    the permissions screen should mean.
+    """
+    overrides: dict[str, bool] = {}
+
+
+class StaffPermissionsOut(BaseModel):
+    """Effective permissions, plus enough provenance to render the UI honestly."""
+    user_id: uuid.UUID
+    role: str
+    full_name: str | None = None
+    email: str | None = None
+    #: Every capability that exists, so the screen can render a complete list
+    #: without hardcoding one that then drifts from the backend.
+    all_capabilities: list[str]
+    #: Granted by this person's ROLE, before any per-user pin.
+    role_defaults: list[str]
+    #: The explicit per-user pins. Sparse — absent means "follow the role".
+    overrides: dict[str, bool]
+    #: What actually applies: role defaults with the overlay on top.
+    effective: list[str]
+
+
 class StaffCreateIn(BaseModel):
     """POST /companies/me/staff (contract rev 2). `role` is a plain string so
     unknown/forbidden roles surface as an explicit 400 in the handler (the
@@ -45,7 +109,30 @@ class StaffCreateIn(BaseModel):
         return self
 
 
+class StaffUpdateIn(BaseModel):
+    full_name: str = Field(min_length=1, max_length=255)
+    phone: str | None = Field(default=None, max_length=20)
+    role: str = Field(min_length=1, max_length=30)
+    approval_level: str | None = None
+
+    @model_validator(mode="after")
+    def _valid_level(self) -> "StaffUpdateIn":
+        if self.approval_level is not None:
+            valid = {s.value for s in APPROVAL_CHAIN}
+            if self.approval_level not in valid:
+                raise ValueError(f"approval_level must be one of {sorted(valid)}")
+        return self
+
+
 class StaffOut(BaseModel):
+    """A team member row for /org/staff.
+
+    The invite fields are the difference between a usable and a broken invite
+    flow: `invite_link` is returned for a freshly minted invitation so an admin
+    can copy it manually when email delivery is not configured, and
+    `email_dispatch` states honestly whether the invite email could actually be
+    delivered by the configured SMTP sender.
+    """
     id: uuid.UUID  # user id
     email: str
     full_name: str | None
@@ -53,6 +140,35 @@ class StaffOut(BaseModel):
     role: str
     status: str
     approval_level: str | None = None  # hiring managers only
+    created_at: datetime | None = None
+    # Invite lifecycle — pending | accepted | revoked | expired | None (no invite)
+    invite_status: str | None = None
+    invite_sent_at: datetime | None = None
+    invite_expires_at: datetime | None = None
+    # Raw single-use link. Only ever populated on the response to the request
+    # that MINTED the token (create / resend) — never on plain list reads,
+    # because the token is stored hashed and cannot be recovered.
+    invite_link: str | None = None
+    # "queued" | "not_configured" — set on create/resend only.
+    email_dispatch: str | None = None
+
+
+class PublicInviteOut(BaseModel):
+    """GET /companies/invites/{token} — unauthenticated view shown on /join.
+    Deliberately minimal: enough to explain the invitation, nothing more."""
+    email: str
+    full_name: str | None
+    role: str
+    company_name: str
+    invited_by_name: str | None
+    expires_at: datetime
+    status: str  # always "pending" here; other states return 410
+
+
+class InviteAcceptOut(BaseModel):
+    accepted: bool
+    role: str
+    company_name: str
 
 
 class ApprovalLevelEntry(BaseModel):

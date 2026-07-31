@@ -8,6 +8,8 @@ The DOCX fixture is generated in-process with python-docx so there is no binary
 blob checked into the repo. The PDF fixture is a tiny hand-built one-page PDF.
 """
 import io
+import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -176,3 +178,38 @@ async def test_extract_structured_fields_valid_json(monkeypatch):
     assert result["skills"] == ["Python"]
     assert result["total_experience_years"] == 5
     assert result["employment_history"][0]["company"] == "Acme"
+
+
+@pytest.mark.asyncio
+async def test_parse_resume_indexes_text_when_llm_is_unavailable(monkeypatch):
+    profile = SimpleNamespace(
+        resume_text="Python FastAPI PostgreSQL",
+        parsed_fields_json=None,
+        embedding=None,
+    )
+
+    class _Session:
+        committed = False
+
+        async def get(self, _model, _profile_id):
+            return profile
+
+        async def commit(self):
+            self.committed = True
+
+    async def _llm_down(*_args, **_kwargs):
+        raise resume_parsing.llm_router.LLMUnavailableError("quota exhausted")
+
+    async def _embed(texts):
+        assert texts == ["Python FastAPI PostgreSQL"]
+        return [[0.25] * 1024]
+
+    session = _Session()
+    monkeypatch.setattr(resume_parsing, "extract_structured_fields", _llm_down)
+    monkeypatch.setattr(resume_parsing, "embed", _embed)
+
+    await resume_parsing.parse_resume(session, uuid.uuid4())
+
+    assert session.committed is True
+    assert profile.parsed_fields_json == resume_parsing._EMPTY_PARSED_FIELDS
+    assert profile.embedding == [0.25] * 1024

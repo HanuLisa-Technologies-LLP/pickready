@@ -5,7 +5,7 @@
 
 import * as React from "react";
 import { useParams } from "next/navigation";
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, LinkIcon } from "lucide-react";
 
 import { apiGet, apiPost } from "@/lib/api";
 import type {
@@ -18,13 +18,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { FormField, FormSection } from "@/components/ui/form";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { PublicNotice, PublicShell } from "@/components/public-shell";
+import { Section } from "@/components/page-primitives";
 import {
   Select,
   SelectContent,
@@ -82,52 +77,44 @@ export default function VerifyEmploymentPage() {
 
   if (invalid) {
     return (
-      <Centered>
-        <Card className="w-full max-w-md text-center">
-          <CardHeader>
-            <CardTitle>Link not valid</CardTitle>
-            <CardDescription>
-              This verification link has expired or was already completed.
-            </CardDescription>
-          </CardHeader>
-        </Card>
-      </Centered>
+      <PublicNotice
+        tone="error"
+        icon={<LinkIcon className="h-7 w-7" aria-hidden="true" />}
+        title="Link not valid"
+        description="This verification link has expired or was already completed."
+      />
     );
   }
 
   if (submitted) {
     return (
-      <Centered>
-        <Card className="w-full max-w-md text-center">
-          <CardHeader className="items-center">
-            <div className="mb-2 flex justify-center">
-              <CheckCircle2 className="h-10 w-10" />
-            </div>
-            <CardTitle>Thank you</CardTitle>
-            <CardDescription>
-              Your verification response has been recorded. No further action
-              is needed.
-            </CardDescription>
-          </CardHeader>
-        </Card>
-      </Centered>
+      <PublicNotice
+        tone="success"
+        icon={<CheckCircle2 className="h-7 w-7" aria-hidden="true" />}
+        title="Thank you"
+        description="Your verification response has been recorded. No further action is needed."
+      />
     );
   }
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-10">
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-xl">
-            Employment verification
-            {info?.candidate_name ? ` — ${info.candidate_name}` : ""}
-          </CardTitle>
-          <CardDescription>
-            You have been listed as a previous employer. Please confirm the
-            details below — it takes about two minutes.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+    <PublicShell>
+      <div className="mb-8">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-brand-600">
+          Employment verification
+        </p>
+        <h1 className="mt-2 text-balance text-2xl font-bold tracking-tight">
+          {info?.candidate_name
+            ? `Confirm details for ${info.candidate_name}`
+            : "Confirm employment details"}
+        </h1>
+        <p className="mt-2 text-pretty text-sm leading-6">
+          You have been listed as a previous employer. Confirming takes about
+          two minutes.
+        </p>
+      </div>
+
+      <Section>
           <form className="space-y-8" onSubmit={submit}>
             <FormSection title="Employment record">
               <FormField label="Designation held" htmlFor="v-designation" required>
@@ -186,7 +173,7 @@ export default function VerifyEmploymentPage() {
 
             <Separator />
 
-            <FormSection title="Exit & compliance">
+            <FormSection title="Exit and compliance">
               <FormField label="NOC status" required>
                 <Select
                   value={form.noc_status}
@@ -204,11 +191,15 @@ export default function VerifyEmploymentPage() {
                   </SelectContent>
                 </Select>
               </FormField>
-              <div className="flex items-center justify-between rounded-md border p-3">
-                <span className="text-sm font-medium">
+              <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-secondary px-4 py-3">
+                <label
+                  htmlFor="v-exit-formalities"
+                  className="text-sm font-medium"
+                >
                   Exit formalities completed
-                </span>
+                </label>
                 <Switch
+                  id="v-exit-formalities"
                   checked={form.exit_formalities_complete}
                   onCheckedChange={(v) =>
                     setForm({ ...form, exit_formalities_complete: v })
@@ -272,19 +263,10 @@ export default function VerifyEmploymentPage() {
             </FormSection>
 
             <Button type="submit" size="lg" className="w-full" disabled={busy}>
-              {busy ? "Submitting…" : "Submit verification"}
+              {busy ? "Submitting" : "Submit verification"}
             </Button>
           </form>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function Centered({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      {children}
-    </div>
+      </Section>
+    </PublicShell>
   );
 }

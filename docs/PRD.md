@@ -1,199 +1,760 @@
-# PickReady — Product Requirements Document (PRD)
+# PickReady Product Requirements Document
 
-> **⚠️ SUPERSEDED IN PART BY PRD v1.0 (2026-07-24).** The role/approval model and
-> several flows below are overridden by PRD v1.0 §4 (FINAL) and the user's four
-> settlements — see `docs/API_CONTRACT.md` (REVISION 3) and `build-log.md`. In
-> effect now: **flat staff roles** (HR Manager / Recruiter / Hiring Manager equal,
-> all create jobs, one shared candidate pool), **direct job publish** (no
-> multi-level approval chain), **public job link** `picready.com/{job_uuid}` +
-> **open candidate application** (register → 40-question questionnaire → resume
-> upload-or-**reuse**), **SMTP email** (replaces Mailtrap HTTP), and **Firebase
-> auth** (Google / email-password / phone). The multi-level approval FSM and the
-> per-role permission matrix described below remain in the codebase but are
-> bypassed. Sections describing OTP-only auth, no-Gmail, resume-never-stored, and
-> the granular permission matrix are historical.
+**Status:** Implementation-aligned product specification
+**Authority:** The running source code, database migrations, tests, and user interfaces in this repository
 
-| | |
+## 1. Purpose and source-of-truth policy
+
+This document defines the product that is implemented today. It replaces earlier product briefs, questionnaires, hand-offs, prompts, and feature specifications.
+
+When this document and the implementation differ, the implementation is authoritative until both are deliberately changed together. A feature is part of the product only when it is reachable through the current application or an active API/background workflow. Dormant compatibility code is not presented as an active user capability.
+
+## 2. Product overview
+
+PickReady is a multi-tenant hiring operations platform. It brings job creation, candidate intake, resume matching, structured assessment, functional reporting, hiring-pipeline communication, employer verification, subscription credits, and business-development operations into one system.
+
+The product serves four workspaces:
+
+| Workspace | Primary users | Purpose |
+|---|---|---|
+| Provider | PickReady owner and provider operators | Provision customers and BD accounts, inspect customer health, and view portfolio billing |
+| Company | Company administrators, HR managers, recruiters, and hiring managers | Run jobs, candidate review, assessments, compliance, staff, billing, and hiring decisions |
+| Candidate | Job applicants and sourced candidates | Maintain a reusable profile and resume, apply for jobs, complete invited assessments, and track applications |
+| Business development | PickReady BD users | Manage personal and social leads, run AI-assisted reach, and convert signed prospects into customers |
+
+The public website explains the platform and pricing and provides entry points for registration, login, public job applications, outreach responses, and employer verification.
+
+## 3. Product principles
+
+1. **The job remains the hiring anchor.** Candidate ranking, assessment content, reports, and workflow actions are scoped to a job.
+2. **AI assists; deterministic rules protect continuity.** AI generates and evaluates content, while validation, fixed rubrics, fallbacks, and auditable workflow states keep operations usable when a provider is unavailable.
+3. **Candidate-facing scores remain qualitative.** Numeric model scores are stored for computation but are not exposed in candidate tables, emails, or reports.
+4. **Access is capability-based.** Tenant roles provide defaults, and individual grants or revocations refine what a staff member can do.
+5. **Records are retained through lifecycle changes.** Jobs, customers, and related profiles are archived rather than destructively removed.
+6. **Billing is event-ledger based.** Every credit mutation is append-only and idempotent.
+7. **Tenant isolation is a product invariant.** Company data is isolated at both application and PostgreSQL row-policy levels.
+
+## 4. Users, roles, and permissions
+
+### 4.1 Provider owner
+
+The provider owner can:
+
+- view and search customers;
+- inspect customer analytics, status, subscription, and credit balance;
+- edit a limited provider-owned customer record: industry, website, and provider notes;
+- archive or restore a customer;
+- view customer compliance documents without changing them;
+- provision, edit, enable, or disable BD accounts;
+- view portfolio billing; and
+- access owner settings.
+
+The provider cannot use the provider interface to change customer contacts, staff, or compliance records.
+
+### 4.2 Company administrator
+
+The `client` account is the company administrator. It has company-wide responsibility for jobs, company information, staff, compliance, and billing, subject to its capabilities.
+
+### 4.3 Company staff
+
+Operational staff roles are:
+
+- HR Manager
+- Recruiter
+- Hiring Manager
+
+These roles use the same core operating areas: Jobs, Company Profile, Dashboard, and Settings. Access to Staff, Company Page, Compliance, Billing, and other protected actions is capability-controlled rather than inferred only from the role name.
+
+Company administrators can invite staff with a seven-day invitation token, resend invitations, disable or reactivate users, and add user-specific capability grants or revocations. A company can have at most five active Hiring Managers; HR Manager and Recruiter seats are not capped by this rule.
+
+### 4.4 Candidate
+
+A candidate owns a reusable profile and a main resume. A candidate can discover open jobs, apply through a public job link, view applications, edit an application during the configured grace period, and complete an assessment only after receiving an invitation.
+
+### 4.5 Business-development user
+
+BD access is governed by:
+
+- `manage_bd_leads`
+- `view_bd_customers`
+- `use_ai_reach`
+
+BD users do not operate inside a customer tenant and cannot access company hiring data through their BD role.
+
+## 5. End-to-end hiring journey
+
+```mermaid
+flowchart LR
+    A["Company profile"] --> B["AI-assisted job draft"]
+    B --> C["Recruiter edits and publishes"]
+    C --> C2["Technical bank + PPI framework generated, reviewed, finalised"]
+    C2 --> D["Public applications, sourced profiles, and databank uploads"]
+    D --> E["Resume parsing and hybrid matching"]
+    E --> F["Recruiter selects candidates"]
+    F --> G["Invitation-gated unified conversation"]
+    G --> H["PPI Assessment Report"]
+    H --> I["Interview, offer, and join pipeline"]
+    I --> J["Outcome history and reusable candidate records"]
+```
+
+## 6. Company setup and administration
+
+### 6.1 Company profile
+
+The company maintains structured content for:
+
+- About the company
+- Work life
+- Benefits
+
+These sections are snapshotted into a job so that a published job retains the company context used when it was created. A recruiter can override the snapshot for an individual job.
+
+### 6.2 Company Page
+
+A separate company-facing content area stores the candidate-oriented company brief, culture, policies, and benefits. It remains available to authorized company users.
+
+### 6.3 Compliance
+
+The company can upload, replace, download, and remove these seven records:
+
+1. GSTIN certificate
+2. PAN
+3. TAN
+4. Bank account details
+5. Signed agreement or schedule
+6. Purchase order
+7. MSME document
+
+Provider users have read-only visibility. The current implementation stores compliance files through Cloudinary.
+
+### 6.4 Dashboard
+
+The company dashboard provides operational summaries derived from job, candidate, assessment, and pipeline data. Dashboard materialized data is refreshed by a recurring background task approximately every five minutes.
+
+## 7. Job creation and publishing
+
+### 7.1 Required job information
+
+A job includes:
+
+- title and structured role inputs;
+- one grade: Non-managerial, Managerial, Leadership, or CXO;
+- minimum and maximum experience;
+- a stable reporting-to option, with an Other path;
+- compensation information;
+- company-profile snapshots; and
+- a canonical Markdown job description.
+
+### 7.2 Drafting workflow
+
+The current company interface follows this sequence:
+
+1. The recruiter enters the structured job inputs.
+2. AI produces a unified Markdown job description.
+3. The recruiter edits the generated Markdown.
+4. The recruiter explicitly publishes the job.
+5. The application returns a public link that can be shared on external channels.
+
+The canonical job description is Markdown. A derived JSON representation is maintained for compatibility and downstream processing. The description remains editable.
+
+The generated document uses seven stable sections:
+
+- Description
+- Role
+- Responsibilities
+- Accountabilities
+- Education
+- Skills
+- Experience
+
+### 7.3 Question generation
+
+Creating a draft queues generation of **two** things, from the JD, independently
+of each other:
+
+- a grade- and job-specific **technical question bank**, each question carrying
+  its own scoring rubric; and
+- the job's **PPI evaluation framework** (section 11.2.1).
+
+The service validates generated questions and tops up missing content
+deterministically, so an LLM outage produces a usable draft rather than an empty
+screen.
+
+**This is the one manual step in an otherwise fully automated pipeline.** The
+job enters `questions_pending_review` and stays there until a recruiter has
+reviewed and finalised **both** halves; approving one does not open the job.
+Only then does it become `ready_for_candidates`. Until it does:
+
+- no candidate can open the unified conversation; and
+- no candidate can be invited - the invitation endpoint refuses with a message
+  naming what is still outstanding.
+
+Applications still arrive in the meantime and are ranked as normal.
+
+An operational safeguard stops the step going silent: a job left unapproved past
+a configured threshold (24-48 hours) mails everyone who could approve it, once.
+
+The reinstatement of this gate on 2026-07-30 supersedes the 2026-07-25 decision
+that removed it.
+
+### 7.4 Posting lifecycle
+
+Each publication has:
+
+- a 30-day active application window;
+- a five-day grace period for existing applicants to edit an application; and
+- an expired state after the grace period.
+
+After the active window:
+
+- the public job link no longer accepts or displays the job;
+- a candidate who did not previously apply cannot create a new application;
+- an existing applicant can edit only during the five-day grace period.
+
+A job can be renewed only after its active window has closed. Renewal starts a new 30-day window. Candidates from the earlier posting remain visible as **Old Profiles**, while profiles from the renewed window are **New Profiles**.
+
+Jobs can be archived and restored without deleting their candidate or history records.
+
+## 8. Candidate acquisition and application
+
+Candidate-job links identify how the candidate entered the workflow:
+
+- **Applied:** submitted through the public job link;
+- **Sourced:** entered through an external outreach link; or
+- **Databank:** uploaded from the company’s existing candidate data.
+
+The company can upload up to 25 resume files in one batch. Each file is validated independently, partial success is returned, and parsing/matching work is queued once for the accepted batch.
+
+## 9. Candidate profile and resume
+
+### 9.1 Reusable profile
+
+The candidate profile is a structured form with these sections:
+
+- personal information;
+- education history;
+- work experience;
+- compensation and availability;
+- document availability and onboarding readiness;
+- resume confirmation; and
+- candidate declaration.
+
+The current minimum completion gate requires:
+
+- current city;
+- total experience;
+- accepted declaration; and
+- declaration full name.
+
+The profile replaces the legacy proposal to ask a separate mandatory 40-question
+validation interview in every assessment.
+
+### 9.1.1 Mandatory application fields (validation)
+
+Validation is no longer handled by an agent, and is no longer read from the
+profile snapshot. It is six **mandatory fields on the application form itself**,
+submitted together with the candidate's resume before they proceed any further:
+
+| Field | Type |
 |---|---|
-| **Product** | PickReady |
-| **Owner** | Hanulisa Technologies LLP |
-| **Document status** | Draft v1.0 |
-| **Date** | July 2026 |
-| **Classification** | Internal / Confidential |
+| Current CTC | text |
+| Expected CTC | text |
+| Notice period | select |
+| Earliest joining date | date |
+| Document readiness | select |
+| Why does this role interest you? | open text |
 
----
+Three properties hold, and all three are deliberate:
 
-## 1. Executive Summary
+1. **Nothing here is scored, interpreted or judged.** No agent reads it, no
+   grade is attached, and the report shows it exactly as the candidate typed it.
+   The recruiter, not any agent, decides whether a candidate's stated interest is
+   genuine.
+2. **It is captured before any assessment spend.** CTC and notice period at
+   application time let a recruiter filter out candidates plainly outside the
+   budget or notice window before a single credit is consumed assessing them.
+3. **It lives on the application, not the candidate profile.** Current CTC and
+   notice period change over time and are answered per opportunity, so each
+   application stays an accurate record of what was true when it was submitted.
 
-PickReady is a multi-tenant, enterprise-grade Applicant Tracking & Recruitment Operations platform. Hanulisa Technologies LLP runs recruitment engagements on behalf of client companies: Hanulisa's own Recruiters and HR Managers source and vet candidates, while each client's Hiring Managers review and decide. The platform's differentiator is a structured, auditable pipeline — OTP-only authentication for every actor, a configurable multi-level job approval chain, a reusable candidate "Databank" with AI-driven contextual matching, and mandatory employer-verification before any candidate reaches a hiring manager.
+The field list is served by the backend, so the form a candidate fills in and
+the Validation section of the report cannot drift apart. An application
+submitted before 2026-07-30 predates these fields and renders as an explicit
+"not collected" rather than a blank panel.
 
-This is a production system, not a prototype: every workflow in this document must be built with proper validation, audit trails, error handling, and role-based access control from day one.
+### 9.2 Resume handling
 
----
+Candidates can upload or reuse their main resume. PDF and DOCX resumes are supported. A content hash avoids storing duplicate content. Files are accessed through authenticated preview or download endpoints. DOCX preview is converted to safe, monochrome HTML, with download as a fallback.
 
-## 2. Problem Statement
+### 9.3 Application snapshot
 
-Recruitment agencies and in-house TA teams typically lose signal at three points: (1) sourcing repeats work already done for a past requisition, (2) candidate claims (employment history, compensation) go unverified until very late — or never, and (3) approval chains for opening a role are informal, slow, and unauditable. PickReady fixes all three by making the Databank, the verification step, and the approval chain first-class, mandatory parts of the product rather than optional add-ons.
+Every application snapshots the candidate’s profile form and resume. Later edits to the reusable profile do not silently rewrite the historical application.
 
----
+## 10. Matching and candidate review
 
-## 3. Goals & Success Metrics
+### 10.1 Candidate retrieval
 
-| Goal | Metric |
-|---|---|
-| Reduce duplicate sourcing effort | % of shortlisted candidates sourced from Databank vs. fresh, per job |
-| Guarantee verified candidate data reaches Hiring Managers | 100% of freshly sourced candidates have completed the 40-aspect + employer-verification flow before Hiring Manager access is granted |
-| Speed up job approval | Median time from "Requested" to "Ratified" |
-| Improve match quality | % of Highly Matching (≥90%) profiles that reach "Shortlisted" or better |
-| Platform reliability | 99.5% uptime on core workflows (job creation, outreach, review) |
+Matching combines:
 
----
+- pgvector semantic similarity;
+- PostgreSQL full-text keyword search; and
+- candidates already linked to the job.
 
-## 4. Actors & Role Model
+The retrieved set is reranked by an LLM. When an AI provider is unavailable, deterministic retrieval remains available and does not fabricate a top recommendation.
 
-The source concept note used "Admin", "Client", "Recruiter", "HR Manager", and "Hiring Manager" somewhat interchangeably. Based on the brainstorm, the following role model is **assumed and locked in** — flag anything below that doesn't match your intent before build starts, since it drives the entire permission and data model:
+### 10.2 Matching dimensions
 
-| Role | Belongs to | Cardinality | Purpose |
-|---|---|---|---|
-| **Super Admin** | Hanulisa (platform owner) | Few, platform-wide | Onboards new Client tenants; defines the base permission template for Recruiter / HR Manager / Hiring Manager roles; can adjust any tenant's role permissions dynamically; platform-wide visibility for support and operations |
-| **Client (Company)** | Client company | 1 per tenant | The account created in the Section 1/2 OTP onboarding flow. Owns the company page, defines the approval hierarchy (Section 3), and creates/manages up to 5 Hiring Manager accounts |
-| **HR Manager** | Hanulisa staff, assigned per tenant | Multiple, per tenant | Adds compensation to ratified jobs, resolves JD ambiguity, manages candidate outreach and the 40-aspect + verification flow, operates the HR Review Screen |
-| **Recruiter** | Hanulisa staff, assigned per tenant | Multiple, per tenant | Sources fresh candidates, uploads resumes, schedules interviews, updates candidate pipeline status |
-| **Hiring Manager** | Client company | **Max 5 accounts per tenant** | Reviews profiles surfaced by HR, acts as one of up to 4 approval levels (Requested/Recommended/Approved/Ratified), and post-approval reviews candidate profiles with Rejected / Shortlisted / Hold |
-| **Candidate** | External | Unbounded | Applies via outreach link, fills the 40-aspect questionnaire, tracks own application status |
+The internal composite uses:
 
-**Dynamic permissions**: Super Admin can toggle, per tenant, exactly which actions each of Recruiter / HR Manager / Hiring Manager can perform (see §6 Permission Matrix for the default template). This is a real RBAC system, not a hardcoded role check — permissions are data, not code.
+| Dimension | Weight |
+|---|---:|
+| Skills | 35% |
+| Experience | 30% |
+| Role and responsibility alignment | 20% |
+| Education | 15% |
 
----
+Compensation data is removed before matching prompts are sent to an AI provider.
 
-## 5. Non-Goals / Explicit Assumptions
+Prior positive outcomes for the same company can weakly influence reranking. These patterns are PII-minimized, and the current job description remains authoritative.
 
-- No Gmail/Outlook OAuth integration anywhere (explicit client requirement) — all client-domain email goes through PickReady's own transactional layer with the client's domain as From/Reply-To.
-- No password-based login anywhere in the system — OTP only, for every actor including Candidates.
-- Verifying a candidate's **current** employer is explicitly out of scope for the automated flow (Section 5g) — it requires a separate, consent-based, Recruiter-led initiative and is not part of this build's automated pipeline.
-- No email templates are provided by PickReady; each employer/tenant supplies its own (Section 8) — the platform provides a template *editor*, not fixed copy.
-- Candidate resumes are never stored on the Candidate Portal between applications — a fresh resume is required per job application (Section 9).
+### 10.3 Ranking order
 
----
+Candidate review order changes by grade:
 
-## 6. Default Permission Matrix (Super Admin–editable template)
+- Non-managerial: skills, experience, then behavioral fit.
+- Managerial, Leadership, and CXO: skills, behavioral fit, then experience.
 
-| Capability | Recruiter | HR Manager | Hiring Manager | Client (Company) |
-|---|---|---|---|---|
-| Create/edit company page | – | – | – | ✅ |
-| Create Hiring Manager accounts | – | – | – | ✅ |
-| Configure approval levels | – | – | – | ✅ |
-| Create/edit Job Description | – | ✅ (post-ratification) | – | – |
-| Approve job at assigned level | – | – | ✅ (if assigned a level) | ✅ (if assigned a level) |
-| Add compensation to job | – | ✅ | – | – |
-| View Databank matches | ✅ | ✅ | – | – |
-| Upload freshly sourced resumes | ✅ | – | – | – |
-| Trigger AI contextual rating | ✅ | ✅ | – | – |
-| Send candidate outreach (40-aspect + verification) | – | ✅ | – | – |
-| View HR Review Screen (full 40 aspects) | – | ✅ | ✅ (read-only, granted profiles only) | – |
-| Shortlist/Reject/Hold a profile | – | – | ✅ | – |
-| Schedule interviews | ✅ | – | – | – |
-| Update candidate pipeline status | ✅ | ✅ | – | – |
-| View HR/Recruiter dashboard | ✅ (own jobs) | ✅ (own jobs) | – | – |
-| Edit any tenant's role permissions | – | – | – | – (Super Admin only) |
+The company candidate table is paginated at 25 rows. It provides source and old/new profile labels, qualitative match labels, five concise comments, resume viewing, reports, team reviews, and permitted status actions.
 
-This table is the seed data for the permissions engine (see ESD §6), not a hardcoded ACL — Super Admin can vary this per tenant.
+### 10.4 Rating policy
 
----
+Numeric scores are internal and never cross the API boundary. Every rated item
+in the product - the four matching parameters, Primary Skills, Secondary Skills,
+Behavioural Competencies and the Overall grade - is shown to the client as one
+of exactly four words:
 
-## 7. Functional Requirements
+| Grade |
+|---|
+| Highly Matching |
+| Matching |
+| Moderately Matching |
+| Not Matching |
 
-### 7.1 Authentication — OTP Everywhere
-- **FR-1.1**: Every actor (Client, Super Admin, HR Manager, Recruiter, Hiring Manager, Candidate) authenticates via OTP — no passwords.
-- **FR-1.2**: Client's *first* login validates both email and mobile via a dual OTP send; subsequent logins accept either channel.
-- **FR-1.3**: Changing a registered email or mobile number re-triggers the full dual-OTP validation.
-- **FR-1.4**: OTPs expire after a configurable window (default 5 minutes), allow a configurable max retry count (default 5) before lockout, and are rate-limited per identifier to prevent abuse.
-- **FR-1.5**: Internal staff (HR Manager, Recruiter, Hiring Manager, Super Admin) use email-OTP; SMS-OTP (via MSG91) is available wherever a mobile number is on file.
+These four replaced the product's earlier pair of five-label scales (Very High /
+High / Medium / Low / Developing for assessment dimensions, and Highly Matching /
+Matching / Moderate / Low / No Matching for ranking comments). The two had to be
+kept in step by hand, and a reader had no way to know that a "High" and a
+"Matching" meant the same thing. One scale now, defined once in
+`services/rating.py`.
 
-### 7.2 Client & Company Onboarding
-- **FR-2.1**: After first login, Client creates a company page (brief, culture, policies, benefits).
-- **FR-2.2**: Client creates up to 5 Hiring Manager accounts from the company page, each via the OTP-based invite flow.
-- **FR-2.3**: Client configures which of the 4 approval levels (Requested/Recommended/Approved/Ratified) are mandatory, and assigns a specific person (internal Hiring Manager or an external approver invited for this purpose) to each active level.
+Band boundaries are inclusive upward: a score landing exactly on a boundary
+takes the higher grade.
 
-### 7.3 Job Creation & Multi-Level Approval Workflow
-- **FR-3.1**: Hiring Manager creates a JD with: Job Title, Department, Level, Reporting To, Reportees, Role, Responsibilities, Accountabilities, Education, Skills, Experience (years), Requirement period.
-- **FR-3.2**: The job moves through the Client-configured subset of Requested → Recommended → Approved → Ratified. Each transition is logged with actor, timestamp, and optional remarks.
-- **FR-3.3**: A job cannot skip a mandatory level; skipped/inactive levels are bypassed automatically.
-- **FR-3.4**: Only once "Ratified" (or the last mandatory level) does the job become visible to HR.
+The four matching parameters carry **no mathematical weightage**. Each is judged,
+graded and commented on its own terms; the internal overall used for ordering a
+candidate list is their plain mean and is never displayed.
 
-### 7.4 HR Sourcing, Databank Matching & AI Contextual Rating
-- **FR-4.1**: On reaching HR, the job becomes editable by HR Manager for compensation and JD-ambiguity fixes.
-- **FR-4.2**: The moment a job reaches HR, PickReady auto-surfaces Databank candidates who previously consented (40-aspect Section 5f — Aspect 40) to be matched against future roles, ranked using the hybrid matching pipeline (ESD §8).
-- **FR-4.3**: Recruiter reviews the Databank shortlist, sources additional candidates through their own channels, and uploads freshly sourced resumes, linked to the job.
-- **FR-4.4**: Databank matches require no re-upload — their existing Profile is reused as-is and is linked automatically.
-- **FR-4.5**: Every linked profile (Databank and fresh) receives an AI contextual rating against the JD, bucketed into: Highly Matching (≥90%), Moderately Matching (≥70%), Matching (≥50%), Not Matching (<50%). Tiers are evaluated top-down; a boundary score (e.g., exactly 90%) falls into the **higher** tier.
+## 11. Assessments
 
-### 7.5 Candidate Outreach — Data & Employer-Verification
-*Applies to freshly sourced candidates only — Databank matches skip this section entirely, reusing their existing Profile.*
-- **FR-5.1**: HR emails selected candidates requesting: Full Name (as per PF records/Class X memorandum), Residing City, Age, Gender, updated resume, and the 40-aspect questionnaire (skipping any aspect already covered by a–d).
-- **FR-5.2**: HR additionally requests official HR email IDs of up to 3 previous employers.
-- **FR-5.3**: For each previous employer supplied, PickReady sends an automated verification request (Designation, DOJ, DOE, Last Drawn CTC, Last Drawn Gross, NOC status, exit-formalities completion, BGV status, and details on educational/address/ID proof and prior experience/compensation) via a secure tokenized web-form link, with LLM-based parsing of a direct email reply as a fallback if the employer doesn't use the link.
-- **FR-5.4**: Verifying the candidate's **current** employer is explicitly excluded from this automated flow (see §5 Non-Goals).
-- **FR-5.5**: All of FR-5.1–5.3 must be complete before the Recruiter can move the candidate forward.
+### 11.1 Invitation gate
 
-### 7.6 Candidate Response, Application & Data Parsing
-- **FR-6.1**: Candidate receives an outreach link and completes all requested items on their own Candidate Page.
-- **FR-6.2**: Candidate-submitted resumes are parsed via LLM extraction (LangChain) into structured fields (skills, experience, education, employment history) and attached to the candidate's record.
+Applying does not automatically start an assessment. A recruiter selects candidate links and sends assessment invitations. The batch endpoint supports up to 200 selections and reports skipped candidates with reasons.
 
-### 7.7 HR Review Screen
-- **FR-7.1**: Home screen shows candidate names on the left; selecting one shows all 40 aspects and their responses on the right.
-- **FR-7.2**: The combined resume + 40-aspect + employer-verification data set is defined platform-wide as the candidate's **Profile**.
+An uninvited candidate receives no assessment access. The first accepted start changes the workflow to In Progress.
 
-### 7.8 Hiring Manager Shortlisting, Interview Scheduling & Status Tracking
-- **FR-8.1**: HR grants Hiring Manager(s) access to reviewed profiles.
-- **FR-8.2**: Hiring Manager acts on each profile via three buttons: Rejected, Shortlisted, Hold (Hold requires a mandatory remarks field).
-- **FR-8.3**: Based on Hiring Manager actions, Recruiter schedules interviews through the platform, sent only from the client's own official email domain (no Gmail/Outlook).
-- **FR-8.4**: Recruiter/HR must keep every profile's status current: Rejected, Shortlisted, Offered, Joined — this update is mandatory, not optional.
-- **FR-8.5**: No fixed email templates are shipped; each tenant maintains its own editable templates.
+### 11.2 Assessment composition
 
-### 7.9 Candidate Portal
-- **FR-9.1**: Candidates log in separately (OTP) to see: New Jobs (only after their first outreach email from a given employer), Apply for Jobs, and Application Stage Status.
-- **FR-9.2**: No resume is persisted on the portal between applications — each application requires a fresh upload.
+One conversation, not two. A single unified conversational agent blends the
+job's technical bank with the candidate's PPI questions into one natural
+exchange; the candidate never sees or interacts with two separate bots and is
+never told which engine scores which answer.
 
-### 7.10 HR / Recruiter Dashboard
-- **FR-10.1**: Per-job metrics: Databank matches surfaced, candidates sourced (fresh), candidates shortlisted, candidates offered, candidates joined.
-- **FR-10.2**: Aggregate metric: total jobs worked, scoped to the logged-in HR/Recruiter's assignments.
+Validation is not asked here at all. It is six mandatory fields on the
+application form (section 9.x), captured before the conversation begins.
 
-### 7.11 Platform Administration (Super Admin Console) — *new, required for the confirmed role model*
-- **FR-11.1**: Super Admin onboards new Client tenants and assigns Hanulisa Recruiter/HR Manager staff to them.
-- **FR-11.2**: Super Admin edits the default permission template (§6) globally or per tenant.
-- **FR-11.3**: Super Admin has read visibility across tenants for support/ops purposes, gated by its own audit-logged access.
+| Job grade | Technical questions | PPI questions | Total |
+|---|---:|---:|---:|
+| Non-managerial | 20 | 25 | 45 |
+| Managerial | 17 | 20 | 37 |
+| Leadership | 15 | 15 | 30 |
+| CXO | 12 | 10 | 22 |
 
----
+Note the direction of the PPI column: more questions for a junior candidate,
+fewer for a CXO. A CXO's evidence is broader per answer and their time is the
+scarce resource.
 
-## 8. Non-Functional Requirements
+### 11.2.1 PickReady Profile Intelligence (PPI)
 
-- **Multi-tenancy isolation**: every tenant-scoped table carries `tenant_id`; enforced at the database layer (Postgres Row-Level Security), not only in application code.
-- **Auditability**: every approval transition, permission change, profile status change, and Super Admin cross-tenant access is written to an immutable audit log.
-- **Security**: OTPs are never logged or stored in plaintext (hashed + short TTL); LLM API keys and any third-party secrets are encrypted at rest; PII (candidate age, gender, compensation) is access-controlled per the permission matrix.
-- **Compliance**: candidate consent (Aspect 40) governs Databank re-use; data retention and right-to-erasure for candidate data should follow India's DPDP Act, 2023.
-- **Performance**: AI contextual rating for a batch of profiles against a job should complete asynchronously and notify HR/Recruiter on completion — this is never a blocking, synchronous UI wait.
-- **Availability**: core workflows (auth, job workflow, outreach, review) target 99.5% uptime.
-- **Theming**: UI ships in a monochrome black-and-white theme with a light/dark toggle, switchable only from Settings/Profile — never a persistent header toggle.
-- **Containerization**: the entire application (frontend, backend, workers, scheduler) must be Docker-containerized, runnable identically in local dev and production.
+PPI replaced the PickReady Functional Index (PFI) on 2026-07-30. PFI was one
+fixed dimension set per grade, reused across every job in the product. PPI
+generates a **fresh evaluation framework for every job, from that job's own JD**:
 
----
+- at least 5 Primary Skills - capabilities the role cannot be performed without;
+- at least 5 Secondary Skills - supporting capabilities that strengthen
+  performance without being disqualifying;
+- at least 5 Behavioural Competencies - observable workplace behaviours.
 
-## 9. Release Plan (Phased, not a staged "MVP-then-features" cut)
+The agent may recommend more than five in any category when the job's complexity
+warrants it. The trade, accepted explicitly: more precise to the specific role,
+at the cost of no longer having one fixed list to point to across the product.
 
-| Phase | Scope |
-|---|---|
-| **Phase 1 — Foundation** | OTP auth for all roles, tenant + RBAC model, Super Admin console, company onboarding, job creation + approval workflow |
-| **Phase 2 — Sourcing & Matching** | Databank, resume upload, BGE-M3 embeddings + pgvector, hybrid ranking pipeline, tier assignment |
-| **Phase 3 — Outreach & Verification** | Candidate outreach emails, 40-aspect questionnaire, employer-verification web-form + fallback parsing, Candidate Portal |
-| **Phase 4 — Review & Pipeline** | HR Review Screen, Hiring Manager shortlisting, interview scheduling under client domain, mandatory status tracking |
-| **Phase 5 — Dashboards & Hardening** | HR/Recruiter dashboard, audit log UI, load/security hardening, observability |
+The agent never proposes **Culture** as a Behavioural Competency. Cultural fit
+cannot be assessed accurately from a single assessment and PPI does not claim
+otherwise. The refusal is enforced at generation, at save, and by a database
+CHECK constraint.
 
----
+PPI is a first-party framework and is not presented as DISC, MBTI, Hogan,
+CliftonStrengths, or another licensed psychometric instrument.
 
-## 10. Glossary
+**The framework is per job; the questions are per candidate.** Once the Hiring
+Manager saves the framework it is the fixed evaluation criteria for every
+candidate who applies to that job - that is the only reason two candidates'
+reports are comparable. The questions probing it are generated individually from
+the JD, the saved framework, and that candidate's own resume, so each
+conversation is relevant to the person in it.
 
-- **Profile**: the combined resume + 40-aspect responses + employer-verification data for one candidate.
-- **Databank**: the pool of previously processed candidates who consented (Aspect 40) to be matched against future jobs.
-- **Tier**: one of Highly Matching / Moderately Matching / Matching / Not Matching, assigned by the AI contextual rating pipeline.
-- **Ratified**: the final, terminal state of the job-approval workflow, after which HR gains access to the job.
+### 11.3 Assessment processing
+
+Two independent scoring agents consume the relevant parts of the transcript in
+parallel and do not wait on each other:
+
+- **Technical scoring** - each answer against the rubric written for that
+  specific question, never open-ended judgement, so a rating stays defensible
+  when a client asks why a candidate was scored a certain way;
+- **PPI scoring** - the candidate's responses against the job's saved Primary
+  Skills, Secondary Skills and Behavioural Competencies.
+
+Validation needs no scoring agent: it flows from the application form straight
+into the report. Report synthesis waits for both scoring agents to complete.
+Provider fallbacks and the scoring mode are recorded for audit.
+
+"Simultaneous" applies to backend scoring only, never to the candidate's
+experience.
+
+### 11.4 Retake behaviour
+
+Every application runs its own assessment. Report reuse was retired with PPI:
+the framework and the technical bank are generated from each job's own JD, so a
+prior report grades criteria the new job never used, and carrying it across
+would assert a result that was never assessed. The six-month classification
+still runs so the candidate is told why they are answering questions again.
+
+## 12. The PPI Assessment Report
+
+The report is generated after assessment completion and is immutable through the
+public application API. A retake produces a new report alongside the old one.
+
+Every report shows **two distinct scores, deliberately kept separate rather than
+merged** - one from before the candidate is assessed, one from after:
+
+- **AI Score** - a resume-based snapshot generated before the assessment,
+  comparing the resume against the four matching parameters.
+- **PPI Assessment** - a conversation-based assessment grading the candidate's
+  actual demonstrated skills and behavioural competencies against the job's
+  saved framework.
+
+They are not duplicating each other. A close match between the two confirms the
+resume was accurate; a gap between them is itself useful signal, not a
+contradiction to hide.
+
+Section order is fixed:
+
+1. **AI Score** - four matching parameters, each with a grade and a 25-30 word
+   remark.
+2. **Overall Assessment** - an Overall Grade, a 45-50 word Overall Remark, and
+   the Overall radar chart. This opens the PPI Assessment section.
+3. **Primary Skills** - a grade and a 45-50 word remark for each, plus a radar.
+4. **Secondary Skills** - the same.
+5. **Behavioural Competencies** - the same.
+6. **Validation** - the mandatory application fields, shown as submitted, with
+   no rating attached.
+7. **Suggested interview questions** - 8 to 10, anchored on whichever Primary
+   Skill, Secondary Skill, Behavioural Competency or technical item graded
+   Moderately Matching or Not Matching. Clearly advisory input, never a
+   recommendation to reject or accept.
+
+Technical items are scored and anchor the suggested questions, but are not a
+rendered section of the report.
+
+### 12.1 Radar charts
+
+Four per candidate - Overall, Primary Skills, Secondary Skills, Behavioural
+Competencies - all part of the PPI Assessment, none part of the AI Score.
+
+Each chart plots **two shapes on the same axes**: the job's required level and
+the candidate's assessed level, so a client sees at a glance where a candidate
+exceeds, meets, or falls short of what the job needs. A small legend below each
+chart identifies the two shapes by word: Job Requirement, Candidate Assessment.
+
+No numbers appear anywhere on any chart: not on axes, not as data labels, not in
+tooltips. The radar uses an internal band index (1 to 4) purely as a rendering
+radius; it is never displayed.
+
+### 12.2 Word-count rules
+
+- Primary Skills, Secondary Skills, Behavioural Competencies and the Overall
+  Remark: **45-50 words**, doubled from the original 25-30 rule.
+- The AI Score's matching parameters keep the original **25-30 words** - it is a
+  snapshot, not the detailed assessment.
+- Remarks must be genuinely reflective of that candidate's specific responses,
+  not templated language with values swapped in.
+- Validation output is exempt: factual data and the candidate's own words, not a
+  rated remark.
+- A remark is always generated complete inside its range and never truncated to
+  fit.
+
+## 13. Hiring pipeline and communications
+
+### 13.1 Pipeline stages
+
+The implemented domain includes:
+
+- Applied
+- Assessment Invited
+- Assessment In Progress
+- Assessment Completed
+- Shortlisted
+- Rejected
+- Interview Scheduled
+- Interview Completed
+- Offer Extended
+- Joined
+- Hold
+
+Rejected and Joined are terminal. Hold and Rejected can be selected from non-terminal states. Forward transitions are validated by the server. Multiple interview rounds are stored with incrementing stage numbers.
+
+Every status change writes append-only history and updates the current-state mirror.
+
+### 13.2 Email workflow
+
+The system supports:
+
+- application confirmation;
+- assessment invitation and reminders;
+- assessment completion;
+- shortlist;
+- rejection;
+- hold;
+- interview scheduling and completion;
+- offer extension; and
+- joined confirmation.
+
+Messages can be AI-drafted with a deterministic fallback, edited by an authorized user where composition is offered, queued through Celery, and sent through configured Gmail SMTP. The log records subject, body, delivery status, whether AI generated the draft, and whether a person edited it.
+
+### 13.3 Employer verification
+
+Employment verification supports:
+
+- creating a verification request;
+- sending a tokenized public form;
+- accepting a verified public response;
+- parsing an inbound verification email through an API;
+- recording an authorized manual override with a reason; and
+- showing verification state with the candidate profile.
+
+Databank handling follows separate verification rules so that historical profiles are not treated as fresh public applicants.
+
+## 14. Billing and credits
+
+### 14.1 Subscription plans
+
+All self-service tiers offer the same implemented feature set and differ by monthly candidate allowance and unit economics.
+
+| Plan | Monthly applications | Monthly price | Nominal price/application |
+|---|---:|---:|---:|
+| Starter | 50 | ₹10,000 | ₹200 |
+| Growth | 100 | ₹18,000 | ₹180 |
+| Scale | 150 | ₹24,000 | ₹160 |
+| Pro | 200 | ₹28,000 | ₹140 |
+| Enterprise | Contact sales | Custom | Custom |
+
+Razorpay subscriptions provide checkout, plan change, cancellation, signature verification, and deduplicated webhook handling. Enterprise is a contact path rather than a self-service database plan.
+
+### 14.2 Credit model
+
+One credit equals 60 integer sub-units.
+
+| Event | Sub-units | Credit equivalent |
+|---|---:|---:|
+| Completed assessment | 60 | 1 |
+| Started but incomplete after reconciliation | 20 | 1/3 |
+| Never opened after reminders and settlement window | 4 | 1/15 |
+| Old-profile review | 3 | 1/20 |
+
+Credits roll over and do not expire. Consumption can make a balance negative because a completed candidate action is not reversed. A negative balance blocks new assessment invitations until credits are restored.
+
+Reminder attempts occur around 24 and 72 hours. Unfinished invitations are settled after seven days. Ledger entries are append-only and carry idempotency keys so retries do not double-charge.
+
+## 15. Business-development workspace
+
+### 15.1 Lead management
+
+Personal and social leads share one lead model. Social sources include LinkedIn, Google, Facebook, Instagram, and X.
+
+Each lead tracks six operational milestones:
+
+1. Interaction 1
+2. Interaction 2
+3. Interaction 3
+4. Meeting or demo 1
+5. Meeting or demo 2
+6. Meeting or demo 3
+
+The first completion time for each milestone is retained.
+
+### 15.2 Agreement conversion
+
+When an agreement is marked signed, the lead is promoted to a prospect customer tenant. Removing the signed state archives and unlinks the prospect. Signing again reuses the same tenant rather than creating duplicates.
+
+### 15.3 AI Reach
+
+AI Reach has two independent modes:
+
+- **Similar to customers:** searches internal customer patterns without network access.
+- **From the internet:** uses Tavily-backed research orchestrated through a plan, search, evaluate, and shape workflow.
+
+Results identify operational states such as OK, unconfigured, timeout, or unavailable and use word confidence labels. AI Reach does not present an opaque numeric confidence score.
+
+BD users can view converted customers and export their customer list as CSV.
+
+## 16. Public experience
+
+The public application includes:
+
+- landing page;
+- product storytelling and workflow demonstration;
+- product and technical documentation;
+- about;
+- insights;
+- pricing;
+- privacy;
+- terms;
+- login and registration;
+- staff invitation acceptance;
+- public job application;
+- outreach response; and
+- employer verification.
+
+Authentication supports Google, email/password, and phone through Firebase. The backend exchanges verified Firebase identity for secure HTTP-only application sessions and presents a context selector when one identity belongs to more than one workspace.
+
+## 17. Product differentiation
+
+The implemented differentiation is:
+
+- one operating chain from job draft to joined outcome;
+- hybrid semantic and keyword matching rather than an LLM-only candidate guess;
+- assessment content that changes with both job and grade;
+- PPI: a behavioural and skills framework generated fresh from every job, combined with technical rubric scoring;
+- qualitative, interview-ready reports instead of exposed black-box numbers;
+- invitation-gated assessment spend with a transparent fractional credit ledger;
+- reusable candidate profiles with per-application snapshots;
+- archived records and renewed-job old/new profile continuity;
+- tenant-level capabilities plus individual permission overlays; and
+- business-development conversion in the same platform that provisions customers.
+
+These are implementation characteristics, not claims that competing products lack similar functionality.
+
+## 18. Measurable value and evidence policy
+
+The codebase provides measurable operating limits and unit economics:
+
+- 22–45 assessment questions depending on grade;
+- four matching parameters, unweighted;
+- at least 15 PPI framework entries per job (5 Primary, 5 Secondary, 5 Behavioural);
+- four radar charts per candidate report;
+- 25 candidate rows per review page;
+- 25 resumes per batch upload;
+- 200 candidates per invitation batch;
+- 30 active posting days plus five grace days;
+- five-minute dashboard refresh;
+- ₹140–₹200 nominal self-service cost per monthly application allowance; and
+- fractional charging for incomplete, no-show, and old-profile-review events.
+
+The current repository does **not** contain production telemetry proving hours saved, cost saved, conversion uplift, accuracy, retention, or time-to-hire improvement. Marketing must not present such figures as proven.
+
+To establish defensible value, production analytics should measure:
+
+- median time from job form start to publication;
+- recruiter review minutes per candidate;
+- percentage of matched candidates invited;
+- invitation-open and assessment-completion rates;
+- report-to-interview conversion;
+- time from application to first decision;
+- cost per completed assessment and per joined candidate;
+- old-profile reuse rate;
+- provider fallback rate; and
+- hiring outcomes by match and report band.
+
+Customer-facing claims should be released only after cohort definition, consent, sample size, and calculation methods are documented.
+
+## 19. Explicit exclusions and superseded behavior
+
+The following older concepts are not active product requirements:
+
+- a separate 40-question validation conversation in every assessment (validation is now six mandatory application fields, section 9.1.1);
+- a total 72–80 question assessment derived from that older design;
+- a multi-level job approval workflow in the current company interface;
+- automatic assessment access immediately after applying;
+- numeric match or assessment scores exposed to users;
+- provider editing of customer staff or compliance;
+- feature gating by paid plan tier;
+- an unlimited Hiring Manager count;
+- a Mailtrap-based production email service; and
+- a claim that “Grok” is an implemented AI provider. The code uses **Groq**, Gemini, and OpenRouter.
+
+Compatibility tables, endpoints, or helpers may remain in the repository for migrated records. Their presence alone does not make these items current user workflows.
+
+## 20. Quality requirements
+
+### 20.1 Security and privacy
+
+- Every tenant-bound query must preserve row-level tenant isolation.
+- Provider bypass operations must be explicitly scoped and audited.
+- Sensitive files must require authenticated access.
+- Secrets must not be committed or embedded in browser bundles.
+- Public token endpoints must be rate-limited and expire or settle according to their workflow.
+- Candidate data sent to AI providers must be minimized.
+
+### 20.2 Reliability
+
+- Background tasks must be retry-safe and idempotent.
+- Billing webhooks and ledger events must deduplicate repeated delivery.
+- AI workflows must record provider/fallback mode.
+- A provider outage must degrade to deterministic output where implemented rather than corrupt workflow state.
+
+### 20.3 Accessibility and responsive behavior
+
+- Public and portal navigation must remain keyboard accessible.
+- Controls must have visible focus and usable labels.
+- Data tables must have mobile alternatives or horizontal containment.
+- Motion must respect reduced-motion preferences.
+- Color cannot be the only carrier of a status or rating.
+
+## 21. Current product limitations
+
+- Quantified customer ROI is not instrumented.
+- Provider customer editing is intentionally narrow.
+- Employer-verification inbound email parsing has an API, but production inbound-mail delivery still needs an operational provider integration.
+- Interview rounds are stored, but feedback and round-completion tooling are less complete than scheduling.
+- AI fallbacks preserve workflow continuity but do not replace human review of high-stakes hiring decisions.
+- Some dormant legacy models and endpoints remain and can confuse maintainers.
+- File retention, malware scanning, data-subject workflows, and regional processing policies require production hardening.
+
+## 22. Concise roadmap
+
+### Near term
+
+- add product analytics for the evidence metrics in Section 18;
+- complete interview feedback and round-management UX;
+- integrate production inbound email for verification;
+- harden file security, retention, and malware scanning;
+- remove dormant multi-level job-approval and OTP paths after migration review; and
+- add end-to-end regression coverage for the four workspaces.
+
+### Scale stage
+
+- introduce enterprise identity and audit exports;
+- support configurable hiring workflows without breaking the default pipeline;
+- add customer-controlled retention and regional data policies;
+- build outcome-calibrated matching evaluation with bias and quality monitoring; and
+- expose operational service health and SLA reporting for enterprise customers.

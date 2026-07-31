@@ -1,6 +1,6 @@
 "use client";
 
-// Shared ratified-jobs list for HR and Recruiter (they only see ratified —
+// Shared ratified-jobs list for HR and Recruiter (they only see ratified, 
 // the backend scopes GET /jobs by role).
 
 import * as React from "react";
@@ -52,13 +52,13 @@ export function JobsList({
         <TableBody>
           {loading ? (
             <TableRow>
-              <TableCell colSpan={5} className="text-center text-muted-foreground">
-                Loading…
+              <TableCell colSpan={5} className="text-center">
+                Loading
               </TableCell>
             </TableRow>
           ) : jobs.length === 0 ? (
             <TableRow>
-              <TableCell colSpan={5} className="text-center text-muted-foreground">
+              <TableCell colSpan={5} className="text-center">
                 No ratified jobs yet.
               </TableCell>
             </TableRow>

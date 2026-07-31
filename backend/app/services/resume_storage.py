@@ -51,15 +51,15 @@ def _error(code: int, message: str, *, retryable: bool = False) -> HTTPException
 def _normalise_filename(filename: str | None) -> str:
     name = os.path.basename((filename or "").strip())
     if not name or len(name) > 255:
-        raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "Choose a resume file with a valid filename.")
+        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "Choose a resume file with a valid filename.")
     return name
 
 
 def _assert_document_signature(data: bytes, extension: str) -> None:
     if extension == ".pdf" and not data.startswith(b"%PDF-"):
-        raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "The selected file is not a valid PDF.")
+        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "The selected file is not a valid PDF.")
     if extension == ".docx" and data[:2] != b"PK":
-        raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "The selected file is not a valid DOCX document.")
+        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "The selected file is not a valid DOCX document.")
 
 
 async def read_validated_resume(file: UploadFile) -> tuple[bytes, str, str]:
@@ -68,15 +68,15 @@ async def read_validated_resume(file: UploadFile) -> tuple[bytes, str, str]:
     extension = os.path.splitext(filename.lower())[1]
     content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
     if extension not in ALLOWED_RESUME_EXTENSIONS:
-        raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "Resume files must be PDF or DOCX.")
+        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "Resume files must be PDF or DOCX.")
     if content_type and content_type not in ALLOWED_RESUME_CONTENT_TYPES:
-        raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "The selected file type does not match a PDF or DOCX resume.")
+        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "The selected file type does not match a PDF or DOCX resume.")
 
     data = await file.read(MAX_RESUME_BYTES + 1)
     if not data:
-        raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "The selected resume is empty.")
+        raise _error(status.HTTP_422_UNPROCESSABLE_CONTENT, "The selected resume is empty.")
     if len(data) > MAX_RESUME_BYTES:
-        raise _error(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "Resume files must be 10 MB or smaller.")
+        raise _error(status.HTTP_413_CONTENT_TOO_LARGE, "Resume files must be 10 MB or smaller.")
     _assert_document_signature(data, extension)
     mime_type = (
         "application/pdf"
@@ -215,12 +215,30 @@ def profile_has_resume(profile: Any) -> bool:
 
 
 async def fetch_resume_bytes(profile: Any) -> bytes:
-    """Download a resume from its persisted Cloudinary metadata for AI work."""
+    """Download a resume through Cloudinary's signed API endpoint.
+
+    Free Cloudinary environments block direct PDF/ZIP delivery by default,
+    which makes an otherwise valid ``secure_url`` return 401. The signed
+    download endpoint authenticates the backend without making candidate
+    resumes public and works for raw PDF and DOCX assets.
+    """
     if not profile_has_resume(profile):
         raise ResumeStorageError("The resume file is missing its Cloudinary metadata.")
+    _configure_cloudinary()
+    import cloudinary.utils
+
+    metadata = profile.resume_metadata_json or {}
+    resource_type = metadata.get("resource_type") or "raw"
+    delivery_type = metadata.get("delivery_type") or "upload"
+    download_url = cloudinary.utils.private_download_url(
+        profile.resume_public_id,
+        "",
+        resource_type=resource_type,
+        type=delivery_type,
+    )
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=True) as client:
-            response = await client.get(profile.resume_url)
+            response = await client.get(download_url)
             response.raise_for_status()
     except httpx.HTTPError as exc:
         raise ResumeStorageError("Cloudinary could not be reached while retrieving the resume.") from exc

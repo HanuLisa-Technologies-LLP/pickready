@@ -10,13 +10,71 @@ from app.models.enums import Role
 
 
 class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
-    """One row per client company engagement. Global table (no RLS)."""
+    """One row per client company engagement. Global table (no RLS).
+
+    The company *profile* (industry / culture / details) lives here rather than
+    on `companies` because it is captured at Owner-console onboarding time,
+    before the client has ever signed in and authored their company page. The
+    `companies` row remains the client-authored, candidate-facing page.
+    """
     __tablename__ = "tenants"
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Legacy: the tenant's email domain. Kept (harmless, and still the stable
+    # UNIQUE key) but no longer collected in the onboarding UI — it is derived
+    # from the owner's email address. Outbound mail is SMTP, so there is no
+    # per-tenant sending domain to verify (claude.md rule 5).
     domain: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    # Resend sending-domain verification state for client-domain email (ESD §11)
+    # Legacy sending-domain verification state. Retained for schema stability;
+    # the SMTP sender does not consult it.
     spf_dkim_status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
+
+    # ── Company profile (migration 0009) ─────────────────────────────────────
+    # One of INDUSTRY_CHOICES (schemas/admin.py). Stored as free text so the
+    # option list can grow without a migration.
+    industry: Mapped[str | None] = mapped_column(String(100))
+    culture: Mapped[str | None] = mapped_column(Text)
+    # ASSUMPTION: free-form prose (size, HQ, founding year, mission) rather
+    # than JSONB — the requirement is narrative context for candidates and for
+    # JD generation, not queryable structured fields.
+    details: Mapped[str | None] = mapped_column(Text)
+
+    # ── Provider Portal customer lifecycle (migration 0020) ──────────────────
+    # `active` | `archived`. Archiving is the REVERSIBLE counterpart to the
+    # hard `DELETE /admin/tenants/{id}`: it only hides the customer from the
+    # default Provider list — no job, application, report or user is touched,
+    # and unarchiving restores the row exactly as it was.
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active"
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Provider-editable customer metadata. Distinct from `domain` above, which
+    # is the immutable internal tenant key derived at onboarding.
+    website_domain: Mapped[str | None] = mapped_column(String(255))
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    # ── Subscription + credits (migration 0026) ──────────────────────────────
+    # A customer IS a tenant, so the Razorpay linkage lives here rather than on
+    # `companies` (which does not exist until the client first signs in — see
+    # models/billing.py for the full reasoning).
+    razorpay_customer_id: Mapped[str | None] = mapped_column(String(100))
+    razorpay_subscription_id: Mapped[str | None] = mapped_column(String(100))
+    current_plan_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("pricing_plans.id", ondelete="SET NULL")
+    )
+    subscription_status: Mapped[str | None] = mapped_column(String(20))
+    subscription_current_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Derived from the ledger (balance < 0) but STORED: the invitation gate runs
+    # on every send and must not re-aggregate the whole ledger to answer it.
+    credit_deficit: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+
+#: `tenants.status` values. Mirrors the CHECK constraint in migration 0020.
+CUSTOMER_ACTIVE = "active"
+CUSTOMER_ARCHIVED = "archived"
+CUSTOMER_STATUSES: tuple[str, ...] = (CUSTOMER_ACTIVE, CUSTOMER_ARCHIVED)
 
 
 class RolePermission(Base, UUIDPKMixin):
@@ -38,7 +96,10 @@ class RolePermission(Base, UUIDPKMixin):
 
 class AuditLog(Base, UUIDPKMixin):
     """Append-only (no UPDATE/DELETE grants for the app role — enforced in the
-    migration). tenant_id NULL for platform-level events."""
+    migration). tenant_id NULL for platform-level events.
+
+    Deliberately carries NO foreign key to `tenants`: the trail must survive a
+    tenant deletion (api/admin.py delete_tenant relies on this)."""
     __tablename__ = "audit_log"
     __table_args__ = (Index("ix_audit_log_tenant_at", "tenant_id", "at"),)
 

@@ -108,10 +108,21 @@ class LinkOut(BaseModel):
     candidate: CandidateOut
     profile_id: uuid.UUID | None
     source: LinkSource
-    match_score: float | None
+    #: Type of procurement: applied | sourced | databank (2026-07-28).
+    source_type: str = "applied"
+    source_type_label: str = "Applied"
     tier: Tier | None
     breakdown: dict | None = None  # Stored 4-param ranking + comments for review UI
+    # Comments-only projection for the review screen — always present, each
+    # comment 25-30 words. ranking_status: "not_scored" | "ready".
+    ranking_status: str = "not_scored"
+    skills_match_comment: str | None = None
+    experience_comment: str | None = None
+    role_alignment_comment: str | None = None
+    education_comment: str | None = None
+    overall_comment: str | None = None
     hm_access_granted: bool
+    archived_at: datetime | None = None
     current_status: PipelineStatus | None
     status_remarks: str | None = None
 
@@ -121,6 +132,65 @@ class GrantAccessOut(BaseModel):
     hm_access_granted: bool = True
 
 
+class LinkArchiveOut(BaseModel):
+    link_id: uuid.UUID
+    archived: bool
+
+
 class JobLinksOut(BaseModel):
     job_id: uuid.UUID
     links: list[LinkOut]
+    # Pagination. Defaults describe a single full page so an older client that
+    # ignores these fields still reads a coherent response.
+    total: int = 0
+    page: int = 1
+    page_size: int = 25
+    total_pages: int = 1
+    has_next: bool = False
+
+
+class RankingCommentsOut(BaseModel):
+    """Comments-only ranking response. Numeric scores never cross this API."""
+
+    skills_match_comment: str | None = None
+    experience_comment: str | None = None
+    role_alignment_comment: str | None = None
+    education_comment: str | None = None
+    overall_comment: str | None = None
+
+
+TeamRating = Literal["very_high", "high", "medium", "low", "developing"]
+
+
+class TeamReviewIn(BaseModel):
+    rating: TeamRating
+    remarks: str = Field(min_length=3, max_length=3000)
+    ai_rewritten_remarks: str | None = Field(default=None, max_length=3000)
+
+
+class TeamReviewRewriteIn(BaseModel):
+    remarks: str = Field(min_length=3, max_length=3000)
+
+
+class TeamReviewRewriteOut(BaseModel):
+    rewritten_remarks: str
+    used_ai: bool
+
+
+class TeamReviewOut(BaseModel):
+    id: uuid.UUID
+    reviewer_user_id: uuid.UUID
+    reviewer_name: str
+    rating: TeamRating
+    remarks: str
+    ai_rewritten_remarks: str | None
+    is_current_user: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class TeamReviewsOut(BaseModel):
+    reviews: list[TeamReviewOut]
+    overall_rating: TeamRating | None
+    overall_remarks: str | None
+    review_count: int

@@ -82,6 +82,10 @@ class MeOut(BaseModel):
 
 class FirebaseSessionIn(BaseModel):
     id_token: str = Field(min_length=20)
+    # Optional portal intent from the unified sign-in screen. This is a filter,
+    # never an authority grant: the resolved database role must already belong
+    # to the requested portal or sign-in is refused.
+    requested_portal: Literal["candidate", "org", "bd", "owner"] | None = None
 
 
 class CandidateRegisterIn(BaseModel):

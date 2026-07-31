@@ -35,7 +35,7 @@ services:
     # env_file delivers the ENTIRE ../.env into the container, so all secrets —
     # FIREBASE_SERVICE_ACCOUNT_JSON, SMTP_HOST / SMTP_PORT / SMTP_USER /
     # SMTP_PASSWORD / SMTP_FROM_EMAIL / SMTP_FROM_NAME / SMTP_STARTTLS / SMTP_SSL
-    # (backend SMTP email, replaces the Mailtrap HTTP API), CLOUDINARY_URL,
+    # (Gmail SMTP email), CLOUDINARY_URL,
     # MSG91_API_KEY / MSG91_SENDER_ID, JWT_*, LLM keys — reach the API. The
     # `environment` block below only overrides the two hostnames that differ
     # inside the compose network; do NOT add SMTP_*/secret overrides here — an
@@ -54,7 +54,16 @@ services:
         condition: service_healthy
     volumes:
       - ../backend:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # Goes through the SAME entrypoint as production (backend/Dockerfile), so
+    # the `api` role is exercised locally rather than only in the cloud. The
+    # trailing flags are appended to uvicorn by the entrypoint.
+    #
+    # --reload-dir limits the watcher to the Python package. Left unbounded it
+    # walks the whole bind mount (alembic, tests, .pytest_cache, __pycache__)
+    # on a Windows filesystem that gives no inotify events, so watchfiles polls
+    # every file on an interval and burns CPU the API needs for requests.
+    command: >
+      api --reload --reload-dir /app/app --reload-include "*.py"
 
   worker:
     build: ../backend
@@ -73,7 +82,11 @@ services:
         condition: service_healthy
     volumes:
       - ../backend:/app
-    command: celery -A app.workers.celery_app:celery_app worker --loglevel=info --concurrency=2
+    # Unprivileged: Celery's SecurityWarning about running as uid 0 is a real
+    # warning, not noise. The account is created in ../backend/Dockerfile and is
+    # now also the image's default USER, so this line is belt and braces.
+    user: "10001:10001"
+    command: worker
 
   beat:
     build: ../backend
@@ -86,23 +99,55 @@ services:
         condition: service_healthy
     volumes:
       - ../backend:/app
-    command: celery -A app.workers.celery_app:celery_app beat --loglevel=info
+    user: "10001:10001"
+    # Beat writes its schedule file; /tmp is writable by the unprivileged user
+    # while the bind-mounted source tree is not (and should not be). The path
+    # is the entrypoint's default (CELERY_BEAT_SCHEDULE).
+    command: beat
 
   frontend:
     build:
       context: ../frontend
       target: deps
     working_dir: /app
+    # No env_file here on purpose. The Razorpay Key ID that Checkout needs in
+    # the browser is served by GET /billing/config instead of being inlined at
+    # build time, so the frontend container never holds the .env at all and
+    # RAZORPAY_KEY_SECRET has no path into the bundle.
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+      # Same-origin API proxy, identical to production. The browser calls
+      # /api/* on the Next server and next.config.js forwards it here, which is
+      # what keeps the auth cookies same-site (see lib/api.ts). Deliberately NOT
+      # a NEXT_PUBLIC_ variable: it is read at server start and never enters the
+      # bundle, so the built image is not pinned to one backend address.
+      #
+      # `backend` is the compose service name; in the cloud this is the backend
+      # Cloud Run URL. NEXT_PUBLIC_API_URL is intentionally unset so dev and
+      # production exercise the same code path.
+      BACKEND_INTERNAL_URL: http://backend:8000
       NEXT_TELEMETRY_DISABLED: "1"
     ports:
       - "3000:3000"
     volumes:
       - ../frontend:/app
       - frontend_node_modules:/app/node_modules
-    command: sh -c "npm install --no-audit --no-fund && npm run dev"
+      # `.next-dev` (next.config.js distDir in development) is a NAMED VOLUME,
+      # deliberately not part of the ../frontend bind mount. Next's dev server
+      # writes chunks here constantly; over a Windows bind mount through WSL2
+      # those writes can land partially or out of order, and the dev server then
+      # serves HTML referencing chunk URLs whose files are missing — the
+      # "GET /_next/static/chunks/main-app.js 404" storm that made the app look
+      # broken until both containers were restarted.
+      - frontend_next_dev:/app/.next-dev
+    # Wipe the previous run's build output before starting. Next mints a new
+    # build id per dev server start; leftovers from the old id are dead weight
+    # that only serve to confuse a browser holding a cached document.
+    command: >
+      sh -c "npm install --no-audit --no-fund
+      && rm -rf /app/.next-dev/*
+      && npm run dev"
 
 volumes:
   pgdata:
   frontend_node_modules:
+  frontend_next_dev:

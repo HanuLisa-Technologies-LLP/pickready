@@ -38,6 +38,36 @@ async def test_outreach_valid_llm_output(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_prompt_includes_review_evidence_and_company_culture(monkeypatch):
+    captured = {}
+    body = " ".join(["We would value a conversation about your experience."] * 19)
+
+    async def _capture(_role, messages, **_kwargs):
+        captured["prompt"] = messages[1]["content"]
+        return '{"subject": "Next round", "body": "%s"}' % body
+
+    monkeypatch.setattr(outreach_content.llm_router, "chat_completion", _capture)
+    candidate = {
+        "name": "Ada Lovelace",
+        "skills_comment": "Strong Python and distributed systems evidence.",
+        "experience_comment": "Led production platform delivery.",
+        "role_comment": "Responsibilities align with the open role.",
+        "education_comment": "Relevant computer science education.",
+    }
+    company = {
+        "name": "Hanulisa Technologies",
+        "culture": "Collaborative, curious, and accountable.",
+    }
+    await outreach_content.generate_outreach_email(candidate, _JOB, company)
+    prompt = captured["prompt"]
+    assert "Strong Python and distributed systems evidence." in prompt
+    assert "Led production platform delivery." in prompt
+    assert "Responsibilities align with the open role." in prompt
+    assert "Relevant computer science education." in prompt
+    assert "Collaborative, curious, and accountable." in prompt
+
+
+@pytest.mark.asyncio
 async def test_outreach_falls_back_when_unavailable(monkeypatch):
     async def _boom(*a, **k):
         raise outreach_content.llm_router.LLMUnavailableError("all down")

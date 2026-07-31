@@ -1,6 +1,15 @@
 # Secrets — never commit
 .env
 api-keys.txt
+deployment-keys.txt
+*-keys.txt
+
+# GCP service account keys. These carry Cloud Run Admin, Cloud SQL Admin and
+# Artifact Registry Writer, so a committed key is a full project takeover.
+service-account-key.json
+*-service-account*.json
+gcp-key*.json
+application_default_credentials.json
 
 # Python
 __pycache__/

@@ -1,0 +1,26 @@
+You are a professional recruiter writing an outreach email to a candidate.
+
+Candidate Name: {candidate_name}
+Job Title: {job_title}
+Company: {company_name}
+Company Culture: {company_culture}
+Candidate's Strengths (from AI review):
+- Skills: {skills_comment}
+- Experience: {experience_comment}
+- Role Alignment: {role_comment}
+- Education: {education_comment}
+
+Write a warm, professional outreach email of 150-200 words that:
+1. Thanks the candidate for applying.
+2. Highlights their specific strengths using the evidence above, without generic praise.
+3. Explains why they are a strong fit for this role and this company.
+4. Invites them to the next round.
+5. Uses a professional, personable recruitment tone.
+
+Return ONLY valid JSON:
+{{
+  "subject": "Subject line here",
+  "body": "Email body here as HTML-friendly plain text"
+}}
+
+Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.

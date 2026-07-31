@@ -2,18 +2,32 @@
 
 // Shared HR/Recruiter dashboard (FR-10.1/10.2): per-job metrics + totals,
 // scoped by the backend to the caller's assignments.
+//
+// The counts here are PIPELINE VOLUMES (how many people reached a stage), not
+// rated output. The "no numbers reach a client" rule covers scores, ranks and
+// percentages for an assessment or a match; it does not cover "4 shortlisted".
 
 import * as React from "react";
+import { LayoutDashboard, type LucideIcon } from "lucide-react";
+import {
+  BadgeCheck,
+  Briefcase,
+  Database,
+  Handshake,
+  UserPlus,
+  Users,
+} from "lucide-react";
 
 import { apiGet } from "@/lib/api";
 import type { DashboardSummary } from "@/lib/types";
 import { PageHeader } from "@/components/app-shell";
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  EmptyState,
+  ErrorState,
+  LoadingCards,
+  RowCard,
+} from "@/components/page-primitives";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -22,6 +36,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ExportXlsxButton } from "@/components/export-xlsx-button";
 
 export function DashboardSummaryView() {
   const [summary, setSummary] = React.useState<DashboardSummary | null>(null);
@@ -57,86 +72,166 @@ export function DashboardSummaryView() {
   return (
     <div>
       <PageHeader
+        eyebrow="Customer Portal"
         title="Dashboard"
-        description="Per-job funnel metrics across your assigned jobs. Refreshed on a schedule."
+        description="Funnel volumes across the jobs assigned to you."
+        actions={
+          summary ? (
+            <ExportXlsxButton
+              fileName="pickready-customer-dashboard"
+              rows={summary.jobs.map((job) => ({
+                job: job.title,
+                databank_matches: job.databank_matched,
+                fresh_sourced: job.fresh_sourced,
+                shortlisted: job.shortlisted,
+                offered: job.offered,
+                joined: job.joined,
+              }))}
+            />
+          ) : null
+        }
       />
 
       {loading ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <LoadingCards count={6} className="lg:grid-cols-3" label="Loading dashboard" />
       ) : !summary ? (
-        <p className="text-sm text-muted-foreground">
-          Could not load dashboard data.
-        </p>
+        <ErrorState
+          title="Dashboard unavailable"
+          description="These figures could not be loaded. Reload the page to try again."
+        />
       ) : (
-        <div className="space-y-6">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
+        <div className="space-y-8">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
             <MetricCard
+              icon={Briefcase}
               label="Jobs worked"
               value={summary.total_jobs_worked}
             />
             <MetricCard
+              icon={Database}
               label="Databank matches"
               value={totals.databank_matched}
             />
-            <MetricCard label="Fresh sourced" value={totals.fresh_sourced} />
-            <MetricCard label="Shortlisted" value={totals.shortlisted} />
-            <MetricCard label="Offered" value={totals.offered} />
-            <MetricCard label="Joined" value={totals.joined} />
+            <MetricCard
+              icon={UserPlus}
+              label="Fresh sourced"
+              value={totals.fresh_sourced}
+            />
+            <MetricCard
+              icon={Users}
+              label="Shortlisted"
+              value={totals.shortlisted}
+            />
+            <MetricCard
+              icon={Handshake}
+              label="Offered"
+              value={totals.offered}
+            />
+            <MetricCard
+              icon={BadgeCheck}
+              label="Joined"
+              value={totals.joined}
+            />
           </div>
 
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Job</TableHead>
-                <TableHead className="text-right">Databank</TableHead>
-                <TableHead className="text-right">Fresh</TableHead>
-                <TableHead className="text-right">Shortlisted</TableHead>
-                <TableHead className="text-right">Offered</TableHead>
-                <TableHead className="text-right">Joined</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {summary.jobs.length === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={6}
-                    className="text-center text-muted-foreground"
-                  >
-                    No jobs assigned yet.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                summary.jobs.map((j) => (
-                  <TableRow key={j.job_id}>
-                    <TableCell className="font-medium">{j.title}</TableCell>
-                    <TableCell className="text-right">
-                      {j.databank_matched}
-                    </TableCell>
-                    <TableCell className="text-right">{j.fresh_sourced}</TableCell>
-                    <TableCell className="text-right">{j.shortlisted}</TableCell>
-                    <TableCell className="text-right">{j.offered}</TableCell>
-                    <TableCell className="text-right">{j.joined}</TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+          {summary.jobs.length === 0 ? (
+            <EmptyState
+              icon={LayoutDashboard}
+              title="No jobs assigned yet"
+              description="Once a job is assigned to you its funnel appears here."
+            />
+          ) : (
+            <>
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Job</TableHead>
+                      <TableHead className="text-right">Databank</TableHead>
+                      <TableHead className="text-right">Fresh</TableHead>
+                      <TableHead className="text-right">Shortlisted</TableHead>
+                      <TableHead className="text-right">Offered</TableHead>
+                      <TableHead className="text-right">Joined</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {summary.jobs.map((j) => (
+                      <TableRow key={j.job_id}>
+                        <TableCell className="font-semibold">{j.title}</TableCell>
+                        <TableCell className="text-right">
+                          {j.databank_matched}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {j.fresh_sourced}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {j.shortlisted}
+                        </TableCell>
+                        <TableCell className="text-right">{j.offered}</TableCell>
+                        <TableCell className="text-right">{j.joined}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+
+              <ul className="space-y-3 md:hidden">
+                {summary.jobs.map((j) => (
+                  <li key={j.job_id}>
+                    <RowCard title={j.title}>
+                      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                        <Stat label="Databank" value={j.databank_matched} />
+                        <Stat label="Fresh" value={j.fresh_sourced} />
+                        <Stat label="Shortlisted" value={j.shortlisted} />
+                        <Stat label="Offered" value={j.offered} />
+                        <Stat label="Joined" value={j.joined} />
+                      </dl>
+                    </RowCard>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function MetricCard({ label, value }: { label: string; value: number }) {
+function Stat({ label, value }: { label: string; value: number }) {
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">
-          {label}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="text-3xl font-bold">{value}</p>
+    <div className="flex items-baseline justify-between gap-2">
+      <dt className="opacity-80">{label}</dt>
+      <dd className="font-semibold [font-variant-numeric:tabular-nums]">
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+function MetricCard({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: number;
+}) {
+  return (
+    <Card className="shadow-card transition-shadow duration-150 hover:shadow-card-hover">
+      <CardContent className="flex items-center gap-4 p-5">
+        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-brand-100 text-accent-foreground">
+          <Icon className="h-5 w-5" aria-hidden="true" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-xs font-medium uppercase tracking-[0.08em] opacity-80">
+            {label}
+          </p>
+          <p className="text-2xl font-bold [font-variant-numeric:tabular-nums]">
+            {value}
+          </p>
+        </div>
       </CardContent>
     </Card>
   );

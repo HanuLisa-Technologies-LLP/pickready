@@ -41,7 +41,14 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "We are considering you for a role at {{company_name}}. Please complete "
         "your candidate page (personal details, updated resume, and "
         "questionnaire) using this link:\n\n{{outreach_link}}\n\n"
-        "Regards,\n{{company_name}} Recruitment Team",
+        "Regards,\n{{company_name}} People Team",
+    ),
+    # AI/manual outreach is composed and approved in the UI before it reaches
+    # the worker. Keep a built-in pass-through so delivery remains available
+    # even before a tenant-specific template row has been created.
+    "outreach_direct": (
+        "{{subject}}",
+        "{{body}}",
     ),
     "verification": (
         "Employment verification request for {{candidate_name}}",
@@ -50,14 +57,27 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "employer. Please verify their employment details using this secure "
         "form:\n\n{{verification_link}}\n\n"
         "Alternatively, you may reply directly to this email with the "
-        "details.\n\nRegards,\n{{company_name}} Recruitment Team",
+        "details.\n\nRegards,\n{{company_name}} People Team",
+    ),
+    # Billing. A failed charge must never be silent: credits simply stop
+    # arriving, and the first the customer would otherwise hear of it is a
+    # refused invitation. Deliberately carries no amount and no card detail.
+    "payment_failed": (
+        "Your PickReady payment did not go through",
+        "Hello,\n\n"
+        "We could not process this month's subscription payment for "
+        "{{company_name}}. Your credit balance is unchanged, and any credits "
+        "already in your pool remain available.\n\n"
+        "Update your payment method to keep new assessment invitations "
+        "flowing:\n\n{{billing_url}}\n\n"
+        "Regards,\nPickReady",
     ),
     "interview_invite": (
-        "Interview invitation — {{job_title}} at {{company_name}}",
+        "Interview invitation, {{job_title}} at {{company_name}}",
         "Dear {{candidate_name}},\n\n"
         "You are invited to an interview for the {{job_title}} position at "
         "{{company_name}}, scheduled for {{scheduled_at}}. A calendar invite "
-        "is attached.\n\nRegards,\n{{company_name}} Recruitment Team",
+        "is attached.\n\nRegards,\n{{company_name}} People Team",
     ),
 }
 
@@ -70,15 +90,71 @@ def substitute(template: str, context: dict[str, Any]) -> str:
 
 
 def text_to_html(body: str) -> str:
-    """Wrap a rendered plain-text body as minimal, safe HTML for Mailtrap.
+    """Render safe, readable letter HTML from an approved plain-text body.
 
-    Mailtrap's Sending API expects an ``html`` field; our templates are authored
-    as plain text (ESD §11), so we HTML-escape and convert newlines to <br> to
-    preserve layout without introducing an HTML templating layer. The plain-text
-    body is still sent alongside as ``text``.
+    Blank-line paragraphs remain paragraphs, standalone links become clear
+    call-to-action buttons, list lines become real bullets and ``**bold**``
+    emphasis is supported after HTML escaping. The text MIME alternative is
+    still sent unchanged.
     """
-    escaped = _html.escape(body).replace("\n", "<br>\n")
-    return f'<div style="font-family:sans-serif;white-space:normal">{escaped}</div>'
+    def inline(value: str) -> str:
+        escaped = _html.escape(value)
+        escaped = re.sub(
+            r"\*\*(.+?)\*\*",
+            r"<strong style=\"font-weight:700;color:#111827\">\1</strong>",
+            escaped,
+        )
+        escaped = re.sub(
+            r"(https?://[^\s<]+)",
+            r'<a href="\1" style="color:#6d28d9;text-decoration:underline">\1</a>',
+            escaped,
+        )
+        return escaped
+
+    blocks: list[str] = []
+    paragraphs = [
+        part.strip()
+        for part in re.split(r"\n\s*\n", body.strip())
+        if part.strip()
+    ]
+    for paragraph in paragraphs:
+        lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+        if len(lines) == 1 and re.fullmatch(r"https?://\S+", lines[0]):
+            url = _html.escape(lines[0], quote=True)
+            blocks.append(
+                '<p style="margin:24px 0;text-align:center">'
+                f'<a href="{url}" style="display:inline-block;background:#6d28d9;'
+                'color:#ffffff;text-decoration:none;font-weight:700;padding:12px 20px;'
+                'border-radius:9px">Open secure link</a></p>'
+            )
+            continue
+        if all(line.startswith(("- ", "* ")) for line in lines):
+            items = "".join(
+                f'<li style="margin:0 0 8px">{inline(line[2:])}</li>'
+                for line in lines
+            )
+            blocks.append(
+                f'<ul style="margin:0 0 18px;padding-left:22px">{items}</ul>'
+            )
+            continue
+        content = "<br>".join(inline(line) for line in lines)
+        blocks.append(f'<p style="margin:0 0 18px">{content}</p>')
+
+    content_html = "".join(blocks)
+    return (
+        '<div style="margin:0;background:#f5f3ff;padding:28px 12px">'
+        '<div style="max-width:640px;margin:0 auto;overflow:hidden;border:1px solid #e5e7eb;'
+        'border-radius:14px;background:#ffffff">'
+        '<div style="padding:20px 28px;border-bottom:1px solid #ede9fe;'
+        'font-family:Arial,sans-serif;font-size:20px;font-weight:800;color:#111827">'
+        'PickReady<span style="color:#7c3aed">.</span></div>'
+        '<div style="padding:28px;font-family:Arial,sans-serif;font-size:15px;'
+        f'line-height:1.65;color:#374151">{content_html}</div>'
+        '<div style="padding:16px 28px;background:#fafafa;font-family:Arial,sans-serif;'
+        'font-size:12px;line-height:1.5;color:#6b7280">'
+        'This message was sent through a secure PickReady workflow.'
+        '</div></div></div>'
+    )
 
 
 async def render(

@@ -2,53 +2,123 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Monochrome black/white theme pair. The light/dark toggle is a pure CSS
-   variable swap (claude.md §4 Styling) — neutral grays only, no hue. */
+/* ===========================================================================
+   PickReady design tokens (implementation baseline, 2026-07-28)
+   ---------------------------------------------------------------------------
+   The light/dark toggle is a pure CSS variable swap (claude.md §4 Styling).
+   No component ever branches on theme.
+
+   Two families live here:
+
+   1. The BRAND family (indigo-violet, sampled from the logo). It is used for
+      primary actions, active navigation, focus rings and accents. It is NOT a
+      wash over every surface; the app shell stays near-monochrome.
+   2. The shadcn semantic family (background/foreground/card/...), kept so every
+      existing primitive keeps working. `--primary` is now the brand colour.
+
+   TEXT IS NEVER GREY (client decision, 2026-07-27). Every text token, including
+   `muted-foreground` which shadcn uses for descriptions, hints and table
+   headers, resolves to pure black in the light theme and pure white in the
+   dark theme. Grey survives ONLY on non-text surfaces: borders, input outlines
+   and muted BACKGROUNDS. `::placeholder` is the single documented exception.
+
+   All colour values are stored as bare HSL triples so Tailwind can compose
+   them with an alpha channel (`bg-brand-600/10`).
+   =========================================================================== */
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 4%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 4%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 4%;
-    --primary: 0 0% 9%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 0 0% 96%;
-    --secondary-foreground: 0 0% 9%;
-    --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 45%;
-    --accent: 0 0% 94%;
-    --accent-foreground: 0 0% 9%;
-    --destructive: 0 0% 20%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 90%;
-    --input: 0 0% 90%;
-    --ring: 0 0% 4%;
-    --radius: 0.5rem;
+    /* --- brand ramp ------------------------------------------------------ */
+    --brand-100: 254 76% 95%; /* #EDE8FE  subtle brand fill, selected row */
+    --brand-500: 253 76% 61%; /* #6B4BEA  accents, chart series 1 */
+    --brand-600: 258 76% 52%; /* #5028E0  primary action, active nav, ring */
+    --brand-700: 258 72% 45%; /* #4520C4  hover on primary */
+
+    /* --- surfaces and ink ------------------------------------------------ */
+    --ink: 240 60% 7%; /* #080820  all text */
+    --surface: 0 0% 100%; /* #FFFFFF  cards */
+    --canvas: 240 25% 98%; /* #F7F7FB  page background */
+    --border-token: 240 15% 91%; /* #E4E4ED  borders, dividers */
+
+    /* --- shadcn semantic aliases ----------------------------------------- */
+    --background: var(--canvas);
+    --foreground: var(--ink);
+    --card: var(--surface);
+    --card-foreground: var(--ink);
+    --popover: var(--surface);
+    --popover-foreground: var(--ink);
+    --primary: var(--brand-600);
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 20% 96%;
+    --secondary-foreground: var(--ink);
+    /* --muted stays a light SURFACE; --muted-foreground is text, so it is ink. */
+    --muted: 240 20% 96%;
+    --muted-foreground: var(--ink);
+    --accent: var(--brand-100);
+    --accent-foreground: var(--brand-700);
+    --destructive: 0 72% 42%;
+    --destructive-foreground: 0 0% 100%;
+    --border: var(--border-token);
+    --input: var(--border-token);
+    --ring: var(--brand-600);
+    --radius: 0.75rem;
+
+    /* --- rating ramp (five word labels, one shared ramp) ------------------ */
+    --rating-1-fg: 142 72% 20%; /* #166534  Very High / Highly Matching */
+    --rating-1-bg: 141 84% 93%; /* #DCFCE7 */
+    --rating-2-fg: 142 69% 29%; /* #15803D  High / Matching */
+    --rating-2-bg: 140 55% 95%; /* #E9F9EE */
+    --rating-3-fg: 42 95% 33%; /* #A16207  Medium / Moderate */
+    --rating-3-bg: 48 96% 89%; /* #FEF3C7 */
+    --rating-4-fg: 21 90% 40%; /* #C2410C  Low / Low */
+    --rating-4-bg: 33 100% 92%; /* #FFEDD5 */
+    --rating-5-fg: 0 74% 42%; /* #B91C1C  Developing / No Matching */
+    --rating-5-bg: 0 93% 94%; /* #FEE2E2 */
   }
 
   .dark {
-    --background: 0 0% 4%;
-    --foreground: 0 0% 98%;
-    --card: 0 0% 7%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 7%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 0 0% 9%;
-    --secondary: 0 0% 15%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 64%;
-    --accent: 0 0% 17%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 0% 80%;
-    --destructive-foreground: 0 0% 9%;
-    --border: 0 0% 15%;
-    --input: 0 0% 15%;
-    --ring: 0 0% 83%;
+    --brand-100: 250 39% 17%; /* #211A3D */
+    --brand-500: 253 100% 74%; /* #9179FF */
+    --brand-600: 253 100% 68%; /* #7C5CFF */
+    --brand-700: 258 76% 52%; /* #5028E0 */
+
+    --ink: 0 0% 100%; /* #FFFFFF */
+    --surface: 240 43% 6%; /* #0A0A18 */
+    --canvas: 240 43% 4%; /* #06060F */
+    --border-token: 240 15% 15%; /* #22222E */
+
+    --background: var(--canvas);
+    --foreground: var(--ink);
+    --card: var(--surface);
+    --card-foreground: var(--ink);
+    --popover: var(--surface);
+    --popover-foreground: var(--ink);
+    --primary: var(--brand-600);
+    --primary-foreground: 240 43% 6%;
+    --secondary: 240 20% 12%;
+    --secondary-foreground: var(--ink);
+    --muted: 240 20% 12%;
+    --muted-foreground: var(--ink);
+    --accent: var(--brand-100);
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: var(--border-token);
+    --input: var(--border-token);
+    --ring: var(--brand-600);
+
+    /* The rating ramp keeps its hue in dark mode but swaps fg/bg roles so the
+       chip stays legible on a near-black card. */
+    --rating-1-fg: 141 78% 78%;
+    --rating-1-bg: 142 72% 14%;
+    --rating-2-fg: 141 66% 74%;
+    --rating-2-bg: 142 60% 13%;
+    --rating-3-fg: 48 92% 76%;
+    --rating-3-bg: 42 88% 15%;
+    --rating-4-fg: 33 96% 76%;
+    --rating-4-bg: 21 82% 16%;
+    --rating-5-fg: 0 90% 80%;
+    --rating-5-bg: 0 66% 17%;
   }
 }
 
@@ -56,7 +126,88 @@
   * {
     @apply border-border;
   }
+
+  html {
+    /* No page ever scrolls horizontally. */
+    overflow-x: hidden;
+  }
+
   body {
     @apply bg-background text-foreground;
+    overflow-x: hidden;
+  }
+
+  /* Headings carry the display tracking from the brief. */
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply tracking-tight;
+  }
+
+  /* Numbers line up in a column wherever a table is rendered. */
+  table {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The ONE exception to "text is never grey": a placeholder rendered in the
+     same solid ink as a real value makes an empty field look filled in. It
+     keeps the ink hue (never a grey token) and is dimmed just enough to read
+     as a prompt rather than an answer. */
+  ::placeholder {
+    color: hsl(var(--foreground));
+    opacity: 0.55;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+}
+
+@layer utilities {
+  /* Glassmorphism. Deliberately one utility so it can only be applied where
+     the brief allows it (landing page and top nav), never on forms or tables
+     where translucency hurts legibility. */
+  .glass {
+    background-color: hsl(var(--surface) / 0.7);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    border-color: hsl(var(--border) / 0.7);
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .text-pretty {
+    text-wrap: pretty;
+  }
+
+  /* Brand gradient, for the one accented phrase in a hero headline. */
+  .text-gradient-brand {
+    background-image: linear-gradient(
+      100deg,
+      hsl(var(--brand-600)),
+      hsl(var(--brand-500)) 55%,
+      hsl(var(--brand-700))
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+}
+
+/* Motion is opt-out at the platform level. Every Framer Motion wrapper in
+   components/motion also collapses to no motion in JS; this catches the CSS
+   animation on Magic UI surfaces too. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

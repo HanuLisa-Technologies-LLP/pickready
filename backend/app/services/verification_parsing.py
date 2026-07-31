@@ -1,7 +1,7 @@
 """Employer verification-reply parsing (ESD §10, FR-5.3 fallback path).
 
 When an employer replies to the verification email instead of using the
-tokenized web form, the inbound-email webhook enqueues this LLM extraction —
+tokenized web form, the inbound-email webhook enqueues this LLM extraction  - 
 same structured schema as the form, so both paths write identical
 `verification_requests.response_json` shapes.
 """
@@ -16,7 +16,7 @@ from app.services import llm_router
 
 logger = logging.getLogger(__name__)
 
-#: Canonical response schema — identical to the public form fields
+#: Canonical response schema  -  identical to the public form fields
 #: (POST /verification/form/{token} in API_CONTRACT.md).
 VERIFICATION_FIELDS = (
     "designation",
@@ -61,7 +61,7 @@ async def parse_reply(
     """Extract the verification schema from a raw employer email reply.
 
     Returns a dict containing exactly VERIFICATION_FIELDS. When the reply is
-    unparseable (the LLM returns non-JSON / a non-object — e.g. an out-of-band
+    unparseable (the LLM returns non-JSON / a non-object  -  e.g. an out-of-band
     prose reply), every field degrades to None and a warning is logged rather
     than raising, so a junk reply never crash-loops the Celery task. Only truly
     empty input raises VerificationParsingError; llm_router.LLMUnavailableError
@@ -82,12 +82,12 @@ async def parse_reply(
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("verification_parsing.non_json_output — all fields null")
+        logger.warning("verification_parsing.non_json_output  -  all fields null")
         parsed = {}
     if not isinstance(parsed, dict):
-        logger.warning("verification_parsing.non_object_output — all fields null")
+        logger.warning("verification_parsing.non_object_output  -  all fields null")
         parsed = {}
 
-    # Normalize to exactly the canonical schema — both submission paths
+    # Normalize to exactly the canonical schema  -  both submission paths
     # (form and email reply) must produce identical shapes.
     return {field: parsed.get(field) for field in VERIFICATION_FIELDS}

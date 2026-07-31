@@ -26,6 +26,12 @@ class User(Base, UUIDPKMixin, CreatedAtMixin):
     # (migration 0004). RLS/owner invariant unaffected.
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20))
+    # Landline WITH extension, as one free-text field (migration 0020) —
+    # "+91-22-1234-5678 ext. 101" is a single thing a human types and reads,
+    # and splitting it would only invite two half-filled columns. Shown on the
+    # Provider Portal's primary-contact panel; edited by its owner, never by
+    # the Provider.
+    landline: Mapped[str | None] = mapped_column(String(50))
     full_name: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[UserStatus] = mapped_column(
         Enum(UserStatus, native_enum=False, length=20), nullable=False, default=UserStatus.invited
@@ -35,6 +41,17 @@ class User(Base, UUIDPKMixin, CreatedAtMixin):
     phone_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     firebase_uid: Mapped[str | None] = mapped_column(String(128), unique=True)
     auth_providers: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+
+    # ── Per-user permission overlay (migration 0016) ─────────────────────────
+    # The HR Head's per-person grants (spec §7.1). NULL means "inherit the role
+    # default" resolved by services/rbac from `role_permissions`. A dict is a
+    # SPARSE overlay of {capability: bool} that wins over the role default for
+    # this one user — capabilities absent from the dict keep tracking the role,
+    # so a later change to the role matrix still reaches everyone it should.
+    #
+    # This stays DATA, not code: gating is still require_capability(...), never
+    # `if role == ...` (claude.md rule 3).
+    permissions_json: Mapped[dict | None] = mapped_column(JSONB)
 
 
 class OTPChallenge(Base, UUIDPKMixin, CreatedAtMixin):

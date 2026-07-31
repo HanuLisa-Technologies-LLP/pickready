@@ -5,3 +5,17 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Secrets never belong in an image layer. The runtime gets them from the
+# environment (Secret Manager on Cloud Run), never from a baked-in file.
+.env
+.env.*
+
+# Not needed to run the API, the worker or beat.
+tests/
+.git
+.gitignore
+Dockerfile
+.dockerignore
+*.log
+celerybeat-schedule*

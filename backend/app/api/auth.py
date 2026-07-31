@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, or_, select
+from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,6 +57,26 @@ from app.services.audit import (
 )
 
 router = APIRouter()
+
+PORTAL_ROLES = {
+    "candidate": {Role.candidate},
+    "org": {Role.client, Role.hr_manager, Role.recruiter, Role.hiring_manager},
+    "bd": {Role.bd},
+    "owner": {Role.super_admin},
+}
+
+
+def _filter_requested_portal(users: list[User], requested_portal: str | None) -> list[User]:
+    """Apply a login-screen portal choice without ever converting roles.
+
+    Portal intent narrows already-authorised database users. It cannot create a
+    BD, owner or customer-team account and therefore cannot be used for
+    privilege escalation.
+    """
+    if not requested_portal:
+        return users
+    allowed = PORTAL_ROLES[requested_portal]
+    return [user for user in users if user.role in allowed]
 
 
 def _is_owner_email(email: str | None, owner_email: str) -> bool:
@@ -136,8 +157,7 @@ async def firebase_session(
     (claude.md rule 2). Behaviour matrix:
 
     - **owner email** (settings.owner_email) -> ALWAYS the seeded super_admin,
-      owner-portal cookies, never a new candidate, not subject to the
-      candidates-only Google gate (fixed, client-controlled identity);
+      owner-portal cookies, never a new candidate;
     - **single match** -> link firebase_uid, issue that user's portal cookies;
     - **staff pre-seed match by email** -> linked in place, role preserved (no
       duplicate candidate row);
@@ -145,7 +165,8 @@ async def firebase_session(
       cookies, finalized by /auth/select-context (same as the OTP path);
     - **no match** -> create a candidate (email and/or phone), candidate cookies.
 
-    Google sign-in is candidates-only; phone-only signup (email null) is allowed.
+    Google and email/password sign-in are available to every role; phone-only
+    signup remains accepted by the legacy API for existing accounts.
     Every failure is a clean 401/403/409/422 — never a 500.
     """
     settings = get_settings()
@@ -157,8 +178,12 @@ async def firebase_session(
     # via this endpoint (the general lookup below only ever creates candidates,
     # and eligible_login_users / the ORM guard reject any impostor super_admin).
     if _is_owner_email(identity.email, settings.owner_email):
-        # Owner is an internal role: only Firebase password/phone identities
-        # are eligible. A Google token must never reach the owner portal.
+        if body.requested_portal not in (None, "owner"):
+            raise HTTPException(
+                status_code=403,
+                detail=f"No {body.requested_portal} workspace is linked to this account",
+            )
+        # Owner is an internal role resolved only by the configured owner email.
         firebase_auth.assert_provider_allowed(identity, Role.super_admin.value)
         owner = (await session.execute(
             select(User).where(
@@ -186,13 +211,24 @@ async def firebase_session(
         eligible = otp_service.eligible_login_users(
             matched, owner_email=settings.owner_email
         )
+        eligible = _filter_requested_portal(eligible, body.requested_portal)
         if not eligible:
             # Every match is disabled or an impostor super_admin — do NOT mint a
             # duplicate candidate over the top of an existing (unusable) account.
-            raise HTTPException(status_code=403, detail="Account unavailable")
+            detail = (
+                f"No {body.requested_portal} workspace is linked to this account"
+                if body.requested_portal
+                else "Account unavailable"
+            )
+            raise HTTPException(status_code=403, detail=detail)
     else:
         # First-ever sign-in for this identity -> a fresh candidate (rule 2:
         # candidates may use Google / email / phone). Phone-only signup allowed.
+        if body.requested_portal not in (None, "candidate"):
+            raise HTTPException(
+                status_code=403,
+                detail=f"No {body.requested_portal} workspace is linked to this account",
+            )
         firebase_auth.assert_provider_allowed(identity, Role.candidate.value)
         if not identity.email and not identity.phone:
             raise HTTPException(
@@ -213,7 +249,7 @@ async def firebase_session(
         ))
         eligible = [user]
 
-    # ── Provider gate on every resolved context (Google = candidates only) ──
+    # ── Provider gate on every resolved context ─────────────────────────────
     for user in eligible:
         firebase_auth.assert_provider_allowed(identity, user.role.value)
 
@@ -257,14 +293,20 @@ def _user_out(user: User) -> UserOut:
 
 async def _capabilities(session: AsyncSession, user: User) -> list[str]:
     """Capability list for auth responses. Tenant-scoped so the RLS policy on
-    role_permissions exposes this tenant's override rows (claude.md rule 1)."""
+    role_permissions exposes this tenant's override rows (claude.md rule 1).
+
+    `user_id` is passed so the response is the EFFECTIVE set for this person —
+    role defaults with their HR Head overlay applied (spec §7.1) — rather than
+    the generic set for their role. The frontend hides actions from this list,
+    so a stale answer here would show buttons that then 403.
+    """
     if user.tenant_id is None:
         return await rbac.capabilities_for_user(
-            session, role=user.role, tenant_id=None
+            session, role=user.role, tenant_id=None, user_id=user.id
         )
     async with tenant_scope(session, user.tenant_id):
         return await rbac.capabilities_for_user(
-            session, role=user.role, tenant_id=user.tenant_id
+            session, role=user.role, tenant_id=user.tenant_id, user_id=user.id
         )
 
 
@@ -274,11 +316,6 @@ async def _capabilities(session: AsyncSession, user: User) -> list[str]:
 _set_auth_cookies = set_auth_cookies
 
 
-@router.post(
-    "/register-candidate",
-    response_model=CandidateRegisterOut,
-    status_code=status.HTTP_201_CREATED,
-)
 async def register_candidate(
     body: CandidateRegisterIn, session: AsyncSession = Depends(get_session)
 ) -> CandidateRegisterOut:
@@ -298,7 +335,6 @@ async def register_candidate(
     return CandidateRegisterOut(candidate_id=candidate.id, email=candidate.email)
 
 
-@router.post("/otp/request", response_model=OTPRequestOut)
 async def request_otp(
     body: OTPRequestIn, session: AsyncSession = Depends(get_session)
 ) -> OTPRequestOut:
@@ -315,7 +351,7 @@ async def request_otp(
     except otp_service.OTPLocked as exc:
         raise HTTPException(
             status_code=429,
-            detail="Too many attempts — please try again in 15 minutes",
+            detail="Too many attempts, please try again in 15 minutes",
         ) from exc
     except otp_service.OTPResendThrottled as exc:
         raise HTTPException(
@@ -325,7 +361,7 @@ async def request_otp(
     except otp_service.OTPRateLimited as exc:
         raise HTTPException(
             status_code=429,
-            detail="Too many code requests — please try again later",
+            detail="Too many code requests, please try again later",
         ) from exc
     await session.commit()
     settings = get_settings()
@@ -345,7 +381,6 @@ def _context_out(ctx: otp_service.LoginContext) -> ContextOut:
     )
 
 
-@router.post("/otp/verify", response_model=OTPVerifyOut)
 async def verify_otp(
     body: OTPVerifyIn, response: Response, session: AsyncSession = Depends(get_session)
 ) -> OTPVerifyOut:
@@ -359,11 +394,11 @@ async def verify_otp(
         await session.commit()  # persist any attempt counter written before lock
         raise HTTPException(
             status_code=429,
-            detail="Too many attempts — please try again in 15 minutes",
+            detail="Too many attempts, please try again in 15 minutes",
         ) from exc
     except otp_service.OTPExpired as exc:
         raise HTTPException(
-            status_code=410, detail="This code has expired — request a new one"
+            status_code=410, detail="This code has expired, request a new one"
         ) from exc
     except otp_service.OTPConsumed as exc:
         raise HTTPException(
@@ -445,13 +480,31 @@ async def select_context(
     )
 
 
+def _dead_session(detail: str) -> JSONResponse:
+    """A definite "this refresh token cannot be used again" answer.
+
+    Returned, not raised. Raising an HTTPException discards the injected
+    Response and with it the Set-Cookie headers, so the clearing silently never
+    happened; a plain JSONResponse carries them.
+
+    Every auth cookie is cleared on the way out, including the `pr_session`
+    presence hint. Leaving the hint behind would let the Next.js middleware keep
+    admitting the browser to portal routes that can only fail, so the user would
+    bounce between a blank page and a broken session instead of landing on the
+    login screen once.
+    """
+    dead = JSONResponse(status_code=401, content={"detail": detail})
+    clear_auth_cookies(dead)
+    return dead
+
+
 @router.post("/refresh")
 async def refresh(
     request: Request, response: Response, session: AsyncSession = Depends(get_session)
-) -> dict:
+):
     token = request.cookies.get(REFRESH_COOKIE)
     if not token:
-        raise HTTPException(status_code=401, detail="Missing refresh token")
+        return _dead_session("Missing refresh token")
     payload = None
     # A refresh token is minted for exactly one portal audience (owner / org /
     # candidate); try each so any valid session refreshes, but the reissued
@@ -464,14 +517,14 @@ async def refresh(
             break
         except pyjwt.InvalidAudienceError:
             continue
-        except pyjwt.PyJWTError as exc:
-            raise HTTPException(status_code=401, detail="Invalid refresh token") from exc
+        except pyjwt.PyJWTError:
+            return _dead_session("Invalid refresh token")
     if payload is None or payload.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        return _dead_session("Invalid refresh token")
 
     user = await session.get(User, uuid.UUID(payload["sub"]))
     if user is None or user.status.value == "disabled":
-        raise HTTPException(status_code=401, detail="Account unavailable")
+        return _dead_session("Account unavailable")
 
     # Rotate BOTH tokens on every refresh (refresh-token rotation), preserving
     # the token's audience.

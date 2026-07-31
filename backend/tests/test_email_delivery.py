@@ -19,6 +19,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 
 @asynccontextmanager
@@ -178,8 +179,7 @@ class _FakeSession:
 
 
 async def _capture_sender(monkeypatch, *, tenant, environment):
-    """Run _send_email_async with everything stubbed; return the captured
-    fields passed to the Mailtrap client (from_email, from_name, html, text)."""
+    """Run _send_email_async with dependencies stubbed and capture SMTP fields."""
     from app.workers import tasks
 
     captured = {}
@@ -205,7 +205,7 @@ async def _capture_sender(monkeypatch, *, tenant, environment):
         tasks, "get_settings",
         lambda: SimpleNamespace(
             environment=environment,
-            smtp_from_email="noreply@pickready.app",
+            smtp_from_email="sender@gmail.com",
             smtp_from_name="PickReady",
         ),
     )
@@ -224,43 +224,43 @@ async def _capture_sender(monkeypatch, *, tenant, environment):
 
 
 @pytest.mark.asyncio
-async def test_sender_tenant_verified_uses_tenant_domain(monkeypatch):
+async def test_sender_tenant_verified_still_uses_gmail(monkeypatch):
     tenant = SimpleNamespace(
         id=uuid.uuid4(), domain="acme.com", spf_dkim_status="verified"
     )
     captured = await _capture_sender(monkeypatch, tenant=tenant, environment="production")
-    assert captured["from"] == "recruitment@acme.com"
+    assert captured["from"] == "sender@gmail.com"
     assert captured["from_name"] == "PickReady"
-    assert captured["audit"]["sender_path"] == "tenant_domain"
+    assert captured["audit"]["sender_path"] == "gmail"
 
 
 @pytest.mark.asyncio
-async def test_sender_tenant_unverified_uses_default_sender(monkeypatch):
+async def test_sender_tenant_unverified_uses_gmail(monkeypatch):
     tenant = SimpleNamespace(
         id=uuid.uuid4(), domain="acme.com", spf_dkim_status="pending"
     )
     captured = await _capture_sender(monkeypatch, tenant=tenant, environment="production")
-    assert captured["from"] == "noreply@pickready.app"
-    assert captured["audit"]["sender_path"] == "default_sender"
+    assert captured["from"] == "sender@gmail.com"
+    assert captured["audit"]["sender_path"] == "gmail"
 
 
 @pytest.mark.asyncio
-async def test_sender_verified_but_development_uses_default_sender(monkeypatch):
+async def test_sender_verified_development_uses_gmail(monkeypatch):
     tenant = SimpleNamespace(
         id=uuid.uuid4(), domain="acme.com", spf_dkim_status="verified"
     )
     captured = await _capture_sender(monkeypatch, tenant=tenant, environment="development")
     # Even a verified domain must not send from the tenant in development.
-    assert captured["from"] == "noreply@pickready.app"
-    assert captured["audit"]["sender_path"] == "default_sender"
+    assert captured["from"] == "sender@gmail.com"
+    assert captured["audit"]["sender_path"] == "gmail"
 
 
 @pytest.mark.asyncio
 async def test_sender_tenant_none_does_not_crash(monkeypatch):
     # Platform users (Owner OTP) have tenant_id=None — this was a real past bug.
     captured = await _capture_sender(monkeypatch, tenant=None, environment="production")
-    assert captured["from"] == "noreply@pickready.app"
-    assert captured["audit"]["sender_path"] == "default_sender"
+    assert captured["from"] == "sender@gmail.com"
+    assert captured["audit"]["sender_path"] == "gmail"
     # html body is derived from the plain-text body and sent alongside text.
     assert captured["text"] == "body"
     assert "body" in captured["html"]
@@ -281,6 +281,38 @@ def _smtp_settings(**overrides):
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+def test_settings_reject_non_gmail_smtp_provider():
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            smtp_host="smtp.example.test",
+            smtp_port=587,
+            smtp_user="sender@example.test",
+            smtp_password="secret",
+            smtp_from_email="sender@example.test",
+            smtp_starttls=True,
+            smtp_ssl=False,
+        )
+
+
+def test_settings_accept_gmail_starttls_contract():
+    from app.core.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        smtp_host="smtp.gmail.com",
+        smtp_port=587,
+        smtp_user="sender@gmail.com",
+        smtp_password="secret",
+        smtp_from_email="sender@gmail.com",
+        smtp_starttls=True,
+        smtp_ssl=False,
+    )
+    assert settings.smtp_host == "smtp.gmail.com"
 
 
 @pytest.mark.asyncio
@@ -521,9 +553,10 @@ def test_preflight_ok_when_keys_present(monkeypatch):
     from app.core import config
 
     config.get_settings.cache_clear()
-    monkeypatch.setenv("SMTP_HOST", "smtp.example.test")
-    monkeypatch.setenv("SMTP_USER", "apikey")
+    monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
+    monkeypatch.setenv("SMTP_USER", "sender@gmail.com")
     monkeypatch.setenv("SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("SMTP_FROM_EMAIL", "sender@gmail.com")
     monkeypatch.setenv("MSG91_API_KEY", "mk_x")
     monkeypatch.setenv("MSG91_SENDER_ID", "PCKRDY")
     config.get_settings.cache_clear()

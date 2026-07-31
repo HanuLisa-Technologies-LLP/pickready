@@ -11,7 +11,7 @@ this:
 3. creates a shared-Databank Candidate + Profile row carrying all Cloudinary
    metadata;
 4. enqueues `pickready.parse_resume` so the AI pipeline (text extraction +
-   embedding + LLM parse — owned by another module) has data to work on.
+   embedding + LLM parse  -  owned by another module) has data to work on.
 
 IDEMPOTENT: a candidate whose email already exists is skipped entirely (no
 re-upload, no duplicate row). Cloudinary uploads additionally pass
@@ -41,12 +41,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models import Candidate, Profile
-from app.services.resume_storage import apply_resume_asset, store_resume
+from app.services.resume_storage import apply_resume_asset, profile_has_resume, store_resume
 from app.workers.celery_app import celery_app
 
 log = logging.getLogger(__name__)
 
-# Non-deliverable, reserved test domain (NOT example.com — Resend/Mailtrap and
+# Non-deliverable, reserved test domain (NOT example.com  -  Resend/legacy email provider and
 # most providers reject example.com with a 422). Every seeded candidate lives
 # here so the corpus can never accidentally email a real person.
 CANDIDATE_EMAIL_DOMAIN = "candidates.pickready.test"
@@ -69,7 +69,7 @@ def resumes_dir() -> Path | None:
         try:
             if path.is_dir():
                 return path
-        except OSError:  # pragma: no cover — unreadable path
+        except OSError:  # pragma: no cover  -  unreadable path
             continue
     return None
 
@@ -97,12 +97,12 @@ def derive_identity(filename: str) -> dict[str, str]:
             seq = token.zfill(2)
             continue
         name_words.append(token)
-    if not name_words:  # pathological filename — fall back to the stem
+    if not name_words:  # pathological filename  -  fall back to the stem
         name_words = [stem]
     full_name = " ".join(w.capitalize() for w in name_words)
     local = ".".join(w.lower() for w in name_words)
     email = f"{local}{seq}@{CANDIDATE_EMAIL_DOMAIN}"
-    phone = f"91{seq.zfill(2)}000000"[:10]  # e.g. 9107000000 — distinct, non-real
+    phone = f"91{seq.zfill(2)}000000"[:10]  # e.g. 9107000000  -  distinct, non-real
     public_id = f"resume_{seq}_{_slug(' '.join(name_words))}"
     return {
         "seq": seq,
@@ -116,7 +116,7 @@ def derive_identity(filename: str) -> dict[str, str]:
 async def seed_resume_corpus(session: AsyncSession, source_tenant_id: uuid.UUID) -> int:
     """Seed the resume corpus. Returns the number of NEW candidates created.
 
-    Only runs in non-production environments — the corpus is dev/demo data."""
+    Only runs in non-production environments  -  the corpus is dev/demo data."""
     if get_settings().is_production:
         log.info("seed_resumes: skipped (production environment)")
         return 0
@@ -124,7 +124,7 @@ async def seed_resume_corpus(session: AsyncSession, source_tenant_id: uuid.UUID)
     directory = resumes_dir()
     if directory is None:
         print(
-            "  ! resume corpus dir not found — set SEED_RESUMES_DIR or copy the "
+            "  ! resume corpus dir not found, set SEED_RESUMES_DIR or copy the "
             "files into the container (docker compose cp ./resumes backend:/resumes); "
             "skipping resume seed"
         )
@@ -135,10 +135,11 @@ async def seed_resume_corpus(session: AsyncSession, source_tenant_id: uuid.UUID)
         if p.is_file() and p.suffix.lower() in RESUME_EXTENSIONS
     )
     if not files:
-        print(f"  ! no resume files in {directory} — skipping resume seed")
+        print(f"  ! no resume files in {directory}  -  skipping resume seed")
         return 0
 
     created = 0
+    repaired = 0
     uploaded = 0
     for path in files:
         ident = derive_identity(path.name)
@@ -147,12 +148,22 @@ async def seed_resume_corpus(session: AsyncSession, source_tenant_id: uuid.UUID)
                 select(Candidate).where(Candidate.email == ident["email"])
             )
         ).scalar_one_or_none()
+        profile = None
         if existing is not None:
-            continue  # idempotent: already seeded, do not re-upload
+            profile = (
+                await session.execute(
+                    select(Profile)
+                    .where(Profile.candidate_id == existing.id)
+                    .order_by(Profile.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if profile is not None and profile_has_resume(profile):
+                continue  # idempotent: complete seed row, do not re-upload
 
         try:
             data = path.read_bytes()
-        except OSError as exc:  # pragma: no cover — unreadable file
+        except OSError as exc:  # pragma: no cover  -  unreadable file
             log.warning("seed_resumes: cannot read %s: %s", path.name, exc)
             continue
 
@@ -169,31 +180,43 @@ async def seed_resume_corpus(session: AsyncSession, source_tenant_id: uuid.UUID)
             continue
         uploaded += 1
 
-        candidate = Candidate(
-            tenant_id=None,  # shared Databank row (spans tenants)
-            full_name=ident["full_name"],
-            email=ident["email"],
-            phone=ident["phone"],
-            city="Bengaluru",
-            consent_databank=True,  # corpus is the matchable Databank
-        )
-        session.add(candidate)
-        await session.flush()
+        if existing is None:
+            candidate = Candidate(
+                tenant_id=None,  # shared Databank row (spans tenants)
+                full_name=ident["full_name"],
+                email=ident["email"],
+                phone=ident["phone"],
+                city="Bengaluru",
+                consent_databank=True,  # corpus is the matchable Databank
+            )
+            session.add(candidate)
+            await session.flush()
+            profile = Profile(
+                candidate_id=candidate.id,
+                source_tenant_id=source_tenant_id,
+            )
+            session.add(profile)
+            created += 1
+        elif profile is None:
+            profile = Profile(
+                candidate_id=existing.id,
+                source_tenant_id=source_tenant_id,
+            )
+            session.add(profile)
+            repaired += 1
+        else:
+            repaired += 1
 
-        profile = Profile(
-            candidate_id=candidate.id,
-            source_tenant_id=source_tenant_id,
-        )
         apply_resume_asset(profile, asset)
-        session.add(profile)
         await session.flush()
 
         # Heavy work is always the Celery task (claude.md rule 4).
         celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
-        created += 1
-        print(f"  + resume candidate {ident['full_name']} <{ident['email']}> "
+        action = "repaired" if existing is not None else "added"
+        print(f"  + {action} resume candidate {ident['full_name']} <{ident['email']}> "
               f"(cloudinary_public_id={asset.public_id})")
 
     print(f"  = resume corpus: {created} new candidate(s), "
-          f"{uploaded} uploaded to Cloudinary, {len(files)} file(s) scanned")
+          f"{repaired} repaired profile(s), {uploaded} uploaded to Cloudinary, "
+          f"{len(files)} file(s) scanned")
     return created
