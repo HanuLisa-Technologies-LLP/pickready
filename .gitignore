@@ -35,3 +35,6 @@ celerybeat-schedule*
 
 # Deploy output: service URLs and revision names written by scripts/deploy.sh
 .deploy-state.env
+
+# CI/CD bootstrap output: contains a live bearer JWT, never commit
+.github-secrets-setup.txt
