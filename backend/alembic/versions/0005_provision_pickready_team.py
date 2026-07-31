@@ -100,25 +100,57 @@ def upgrade() -> None:
 
     # Hiring-manager assignments are required by the approval workflow and are
     # safe to provision alongside the corresponding permanent user records.
-    connection.execute(
-        sa.text(
-            """
-            INSERT INTO hiring_managers (id, tenant_id, user_id, approval_level)
-            SELECT
-                u.id, u.tenant_id, u.id, NULL
-            FROM users u
-            WHERE u.role = 'hiring_manager'
-              AND u.id IN (
-                CAST('20000000-0000-4000-8000-000000000004' AS uuid),
-                CAST('20000000-0000-4000-8000-000000000007' AS uuid),
-                CAST('20000000-0000-4000-8000-000000000010' AS uuid)
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM hiring_managers hm
-                WHERE hm.tenant_id = u.tenant_id AND hm.user_id = u.id
-              )
-            """
+    #
+    # `hiring_managers` is tenant-scoped and has carried ENABLE + FORCE ROW
+    # LEVEL SECURITY since 0001, an ancestor of this revision, so the policy is
+    # already live here. It reads:
+    #
+    #     tenant_id = current_setting('app.tenant_id', true)::uuid
+    #     OR current_setting('app.bypass_rls', true) = 'on'
+    #
+    # This only ever passed in dev because the docker role is a superuser, which
+    # bypasses RLS outright (FORCE covers just the owner-but-not-superuser
+    # case). On Cloud SQL the app role is neither, so the WITH CHECK refused
+    # every row. Rather than reach for the bypass, satisfy the FIRST branch
+    # honestly: announce the tenant we are writing, then write only that
+    # tenant's row. One statement per tenant, each scoped to itself, which is
+    # also why the single INSERT ... SELECT is split three ways.
+    #
+    # The GUC is set as a bare string: custom GUCs are text, `SET LOCAL x =
+    # '...'::uuid` is a syntax error, and the policy performs the cast itself.
+    hm_tenants = {domain: tenant_id for tenant_id, _name, domain in TENANTS}
+    for user_id, domain, role, _full_name, _email, _phone in USERS:
+        if role != "hiring_manager":
+            continue
+        # Derived from the seed tuples above so the mapping cannot drift from
+        # the rows those tuples actually create.
+        tenant_id = hm_tenants[domain]
+        # SET LOCAL takes no bind parameters; both values are file-local
+        # literals, never caller input.
+        connection.execute(sa.text(f"SET LOCAL app.tenant_id = '{tenant_id}'"))
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO hiring_managers (id, tenant_id, user_id, approval_level)
+                SELECT
+                    u.id, u.tenant_id, u.id, NULL
+                FROM users u
+                WHERE u.role = 'hiring_manager'
+                  AND u.id = CAST(:user_id AS uuid)
+                  AND NOT EXISTS (
+                    SELECT 1 FROM hiring_managers hm
+                    WHERE hm.tenant_id = u.tenant_id AND hm.user_id = u.id
+                  )
+                """
+            ),
+            {"user_id": user_id},
         )
+
+    # env.py runs the WHOLE upgrade in one transaction, so SET LOCAL persists
+    # past this migration. Hand the sentinel back rather than leaving the last
+    # tenant silently scoping every later revision.
+    connection.execute(
+        sa.text("SET LOCAL app.tenant_id = '00000000-0000-0000-0000-000000000000'")
     )
 
 
