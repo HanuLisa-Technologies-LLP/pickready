@@ -12,6 +12,7 @@ from sqlalchemy import func, or_, select
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.db import get_session, tenant_scope, superadmin_scope
 
 from app.api.deps import (
     REFRESH_COOKIE,
@@ -21,7 +22,7 @@ from app.api.deps import (
     set_auth_cookies,
 )
 from app.core.config import get_settings
-from app.core.db import get_session, tenant_scope
+from app.core.db import get_session, tenant_scope, superadmin_scope
 from app.core.security import (
     ALGORITHM,
     AUDIENCE_CANDIDATE,
@@ -301,9 +302,10 @@ async def _capabilities(session: AsyncSession, user: User) -> list[str]:
     so a stale answer here would show buttons that then 403.
     """
     if user.tenant_id is None:
-        return await rbac.capabilities_for_user(
-            session, role=user.role, tenant_id=None, user_id=user.id
-        )
+        async with superadmin_scope(session):
+            return await rbac.capabilities_for_user(
+                session, role=user.role, tenant_id=None, user_id=user.id
+            )
     async with tenant_scope(session, user.tenant_id):
         return await rbac.capabilities_for_user(
             session, role=user.role, tenant_id=user.tenant_id, user_id=user.id
