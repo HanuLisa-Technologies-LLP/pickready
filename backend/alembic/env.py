@@ -40,6 +40,38 @@ def run_migrations_offline() -> None:
 def _do_run_migrations(connection: Connection) -> None:
     context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
+        # Migrations are a trusted, tenant-agnostic maintenance context — the
+        # same standing the app already grants Celery workers and the Super
+        # Admin console — so they reach through the SAME explicit escape hatch
+        # those paths use (`core/db.superadmin_scope`): app.bypass_rls = 'on'.
+        #
+        # Without it, every data migration that touches a tenant-scoped table
+        # breaks the moment the connection role is not a superuser. In dev the
+        # docker role IS a superuser (superusers bypass RLS outright, and FORCE
+        # only covers the owner-but-not-superuser case), so this stayed hidden
+        # until the first Cloud SQL deploy, where the app role is neither and
+        # the policies finally bite. It fails two ways, and the quiet one is
+        # worse: an INSERT is refused LOUDLY (0005 hiring_managers), but an
+        # UPDATE simply matches zero rows and reports success — which is how
+        # 0014 and 0018 came to backfill nothing and then fail a SET NOT NULL
+        # against the very rows they were supposed to fix.
+        #
+        # This changes NOTHING about runtime enforcement: it is scoped to this
+        # one migration connection, and no policy is dropped or disabled. Its
+        # real value is making dev and production agree, so a migration that
+        # passes locally means something.
+        #
+        # The sentinel tenant id is pinned for the same reason superadmin_scope
+        # pins it — the policies' `app.tenant_id::uuid` cast must stay
+        # well-defined, and an unset custom GUC can read back as '' rather than
+        # NULL, where ''::uuid raises.
+        connection.exec_driver_sql(
+            "SELECT set_config('app.tenant_id',"
+            " '00000000-0000-0000-0000-000000000000', false)"
+        )
+        connection.exec_driver_sql(
+            "SELECT set_config('app.bypass_rls', 'on', false)"
+        )
         context.run_migrations()
 
 
