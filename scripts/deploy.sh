@@ -188,18 +188,22 @@ build_secret_flag() {
 }
 
 # ---------------------------------------------------------------------------
-# Plain env vars. The ^@^ delimiter form is used everywhere below because a
-# connection string may legitimately contain a comma, and the default
-# comma-separated form would split it into two broken variables.
+# Plain env vars. gcloud's ^DELIM^ form lets us pick a delimiter other than the
+# default comma, because a connection string may legitimately contain a comma.
+# The delimiter is PIPE, not '@': the Cloud SQL socket DSN is
+# postgresql+asyncpg://user:pass@/db?host=/cloudsql/CONN, and an '@' delimiter
+# split it AT that '@' into two broken variables (DATABASE_URL truncated at the
+# password, and a bogus '/db?host' var). A pipe cannot appear in any of these
+# values (URL userinfo/host/query, a Redis host:port, the literal "production").
 # ---------------------------------------------------------------------------
 build_env() {  # build_env [extra KEY=VALUE ...]
-  local out="ENVIRONMENT=production@DATABASE_URL=${DATABASE_URL}@REDIS_URL=${REDIS_URL}"
+  local out="ENVIRONMENT=production|DATABASE_URL=${DATABASE_URL}|REDIS_URL=${REDIS_URL}"
   local kv
   for kv in "$@"; do
     [ -n "$kv" ] || continue
-    out="${out}@${kv}"
+    out="${out}|${kv}"
   done
-  printf '^@^%s' "$out"
+  printf '^|^%s' "$out"
 }
 
 # ---------------------------------------------------------------------------
