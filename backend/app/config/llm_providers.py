@@ -153,12 +153,20 @@ def max_tokens_for(task_type: str) -> int:
 #: How many keys the router is willing to burn on one logical call before it
 #: gives up and lets the caller's own fallback take over. Bounded so a task
 #: cannot spend minutes walking 21 dead keys.
+#:
+#: Sized so that, with three providers in the chain, a call can lose a whole
+#: provider AND still retry a rate-limited key on a sibling. The budgets below
+#: were each one attempt short of that: a 402 from the first provider plus a
+#: burst 429 from the second used the entire budget and the third provider was
+#: never reached, which is how "AI features not working at all" looked in
+#: production. The wall-clock ceiling in TASK_TOTAL_BUDGET is what actually
+#: bounds a user-facing request; these numbers bound the attempts within it.
 TASK_RETRY_BUDGET: dict[str, int] = {
-    "jd_generation": 4,
-    "technical_questions": 4,
-    "behavioral_assessment": 4,
-    "report_synthesis": 5,
-    "email_composition": 3,
+    "jd_generation": 5,
+    "technical_questions": 6,
+    "behavioral_assessment": 5,
+    "report_synthesis": 6,
+    "email_composition": 4,
     "rerank": 6,
     "extraction": 6,
 }

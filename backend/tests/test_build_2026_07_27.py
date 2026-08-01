@@ -122,6 +122,24 @@ def test_probe_each_provider_first_handles_ragged_and_empty_tiers() -> None:
     assert llm_router.probe_each_provider_first([]) == []
 
 
+def test_account_level_failures_are_distinguished_from_rate_limits() -> None:
+    """401/402/403 condemn the account; 429 condemns only that key this minute."""
+    import httpx
+
+    def _err(status: int) -> httpx.HTTPStatusError:
+        request = httpx.Request("POST", "https://example.invalid/v1/chat")
+        return httpx.HTTPStatusError(
+            "boom", request=request, response=httpx.Response(status, request=request)
+        )
+
+    for status in (401, 402, 403):
+        assert llm_router.is_account_level_failure(_err(status)) is True
+    # A rate limit must NOT take the provider's sibling keys out of the chain.
+    assert llm_router.is_account_level_failure(_err(429)) is False
+    assert llm_router.is_account_level_failure(_err(500)) is False
+    assert llm_router.is_account_level_failure(ValueError("not http")) is False
+
+
 def test_build_chain_skips_providers_with_no_keys() -> None:
     chain = llm_router._build_chain([_key("gemini", "m1")], "email_composition")
     assert [k.provider for k in chain] == ["gemini"]

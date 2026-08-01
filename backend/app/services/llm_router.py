@@ -166,6 +166,24 @@ def _is_skippable(key: _RouterKey) -> bool:
     return time.monotonic() < _state(key.fingerprint).unhealthy_until
 
 
+#: HTTP statuses that condemn the whole PROVIDER ACCOUNT, not the one key:
+#: 401 the credentials are wrong, 402 the prepaid balance is spent, 403 the
+#: account is disabled. Every sibling key bills the same account, so trying
+#: them is guaranteed to fail — and each pointless attempt costs one unit of a
+#: retry budget that a genuinely healthy provider further down the chain needs.
+#: 429 is deliberately NOT here: a rate limit is per key and per minute, and
+#: the sibling key is exactly the right thing to try next.
+_ACCOUNT_LEVEL_STATUSES = frozenset({401, 402, 403})
+
+
+def is_account_level_failure(exc: Exception) -> bool:
+    """True when `exc` says the provider ACCOUNT is unusable (pure; tested)."""
+    return (
+        isinstance(exc, httpx.HTTPStatusError)
+        and exc.response.status_code in _ACCOUNT_LEVEL_STATUSES
+    )
+
+
 def _provider_stats(provider: str) -> _ProviderStats:
     if provider not in _stats:
         _stats[provider] = _ProviderStats()
@@ -488,7 +506,13 @@ async def _call_gemini(
 
     resp = await client.post(
         GEMINI_URL_TMPL.format(model=GEMINI_MODEL),
-        params={"key": key.api_key},  # never logged
+        # The key goes in a HEADER, never the query string. As `params={"key":
+        # ...}` it landed in httpx's own INFO log line ("HTTP Request: POST
+        # https://...:generateContent?key=AQ.Ab8RN6...") and from there into
+        # Cloud Logging in plain text, which breaks this module's stated
+        # guarantee that key material is never logged. Google documents
+        # x-goog-api-key as equivalent to the query parameter.
+        headers={"x-goog-api-key": key.api_key},
         json=body,
     )
     resp.raise_for_status()
@@ -528,6 +552,9 @@ class _RouteContext:
     #: Output ceiling sent to every provider on this call. Defaulted so the
     #: tests that build a context by hand keep working unchanged.
     max_tokens: int = 4096
+    #: Providers that answered with an ACCOUNT-level failure during THIS call.
+    #: Their remaining keys are skipped (see `_is_account_level_failure`).
+    dead_providers: set[str] = field(default_factory=set)
     errors: list[str] = field(default_factory=list)
 
 
@@ -572,10 +599,19 @@ async def _attempt(state: RouterState) -> dict:
     index = state.get("current_index", 0)
     attempts = state.get("attempts", 0)
 
-    # Skip keys whose breaker is open. Skips advance the index but do NOT
-    # consume retry budget — budget counts real network attempts.
-    while index < len(ctx.chain) and _is_skippable(ctx.chain[index]):
-        ctx.errors.append(f"{ctx.chain[index].provider}: skipped (circuit open)")
+    # Skip keys whose breaker is open, and every key belonging to a provider
+    # whose ACCOUNT already failed in this call. Skips advance the index but do
+    # NOT consume retry budget — budget counts real network attempts.
+    dead = getattr(ctx, "dead_providers", frozenset())
+    while index < len(ctx.chain) and (
+        _is_skippable(ctx.chain[index]) or ctx.chain[index].provider in dead
+    ):
+        reason = (
+            "account unusable"
+            if ctx.chain[index].provider in dead
+            else "circuit open"
+        )
+        ctx.errors.append(f"{ctx.chain[index].provider}: skipped ({reason})")
         index += 1
     if index >= len(ctx.chain):
         return {"current_index": index, "error": "chain exhausted"}
@@ -616,6 +652,10 @@ async def _attempt(state: RouterState) -> dict:
             f"{key.provider}: {type(exc).__name__}"
             + (f" (HTTP {status_code})" if status_code else "")
         )
+        if is_account_level_failure(exc) and hasattr(ctx, "dead_providers"):
+            # Don't spend the rest of the budget on sibling keys that bill the
+            # same dead account — the next PROVIDER is the useful thing to try.
+            ctx.dead_providers.add(key.provider)
         return {
             "current_index": index + 1,
             "attempts": attempts + 1,
