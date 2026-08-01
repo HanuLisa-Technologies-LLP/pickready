@@ -3,7 +3,7 @@
 import * as React from "react";
 import { Building2, ChevronDown, Save, UserRound } from "lucide-react";
 
-import { apiGet, apiPut } from "@/lib/api";
+import { ApiError, apiGet, apiPut } from "@/lib/api";
 import type { CompanyPage, TenantProfile } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
@@ -57,13 +57,26 @@ export default function CompanyPageEditor() {
     setLoadError(null);
     try {
       const [companyPage, profile] = await Promise.all([
-        apiGet<CompanyPage | { company: CompanyPage }>("/companies/me"),
+        // A customer who has never saved this page gets a 404 from
+        // GET /companies/me ("Company page not created yet"). That is the
+        // NORMAL state for every new customer, not a failure: treating it as
+        // one rendered an error screen on the only page that can create the
+        // record, so the page could never be created at all. Start from the
+        // empty form instead; the first Save (PUT) creates the row.
+        apiGet<CompanyPage | { company: CompanyPage }>("/companies/me").catch(
+          (error: unknown) => {
+            if (error instanceof ApiError && error.status === 404) return null;
+            throw error;
+          }
+        ),
         apiGet<TenantProfile>("/admin/my-tenant"),
       ]);
       const resolved =
-        "company" in (companyPage as object)
-          ? (companyPage as { company: CompanyPage }).company
-          : (companyPage as CompanyPage);
+        companyPage === null
+          ? EMPTY_PAGE
+          : "company" in (companyPage as object)
+            ? (companyPage as { company: CompanyPage }).company
+            : (companyPage as CompanyPage);
       setPage({ ...EMPTY_PAGE, ...resolved });
       setCompany(profile);
     } catch (error) {

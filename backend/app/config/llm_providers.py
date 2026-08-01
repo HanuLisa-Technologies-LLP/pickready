@@ -117,6 +117,39 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "extraction": 120.0,
 }
 
+#: Per-call output ceiling, in tokens.
+#:
+#: This is NOT a nicety. OpenRouter bills against a prepaid balance and, when a
+#: request omits `max_tokens`, it prices the request at the MODEL's maximum
+#: (65536 for llama-3.3-70b) and rejects it outright:
+#:   402 "This request requires more credits, or fewer max_tokens. You
+#:        requested up to 65536 tokens, but can only afford 3944."
+#: Every OpenRouter call in production was failing this way, which took out the
+#: first-choice tier for jd_generation and report_synthesis. Sending an explicit,
+#: task-sized ceiling is also simply correct: it bounds cost and latency on
+#: every provider, not just the one that complained.
+TASK_MAX_TOKENS: dict[str, int] = {
+    # One JD document, seven sections.
+    "jd_generation": 4096,
+    # A short email body.
+    "email_composition": 1024,
+    # An ordering plus brief justifications.
+    "rerank": 2048,
+    # A full question bank (up to 25 items with rubrics).
+    "technical_questions": 8192,
+    "behavioral_assessment": 4096,
+    # Six report sections in one response — the largest thing we ask for.
+    "report_synthesis": 8192,
+    "extraction": 8192,
+}
+
+DEFAULT_MAX_TOKENS = 4096
+
+
+def max_tokens_for(task_type: str) -> int:
+    return TASK_MAX_TOKENS.get(task_type, DEFAULT_MAX_TOKENS)
+
+
 #: How many keys the router is willing to burn on one logical call before it
 #: gives up and lets the caller's own fallback take over. Bounded so a task
 #: cannot spend minutes walking 21 dead keys.

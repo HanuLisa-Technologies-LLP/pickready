@@ -69,6 +69,7 @@ from typing_extensions import TypedDict
 
 from app.config.llm_providers import (
     PROVIDER_MODELS,
+    max_tokens_for,
     provider_order,
     retry_budget_for,
     timeout_for,
@@ -382,41 +383,88 @@ def _build_chain(
     return chain
 
 
+def probe_each_provider_first(chain: list[_RouterKey]) -> list[_RouterKey]:
+    """Reorder a tier-grouped chain so EVERY provider is tried once before any
+    provider gets a second key.
+
+    Pure and side-effect free (unit-tested directly).
+
+    THE BUG THIS CLOSES. `_build_chain` emits all of provider A's keys, then all
+    of B's, then all of C's — while the retry budget bounds how many keys a call
+    may actually burn. jd_generation has 3 keys per provider and a budget of 4,
+    so a dead first tier consumed 3 attempts and a dead second tier the 4th: the
+    third provider was NEVER reached. In production OpenRouter was 402ing (out of
+    prepaid credit) and Gemini 429ing (free-tier quota), while three perfectly
+    healthy Groq keys sat at positions 7-9 and were never called. Every AI
+    feature fell back to its deterministic template and reported itself as
+    "AI unavailable".
+
+    Interleaving keeps the task's provider PREFERENCE intact — the first entry is
+    still the preferred provider's first key — but guarantees that one dead tier
+    can only ever cost one attempt before the next tier is tried.
+    """
+    tiers: list[list[_RouterKey]] = []
+    for key in chain:
+        if tiers and tiers[-1][0].provider == key.provider:
+            tiers[-1].append(key)
+        else:
+            tiers.append([key])
+    ordered: list[_RouterKey] = []
+    for round_index in range(max((len(t) for t in tiers), default=0)):
+        for tier in tiers:
+            if round_index < len(tier):
+                ordered.append(tier[round_index])
+    return ordered
+
+
 # ── Provider calls (httpx, no SDKs) ─────────────────────────────────────────
 
-def _openai_style_payload(model: str, messages: list[dict], json_mode: bool) -> dict:
-    payload: dict[str, Any] = {"model": model, "messages": messages, "temperature": 0.1}
+def _openai_style_payload(
+    model: str, messages: list[dict], json_mode: bool, max_tokens: int
+) -> dict:
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.1,
+        # Always explicit. OpenRouter prices an unbounded request at the model
+        # maximum and 402s a prepaid account that cannot cover it — see
+        # config/llm_providers.TASK_MAX_TOKENS.
+        "max_tokens": max_tokens,
+    }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
     return payload
 
 
 async def _call_groq(
-    client: httpx.AsyncClient, key: _RouterKey, messages: list[dict], json_mode: bool
+    client: httpx.AsyncClient, key: _RouterKey, messages: list[dict], json_mode: bool,
+    max_tokens: int,
 ) -> str:
     resp = await client.post(
         GROQ_URL,
         headers={"Authorization": f"Bearer {key.api_key}"},
-        json=_openai_style_payload(GROQ_MODEL, messages, json_mode),
+        json=_openai_style_payload(GROQ_MODEL, messages, json_mode, max_tokens),
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
 
 async def _call_openrouter(
-    client: httpx.AsyncClient, key: _RouterKey, messages: list[dict], json_mode: bool
+    client: httpx.AsyncClient, key: _RouterKey, messages: list[dict], json_mode: bool,
+    max_tokens: int,
 ) -> str:
     resp = await client.post(
         OPENROUTER_URL,
         headers={"Authorization": f"Bearer {key.api_key}"},
-        json=_openai_style_payload(OPENROUTER_MODEL, messages, json_mode),
+        json=_openai_style_payload(OPENROUTER_MODEL, messages, json_mode, max_tokens),
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
 
 async def _call_gemini(
-    client: httpx.AsyncClient, key: _RouterKey, messages: list[dict], json_mode: bool
+    client: httpx.AsyncClient, key: _RouterKey, messages: list[dict], json_mode: bool,
+    max_tokens: int,
 ) -> str:
     system_texts = [m["content"] for m in messages if m.get("role") == "system"]
     contents = [
@@ -430,7 +478,10 @@ async def _call_gemini(
     body: dict[str, Any] = {"contents": contents}
     if system_texts:
         body["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_texts)}]}
-    gen_config: dict[str, Any] = {"temperature": 0.1}
+    gen_config: dict[str, Any] = {
+        "temperature": 0.1,
+        "maxOutputTokens": max_tokens,
+    }
     if json_mode:
         gen_config["responseMimeType"] = "application/json"
     body["generationConfig"] = gen_config
@@ -474,6 +525,9 @@ class _RouteContext:
     #: attempt timeout with a 4-key budget is still a 60s request. Set to None
     #: to disable (used by tests that drive the graph directly).
     deadline: float | None = None
+    #: Output ceiling sent to every provider on this call. Defaulted so the
+    #: tests that build a context by hand keep working unchanged.
+    max_tokens: int = 4096
     errors: list[str] = field(default_factory=list)
 
 
@@ -530,7 +584,8 @@ async def _attempt(state: RouterState) -> dict:
     started = time.monotonic()
     try:
         result = await _PROVIDER_CALLERS[key.provider](
-            ctx.client, key, ctx.messages, ctx.json_mode
+            ctx.client, key, ctx.messages, ctx.json_mode,
+            getattr(ctx, "max_tokens", 4096),
         )
     except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
         # Rate limits, 5xx, timeouts, malformed responses — mark and move on to
@@ -541,13 +596,26 @@ async def _attempt(state: RouterState) -> dict:
         )
         _record_attempt(key.provider, latency_ms, success=False, throttled=throttled)
         await _record_failure(key, ctx.session)
-        logger.info(
-            "llm_router.attempt task_type=%s provider=%s fingerprint=%s "
-            "latency_ms=%.0f outcome=failure error=%s throttled=%s",
-            ctx.task_type, key.provider, key.fingerprint, latency_ms,
-            type(exc).__name__, throttled,
+        # The HTTP status is the whole diagnosis (401 bad key, 402 out of
+        # credit, 429 quota) and it was previously logged at INFO, which the
+        # production log level drops. A silently-degraded AI feature then looks
+        # identical to a working one that "chose" its deterministic fallback,
+        # so this is WARNING and carries the status code. Never the key.
+        status_code = (
+            exc.response.status_code
+            if isinstance(exc, httpx.HTTPStatusError)
+            else None
         )
-        ctx.errors.append(f"{key.provider}: {type(exc).__name__}")
+        logger.warning(
+            "llm_router.attempt task_type=%s provider=%s fingerprint=%s "
+            "latency_ms=%.0f outcome=failure error=%s status=%s throttled=%s",
+            ctx.task_type, key.provider, key.fingerprint, latency_ms,
+            type(exc).__name__, status_code, throttled,
+        )
+        ctx.errors.append(
+            f"{key.provider}: {type(exc).__name__}"
+            + (f" (HTTP {status_code})" if status_code else "")
+        )
         return {
             "current_index": index + 1,
             "attempts": attempts + 1,
@@ -620,7 +688,8 @@ async def invoke_llm(
     LLMUnavailableError only after every eligible key failed or was skipped.
     """
     keys = await _load_keys(session)
-    chain = _build_chain(keys, task_type)  # raises ValueError on an unknown type
+    # raises ValueError on an unknown type
+    chain = probe_each_provider_first(_build_chain(keys, task_type))
     if not chain:
         raise LLMUnavailableError(
             "No LLM provider keys configured (llm_provider_keys table empty and "
@@ -653,6 +722,7 @@ async def invoke_llm(
             session=session,
             retry_budget=retry_budget_for(task_type),
             deadline=time.monotonic() + budget if budget else None,
+            max_tokens=max_tokens_for(task_type),
         )
         final: RouterState = await _router_graph.ainvoke(
             {

@@ -395,6 +395,12 @@ async def create_job(
     # it does not wait for publish, so an unpublished draft is never the thing
     # holding up the assessment.
     celery_app.send_task("pickready.generate_technical_questions", args=[str(job.id)])
+    # Load the GENERATED posting-window columns before serialising. The mapper
+    # asks for them via RETURNING (models/job.eager_defaults), but a direct
+    # publish re-stamps `posting_start_date` after the INSERT, which expires
+    # both derived columns again; reading them from the serialiser would then
+    # trigger a lazy load in the wrong greenlet and 500 the whole request.
+    await session.refresh(job)
     return _with_public_url(job)
 
 
@@ -503,6 +509,9 @@ async def publish_job(
 
     await fsm.apply_direct_publish(session, job)
     await session.flush()
+    # Publishing moves `posting_start_date`, which regenerates the two derived
+    # window columns in the database. Same refresh as `renew_job` below.
+    await session.refresh(job)
     await _invalidate_public_job(job.id)
     await audit(
         session,

@@ -9,7 +9,7 @@ broker.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -84,6 +84,25 @@ class _FakeSession:
 
     async def get(self, model, ident):
         return None
+
+    async def refresh(self, obj, attribute_names=None) -> None:
+        """Model the real session's refresh, which is what loads the GENERATED
+        posting-window columns after a write.
+
+        This fake previously had no `refresh` at all, and that gap is precisely
+        why POST /jobs could 500 in production while every test here passed:
+        the real AsyncSession leaves `posting_end_date` / `grace_period_end_date`
+        expired after an INSERT, and reading them from the response serialiser
+        raised MissingGreenlet. Stamping plausible values here keeps the fake
+        honest about the step the handler now performs.
+        """
+        self._stamp(obj)
+        start = getattr(obj, "posting_start_date", None)
+        if start is not None:
+            if getattr(obj, "posting_end_date", None) is None:
+                obj.posting_end_date = start + timedelta(days=30)
+            if getattr(obj, "grace_period_end_date", None) is None:
+                obj.grace_period_end_date = start + timedelta(days=35)
 
     @staticmethod
     def _stamp(obj) -> None:

@@ -89,6 +89,39 @@ def test_build_chain_orders_tiers_before_balancing_within_them() -> None:
     assert [k.provider for k in balanced] == ["groq", "groq", "gemini", "openrouter"]
 
 
+def test_probe_each_provider_first_reaches_every_tier_within_the_retry_budget() -> None:
+    """A dead tier must cost ONE attempt, not all of its keys.
+
+    Regression: jd_generation has 3 keys per provider and a retry budget of 4,
+    so the tier-grouped chain spent the whole budget on the first two providers
+    and never called the third — which in production was the only healthy one.
+    """
+    keys = [
+        _key("groq", "g1"), _key("groq", "g2"), _key("groq", "g3"),
+        _key("gemini", "m1"), _key("gemini", "m2"), _key("gemini", "m3"),
+        _key("openrouter", "o1"), _key("openrouter", "o2"), _key("openrouter", "o3"),
+    ]
+    chain = llm_router._build_chain(keys, "jd_generation", balance=False)
+    ordered = llm_router.probe_each_provider_first(chain)
+
+    # Preference order still decides who goes FIRST.
+    assert ordered[0].provider == "openrouter"
+    # Every provider is reached inside jd_generation's 4-attempt budget.
+    assert {k.provider for k in ordered[:3]} == {"openrouter", "gemini", "groq"}
+    # Nothing is dropped or duplicated.
+    assert sorted(k.fingerprint for k in ordered) == sorted(
+        k.fingerprint for k in chain
+    )
+
+
+def test_probe_each_provider_first_handles_ragged_and_empty_tiers() -> None:
+    keys = [_key("openrouter", "o1"), _key("gemini", "m1"), _key("gemini", "m2")]
+    chain = llm_router._build_chain(keys, "jd_generation", balance=False)
+    ordered = llm_router.probe_each_provider_first(chain)
+    assert [k.fingerprint for k in ordered] == ["o1", "m1", "m2"]
+    assert llm_router.probe_each_provider_first([]) == []
+
+
 def test_build_chain_skips_providers_with_no_keys() -> None:
     chain = llm_router._build_chain([_key("gemini", "m1")], "email_composition")
     assert [k.provider for k in chain] == ["gemini"]

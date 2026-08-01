@@ -202,7 +202,7 @@ async def test_all_keys_in_cooldown_fail_fast(monkeypatch, caplog):
     monkeypatch.setattr(llm_router, "_load_keys", _returns(keys))
     attempts: list[str] = []
 
-    async def _ok(client, key, messages, json_mode):
+    async def _ok(client, key, messages, json_mode, max_tokens):
         attempts.append(key.fingerprint)
         return "recovered"
 
@@ -224,7 +224,7 @@ async def test_open_key_is_skipped_while_a_healthy_one_remains(monkeypatch):
     monkeypatch.setattr(llm_router, "_load_keys", _returns([bad, good]))
     attempts: list[str] = []
 
-    async def _ok(client, key, messages, json_mode):
+    async def _ok(client, key, messages, json_mode, max_tokens):
         attempts.append(key.fingerprint)
         return "ok"
 
@@ -238,7 +238,7 @@ async def test_chain_exhaustion_still_raises_without_leaking_key_material(monkey
     keys = [_key(fp="db:k0"), _key(fp="db:k1")]
     monkeypatch.setattr(llm_router, "_load_keys", _returns(keys))
 
-    async def _boom(client, key, messages, json_mode):
+    async def _boom(client, key, messages, json_mode, max_tokens):
         raise httpx.ConnectError("down")
 
     monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _boom)
@@ -253,7 +253,7 @@ async def test_success_after_recovery_clears_the_breaker_end_to_end(monkeypatch)
     session = _FakeSession()
     monkeypatch.setattr(llm_router, "_load_keys", _returns([key]))
 
-    async def _ok(client, k, messages, json_mode):
+    async def _ok(client, k, messages, json_mode, max_tokens):
         return "fine"
 
     monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _ok)

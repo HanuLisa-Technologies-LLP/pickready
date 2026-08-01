@@ -46,6 +46,17 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
     compensation_json is added by HR post-ratification (FR-4.1)."""
     __tablename__ = "jobs"
     __table_args__ = (Index("ix_jobs_tenant_status", "tenant_id", "status"),)
+    # `posting_end_date` / `grace_period_end_date` are Postgres GENERATED
+    # columns (below). SQLAlchemy omits them from the INSERT, and without
+    # eager_defaults it leaves them EXPIRED on the instance — so the first
+    # attribute read after a flush issues a lazy SELECT. Under asyncpg that
+    # lazy load happens outside the greenlet and raises MissingGreenlet, which
+    # surfaced as a hard 500 on POST /jobs ("2 validation errors for JobOut",
+    # posting_end_date + grace_period_end_date) and made it impossible to
+    # create a job at all. eager_defaults adds RETURNING to the INSERT/UPDATE
+    # so the generated values come back with the write. Same reasoning as
+    # models/bd.py, which already carries this flag.
+    __mapper_args__ = {"eager_defaults": True}
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
