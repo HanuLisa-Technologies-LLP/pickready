@@ -533,6 +533,19 @@ async def candidate_pipeline(
     Every stage is present even at zero, so the funnel does not visually
     reshape itself as candidates move — an empty column is information.
     """
+    # An all-zero funnel for a job that does not exist (mistyped id, or another
+    # tenant's job) is indistinguishable from a real job nobody has applied to,
+    # so the UI renders a confident empty state for a job the caller cannot
+    # see. Every sibling endpoint 404s here; this one silently did not.
+    exists = (
+        await session.execute(
+            text("SELECT 1 FROM jobs WHERE id = :jid AND tenant_id = :tid"),
+            {"jid": str(job_id), "tid": str(user.tenant_id)},
+        )
+    ).first()
+    if exists is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
     rows = (
         await session.execute(
             text(

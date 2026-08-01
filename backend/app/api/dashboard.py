@@ -81,7 +81,14 @@ async def dashboard_summary(
                 databank_matched=databank[j.id],
                 fresh_sourced=fresh[j.id],
                 shortlisted=by_status[j.id][PipelineStatus.shortlisted],
-                offered=by_status[j.id][PipelineStatus.offered],
+                # Both spellings. Migration 0018 renamed this stage to
+                # `offer_extended` but kept `offered` valid rather than
+                # rewriting history, so a tenant can hold rows of either and
+                # counting only one silently reports a smaller funnel.
+                offered=(
+                    by_status[j.id][PipelineStatus.offered]
+                    + by_status[j.id][PipelineStatus.offer_extended]
+                ),
                 joined=by_status[j.id][PipelineStatus.joined],
             )
             for j in jobs

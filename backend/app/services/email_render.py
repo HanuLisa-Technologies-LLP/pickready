@@ -79,6 +79,51 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "{{company_name}}, scheduled for {{scheduled_at}}. A calendar invite "
         "is attached.\n\nRegards,\n{{company_name}} People Team",
     ),
+    # ── Names that MUST exist here because a caller sends them ───────────────
+    # `render` raises ValueError when a template name resolves to neither a
+    # tenant row nor a default, and that raise happens inside the Celery task,
+    # AFTER the API has already answered 200. Three names were being sent with
+    # no default and no seeded row, so those invitations were discarded with no
+    # email_log row, no audit_log row, and nothing the user could see. The
+    # invariant is enforced by tests/test_email_delivery.py, which walks every
+    # literal name passed to pickready.send_email in backend/app.
+    #
+    # api/verification.py sends this exact name; the "outreach" entry above
+    # kept the older name and was never reached.
+    "candidate_outreach": (
+        "Information request regarding the {{job_title}} role at {{company_name}}",
+        "Dear {{candidate_name}},\n\n"
+        "We are considering you for the {{job_title}} role at "
+        "{{company_name}}. Please complete your candidate page (personal "
+        "details, updated resume, and questionnaire) using this link:\n\n"
+        "{{outreach_url}}\n\n"
+        "Regards,\n{{company_name}} People Team",
+    ),
+    # api/admin.py, when the platform owner creates a customer.
+    "client_invite": (
+        "Your {{tenant_name}} workspace on PickReady is ready",
+        "Hello,\n\n"
+        "A PickReady workspace has been created for {{tenant_name}}. Accept "
+        "your invitation and sign in here:\n\n{{invite_link}}\n\n"
+        "You will sign in with Google or with an email and password, "
+        "PickReady never asks you to set a separate password.\n\n"
+        "Regards,\nPickReady",
+    ),
+    # api/companies.py seeds a tenant-EDITABLE row for this name on first use,
+    # but a default belongs here too: the seeding and the send are separate
+    # steps, and a missing row must degrade to generic copy rather than to a
+    # silently lost invitation.
+    "staff_invite": (
+        "You have been invited to {{company_name}} on PickReady",
+        "Hi {{full_name}},\n\n"
+        "{{invited_by}} has invited you to join {{company_name}} on PickReady "
+        "as a {{role_label}}.\n\n"
+        "Accept your invitation here:\n\n{{invite_link}}\n\n"
+        "You will sign in with Google or with an email and password, "
+        "PickReady never asks you to set a separate password.\n\n"
+        "This link expires on {{expires_on}}.\n\n"
+        "Regards,\nThe {{company_name}} team",
+    ),
 }
 
 

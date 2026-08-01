@@ -103,33 +103,43 @@ _STAFF_OPERATIONAL: dict[str, bool] = {
     VIEW_BILLING: True,
 }
 
+# The customer-side grant set, shared by all four customer roles.
+#
+# Migration 0031 seeds exactly this list globally, for exactly these four roles,
+# and this dict must agree with it: `_seed_permissions` (api/admin.py) copies
+# THIS dict into TENANT-SCOPED rows whenever the Owner console creates a
+# customer, and a tenant row BEATS the global template in
+# rbac.resolve_permission. When the two disagree, every console-created customer
+# silently gets the smaller of the two sets.
+#
+# The product decision behind it (PRD v1.0 §4): recruiters, hiring managers, HR
+# managers and the client company owner all run the customer's hiring and are
+# FUNCTIONALLY IDENTICAL, including billing. What separates them is not a
+# capability list; it is who the account belongs to.
+_CUSTOMER_FULL_ACCESS: dict[str, bool] = {
+    **_STAFF_OPERATIONAL,
+    CREATE_COMPANY_PAGE: True,
+    MANAGE_STAFF: True,
+    CONFIGURE_APPROVAL_LEVELS: True,   # dormant (FSM bypassed) but kept grantable
+    APPROVE_JOB: True,                 # dormant for the same reason
+    MANAGE_COMPLIANCE_DOCUMENTS: True,
+    MANAGE_BILLING: True,
+}
+
 # Default template. {role: {capability: allowed}} — capabilities not listed
-# default to False for that role. APPROVE_JOB / CONFIGURE_APPROVAL_LEVELS are
-# intentionally NOT granted to the staff roles: the approval chain is dormant.
+# default to False for that role.
+#
+# EDIT_ROLE_PERMISSIONS is never here: it rewrites the matrix itself, so
+# granting it to a customer role removes the boundary rather than widening it.
+# The three MANAGE_BD_* / USE_AI_REACH grants stay with the `bd` role, which is
+# PickReady's own sales console and has no tenant. Same two exclusions, and the
+# same reasoning, as migration 0031.
 DEFAULT_PERMISSION_MATRIX: dict[Role, dict[str, bool]] = {
-    Role.hr_manager: dict(_STAFF_OPERATIONAL),
-    Role.recruiter: dict(_STAFF_OPERATIONAL),
-    Role.hiring_manager: dict(_STAFF_OPERATIONAL),
-    Role.client: {
-        # Company Admin: company page + staff management. Also allowed to
-        # create jobs (a Company Admin is a legitimate job poster).
-        CREATE_COMPANY_PAGE: True,
-        MANAGE_STAFF: True,
-        CONFIGURE_APPROVAL_LEVELS: True,   # dormant (FSM bypassed) but kept grantable
-        CREATE_JOB: True,
-        PUBLISH_JOB: True,
-        EDIT_COMPANY_PROFILE: True,
-        MANAGE_EMAIL_TEMPLATES: True,
-        # The company's legal/tax records. Not in _STAFF_OPERATIONAL: a
-        # recruiter has no business filing the signed agreement, and the
-        # Provider Portal shows these to the platform owner.
-        MANAGE_COMPLIANCE_DOCUMENTS: True,
-        # Subscribing, upgrading and cancelling. Same reasoning as the
-        # compliance documents directly above: a recurring charge against the
-        # company card is not recruitment work.
-        MANAGE_BILLING: True,
-        VIEW_BILLING: True,
-    },
+    Role.hr_manager: dict(_CUSTOMER_FULL_ACCESS),
+    Role.recruiter: dict(_CUSTOMER_FULL_ACCESS),
+    Role.hiring_manager: dict(_CUSTOMER_FULL_ACCESS),
+    # Company Admin: the same functional access, on the account they own.
+    Role.client: dict(_CUSTOMER_FULL_ACCESS),
     # Business Development. Deliberately NOT given any recruitment capability:
     # a BD rep sells the platform, they do not run a customer's hiring. The set
     # here must match migration 0023's seeded rows exactly, or the engine (which

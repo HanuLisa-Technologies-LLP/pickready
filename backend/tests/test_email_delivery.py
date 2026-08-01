@@ -562,3 +562,56 @@ def test_preflight_ok_when_keys_present(monkeypatch):
     config.get_settings.cache_clear()
     assert config.preflight_delivery_config() == []
     config.get_settings.cache_clear()
+
+
+def test_every_template_name_the_app_sends_has_a_default() -> None:
+    """Every literal template name passed to `pickready.send_email` anywhere in
+    backend/app MUST resolve without a tenant row.
+
+    This is the invariant that was broken in production. `email_render.render`
+    raises ValueError when a name matches neither a tenant row nor a default,
+    and it raises inside the Celery task — long after the API answered 200. Two
+    names (`candidate_outreach`, `client_invite`) were being sent with no
+    default and nothing seeding a row, so those invitations were discarded with
+    no email_log row and no audit_log row. Nothing in the product could show
+    the user that their invitation had evaporated.
+
+    Scanning the source rather than listing the names by hand is deliberate: a
+    hand-maintained list is exactly what drifted in the first place.
+    """
+    import ast
+    from pathlib import Path
+
+    from app.services.email_render import DEFAULT_TEMPLATES
+
+    app_root = Path(__file__).resolve().parents[1] / "app"
+    # Parsed, not regexed: the call is
+    # `send_task("pickready.send_email", args=[<tenant>, <to>, "<name>", {...}])`
+    # and the template name is args[2]. A regex over this shape kept picking up
+    # keys out of the context dict that follows it.
+    found: set[str] = set()
+    for path in app_root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            first = node.args[0]
+            if not (
+                isinstance(first, ast.Constant)
+                and first.value == "pickready.send_email"
+            ):
+                continue
+            task_args = next(
+                (kw.value for kw in node.keywords if kw.arg == "args"), None
+            )
+            if isinstance(task_args, ast.List) and len(task_args.elts) >= 3:
+                name = task_args.elts[2]
+                if isinstance(name, ast.Constant) and isinstance(name.value, str):
+                    found.add(name.value)
+
+    assert found, "scanner matched nothing — the send_task shape must have changed"
+    missing = sorted(name for name in found if name not in DEFAULT_TEMPLATES)
+    assert not missing, (
+        f"template name(s) {missing} are sent by the app but have no entry in "
+        "DEFAULT_TEMPLATES; every one of those emails would be silently lost"
+    )

@@ -203,7 +203,13 @@ async def list_leads(
         description="Matches company, industry, location, contact name, email, "
                     "phone or website.",
     ),
-    agreement: bool | None = Query(
+    # Typed as a STRING, not a bool, on purpose. The contract below is that
+    # `agreement=` (present but empty) means "undecided", but FastAPI's bool
+    # validator rejects "" during dependency resolution with a 422, so the
+    # handler body that distinguishes the two cases was never reached. The BD
+    # console's "Undecided" tab sends exactly that (components/bd/reach-page.tsx)
+    # and was therefore 422ing every time. Parsed by hand below.
+    agreement: str | None = Query(
         default=None,
         description="true signed, false declined. Send an empty value to list "
                     "the leads nobody has decided yet.",
@@ -228,11 +234,22 @@ async def list_leads(
     # `agreement=` (present but empty) means "undecided"; an absent key means
     # "do not filter". Only the raw query string can tell them apart.
     agreement_is_set = "agreement" in request.query_params
+    if agreement is None or agreement == "":
+        agreement_value: bool | None = None
+    elif agreement.lower() in ("true", "1", "yes"):
+        agreement_value = True
+    elif agreement.lower() in ("false", "0", "no"):
+        agreement_value = False
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail="agreement must be true, false, or empty for undecided",
+        )
 
     predicates = bd_leads.lead_predicates(
         channel=channel,
         search=search,
-        agreement=agreement,
+        agreement=agreement_value,
         include_archived=include_archived,
         agreement_is_set=agreement_is_set,
     )

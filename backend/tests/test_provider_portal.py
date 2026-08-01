@@ -393,13 +393,26 @@ def test_the_provider_router_never_deletes_a_customer() -> None:
 
 # ── Who may file a compliance document ───────────────────────────────────────
 
-def test_only_the_company_admin_may_manage_compliance_documents() -> None:
-    """The one place the flat staff model is deliberately not flat: a GSTIN
-    certificate is a legal instrument, not recruitment data."""
+def test_every_customer_role_may_manage_compliance_documents() -> None:
+    """All four customer-side roles hold this grant.
+
+    This test previously asserted the opposite, that MANAGE_COMPLIANCE_DOCUMENTS
+    was the one place the flat staff model was deliberately not flat. Migration
+    0031 (deployed) seeds it for hr_manager, recruiter and hiring_manager too,
+    so the live `role_permissions` rows have granted it to all four since that
+    migration ran and the old assertion described a state production was not in.
+    The code template and the migration have to agree, because
+    `api/admin._seed_permissions` copies the template into tenant rows that
+    OVERRIDE the migration's global rows for console-created customers.
+
+    Inverted rather than deleted: the grant stays a deliberate, visible decision,
+    and narrowing it later is a test change somebody has to justify.
+    """
     capability = caps.MANAGE_COMPLIANCE_DOCUMENTS
-    assert DEFAULT_PERMISSION_MATRIX[Role.client][capability] is True
-    for role in (Role.hr_manager, Role.recruiter, Role.hiring_manager):
-        assert capability not in DEFAULT_PERMISSION_MATRIX[role]
+    for role in (Role.client, Role.hr_manager, Role.recruiter, Role.hiring_manager):
+        assert DEFAULT_PERMISSION_MATRIX[role][capability] is True
+    # Still not something a NEW role inherits by default.
+    assert capability not in DEFAULT_PERMISSION_MATRIX[Role.bd]
 
 
 def test_the_capability_is_registered() -> None:

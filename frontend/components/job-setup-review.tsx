@@ -352,25 +352,43 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
 
+  /**
+   * The three halves are fetched INDEPENDENTLY.
+   *
+   * A single Promise.all here meant that one rejection took all three down: a
+   * job whose framework or question bank has not been generated yet answers
+   * 404, which is the NORMAL state for a job created moments ago, and the whole
+   * component then had null state and returned null. The entire assessment
+   * surface disappeared from the job page, which reads to a customer as
+   * "assessments are not available" rather than "not generated yet". Each part
+   * now degrades to absent on its own and the cards below say so in place.
+   */
   const load = React.useCallback(async () => {
-    try {
-      const [setupRes, frameworkRes, bankRes] = await Promise.all([
-        apiGet<Setup>(`${BASE}/${jobId}/setup`),
-        apiGet<Framework>(`${BASE}/${jobId}/framework`),
-        apiGet<QuestionBank>(`${BASE}/${jobId}/questions`),
-      ]);
-      setSetup(setupRes);
-      setFramework(frameworkRes);
-      setBank(bankRes);
-    } catch (error) {
+    const [setupRes, frameworkRes, bankRes] = await Promise.allSettled([
+      apiGet<Setup>(`${BASE}/${jobId}/setup`),
+      apiGet<Framework>(`${BASE}/${jobId}/framework`),
+      apiGet<QuestionBank>(`${BASE}/${jobId}/questions`),
+    ]);
+    setSetup(setupRes.status === "fulfilled" ? setupRes.value : null);
+    setFramework(frameworkRes.status === "fulfilled" ? frameworkRes.value : null);
+    setBank(bankRes.status === "fulfilled" ? bankRes.value : null);
+    // Only a total failure is worth interrupting the recruiter for. One missing
+    // half is explained in place by the card it belongs to.
+    if (
+      setupRes.status === "rejected" &&
+      frameworkRes.status === "rejected" &&
+      bankRes.status === "rejected"
+    ) {
       toast({
         title: "Couldn't load the assessment setup",
-        description: errorMessage(error, "Please refresh and try again."),
+        description: errorMessage(
+          setupRes.reason,
+          "Please refresh and try again."
+        ),
         variant: "destructive",
       });
-    } finally {
-      setLoading(false);
     }
+    setLoading(false);
   }, [jobId, toast]);
 
   React.useEffect(() => {
@@ -405,14 +423,44 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
       </div>
     );
   }
-  if (!setup || !framework || !bank) return null;
+  // Nothing came back at all. Rendering null here is what made the one manual
+  // step in the pipeline look like a feature the customer had not been given;
+  // say what the state is and offer a way to look again.
+  if (!setup && !framework && !bank) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Assessment setup</CardTitle>
+          <CardDescription>
+            The PPI framework and the technical questions for this job are not
+            available yet. Both are generated from the job description shortly
+            after a job is created, and this step has to be finalised before any
+            candidate can be invited.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setLoading(true);
+              void load();
+            }}
+          >
+            Check again
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
 
-  const frozen = framework.approved;
-  const activeQuestions = bank.questions.filter((question) => question.is_active);
+  const frozen = Boolean(framework?.approved);
+  const activeQuestions = (bank?.questions ?? []).filter(
+    (question) => question.is_active
+  );
 
   return (
     <div className="space-y-5">
-      <SetupStatus setup={setup} />
+      {setup ? <SetupStatus setup={setup} /> : null}
 
       {/* ── PPI framework ─────────────────────────────────────────────────── */}
       <Card>
@@ -426,7 +474,7 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
                 reports comparable.
               </CardDescription>
             </div>
-            {framework.approved ? (
+            {framework?.approved ? (
               <Badge variant="brand" className="gap-1">
                 <Lock className="h-3 w-3" aria-hidden />
                 Saved
@@ -435,90 +483,104 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
           </div>
         </CardHeader>
         <CardContent className="space-y-5">
-          {CATEGORY_ORDER.map((category) => {
-            const rows = framework.competencies.filter((row) => row.category === category);
-            const short = rows.length < framework.minimum_per_category;
-            return (
-              <section key={category} className="space-y-2">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <h4 className="text-sm font-semibold">{CATEGORY_LABEL[category]}</h4>
-                  <span className="text-xs">
-                    {rows.length} of at least {framework.minimum_per_category}
-                    {short ? ", more needed" : ""}
-                  </span>
-                </div>
-                <p className="text-xs">{CATEGORY_HINT[category]}</p>
-                {rows.map((competency) => (
-                  <CompetencyRow
-                    key={competency.id}
-                    competency={competency}
-                    frozen={frozen}
-                    onSave={(next) =>
-                      mutate(
-                        () =>
-                          apiPut(`${BASE}/${jobId}/framework/${competency.id}`, next),
-                        "Couldn't save that change"
-                      ).then(() => undefined)
-                    }
-                    onRemove={() =>
-                      mutate(
-                        () => apiDelete(`${BASE}/${jobId}/framework/${competency.id}`),
-                        "Couldn't remove that entry"
-                      ).then(() => undefined)
-                    }
-                  />
-                ))}
-                {frozen ? null : (
-                  <AddCompetency
-                    category={category}
-                    onAdd={(next) =>
-                      mutate(
-                        () => apiPost(`${BASE}/${jobId}/framework`, next),
-                        "Couldn't add that entry"
-                      ).then(() => undefined)
-                    }
-                  />
-                )}
-              </section>
-            );
-          })}
-
-          {framework.blocking_reason ? (
-            <p className="rounded-md border border-amber-600 p-3 text-xs">
-              {framework.blocking_reason}
+          {!framework ? (
+            // The framework alone is missing (still generating, or its read
+            // failed). Explain that rather than showing three empty category
+            // headings with "0 of at least 3, more needed", which reads as a
+            // broken screen.
+            <p className="text-sm">
+              The framework for this job is still being prepared. It is written
+              from the job description, so it appears here a few moments after
+              the job is created. Refresh to check.
             </p>
-          ) : null}
+          ) : (
+            <>
+            {CATEGORY_ORDER.map((category) => {
+              const rows = framework.competencies.filter((row) => row.category === category);
+              const short = rows.length < framework.minimum_per_category;
+              return (
+                <section key={category} className="space-y-2">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <h4 className="text-sm font-semibold">{CATEGORY_LABEL[category]}</h4>
+                    <span className="text-xs">
+                      {rows.length} of at least {framework.minimum_per_category}
+                      {short ? ", more needed" : ""}
+                    </span>
+                  </div>
+                  <p className="text-xs">{CATEGORY_HINT[category]}</p>
+                  {rows.map((competency) => (
+                    <CompetencyRow
+                      key={competency.id}
+                      competency={competency}
+                      frozen={frozen}
+                      onSave={(next) =>
+                        mutate(
+                          () =>
+                            apiPut(`${BASE}/${jobId}/framework/${competency.id}`, next),
+                          "Couldn't save that change"
+                        ).then(() => undefined)
+                      }
+                      onRemove={() =>
+                        mutate(
+                          () => apiDelete(`${BASE}/${jobId}/framework/${competency.id}`),
+                          "Couldn't remove that entry"
+                        ).then(() => undefined)
+                      }
+                    />
+                  ))}
+                  {frozen ? null : (
+                    <AddCompetency
+                      category={category}
+                      onAdd={(next) =>
+                        mutate(
+                          () => apiPost(`${BASE}/${jobId}/framework`, next),
+                          "Couldn't add that entry"
+                        ).then(() => undefined)
+                      }
+                    />
+                  )}
+                </section>
+              );
+            })}
 
-          <div className="flex flex-wrap gap-2">
-            {framework.approved ? (
-              <Button
-                variant="outline"
-                disabled={busy}
-                onClick={() =>
-                  void mutate(
-                    () => apiPost(`${BASE}/${jobId}/framework/reopen`),
-                    "Couldn't reopen the framework"
-                  )
-                }
-              >
-                <Unlock className="mr-1.5 h-3.5 w-3.5" aria-hidden />
-                Reopen for editing
-              </Button>
-            ) : (
-              <Button
-                disabled={busy || Boolean(framework.blocking_reason)}
-                onClick={async () => {
-                  const ok = await mutate(
-                    () => apiPost(`${BASE}/${jobId}/framework/finalize`),
-                    "Couldn't save the framework"
-                  );
-                  if (ok) toast({ title: "Framework saved" });
-                }}
-              >
-                Save framework
-              </Button>
-            )}
-          </div>
+            {framework.blocking_reason ? (
+              <p className="rounded-md border border-amber-600 p-3 text-xs">
+                {framework.blocking_reason}
+              </p>
+            ) : null}
+
+            <div className="flex flex-wrap gap-2">
+              {framework.approved ? (
+                <Button
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    void mutate(
+                      () => apiPost(`${BASE}/${jobId}/framework/reopen`),
+                      "Couldn't reopen the framework"
+                    )
+                  }
+                >
+                  <Unlock className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+                  Reopen for editing
+                </Button>
+              ) : (
+                <Button
+                  disabled={busy || Boolean(framework.blocking_reason)}
+                  onClick={async () => {
+                    const ok = await mutate(
+                      () => apiPost(`${BASE}/${jobId}/framework/finalize`),
+                      "Couldn't save the framework"
+                    );
+                    if (ok) toast({ title: "Framework saved" });
+                  }}
+                >
+                  Save framework
+                </Button>
+              )}
+            </div>
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -534,7 +596,7 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
                 question is scored against its own rubric, never open-ended judgement.
               </CardDescription>
             </div>
-            {bank.approved ? (
+            {bank?.approved ? (
               <Badge variant="brand" className="gap-1">
                 <Check className="h-3 w-3" aria-hidden />
                 Finalised
@@ -545,7 +607,9 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
         <CardContent className="space-y-3">
           {activeQuestions.length === 0 ? (
             <p className="text-sm">
-              These questions are still being prepared. Refresh in a moment.
+              {bank
+                ? "These questions are still being prepared. They are written from the job's required skills, and appear here a few moments after the job is created. Refresh to check."
+                : "The question bank for this job is not available yet. It is written from the job's required skills shortly after the job is created. Refresh to check."}
             </p>
           ) : (
             <ol className="space-y-2">
@@ -570,7 +634,7 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
               if (ok) toast({ title: "Technical questions finalised" });
             }}
           >
-            {bank.approved ? "Re-finalise questions" : "Finalise questions"}
+            {bank?.approved ? "Re-finalise questions" : "Finalise questions"}
           </Button>
         </CardContent>
       </Card>

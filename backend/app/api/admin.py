@@ -246,10 +246,31 @@ async def create_tenant(
     )
     # Firebase owns credentials: the invite is an onboarding pointer, never a
     # code. Sending is a Celery task (rule 4) over SMTP (rule 5).
+    #
+    # The email used to carry only the tenant's name and NO acceptance link,
+    # because no StaffInvite row was ever minted for the client owner — so the
+    # person the workspace was created for had no way into it. Mint the same
+    # single-use invite the staff path mints (see create_staff_invite below).
+    client_token = generate_invite_token()
+    session.add(
+        StaffInvite(
+            tenant_id=tenant.id,
+            user_id=client_user.id,
+            email=str(body.client_email),
+            role=Role.client.value,
+            token_hash=hash_invite_token(client_token),
+            invited_by=user.user_id,
+            expires_at=invite_expiry(),
+        )
+    )
+    await session.flush()
     celery_app.send_task(
         "pickready.send_email",
         args=[str(tenant.id), str(body.client_email), "client_invite",
-              {"tenant_name": name}],
+              {"tenant_name": name,
+               "invite_link": build_invite_link(
+                   get_settings().frontend_url, client_token
+               )}],
     )
     return TenantCreateOut(
         tenant=_tenant_out(tenant, client_user),

@@ -30,7 +30,7 @@ import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
-import { LoadingRows } from "@/components/page-primitives";
+import { ErrorState, LoadingRows } from "@/components/page-primitives";
 import { asJdLines } from "@/components/job-description";
 import { CandidateRankingTable } from "@/components/candidate-ranking-table";
 import { DatabankUpload } from "@/components/databank-upload";
@@ -177,6 +177,12 @@ export default function OrgJobDetailPage() {
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState<Draft | null>(null);
   const [saving, setSaving] = React.useState(false);
+  // Distinguishes "the job has not arrived yet" from "the job could not be
+  // read". Without it a failed load left `job` null forever and the card below
+  // showed its loading skeleton for the rest of the session: the job
+  // description simply never appeared, and the toast that said why was long
+  // gone by the time anyone looked.
+  const [jobError, setJobError] = React.useState<string | null>(null);
 
   const [matchingBusy, setMatchingBusy] = React.useState(false);
   const [reloadKey, setReloadKey] = React.useState(0);
@@ -220,11 +226,15 @@ export default function OrgJobDetailPage() {
   }, [jobId, toast]);
 
   const loadJob = React.useCallback(async () => {
+    setJobError(null);
     try {
       const res = await apiGet<Job>(`/jobs/${jobId}`);
       setJob(res);
       setDraft(draftFromJob(res));
     } catch (e) {
+      setJobError(
+        e instanceof Error ? e.message : "This job could not be loaded."
+      );
       toast({
         title: "Failed to load job",
         description: e instanceof Error ? e.message : undefined,
@@ -436,7 +446,17 @@ export default function OrgJobDetailPage() {
         </CardHeader>
 
         <CardContent className="space-y-4 text-sm">
-          {!job ? (
+          {!job && jobError ? (
+            <ErrorState
+              title="This job could not be loaded"
+              description={jobError}
+              action={
+                <Button variant="outline" onClick={() => void loadJob()}>
+                  Try again
+                </Button>
+              }
+            />
+          ) : !job ? (
             <LoadingRows rows={4} label="Loading the job description" />
           ) : editing && draft ? (
             <div className="space-y-4">

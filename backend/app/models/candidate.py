@@ -278,7 +278,11 @@ class PipelineStatusEntry(Base, UUIDPKMixin):
         UUID(as_uuid=True), ForeignKey("job_candidate_links.id", ondelete="CASCADE"), nullable=False
     )
     status: Mapped[PipelineStatus] = mapped_column(
-        Enum(PipelineStatus, native_enum=False, length=15), nullable=False
+        # length matches the varchar(30) migration 0018 actually created. The
+        # old 15 predates the 10-stage vocabulary and is too short for
+        # "assessment_in_progress" (22), so it would have started truncating on
+        # any database created from the models rather than from the migrations.
+        Enum(PipelineStatus, native_enum=False, length=30), nullable=False
     )
     remarks: Mapped[str | None] = mapped_column(Text)
     set_by: Mapped[uuid.UUID | None] = mapped_column(

@@ -26,6 +26,7 @@ from app.core.config import get_settings
 from app.models.candidate import Candidate, JobCandidateLink, Profile, VerificationRequest
 from app.models.enums import LinkSource, SubmittedVia, VerificationStatus
 from app.models.job import Job
+from app.models.tenant import Tenant
 from app.schemas.verification import (
     EmployerFormField,
     EmployerFormIn,
@@ -78,6 +79,12 @@ async def send_outreach(
     if job is None or job.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    # Loaded once, outside the loop: the template addresses the candidate on
+    # behalf of a named company, and rendering it with an empty company name
+    # produces "a role at ." in the candidate's inbox.
+    tenant = await session.get(Tenant, user.tenant_id)
+    company_name = tenant.name if tenant is not None else "PickReady"
+
     sent: list[uuid.UUID] = []
     skipped_databank: list[uuid.UUID] = []
     not_linked: list[uuid.UUID] = []
@@ -101,13 +108,23 @@ async def send_outreach(
 
         candidate = await session.get(Candidate, candidate_id)
         token = make_outreach_token(link.profile_id, job.id)
-        outreach_url = f"{get_settings().frontend_url}/outreach/{token}"
+        # The candidate page is served at /portal/outreach/[token] (see
+        # frontend/app/(candidate)/portal/outreach/[token]/page.tsx). The bare
+        # /outreach/{token} this used to build has no route, so every emailed
+        # link 404'd even once the mail itself was delivered.
+        outreach_url = f"{get_settings().frontend_url}/portal/outreach/{token}"
         celery_app.send_task(
             "pickready.send_email",
             args=[
                 str(user.tenant_id), candidate.email, "candidate_outreach",
-                {"outreach_url": outreach_url, "job_title": job.title,
-                 "candidate_name": candidate.full_name},
+                {"outreach_url": outreach_url,
+                 # Alias: a tenant-authored row may still use the older
+                 # {{outreach_link}} placeholder, and an unknown placeholder
+                 # renders as an empty string rather than failing loudly.
+                 "outreach_link": outreach_url,
+                 "job_title": job.title,
+                 "candidate_name": candidate.full_name,
+                 "company_name": company_name},
             ],
         )
         sent.append(candidate_id)

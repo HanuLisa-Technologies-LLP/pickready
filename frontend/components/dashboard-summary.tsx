@@ -18,7 +18,7 @@ import {
   Users,
 } from "lucide-react";
 
-import { apiGet } from "@/lib/api";
+import { ApiError, apiGet } from "@/lib/api";
 import type { DashboardSummary } from "@/lib/types";
 import { PageHeader } from "@/components/app-shell";
 import {
@@ -41,11 +41,20 @@ import { ExportXlsxButton } from "@/components/export-xlsx-button";
 export function DashboardSummaryView() {
   const [summary, setSummary] = React.useState<DashboardSummary | null>(null);
   const [loading, setLoading] = React.useState(true);
+  // GET /dashboard/summary is gated on `view_dashboard`, which the Company
+  // Admin (role `client`) does NOT hold by default. Collapsing that 403 into
+  // the same "could not be loaded" state as a server fault is what made the
+  // dashboard read as broken to the first person who signs a new customer up:
+  // the answer is "not yours to see", and it does not improve on a reload.
+  const [forbidden, setForbidden] = React.useState(false);
 
   React.useEffect(() => {
     apiGet<DashboardSummary>("/dashboard/summary")
       .then(setSummary)
-      .catch(() => setSummary(null))
+      .catch((error: unknown) => {
+        setSummary(null);
+        if (error instanceof ApiError && error.status === 403) setForbidden(true);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -94,6 +103,11 @@ export function DashboardSummaryView() {
 
       {loading ? (
         <LoadingCards count={6} className="lg:grid-cols-3" label="Loading dashboard" />
+      ) : forbidden ? (
+        <ErrorState
+          title="The dashboard is not part of your access"
+          description="Ask your Company Admin to grant you dashboard visibility."
+        />
       ) : !summary ? (
         <ErrorState
           title="Dashboard unavailable"

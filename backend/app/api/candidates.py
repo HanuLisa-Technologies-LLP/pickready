@@ -67,7 +67,18 @@ from app.workers.celery_app import celery_app
 
 router = APIRouter()
 
-FORWARD_STATUSES = {PipelineStatus.shortlisted, PipelineStatus.offered, PipelineStatus.joined}
+#: Statuses that move an application FORWARD. `offer_extended` is the current
+#: name for `offered` (migration 0018 kept both valid), and omitting it meant a
+#: fresh-sourced candidate advanced under the new name was not treated as
+#: progressed at all.
+FORWARD_STATUSES = {
+    PipelineStatus.shortlisted,
+    PipelineStatus.interview_scheduled,
+    PipelineStatus.interview_completed,
+    PipelineStatus.offered,
+    PipelineStatus.offer_extended,
+    PipelineStatus.joined,
+}
 
 
 async def _get_link(
@@ -742,6 +753,9 @@ async def schedule_interview(
     if candidate is None or tenant is None:
         raise HTTPException(status_code=404, detail="Candidate or tenant missing")
 
+    job = await session.get(Job, link.job_id)
+    job_title = job.title if job is not None else "the role"
+
     ics_uid = f"{uuid.uuid4()}@{tenant.domain}"
     sent_from = f"no-reply@{tenant.domain}"
     interview = Interview(
@@ -757,6 +771,12 @@ async def schedule_interview(
         args=[
             str(user.tenant_id), candidate.email, "interview_invite",
             {
+                # The three the template actually addresses the candidate with.
+                # Without them an unknown placeholder renders as "", so the
+                # invitation went out as "Dear ," / "the position at ,".
+                "candidate_name": candidate.full_name or "there",
+                "job_title": job_title,
+                "company_name": tenant.name,
                 "scheduled_at": body.scheduled_at.isoformat(),
                 "notes": body.notes,
                 "ics_uid": ics_uid,

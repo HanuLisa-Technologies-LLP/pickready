@@ -65,11 +65,36 @@ class Tier(str, enum.Enum):
 
 
 class PipelineStatus(str, enum.Enum):
-    rejected = "rejected"
+    """The 10-stage hiring pipeline (spec §3.3), plus two retained legacy values.
+
+    This enum MUST stay in step with `services/hiring_pipeline`'s constants and
+    with migration 0018's `PIPELINE_STATUSES`, which is what the `varchar(30)`
+    columns actually accept. It did not: 0018 widened the vocabulary from five
+    values to ten, but this enum kept only the original five. Reading a row
+    written by the newer code — the first time a recruiter invited anyone to an
+    assessment — then raised
+
+        LookupError: 'assessment_invited' is not among the defined enum values
+
+    inside SQLAlchemy's row processor, which 500'd GET /dashboard/summary for
+    that whole tenant, permanently, from the first invitation onward.
+
+    `offered` and `offer_extended` are deliberately BOTH here: 0018 kept the old
+    name valid rather than rewriting history, so both can appear in the table.
+    """
+    applied = "applied"
+    assessment_invited = "assessment_invited"
+    assessment_in_progress = "assessment_in_progress"
+    assessment_completed = "assessment_completed"
     shortlisted = "shortlisted"
-    hold = "hold"  # requires mandatory remarks (FR-8.2)
-    offered = "offered"
+    rejected = "rejected"
+    interview_scheduled = "interview_scheduled"
+    interview_completed = "interview_completed"
+    offer_extended = "offer_extended"
     joined = "joined"
+    hold = "hold"  # requires mandatory remarks (FR-8.2)
+    #: Legacy synonym of `offer_extended`, retained so historic rows still read.
+    offered = "offered"
 
 
 class VerificationStatus(str, enum.Enum):

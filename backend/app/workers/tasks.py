@@ -198,14 +198,24 @@ async def _send_email_async(
         settings.environment,
     )
 
-    subject, body = await email_render.render(
-        session, tenant.id if tenant is not None else None, template_name, context
-    )
-    html_body = email_render.text_to_html(body)
+    # Rendering happens INSIDE the audited block. It used to sit above the
+    # try/finally, so a template that resolved to neither a tenant row nor a
+    # default raised ValueError before the audit was armed: the invitation was
+    # discarded with no email_log row, no audit_log row, and a 200 already
+    # returned to the caller. The only trace was a stderr traceback. Any future
+    # render failure now lands in audit_log with status="failed" like every
+    # other delivery failure.
+    subject = ""
+    body = ""
+    html_body = ""
     delivery_status = "sent"
     message_id = ""
     err_meta: dict = {}
     try:
+        subject, body = await email_render.render(
+            session, tenant.id if tenant is not None else None, template_name, context
+        )
+        html_body = email_render.text_to_html(body)
         message_id = await smtp_send(
             from_email=from_addr,
             from_name=settings.smtp_from_name,

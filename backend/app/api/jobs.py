@@ -725,7 +725,22 @@ async def patch_job(
         job.jd_markdown = jd_generation.strip_em_dashes(body.jd_markdown.strip())
         job.jd_json = jd_generation.parse_jd_markdown(job.jd_markdown)
     elif "jd" in sent and body.jd is not None:
+        # Re-render the document from the edited sections. Writing only
+        # `jd_json` left `jd_markdown` stale, and `jd_markdown_for` prefers the
+        # STORED document over a re-render — so an edit made on the job detail
+        # page (which sends `jd`, not `jd_markdown`) updated the recruiter's
+        # view and never reached the candidate-facing JD at /apply/{job_id}.
+        # The document is canonical; it must move whenever the sections do.
+        from app.services import jd_generation
+
         job.jd_json = body.jd.model_dump(mode="json")
+        job.jd_markdown = jd_generation.strip_em_dashes(
+            jd_generation.render_jd_markdown(
+                job.jd_json,
+                min_years=job.experience_min_years,
+                max_years=job.experience_max_years,
+            )
+        )
     if "grade" in sent and body.grade is not None:
         # ASSUMPTION (mirrors PUT /jd): changing the grade changes how many
         # questions a FUTURE candidate is asked, but does NOT regenerate an
