@@ -17,6 +17,7 @@ Invariants under test:
 """
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -269,3 +270,50 @@ def _returns(keys):
     async def _loader(session):
         return keys
     return _loader
+
+
+@pytest.mark.asyncio
+async def test_a_stalled_provider_is_abandoned_at_the_attempt_timeout(monkeypatch):
+    """One slow provider must not hold a call open past its budget.
+
+    Regression: httpx's `read` timeout only fires when NO byte arrives for that
+    long, and OpenRouter pads a pending completion with whitespace to keep the
+    connection alive. A jd_generation attempt with a 15s read timeout was
+    observed running 47 seconds in production, and the background assessment
+    tasks stopped returning at all. The attempt is now bounded by wall clock.
+    """
+    from app.services import llm_router
+
+    llm_router._breaker.clear()
+
+    async def _stalls(client, key, messages, json_mode, max_tokens):
+        await asyncio.sleep(5)
+        return "never reached"
+
+    async def _fast(client, key, messages, json_mode, max_tokens):
+        return "ok"
+
+    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "openrouter", _stalls)
+    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _fast)
+    monkeypatch.setattr(
+        llm_router,
+        "_load_keys",
+        lambda session: _resolved([
+            llm_router._RouterKey(provider="openrouter", api_key="x", fingerprint="o1"),
+            llm_router._RouterKey(provider="groq", api_key="x", fingerprint="g1"),
+        ]),
+    )
+
+    started = time.monotonic()
+    result = await llm_router.invoke_llm(
+        "jd_generation", [{"role": "user", "content": "hi"}], timeout=0.2
+    )
+    elapsed = time.monotonic() - started
+
+    # The stalled first-choice provider was abandoned and the healthy one served.
+    assert result == "ok"
+    assert elapsed < 4, f"attempt was not bounded: took {elapsed:.1f}s"
+
+
+async def _resolved(value):
+    return value

@@ -54,6 +54,7 @@ SECURITY: API keys are never logged, and never included in exception messages.
 """
 from __future__ import annotations
 
+import asyncio
 import itertools
 import logging
 import time
@@ -555,6 +556,9 @@ class _RouteContext:
     #: Providers that answered with an ACCOUNT-level failure during THIS call.
     #: Their remaining keys are skipped (see `_is_account_level_failure`).
     dead_providers: set[str] = field(default_factory=set)
+    #: Hard wall-clock ceiling for ONE attempt. Not the same thing as the httpx
+    #: timeout, and that difference is the point — see `_attempt`.
+    attempt_timeout: float | None = None
     errors: list[str] = field(default_factory=list)
 
 
@@ -619,11 +623,34 @@ async def _attempt(state: RouterState) -> dict:
     key = ctx.chain[index]
     started = time.monotonic()
     try:
-        result = await _PROVIDER_CALLERS[key.provider](
-            ctx.client, key, ctx.messages, ctx.json_mode,
-            getattr(ctx, "max_tokens", 4096),
+        # asyncio.wait_for, NOT just the httpx timeout. httpx's `read` timeout
+        # only fires when NO byte arrives for that long, and OpenRouter pads a
+        # pending completion with whitespace to hold the connection open — so a
+        # jd_generation attempt with a 15s read timeout was observed running 47
+        # seconds, and background chains stopped returning at all. This is a
+        # wall-clock ceiling on the attempt that no amount of keep-alive traffic
+        # can defeat. It is also clamped to whatever is left of the whole call's
+        # budget, so one attempt can never overrun the deadline that the
+        # conditional edge is enforcing between attempts.
+        bounds = [
+            t
+            for t in (
+                getattr(ctx, "attempt_timeout", None),
+                (ctx.deadline - time.monotonic()) if ctx.deadline is not None else None,
+            )
+            if t is not None
+        ]
+        limit = min(bounds) if bounds else None  # None == unbounded (tests)
+        result = await asyncio.wait_for(
+            _PROVIDER_CALLERS[key.provider](
+                ctx.client, key, ctx.messages, ctx.json_mode,
+                getattr(ctx, "max_tokens", 4096),
+            ),
+            timeout=limit,
         )
-    except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
+    except (
+        httpx.HTTPError, KeyError, IndexError, ValueError, asyncio.TimeoutError
+    ) as exc:
         # Rate limits, 5xx, timeouts, malformed responses — mark and move on to
         # the next key. Never include the key material in the message.
         latency_ms = (time.monotonic() - started) * 1000
@@ -763,6 +790,7 @@ async def invoke_llm(
             retry_budget=retry_budget_for(task_type),
             deadline=time.monotonic() + budget if budget else None,
             max_tokens=max_tokens_for(task_type),
+            attempt_timeout=request_timeout,
         )
         final: RouterState = await _router_graph.ainvoke(
             {
