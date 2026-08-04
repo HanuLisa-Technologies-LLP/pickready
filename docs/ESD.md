@@ -192,7 +192,20 @@ The browser sends a Firebase ID token to `/api/v1/auth/firebase/session`. The AP
 
 ### 7.2 Workspace selection
 
-One identity may belong to more than one workspace. `/select-context` issues the audience and tenant context selected by the user.
+**The sign-in form does not ask.** It collects an email address and a password,
+or offers Continue with Google. Which portal the user reaches is resolved
+server-side from the account record and returned by the session exchange; the
+frontend routes on that answer. A `?portal=` query parameter still deep-links
+(candidate apply links rely on it) but there is no control that sets it.
+
+`/select-context` survives for the case it was actually needed for: one identity
+belonging to more than one workspace, choosing between workspaces the backend
+has already resolved. That is a disambiguation among real memberships, not a
+declaration of intent.
+
+The removed picker was a hint, never an authorization. Selecting "Provider
+owner" granted nothing, so a wrong guess produced a refusal indistinguishable
+from a broken account.
 
 Distinct JWT audiences are used for:
 
@@ -245,9 +258,8 @@ sequenceDiagram
     API->>DB: Stamp 30-day active window
     API->>Q: Queue candidate matching
     API-->>UI: Return public application link
-    UI->>API: Review and finalise technical bank
-    UI->>API: Review and finalise PPI framework
-    API->>DB: Both approved, assessment_status = ready_for_candidates
+    UI->>API: Review and save PPI framework
+    API->>DB: Framework approved, assessment_status = ready_for_candidates
 ```
 
 The current UI always creates a draft first. A compatibility API default can
@@ -255,7 +267,7 @@ publish immediately, but it is not the intended interface workflow.
 
 Publishing and assessment readiness are INDEPENDENT states. A published job
 accepts applications and ranks them immediately; it cannot invite anyone to an
-assessment until the recruiter has finalised both halves of the setup
+assessment until the recruiter has saved the PPI framework
 (section 12.1.2). Separating them is deliberate: making publish wait on the
 review would hold the posting window closed over a step that only affects what
 happens after a candidate has already applied.
@@ -361,9 +373,23 @@ waiting on.
 #### 12.1.2 The review gate
 
 `jobs.assessment_status` is `questions_pending_review` on creation and becomes
-`ready_for_candidates` only when BOTH `questions_approved_at` and
-`framework_approved_at` are stamped. `_refresh_setup_status` recomputes it after
-either finalize handler, so neither has to know about the other's state.
+`ready_for_candidates` when `framework_approved_at` is stamped.
+`_refresh_setup_status` recomputes it from that column alone.
+
+The technical bank no longer gates anything: generated questions are usable
+immediately, and editing or removing one takes effect at once. It is not a gate
+in either direction - approving the bank alone does not open a job, or removing
+one gate would have removed both and candidates would be assessed against
+criteria nobody confirmed.
+
+`questions_approved_at` is still stamped by the surviving finalize route and is
+now read by nothing. It was deliberately not dropped in the same change that
+stopped reading it, so a rollback needs no data restore.
+
+The asymmetry is the point. The framework is the fixed criteria every candidate
+on the job is graded against and is frozen once anyone has been assessed, so a
+human confirming it is the comparability guarantee. A technical question is
+scored against its own rubric, so a weak one costs one item on one report.
 
 Until the job is ready:
 
@@ -375,10 +401,13 @@ A saved framework is frozen: add/update/delete return 409 until it is reopened,
 and reopening is itself refused once any candidate has been assessed against it,
 because a report is immutable and states a grade against those exact criteria.
 
-`pickready.remind_unapproved_technical_questions` runs hourly and mails everyone
-who could approve a job left pending past
-`settings.technical_review_reminder_hours`. `question_reminder_sent_at` makes it
-one reminder per job rather than an hourly nag.
+`pickready.remind_unapproved_technical_questions` keeps its name and hourly
+schedule but now chases an unapproved FRAMEWORK, measured against
+`framework_generated_at` alone. It previously took the earlier of the two
+generation stamps, which after the gate change would chase a job whose framework
+had only just been generated because its technical questions happened to be
+older - and since `question_reminder_sent_at` allows one reminder per job, that
+would spend it on a review nobody was late on.
 
 #### 12.1.3 Per-candidate PPI questions
 
@@ -405,6 +434,33 @@ The recruiter invitation endpoint:
 - returns per-candidate skipped reasons.
 
 Starting requires a valid invitation. Messages are written one answer at a time. The full conversation is persisted for processing and audit.
+
+**Adaptive follow-ups.** Each submitted answer is evaluated for whether anything
+specific and material is missing; if so the agent composes one follow-up against
+the transcript so far, which is read back from the persisted messages rather
+than held in process memory (each turn is an independent stateless request).
+
+Three invariants constrain the mechanism, and each is covered by an integration
+test because each fails silently if broken:
+
+- **Grouping.** A follow-up is recorded under the *same* question key as the
+  question that produced it, so its answer joins that question's group for
+  scoring. A new key would be dropped without error, because nothing iterates
+  keys the framework did not define.
+- **Billing.** A follow-up does not extend the question list and does not
+  advance the question index. Completion, and therefore the charge, still fires
+  after exactly the same set of base questions.
+- **Completion.** A follow-up outstanding on the final base question holds
+  completion open, so the customer is not charged and scoring is not dispatched
+  while the candidate is still answering.
+
+Termination is structural rather than conventional: at most one follow-up per
+base question and a fixed per-conversation ceiling, held in a persisted counter
+so it survives a retry or a message that fails to write. Turns are bounded by
+question count plus that ceiling.
+
+Every failure path - provider outage, timeout, unparseable response, an
+over-long or empty follow-up - falls back to asking the next prepared question.
 
 ### 12.3 Parallel scoring and synthesis
 
@@ -514,7 +570,12 @@ Lifecycle email content is generated through the provider router with a determin
 
 Application confirmation, assessment invitation/reminder/completion, shortlist, rejection, hold, interview scheduling/completion, offer, and joined events are implemented.
 
-The historical question-bank reminder task is inert because the current workflow has no manual bank-approval gate.
+The question-bank reminder task keeps its name but no longer chases a technical
+bank: that approval step was removed, so `questions_pending_review` now has one
+cause, an unapproved PPI framework, and the overdue threshold is measured
+against the framework's own generation timestamp. The task name is retained
+because a beat schedule entry and a worker registration have to agree across a
+rolling deploy.
 
 ### 14.2 Employer verification
 
@@ -539,6 +600,21 @@ old-profile review = 3
 Consumption methods require a stable idempotency key. The ledger is append-only; balance is derived and mirrored for fast display.
 
 Celery beat reconciles invitations after the seven-day settlement window. A candidate who started but did not finish incurs 20 sub-units; a candidate who never opened after reminders incurs four. A negative balance remains valid historical state but prevents new invitations.
+
+**Demonstration tenants.** `tenants.is_demo` exempts a tenant from billing
+*refusals*, not from billing *records*. The headroom check consults the flag
+before summing the balance - a demonstration tenant that has run assessments
+carries a negative ledger like any other, and evaluating the balance first would
+gate precisely the accounts that must never be gated. The deficit flag is never
+raised for them, so neither dunning nor the deficit banner fires, and the
+balance is presented as unlimited. Ledger writes are unchanged.
+
+It is a column rather than a constant in code so the exemption is visible in the
+data and a further demonstration tenant is an `UPDATE`. Matching is by primary
+key, never by company name: a near-miss on a name would exempt a paying
+customer, and that failure is silent - it raises nothing and writes no anomaly,
+it simply stops collecting money. Tests pair every demonstration assertion with
+a paying-tenant twin for that reason.
 
 ## 16. Business-development architecture
 
@@ -578,6 +654,69 @@ The router supports up to seven configured keys per provider, round-robin select
 | Structured extraction | Gemini → OpenRouter → Groq |
 
 Interactive and background operations have separate budgets. Failed providers are skipped until their circuit recovers.
+
+### 17.3 Sampling policy
+
+Temperature is data alongside the routing table, not a literal in the router. It
+was previously hard-coded in two places - the OpenAI-shaped payload and the
+Gemini generation config - which could drift apart and left no task able to
+differ from any other.
+
+The split is by whether a task **judges** or **writes**:
+
+| Task | Temperature |
+|---|---:|
+| Behavioral/PPI scoring | 0.0 |
+| Report synthesis | 0.0 |
+| Candidate reranking | 0.0 |
+| Structured extraction | 0.0 |
+| Technical question generation | 0.4 |
+| JD generation, email drafting | 0.5 |
+| Conversation turn | 0.7 |
+
+Anything that judges is deterministic, so the same answer yields the same grade
+whenever it is scored; a grade that depends on *when* it was produced is
+indefensible in a hiring decision and unfalsifiable in review, because a
+disagreeing rescore reads as a broken rubric. Report synthesis is deterministic
+despite emitting prose, because it states grades. Unlisted tasks default to 0.0 -
+a new creative task merely reads flat, whereas a new scoring task sampling above
+zero would silently become irreproducible.
+
+### 17.4 Tracing and observability
+
+LangSmith tracing attaches inside the router's single entry point rather than at
+each agent. Every LLM call in the product already routes through that function,
+so one attachment covers the technical scorer, the PPI scorer, the interviewer
+and report synthesis, and cannot be forgotten when a fifth agent is added.
+
+Runs are named `llm:<task_type>` and tagged, so the dashboard separates agents
+with no per-agent wiring. A span covers the whole provider chain rather than one
+attempt: the operational question is whether a call eventually produced an
+answer and how long the fallback walk took.
+
+Three properties are deliberate:
+
+- **Off without a key.** Absent `LANGSMITH_API_KEY` the tracer allocates nothing
+  and makes no network call, so tests and local development cannot post into a
+  shared project. `LANGSMITH_TRACING=false` silences an environment that has the
+  key mounted.
+- **Never load-bearing.** A missing SDK, bad key, unknown project or unreachable
+  endpoint degrades to an untraced call, never a failed one. Observability is
+  not worth an outage.
+- **No candidate content by default.** Traces carry task type, message count,
+  prompt size, response length, provider and error - enough to identify a failing
+  or degrading agent. Prompt and completion text carry a real candidate's answers
+  and a real job description; exporting those to a third party requires
+  `LANGSMITH_TRACE_CONTENT=true`. Provider API keys are never recorded.
+
+### 17.5 Broker publication
+
+Publishing to Redis carries an explicit connect and socket timeout. The default
+is unbounded, which means an unreachable broker does not raise, it blocks - and
+a blocked publish silently defeats every `try/except` guarding an enqueue,
+because no exception ever reaches the handler. Observed as a management job that
+located its inputs and then died at the task ceiling having written nothing,
+because its first publish never returned.
 
 ### 17.3 Production recommendation
 

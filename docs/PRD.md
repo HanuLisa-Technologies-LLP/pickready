@@ -87,7 +87,7 @@ BD users do not operate inside a customer tenant and cannot access company hirin
 flowchart LR
     A["Company profile"] --> B["AI-assisted job draft"]
     B --> C["Recruiter edits and publishes"]
-    C --> C2["Technical bank + PPI framework generated, reviewed, finalised"]
+    C --> C2["Technical bank generated and usable; PPI framework reviewed and saved"]
     C2 --> D["Public applications, sourced profiles, and databank uploads"]
     D --> E["Resume parsing and hybrid matching"]
     E --> F["Recruiter selects candidates"]
@@ -180,22 +180,36 @@ The service validates generated questions and tops up missing content
 deterministically, so an LLM outage produces a usable draft rather than an empty
 screen.
 
-**This is the one manual step in an otherwise fully automated pipeline.** The
-job enters `questions_pending_review` and stays there until a recruiter has
-reviewed and finalised **both** halves; approving one does not open the job.
-Only then does it become `ready_for_candidates`. Until it does:
+**The technical question bank has no approval step.** Generated questions are
+usable the moment they exist. A recruiter may still edit or remove an individual
+question, and the change takes effect immediately, but nothing waits on them.
+The "Finalise questions" control is gone from the job setup screen.
+
+**The PPI framework review remains, and it is the one manual step in an
+otherwise fully automated pipeline.** The job enters `questions_pending_review`
+and stays there until the framework is saved; only then does it become
+`ready_for_candidates`. Until it does:
 
 - no candidate can open the unified conversation; and
-- no candidate can be invited - the invitation endpoint refuses with a message
-  naming what is still outstanding.
+- no candidate can be invited - the invitation endpoint refuses and names the
+  framework as what is outstanding.
 
 Applications still arrive in the meantime and are ranked as normal.
 
-An operational safeguard stops the step going silent: a job left unapproved past
-a configured threshold (24-48 hours) mails everyone who could approve it, once.
+The two halves are deliberately not treated alike, and the asymmetry is the
+reason one survived. The framework is the fixed evaluation criteria **every**
+candidate on the job is graded against, it is frozen once anyone has been
+assessed, and a report states a grade against those exact criteria - so a human
+confirming it is the product's only comparability guarantee. A technical
+question is scored against its own rubric, so a weak one costs a single item on
+a single report rather than making two reports incomparable.
 
-The reinstatement of this gate on 2026-07-30 supersedes the 2026-07-25 decision
-that removed it.
+An operational safeguard stops the surviving step going silent: a job whose
+framework is left unapproved past a configured threshold (24-48 hours) mails
+everyone who could approve it, once.
+
+This supersedes the 2026-07-30 reinstatement **for the technical half only**.
+The framework half of that decision stands.
 
 ### 7.4 Posting lifecycle
 
@@ -369,6 +383,26 @@ job's technical bank with the candidate's PPI questions into one natural
 exchange; the candidate never sees or interacts with two separate bots and is
 never told which engine scores which answer.
 
+**The agent is adaptive, not a script.** It carries the conversation so far into
+every turn, so it can refer back to what the candidate has already said and does
+not re-tread ground. When an answer leaves something specific and material
+unsaid - a claim with no outcome, a decision with no reasoning, an answer that
+talks around the question - it asks a follow-up in the candidate's own terms
+before moving on. A complete short answer is accepted as complete, and a
+negative answer ("I have not used that") is accepted without pressing.
+
+**The interview is bounded, and finishes.** At most one follow-up per question
+and a fixed ceiling per conversation, so the number of turns can never exceed
+the number of questions plus that ceiling however the model behaves. A follow-up
+is extra evidence for a question already asked, never an extra question: it is
+recorded against the same question it came from, so it reaches the same scorer,
+and it does not change when the assessment is considered complete or when the
+customer is charged.
+
+If the model is unavailable the agent asks the next prepared question. An outage
+costs the follow-ups and nothing else; it never costs a candidate their
+assessment.
+
 Validation is not asked here at all. It is six mandatory fields on the
 application form (section 9.x), captured before the conversation begins.
 
@@ -427,6 +461,24 @@ parallel and do not wait on each other:
 Validation needs no scoring agent: it flows from the application form straight
 into the report. Report synthesis waits for both scoring agents to complete.
 Provider fallbacks and the scoring mode are recorded for audit.
+
+**An answer with nothing in it to grade never reaches a scoring prompt.** Empty,
+single-token and keyboard-mash answers are detected before scoring and routed to
+the same "no usable evidence" outcome as an unanswered question: the lowest
+grade, and a remark that says plainly that nothing was provided. The check is
+deterministic and runs in-process, because the failure it guards against appears
+precisely when the model is unavailable.
+
+The check is deliberately conservative. It decides only whether there is text
+worth scoring, never whether an answer is correct or relevant. "I have not
+worked with Kafka" is a real answer and is passed through to be graded on its
+merits, because wrongly discarding a real answer grades a real candidate down by
+a route nobody can see.
+
+**Scoring is reproducible.** Every agent that judges - technical scoring, PPI
+scoring, report synthesis - runs deterministically, so the same answer produces
+the same grade whenever it is scored. Only the conversational agent's phrasing
+is allowed to vary, and what it asks is fixed by the framework regardless.
 
 "Simultaneous" applies to backend scoring only, never to the candidate's
 experience.
@@ -585,6 +637,19 @@ Credits roll over and do not expire. Consumption can make a balance negative bec
 
 Reminder attempts occur around 24 and 72 hours. Unfinished invitations are settled after seven days. Ledger entries are append-only and carry idempotency keys so retries do not double-charge.
 
+**Demonstration companies are exempt from billing refusals, never from billing
+records.** A small, explicitly flagged set of permanent demonstration tenants
+behaves as fully paid customers: invitations are never blocked, no deficit is
+ever raised against them, no payment is ever requested, and their balance is
+presented as unlimited. Their usage is still recorded in the ledger exactly as
+any other customer's, because the billing screens are part of what a
+demonstration needs to show and a billing page with no usage on it demonstrates
+nothing.
+
+The exemption is a property of the specific tenant records, not of anything a
+customer can acquire, and every other tenant continues to be metered, gated and
+billed unchanged.
+
 ## 15. Business-development workspace
 
 ### 15.1 Lead management
@@ -635,7 +700,21 @@ The public application includes:
 - outreach response; and
 - employer verification.
 
-Authentication supports Google, email/password, and phone through Firebase. The backend exchanges verified Firebase identity for secure HTTP-only application sessions and presents a context selector when one identity belongs to more than one workspace.
+Authentication supports Google, email/password, and phone through Firebase. The backend exchanges verified Firebase identity for secure HTTP-only application sessions.
+
+**Nobody chooses their own workspace at sign-in.** The page asks for an email
+address and a password, or offers Continue with Google, and nothing else. Which
+portal a person lands in is decided entirely by the backend from the account's
+own record - the invitation it was created from, or its account type - and the
+frontend routes them there from what the sign-in returns. A context selector is
+still shown in the one case it is genuinely needed: an identity that belongs to
+more than one workspace, chosen **after** the backend has established which
+workspaces those are.
+
+The previous workspace picker was worse than redundant. Choosing an option never
+granted the access it named - it was only ever a hint - so anyone who guessed
+wrong received a refusal that read as a broken account rather than as a wrong
+choice.
 
 ## 17. Product differentiation
 
