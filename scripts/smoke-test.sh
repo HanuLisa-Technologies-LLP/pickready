@@ -57,7 +57,7 @@ die()  { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || die "curl is required."
 
 [ -n "$TARGET" ] || die "no target URL. Pass one as \$1, or set BACKEND_STAGED_URL, or run scripts/deploy.sh first."
-[ -n "${TEST_BEARER_TOKEN:-}" ] || die "TEST_BEARER_TOKEN is required: it must be a valid PickReady access JWT for a test hiring-manager account."
+[ -n "${TEST_BEARER_TOKEN:-}" ] || die "TEST_BEARER_TOKEN is required. CI mints one per run via scripts/mint-smoke-token.py; to run this by hand: TEST_BEARER_TOKEN=\$(JWT_SECRET=\$(gcloud secrets versions access latest --secret=JWT_SECRET) python3 scripts/mint-smoke-token.py)"
 
 log "Smoke testing ${TARGET}"
 
@@ -121,10 +121,14 @@ for path in "${AUTHED_PATHS[@]}"; do
     pass "${path} 200"
   else
     fail "${path} returned ${code}"
-    # 401 here is far more often an expired TEST_BEARER_TOKEN than a broken
-    # revision, and saying so saves an hour of reading application logs.
+    # CI mints this token seconds before calling us (scripts/mint-smoke-token.py),
+    # so "it expired" is no longer the likely explanation and pointing there
+    # sends the reader somewhere already ruled out. A 401 now means the signing
+    # secret and the verifying secret disagree, or the identity in the token no
+    # longer resolves; a 403 means the audience is wrong for the route.
     if [ "$code" = "401" ] || [ "$code" = "403" ]; then
-      printf '        (check TEST_BEARER_TOKEN: access tokens expire in %s)\n' "15 minutes by default"
+      printf '        (token is minted per-run; a 401 points at JWT_SECRET drift\n'
+      printf '         or SMOKE_USER_ID/SMOKE_TENANT_ID no longer existing)\n'
     fi
     head -c 500 "$BODY_FILE" || true
     echo

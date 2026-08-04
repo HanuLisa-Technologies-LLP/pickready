@@ -100,11 +100,28 @@ jobs:
           NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
         run: ./scripts/deploy.sh
 
+      # Minted here rather than read from a stored secret. A PickReady access
+      # token lives 15 minutes and this job spends about 10 of them building
+      # images, so a hand-pasted TEST_BEARER_TOKEN is usually dead before the
+      # smoke step runs -- observed as "Signature has expired" (run #9) and,
+      # after a manual refresh, "Invalid crypto padding" (run #10).
+      - name: Mint a smoke-test token
+        id: smoke_token
+        run: |
+          JWT_SECRET="$(gcloud secrets versions access latest \
+            --secret=JWT_SECRET --project="$GCP_PROJECT_ID")"
+          TOKEN="$(JWT_SECRET="$JWT_SECRET" python3 scripts/mint-smoke-token.py)"
+          # Mask before emitting: ::add-mask:: redacts the value from every
+          # subsequent log line, and a token that reached the log unmasked
+          # would stay readable in the run's artifacts for its whole lifetime.
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Smoke test the staged revision
         env:
           BACKEND_STAGED_URL: ${{ steps.deploy.outputs.BACKEND_STAGED_URL }}
           FRONTEND_STAGED_URL: ${{ steps.deploy.outputs.FRONTEND_STAGED_URL }}
-          TEST_BEARER_TOKEN: ${{ secrets.TEST_BEARER_TOKEN }}
+          TEST_BEARER_TOKEN: ${{ steps.smoke_token.outputs.token }}
         run: ./scripts/smoke-test.sh
 
       - name: Summary
@@ -173,13 +190,26 @@ jobs:
           STAGE_TAG: ${{ needs.deploy-staged.outputs.stage_tag }}
         run: ./scripts/promote.sh
 
+      # A SECOND mint, deliberately not reused from deploy-staged. This job sits
+      # behind the production environment's approval gate, which can hold for
+      # hours; any token handed across from the earlier job would be long
+      # expired by the time a reviewer clicks approve.
+      - name: Mint a smoke-test token
+        id: smoke_token
+        run: |
+          JWT_SECRET="$(gcloud secrets versions access latest \
+            --secret=JWT_SECRET --project="$GCP_PROJECT_ID")"
+          TOKEN="$(JWT_SECRET="$JWT_SECRET" python3 scripts/mint-smoke-token.py)"
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Smoke test production
         # The same probes, now against the live URLs. A pass here is the proof
         # that the promotion itself worked, not just the staged revision.
         env:
           BACKEND_STAGED_URL: ${{ needs.deploy-staged.outputs.backend_url }}
           FRONTEND_STAGED_URL: ${{ needs.deploy-staged.outputs.frontend_url }}
-          TEST_BEARER_TOKEN: ${{ secrets.TEST_BEARER_TOKEN }}
+          TEST_BEARER_TOKEN: ${{ steps.smoke_token.outputs.token }}
         run: ./scripts/smoke-test.sh
 
       - name: Summary
