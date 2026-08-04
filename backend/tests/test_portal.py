@@ -488,3 +488,107 @@ async def test_portal_job_read_carries_the_job_description() -> None:
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
+
+
+async def test_applying_enqueues_question_generation_immediately(monkeypatch) -> None:
+    """The fix for the wait between applying and being able to start.
+
+    Question generation used to be enqueued LAZILY, by
+    `_ensure_conversation_ready`, which runs the first time the candidate
+    presses Start. So the candidate applied, opened the assessment, and got
+    409 "We are preparing your assessment. Please try again in a moment."
+    while an LLM chain ran -- refreshing a page that kept saying the same
+    thing. Enqueuing at apply time means generation is already under way
+    while they are still on the confirmation screen.
+
+    Asserted here because nothing else covers it: adding the enqueue left all
+    901 tests green, which said nothing either way.
+    """
+    from sqlalchemy import update as sa_update
+
+    from app.api import candidates as cand_mod
+    from app.api import portal as portal_mod
+    from app.core.db import superadmin_scope
+    from app.models import Job
+
+    async def fake_store(_resume):
+        return _asset("https://res.cloudinary.com/x/raw/upload/eager.pdf")
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(cand_mod, "store_resume", fake_store)
+    monkeypatch.setattr(portal_mod, "store_resume", fake_store)
+    monkeypatch.setattr(
+        portal_mod.celery_app, "send_task",
+        lambda name, *a, **k: enqueued.append(name),
+    )
+
+    engine, factory = await _factory_or_skip()
+    fx = _Fixture()
+    try:
+        await _seed(factory, fx)
+        # The branch only runs for a job whose setup is approved; the seed
+        # leaves jobs at questions_pending_review.
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    await s.execute(
+                        sa_update(Job)
+                        .where(Job.id == fx.jobs[0])
+                        .values(assessment_status="ready_for_candidates")
+                    )
+        user = _user(fx)
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    await portal_mod.apply_to_job(
+                        fx.jobs[0], _ASPECTS, _upload(), False,
+                        user=user, session=s, validation=_VALIDATION,
+                    )
+        assert "pickready.generate_candidate_questions" in enqueued, (
+            "applying did not start question generation, so the candidate will "
+            f"wait on the lazy path when they press Start (enqueued: {enqueued})"
+        )
+    finally:
+        await _cleanup(factory, fx)
+        await engine.dispose()
+
+
+async def test_applying_to_an_unapproved_job_does_not_enqueue_generation(
+    monkeypatch,
+) -> None:
+    """The mirror. A job still at questions_pending_review has no approved
+    framework, so generating this candidate's questions against it would
+    produce questions for criteria a human has not confirmed."""
+    from app.api import candidates as cand_mod
+    from app.api import portal as portal_mod
+    from app.core.db import superadmin_scope
+
+    async def fake_store(_resume):
+        return _asset("https://res.cloudinary.com/x/raw/upload/pending.pdf")
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(cand_mod, "store_resume", fake_store)
+    monkeypatch.setattr(portal_mod, "store_resume", fake_store)
+    monkeypatch.setattr(
+        portal_mod.celery_app, "send_task",
+        lambda name, *a, **k: enqueued.append(name),
+    )
+
+    engine, factory = await _factory_or_skip()
+    fx = _Fixture()
+    try:
+        await _seed(factory, fx)
+        user = _user(fx)
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    await portal_mod.apply_to_job(
+                        fx.jobs[0], _ASPECTS, _upload(), False,
+                        user=user, session=s, validation=_VALIDATION,
+                    )
+        assert "pickready.generate_candidate_questions" not in enqueued
+        # The application itself still went through normally.
+        assert "pickready.parse_resume" in enqueued
+    finally:
+        await _cleanup(factory, fx)
+        await engine.dispose()

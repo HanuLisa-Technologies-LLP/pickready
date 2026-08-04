@@ -931,6 +931,38 @@ async def apply_to_job(
             )
         )
         await session.flush()
+        # Start generating THIS candidate's questions now, not when they first
+        # press Start.
+        #
+        # `_ensure_conversation_ready` used to be the only thing that enqueued
+        # this, and it enqueues LAZILY: the candidate opens the assessment, the
+        # questions do not exist yet, so it fires the task and answers 409 "We
+        # are preparing your assessment. Please try again in a moment." The
+        # candidate then waits on an LLM chain that legitimately takes a while,
+        # refreshing a page that keeps saying the same thing. That is the delay
+        # between applying and being able to begin.
+        #
+        # Enqueued here, generation runs while the candidate is still reading
+        # the confirmation screen, so choosing "start now" is genuinely
+        # available immediately. The lazy path stays exactly as it is: it is the
+        # backstop for an application that predates this change, for a job whose
+        # setup was approved after the candidate applied, and for a task that
+        # failed. Both paths are idempotent -- generate_candidate_questions
+        # writes rows keyed on the link, and `_ensure_conversation_ready` only
+        # fires when the count is still zero.
+        #
+        # Never allowed to fail the application, for the same reason as the
+        # confirmation email below: a broker hiccup must not cost the candidate
+        # their submission, and the lazy path will still cover it.
+        try:
+            celery_app.send_task(
+                "pickready.generate_candidate_questions", args=[str(link.id)]
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "portal.question_generation_enqueue_failed link_id=%s error=%s",
+                link.id, type(exc).__name__,
+            )
 
     celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
     # Email 1 of 6: confirm receipt (spec §6.1). Enqueued, never inline
