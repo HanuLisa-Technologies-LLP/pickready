@@ -291,7 +291,20 @@ async def test_ppi_node_scores_every_framework_entry(monkeypatch) -> None:
         _competency(ppi.CATEGORY_SECONDARY, "Observability", 67),
         _competency(ppi.CATEGORY_BEHAVIOURAL, "Ownership", 82),
     ]
-    answers = {str(row.id): ["a", "b"] for row in competencies}
+    # Real prose, not the placeholder ["a", "b"] this fixture used to carry.
+    # `services/answer_quality` now refuses a non-answer before it can reach the
+    # rubric, so a single-character placeholder routes to the unanswered branch
+    # and scores UNANSWERED_SCORE. That is the guard working; the fixture simply
+    # has to look like something a candidate would type.
+    answers = {
+        str(row.id): [
+            f"I owned the {row.name.lower()} work on our payments platform and "
+            "drove it from design through to production rollout.",
+            "The hardest part was migrating live traffic without downtime, so we "
+            "shadowed reads for two weeks before cutting over.",
+        ]
+        for row in competencies
+    }
     out = await fa.ppi_node(
         {"session": None, "link": SimpleNamespace(id=uuid.uuid4()),
          "competencies": competencies, "answers": answers, "transcript": []}

@@ -52,7 +52,7 @@ from app.models.assessment import (
 )
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
-from app.services import llm_router, ppi
+from app.services import answer_quality, llm_router, ppi
 from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELDS
 from app.services.rating import (
     GRADES,
@@ -805,7 +805,20 @@ async def technical_node(state: AssessmentState) -> dict:
         answered: list[str] = []
         for question in questions:
             answer = " ".join(answers.get(str(question.id), []))
-            if not answer:
+            # An answer with nothing in it to grade is treated exactly as an
+            # unanswered one, and deliberately never reaches `_llm_score`.
+            # Letting it through is what produced a passing grade for
+            # `ewidjverip`: on an LLM failure the caller falls back to
+            # `_stable_score`, whose 45..94 floor cannot express Not Matching.
+            # See services/answer_quality for the full mechanism.
+            verdict = answer_quality.assess(answer)
+            if not verdict.substantive:
+                if answer:
+                    logger.info(
+                        "functional_assessment.insufficient_answer "
+                        "link_id=%s question_id=%s reason=%s",
+                        state["link"].id, question.id, verdict.reason,
+                    )
                 scores.append(UNANSWERED_SCORE)
                 continue
             answered.append(answer)
@@ -871,7 +884,18 @@ async def ppi_node(state: AssessmentState) -> dict:
         ordinal_by_category[competency.category] = (
             ordinal_by_category.get(competency.category, 0) + 1
         )
-        collected = answers.get(str(competency.id), [])
+        # Filtered, not just checked, so one real answer alongside a keysmash
+        # is still graded on the real one -- and a competency probed only by
+        # non-answers falls through to the unanswered branch below rather than
+        # to `_stable_score`, which cannot return a failing grade.
+        raw_collected = answers.get(str(competency.id), [])
+        collected = [item for item in raw_collected if answer_quality.is_substantive(item)]
+        if raw_collected and not collected:
+            logger.info(
+                "functional_assessment.insufficient_answers "
+                "link_id=%s competency_id=%s answers=%d",
+                state["link"].id, competency.id, len(raw_collected),
+            )
         base = {
             "category": competency.category,
             "name": competency.name,
