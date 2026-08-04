@@ -56,12 +56,26 @@ RESUME_EXTENSIONS = {".pdf", ".docx"}
 def resumes_dir() -> Path | None:
     """Resolve the resume corpus directory, or None if it can't be found.
 
-    Search order: explicit `SEED_RESUMES_DIR`, the conventional container copy
-    target `/resumes`, then `<repo-root>/resumes` for a source checkout."""
+    Search order: explicit `SEED_RESUMES_DIR`, the corpus SHIPPED IN THE IMAGE,
+    the conventional container copy target `/resumes`, then `<repo-root>/resumes`
+    for a source checkout.
+
+    The shipped copy is why the demo candidates can exist in production at all.
+    The corpus used to live at `<repo-root>/resumes`, which is OUTSIDE the
+    backend Docker build context, so it never reached the image and this
+    function returned None on Cloud Run. The seed then logged that it found no
+    files and moved on, which is why production had two candidates against the
+    thirty the demo assumes. Moving the .docx files under `backend/` puts them
+    inside the context, so the existing `COPY . .` carries them to
+    `/app/demo_resumes` with no Dockerfile change. The generator scripts stay
+    at the repo root: they author the corpus and have no business in a runtime
+    image."""
     candidates: list[Path] = []
     env = os.getenv("SEED_RESUMES_DIR")
     if env:
         candidates.append(Path(env))
+    # scripts -> app -> backend root. Present in the image and in a checkout.
+    candidates.append(Path(__file__).resolve().parents[2] / "demo_resumes")
     candidates.append(Path("/resumes"))
     # scripts -> app -> /app (backend root) -> repo root, when run from source.
     candidates.append(Path(__file__).resolve().parents[3] / "resumes")
