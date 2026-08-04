@@ -98,6 +98,15 @@ celery_app.conf.update(
             "task": "pickready.refresh_dashboard_views",
             "schedule": 300.0,  # every 5 minutes (ESD §14)
         },
+        # Still scheduled, and still necessary, but it now chases a DIFFERENT
+        # thing. The technical bank's approval step was removed on 2026-08-04,
+        # so the only remaining way a job sits at `questions_pending_review` is
+        # an unapproved PPI FRAMEWORK. That gate survives, and it is exactly as
+        # silent a bottleneck as the old one: applications keep arriving, no
+        # candidate can be invited, and nothing says why. The task name is kept
+        # as-is rather than renamed, because a beat entry and a worker
+        # registration have to agree across a rolling deploy and renaming both
+        # atomically is not something a rollout can guarantee.
         "remind-unapproved-technical-questions": {
             "task": "pickready.remind_unapproved_technical_questions",
             "schedule": 3600.0,

@@ -37,15 +37,30 @@
   instruction is a request, not a guarantee, and the Hiring Manager's Edit
   control can type anything. Cultural fit cannot be assessed accurately from a
   single assessment and PPI does not claim otherwise.
-- **The manual review gate is BACK, it covers BOTH halves, and approving one
-  does not open the job.** `jobs.assessment_status` starts at
-  `questions_pending_review` and reaches `ready_for_candidates` only when
-  `questions_approved_at` AND `framework_approved_at` are both stamped
-  (`api/assessments._refresh_setup_status`). Until then the conversation 409s
-  and `select-candidates` 409s, so nobody is mailed an assessment they cannot
-  open. This deliberately REVERSES the 2026-07-25 decision that removed the
-  gate. `pickready.remind_unapproved_technical_questions` is live again and is
-  what stops the one manual step going silent.
+- **The manual review gate covers the FRAMEWORK ONLY** (amended 2026-08-04,
+  client decision). `jobs.assessment_status` starts at
+  `questions_pending_review` and reaches `ready_for_candidates` when
+  `framework_approved_at` is stamped (`api/assessments._refresh_setup_status`).
+  Until then the conversation 409s and `select-candidates` 409s, so nobody is
+  mailed an assessment they cannot open.
+  **The TECHNICAL question bank no longer gates anything**: generated questions
+  are usable immediately, the "Finalise questions" control is gone from
+  `components/job-setup-review.tsx`, and editing an individual question still
+  takes effect at once. This reverses only the technical half of the 2026-07-30
+  decision; the framework half stands. The two are not symmetric, and that is
+  the whole reason one survived: the framework is the fixed criteria EVERY
+  candidate on the job is graded against and is frozen once anyone is assessed,
+  so a human confirming it is the product's only comparability guarantee. A
+  technical question is scored against its own rubric, so a weak one costs one
+  item on one report rather than making two reports incomparable.
+  `questions_approved_at` is still stamped by the surviving finalize route and
+  is now READ BY NOTHING; it was deliberately not dropped in the same change
+  that stopped reading it, so a rollback needs no data restore.
+  `pickready.remind_unapproved_technical_questions` keeps its name and its
+  hourly schedule but now chases an unapproved FRAMEWORK, measured against
+  `framework_generated_at` alone. The both-halves rule had NO test for its
+  entire life, which is why `tests/test_assessment_setup_gate.py` now pins the
+  rule that replaced it.
 - **Publishing and assessment readiness are independent.** A published job
   takes applications and ranks them immediately; it just cannot invite anyone
   yet. Making publish wait on the review would hold the 30-day posting window

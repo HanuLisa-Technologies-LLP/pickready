@@ -66,15 +66,28 @@ async def _staff_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID
 
 
 async def _refresh_setup_status(session: AsyncSession, job: Job) -> None:
-    """A job is open to candidates only when BOTH halves are approved (spec §11).
+    """A job is open to candidates once the PPI FRAMEWORK is approved.
 
-    Called after either finalize handler, so neither has to know about the
-    other's state. Approving one half of the setup never opens the job on its
-    own -- a candidate would then be assessed against an unreviewed framework,
-    which is exactly what the manual step exists to prevent.
+    CHANGED 2026-08-04, client decision: the technical question bank no longer
+    gates anything. It used to be the other half of this condition, and a job
+    stayed at `questions_pending_review` until a recruiter pressed Finalize on
+    it. That step is removed -- generated questions are usable immediately.
+
+    The FRAMEWORK review is deliberately KEPT, and the two are not the same
+    thing. The framework is the fixed evaluation criteria every candidate on
+    this job is graded against, it is frozen once anyone has been assessed, and
+    a report states a grade against those exact criteria. A human confirming it
+    is the product's comparability guarantee. The technical bank carries no such
+    promise: each question is scored against its own rubric, and a weak question
+    costs one item on one report rather than making two reports incomparable.
+
+    `questions_approved_at` is left on the model and still stamped by the
+    finalize route, which survives so an existing client and the historic rows
+    that carry a timestamp both keep working. It simply no longer decides
+    anything -- deliberately not dropped in the same change that stops reading
+    it, so a rollback needs no data restore.
     """
-    both_done = job.questions_approved_at is not None and job.framework_approved_at is not None
-    target = READY_FOR_CANDIDATES if both_done else PENDING_REVIEW
+    target = READY_FOR_CANDIDATES if job.framework_approved_at is not None else PENDING_REVIEW
     if job.assessment_status != target:
         job.assessment_status = target
     await session.flush()

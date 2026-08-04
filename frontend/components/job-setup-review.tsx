@@ -624,18 +624,22 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
               ))}
             </ol>
           )}
-          <Button
-            disabled={busy || activeQuestions.length === 0}
-            onClick={async () => {
-              const ok = await mutate(
-                () => apiPost(`${BASE}/${jobId}/finalize`),
-                "Couldn't finalise the questions"
-              );
-              if (ok) toast({ title: "Technical questions finalised" });
-            }}
-          >
-            {bank?.approved ? "Re-finalise questions" : "Finalise questions"}
-          </Button>
+          {/* The "Finalise questions" button was REMOVED on 2026-08-04 (client
+              decision). Technical questions are usable the moment they are
+              generated, so there is nothing here for a recruiter to unblock.
+              Editing and removing individual questions above still works and
+              still takes effect immediately.
+
+              The PPI framework's Save step is a different control and is
+              deliberately still present: the framework is the fixed criteria
+              every candidate on this job is graded against, and a human
+              confirming it is what makes two reports comparable. */}
+          {activeQuestions.length > 0 ? (
+            <p className="text-sm">
+              These questions are live. Any edit you make here applies to
+              candidates who have not answered them yet.
+            </p>
+          ) : null}
         </CardContent>
       </Card>
     </div>

@@ -759,9 +759,23 @@ def remind_unapproved_technical_questions():
     """The operational safeguard on the pipeline's one manual step (spec §5).
 
     A job whose setup sits unapproved past the configured threshold (24-48h)
-    mails everyone who could approve it. Without this the single manual step
-    becomes a SILENT bottleneck: applications keep arriving, no candidate can
-    be invited, and nothing anywhere says why.
+    mails everyone who could approve it. Without this the manual step becomes a
+    SILENT bottleneck: applications keep arriving, no candidate can be invited,
+    and nothing anywhere says why.
+
+    WHAT IT CHASES CHANGED ON 2026-08-04, THOUGH THE NAME DID NOT.
+    The technical bank's approval step was removed, so `questions_pending_review`
+    now has exactly one cause: an unapproved PPI FRAMEWORK. The threshold is
+    therefore measured against `framework_generated_at` alone. It used to take
+    the earlier of the two generation stamps, which after the change would chase
+    a job whose framework had only just been generated because its technical
+    questions happened to be older -- a reminder for a review nobody is late on,
+    and `question_reminder_sent_at` makes it one per job, so that wasted the
+    single reminder the job ever gets.
+
+    The task name is deliberately left alone: a beat entry and a worker
+    registration must agree across a rolling deploy, and renaming both
+    atomically is not something a rollout can guarantee.
 
     `question_reminder_sent_at` makes it one reminder per job, not an hourly
     nag -- the beat schedule runs this every hour so a job is reminded near its
@@ -782,14 +796,11 @@ def remind_unapproved_technical_questions():
                 await session.execute(
                     select(Job).where(
                         Job.assessment_status == "questions_pending_review",
-                        # Either half generated long enough ago is enough to
-                        # chase: whichever half is still unapproved is what is
-                        # blocking every candidate on this job.
-                        func.least(
-                            func.coalesce(Job.questions_generated_at, Job.framework_generated_at),
-                            func.coalesce(Job.framework_generated_at, Job.questions_generated_at),
-                        )
-                        <= threshold,
+                        # The FRAMEWORK stamp alone. It is the only half that
+                        # still gates the job, so it is the only one whose age
+                        # says whether a review is actually overdue.
+                        Job.framework_generated_at.isnot(None),
+                        Job.framework_generated_at <= threshold,
                         Job.question_reminder_sent_at.is_(None),
                         Job.archived_at.is_(None),
                     )
