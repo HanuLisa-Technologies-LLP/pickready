@@ -28,6 +28,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+from celery.exceptions import SoftTimeLimitExceeded
 from celery.signals import worker_ready
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -53,6 +54,24 @@ from app.models import (
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+
+# A task that blew its 600-second soft time limit must NOT be retried.
+#
+# Observed in production 2026-08-01: `generate_technical_questions` reached an
+# unterminating loop in services/ppi._fallback_framework, held a pool slot for
+# the full soft limit, raised SoftTimeLimitExceeded, and was then handed
+# straight back to `autoretry_for=(Exception,)` -- which catches
+# SoftTimeLimitExceeded, because it derives from Exception. Two such tasks took
+# both slots of the `--concurrency=2` worker and, at six attempts each, would
+# have held them for roughly an hour. Every queued email sat behind them: a
+# staff invitation enqueued at 14:07 UTC was still unsent, with the worker
+# silent since 14:03, which is exactly the reported "invites not sent".
+#
+# A task that could not finish in ten minutes will not finish in ten more, so
+# the retry buys nothing and costs the pool slot that delivery needs. The
+# timeout is now terminal: one hung task costs one attempt, not the queue.
+NO_RETRY_ON_TIMEOUT = (SoftTimeLimitExceeded,)
 
 
 # ── Startup preflight ────────────────────────────────────────────────────────
@@ -562,6 +581,7 @@ def send_sms(self, phone: str, message: str):
 @celery_app.task(
     name="pickready.run_matching",
     autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=5,
 )
@@ -612,6 +632,7 @@ def run_matching(job_id: str):
 @celery_app.task(
     name="pickready.generate_technical_questions",
     autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=5,
 )
@@ -653,6 +674,7 @@ def generate_technical_questions(job_id: str):
 @celery_app.task(
     name="pickready.generate_candidate_questions",
     autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=5,
 )
@@ -686,6 +708,7 @@ def generate_candidate_questions(link_id: str):
 @celery_app.task(
     name="pickready.run_functional_assessment",
     autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=5,
 )
@@ -810,6 +833,7 @@ def remind_unapproved_technical_questions():
 @celery_app.task(
     name="pickready.parse_resume",
     autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=5,
 )
@@ -828,6 +852,7 @@ def parse_resume(profile_id: str):
 @celery_app.task(
     name="pickready.send_verification_requests",
     autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=5,
 )
@@ -880,6 +905,7 @@ def send_verification_requests(profile_id: str):
 @celery_app.task(
     name="pickready.parse_verification_reply",
     autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=5,
 )
@@ -927,6 +953,7 @@ def parse_verification_reply(verification_request_id: str, raw_email_text: str):
 @celery_app.task(
     name="pickready.reconcile_assessment_credits",
     autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=3,
 )
@@ -999,18 +1026,54 @@ def send_payment_failed_email(tenant_id: str):
 @celery_app.task(
     name="pickready.refresh_dashboard_views",
     autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=5,
 )
 def refresh_dashboard_views():
     """Refresh the dashboard materialized view (Celery-beat, every 5 min).
     CONCURRENTLY requires the unique index on job_id and must run outside a
-    transaction block  -  hence the AUTOCOMMIT connection."""
+    transaction block  -  hence the AUTOCOMMIT connection.
+
+    THE REFRESH MUST BYPASS RLS, OR IT REBUILDS THE VIEW EMPTY.
+    `dashboard_job_metrics` aggregates `jobs` and `job_candidate_links`, both of
+    which have FORCE ROW LEVEL SECURITY  -  forced, so being the table owner does
+    not exempt the refresh. This connection is brand new and belongs to no
+    tenant, so without an escape hatch every base row is filtered out and
+    REFRESH faithfully rebuilds the view from zero rows. It raises nothing: an
+    empty aggregate is a perfectly valid result. Measured on production before
+    this fix, the view held 0 rows against 35 live jobs, and every dashboard
+    reading it rendered blank behind a clean 200.
+
+    Setting the flag is correct rather than a workaround: this is the same
+    audit-logged cross-tenant escape hatch the policies define, and a
+    platform-wide aggregate is cross-tenant BY DEFINITION. The view is never
+    served raw  -  `api/dashboard` filters it by the caller's tenant.
+
+    The sentinel tenant is pinned alongside it for the reason set out in
+    `core/db.superadmin_scope`: `current_setting` is STABLE, so the planner
+    constant-folds the policies' `::uuid` cast before the bypass OR is ever
+    evaluated, and an empty-string GUC therefore raises during planning no
+    matter what the bypass flag says. Migration 0034 guards the cast with
+    nullif() so this can no longer bite, but pinning the sentinel keeps the task
+    correct even against an unmigrated database.
+    """
     async def _task():
         engine = create_async_engine(get_settings().database_url)
         try:
             async with engine.connect() as conn:
                 await conn.execution_options(isolation_level="AUTOCOMMIT")
+                # false => session-level, so it survives the REFRESH's own
+                # implicit transaction rather than reverting underneath it.
+                await conn.execute(
+                    text("SELECT set_config('app.bypass_rls', 'on', false)")
+                )
+                await conn.execute(
+                    text(
+                        "SELECT set_config('app.tenant_id',"
+                        " '00000000-0000-0000-0000-000000000000', false)"
+                    )
+                )
                 await conn.execute(
                     text("REFRESH MATERIALIZED VIEW CONCURRENTLY dashboard_job_metrics")
                 )

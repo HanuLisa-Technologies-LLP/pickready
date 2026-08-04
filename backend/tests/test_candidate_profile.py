@@ -19,6 +19,7 @@ from sqlalchemy import select, text
 from starlette.datastructures import Headers, UploadFile
 
 from app.services.resume_storage import ResumeAsset
+from tests.application_fixtures import VALIDATION_PAYLOAD as _VALIDATION
 
 
 def _upload(filename: str = "cv.pdf") -> UploadFile:
@@ -245,7 +246,8 @@ async def test_apply_snapshots_the_profile_form_onto_the_application(monkeypatch
                         user=user, session=s,
                     )
                     out = await portal_mod.apply_to_job(
-                        fx.jobs[0], "{}", _upload(), False, user, s
+                        fx.jobs[0], "{}", _upload(), False,
+                        user=user, session=s, validation=_VALIDATION,
                     )
 
         async with factory() as s:
@@ -298,7 +300,8 @@ async def test_main_resume_replaces_without_rewriting_past_applications(monkeypa
             async with s.begin():
                 async with superadmin_scope(s):
                     applied = await portal_mod.apply_to_job(
-                        fx.jobs[0], "{}", _upload(), False, user, s
+                        fx.jobs[0], "{}", _upload(), False,
+                        user=user, session=s, validation=_VALIDATION,
                     )
                     replaced = await portal_mod.replace_main_resume(
                         _upload(), user=user, session=s
@@ -328,7 +331,8 @@ async def test_main_resume_replaces_without_rewriting_past_applications(monkeypa
             async with s.begin():
                 async with superadmin_scope(s):
                     again = await portal_mod.apply_to_job(
-                        fx.jobs[1], "{}", None, True, user, s
+                        fx.jobs[1], "{}", None, True,
+                        user=user, session=s, validation=_VALIDATION,
                     )
                     reused = (await s.execute(
                         select(Profile).where(Profile.id == again.profile_id)

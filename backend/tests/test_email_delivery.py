@@ -615,3 +615,105 @@ def test_every_template_name_the_app_sends_has_a_default() -> None:
         f"template name(s) {missing} are sent by the app but have no entry in "
         "DEFAULT_TEMPLATES; every one of those emails would be silently lost"
     )
+
+
+# ── Queue isolation for delivery (regression, 2026-08-01) ────────────────────
+#
+# Production incident: every task shared one `celery` queue against a
+# `--concurrency=2` worker. Two `generate_technical_questions` runs wedged both
+# slots in an unterminating loop, and a staff invitation enqueued at 14:07 UTC
+# was not delivered until 14:13, when a slot briefly freed at the soft-time-limit
+# boundary. The API had already answered 201 with `email_dispatch: "queued"`, so
+# nothing surfaced the delay. Delivery now has its own queue.
+
+def _celery_app():
+    # Importing tasks is what registers them; the routing assertions below are
+    # meaningless against an empty registry.
+    import app.workers.tasks  # noqa: F401
+    from app.workers.celery_app import celery_app
+
+    return celery_app
+
+
+def test_mail_queue_is_declared_alongside_the_default() -> None:
+    """A worker started without -Q consumes exactly the declared queues.
+
+    If `mail` were routed but never declared, the existing single worker pool
+    would stop consuming it and every email would queue forever.
+    """
+    names = {q.name for q in _celery_app().amqp.queues.values()}
+    assert {"celery", "mail"} <= names
+
+
+def test_declared_queue_routing_keys_match_their_names() -> None:
+    """The Redis transport picks the destination list by ROUTING KEY.
+
+    Left unset, Celery fills a queue's routing key from
+    task_default_routing_key, which is the DEFAULT queue's name, so `mail`
+    would be declared with routing key "celery". Mail would then land back in
+    the `celery` list and a worker started with `--queues=mail` would sit idle
+    while invitations piled up behind the AI work the split exists to escape.
+    """
+    for queue in _celery_app().amqp.queues.values():
+        assert queue.routing_key == queue.name, (
+            f"queue {queue.name!r} has routing key {queue.routing_key!r}; on "
+            "Redis its messages would be delivered to the wrong list"
+        )
+
+
+def test_every_outbound_delivery_task_is_routed_to_the_mail_queue() -> None:
+    """Delivery must never sit behind an LLM chain that legitimately takes
+    minutes. Scanned from the task registry rather than a hand-kept list."""
+    celery = _celery_app()
+    delivery = {
+        name
+        for name in celery.tasks
+        if name.startswith("pickready.")
+        and ("send_" in name or name.endswith("_email"))
+    }
+    assert delivery, "task registry scan matched nothing"
+    misrouted = sorted(
+        name
+        for name in delivery
+        if celery.amqp.router.route({}, name)["queue"].name != "mail"
+    )
+    assert not misrouted, (
+        f"delivery task(s) {misrouted} still route to the slow queue; an "
+        "invitation there can be starved by AI work"
+    )
+
+
+def test_routed_task_names_all_exist() -> None:
+    """A typo in task_routes fails open: the task keeps using the slow queue
+    and nothing reports it."""
+    celery = _celery_app()
+    unknown = sorted(
+        n for n in celery.conf.task_routes if n not in celery.tasks
+    )
+    assert not unknown, f"task_routes names no such task: {unknown}"
+
+
+def test_a_timed_out_task_is_not_auto_retried() -> None:
+    """SoftTimeLimitExceeded derives from Exception, so `autoretry_for=
+    (Exception,)` used to hand a hung task straight back to the pool: the
+    incident log shows `retry: Retry in 1s: SoftTimeLimitExceeded()` and the
+    slot re-occupied in the same second. A task that could not finish in ten
+    minutes will not finish in ten more, and the retry costs the pool slot
+    delivery needs."""
+    from celery.exceptions import SoftTimeLimitExceeded
+
+    celery = _celery_app()
+    offenders = []
+    for name, task in celery.tasks.items():
+        if not name.startswith("pickready."):
+            continue
+        if Exception not in (getattr(task, "autoretry_for", None) or ()):
+            continue
+        if SoftTimeLimitExceeded not in (
+            getattr(task, "dont_autoretry_for", None) or ()
+        ):
+            offenders.append(name)
+    assert not offenders, (
+        f"task(s) {sorted(offenders)} auto-retry on a soft-timeout and can "
+        "wedge a worker slot indefinitely"
+    )

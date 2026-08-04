@@ -57,6 +57,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -69,6 +70,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing_extensions import TypedDict
 
 from app.config.llm_providers import (
+    MIN_CEILING_FRACTION,
+    MIN_USEFUL_MAX_TOKENS,
     PROVIDER_MODELS,
     max_tokens_for,
     provider_order,
@@ -177,12 +180,84 @@ def _is_skippable(key: _RouterKey) -> bool:
 _ACCOUNT_LEVEL_STATUSES = frozenset({401, 402, 403})
 
 
+#: "…but can only afford 2674." — OpenRouter, HTTP 402.
+_OPENROUTER_AFFORD_RE = re.compile(r"can only afford (\d+)", re.IGNORECASE)
+#: "…on tokens per day (TPD): Limit 100000, Used 99729, Requested 4133." — Groq,
+#: HTTP 429. What is left is Limit - Used, which is what we may still ask for.
+_GROQ_QUOTA_RE = re.compile(
+    r"Limit (\d+), Used (\d+), Requested (\d+)", re.IGNORECASE
+)
+
+
+def affordable_max_tokens(exc: Exception) -> int | None:
+    """The output ceiling the provider says it CAN still serve, or None.
+
+    Pure and side-effect free (unit-tested directly).
+
+    THE BUG THIS CLOSES. A 402 from OpenRouter and a token-quota 429 from Groq
+    both look terminal, and the router treated them that way: the 402 condemned
+    the whole OpenRouter account for the call and the 429 burned a retry. But
+    neither says "no". Both say "not THAT many", and both name the number they
+    would accept:
+
+      OpenRouter 402: "You requested up to 4096 tokens, but can only afford
+                       2674."
+      Groq 429:       "tokens per day (TPD): Limit 100000, Used 99729,
+                       Requested 4133."
+
+    Asking again for a ceiling the provider has already told us it can cover is
+    the one retry guaranteed to be worth making. Returning None means the body
+    named no usable number, and the caller keeps the existing behaviour.
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    try:
+        body = exc.response.text
+    except Exception:  # noqa: BLE001 — a body we cannot read tells us nothing
+        return None
+    if not body:
+        return None
+
+    match = _OPENROUTER_AFFORD_RE.search(body)
+    if match:
+        return int(match.group(1))
+
+    match = _GROQ_QUOTA_RE.search(body)
+    if match:
+        limit, used = int(match.group(1)), int(match.group(2))
+        return max(limit - used, 0)
+    return None
+
+
 def is_account_level_failure(exc: Exception) -> bool:
-    """True when `exc` says the provider ACCOUNT is unusable (pure; tested)."""
+    """True when `exc` says the provider ACCOUNT is unusable (pure; tested).
+
+    A status in `_ACCOUNT_LEVEL_STATUSES` that ALSO names a still-affordable
+    ceiling is deliberately excluded: the account is solvent, we simply asked
+    for more than it covers, and `affordable_max_tokens` turns that into a
+    retry rather than writing the provider off for the rest of the call.
+    """
     return (
         isinstance(exc, httpx.HTTPStatusError)
         and exc.response.status_code in _ACCOUNT_LEVEL_STATUSES
+        and not _is_retryable_ceiling(affordable_max_tokens(exc))
     )
+
+
+def _is_retryable_ceiling(ceiling: int | None, requested: int | None = None) -> bool:
+    """A stated ceiling is worth re-asking for only if it can carry real work.
+
+    Two independent bars, and both matter. The absolute floor rejects a ceiling
+    that is useless for any task (a provider with 271 tokens of quota left). The
+    fractional bar rejects a ceiling that is useless for THIS task: it is
+    relative to what the caller asked for, because 2600 tokens is a complete JD
+    and a truncated report.
+    """
+    if ceiling is None or ceiling < MIN_USEFUL_MAX_TOKENS:
+        return False
+    if requested is not None and ceiling < requested * MIN_CEILING_FRACTION:
+        return False
+    return True
 
 
 def _provider_stats(provider: str) -> _ProviderStats:
@@ -553,6 +628,14 @@ class _RouteContext:
     #: Output ceiling sent to every provider on this call. Defaulted so the
     #: tests that build a context by hand keep working unchanged.
     max_tokens: int = 4096
+    #: PER-PROVIDER overrides of `max_tokens`, learned mid-call from a provider
+    #: that told us what it could still afford (see `affordable_max_tokens`).
+    #:
+    #: Scoped per provider on purpose. OpenRouter running a nearly empty prepaid
+    #: balance is a fact about OpenRouter, and letting its 2674-token ceiling
+    #: follow the call onto a Gemini key with a full daily quota would quietly
+    #: truncate a report for no reason. A provider only ever constrains itself.
+    provider_max_tokens: dict[str, int] = field(default_factory=dict)
     #: Providers that answered with an ACCOUNT-level failure during THIS call.
     #: Their remaining keys are skipped (see `_is_account_level_failure`).
     dead_providers: set[str] = field(default_factory=set)
@@ -621,6 +704,14 @@ async def _attempt(state: RouterState) -> dict:
         return {"current_index": index, "error": "chain exhausted"}
 
     key = ctx.chain[index]
+    # The ceiling this PROVIDER gets: the task's, unless this provider has
+    # already told us mid-call that it can only serve less.
+    effective_max_tokens = min(
+        getattr(ctx, "max_tokens", 4096),
+        getattr(ctx, "provider_max_tokens", {}).get(
+            key.provider, getattr(ctx, "max_tokens", 4096)
+        ),
+    )
     started = time.monotonic()
     try:
         # asyncio.wait_for, NOT just the httpx timeout. httpx's `read` timeout
@@ -644,7 +735,7 @@ async def _attempt(state: RouterState) -> dict:
         result = await asyncio.wait_for(
             _PROVIDER_CALLERS[key.provider](
                 ctx.client, key, ctx.messages, ctx.json_mode,
-                getattr(ctx, "max_tokens", 4096),
+                effective_max_tokens,
             ),
             timeout=limit,
         )
@@ -679,6 +770,31 @@ async def _attempt(state: RouterState) -> dict:
             f"{key.provider}: {type(exc).__name__}"
             + (f" (HTTP {status_code})" if status_code else "")
         )
+
+        # The provider may have refused the CEILING rather than the request.
+        # If it named a smaller number it can still serve, adopt that number and
+        # re-ask THIS key — do not advance the index and do not condemn the
+        # provider. Only ever reduce, so this cannot ratchet upward, and the
+        # attempt counter still moves, so the retry budget bounds the loop.
+        ceiling = affordable_max_tokens(exc)
+        if (
+            _is_retryable_ceiling(ceiling, effective_max_tokens)
+            and ceiling < effective_max_tokens
+            and hasattr(ctx, "provider_max_tokens")
+        ):
+            logger.warning(
+                "llm_router.max_tokens_reduced task_type=%s provider=%s "
+                "fingerprint=%s from=%d to=%d status=%s",
+                ctx.task_type, key.provider, key.fingerprint,
+                effective_max_tokens, ceiling, status_code,
+            )
+            ctx.provider_max_tokens[key.provider] = ceiling
+            return {
+                "current_index": index,
+                "attempts": attempts + 1,
+                "error": type(exc).__name__,
+            }
+
         if is_account_level_failure(exc) and hasattr(ctx, "dead_providers"):
             # Don't spend the rest of the budget on sibling keys that bill the
             # same dead account — the next PROVIDER is the useful thing to try.

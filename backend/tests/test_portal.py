@@ -21,6 +21,7 @@ import pytest
 from sqlalchemy import select, text
 from starlette.datastructures import Headers, UploadFile
 from app.services.resume_storage import ResumeAsset
+from tests.application_fixtures import VALIDATION_PAYLOAD as _VALIDATION
 
 
 def _upload(
@@ -45,6 +46,7 @@ def _asset(url: str) -> ResumeAsset:
 
 
 _ASPECTS = json.dumps({str(n): f"answer {n}" for n in range(5, 40)} | {"40": True})
+
 
 
 async def _factory_or_skip():
@@ -146,7 +148,8 @@ async def test_open_apply_with_no_prior_contact_succeeds(monkeypatch) -> None:
             async with s.begin():
                 async with superadmin_scope(s):
                     out = await portal_mod.apply_to_job(
-                        fx.jobs[0], _ASPECTS, _upload(), False, user, s
+                        fx.jobs[0], _ASPECTS, _upload(), False,
+                        user=user, session=s, validation=_VALIDATION,
                     )
         assert out.job_id == fx.jobs[0]
         assert out.resume_reused is False
@@ -199,7 +202,8 @@ async def test_reuse_previous_copies_last_resume(monkeypatch) -> None:
             async with s.begin():
                 async with superadmin_scope(s):
                     first = await portal_mod.apply_to_job(
-                        fx.jobs[0], _ASPECTS, _upload(), False, user, s
+                        fx.jobs[0], _ASPECTS, _upload(), False,
+                        user=user, session=s, validation=_VALIDATION,
                     )
         first_url = uploads[0]
 
@@ -208,7 +212,8 @@ async def test_reuse_previous_copies_last_resume(monkeypatch) -> None:
             async with s.begin():
                 async with superadmin_scope(s):
                     second = await portal_mod.apply_to_job(
-                        fx.jobs[1], _ASPECTS, None, True, user, s
+                        fx.jobs[1], _ASPECTS, None, True,
+                        user=user, session=s, validation=_VALIDATION,
                     )
         assert second.resume_reused is True
         assert len(uploads) == 1, "reuse must NOT re-upload"
@@ -250,7 +255,8 @@ async def test_fresh_upload_creates_a_new_profile(monkeypatch) -> None:
                 async with s.begin():
                     async with superadmin_scope(s):
                         out = await portal_mod.apply_to_job(
-                            jid, _ASPECTS, _upload(), False, user, s
+                            jid, _ASPECTS, _upload(), False,
+                            user=user, session=s, validation=_VALIDATION,
                         )
                         profile_ids.append(out.profile_id)
         assert profile_ids[0] != profile_ids[1]
@@ -284,7 +290,8 @@ async def test_reuse_without_any_previous_resume_is_422(monkeypatch) -> None:
                 async with s.begin():
                     async with superadmin_scope(s):
                         await portal_mod.apply_to_job(
-                            fx.jobs[0], _ASPECTS, None, True, user, s
+                            fx.jobs[0], _ASPECTS, None, True,
+                            user=user, session=s, validation=_VALIDATION,
                         )
         assert exc.value.status_code == 422
     finally:
@@ -310,7 +317,8 @@ async def test_apply_rejects_bad_resume_file(monkeypatch) -> None:
                 async with s.begin():
                     async with superadmin_scope(s):
                         await portal_mod.apply_to_job(
-                            fx.jobs[0], _ASPECTS, bad, False, user, s
+                            fx.jobs[0], _ASPECTS, bad, False,
+                            user=user, session=s, validation=_VALIDATION,
                         )
         assert exc.value.status_code == 422
     finally:
@@ -350,7 +358,8 @@ async def test_apply_context_reports_stored_resume_and_duplicate(monkeypatch) ->
             async with s.begin():
                 async with superadmin_scope(s):
                     await portal_mod.apply_to_job(
-                        fx.jobs[0], _ASPECTS, _upload(), False, user=user, session=s
+                        fx.jobs[0], _ASPECTS, _upload(), False,
+                        user=user, session=s, validation=_VALIDATION,
                     )
 
         # Now: applied to job 0, and a reusable resume exists for job 1.
@@ -400,6 +409,7 @@ async def test_apply_persists_personal_details_on_the_candidate(monkeypatch) -> 
                         fx.jobs[0], _ASPECTS, _upload(), False,
                         full_name="Renamed Applicant", residing_city="Chennai",
                         age=31, gender="female", user=user, session=s,
+                        validation=_VALIDATION,
                     )
         async with factory() as s:
             async with s.begin():

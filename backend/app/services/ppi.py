@@ -213,6 +213,20 @@ def _jd_terms(job: Job, field: str) -> list[str]:
     return out
 
 
+#: Words used to tell two padded competency names apart when the JD gave the
+#: fallback fewer distinct terms than the per-category floor. Must hold at least
+#: MINIMUM_PER_CATEGORY entries, since one pass of the padding loop may use each
+#: at most once.
+_PADDING_QUALIFIERS: tuple[str, ...] = (
+    "further",
+    "adjacent",
+    "broader",
+    "related",
+    "wider",
+    "applied",
+)
+
+
 def _fallback_framework(job: Job) -> list[dict[str, Any]]:
     """A framework built from the JD's own words, with no network call."""
     skills = _jd_terms(job, "skills")
@@ -228,13 +242,53 @@ def _fallback_framework(job: Job) -> list[dict[str, Any]]:
     # Cycle the pool rather than emitting fewer than the minimum: the floor is
     # a product contract, and a short framework silently narrows every report
     # written against this job.
-    filler = cycle(pool)
-    while len(primary) < MINIMUM_PER_CATEGORY:
-        primary.append(f"{next(filler)} (core)")
-    while len(secondary) < MINIMUM_PER_CATEGORY:
-        candidate = f"{next(filler)} (supporting)"
-        if candidate not in secondary:
-            secondary.append(candidate)
+    #
+    # WHY THIS IS A BOUNDED `for` AND NOT A `while`
+    # ---------------------------------------------
+    # The padding used to append only when the generated name happened to be
+    # new:
+    #
+    #     while len(secondary) < MINIMUM_PER_CATEGORY:
+    #         candidate = f"{next(filler)} (supporting)"
+    #         if candidate not in secondary:
+    #             secondary.append(candidate)
+    #
+    # `filler` cycles `pool`, so once every pool term had been used the loop
+    # regenerated names it had already rejected and made no further progress.
+    # Any job whose pool holds fewer than MINIMUM_PER_CATEGORY DISTINCT terms
+    # hung forever, and that is the NORMAL shape of a job created from
+    # `jd_markdown` alone, where `jd_json.skills` is [] and the pool is just the
+    # title. Observed in production 2026-08-01: `generate_technical_questions`
+    # spun until Celery's 600s soft time limit and then autoretried five times,
+    # holding one of the worker pool's two slots for the best part of an hour
+    # each. Every queued assessment task starved behind it, which is what
+    # "assessments are not available" looked like from the outside.
+    #
+    # The loop is now bounded by the shortfall it is filling and appends exactly
+    # one name per pass, so it terminates whatever the pool contains. The
+    # qualifier only has to make the name READ differently to the recruiter who
+    # reviews it; correctness no longer depends on it being unique, which is why
+    # a collision can no longer cost anything worse than one duplicate row that
+    # `_normalise` then drops.
+    def _pad(target: list[str], suffix: str) -> None:
+        taken = {name.casefold() for name in target}
+        filler = cycle(pool)
+        for attempt in range(MINIMUM_PER_CATEGORY):
+            if len(target) >= MINIMUM_PER_CATEGORY:
+                return
+            base = next(filler)
+            name = f"{base} ({suffix})"
+            if name.casefold() in taken:
+                # No digit here, deliberately. This name is rendered to the
+                # Hiring Manager on the setup screen and can survive review into
+                # a report, and claude.md's no-numbers rule is about what a
+                # client reads, not only about scores.
+                name = f"{base} ({_PADDING_QUALIFIERS[attempt]} {suffix})"
+            taken.add(name.casefold())
+            target.append(name)
+
+    _pad(primary, "core")
+    _pad(secondary, "supporting")
 
     for name in primary:
         rows.append(
@@ -354,6 +408,38 @@ def _top_up(rows: list[dict[str, Any]], job: Job) -> list[dict[str, Any]]:
         existing.add(key)
         counts[category] += 1
         rows.append(filler)
+    # The fallback offers exactly MINIMUM_PER_CATEGORY names per category, so a
+    # single collision with an LLM-generated name leaves the category one short,
+    # `framework_is_complete` then refuses the save, and the job is stranded at
+    # `questions_pending_review` with no way forward but hand-typing a
+    # competency. Close the floor explicitly rather than hoping the two name
+    # sets miss each other.
+    #
+    # Bounded by the shortfall, for the same reason as `_pad` above: a loop that
+    # only exits once a generated name happens to be new is a loop that can fail
+    # to exit at all.
+    for category in CATEGORIES:
+        for attempt in range(len(_PADDING_QUALIFIERS)):
+            if counts[category] >= MINIMUM_PER_CATEGORY:
+                break
+            name = f"{job.title} ({_PADDING_QUALIFIERS[attempt]} capability)"[:_MAX_NAME]
+            key = (category, name.casefold())
+            if key in existing:
+                continue
+            existing.add(key)
+            counts[category] += 1
+            rows.append(
+                {
+                    "category": category,
+                    "name": name,
+                    "description": (
+                        "Placeholder for the hiring team to rename during review: "
+                        "a capability this role needs beyond those the job "
+                        f"description names for {job.title}."
+                    ),
+                    "required_level": GRADE_MATCHING,
+                }
+            )
     return rows
 
 

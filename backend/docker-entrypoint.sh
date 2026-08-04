@@ -42,9 +42,24 @@ case "$ROLE" in
       $WORKER_FLAG "$@"
     ;;
   worker)
+    # No -Q: consumes every queue in celery_app.task_queues, so this role keeps
+    # draining mail as well and a deployment that never adds the mail-worker
+    # pool below still delivers every message.
     exec celery -A "$CELERY_APP" worker \
       --loglevel="${CELERY_LOGLEVEL:-info}" \
       --concurrency="${CELERY_CONCURRENCY:-2}" \
+      "$@"
+    ;;
+  mail-worker)
+    # Delivery ONLY. An invitation must not wait behind an LLM chain: on
+    # 2026-08-01 two wedged question-generation tasks took both slots of the
+    # shared worker and a queued staff invite went undelivered while the API
+    # had already reported it sent. Sending is IO against Gmail SMTP and cheap,
+    # so this pool runs small and its slots can never be occupied by AI work.
+    exec celery -A "$CELERY_APP" worker \
+      --loglevel="${CELERY_LOGLEVEL:-info}" \
+      --concurrency="${CELERY_MAIL_CONCURRENCY:-4}" \
+      --queues=mail \
       "$@"
     ;;
   beat)

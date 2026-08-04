@@ -19,6 +19,7 @@ from starlette.datastructures import Headers, UploadFile
 from app.api import candidates as cand_mod
 from app.services import resume_storage
 from app.services.resume_storage import ResumeAsset
+from tests.application_fixtures import VALIDATION_PAYLOAD as _VALIDATION
 
 
 def _upload(
@@ -227,7 +228,8 @@ async def test_apply_creates_a_fresh_profile_each_time(monkeypatch) -> None:
                     async with superadmin_scope(s):
                         # New signature: (job_id, aspects, resume, reuse_previous, user, session)
                         out = await portal_mod.apply_to_job(
-                            jid, aspects, _upload(), False, user, s
+                            jid, aspects, _upload(), False,
+                            user=user, session=s, validation=_VALIDATION,
                         )
                         link = (await s.execute(
                             select(JobCandidateLink).where(

@@ -41,9 +41,29 @@ PROVIDERS: tuple[str, ...] = ("groq", "gemini", "openrouter")
 KEY_SLOTS_PER_PROVIDER = 7
 
 #: Default model per provider. These are read by the router's HTTP callers.
+#:
+#: A RETIRED MODEL ID IS THE SINGLE MOST COMMON WAY A WHOLE TIER GOES DARK, and
+#: it has now happened twice. It does not look like a configuration error from
+#: the inside: the router simply records a failure per key and falls through to
+#: the caller's deterministic template, so the product reports "AI unavailable"
+#: while every credential is perfectly valid. Re-probe these ids whenever AI
+#: output degrades before suspecting the keys.
 PROVIDER_MODELS: dict[str, str] = {
     "groq": "llama-3.3-70b-versatile",
-    "gemini": "gemini-2.0-flash",
+    # A ROLLING ALIAS, deliberately, and the exception to pinning below.
+    # `gemini-2.0-flash` was pinned here and, on 2026-08-01, every Gemini key
+    # answered it with HTTP 429 and the tell-tale body
+    #   "Quota exceeded for metric: ...generate_content_free_tier_requests,
+    #    limit: 0, model: gemini-2.0-flash"
+    # `limit: 0` is not a rate limit that clears on retry — Google had withdrawn
+    # the model from the free tier outright, so the quota ceiling is zero
+    # forever and no amount of backoff or key rotation reaches it. The very same
+    # keys returned HTTP 200 against `gemini-flash-latest` in the same second.
+    # The alias is Google's supported remedy for exactly this: it always
+    # resolves to a current free-tier-eligible flash model (gemini-3.6-flash at
+    # the time of writing), so a future retirement cannot silently remove the
+    # entire Gemini tier again. Verified with JSON mode on all three keys.
+    "gemini": "gemini-flash-latest",
     # NOT the ":free" slug — OpenRouter retired it and now hard-404s every
     # request, which silently killed the whole third fallback tier.
     "openrouter": "meta-llama/llama-3.3-70b-instruct",
@@ -144,6 +164,38 @@ TASK_MAX_TOKENS: dict[str, int] = {
 }
 
 DEFAULT_MAX_TOKENS = 4096
+
+#: Floor for the router's ADAPTIVE max_tokens retry.
+#:
+#: Some providers refuse a request not because the account is dead but because
+#: the ceiling we asked for is larger than what the remaining balance or quota
+#: covers, and they say so precisely:
+#:   OpenRouter 402 "You requested up to 4096 tokens, but can only afford 2674."
+#:   Groq 429     "Limit 100000, Used 99729, Requested 4133."
+#: Both are satisfiable at a smaller ceiling, and both were being thrown away.
+#: The router re-asks the SAME key with the provider's own stated ceiling rather
+#: than condemning the provider (see llm_router.affordable_max_tokens).
+#:
+#: The floor is what stops that from turning into a pointless extra attempt: an
+#: account with 270 tokens of daily quota left cannot produce a usable JD or
+#: report, so below this we accept the failure and move to the next provider,
+#: which is the genuinely useful thing to try.
+MIN_USEFUL_MAX_TOKENS = 512
+
+#: A reduced ceiling is only accepted if it is at least this FRACTION of what
+#: the task asked for.
+#:
+#: Without it the adaptive retry quietly trades correctness for availability. A
+#: nearly empty OpenRouter balance offered 2600 tokens against report_synthesis'
+#: 8192, and taking that deal would put a TRUNCATED Functional Skills Report in
+#: front of a recruiter — precisely what this repo's standing rule forbids
+#: ("a truncated report is worse than a slow one"; remarks are regenerated, never
+#: cut to length). Below the fraction we let the attempt fail and move to the
+#: next provider, which very likely can serve the whole thing.
+#:
+#: The same 2600 IS accepted for jd_generation, whose ask is 4096: a JD at
+#: two-thirds length is a complete draft the recruiter edits anyway.
+MIN_CEILING_FRACTION = 0.5
 
 
 def max_tokens_for(task_type: str) -> int:

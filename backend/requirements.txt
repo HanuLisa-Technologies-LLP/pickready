@@ -9,7 +9,14 @@ asyncpg>=0.29
 alembic>=1.13
 pgvector>=0.3
 redis>=5.0
-celery>=5.4
+# >=5.6.3, not >=5.4: workers/tasks.py passes `dont_autoretry_for` to keep a
+# SoftTimeLimitExceeded from being handed straight back to autoretry_for (which
+# catches it, since it derives from Exception). Celery IGNORES an unknown task
+# option silently, so on a resolver that picked 5.4 the hung-task guard would
+# read as present and do nothing -- the exact failure it exists to prevent.
+# Verified in celery/app/autoretry.py at 5.6.3: `except dont_autoretry_for`
+# precedes `except autoretry_for`.
+celery>=5.6.3
 flower>=2.0
 PyJWT>=2.9
 cryptography>=43.0

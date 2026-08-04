@@ -141,6 +141,73 @@ async def test_framework_survives_a_total_llm_outage(monkeypatch) -> None:
     assert "Python" in primary
 
 
+@pytest.mark.parametrize(
+    "jd_json",
+    [
+        # A job created from `jd_markdown` alone: the per-section columns are
+        # derived and can be empty, so the whole pool is the job title.
+        {"skills": [], "responsibilities": [], "accountabilities": []},
+        {},
+        {"skills": ["Python"]},
+        {"skills": ["Python", "FastAPI"], "responsibilities": ["Build APIs"]},
+        # Exactly at the floor, and one past it: the boundary either side of
+        # where `secondary` starts drawing from the pool's tail.
+        {"skills": ["a", "b", "c", "d"]},
+        {"skills": ["a", "b", "c", "d", "e"]},
+        {"skills": ["a", "b", "c", "d", "e", "f"]},
+        # Duplicates collapse to one distinct term, which is the shape that
+        # actually hung: the pool is non-empty but has nothing new to offer.
+        {"skills": ["Python", "python", "PYTHON"]},
+    ],
+)
+def test_a_thin_jd_still_yields_a_full_framework_and_terminates(jd_json) -> None:
+    """Regression, production 2026-08-01.
+
+    `_fallback_framework` padded `secondary` by cycling the JD pool and
+    appending only when the generated name was new. Once every pool term had
+    been used it regenerated names it had already rejected and made no further
+    progress, so any JD with fewer than MINIMUM_PER_CATEGORY distinct terms
+    spun forever. The Celery task held a worker slot until the 600s soft time
+    limit and then autoretried five times, starving every other assessment
+    task behind it -- which is what "assessments are not available" looked
+    like from the outside.
+
+    pytest-timeout is not a dependency here, so termination is asserted by the
+    test simply returning: a hang fails the run by never finishing.
+    """
+    job = _job()
+    job.jd_json = jd_json
+    rows = ppi._top_up(ppi._normalise(ppi._fallback_framework(job)), job)
+    for category in ppi.CATEGORIES:
+        assert (
+            sum(1 for row in rows if row["category"] == category)
+            >= ppi.MINIMUM_PER_CATEGORY
+        ), category
+    # Every name must be distinct within its category, or the framework saves
+    # fewer rows than it counted and the floor is not really met.
+    keys = [(row["category"], row["name"].casefold()) for row in rows]
+    assert len(keys) == len(set(keys))
+    assert not any(
+        row["category"] == ppi.CATEGORY_BEHAVIOURAL
+        and ppi.is_forbidden_competency(row["name"])
+        for row in rows
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_thin_jd_survives_a_total_llm_outage(monkeypatch) -> None:
+    """The same regression, through the real entry point."""
+    async def _boom(*a, **k):
+        raise RuntimeError("all providers down")
+
+    monkeypatch.setattr(ppi.llm_router, "chat_completion", _boom)
+    job = _job()
+    job.jd_json = {"skills": [], "responsibilities": [], "accountabilities": []}
+    rows = await ppi.generate_framework(_StubSession(), job)
+    for category in ppi.CATEGORIES:
+        assert sum(1 for row in rows if row.category == category) >= ppi.MINIMUM_PER_CATEGORY
+
+
 @pytest.mark.asyncio
 async def test_a_generated_culture_competency_is_dropped_not_stored(monkeypatch) -> None:
     """Dropped rather than rejected: refusing the whole generation over one bad

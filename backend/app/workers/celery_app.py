@@ -12,10 +12,28 @@ so the API process never imports worker dependencies):
   pickready.refresh_dashboard_views()
 """
 from celery import Celery
+from kombu import Queue
 
 from app.core.config import get_settings
 
 settings = get_settings()
+
+# Delivery gets its OWN queue, because it was the thing that broke.
+#
+# Everything used to share one `celery` queue against a `--concurrency=2`
+# worker. On 2026-08-01 two `generate_technical_questions` runs wedged both
+# slots and a staff invitation enqueued behind them was never delivered: the
+# API had already answered 201 with `email_dispatch: "queued"`, so the failure
+# was invisible from the outside. Sending an email takes about three seconds
+# and must never wait on an LLM chain that legitimately takes minutes.
+#
+# A worker started without `-Q` consumes every queue named in `task_queues`, so
+# the existing single worker pool keeps draining BOTH after this change and no
+# message can be stranded. The split only becomes a guarantee once a second
+# pool runs with `--args=mail-worker` (see docker-entrypoint.sh), which is what
+# gives delivery capacity that AI work cannot occupy.
+QUEUE_DEFAULT = "celery"
+QUEUE_MAIL = "mail"
 
 celery_app = Celery(
     "pickready",
@@ -29,6 +47,31 @@ celery_app.conf.update(
     accept_content=["json"],
     result_serializer="json",
     timezone="Asia/Kolkata",
+    task_default_queue=QUEUE_DEFAULT,
+    # The routing key is set EXPLICITLY on both. Left unset, Celery fills it
+    # from task_default_routing_key, which is the default queue name, so `mail`
+    # would be declared with routing key "celery". The Redis transport picks
+    # the destination list by ROUTING KEY, not by queue name, so every mail
+    # message would have landed back in the `celery` list and a worker started
+    # with `--queues=mail` would have sat idle forever while invitations piled
+    # up behind the AI work this split exists to escape.
+    task_queues=(
+        Queue(QUEUE_DEFAULT, routing_key=QUEUE_DEFAULT),
+        Queue(QUEUE_MAIL, routing_key=QUEUE_MAIL),
+    ),
+    # Routing is keyed on the task NAME, so it applies to `send_task` calls from
+    # the API process exactly as it does to direct invocations. Every outbound
+    # message the product sends is listed here; anything unrouted falls through
+    # to the default queue, which is the safe direction to fail.
+    task_routes={
+        "pickready.send_email": {"queue": QUEUE_MAIL},
+        "pickready.send_sms": {"queue": QUEUE_MAIL},
+        "pickready.send_lifecycle_email": {"queue": QUEUE_MAIL},
+        "pickready.send_payment_failed_email": {"queue": QUEUE_MAIL},
+        "pickready.send_application_confirmation": {"queue": QUEUE_MAIL},
+        "pickready.send_assessment_reminder": {"queue": QUEUE_MAIL},
+        "pickready.send_verification_requests": {"queue": QUEUE_MAIL},
+    },
     task_acks_late=True,
     task_default_retry_delay=30,
     # A task must never own a pool slot indefinitely. Observed in production:
