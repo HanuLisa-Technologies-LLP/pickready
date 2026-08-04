@@ -1,6 +1,7 @@
 """Job setup review, the unified conversation, and the PPI Assessment Report."""
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
@@ -39,7 +40,7 @@ from app.schemas.assessments import (
     TechnicalQuestionOut,
 )
 from app.services import capabilities as caps
-from app.services import credit_reconciliation, hiring_pipeline, ppi
+from app.services import credit_reconciliation, hiring_pipeline, interviewer, ppi
 from app.services.audit import audit
 from app.services.functional_assessment import (
     CATEGORY_MATCHING,
@@ -728,6 +729,30 @@ async def start_conversation(
     )
 
 
+
+async def _transcript_rows(
+    session: AsyncSession, conversation_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    """The conversation so far, oldest first.
+
+    This is the agent's MEMORY. Without it every turn would be judged on the
+    single answer in front of it, which is how the interview came to repeat
+    ground the candidate had already covered.
+
+    Read back from `assessment_messages` rather than accumulated in memory
+    because `respond` is one stateless HTTP request per turn -- there is no
+    process holding the conversation between them.
+    """
+    rows = (
+        await session.execute(
+            select(AssessmentMessage.speaker, AssessmentMessage.content)
+            .where(AssessmentMessage.conversation_id == conversation_id)
+            .order_by(AssessmentMessage.ordinal)
+        )
+    ).all()
+    return [{"speaker": speaker, "content": content} for speaker, content in rows]
+
+
 @router.post("/conversations/{conversation_id}/respond", response_model=ConversationOut)
 async def respond(
     conversation_id: uuid.UUID,
@@ -741,18 +766,61 @@ async def respond(
     link, job = await _candidate_link(session, user, conversation.job_candidate_link_id)
     prompts = await _conversation_prompts(session, job, link)
     index = conversation.next_question_index
-    if index >= len(prompts):
+    pending = conversation.pending_prompt
+    # A pending follow-up means the candidate is answering the PROBE, not the
+    # next scripted question. Completion therefore cannot be decided by the
+    # index alone: the last base question may still have a follow-up
+    # outstanding, and finishing there would charge the customer and start
+    # scoring while the candidate is still typing.
+    if index >= len(prompts) and not pending:
         raise HTTPException(status_code=409, detail="Conversation is already complete")
-    domain, key, prompt = prompts[index]
+
+    if pending:
+        # Answered under the key of the question that PRODUCED the follow-up,
+        # so `answers_by_key` files it with that question's other answers and
+        # every scorer sees one richer answer rather than an unknown key.
+        # The index is deliberately NOT advanced: a follow-up is extra evidence
+        # for a question already counted, never an extra question.
+        domain = conversation.pending_domain or "technical"
+        key = conversation.pending_question_key or ""
+        prompt = pending
+        conversation.pending_prompt = None
+        conversation.pending_question_key = None
+        conversation.pending_domain = None
+    else:
+        domain, key, prompt = prompts[index]
+        conversation.next_question_index += 1
+
     ordinal = (
         await session.execute(select(func.coalesce(func.max(AssessmentMessage.ordinal), 0)).where(AssessmentMessage.conversation_id == conversation.id))
     ).scalar_one()
+    answer_text = body.answer.strip()
     session.add_all([
         AssessmentMessage(tenant_id=job.tenant_id, conversation_id=conversation.id, ordinal=ordinal + 1, speaker="agent", domain=domain, question_key=key, content=prompt),
-        AssessmentMessage(tenant_id=job.tenant_id, conversation_id=conversation.id, ordinal=ordinal + 2, speaker="candidate", domain=domain, question_key=key, content=body.answer.strip()),
+        AssessmentMessage(tenant_id=job.tenant_id, conversation_id=conversation.id, ordinal=ordinal + 2, speaker="candidate", domain=domain, question_key=key, content=answer_text),
     ])
-    conversation.next_question_index += 1
-    if conversation.next_question_index >= len(prompts):
+    await session.flush()
+
+    # Decide whether to press on this answer. Only after a BASE question: two
+    # consecutive probes on one point reads as cross-examination, and it is
+    # also what would let one evasive candidate consume the whole budget.
+    if not pending:
+        transcript = await _transcript_rows(session, conversation.id)
+        follow_up = await interviewer.next_follow_up(
+            session=session,
+            question=prompt,
+            answer=answer_text,
+            transcript=transcript,
+            follow_ups_used=conversation.follow_ups_used,
+            already_followed_up=False,
+        )
+        if follow_up:
+            conversation.pending_prompt = follow_up
+            conversation.pending_question_key = key
+            conversation.pending_domain = domain
+            conversation.follow_ups_used += 1
+
+    if conversation.next_question_index >= len(prompts) and not conversation.pending_prompt:
         conversation.status = "completed"
         conversation.completed_at = datetime.now(timezone.utc)
         # One full credit, charged at the moment completed_at is set. Idempotent,
@@ -768,9 +836,15 @@ async def respond(
         celery_app.send_task("pickready.run_functional_assessment", args=[str(link.id)])
     await session.flush()
     next_index = conversation.next_question_index
+    # A pending follow-up is what the candidate sees next. The progress label
+    # deliberately keeps counting BASE questions, so a probe does not make the
+    # interview look longer than it is or push the count past its own total.
+    next_prompt = conversation.pending_prompt or (
+        prompts[next_index][2] if next_index < len(prompts) else None
+    )
     return ConversationOut(
         conversation_id=conversation.id,
         status=conversation.status,
-        prompt=prompts[next_index][2] if next_index < len(prompts) else None,
+        prompt=next_prompt,
         progress_label=f"Question {next_index + 1} of {len(prompts)}" if next_index < len(prompts) else "Conversation complete",
     )

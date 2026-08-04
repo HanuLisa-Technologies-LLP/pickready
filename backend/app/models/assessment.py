@@ -103,6 +103,26 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
     next_question_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # ── Adaptive follow-up state (migration 0038) ────────────────────────────
+    # A follow-up is GENERATED when one answer is submitted and ANSWERED on the
+    # next request, so it has to survive between the two. It deliberately does
+    # not extend the prompt list and does not advance `next_question_index`,
+    # because that list's length decides when billing fires and its keys are
+    # what the scorers group by.
+    #
+    # `pending_question_key` is the key of the question that PRODUCED the
+    # follow-up, so the follow-up's answer joins that question's existing group
+    # in `answers_by_key` and every scorer keeps working unchanged.
+    pending_prompt: Mapped[str | None] = mapped_column(Text)
+    pending_question_key: Mapped[str | None] = mapped_column(String(80))
+    pending_domain: Mapped[str | None] = mapped_column(String(20))
+    # Persisted rather than counted from the transcript: an interview that can
+    # ask "one more thing" must be provably finite, and a stored counter holds
+    # even if a message fails to persist or a request is retried.
+    follow_ups_used: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     # ── Invitation + progress tracking (migration 0018) ──────────────────────
     # These three columns existed in the database but not on this model, so
     # every attribute read of them raised AttributeError and turned
