@@ -66,3 +66,35 @@ def test_resumes_dir_resolves_without_any_environment_help() -> None:
         "found no files and exit successfully, seeding nobody"
     )
     assert len(list(resolved.glob("*.docx"))) == EXPECTED_RESUME_COUNT
+
+
+# ── The production guard, and why it has an exception ────────────────────────
+
+def test_the_corpus_seed_still_refuses_production_by_default() -> None:
+    """The guard protects `seed_dev_data`, which seeds an entire development
+    world and must never be aimed at a real database. Removing it to let the
+    demo candidates through would have removed that protection too."""
+    import inspect
+
+    from app.scripts.seed_resumes import seed_resume_corpus
+
+    signature = inspect.signature(seed_resume_corpus)
+    assert "allow_production" in signature.parameters
+    assert signature.parameters["allow_production"].default is False, (
+        "the production guard must stay ON by default; only a deliberate "
+        "caller may opt out"
+    )
+
+
+def test_the_demo_seeder_opts_in_explicitly() -> None:
+    """`seed_demo_candidates` is that deliberate caller. If this opt-in is ever
+    dropped, the script silently seeds nobody in production and exits 0 --
+    exactly the failure that left production with two candidates."""
+    import pathlib
+
+    source = pathlib.Path(
+        __file__
+    ).resolve().parents[1].joinpath(
+        "app/scripts/seed_demo_candidates.py"
+    ).read_text(encoding="utf-8")
+    assert "allow_production=True" in source

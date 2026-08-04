@@ -21,10 +21,17 @@ returns the existing asset instead of creating a copy.
 Cloudinary is mandatory: a file that cannot be stored is not seeded. This
 prevents a demo candidate with a broken or missing resume reference.
 
-The resume files are NOT part of the backend image. Point the seed at them
-with the `SEED_RESUMES_DIR` env var, or copy them into the container first
-(`docker compose ... cp ./resumes backend:/resumes`). Absent both, the corpus
-step logs that it found no files and the rest of the seed proceeds unchanged.
+The resume files DO ship in the backend image, at `/app/demo_resumes`. They used
+to live at `<repo-root>/resumes`, outside the Docker build context, so they never
+reached the image: `resumes_dir()` returned None on Cloud Run, this step logged
+that it found no files, and the seed carried on succeeding. That is why
+production ran with two candidates instead of thirty while every deploy was
+green. `SEED_RESUMES_DIR` and `/resumes` are still honoured and still take
+precedence, so a local override behaves as it always did.
+
+To seed them deliberately, including in production, use
+`python -m app.scripts.seed_demo_candidates` -- this module refuses production
+by default (see `seed_resume_corpus`).
 """
 from __future__ import annotations
 
@@ -127,11 +134,30 @@ def derive_identity(filename: str) -> dict[str, str]:
     }
 
 
-async def seed_resume_corpus(session: AsyncSession, source_tenant_id: uuid.UUID) -> int:
+async def seed_resume_corpus(
+    session: AsyncSession,
+    source_tenant_id: uuid.UUID,
+    *,
+    allow_production: bool = False,
+) -> int:
     """Seed the resume corpus. Returns the number of NEW candidates created.
 
-    Only runs in non-production environments  -  the corpus is dev/demo data."""
-    if get_settings().is_production:
+    Refuses to run in production UNLESS the caller says otherwise, and the
+    distinction is the whole point of the flag.
+
+    The guard exists for `seed_dev_data`, which seeds an entire development
+    world -- demo tenants, staff logins, jobs -- and must never be pointed at a
+    real database by accident. That caller keeps the default and keeps the
+    protection.
+
+    The thirty resume candidates are a different matter: they are PERMANENT
+    demonstration fixtures that are supposed to exist in production, and a
+    blanket refusal is why production had two candidates while every deploy
+    reported success. `seed_demo_candidates` therefore opts in explicitly.
+    Opt-in rather than removal, because the risk the guard was written for --
+    somebody running the full dev seed against production -- has not gone away.
+    """
+    if get_settings().is_production and not allow_production:
         log.info("seed_resumes: skipped (production environment)")
         return 0
 

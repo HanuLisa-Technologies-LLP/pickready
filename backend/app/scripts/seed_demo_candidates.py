@@ -83,7 +83,17 @@ async def _run(dry_run: bool) -> int:
                 # The candidates are databank rows with no owning tenant, so the
                 # write has to happen outside any single tenant's RLS scope.
                 async with superadmin_scope(session):
-                    created = await seed_resume_corpus(session, SOURCE_TENANT_ID)
+                    # allow_production: these thirty are permanent
+                    # demonstration fixtures and are SUPPOSED to exist in
+                    # production. `seed_resume_corpus` refuses production by
+                    # default to protect `seed_dev_data`, which seeds an entire
+                    # development world and must never be aimed at a real
+                    # database. That default is left alone; this caller is the
+                    # deliberate exception, which is why the opt-in is explicit
+                    # and lives here rather than in the shared function.
+                    created = await seed_resume_corpus(
+                        session, SOURCE_TENANT_ID, allow_production=True
+                    )
         print(f"  = done: {created} candidate(s) created")
         return 0
     finally:
