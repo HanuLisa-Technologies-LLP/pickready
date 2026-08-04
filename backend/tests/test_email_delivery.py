@@ -717,3 +717,26 @@ def test_a_timed_out_task_is_not_auto_retried() -> None:
         f"task(s) {sorted(offenders)} auto-retry on a soft-timeout and can "
         "wedge a worker slot indefinitely"
     )
+
+
+# ── An unreachable broker must fail, not hang ────────────────────────────────
+
+def test_the_broker_has_publish_timeouts() -> None:
+    """Publishing to Redis has NO timeout by default, so `send_task` against a
+    private IP with no route blocks forever instead of raising.
+
+    That is worse than an error, because every caller that carefully wraps its
+    enqueue in try/except never gets to run the handler -- nothing is raised.
+    Observed in production: a Cloud Run job with REDIS_URL but no VPC egress
+    hung on its first enqueue and was killed at the 900s ceiling having written
+    nothing.
+    """
+    celery = _celery_app()
+    options = celery.conf.broker_transport_options or {}
+    assert options.get("socket_connect_timeout"), (
+        "no broker connect timeout; an unreachable broker will hang callers"
+    )
+    assert options.get("socket_timeout"), "no broker socket timeout"
+    assert celery.conf.broker_connection_max_retries is not None, (
+        "connection retries are unbounded; a dead broker retries forever"
+    )

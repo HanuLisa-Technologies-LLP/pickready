@@ -289,6 +289,22 @@ run_migrations() {
     --region="$REGION"
     --service-account="$RUNTIME_SA"
     --set-cloudsql-instances="$SQL_CONNECTION_NAME"
+    # VPC egress, same as every service. `alembic upgrade` itself does not need
+    # it -- Cloud SQL arrives through the connector above -- but this job is
+    # also how one-off management commands are run against production, and it is
+    # handed REDIS_URL like everything else.
+    #
+    # Without a route to the private range, anything touching Redis does not
+    # fail, it HANGS: `celery_app.send_task` sits on a private IP with nowhere
+    # to go until Cloud Run kills the task at its 900s ceiling. Observed exactly
+    # that while seeding the demo candidates -- the corpus was found, thirty
+    # files were listed, and then fifteen minutes of silence and a terminated
+    # task, with not one candidate written, because the FIRST enqueue never
+    # returned. A job carrying REDIS_URL with no way to reach Redis is a trap
+    # laid for whoever runs the next management command.
+    --network="$NETWORK"
+    --subnet="$SUBNET"
+    --vpc-egress=private-ranges-only
     "--set-env-vars=$(build_env)"
     "--set-secrets=${SECRET_FLAG}"
     --args=migrate

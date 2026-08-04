@@ -72,6 +72,26 @@ celery_app.conf.update(
         "pickready.send_assessment_reminder": {"queue": QUEUE_MAIL},
         "pickready.send_verification_requests": {"queue": QUEUE_MAIL},
     },
+    # An UNREACHABLE broker must fail, not hang. Publishing to Redis has no
+    # timeout by default, so `send_task` against a private IP with no route
+    # blocks forever rather than raising -- and every caller that carefully
+    # wraps the enqueue in try/except gets no chance to run its handler, because
+    # nothing is ever raised.
+    #
+    # Observed while seeding the demo candidates from a Cloud Run job that had
+    # REDIS_URL but no VPC egress: the very first enqueue never returned and the
+    # task was killed at the 900s ceiling with nothing written. The routing is
+    # fixed separately (scripts/deploy.sh gives the job VPC access); this makes
+    # the failure mode survivable wherever it happens next, including a
+    # Memorystore outage taking down request handlers that only meant to queue
+    # an email.
+    broker_transport_options={
+        "socket_connect_timeout": 5,
+        "socket_timeout": 5,
+    },
+    # Bounded, for the same reason. The default retries the connection forever.
+    broker_connection_retry_on_startup=True,
+    broker_connection_max_retries=3,
     task_acks_late=True,
     task_default_retry_delay=30,
     # A task must never own a pool slot indefinitely. Observed in production:
