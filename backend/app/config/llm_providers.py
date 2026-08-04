@@ -202,6 +202,58 @@ def max_tokens_for(task_type: str) -> int:
     return TASK_MAX_TOKENS.get(task_type, DEFAULT_MAX_TOKENS)
 
 
+#: Sampling temperature per task. Policy, and therefore DATA -- it belongs here
+#: beside the routing table rather than inline in the router, for the same
+#: reason provider order and retry budget do (claude.md rule: routing policy is
+#: data in config/llm_providers.py, never inline in a service). It was
+#: previously hardcoded at 0.1 in TWO places inside llm_router, once for the
+#: OpenAI-style payload and once for Gemini's generationConfig, so the two could
+#: drift apart silently and neither could be varied by task.
+#:
+#: The split is by whether the task JUDGES or WRITES.
+#:
+#: A scoring call must return the same grade for the same answer every time it
+#: runs. Anything above zero means a candidate's grade depends partly on when
+#: they were scored, which is indefensible in a hiring decision and, worse,
+#: unfalsifiable: a rescore that disagrees looks like a bug in the rubric rather
+#: than sampling noise. These sit at 0.0.
+#:
+#: A conversational turn is the opposite case. Asking a follow-up at 0.0 makes
+#: the interviewer sound like a form, repeating near-identical phrasing to every
+#: candidate, which is exactly the "static script" complaint. Phrasing may vary;
+#: WHAT is asked is fixed by the framework, not by the sampler.
+#:
+#: Note what is NOT here: report_synthesis is a scoring-adjacent task that
+#: states grades and must not vary, so it is deterministic even though its
+#: output is prose.
+TASK_TEMPERATURE: dict[str, float] = {
+    # ── Deterministic: these judge. ──────────────────────────────────────────
+    "behavioral_assessment": 0.0,   # per-answer and per-competency scoring
+    "report_synthesis": 0.0,        # states the grades a client reads
+    "rerank": 0.0,                  # orders candidates
+    "extraction": 0.0,              # pulls structured fields out of a resume
+    # ── Generative: these write. ─────────────────────────────────────────────
+    # Question banks want variety across a job's items, but not so much that a
+    # rubric drifts from its question.
+    "technical_questions": 0.4,
+    "jd_generation": 0.5,
+    "email_composition": 0.5,
+    # The unified candidate conversation. The highest in the product, and the
+    # only place where sounding different to different people is the point.
+    "conversation_turn": 0.7,
+}
+
+#: Anything unlisted is treated as a judging task. Defaulting to deterministic
+#: is the safe direction: a new task that should have been creative reads a
+#: little flat, whereas a new SCORING task silently sampling at 0.5 would make
+#: grades non-reproducible and nothing would announce it.
+DEFAULT_TEMPERATURE = 0.0
+
+
+def temperature_for(task_type: str) -> float:
+    return TASK_TEMPERATURE.get(task_type, DEFAULT_TEMPERATURE)
+
+
 #: How many keys the router is willing to burn on one logical call before it
 #: gives up and lets the caller's own fallback take over. Bounded so a task
 #: cannot spend minutes walking 21 dead keys.

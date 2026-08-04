@@ -203,7 +203,7 @@ async def test_all_keys_in_cooldown_fail_fast(monkeypatch, caplog):
     monkeypatch.setattr(llm_router, "_load_keys", _returns(keys))
     attempts: list[str] = []
 
-    async def _ok(client, key, messages, json_mode, max_tokens):
+    async def _ok(client, key, messages, json_mode, max_tokens, temperature=0.0):
         attempts.append(key.fingerprint)
         return "recovered"
 
@@ -225,7 +225,7 @@ async def test_open_key_is_skipped_while_a_healthy_one_remains(monkeypatch):
     monkeypatch.setattr(llm_router, "_load_keys", _returns([bad, good]))
     attempts: list[str] = []
 
-    async def _ok(client, key, messages, json_mode, max_tokens):
+    async def _ok(client, key, messages, json_mode, max_tokens, temperature=0.0):
         attempts.append(key.fingerprint)
         return "ok"
 
@@ -239,7 +239,7 @@ async def test_chain_exhaustion_still_raises_without_leaking_key_material(monkey
     keys = [_key(fp="db:k0"), _key(fp="db:k1")]
     monkeypatch.setattr(llm_router, "_load_keys", _returns(keys))
 
-    async def _boom(client, key, messages, json_mode, max_tokens):
+    async def _boom(client, key, messages, json_mode, max_tokens, temperature=0.0):
         raise httpx.ConnectError("down")
 
     monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _boom)
@@ -254,7 +254,7 @@ async def test_success_after_recovery_clears_the_breaker_end_to_end(monkeypatch)
     session = _FakeSession()
     monkeypatch.setattr(llm_router, "_load_keys", _returns([key]))
 
-    async def _ok(client, k, messages, json_mode, max_tokens):
+    async def _ok(client, k, messages, json_mode, max_tokens, temperature=0.0):
         return "fine"
 
     monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _ok)
@@ -286,11 +286,11 @@ async def test_a_stalled_provider_is_abandoned_at_the_attempt_timeout(monkeypatc
 
     llm_router._breaker.clear()
 
-    async def _stalls(client, key, messages, json_mode, max_tokens):
+    async def _stalls(client, key, messages, json_mode, max_tokens, temperature=0.0):
         await asyncio.sleep(5)
         return "never reached"
 
-    async def _fast(client, key, messages, json_mode, max_tokens):
+    async def _fast(client, key, messages, json_mode, max_tokens, temperature=0.0):
         return "ok"
 
     monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "openrouter", _stalls)
@@ -317,3 +317,60 @@ async def test_a_stalled_provider_is_abandoned_at_the_attempt_timeout(monkeypatc
 
 async def _resolved(value):
     return value
+
+
+# ── Sampling policy (item 7: determinism where the task JUDGES) ──────────────
+
+def test_every_judging_task_is_deterministic() -> None:
+    """A scoring call must return the same grade for the same answer.
+
+    Anything above zero means a candidate's grade depends partly on when they
+    happened to be scored. That is indefensible in a hiring decision and, worse,
+    unfalsifiable: a rescore that disagrees looks like a broken rubric rather
+    than sampling noise.
+
+    report_synthesis is included deliberately even though its output is prose.
+    It STATES the grades a client reads, so it judges.
+    """
+    from app.config.llm_providers import temperature_for
+
+    for task in ("behavioral_assessment", "report_synthesis", "rerank", "extraction"):
+        assert temperature_for(task) == 0.0, (
+            f"{task} samples at {temperature_for(task)}; scoring must be reproducible"
+        )
+
+
+def test_an_unknown_task_defaults_to_deterministic() -> None:
+    """The safe direction. A new task that should have been creative reads a
+    little flat; a new SCORING task silently sampling at 0.5 would make grades
+    non-reproducible and nothing would announce it."""
+    from app.config.llm_providers import temperature_for
+
+    assert temperature_for("some_task_added_next_year") == 0.0
+
+
+def test_the_conversation_turn_is_allowed_to_vary() -> None:
+    """The one place sounding different to different people is the point.
+
+    At 0.0 the interviewer repeats near-identical phrasing to every candidate,
+    which is the "static script" complaint. WHAT is asked stays fixed by the
+    framework; only the phrasing varies.
+    """
+    from app.config.llm_providers import temperature_for
+
+    assert temperature_for("conversation_turn") > 0.5
+
+
+def test_temperature_is_not_hardcoded_in_the_router() -> None:
+    """It was previously a 0.1 literal in TWO places -- the OpenAI-style payload
+    and Gemini's generationConfig -- so they could drift apart silently and no
+    task could be made deterministic. Policy is data, in config/llm_providers."""
+    import pathlib
+
+    source = pathlib.Path(
+        __file__
+    ).resolve().parents[1].joinpath("app/services/llm_router.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"temperature": 0.1' not in source
+    assert "temperature_for" in source

@@ -73,7 +73,9 @@ from app.config.llm_providers import (
     MIN_CEILING_FRACTION,
     MIN_USEFUL_MAX_TOKENS,
     PROVIDER_MODELS,
+    DEFAULT_TEMPERATURE,
     max_tokens_for,
+    temperature_for,
     provider_order,
     retry_budget_for,
     timeout_for,
@@ -514,12 +516,17 @@ def probe_each_provider_first(chain: list[_RouterKey]) -> list[_RouterKey]:
 # ── Provider calls (httpx, no SDKs) ─────────────────────────────────────────
 
 def _openai_style_payload(
-    model: str, messages: list[dict], json_mode: bool, max_tokens: int
+    model: str, messages: list[dict], json_mode: bool, max_tokens: int,
+    temperature: float,
 ) -> dict:
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": 0.1,
+        # Passed in from config/llm_providers.temperature_for(task_type), never
+        # a literal. It used to be 0.1 hardcoded here AND again in Gemini's
+        # generationConfig below, so the two could drift apart silently and no
+        # task could be scored deterministically.
+        "temperature": temperature,
         # Always explicit. OpenRouter prices an unbounded request at the model
         # maximum and 402s a prepaid account that cannot cover it — see
         # config/llm_providers.TASK_MAX_TOKENS.
@@ -532,12 +539,14 @@ def _openai_style_payload(
 
 async def _call_groq(
     client: httpx.AsyncClient, key: _RouterKey, messages: list[dict], json_mode: bool,
-    max_tokens: int,
+    max_tokens: int, temperature: float,
 ) -> str:
     resp = await client.post(
         GROQ_URL,
         headers={"Authorization": f"Bearer {key.api_key}"},
-        json=_openai_style_payload(GROQ_MODEL, messages, json_mode, max_tokens),
+        json=_openai_style_payload(
+            GROQ_MODEL, messages, json_mode, max_tokens, temperature
+        ),
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
@@ -545,12 +554,14 @@ async def _call_groq(
 
 async def _call_openrouter(
     client: httpx.AsyncClient, key: _RouterKey, messages: list[dict], json_mode: bool,
-    max_tokens: int,
+    max_tokens: int, temperature: float,
 ) -> str:
     resp = await client.post(
         OPENROUTER_URL,
         headers={"Authorization": f"Bearer {key.api_key}"},
-        json=_openai_style_payload(OPENROUTER_MODEL, messages, json_mode, max_tokens),
+        json=_openai_style_payload(
+            OPENROUTER_MODEL, messages, json_mode, max_tokens, temperature
+        ),
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
@@ -558,7 +569,7 @@ async def _call_openrouter(
 
 async def _call_gemini(
     client: httpx.AsyncClient, key: _RouterKey, messages: list[dict], json_mode: bool,
-    max_tokens: int,
+    max_tokens: int, temperature: float,
 ) -> str:
     system_texts = [m["content"] for m in messages if m.get("role") == "system"]
     contents = [
@@ -573,7 +584,7 @@ async def _call_gemini(
     if system_texts:
         body["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_texts)}]}
     gen_config: dict[str, Any] = {
-        "temperature": 0.1,
+        "temperature": temperature,
         "maxOutputTokens": max_tokens,
     }
     if json_mode:
@@ -628,6 +639,12 @@ class _RouteContext:
     #: Output ceiling sent to every provider on this call. Defaulted so the
     #: tests that build a context by hand keep working unchanged.
     max_tokens: int = 4096
+    #: Sampling temperature for this call, from
+    #: config/llm_providers.temperature_for(task_type). Defaulted to the
+    #: deterministic value so a context built by hand in a test scores
+    #: reproducibly rather than inheriting whatever the last edit happened to
+    #: leave in the router.
+    temperature: float = DEFAULT_TEMPERATURE
     #: PER-PROVIDER overrides of `max_tokens`, learned mid-call from a provider
     #: that told us what it could still afford (see `affordable_max_tokens`).
     #:
@@ -735,7 +752,7 @@ async def _attempt(state: RouterState) -> dict:
         result = await asyncio.wait_for(
             _PROVIDER_CALLERS[key.provider](
                 ctx.client, key, ctx.messages, ctx.json_mode,
-                effective_max_tokens,
+                effective_max_tokens, ctx.temperature,
             ),
             timeout=limit,
         )
@@ -906,6 +923,7 @@ async def invoke_llm(
             retry_budget=retry_budget_for(task_type),
             deadline=time.monotonic() + budget if budget else None,
             max_tokens=max_tokens_for(task_type),
+            temperature=temperature_for(task_type),
             attempt_timeout=request_timeout,
         )
         final: RouterState = await _router_graph.ainvoke(
