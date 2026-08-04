@@ -1,5 +1,86 @@
 # claude.md, PickReady Build Conventions
 
+## Current hard rules, adaptive interview + demo fixtures (2026-08-05)
+
+- **The assessment conversation is ADAPTIVE, and three things must never move
+  with it.** `api/assessments.respond` used to be an index into a pre-generated
+  list with no LLM call anywhere in the conversation, so "the agent has no
+  memory" was not a prompt problem, there was no agent. `services/interviewer`
+  now writes at most ONE follow-up per base question against the transcript so
+  far. The invariants it must not break, each pinned by a test in
+  `tests/test_conversation_flow.py`: a follow-up is answered under the SAME
+  `question_key` (so `answers_by_key` hands the scorer one richer answer, never
+  an unknown key that every scorer would silently DROP); it does NOT advance
+  `next_question_index` (which is what fires `charge_completed`, so billing is
+  unmoved); and a follow-up outstanding on the LAST base question HOLDS
+  completion open, or the customer is charged and scoring dispatched while the
+  candidate is still typing.
+- **The interview is bounded by construction, not by convention.** One follow-up
+  per question, `MAX_FOLLOW_UPS` per conversation, counted in a PERSISTED column
+  so the ceiling survives a retry or a message that fails to write. Total turns
+  are `len(prompts) + MAX_FOLLOW_UPS`, whatever the model returns.
+- **Every follow-up failure path returns None, meaning "ask the next scripted
+  question".** Outage, timeout, malformed JSON, a model echoing the string
+  "null", a follow-up long enough to be a speech. A candidate is mid-assessment
+  on a live request, so a provider problem costs the adaptivity and nothing
+  else. Unlike `_llm_score`'s fallback, which invented a grade, this one is
+  simply the product's previous behaviour.
+- **Sampling temperature is DATA in `config/llm_providers.TASK_TEMPERATURE`, and
+  the split is judge-versus-write.** Every task that JUDGES is 0.0:
+  `behavioral_assessment`, `report_synthesis` (it states the grades a client
+  reads, prose or not), `rerank`, `extraction`. A scoring call that samples
+  above zero makes a candidate's grade depend on WHEN they were scored, which is
+  unfalsifiable -- a disagreeing rescore reads as a broken rubric. Unlisted
+  tasks default to 0.0, the safe direction. `conversation_turn` is 0.7 and is
+  the only task above 0.5.
+- **A non-answer never reaches a scoring prompt.** `services/answer_quality`
+  routes gibberish, empty and single-token answers to the SAME unanswered path
+  the product already had (`UNANSWERED_SCORE`, which grades Not Matching).
+  Gibberish used to reach `_stable_score`, which hashes into 45..94: measured
+  over 20,000 seeds, 69.6% graded Moderately Matching or better and 10.1%
+  Highly Matching. The defect was never that gibberish could not fail; it is
+  that a HASH decided whether it did. The guard is deliberately conservative:
+  "I have not used Kafka" is a real answer and is scored low on its merits.
+- **Demonstration tenants are exempt from billing REFUSALS, never from billing
+  RECORDS.** `tenants.is_demo` is a column, not a UUID list in Python, so the
+  exemption is visible in the table and a fourth demo tenant is an UPDATE.
+  Sarkar Corp, ACRM Corp, Specter & Co. -- keyed by their seed UUIDs, never by
+  name (a fourth tenant, Workify Corp, is REAL and must keep being billed; the
+  brief that requested this called the third company "ACME Corp", which does not
+  exist). `has_credit_headroom` checks the demo flag BEFORE summing the balance,
+  because a demo tenant that has run assessments has a negative ledger like any
+  other. Ledger entries are still written: a billing page with no usage on it
+  demonstrates nothing. The dangerous direction is a LEAKED exemption, which
+  raises nothing and just stops collecting money, so every test has a
+  paying-tenant twin.
+- **The 30 demo candidates and their resume corpus ship in the image.** The
+  corpus lives at `backend/demo_resumes` because `backend` is the Docker build
+  context; at `<repo-root>/resumes` it never reached the image, `resumes_dir()`
+  returned None on Cloud Run, and the seed logged that it found nothing and
+  EXITED 0. Production ran on two candidates against thirty while every deploy
+  was green. `seed_resume_corpus` still refuses production by default (that
+  guard protects `seed_dev_data`, which seeds an entire dev world); only
+  `app.scripts.seed_demo_candidates` opts in with `allow_production=True`.
+- **The migrate job has VPC egress, and the broker has publish timeouts.**
+  Publishing to Redis has NO timeout by default, so an unreachable broker does
+  not fail, it HANGS -- which silently defeats every `try/except` around an
+  enqueue, because nothing is ever raised for the handler to catch. Observed as
+  a management job that found 30 files then died at the 900s ceiling having
+  written nothing, because the first `send_task` never returned.
+- **Every LLM call is traced to LangSmith from ONE chokepoint,
+  `llm_router.invoke_llm`.** Runs are `llm:<task_type>` and tagged, so the
+  dashboard separates the agents with no per-agent wiring. Tracing is OFF
+  without `LANGSMITH_API_KEY` (tests and local dev post nothing), a broken SDK
+  degrades to an UNTRACED call and never a failed one, and prompt/completion
+  TEXT is not sent unless `LANGSMITH_TRACE_CONTENT=true` -- prompts carry a real
+  candidate's answers and a real JD, and that is the data owner's call.
+- **Sign-in asks for no workspace.** The login page is Continue with Google,
+  email, password. The backend routes to the correct portal from the account's
+  own record; `?portal=` still deep-links for candidate apply links. The old
+  picker was worse than redundant: choosing "Provider owner" never GRANTED
+  provider access, so a wrong guess produced a refusal that read like a broken
+  account.
+
 ## Current hard rules, PPI + the four-grade scale (2026-07-30)
 
 - **There is ONE rating scale, it has FOUR grades, and it lives in
