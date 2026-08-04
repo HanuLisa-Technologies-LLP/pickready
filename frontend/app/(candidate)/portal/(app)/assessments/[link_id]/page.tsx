@@ -31,6 +31,12 @@ interface Conversation {
 interface Exchange {
   prompt: string;
   answer: string;
+  /** When each side of the turn appeared, in THIS browser. The transcript is
+   *  stored server-side without per-message timestamps, and inventing a
+   *  server time here would be a worse lie than showing the local one: these
+   *  are the times the candidate actually saw and sent the message. */
+  askedAt: Date;
+  answeredAt: Date;
 }
 
 export default function UnifiedAssessmentPage() {
@@ -43,6 +49,10 @@ export default function UnifiedAssessmentPage() {
   const [answer, setAnswer] = React.useState("");
   const [loading, setLoading] = React.useState(true);
   const [sending, setSending] = React.useState(false);
+  // When the question currently on screen was shown. Captured on arrival so
+  // the transcript can record it once the candidate answers.
+  const promptShownAt = React.useRef<Date>(new Date());
+  const endRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     apiPost<Conversation>(
@@ -59,6 +69,20 @@ export default function UnifiedAssessmentPage() {
       .finally(() => setLoading(false));
   }, [linkId, toast]);
 
+  // Auto-scroll. A conversation that grows off the bottom of the viewport and
+  // leaves the reader to find the new message is the single most obvious way a
+  // chat stops feeling like one. `behavior: smooth` follows the thread rather
+  // than jumping, and it runs on the typing indicator too so the candidate can
+  // see that the interviewer is composing.
+  React.useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [exchanges.length, conversation?.prompt, sending]);
+
+  // A new question is on screen: start its clock.
+  React.useEffect(() => {
+    if (conversation?.prompt) promptShownAt.current = new Date();
+  }, [conversation?.prompt]);
+
   const respond = async () => {
     if (!conversation?.prompt || !answer.trim()) return;
     const currentPrompt = conversation.prompt;
@@ -71,7 +95,12 @@ export default function UnifiedAssessmentPage() {
       );
       setExchanges((items) => [
         ...items,
-        { prompt: currentPrompt, answer: currentAnswer },
+        {
+          prompt: currentPrompt,
+          answer: currentAnswer,
+          askedAt: promptShownAt.current,
+          answeredAt: new Date(),
+        },
       ]);
       setConversation(next);
       setAnswer("");
@@ -104,8 +133,12 @@ export default function UnifiedAssessmentPage() {
       <div className="mx-auto max-w-3xl space-y-4">
         {exchanges.map((exchange, index) => (
           <React.Fragment key={index}>
-            <Bubble side="asked">{exchange.prompt}</Bubble>
-            <Bubble side="answered">{exchange.answer}</Bubble>
+            <Bubble side="asked" at={exchange.askedAt}>
+              {exchange.prompt}
+            </Bubble>
+            <Bubble side="answered" at={exchange.answeredAt}>
+              {exchange.answer}
+            </Bubble>
           </React.Fragment>
         ))}
 
@@ -117,6 +150,22 @@ export default function UnifiedAssessmentPage() {
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
             Preparing your assessment
           </p>
+        ) : null}
+
+        {/* The interviewer composing. This is not decoration: since the
+            assessment became adaptive, the server really is deciding whether
+            to follow up on what was just said, and that round trip includes a
+            model call. Without this the page simply sits still and the
+            candidate cannot tell the difference between thinking and broken. */}
+        {sending ? (
+          <div className="sm:mr-10" aria-live="polite">
+            <p className="sr-only">The interviewer is typing</p>
+            <div className="inline-flex items-center gap-1.5 rounded-2xl rounded-tl-md border border-border bg-surface px-5 py-4 shadow-card">
+              <Dot delay="0ms" />
+              <Dot delay="150ms" />
+              <Dot delay="300ms" />
+            </div>
+          </div>
         ) : null}
 
         {conversation?.status === "completed" ? (
@@ -178,9 +227,33 @@ export default function UnifiedAssessmentPage() {
             </div>
           </>
         ) : null}
+
+        {/* Scroll target. An empty node rather than scrolling the last bubble,
+            so the view lands below the newest message instead of pinning its
+            top edge to the bottom of the viewport. */}
+        <div ref={endRef} aria-hidden="true" />
       </div>
     </div>
   );
+}
+
+/** One animated dot of the typing indicator. */
+function Dot({ delay }: { delay: string }) {
+  return (
+    <span
+      className="h-2 w-2 animate-bounce rounded-full bg-brand-600/70"
+      style={{ animationDelay: delay }}
+    />
+  );
+}
+
+/** Time of day, e.g. "14:32". Deliberately no date: the whole conversation
+ *  happens in one sitting, and a date on every bubble is noise. */
+function formatTime(value: Date): string {
+    return value.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
 }
 
 /**
@@ -190,9 +263,11 @@ export default function UnifiedAssessmentPage() {
  */
 function Bubble({
   side,
+  at,
   children,
 }: {
   side: "asked" | "answered";
+  at?: Date;
   children: React.ReactNode;
 }) {
   const asked = side === "asked";
@@ -208,6 +283,13 @@ function Bubble({
       >
         {children}
       </div>
+      {at ? (
+        <p
+          className={`mt-1 text-[11px] ${asked ? "text-left" : "text-right"}`}
+        >
+          <time dateTime={at.toISOString()}>{formatTime(at)}</time>
+        </p>
+      ) : null}
     </div>
   );
 }
