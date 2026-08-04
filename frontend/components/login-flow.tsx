@@ -37,7 +37,7 @@ export function LoginFlow({
   const searchParams = useSearchParams();
   const { setSession } = useAuth();
   const initialPortal = searchParams.get("portal");
-  const [requestedPortal, setRequestedPortal] = React.useState<RequestedPortal | null>(
+  const [requestedPortal] = React.useState<RequestedPortal | null>(
     initialPortal === "candidate" ||
       initialPortal === "org" ||
       initialPortal === "bd" ||
@@ -204,8 +204,20 @@ export function LoginFlow({
         </div>
       ) : (
         <div className="space-y-5">
-          <PortalChooser value={requestedPortal} onChange={setRequestedPortal} />
+          {/* The workspace chooser was REMOVED on 2026-08-04. A person should
+              not be asked which kind of account they have -- the backend
+              already knows, from the invitation or account type recorded when
+              the account was created, and `exchangeFirebaseSession` routes to
+              the right portal from what it returns. Asking was also
+              misleading: picking "Provider owner" never granted provider
+              access, so the control could only ever produce a confusing
+              refusal for anyone who guessed wrong.
 
+              `requestedPortal` stays in state and is still passed to the
+              exchange, but now only ever holds a value deep-linked via
+              ?portal=, which existing candidate apply links depend on. Absent
+              that, it is null, which the backend reads as "resolve every
+              workspace for this identity". */}
           <Button
             type="button"
             variant="outline"
@@ -280,52 +292,3 @@ export function LoginFlow({
   );
 }
 
-const PORTALS: Array<{
-  value: RequestedPortal | null;
-  label: string;
-  detail: string;
-}> = [
-  { value: null, label: "Find my workspace", detail: "Show every workspace linked to this account" },
-  { value: "candidate", label: "Candidate", detail: "Applications, profile and assessments" },
-  { value: "org", label: "Company team", detail: "Jobs, candidates and decision workflow" },
-  { value: "bd", label: "Business development", detail: "PickReady leads and customer reach" },
-  { value: "owner", label: "Provider owner", detail: "Customers, billing and platform controls" },
-];
-
-function PortalChooser({
-  value,
-  onChange,
-}: {
-  value: RequestedPortal | null;
-  onChange: (value: RequestedPortal | null) => void;
-}) {
-  return (
-    <fieldset>
-      <legend className="text-sm font-semibold">Choose your workspace</legend>
-      <p className="mt-1 text-xs leading-5">
-        Your account invitation still decides what you can access.
-      </p>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        {PORTALS.map((portal) => {
-          const selected = portal.value === value;
-          return (
-            <button
-              key={portal.label}
-              type="button"
-              aria-pressed={selected}
-              onClick={() => onChange(portal.value)}
-              className={`rounded-xl border px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                selected
-                  ? "border-brand-600 bg-brand-100/70"
-                  : "border-border bg-surface hover:border-brand-600/40"
-              } ${portal.value === null ? "sm:col-span-2" : ""}`}
-            >
-              <span className="block text-xs font-semibold">{portal.label}</span>
-              <span className="mt-0.5 block text-[11px] leading-4">{portal.detail}</span>
-            </button>
-          );
-        })}
-      </div>
-    </fieldset>
-  );
-}
