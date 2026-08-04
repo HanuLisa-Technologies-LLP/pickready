@@ -69,6 +69,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing_extensions import TypedDict
 
+from app.services import tracing
 from app.config.llm_providers import (
     MIN_CEILING_FRACTION,
     MIN_USEFUL_MAX_TOKENS,
@@ -887,6 +888,37 @@ async def invoke_llm(
     "content": str}]. Returns the assistant message text. Raises
     LLMUnavailableError only after every eligible key failed or was skipped.
     """
+    # One traced run per logical call, named after the task type, so the
+    # LangSmith dashboard separates the scorers from report synthesis from the
+    # interviewer with no per-agent wiring. It wraps the WHOLE chain rather
+    # than one attempt: what matters operationally is whether this call
+    # eventually produced an answer and how long the fallback walk took, not
+    # that key three of twenty-one was rate limited.
+    with tracing.trace_llm(task_type, messages=messages) as run:
+        try:
+            result = await _invoke_llm_inner(
+                task_type, messages, response_format_json, session, timeout,
+                total_budget,
+            )
+        except Exception as exc:  # noqa: BLE001 -- re-raised immediately
+            if run is not None:
+                run.end(error=f"{type(exc).__name__}: {exc}")
+            raise
+        if run is not None:
+            run.end(output=result)
+        return result
+
+
+async def _invoke_llm_inner(
+    task_type: str,
+    messages: list[dict],
+    response_format_json: bool,
+    session: AsyncSession | None,
+    timeout: float | None,
+    total_budget: float | None,
+) -> str:
+    """The routing chain itself. Split out so `invoke_llm` is only the tracing
+    wrapper, and so a tracing failure can never be mistaken for a router bug."""
     keys = await _load_keys(session)
     # raises ValueError on an unknown type
     chain = probe_each_provider_first(_build_chain(keys, task_type))
