@@ -118,6 +118,11 @@ class CreditSummaryOut(BaseModel):
     #: Plain-language reason shown on the billing page when invitations are
     #: paused. None when there is nothing to explain.
     deficit_message: str | None = None
+    #: A permanent demonstration company. Every figure above is still real
+    #: usage; only the BALANCE should be presented as unlimited, because a demo
+    #: tenant that has run assessments sums to a negative ledger and the page is
+    #: meant to read as fully paid. Invitations are never gated for these.
+    unlimited: bool = False
 
 
 class CreditLedgerEntryOut(BaseModel):

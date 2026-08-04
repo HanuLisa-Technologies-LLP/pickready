@@ -211,15 +211,20 @@ async def select_candidates_for_assessment(
         raise HTTPException(status_code=404, detail="Job not found")
 
     # ── The review gate (spec §5, §11) ──────────────────────────────────────
-    # Inviting before the technical bank and the PPI framework are both
-    # finalised would mail candidates an assessment they cannot open, so the
-    # refusal happens here rather than at the door the candidate walks into.
+    # Inviting before the PPI framework is approved would mail candidates an
+    # assessment they cannot open, so the refusal happens here rather than at
+    # the door the candidate walks into.
+    #
+    # The message named the technical bank until 2026-08-04, when that half of
+    # the gate was removed. Left as it was, it would have sent a recruiter
+    # hunting for a Finalise control that no longer exists on the page, on the
+    # one screen where they are already blocked.
     if job["assessment_status"] != "ready_for_candidates":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "This job is still awaiting review. Finalise the technical "
-                "questions and the PPI framework before inviting candidates."
+                "This job is still awaiting review. Save the PPI framework on "
+                "the job's setup screen before inviting candidates."
             ),
         )
 

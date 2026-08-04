@@ -196,6 +196,7 @@ async def _summary_out(session: AsyncSession, tenant_id: uuid.UUID) -> CreditSum
         usage_this_month_subunits=UsageBreakdownOut(**summary.month_by_event),
         in_deficit=summary.in_deficit,
         deficit_message=_DEFICIT_MESSAGE if summary.in_deficit else None,
+        unlimited=summary.unlimited,
     )
 
 

@@ -52,6 +52,7 @@ __all__ = [
     "credits_from_subunits",
     "grant",
     "has_credit_headroom",
+    "is_demo_tenant",
     "summarize",
 ]
 
@@ -77,6 +78,12 @@ class BalanceSummary:
     #: Sub-units carried in from before this month's first grant.
     rollover_subunits: int
     in_deficit: bool
+    #: A permanent demonstration company. The billing page still renders every
+    #: figure above -- usage is real and the statement adds up -- but the
+    #: BALANCE is presented as unlimited rather than as the ledger sum, which
+    #: for a demo tenant that has run assessments is a negative number on a page
+    #: that is supposed to read as fully paid.
+    unlimited: bool = False
 
     @property
     def balance_credits(self) -> Decimal:
@@ -141,7 +148,10 @@ async def _sync_deficit(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
     bypass scope.
     """
     balance = await balance_subunits(session, tenant_id)
-    in_deficit = balance < 0
+    # A demonstration tenant is never in deficit, whatever the ledger sums to.
+    # The flag drives the dunning email and the portal's deficit banner, so
+    # letting it go true here would have a demo company chased for payment.
+    in_deficit = balance < 0 and not await is_demo_tenant(session, tenant_id)
     await session.execute(
         text("UPDATE tenants SET credit_deficit = :flag WHERE id = :tid"),
         {"flag": in_deficit, "tid": str(tenant_id)},
@@ -216,13 +226,41 @@ async def consume(
     return True
 
 
+async def is_demo_tenant(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
+    """A permanent demonstration company, exempt from every billing REFUSAL.
+
+    Read straight from `tenants`, which is a global table with no RLS policy, so
+    this answers correctly from a tenant-scoped session and from a webhook's
+    bypass scope alike -- the same reason `_sync_deficit` writes there with raw
+    SQL.
+
+    Exemption covers refusals and alarms ONLY. Usage is still written to the
+    ledger, because the requirement is that the billing UI and the billing logic
+    keep working for these tenants, and a billing page with no usage on it
+    demonstrates nothing.
+    """
+    flag = (
+        await session.execute(
+            text("SELECT is_demo FROM tenants WHERE id = :tid"), {"tid": str(tenant_id)}
+        )
+    ).scalar()
+    return bool(flag)
+
+
 async def has_credit_headroom(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
     """May this customer send NEW assessment invitations?
 
     False once the balance is negative. It stays false until a grant (the next
     billing cycle, or an upgrade) brings it back to zero or above — the ledger
     itself is the recovery condition, so nothing has to remember to clear a flag.
+
+    A demonstration tenant is always true. Checked FIRST, before the balance is
+    summed: a demo company that has run assessments has a negative ledger like
+    any other, and asking the balance first would gate the one set of accounts
+    that must never be gated.
     """
+    if await is_demo_tenant(session, tenant_id):
+        return True
     return await balance_subunits(session, tenant_id) >= 0
 
 
@@ -278,11 +316,14 @@ async def summarize(session: AsyncSession, tenant_id: uuid.UUID) -> BalanceSumma
     )
 
     balance = granted - consumed
+    demo = await is_demo_tenant(session, tenant_id)
+    in_deficit = balance < 0 and not demo
     return BalanceSummary(
         balance_subunits=balance,
         granted_subunits=granted,
         consumed_subunits=consumed,
         month_by_event=month_by_event,
         rollover_subunits=rollover,
-        in_deficit=balance < 0,
+        in_deficit=in_deficit,
+        unlimited=demo,
     )

@@ -69,6 +69,16 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     credit_deficit: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # A permanent demonstration company (Sarkar Corp, ACRM Corp, Specter & Co.).
+    # Billing still RECORDS everything for these tenants -- a demo of a billing
+    # page with no usage on it proves nothing -- but it never refuses anything:
+    # `credits.has_credit_headroom` is unconditionally true and `credit_deficit`
+    # is never set. Kept as a column rather than a UUID list in Python so the
+    # exemption is visible in the table and a future demo tenant is an UPDATE
+    # rather than a release (migration 0037).
+    is_demo: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
 
 #: `tenants.status` values. Mirrors the CHECK constraint in migration 0020.
