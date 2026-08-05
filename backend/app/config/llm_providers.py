@@ -70,6 +70,7 @@ PROVIDER_MODELS: dict[str, str] = {
 }
 
 TaskType = Literal[
+    "conversation_turn",
     "jd_generation",
     "technical_questions",
     "behavioral_assessment",
@@ -87,6 +88,26 @@ TASK_ROUTES: dict[str, list[str]] = {
     "behavioral_assessment": ["gemini", "groq", "openrouter"],
     "report_synthesis": ["openrouter", "gemini", "groq"],
     "email_composition": ["groq", "gemini", "openrouter"],
+    # The unified candidate conversation: the follow-up decision, the next
+    # question, and the challenge to a non-answer.
+    #
+    # THIS ENTRY WAS MISSING FROM 2026-08-04 TO 2026-08-05, and its absence is
+    # why the interview stayed a script. `conversation_turn` was added to
+    # TASK_TEMPERATURE when the adaptive turn was built, and to nothing else.
+    # `provider_order` raises ValueError on an unknown task type ON PURPOSE, so
+    # a typo fails loudly rather than silently picking an arbitrary chain --
+    # but every caller in the conversation path catches broadly and degrades to
+    # the scripted question, because that is the right answer to a provider
+    # outage with a candidate mid-assessment. So the guard that protects
+    # candidates from an outage perfectly concealed a config typo: 100% of
+    # conversational calls raised, 100% degraded, and the product looked
+    # exactly as unadaptive as it had before any of the work.
+    #
+    # Groq first because it is the fastest of the three and a candidate is
+    # watching a text box. Gemini LAST despite being the usual first choice:
+    # measured on production 2026-08-05 its free-tier keys answer 429 quota
+    # exceeded, while Groq and OpenRouter both answer 200.
+    "conversation_turn": ["groq", "openrouter", "gemini"],
     # ── Legacy role hints (ESD §8.4) — behaviour deliberately unchanged ──
     "rerank": ["groq", "gemini", "openrouter"],
     "extraction": ["gemini", "openrouter", "groq"],
@@ -117,6 +138,11 @@ TASK_TIMEOUTS: dict[str, float] = {
     "email_composition": 15.0,
     # Interactive by design — reranking exists to be fast.
     "rerank": 15.0,
+    # THE most interactive call in the product: a candidate is sitting in front
+    # of a text box waiting for the next question, and there can be two of these
+    # in one turn (classify, then write). Tighter than the others for that
+    # reason: a slow provider here is felt twice per question.
+    "conversation_turn": 12.0,
     # Background (Celery).
     "technical_questions": 60.0,
     "behavioral_assessment": 45.0,
@@ -128,6 +154,10 @@ TASK_TIMEOUTS: dict[str, float] = {
 #: Without this, "15s per attempt" times a 4-key retry budget is a 60s request —
 #: the per-attempt cap alone does not bound what the user experiences.
 TASK_TOTAL_BUDGET: dict[str, float] = {
+    # 24s: two attempts at the 12s cap. Deliberately short, because this budget
+    # is spent while a candidate watches a text box, and the degraded path here
+    # is the scripted question rather than a failure.
+    "conversation_turn": 24.0,
     "jd_generation": 30.0,
     "email_composition": 30.0,
     "rerank": 30.0,
@@ -266,6 +296,11 @@ def temperature_for(task_type: str) -> float:
 #: production. The wall-clock ceiling in TASK_TOTAL_BUDGET is what actually
 #: bounds a user-facing request; these numbers bound the attempts within it.
 TASK_RETRY_BUDGET: dict[str, int] = {
+    # Three: one per provider tier, no sibling-key retries. A candidate is
+    # waiting, and the fallback (ask the scripted question) is genuinely
+    # acceptable, so spending nine attempts to save one turn's adaptivity is
+    # the wrong trade.
+    "conversation_turn": 3,
     "jd_generation": 5,
     "technical_questions": 6,
     "behavioral_assessment": 5,

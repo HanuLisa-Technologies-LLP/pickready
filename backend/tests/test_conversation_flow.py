@@ -24,6 +24,37 @@ import pytest
 from sqlalchemy import select, text
 
 
+@pytest.fixture(autouse=True)
+def _stub_classifier(monkeypatch):
+    """Every test in this file is about FLOW, not about judging an answer.
+
+    This became necessary the moment `conversation_turn` gained a route. Until
+    then `invoke_llm("conversation_turn")` raised ValueError on an unknown task
+    type, the classifier degraded to "substantive" without touching anything,
+    and these tests passed while exercising none of the real path -- which is
+    precisely how the missing route survived a green suite for a day.
+
+    With the route in place the classifier reaches the router, which loads keys
+    through the SAME session these tests drive by hand, inside a transaction
+    they have already closed. Stubbing it keeps the file testing what it says it
+    tests; `tests/test_answer_classification.py` covers the judgement itself.
+    """
+    from app.services import answer_classification as ac
+
+    async def _substantive(**kwargs):
+        return ac.Classification(
+            label="substantive",
+            confidence="high",
+            reason="stubbed for a flow test",
+            needs_rechallenge=False,
+            scorable=True,
+        )
+
+    monkeypatch.setattr(ac, "classify", _substantive)
+    # `api.assessments` imported the module, not the symbol, so patching the
+    # module attribute is enough and there is no second binding to keep in step.
+
+
 async def _factory_or_skip():
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
