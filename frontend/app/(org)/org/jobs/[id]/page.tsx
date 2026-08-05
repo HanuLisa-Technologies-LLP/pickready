@@ -716,8 +716,9 @@ export default function OrgJobDetailPage() {
         </div>
       ) : null}
 
-      {/* The one manual step (spec §11): both halves of the assessment setup
-          are reviewed and finalised here before any candidate can be invited. */}
+      {/* The one manual step (spec §11): the PPI framework is reviewed and
+          saved here before any candidate can be invited. The technical
+          questions are shown for editing but gate nothing. */}
       {job ? <JobSetupReview jobId={jobId} /> : null}
 
       {job ? <PipelineFunnel jobId={jobId} reloadKey={reloadKey} /> : null}

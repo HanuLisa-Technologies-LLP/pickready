@@ -2,18 +2,32 @@
 
 // The single manual step in the pipeline (spec §11).
 //
-// Two things are generated in parallel when a job is created, and BOTH must be
-// finalised by a human before any candidate can be invited:
+// Two things are generated in parallel when a job is created, and exactly ONE
+// of them gates candidates (client decision, 2026-08-04):
 //
-//   1. The technical question bank, generated from the JD (spec §5).
-//   2. The PPI evaluation framework: Primary Skills, Secondary Skills and
+//   1. The PPI evaluation framework: Primary Skills, Secondary Skills and
 //      Behavioural Competencies, generated from the JD (spec §6.2, §6.3).
+//      A human MUST save it. It is the fixed criteria every candidate on this
+//      job is graded against, so a human confirming it is the product's only
+//      guarantee that two reports are comparable.
+//   2. The technical question bank, generated from the JD (spec §5). It gates
+//      NOTHING. Questions are live the moment they are generated; a weak one
+//      costs one item on one report rather than making two reports
+//      incomparable, which is why only the framework half survived.
 //
 // Everything else in the pipeline runs without human intervention. This screen
 // therefore has one job: make the outstanding work obvious, so the step does
 // not become a silent bottleneck. The status strip at the top says exactly what
 // is still blocking candidates, and the backend mails a reminder if it is left
 // unapproved past the configured threshold.
+//
+// THE STATUS STRIP MUST NAME ONLY THE FRAMEWORK. It previously built its
+// outstanding list from `questions_approved` as well, so it told every
+// recruiter that "the technical questions" were blocking candidates while the
+// control that would have cleared them had been deleted in the same change.
+// The banner was unclearable by construction and read as the removed feature
+// still being present. A blocker the UI names must have a control that
+// satisfies it.
 
 import * as React from "react";
 import { Check, Loader2, Lock, Pencil, Plus, Trash2, Unlock } from "lucide-react";
@@ -107,7 +121,10 @@ interface Setup {
   job_id: string;
   status: string;
   grade: string | null;
-  questions_approved: boolean;
+  // `questions_approved` is still returned by the API and is deliberately NOT
+  // declared here. It is stamped by the surviving finalize route and read by
+  // nothing; leaving it off the type is what stops it being wired back into a
+  // blocking message by someone reading the payload rather than this file.
   framework_approved: boolean;
   ready_for_candidates: boolean;
 }
@@ -127,22 +144,23 @@ function SetupStatus({ setup }: { setup: Setup }) {
           Ready for candidates
         </p>
         <p className="mt-1 text-xs">
-          Both the technical questions and the PPI framework are finalised. Candidates you
-          invite can now take the assessment.
+          The PPI framework is saved. Candidates you invite can now take the
+          assessment.
         </p>
       </div>
     );
   }
-  const outstanding = [
-    setup.questions_approved ? null : "the technical questions",
-    setup.framework_approved ? null : "the PPI framework",
-  ].filter(Boolean);
+  // Only the framework is named, because only the framework can be acted on.
+  // `setup.questions_approved` is deliberately NOT read here: the backend
+  // stopped gating on it and the button that set it is gone, so naming it
+  // would state a blocker no control on this page can clear.
   return (
     <div className="rounded-lg border border-amber-600 bg-amber-50 p-4 dark:bg-amber-950/40">
-      <p className="text-sm font-semibold">Questions pending review</p>
+      <p className="text-sm font-semibold">Framework pending review</p>
       <p className="mt-1 text-xs">
-        No candidate can be invited to this job until you finalise {outstanding.join(" and ")}.
-        Applications still arrive in the meantime.
+        No candidate can be invited to this job until you save the PPI framework
+        below. Applications still arrive in the meantime, and the technical
+        questions are already live.
       </p>
     </div>
   );
@@ -434,8 +452,8 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
           <CardDescription>
             The PPI framework and the technical questions for this job are not
             available yet. Both are generated from the job description shortly
-            after a job is created, and this step has to be finalised before any
-            candidate can be invited.
+            after a job is created. The framework has to be saved before any
+            candidate can be invited; the questions go live on their own.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -596,12 +614,11 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
                 question is scored against its own rubric, never open-ended judgement.
               </CardDescription>
             </div>
-            {bank?.approved ? (
-              <Badge variant="brand" className="gap-1">
-                <Check className="h-3 w-3" aria-hidden />
-                Finalised
-              </Badge>
-            ) : null}
+            {/* No "Finalised" badge. It rendered from `bank.approved`, which
+                only a route nothing calls any more can set, so on every job
+                created since 2026-08-04 it was permanently absent and implied
+                an approval step that no longer exists. The questions' real
+                state is stated in words below: they are live. */}
           </div>
         </CardHeader>
         <CardContent className="space-y-3">
