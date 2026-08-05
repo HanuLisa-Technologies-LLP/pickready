@@ -1,4 +1,5 @@
 """Job setup review, the unified conversation, and the PPI Assessment Report."""
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -23,7 +24,7 @@ from app.models.assessment import (
     ReportDimension,
     TechnicalQuestion,
 )
-from app.models.candidate import Candidate, JobCandidateLink
+from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
 from app.schemas.assessments import (
     CompetencyIn,
@@ -40,7 +41,14 @@ from app.schemas.assessments import (
     TechnicalQuestionOut,
 )
 from app.services import capabilities as caps
-from app.services import credit_reconciliation, hiring_pipeline, interviewer, ppi
+from app.services import (
+    answer_classification,
+    credit_reconciliation,
+    hiring_pipeline,
+    interview_telemetry,
+    interviewer,
+    ppi,
+)
 from app.services.audit import audit
 from app.services.functional_assessment import (
     CATEGORY_MATCHING,
@@ -740,6 +748,67 @@ async def start_conversation(
 
 
 
+async def _turn_context(
+    session: AsyncSession,
+    job: Job,
+    link: JobCandidateLink,
+    domain: str,
+    question_key: str,
+) -> dict[str, str]:
+    """Everything the interviewer needs to write the next question.
+
+    The JD and the resume are the two things that make a question specific to
+    this role and this person; the competency is what makes the answer
+    gradeable. Without all three the agent can only recite.
+
+    `mode` is decided by how the answer will be SCORED, never by preference:
+
+      * ppi        -> MODE_GENERATE. Scored against the COMPETENCY across every
+                      answer filed under it, so the question may be written
+                      fresh from the JD, the resume and the transcript.
+      * technical  -> MODE_REWORD. Scored against THAT QUESTION'S own stored
+                      prompt and rubric_json, so generating a fresh one would
+                      grade the answer against a rubric written for a question
+                      nobody was asked.
+
+    Read per turn rather than cached on the conversation because a recruiter may
+    edit the JD or a competency mid-pipeline, and the next question should
+    reflect what the job says now.
+    """
+    resume_excerpt = ""
+    if link.profile_id is not None:
+        resume_excerpt = (
+            await session.execute(
+                select(Profile.resume_text).where(Profile.id == link.profile_id)
+            )
+        ).scalar_one_or_none() or ""
+
+    if domain != "ppi":
+        return {
+            "mode": interviewer.MODE_REWORD,
+            "competency": "",
+            "competency_hint": "",
+            "jd_excerpt": job.jd_markdown or "",
+            "resume_excerpt": resume_excerpt,
+        }
+
+    # `question_key` carries the JobCompetency id for a PPI question, which is
+    # exactly the criterion this turn has to probe and the key its answer will
+    # be filed under.
+    competency = None
+    try:
+        competency = await session.get(JobCompetency, uuid.UUID(str(question_key)))
+    except (ValueError, TypeError):
+        competency = None
+    return {
+        "mode": interviewer.MODE_GENERATE if competency else interviewer.MODE_REWORD,
+        "competency": competency.name if competency else "",
+        "competency_hint": (competency.description or "") if competency else "",
+        "jd_excerpt": job.jd_markdown or "",
+        "resume_excerpt": resume_excerpt,
+    }
+
+
 async def _transcript_rows(
     session: AsyncSession, conversation_id: uuid.UUID
 ) -> list[dict[str, Any]]:
@@ -770,6 +839,10 @@ async def respond(
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> ConversationOut:
+    # Wall clock for the turn, for the telemetry line at the end. monotonic
+    # rather than wall time: this measures a duration, and a clock adjustment
+    # mid-request would otherwise produce a negative latency.
+    turn_started = time.monotonic()
     conversation = await session.get(AssessmentConversation, conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -835,12 +908,28 @@ async def respond(
         # question (a pending prompt suppresses any reaction on the turn that
         # answers it), and changes no scoring: the non-answer is already
         # recorded and already grades Not Matching.
-        reaction = await interviewer.challenge_non_answer(
+        # ONE classification decides what happens next. Gibberish and empty are
+        # settled deterministically (no model call, because the model being down
+        # is exactly when the guard matters); off_topic and evasive need the
+        # model, because they are well-formed prose that simply does not answer
+        # the question, and nothing deterministic can see that.
+        verdict = await answer_classification.classify(
             session=session,
             question=prompt,
             answer=answer_text,
             transcript=transcript,
         )
+        reaction = None
+        action = "advanced"
+        if verdict.needs_rechallenge:
+            reaction = await interviewer.challenge_non_answer(
+                session=session,
+                question=prompt,
+                answer=answer_text,
+                transcript=transcript,
+                label=verdict.label,
+            )
+            action = "rechallenged" if reaction else "advanced"
         if reaction is None:
             reaction = await interviewer.next_follow_up(
                 session=session,
@@ -854,13 +943,36 @@ async def respond(
                 # anything the candidate said.
                 budget=interviewer.follow_up_budget(len(prompts)),
             )
-            # Only a real probe draws down the budget.
+            # Only a real probe draws down the budget. A re-ask does not:
+            # asking someone to actually answer is not a probe, and spending
+            # the budget on it would starve the thin-but-real answers later in
+            # the interview that a probe is worth much more on.
             if reaction:
                 conversation.follow_ups_used += 1
+                action = "followed_up"
+            else:
+                action = "advanced"
         if reaction:
             conversation.pending_prompt = reaction
             conversation.pending_question_key = key
             conversation.pending_domain = domain
+
+        # One structured line per turn. Labels, keys and timings only, never
+        # answer or question text: an ordinary log is far more widely readable
+        # than a LangSmith trace, and prompts carry a real candidate's answers.
+        interview_telemetry.record_turn(
+            interview_telemetry.TurnEvent(
+                conversation_id=str(conversation.id),
+                turn_index=index,
+                question_key=key,
+                domain=domain,
+                answer_label=verdict.label,
+                action=action,
+                generated=conversation.delivered_prompt is not None,
+                degraded=verdict.confidence == "low",
+                latency_ms=int((time.monotonic() - turn_started) * 1000),
+            )
+        )
 
     if conversation.next_question_index >= len(prompts) and not conversation.pending_prompt:
         conversation.status = "completed"
@@ -879,21 +991,31 @@ async def respond(
     await session.flush()
     next_index = conversation.next_question_index
 
-    # Say the next BASE question the way an interviewer would say it here.
+    # Write the next BASE question for THIS candidate at THIS point.
     #
-    # Skipped entirely when a probe is outstanding: the probe IS the next thing
-    # the candidate sees, and composing a delivery nobody will read would spend
-    # a second sequential model call on a request a candidate is waiting on.
-    # Also skipped once the questions run out, for the same reason.
+    # Skipped entirely when a probe or re-ask is outstanding: that IS the next
+    # thing the candidate sees, and writing a question nobody will read would
+    # spend a second sequential model call on a request a candidate is waiting
+    # on. Also skipped once the questions run out, for the same reason.
     if not conversation.pending_prompt and next_index < len(prompts):
+        next_domain, next_key, next_stored = prompts[next_index]
+        # Re-read AFTER the flush above so the turn just written is part of the
+        # memory this question is conditioned on. Reading the stale list would
+        # have the interviewer talk as though the last answer had not been given.
+        memory = await _transcript_rows(session, conversation.id)
+        context = await _turn_context(session, job, link, next_domain, next_key)
         conversation.delivered_prompt = await interviewer.compose_next_question(
             session=session,
-            question=prompts[next_index][2],
-            # Re-read AFTER the flush above so the turn just written is part of
-            # the memory the delivery is conditioned on. Reading the stale list
-            # would have the interviewer talk as though the last answer had not
-            # been given.
-            transcript=await _transcript_rows(session, conversation.id),
+            question=next_stored,
+            transcript=memory,
+            mode=context["mode"],
+            competency=context["competency"],
+            competency_hint=context["competency_hint"],
+            jd_excerpt=context["jd_excerpt"],
+            resume_excerpt=context["resume_excerpt"],
+            asked_before=[
+                row["content"] for row in memory if row.get("speaker") == "agent"
+            ],
         )
         await session.flush()
 

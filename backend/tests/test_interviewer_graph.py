@@ -268,19 +268,51 @@ async def test_keyboard_mash_is_challenged_not_ignored(monkeypatch, mash) -> Non
 @pytest.mark.asyncio
 async def test_a_real_answer_is_not_challenged(monkeypatch) -> None:
     """The guard must not nag someone who answered. A negative answer is a real
-    answer and is scored low on its merits, never re-asked."""
+    answer and is scored low on its merits, never re-asked.
+
+    WHOSE JOB THIS IS, as of the classifier landing: `answer_classification`
+    decides, and `challenge_non_answer` trusts the label it is handed. So the
+    protection for a real answer is that the classifier returns "substantive"
+    and `needs_rechallenge` is False, which is asserted in
+    tests/test_answer_classification.py. What is asserted HERE is the other
+    half of that contract: a label this module does not recognise must produce
+    SILENCE rather than a guessed challenge, because a false challenge accuses
+    a real candidate of not answering.
+    """
     async def _spy(*args, **kwargs):
         raise AssertionError("should not have reached the model")
 
     monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _spy)
-    for answer in (
-        "I have not used Kafka in production.",
-        "I built the billing pipeline and cut p99 latency to 180ms.",
-    ):
+    for label in ("substantive", "", "something_new", "SUBSTANTIVE"):
         assert await interviewer.challenge_non_answer(
-            session=None, question="Tell me about Kafka.", answer=answer,
+            session=None,
+            question="Tell me about Kafka.",
+            answer="I have not used Kafka in production.",
             transcript=[],
+            label=label,
         ) is None
+
+
+@pytest.mark.asyncio
+async def test_the_challenge_wording_matches_what_went_wrong(monkeypatch) -> None:
+    """Telling a candidate who wrote three coherent paragraphs that their reply
+    "did not come through" proves the agent cannot tell prose from keyboard
+    mash. Each label gets its own outage fallback for that reason."""
+    async def _down(*args, **kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _down)
+    seen = {}
+    for label in ("gibberish", "empty", "off_topic", "evasive"):
+        seen[label] = await interviewer.challenge_non_answer(
+            session=None, question="Tell me about Kafka.", answer="...",
+            transcript=[], label=label,
+        )
+    assert all(seen.values()), "every rechallengeable label needs wording"
+    assert len(set(seen.values())) == 4, f"wording must differ by label: {seen}"
+    # The prose labels must not claim nothing arrived.
+    for label in ("off_topic", "evasive"):
+        assert "come through" not in seen[label].lower()
 
 
 def test_the_follow_up_budget_scales_with_the_interview() -> None:
