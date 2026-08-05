@@ -566,33 +566,38 @@ async def _candidate_link(session: AsyncSession, user: CurrentUser, link_id: uui
     job = await session.get(Job, link.job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    # The review gate (spec §5): no candidate enters the conversation until the
-    # recruiter has finalised BOTH the technical bank and the PPI framework.
+    # The review gate (spec §5, amended 2026-08-04): no candidate enters the
+    # conversation until the recruiter has saved the PPI FRAMEWORK. The
+    # technical bank stopped gating anything in the same change, so it is no
+    # longer named here or in the message the candidate reads.
     if job.assessment_status != READY_FOR_CANDIDATES:
         raise HTTPException(
             status_code=409,
             detail=(
                 "This assessment is not open yet. The hiring team is still "
-                "reviewing the questions for this role, and you will be emailed "
-                "as soon as it is ready."
+                "confirming how this role will be evaluated, and you will be "
+                "emailed as soon as it is ready."
             ),
         )
     return link, job
 
 
-# Short conversational connectors so the blended sequence reads as ONE
-# conversation rather than two interleaved engines (spec §8). Cycled by
-# position; the first prompt is always delivered bare.
-_CONNECTORS: tuple[str, ...] = (
-    "Thanks for that.",
-    "Good, moving on.",
-    "That's helpful.",
-    "Understood.",
-    "Noted, thank you.",
-    "Great.",
-    "Appreciate the detail.",
-    "Right, next one.",
-)
+# REMOVED 2026-08-05: `_CONNECTORS`, eight canned openers ("Great.",
+# "Understood.", "Thanks for that.", "Appreciate the detail." ...) prepended to
+# every question by POSITION.
+#
+# They were the literal thing the brief forbids: templated acknowledgment
+# strings, chosen by `position % 8` and therefore blind to what the candidate
+# had just said. An answer of "I do not know" was met with "Appreciate the
+# detail." That is worse than saying nothing, because it tells the candidate
+# the interviewer is not reading -- and it is the single most visible reason
+# the assessment read as a form rather than a conversation.
+#
+# The job they were doing (making the blended technical/PPI sequence read as
+# ONE conversation, spec §8) is now done properly by
+# `interviewer.compose_next_question`, which writes the transition against the
+# actual transcript, or writes nothing when there is no real connection to
+# draw. A bare question is always better than a false acknowledgment.
 
 
 async def _conversation_prompts(
@@ -632,17 +637,12 @@ async def _conversation_prompts(
             if index < len(group):
                 blended.append(group[index])
 
-    def _connect(position: int, prompt: str) -> str:
-        # The first prompt, and any prompt that already opens with its own
-        # discourse marker, are delivered bare -- stacking two reads oddly.
-        if position == 0 or prompt.split(" ", 1)[0].rstrip(",") in ("Finally", "To", "Before", "Right", "And"):
-            return prompt
-        return f"{_CONNECTORS[position % len(_CONNECTORS)]} {prompt}"
-
-    return [
-        (domain, key, _connect(position, prompt))
-        for position, (domain, key, prompt) in enumerate(blended)
-    ]
+    # Returned BARE. The conversational join between one question and the next
+    # is written per turn by `interviewer.compose_next_question` against the
+    # real transcript, so it can only claim a connection that actually exists.
+    # Anything canned here would be prepended before the candidate has said
+    # anything for it to respond to.
+    return blended
 
 
 async def _ensure_conversation_ready(

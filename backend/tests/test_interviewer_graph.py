@@ -48,6 +48,42 @@ def test_both_graphs_expose_their_nodes() -> None:
     assert {"plan", "compose", "validate"} <= deliver
 
 
+def test_no_canned_acknowledgments_in_the_conversation_path() -> None:
+    """`_CONNECTORS` prepended one of eight fixed openers to every question by
+    POSITION -- "Great.", "Understood.", "Appreciate the detail." -- chosen by
+    `position % 8` and therefore blind to what the candidate had just said. An
+    answer of "I do not know" was met with "Appreciate the detail."
+
+    It survived every prior pass because nothing asserted its absence, and it
+    was the most visible reason the assessment read as a form rather than a
+    conversation. The transition is now written per turn against the real
+    transcript, or not written at all.
+    """
+    import inspect
+
+    from app.api import assessments
+
+    # CODE lines only. The comment recording the removal necessarily quotes the
+    # strings it removed, and a check that could not tell those apart would
+    # forbid explaining the change.
+    code = "\n".join(
+        line
+        for line in inspect.getsource(assessments).splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    assert "_CONNECTORS" not in code, (
+        "a canned connector table is back in the conversation path"
+    )
+    for canned in (
+        "Thanks for that.",
+        "Good, moving on.",
+        "Understood.",
+        "Appreciate the detail.",
+        "Right, next one.",
+    ):
+        assert canned not in code, f"canned acknowledgment {canned!r} is back"
+
+
 # ── A rewrite may not change the question ────────────────────────────────────
 
 
