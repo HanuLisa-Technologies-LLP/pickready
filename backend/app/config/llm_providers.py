@@ -296,11 +296,23 @@ def temperature_for(task_type: str) -> float:
 #: production. The wall-clock ceiling in TASK_TOTAL_BUDGET is what actually
 #: bounds a user-facing request; these numbers bound the attempts within it.
 TASK_RETRY_BUDGET: dict[str, int] = {
-    # Three: one per provider tier, no sibling-key retries. A candidate is
-    # waiting, and the fallback (ask the scripted question) is genuinely
-    # acceptable, so spending nine attempts to save one turn's adaptivity is
-    # the wrong trade.
-    "conversation_turn": 3,
+    # Six, raised from three on 2026-08-05 after watching it fail live.
+    #
+    # Three was "one per provider tier, no sibling-key retries", reasoned from
+    # the fallback being acceptable. Measured, that was wrong: a turn makes up
+    # to THREE calls (classify, challenge or probe, then write the next
+    # question), so a real interview issues them in bursts and Groq answers 429.
+    # A 429 is retried with a reduced max_tokens, which consumes an attempt, so
+    # a throttled first tier could exhaust the budget before the chain ever
+    # reached a HEALTHY OpenRouter. Observed as every challenge in a live
+    # transcript arriving canned while an isolated probe composed 5 out of 5.
+    #
+    # Six is still tightly bounded, and it is NOT the thing protecting the
+    # candidate from waiting: TASK_TOTAL_BUDGET does that, in wall clock, at
+    # 24s. Attempts are ~300ms when they succeed, so the extra budget costs
+    # nothing on the happy path and buys the fallback tier a real chance on the
+    # unhappy one.
+    "conversation_turn": 6,
     "jd_generation": 5,
     "technical_questions": 6,
     "behavioral_assessment": 5,
