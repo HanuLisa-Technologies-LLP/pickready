@@ -721,10 +721,20 @@ async def start_conversation(
             )
     prompts = await _conversation_prompts(session, job, link)
     index = min(conversation.next_question_index, len(prompts))
+    # A pending follow-up outranks the next base question: the candidate left
+    # mid-probe and must come back to the probe, not skip past it.
+    # `delivered_prompt` is the wording composed for this base question on the
+    # previous turn; it is NULL on the first question and whenever a rewrite was
+    # unavailable, and the stored text is the correct fallback in both cases.
+    prompt = conversation.pending_prompt or (
+        (conversation.delivered_prompt or prompts[index][2])
+        if index < len(prompts)
+        else None
+    )
     return ConversationOut(
         conversation_id=conversation.id,
         status=conversation.status,
-        prompt=prompts[index][2] if index < len(prompts) else None,
+        prompt=prompt,
         progress_label=f"Question {index + 1} of {len(prompts)}" if index < len(prompts) else "Conversation complete",
     )
 
@@ -789,6 +799,14 @@ async def respond(
         conversation.pending_domain = None
     else:
         domain, key, prompt = prompts[index]
+        # Log what the candidate actually READ, not what was stored for them.
+        # `delivered_prompt` is the wording composed on the previous turn; when
+        # it is NULL (first question, or the rewrite was unavailable) the two
+        # are the same string. Getting this wrong would make the transcript a
+        # record of a conversation that never happened, and the transcript is
+        # both the scorers' input and this agent's own memory.
+        prompt = conversation.delivered_prompt or prompt
+        conversation.delivered_prompt = None
         conversation.next_question_index += 1
 
     ordinal = (
@@ -836,11 +854,32 @@ async def respond(
         celery_app.send_task("pickready.run_functional_assessment", args=[str(link.id)])
     await session.flush()
     next_index = conversation.next_question_index
+
+    # Say the next BASE question the way an interviewer would say it here.
+    #
+    # Skipped entirely when a probe is outstanding: the probe IS the next thing
+    # the candidate sees, and composing a delivery nobody will read would spend
+    # a second sequential model call on a request a candidate is waiting on.
+    # Also skipped once the questions run out, for the same reason.
+    if not conversation.pending_prompt and next_index < len(prompts):
+        conversation.delivered_prompt = await interviewer.compose_next_question(
+            session=session,
+            question=prompts[next_index][2],
+            # Re-read AFTER the flush above so the turn just written is part of
+            # the memory the delivery is conditioned on. Reading the stale list
+            # would have the interviewer talk as though the last answer had not
+            # been given.
+            transcript=await _transcript_rows(session, conversation.id),
+        )
+        await session.flush()
+
     # A pending follow-up is what the candidate sees next. The progress label
     # deliberately keeps counting BASE questions, so a probe does not make the
     # interview look longer than it is or push the count past its own total.
     next_prompt = conversation.pending_prompt or (
-        prompts[next_index][2] if next_index < len(prompts) else None
+        (conversation.delivered_prompt or prompts[next_index][2])
+        if next_index < len(prompts)
+        else None
     )
     return ConversationOut(
         conversation_id=conversation.id,

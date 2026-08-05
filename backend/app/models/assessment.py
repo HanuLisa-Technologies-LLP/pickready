@@ -123,6 +123,26 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
         Integer, nullable=False, default=0, server_default="0"
     )
 
+    # ── Delivered wording of the next BASE question (migration 0039) ─────────
+    # `services/interviewer.compose_next_question` says the next scripted
+    # question the way an interviewer would say it here, conditioned on the
+    # transcript. It is generated when the PREVIOUS answer is submitted and
+    # answered on the NEXT request, so like `pending_prompt` it has to survive
+    # between the two.
+    #
+    # It exists so the transcript records what the candidate ACTUALLY READ. The
+    # agent message is written on the request that carries the answer, so
+    # without this column the composed question would be shown and the stored
+    # question logged, and every scorer would read a transcript that never
+    # happened.
+    #
+    # NULL means "no rewrite available, use the stored text", which is the
+    # product's previous behaviour and always a correct thing to ask. It never
+    # changes WHICH question is asked: `next_question_index` and the question
+    # key are untouched by delivery, and `_substance_preserved` refuses a
+    # rewrite that dropped a specific term.
+    delivered_prompt: Mapped[str | None] = mapped_column(Text)
+
     # ── Invitation + progress tracking (migration 0018) ──────────────────────
     # These three columns existed in the database but not on this model, so
     # every attribute read of them raised AttributeError and turned
