@@ -824,19 +824,43 @@ async def respond(
     # also what would let one evasive candidate consume the whole budget.
     if not pending:
         transcript = await _transcript_rows(session, conversation.id)
-        follow_up = await interviewer.next_follow_up(
+        # A NON-ANSWER is answered first, and separately. Observed live on
+        # 2026-08-05: four consecutive keyboard-mash answers were each met with
+        # the next scripted question, because the follow-up path deliberately
+        # refuses to spend a probe on gibberish. Sound for probing, and the
+        # worst possible behaviour overall -- the one case a human interviewer
+        # certainly reacts to became the one case this agent never did.
+        #
+        # A re-ask costs no follow-up budget, is bounded to one per base
+        # question (a pending prompt suppresses any reaction on the turn that
+        # answers it), and changes no scoring: the non-answer is already
+        # recorded and already grades Not Matching.
+        reaction = await interviewer.challenge_non_answer(
             session=session,
             question=prompt,
             answer=answer_text,
             transcript=transcript,
-            follow_ups_used=conversation.follow_ups_used,
-            already_followed_up=False,
         )
-        if follow_up:
-            conversation.pending_prompt = follow_up
+        if reaction is None:
+            reaction = await interviewer.next_follow_up(
+                session=session,
+                question=prompt,
+                answer=answer_text,
+                transcript=transcript,
+                follow_ups_used=conversation.follow_ups_used,
+                already_followed_up=False,
+                # Scaled to this interview's length. A flat five probes across
+                # 45 questions left 89% of the conversation unable to react to
+                # anything the candidate said.
+                budget=interviewer.follow_up_budget(len(prompts)),
+            )
+            # Only a real probe draws down the budget.
+            if reaction:
+                conversation.follow_ups_used += 1
+        if reaction:
+            conversation.pending_prompt = reaction
             conversation.pending_question_key = key
             conversation.pending_domain = domain
-            conversation.follow_ups_used += 1
 
     if conversation.next_question_index >= len(prompts) and not conversation.pending_prompt:
         conversation.status = "completed"

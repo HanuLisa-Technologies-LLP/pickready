@@ -236,6 +236,63 @@ async def test_a_non_answer_is_never_probed(monkeypatch) -> None:
     assert not called
 
 
+# ── A non-answer is never met with silence ───────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "mash",
+    # The four answers actually typed into production on 2026-08-05. Every one
+    # of them was met with the next scripted question, and the interview reached
+    # "Question 8 of 45" without ever remarking that nothing had been answered.
+    ["fsjdemd", "xdshfjg,uyytrs", "dwrhejyrkhfbgertyfg", "cvdgrertykfmhgnfrshfmgc"],
+)
+@pytest.mark.asyncio
+async def test_keyboard_mash_is_challenged_not_ignored(monkeypatch, mash) -> None:
+    async def _down(*args, **kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _down)
+    out = await interviewer.challenge_non_answer(
+        session=None,
+        question="Describe a system you designed end to end.",
+        answer=mash,
+        transcript=[],
+    )
+    assert out, (
+        f"{mash!r} was met with silence. This is the defect the user reported: "
+        "the one case a human interviewer certainly reacts to was the one case "
+        "the agent was guaranteed to say nothing about."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_real_answer_is_not_challenged(monkeypatch) -> None:
+    """The guard must not nag someone who answered. A negative answer is a real
+    answer and is scored low on its merits, never re-asked."""
+    async def _spy(*args, **kwargs):
+        raise AssertionError("should not have reached the model")
+
+    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _spy)
+    for answer in (
+        "I have not used Kafka in production.",
+        "I built the billing pipeline and cut p99 latency to 180ms.",
+    ):
+        assert await interviewer.challenge_non_answer(
+            session=None, question="Tell me about Kafka.", answer=answer,
+            transcript=[],
+        ) is None
+
+
+def test_the_follow_up_budget_scales_with_the_interview() -> None:
+    """A flat five probes across 45 questions left 89% of the conversation
+    unable to react to anything the candidate said."""
+    assert interviewer.follow_up_budget(45) == 15   # non-managerial
+    assert interviewer.follow_up_budget(22) == 7    # CXO
+    # Clamped at both ends, so the ceiling is always provable.
+    assert interviewer.follow_up_budget(3) == interviewer.MAX_FOLLOW_UPS
+    assert interviewer.follow_up_budget(900) == interviewer.MAX_FOLLOW_UPS_CEILING
+
+
 @pytest.mark.asyncio
 async def test_a_model_echoing_null_is_not_shown_as_a_question(monkeypatch) -> None:
     async def _null(*args, **kwargs):

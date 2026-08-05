@@ -90,15 +90,42 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "MAX_FOLLOW_UPS",
     "MAX_FOLLOW_UPS_PER_QUESTION",
+    "follow_up_budget",
     "next_follow_up",
     "compose_next_question",
+    "challenge_non_answer",
 ]
 
-#: Ceiling per conversation. Five is roughly one probe per five base questions
-#: on a non-managerial assessment (45 questions), which reads as an attentive
-#: interviewer rather than an interrogation, and it bounds both the candidate's
-#: time and the token spend per assessment.
+#: Floor for a short interview, and the value this was FIXED at until
+#: 2026-08-05. Five probes across a non-managerial assessment's 45 questions
+#: means at most 11% of the interview could react to anything the candidate
+#: said; the other 89% was a script whatever they typed. That is the structural
+#: reason it read as a form with a chat skin, and no amount of prompt tuning
+#: reaches it. `follow_up_budget` now scales the ceiling with the interview's
+#: actual length and this is only its lower bound.
 MAX_FOLLOW_UPS = 5
+
+#: Hard upper bound, whatever the arithmetic says. Bounds the candidate's time
+#: and the token spend per assessment, and keeps an interview that can ask "one
+#: more thing" provably finite.
+MAX_FOLLOW_UPS_CEILING = 15
+
+#: One probe per this many base questions. At 45 questions that is 15, the
+#: ceiling; at 22 (CXO) it is 7. Roughly "the interviewer pressed on a third of
+#: what I said", which is what an attentive human interview feels like.
+QUESTIONS_PER_FOLLOW_UP = 3
+
+
+def follow_up_budget(question_count: int) -> int:
+    """How many probes this conversation may spend, scaled to its length.
+
+    A fixed ceiling is wrong in both directions: five is nearly nothing across a
+    45-question non-managerial interview, and would be an interrogation across a
+    10-question CXO one. Clamped at both ends so the result is always between
+    MAX_FOLLOW_UPS and MAX_FOLLOW_UPS_CEILING.
+    """
+    scaled = int(question_count) // QUESTIONS_PER_FOLLOW_UP
+    return max(MAX_FOLLOW_UPS, min(MAX_FOLLOW_UPS_CEILING, scaled))
 
 #: One per base question. Two consecutive probes on the same point is where an
 #: interview starts to feel like cross-examination, and it is also what would
@@ -280,10 +307,37 @@ class _DecideState(TypedDict, total=False):
     transcript: list[dict[str, Any]]
     follow_ups_used: int
     already_followed_up: bool
+    budget: int
     # working
     stop: bool
     raw: str | None
     follow_up: str | None
+
+
+_CHALLENGE_SYSTEM = (
+    "You are conducting a job interview. The candidate's last reply was not an "
+    "answer: it was keyboard mash, a single word, or an empty gesture.\n"
+    "\n"
+    "Say what a competent interviewer would say. Note plainly that the reply "
+    "did not come through as an answer, and ask them for the question again in "
+    "one sentence. Be matter of fact and not unkind: assume a slip or a "
+    "misunderstanding, never accuse them of anything.\n"
+    "\n"
+    "Do NOT quote their non-answer back at them, do NOT praise, evaluate or "
+    "score, and do NOT move on to another topic.\n"
+    "\n"
+    'Return JSON: {"challenge": <string>}.'
+)
+
+#: Used when the model is unavailable. This is NOT the templated filler the
+#: brief forbids: filler asserts a reaction that did not happen ("Appreciate the
+#: detail." to gibberish), whereas this is a true statement about what actually
+#: arrived, and the alternative is the silence that made the agent look like it
+#: was not reading at all. Deterministic on purpose -- an outage is exactly when
+#: a candidate is most likely to be typing into a void.
+_CHALLENGE_FALLBACK = (
+    "That did not come through as an answer. Could you take another go at it?"
+)
 
 
 async def _decide_budget(state: _DecideState) -> _DecideState:
@@ -293,7 +347,11 @@ async def _decide_budget(state: _DecideState) -> _DecideState:
     the ceiling cannot be argued with by a provider response.
     """
     used = int(state.get("follow_ups_used") or 0)
-    if state.get("already_followed_up") or used >= MAX_FOLLOW_UPS:
+    # The caller passes a length-scaled budget; MAX_FOLLOW_UPS is the floor used
+    # when it did not, so an older caller keeps the previous ceiling rather than
+    # accidentally getting an unbounded one.
+    budget = int(state.get("budget") or MAX_FOLLOW_UPS)
+    if state.get("already_followed_up") or used >= budget:
         return {"stop": True}
     return {"stop": False}
 
@@ -491,13 +549,19 @@ async def next_follow_up(
     transcript: list[dict[str, Any]] | None,
     follow_ups_used: int,
     already_followed_up: bool,
+    budget: int | None = None,
 ) -> str | None:
     """One adaptive follow-up, or None to ask the next scripted question.
 
-    The signature is unchanged and is deliberately kept so: it is the seam the
-    conversation-flow tests patch to pin the four invariants, and those tests
-    are the only thing standing between an edit here and a billing or scoring
-    defect that would not show up until a report was wrong.
+    `budget` is this conversation's length-scaled ceiling
+    (`follow_up_budget(len(prompts))`); it defaults to MAX_FOLLOW_UPS so a
+    caller that does not pass one keeps the previous behaviour rather than
+    losing its ceiling.
+
+    Every other part of the signature is unchanged, deliberately: it is the seam
+    the conversation-flow tests patch to pin the four invariants, and those
+    tests are the only thing standing between an edit here and a billing or
+    scoring defect that would not show up until a report was wrong.
     """
     try:
         result = await _DECIDE_GRAPH.ainvoke(
@@ -508,6 +572,7 @@ async def next_follow_up(
                 "transcript": transcript or [],
                 "follow_ups_used": follow_ups_used,
                 "already_followed_up": already_followed_up,
+                "budget": budget if budget is not None else MAX_FOLLOW_UPS,
             }
         )
     except Exception as exc:  # noqa: BLE001
@@ -516,6 +581,75 @@ async def next_follow_up(
         logger.info("interviewer.decide_graph_failed error=%s", type(exc).__name__)
         return None
     return result.get("follow_up")
+
+
+async def challenge_non_answer(
+    *,
+    session: Any,
+    question: str,
+    answer: str,
+    transcript: list[dict[str, Any]] | None,
+) -> str | None:
+    """Push back on a non-answer instead of silently asking the next question.
+
+    THE DEFECT THIS FIXES, OBSERVED LIVE 2026-08-05
+    -----------------------------------------------
+    A candidate typed `fsjdemd`, then `xdshfjg,uyytrs`, then
+    `dwrhejyrkhfbgertyfg`, then `cvdgrertykfmhgnfrshfmgc`. The agent asked the
+    next scripted question each time and reached "Question 8 of 45" without ever
+    remarking that nothing had been answered.
+
+    That was a direct consequence of the follow-up path's own budget guard:
+    `_decide_substance` sees a non-answer and returns "no probe" to avoid
+    spending a scarce follow-up on keyboard mash. The reasoning was sound for
+    PROBING and produced the worst possible behaviour overall, because the one
+    case where any human interviewer certainly reacts became the one case the
+    agent was guaranteed to be silent on.
+
+    So a non-answer now gets its own response, and it is deliberately NOT a
+    follow-up:
+
+      * It does not consume the follow-up budget. Probing a thin-but-real answer
+        later in the interview is worth more, and asking someone to actually
+        answer is not a probe.
+      * It is bounded by construction. The re-ask is delivered through the same
+        `pending_prompt` mechanism, and a pending prompt suppresses any further
+        reaction on the turn that answers it, so there is at most ONE per base
+        question and total turns stay bounded by
+        2 * len(prompts) + follow_up_budget. No new column, and still provably
+        finite.
+      * It changes NO scoring. The non-answer is already recorded and already
+        routes to UNANSWERED_SCORE via `services/answer_quality`. This is the
+        conversation reacting, not the scorer being overridden. A candidate who
+        mashes the keyboard twice is still graded Not Matching on that question.
+
+    Returns None when the answer is substantive, meaning "nothing to push back
+    on"; the caller then runs the normal follow-up decision.
+    """
+    if answer_quality.is_substantive(answer):
+        return None
+
+    payload = {
+        "question_asked": question,
+        "conversation_so_far": _recent(transcript),
+    }
+    try:
+        raw = await llm_router.invoke_llm(
+            "conversation_turn",
+            [
+                {"role": "system", "content": _CHALLENGE_SYSTEM},
+                {"role": "user", "content": json.dumps(payload)},
+            ],
+            response_format_json=True,
+            session=session,
+        )
+        text = _strip_praise(" ".join(str(json.loads(raw).get("challenge") or "").split()))
+    except Exception as exc:  # noqa: BLE001
+        logger.info("interviewer.challenge_unavailable error=%s", type(exc).__name__)
+        return _CHALLENGE_FALLBACK
+    if not text or len(text) > MAX_FOLLOW_UP_CHARS:
+        return _CHALLENGE_FALLBACK
+    return text
 
 
 async def compose_next_question(
