@@ -16,6 +16,8 @@ reaches a client as a grade nobody can explain.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.services import interviewer
@@ -291,6 +293,56 @@ async def test_a_real_answer_is_not_challenged(monkeypatch) -> None:
             transcript=[],
             label=label,
         ) is None
+
+
+@pytest.mark.parametrize("label", ["gibberish", "empty", "off_topic", "evasive"])
+def test_the_challenge_prompt_actually_renders(label) -> None:
+    """The situation must reach the prompt, for every label.
+
+    This was broken and invisible. `.format()` was used to inject the situation,
+    and it raised KeyError on the literal JSON braces at the end of the prompt
+    ({"challenge": ...}). The broad except turned that into the deterministic
+    fallback, so every challenge a candidate saw was the canned sentence and
+    never a composed one. Nothing failed, because a fallback is a legitimate
+    output -- it was found by reading a live production transcript and noticing
+    the wording was byte-identical to the constant.
+    """
+    situation = interviewer._CHALLENGE_BY_LABEL[label]
+    rendered = interviewer._CHALLENGE_SYSTEM.replace(
+        interviewer._SITUATION_SLOT, situation
+    )
+    assert situation in rendered, "the situation never reached the prompt"
+    assert interviewer._SITUATION_SLOT not in rendered, "the slot was left unfilled"
+    # The JSON contract must survive intact, or the model has no schema to
+    # answer against and every response fails validation.
+    assert '{"challenge":' in rendered
+
+
+@pytest.mark.asyncio
+async def test_a_composed_challenge_is_preferred_over_the_fallback(monkeypatch) -> None:
+    """When the model IS available, the candidate must get its words.
+
+    The fallback is correct and necessary, and it is also indistinguishable
+    from success unless something asserts the difference. That is precisely how
+    the KeyError above survived: the product kept working, in its degraded mode,
+    permanently.
+    """
+    composed = "You mentioned Kafka a moment ago. What specifically broke?"
+
+    async def _ok(*args, **kwargs):
+        return json.dumps({"challenge": composed})
+
+    monkeypatch.setattr(interviewer.llm_router, "invoke_llm", _ok)
+    for label in ("gibberish", "empty", "off_topic", "evasive"):
+        out = await interviewer.challenge_non_answer(
+            session=None, question="Tell me about Kafka.", answer="fsjdemd",
+            transcript=[], label=label,
+        )
+        assert out == composed, (
+            f"{label} fell back to the canned line while the model was "
+            f"available: {out!r}"
+        )
+        assert out not in interviewer._CHALLENGE_FALLBACK.values()
 
 
 @pytest.mark.asyncio

@@ -311,6 +311,74 @@ LEAKY_AGENT_OUTPUT: tuple[str, ...] = (
 )
 
 
+async def _measure_composition_is_preferred(monkey) -> Result:
+    """When the model IS available, its words must reach the candidate.
+
+    A fallback is a legitimate output, which makes it indistinguishable from
+    success unless something asserts the difference. That is exactly how a
+    `.format()` KeyError on the prompt's own JSON braces made EVERY challenge a
+    canned sentence, permanently, with nothing failing anywhere. Found by
+    reading a live transcript and noticing the wording was byte-identical to the
+    constant. This measurement is the check that would have caught it.
+    """
+    result = Result("composition_preferred_over_fallback")
+
+    composed_challenge = "You mentioned Kafka a moment ago. What specifically broke?"
+    monkey(_stub({"challenge": composed_challenge}))
+    for label in ("gibberish", "empty", "off_topic", "evasive"):
+        out = await interviewer.challenge_non_answer(
+            session=None, question="Tell me about Kafka.", answer="fsjdemd",
+            transcript=[], label=label,
+        )
+        result.record(
+            out == composed_challenge,
+            f"{label} used the canned line while the model was available: {out!r}",
+        )
+
+    composed_question = "How did you find the root cause on that outage?"
+    monkey(_stub({"question": composed_question}))
+    out = await interviewer.compose_next_question(
+        session=None, question="Describe a system you owned.",
+        transcript=[{"speaker": "candidate", "content": "We had an outage."}],
+        mode=interviewer.MODE_GENERATE, competency="Debugging",
+    )
+    result.record(
+        out == composed_question,
+        f"generation fell back while the model was available: {out!r}",
+    )
+
+    composed_probe = "What broke first when you cut the batch size?"
+    monkey(_stub({"follow_up": composed_probe}))
+    out = await interviewer.next_follow_up(
+        session=None, question="Describe a system you designed.",
+        answer="I built the billing pipeline and cut p99 to 180ms.",
+        transcript=[], follow_ups_used=0, already_followed_up=False, budget=15,
+    )
+    result.record(
+        out == composed_probe,
+        f"the probe was dropped while the model was available: {out!r}",
+    )
+    return result
+
+
+def _measure_prompt_templates_render() -> Result:
+    """Every prompt template must survive substitution with its JSON contract
+    intact. The defect above was a template that could not be rendered at all."""
+    result = Result("prompt_templates_render")
+    for label, situation in interviewer._CHALLENGE_BY_LABEL.items():
+        rendered = interviewer._CHALLENGE_SYSTEM.replace(
+            interviewer._SITUATION_SLOT, situation
+        )
+        result.record(situation in rendered, f"{label}: situation never reached the prompt")
+        result.record(
+            interviewer._SITUATION_SLOT not in rendered, f"{label}: slot left unfilled"
+        )
+        result.record(
+            '{"challenge":' in rendered, f"{label}: JSON contract was destroyed"
+        )
+    return result
+
+
 def _measure_injection_resistance() -> Result:
     """Candidate text is DATA, never instructions."""
     result = Result("injection_resistance")
@@ -397,6 +465,8 @@ async def run() -> list[Result]:
             await _measure_outage_degradation(monkey),
             await _measure_question_integrity(monkey),
             await _measure_no_praise(monkey),
+            await _measure_composition_is_preferred(monkey),
+            _measure_prompt_templates_render(),
             _measure_injection_resistance(),
             _measure_injection_false_positives(),
             _measure_no_numbers_reach_a_candidate(),

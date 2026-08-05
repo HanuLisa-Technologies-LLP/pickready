@@ -372,11 +372,25 @@ _CHALLENGE_BY_LABEL: dict[str, str] = {
     ),
 }
 
+#: Substituted into `_CHALLENGE_SYSTEM` by plain replacement, NOT str.format.
+#:
+#: `.format()` was used here and raised KeyError on the literal JSON braces at
+#: the end of the prompt ({"challenge": ...}), which the broad except below
+#: turned into the deterministic fallback. So every challenge a candidate saw
+#: was the canned sentence and never a composed one -- functional, but unable to
+#: refer to anything the candidate had said, which is most of the point.
+#:
+#: Caught by reading a live transcript, not by a test: the fallback is a
+#: legitimate output, so nothing failed. It is the same shape as the missing
+#: `conversation_turn` route -- a broad except that exists for provider outages
+#: quietly absorbing a code defect.
+_SITUATION_SLOT = "<<SITUATION>>"
+
 _CHALLENGE_SYSTEM = (
     "You are conducting a job interview and are about to push back on the "
     "candidate's last reply.\n"
     "\n"
-    "{situation}\n"
+    f"{_SITUATION_SLOT}\n"
     "\n"
     "Write ONE short thing a competent human interviewer would say out loud. "
     "Be matter of fact and not unkind. Do NOT quote their reply back at them, "
@@ -803,7 +817,10 @@ async def challenge_non_answer(
         raw = await llm_router.invoke_llm(
             "conversation_turn",
             [
-                {"role": "system", "content": _CHALLENGE_SYSTEM.format(situation=situation)},
+                {
+                    "role": "system",
+                    "content": _CHALLENGE_SYSTEM.replace(_SITUATION_SLOT, situation),
+                },
                 {"role": "user", "content": json.dumps(payload)},
             ],
             response_format_json=True,
