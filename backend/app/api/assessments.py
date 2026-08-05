@@ -43,6 +43,7 @@ from app.schemas.assessments import (
 from app.services import capabilities as caps
 from app.services import (
     answer_classification,
+    conversation_guardrails,
     credit_reconciliation,
     hiring_pipeline,
     interview_telemetry,
@@ -885,75 +886,106 @@ async def respond(
     ordinal = (
         await session.execute(select(func.coalesce(func.max(AssessmentMessage.ordinal), 0)).where(AssessmentMessage.conversation_id == conversation.id))
     ).scalar_one()
-    answer_text = body.answer.strip()
+    # INBOUND GUARD, before this text is stored or reaches any prompt.
+    #
+    # A candidate's answer is DATA, never instructions to the interviewer, and
+    # it goes straight into a model prompt. `sanitized` keeps their real content
+    # and defangs attack framing, so an answer that legitimately DISCUSSES
+    # prompt injection is still an answer. It also redacts anything shaped like
+    # a pasted credential, which protects the candidate rather than us: prompts
+    # are traced, and a key pasted by mistake must not be persisted or sent on.
+    #
+    # Note the contract: `violation is not None` does NOT mean refused. Only
+    # `allowed` decides, and it goes False only when the framing was a directive
+    # AND nothing resembling an answer is left underneath it.
+    guard = conversation_guardrails.inspect_answer(body.answer)
+    answer_text = guard.sanitized.strip()
     session.add_all([
         AssessmentMessage(tenant_id=job.tenant_id, conversation_id=conversation.id, ordinal=ordinal + 1, speaker="agent", domain=domain, question_key=key, content=prompt),
         AssessmentMessage(tenant_id=job.tenant_id, conversation_id=conversation.id, ordinal=ordinal + 2, speaker="candidate", domain=domain, question_key=key, content=answer_text),
     ])
     await session.flush()
 
-    # Decide whether to press on this answer. Only after a BASE question: two
-    # consecutive probes on one point reads as cross-examination, and it is
+    # Decide how to react to this answer. Only after a BASE question: two
+    # consecutive reactions on one point reads as cross-examination, and it is
     # also what would let one evasive candidate consume the whole budget.
     if not pending:
         transcript = await _transcript_rows(session, conversation.id)
-        # A NON-ANSWER is answered first, and separately. Observed live on
-        # 2026-08-05: four consecutive keyboard-mash answers were each met with
-        # the next scripted question, because the follow-up path deliberately
-        # refuses to spend a probe on gibberish. Sound for probing, and the
-        # worst possible behaviour overall -- the one case a human interviewer
-        # certainly reacts to became the one case this agent never did.
-        #
-        # A re-ask costs no follow-up budget, is bounded to one per base
-        # question (a pending prompt suppresses any reaction on the turn that
-        # answers it), and changes no scoring: the non-answer is already
-        # recorded and already grades Not Matching.
-        # ONE classification decides what happens next. Gibberish and empty are
-        # settled deterministically (no model call, because the model being down
-        # is exactly when the guard matters); off_topic and evasive need the
-        # model, because they are well-formed prose that simply does not answer
-        # the question, and nothing deterministic can see that.
-        verdict = await answer_classification.classify(
-            session=session,
-            question=prompt,
-            answer=answer_text,
-            transcript=transcript,
-        )
         reaction = None
         action = "advanced"
-        if verdict.needs_rechallenge:
-            reaction = await interviewer.challenge_non_answer(
+        answer_label = "substantive"
+        degraded = False
+
+        if not guard.allowed:
+            # A refused turn is still transcribed above: the record of what was
+            # said is what a dispute is settled from. Classifying it would spend
+            # a model call grading an attack, so this short-circuits to the same
+            # re-ask mechanism a non-answer uses -- same question_key, no
+            # follow-up budget, bounded to one per question.
+            reaction = guard.candidate_message
+            action = "rechallenged"
+            answer_label = f"guarded_{guard.violation}"
+        else:
+            # ONE classification decides what happens next. Gibberish and empty
+            # are settled deterministically (no model call, because the model
+            # being down is exactly when the guard matters); off_topic and
+            # evasive need the model, because they are well-formed prose that
+            # simply does not answer the question, and nothing deterministic
+            # can see that.
+            #
+            # Observed live on 2026-08-05: four consecutive keyboard-mash
+            # answers were each met with the next scripted question, because
+            # the follow-up path deliberately refuses to spend a probe on
+            # gibberish. Sound for probing, and the worst behaviour overall --
+            # the one case a human interviewer certainly reacts to became the
+            # one case this agent never did.
+            verdict = await answer_classification.classify(
                 session=session,
                 question=prompt,
                 answer=answer_text,
                 transcript=transcript,
-                label=verdict.label,
             )
-            action = "rechallenged" if reaction else "advanced"
-        if reaction is None:
-            reaction = await interviewer.next_follow_up(
-                session=session,
-                question=prompt,
-                answer=answer_text,
-                transcript=transcript,
-                follow_ups_used=conversation.follow_ups_used,
-                already_followed_up=False,
-                # Scaled to this interview's length. A flat five probes across
-                # 45 questions left 89% of the conversation unable to react to
-                # anything the candidate said.
-                budget=interviewer.follow_up_budget(len(prompts)),
-            )
-            # Only a real probe draws down the budget. A re-ask does not:
-            # asking someone to actually answer is not a probe, and spending
-            # the budget on it would starve the thin-but-real answers later in
-            # the interview that a probe is worth much more on.
-            if reaction:
-                conversation.follow_ups_used += 1
-                action = "followed_up"
-            else:
-                action = "advanced"
+            answer_label = verdict.label
+            degraded = verdict.confidence == "low"
+
+            if verdict.needs_rechallenge:
+                # A re-ask costs no follow-up budget and changes no scoring:
+                # the answer is already recorded, and gibberish already grades
+                # Not Matching through the existing unanswered path.
+                reaction = await interviewer.challenge_non_answer(
+                    session=session,
+                    question=prompt,
+                    answer=answer_text,
+                    transcript=transcript,
+                    label=verdict.label,
+                )
+                action = "rechallenged" if reaction else "advanced"
+
+            if reaction is None:
+                reaction = await interviewer.next_follow_up(
+                    session=session,
+                    question=prompt,
+                    answer=answer_text,
+                    transcript=transcript,
+                    follow_ups_used=conversation.follow_ups_used,
+                    already_followed_up=False,
+                    # Scaled to this interview's length. A flat five probes
+                    # across 45 questions left 89% of the conversation unable
+                    # to react to anything the candidate said.
+                    budget=interviewer.follow_up_budget(len(prompts)),
+                )
+                # Only a real probe draws down the budget. A re-ask does not:
+                # asking someone to actually answer is not a probe, and
+                # spending the budget on it would starve the thin-but-real
+                # answers later in the interview that a probe is worth more on.
+                if reaction:
+                    conversation.follow_ups_used += 1
+                    action = "followed_up"
+
         if reaction:
-            conversation.pending_prompt = reaction
+            # OUTBOUND GUARD. Last thing before any interviewer line is stored
+            # as what the candidate will read.
+            conversation.pending_prompt = conversation_guardrails.inspect_agent_output(reaction)
             conversation.pending_question_key = key
             conversation.pending_domain = domain
 
@@ -966,10 +998,10 @@ async def respond(
                 turn_index=index,
                 question_key=key,
                 domain=domain,
-                answer_label=verdict.label,
+                answer_label=answer_label,
                 action=action,
                 generated=conversation.delivered_prompt is not None,
-                degraded=verdict.confidence == "low",
+                degraded=degraded,
                 latency_ms=int((time.monotonic() - turn_started) * 1000),
             )
         )
@@ -1004,7 +1036,7 @@ async def respond(
         # have the interviewer talk as though the last answer had not been given.
         memory = await _transcript_rows(session, conversation.id)
         context = await _turn_context(session, job, link, next_domain, next_key)
-        conversation.delivered_prompt = await interviewer.compose_next_question(
+        written = await interviewer.compose_next_question(
             session=session,
             question=next_stored,
             transcript=memory,
@@ -1017,6 +1049,12 @@ async def respond(
                 row["content"] for row in memory if row.get("speaker") == "agent"
             ],
         )
+        # OUTBOUND GUARD, on the way in to storage rather than on the way out,
+        # so the transcript records exactly the text the candidate will read.
+        # A generated question is written by a model that has just been shown a
+        # JD, a resume and a competency, which is precisely the context from
+        # which a grade or a required level could leak into interviewer speech.
+        conversation.delivered_prompt = conversation_guardrails.inspect_agent_output(written)
         await session.flush()
 
     # A pending follow-up is what the candidate sees next. The progress label
