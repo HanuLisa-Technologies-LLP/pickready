@@ -151,6 +151,52 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# ROUTE CONTRACT. Proves the revision under test is carrying THIS release, not
+# merely answering HTTP.
+#
+# This is the check that would have caught 2026-08-04, when every deploy was
+# green and three reported features did not work: a green run means the service
+# is up, and every probe above passes identically against the previous image.
+# `/openapi.json` is what the router actually registered, so an absent route is
+# absent and a present one is present -- no fixture, no job id, no auth.
+log "Route contract"
+code="$(probe "/openapi.json")"
+if [ "$code" != "200" ]; then
+  fail "/openapi.json returned ${code}; cannot verify the route contract"
+  FAILURES=$((FAILURES + 1))
+else
+  # WITHDRAWN 2026-08-06: the Company Portal's preset technical question bank.
+  # A company can no longer create, edit, store or assign technical questions;
+  # they are written per candidate during the assessment. If these are still
+  # registered, the old image is serving.
+  for gone in \
+    '/api/v2/assessments/jobs/{job_id}/questions' \
+    '/api/v2/assessments/jobs/{job_id}/finalize'
+  do
+    if grep -qF "\"${gone}\"" "$BODY_FILE"; then
+      fail "${gone} is still registered; this revision predates the 2026-08-06 release"
+      FAILURES=$((FAILURES + 1))
+    else
+      pass "${gone} is gone"
+    fi
+  done
+
+  # ADDED in the same release. Asserted POSITIVELY as well, because "the old
+  # routes are absent" is also true of an image where the whole router failed
+  # to load.
+  for present in \
+    '/api/v2/assessments/transcripts/links/{link_id}'
+  do
+    if grep -qF "\"${present}\"" "$BODY_FILE"; then
+      pass "${present} is registered"
+    else
+      fail "${present} is missing; the assessment router did not load this release"
+      FAILURES=$((FAILURES + 1))
+    fi
+  done
+fi
+
+# ---------------------------------------------------------------------------
 if [ -n "$FRONTEND_TARGET" ]; then
   log "Frontend ${FRONTEND_TARGET}"
   code="$(curl --silent --show-error --location --max-time "$CURL_TIMEOUT" \
