@@ -265,10 +265,19 @@ async def test_another_tenants_application_is_not_readable() -> None:
             ("agent", "technical", tech, "Q?"),
             ("candidate", "technical", tech, "A."),
         ])
-        fx.tenant_id = uuid.uuid4()  # the CALLER is now somebody else
+        # The CALLER is now somebody else. `_user` reads `fx.tenant_id`, so this
+        # is how the fixture expresses "a different tenant's staff".
+        #
+        # The seeded id is kept: `_cleanup` deletes BY `fx.tenant_id`, and an
+        # earlier version of this test reassigned it in place -- so cleanup
+        # deleted a tenant that never existed and leaked the real one. Nine of
+        # them accumulated in the dev database before anyone counted the rows.
+        seeded_tenant = fx.tenant_id
+        fx.tenant_id = uuid.uuid4()
         with pytest.raises(HTTPException) as exc:
             await _fetch(fx, factory)
         assert exc.value.status_code == 404
+        fx.tenant_id = seeded_tenant
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()
