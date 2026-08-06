@@ -61,7 +61,14 @@ from app.models.assessment import (
 )
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
-from app.services import answer_quality, llm_router, ppi, technical_interview
+from app.services import (
+    agent_loop,
+    answer_quality,
+    conversation_guardrails,
+    llm_router,
+    ppi,
+    technical_interview,
+)
 from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELDS
 from app.services.rating import (
     GRADES,
@@ -477,29 +484,82 @@ async def bounded_remark(
     The `highly dynamic` instruction is not decoration (spec §10.5): a templated
     remark with the competency name swapped in is exactly what the client
     rejected, so the prompt names the evidence and forbids generic phrasing.
+
+    RUN THROUGH `agent_loop` SINCE 2026-08-06, AND IT FIXED THREE REAL DEFECTS
+    -------------------------------------------------------------------------
+    The hand-rolled loop this replaced did retry, so the change looks cosmetic.
+    It is not:
+
+      1. It APPENDED each correction to the same prompt string, so a second
+         miss left the model reading two contradictory instructions ("...had 38
+         words, regenerate... ...had 52 words, regenerate..."). `run_loop`
+         passes the current reflection as a fresh turn and never accumulates.
+
+      2. It did `except: break`. One transient provider error abandoned every
+         remaining attempt and shipped the canned fallback -- on the single most
+         client-visible string in the product. A raised attempt is now just a
+         failed attempt, and the next one still runs.
+
+      3. NOTHING CHECKED THE NO-NUMBERS RULE. The prompt asked for no score,
+         percentage or grade, and a prompt instruction is a request rather than
+         a guarantee (the same reasoning that puts a Postgres CHECK behind the
+         "Culture" ban). A remark is prose written by a model that has just been
+         shown a candidate's answers and is being asked to assess them, which is
+         precisely where "demonstrates strong 8/10 capability" comes from. It is
+         now a rejection reason, so the model is told and writes it again.
     """
-    prompt = (
+    fallback = _fallback_remark_45(name) if minimum >= 45 else _fallback_remark_25(name)
+
+    system = (
         f"Write one complete, evidence-based assessment remark of exactly {minimum}-{maximum} words "
         f"for '{name}'. Ground every clause in the specific evidence supplied: quote or paraphrase what "
         "this candidate actually said. Do not use templated phrasing that would fit any candidate, and "
         "do not include a score, percentage, grade, recommendation, or heading. "
         f"Evidence: {evidence}"
     )
-    for _attempt in range(3):
-        try:
-            value = (
-                await llm_router.chat_completion(
-                    "report_synthesis",
-                    [{"role": "system", "content": prompt}, {"role": "user", "content": "Return only the remark."}],
-                    session=None,
-                )
-            ).strip()
-            if minimum <= word_count(value) <= maximum:
-                return value
-            prompt += f" Your previous response had {word_count(value)} words; regenerate it within the required range."
-        except Exception:
-            break
-    return _fallback_remark_45(name) if minimum >= 45 else _fallback_remark_25(name)
+
+    async def execute(reflection: str) -> str:
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "Return only the remark."},
+        ]
+        if reflection:
+            messages.append({"role": "user", "content": reflection})
+        return (
+            await llm_router.chat_completion(
+                "report_synthesis", messages, session=None
+            )
+        ).strip()
+
+    def evaluate(value: str) -> agent_loop.Critique:
+        reasons: list[str] = []
+        if not value:
+            reasons.append("return the remark itself, not an empty response")
+        words = word_count(value)
+        if not (minimum <= words <= maximum):
+            reasons.append(
+                f"write between {minimum} and {maximum} words; the previous "
+                f"attempt was {words}"
+            )
+        if conversation_guardrails.contains_forbidden_number(value):
+            reasons.append(
+                "state no score, percentage, rating out of a total, or "
+                "percentile; describe the evidence in words only"
+            )
+        return agent_loop.reject(*reasons) if reasons else agent_loop.ok()
+
+    result = await agent_loop.run_loop(
+        name="report_remark",
+        execute=execute,
+        evaluate=evaluate,
+        fallback=fallback,
+        # Background: this runs inside the scoring Celery task, nobody is
+        # watching, and the alternative to one more attempt is a canned string
+        # in a report a client reads.
+        max_attempts=agent_loop.BACKGROUND_ATTEMPTS,
+        deadline_seconds=agent_loop.BACKGROUND_DEADLINE,
+    )
+    return result.value
 
 
 class AssessmentState(TypedDict, total=False):

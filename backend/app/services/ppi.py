@@ -49,7 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.assessment import CandidateQuestion, JobCompetency
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
-from app.services import llm_router
+from app.services import agent_loop, llm_router
 from app.services.rating import (
     GRADE_HIGHLY,
     GRADE_MATCHING,
@@ -466,38 +466,81 @@ async def generate_framework(
     if existing and not replace:
         return list(existing)
 
-    rows: list[dict[str, Any]] = []
-    try:
+    # ── Generation, inside the bounded loop ──────────────────────────────────
+    #
+    # WHY A LOOP RATHER THAN THE ONE-SHOT CALL THIS REPLACED
+    # ------------------------------------------------------
+    # `_top_up` has always guaranteed the per-category minimum, so a short
+    # generation never FAILED -- it was silently padded with mechanically
+    # derived names ("Kafka (supporting)", "Python (further core)"). That is a
+    # correct floor and a poor framework, and it lands on the one screen a human
+    # is required to review: the recruiter has to hand-fix filler the product
+    # could have asked the model to write properly.
+    #
+    # "You returned three secondary skills and I need five" is exactly the kind
+    # of defect a model corrects immediately when told. The top-up stays as the
+    # floor beneath the loop; it is now the last resort rather than the first.
+    payload = json.dumps(
+        {
+            "title": job.title,
+            "grade": job.assessment_grade,
+            "experience_min_years": job.experience_min_years,
+            "experience_max_years": job.experience_max_years,
+            "jd": job.jd_json,
+            "jd_markdown": (job.jd_markdown or "")[:6000],
+        }
+    )
+
+    async def _execute(reflection: str) -> list[dict[str, Any]]:
+        messages = [
+            {"role": "system", "content": _FRAMEWORK_SYSTEM_PROMPT},
+            {"role": "user", "content": payload},
+        ]
+        if reflection:
+            messages.append({"role": "user", "content": reflection})
         raw = await llm_router.chat_completion(
-            "jd_generation",
-            [
-                {"role": "system", "content": _FRAMEWORK_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "title": job.title,
-                            "grade": job.assessment_grade,
-                            "experience_min_years": job.experience_min_years,
-                            "experience_max_years": job.experience_max_years,
-                            "jd": job.jd_json,
-                            "jd_markdown": (job.jd_markdown or "")[:6000],
-                        }
-                    ),
-                },
-            ],
-            response_format_json=True,
-            session=session,
+            "jd_generation", messages, response_format_json=True, session=session
         )
-        rows = _normalise(json.loads(raw).get("competencies", []))
-    except Exception:
+        return _normalise(json.loads(raw).get("competencies", []))
+
+    def _evaluate(candidate: list[dict[str, Any]]) -> agent_loop.Critique:
+        counts = {category: 0 for category in CATEGORIES}
+        for row in candidate:
+            counts[row["category"]] += 1
+        short = [
+            f"{CATEGORY_LABELS[category]} (you returned {count}, "
+            f"at least {MINIMUM_PER_CATEGORY} are required)"
+            for category, count in counts.items()
+            if count < MINIMUM_PER_CATEGORY
+        ]
+        if short:
+            return agent_loop.reject(
+                "return more competencies in these categories: " + "; ".join(short)
+            )
+        return agent_loop.ok()
+
+    result = await agent_loop.run_loop(
+        name="ppi_framework",
+        execute=_execute,
+        evaluate=_evaluate,
+        # The JD-derived framework, which needs no network at all. This is what
+        # repaired 19 stranded live jobs on 2026-08-06 with every provider down.
+        fallback=_normalise(_fallback_framework(job)),
+        max_attempts=agent_loop.BACKGROUND_ATTEMPTS,
+        deadline_seconds=agent_loop.BACKGROUND_DEADLINE,
+    )
+    if result.degraded:
         logger.warning(
-            "ppi.framework.llm_unavailable job_id=%s, using the JD-derived framework",
-            job.id,
+            "ppi.framework.degraded job_id=%s attempts=%d reasons=%s",
+            job.id, result.attempts, list(result.reasons),
         )
-        rows = []
+    rows = result.value
     if not rows:
         rows = _normalise(_fallback_framework(job))
+    # The floor stays, beneath the loop. `_normalise` caps and de-duplicates, so
+    # even an accepted generation can land one short of a minimum after a
+    # collision, and `framework_is_complete` would then refuse the save and
+    # strand the job at `questions_pending_review` with no way forward.
     rows = _top_up(rows, job)
 
     # Deactivate rather than delete on `replace`: a competency may already be
