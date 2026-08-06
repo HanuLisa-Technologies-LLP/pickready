@@ -132,6 +132,42 @@ def test_a_question_that_ignores_its_skill_is_rejected() -> None:
     assert any("Kafka" in reason for reason in critique.reasons)
 
 
+@pytest.mark.parametrize("skill", ["LLMs", "RAG", "ETL", "SQL", "CI/CD"])
+def test_an_acronym_skill_may_be_expanded_by_the_question(skill) -> None:
+    """Found by running a real interview, not by reasoning about it.
+
+    A live "AI / Generative AI Engineer" job produced the skill plan
+    ['LLMs', 'RAG', 'LangGraph', ...]. The model wrote a good opening question
+    about "Large Language Models" and the mention check rejected it twice,
+    because the literal string "llms" is not in it -- so every candidate on that
+    job read the canned fallback as question one.
+
+    Detecting an arbitrary expansion cheaply is not possible, so the criterion
+    is skipped for an acronym and the prompt instruction carries it alone. The
+    tolerant direction is the correct one here: a guard that rejects a real
+    question fails invisibly and looks like a provider outage.
+    """
+    payload = _good_payload(
+        question="Walk me through how you applied Large Language Models to the search reranker at Zeta."
+    )
+    assert _evaluate(payload, skill=skill).ok
+
+
+@pytest.mark.parametrize(
+    "skill", ["LangGraph", "PostgreSQL", "Kafka", "Terraform", "Airflow"]
+)
+def test_a_named_technology_is_still_checked(skill) -> None:
+    """The tolerance is for ACRONYMS, not a hole in the criterion.
+
+    An acronym is UPPER CASE, not merely capitalised. A first pass at this rule
+    tested "short and starts with a capital", which swept in "Kafka" -- a proper
+    noun every good question spells out, and exactly the case the mention check
+    exists to police.
+    """
+    payload = _good_payload(question="Tell me about a time you missed a deadline.")
+    assert not _evaluate(payload, skill=skill).ok
+
+
 def test_a_phrase_skill_matches_on_words_not_as_a_substring() -> None:
     """A skill label is routinely a phrase a good question quite properly says
     in a different order. Requiring the literal phrase would reject the best

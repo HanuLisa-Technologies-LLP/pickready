@@ -63,7 +63,7 @@ from app.models.email_log import (
     EMAIL_TYPE_PROMPTS,
     EMAIL_TYPES,
 )
-from app.services import llm_router
+from app.services import agent_loop, conversation_guardrails, llm_router
 
 logger = logging.getLogger(__name__)
 
@@ -369,32 +369,76 @@ async def draft(
         rendered = None
 
     if rendered is not None:
-        try:
+        # Run through the bounded loop rather than one shot. Two things it
+        # fixes, both of them reachable today:
+        #
+        #   * An UNPARSEABLE response shipped the deterministic template with no
+        #     second attempt. "Return the JSON object with a subject and a body"
+        #     is the most trivially correctable defect there is, and the compose
+        #     modal is open while this runs, so the recruiter watched a wait and
+        #     then got a template.
+        #   * The `except` caught `LLMUnavailableError` ALONE. Anything else --
+        #     a timeout surfacing unwrapped, a malformed body that broke the
+        #     parser -- propagated out of an interactive route and 500ed the
+        #     modal, when the correct answer is the template this function
+        #     already has ready.
+        async def _execute(reflection: str) -> tuple[str, str]:
+            messages = [
+                {"role": "system", "content": rendered},
+                {"role": "user", "content": "Return only the JSON object."},
+            ]
+            if reflection:
+                messages.append({"role": "user", "content": reflection})
             raw = await llm_router.invoke_llm(
                 _TASK_TYPE,
-                [
-                    {"role": "system", "content": rendered},
-                    {"role": "user", "content": "Return only the JSON object."},
-                ],
+                messages,
                 response_format_json=True,
                 session=session,
             )
             parsed = parse_draft(raw)
-            if parsed is not None:
-                subject, body = parsed
-                generated_by_ai = True
-            else:
-                logger.warning(
-                    "lifecycle_email.unparseable_response email_type=%s, "
-                    "using deterministic template",
-                    email_type,
+            if parsed is None:
+                raise ValueError("response was not {subject, body}")
+            return parsed
+
+        def _evaluate(candidate: tuple[str, str]) -> agent_loop.Critique:
+            draft_subject, draft_body = candidate
+            reasons: list[str] = []
+            if not draft_subject.strip():
+                reasons.append("include a non-empty subject line")
+            if not draft_body.strip():
+                reasons.append("include a non-empty body")
+            # An email never contains a score (claude.md, and this one goes to a
+            # CANDIDATE). Checked rather than merely asked for, same as
+            # everywhere else the rule applies.
+            if conversation_guardrails.contains_forbidden_number(
+                f"{draft_subject}\n{draft_body}"
+            ):
+                reasons.append(
+                    "state no score, rating, percentage or rank anywhere in the "
+                    "subject or the body"
                 )
-        except llm_router.LLMUnavailableError:
+            return agent_loop.reject(*reasons) if reasons else agent_loop.ok()
+
+        result = await agent_loop.run_loop(
+            name=f"email_{email_type}",
+            execute=_execute,
+            evaluate=_evaluate,
+            # Empty means "no usable draft"; the deterministic template below is
+            # then used, which is exactly the previous behaviour.
+            fallback=("", ""),
+            # Interactive: a recruiter has the compose modal open and blocked.
+            max_attempts=agent_loop.INTERACTIVE_ATTEMPTS,
+            deadline_seconds=agent_loop.INTERACTIVE_DEADLINE,
+        )
+        if result.degraded:
             logger.warning(
-                "lifecycle_email.llm_unavailable email_type=%s, "
-                "using deterministic template",
-                email_type,
+                "lifecycle_email.degraded email_type=%s attempts=%d error=%s "
+                "reasons=%s, using deterministic template",
+                email_type, result.attempts, result.error, list(result.reasons),
             )
+        else:
+            subject, body = result.value
+            generated_by_ai = True
 
     if subject is None or body is None:
         subject, body = fallback_draft(email_type, ctx)

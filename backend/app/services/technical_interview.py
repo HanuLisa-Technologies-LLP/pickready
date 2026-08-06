@@ -345,6 +345,41 @@ def _normalise(payload: Any) -> dict[str, Any] | None:
     return {"question": question, "rubric": rubric}
 
 
+#: An acronym is UPPER CASE, not merely capitalised, and that distinction is
+#: the whole rule. A first pass tested "short and starts with a capital", which
+#: swept in "Kafka" -- a proper noun every good question spells out, and exactly
+#: the case the mention check exists to police. A single trailing lowercase "s"
+#: is allowed so "LLMs" and "APIs" read as the plurals they are.
+_ACRONYM = re.compile(r"^[A-Z0-9][A-Z0-9+#./-]{0,7}s?$")
+
+
+def _looks_like_acronym(skill: str) -> bool:
+    """Whether `skill` is a short initialism a good question may expand.
+
+    THE DEFECT THIS EXISTS FOR, FOUND BY RUNNING A REAL INTERVIEW
+    ------------------------------------------------------------
+    An end-to-end run against a live "AI / Generative AI Engineer" job produced
+    a skill plan starting `['LLMs', 'RAG', 'LangGraph', ...]`. The model wrote a
+    perfectly good opening question -- "can you describe a specific situation
+    where you applied Large Language Models..." -- and `_mentions` rejected it,
+    twice, because the string "llms" does not appear in it. Every candidate for
+    that job therefore read the deterministic fallback probe as question one.
+
+    That is precisely the failure this repo has a standing rule about: with a
+    guard on generated text, the hard part is the distinction and not the
+    detection, and a guard that rejects a real question fails INVISIBLY -- the
+    logs record a rejection, the product degrades quietly, and it looks like a
+    provider outage.
+
+    Detecting an arbitrary expansion cheaply is not possible, so the tolerant
+    direction is the correct one: for an acronym the criterion is skipped and
+    the prompt instruction carries it alone. The miss it allows is a rare
+    off-topic question on a short-named skill; the alternative it avoids is
+    every question on that skill being canned.
+    """
+    return bool(_ACRONYM.match(skill.strip()))
+
+
 def _mentions(text: str, skill: str) -> bool:
     """Whether `text` plausibly refers to `skill`.
 
@@ -355,6 +390,11 @@ def _mentions(text: str, skill: str) -> bool:
     significant word catches the failure this criterion exists for, which is a
     model that ignored the skill entirely and asked about something else.
     """
+    skill = skill.strip()
+    # A whole-label acronym ("LLMs", "RAG") is expanded by good questions. See
+    # `_looks_like_acronym`: this is deliberately the tolerant direction.
+    if _looks_like_acronym(skill):
+        return True
     significant = [
         word for word in re.findall(r"[A-Za-z0-9+#./-]{3,}", skill.casefold())
         if word not in {"and", "the", "for", "with", "using"}
