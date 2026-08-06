@@ -40,6 +40,15 @@
   the user experiences. `run_loop` NEVER raises; it returns `fallback` with
   `degraded=True`, and `LoopResult.degraded` is the honest record that gets
   counted. Interactive loops get 2 attempts / 26s; background ones 3 / 240s.
+- **A loop deadline must PREDICT the next attempt, not merely observe the
+  elapsed time.** `elapsed >= deadline` sounds right and is not: one
+  `conversation_turn` call is bounded by the router at 24s and the interactive
+  deadline is 26s, so after a slow first attempt `24 >= 26` is False, attempt
+  two starts, and the real worst case is 48 seconds with a candidate watching a
+  text box. The check is `elapsed + longest_attempt_so_far >= deadline`, so an
+  attempt that cannot FINISH inside the budget is never started, and a failed
+  attempt's duration counts -- a timeout is the slowest and most informative
+  thing that can happen.
 - **A TIMESTAMP IS NOT EVIDENCE THAT WORK HAPPENED.** Measured on the live
   database 2026-08-06: 19 of 35 jobs, across three entire tenants, carried
   `framework_generated_at` and had ZERO competency rows. Every one of those jobs
@@ -140,7 +149,13 @@
   carry a real candidate's answers. `interview_telemetry.conversation_summary`
   is OPERATOR data, carries numbers, and must never reach a response schema.
 - **`app/scripts/eval_interview.py` is the agent's evaluation and CI gates on
-  it.** Fully stubbed and offline on purpose: a rate that moves means the CODE
+  it.** TRUE ONLY SINCE 2026-08-06, and this line asserted it for two days while
+  it was false: `deploy.yml` built, migrated, staged and smoke-tested, and ran
+  neither the eval nor the unit suite. Nothing stopped a commit whose tests
+  failed from reaching a production revision. The `test` job that now precedes
+  `deploy-staged` is what makes the sentence true; do not remove it, and do not
+  write "CI gates on X" here again without opening the workflow file.
+  Fully stubbed and offline on purpose: a rate that moves means the CODE
   changed, not that a provider sampled differently. It measures judgement across
   a labelled set (non-answer detection, the real-answer false-positive
   direction, outage degradation, question integrity, injection resistance, the
