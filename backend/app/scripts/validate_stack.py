@@ -204,25 +204,45 @@ async def _run_db_checks(report: Report) -> None:
                 links, jobs = row[0], row[1]
                 if jobs < 1:
                     return FAIL, "no job_candidate_links have match_breakdown_json (run matching)"
-                # Spot-check one breakdown has the 4-parameter + overall shape.
-                sample = (
-                    await s.execute(
-                        text(
-                            "SELECT match_breakdown_json FROM job_candidate_links "
-                            "WHERE match_breakdown_json IS NOT NULL LIMIT 1"
+
+                # COUNTED, NOT SAMPLED.
+                #
+                # This used to read `LIMIT 1` and report on whichever row came
+                # back. A sample of one is not evidence about a population in
+                # either direction: it reported WARN because ONE legacy row out
+                # of 1037 was short a key, and it would just as readily have
+                # reported PASS while half the table was malformed. That is the
+                # same shape as every other defect this repo has been bitten by
+                # -- a check whose green means less than it appears to.
+                #
+                # `?` is the jsonb key-exists operator, so this is an index-free
+                # but single-pass scan over a table of a size where that is
+                # cheap, and it names the actual number.
+                expected = ("skills_match", "experience_relevance", "role_alignment",
+                            "education_fit", "overall")
+                shortfalls = []
+                for key in expected:
+                    bad = (
+                        await s.execute(
+                            text(
+                                "SELECT count(*) FROM job_candidate_links "
+                                "WHERE match_breakdown_json IS NOT NULL "
+                                "  AND NOT (match_breakdown_json ? :key)"
+                            ),
+                            {"key": key},
                         )
-                    )
-                ).scalar_one()
-                shape = sample if isinstance(sample, dict) else json.loads(sample)
-                expected = {"skills_match", "experience_relevance", "role_alignment",
-                            "education_fit", "overall"}
-                missing = expected - set(shape or {})
-                if missing:
+                    ).scalar_one()
+                    if bad:
+                        shortfalls.append(f"{key} missing on {bad}")
+                if shortfalls:
                     return WARN, (
-                        f"{links} links across {jobs} job(s), but a sample breakdown "
-                        f"is missing keys {sorted(missing)}"
+                        f"{links} links across {jobs} job(s); "
+                        + ", ".join(shortfalls)
                     )
-                return PASS, f"{links} scored links across {jobs} job(s); breakdown shape ok"
+                return PASS, (
+                    f"{links} scored links across {jobs} job(s); every breakdown "
+                    "carries all five keys"
+                )
 
             await _acheck(report, "matching_breakdowns_persisted", breakdowns_persisted)
 
