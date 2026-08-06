@@ -39,8 +39,93 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # THE TEST GATE. Added 2026-08-06, and it was missing until then.
+  #
+  # This pipeline built, migrated, staged and smoke-tested, and never once ran
+  # the unit suite or the agent evaluation. claude.md asserted that "CI gates on
+  # `app/scripts/eval_interview.py`"; it did not. Nothing stopped a commit whose
+  # tests failed from reaching a production revision -- the smoke test only asks
+  # whether the service answers HTTP, which is exactly the gap that produced the
+  # 2026-08-04 "every deploy green, three features broken" release.
+  #
+  # It runs BEFORE the build, and `deploy-staged` needs it, so a red suite costs
+  # a two-minute job rather than a build, a migration and a staged revision.
+  test:
+    name: Backend tests and agent evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      # pgvector, not plain postgres: the schema declares vector columns and
+      # `alembic upgrade` fails on `CREATE EXTENSION vector` without it.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: pickready
+          POSTGRES_PASSWORD: pickready
+          POSTGRES_DB: pickready
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pickready"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://pickready:pickready@localhost:5432/pickready
+      # A throwaway signing key. The suite mints and verifies its own tokens and
+      # never talks to a real identity provider.
+      JWT_SECRET: ci-test-secret-not-used-anywhere-else
+      ENVIRONMENT: development
+      # Deliberately EMPTY. With no provider keys the router raises on every
+      # call and each agent takes its documented degraded path, so the suite
+      # exercises the fallbacks rather than quietly depending on a live model --
+      # and a CI run cannot be reddened by somebody else's rate limit.
+      GROQ_API_KEY_1: ""
+      GEMINI_API_KEY_1: ""
+      OPENROUTER_API_KEY_1: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      - name: Apply migrations
+        working-directory: backend
+        # The suite's database-backed tests skip when Postgres is unreachable,
+        # which would let a schema error pass as a green run. Migrating first
+        # means a broken migration fails HERE, loudly, instead of failing in the
+        # Cloud Run migrate job after the images are already built.
+        run: alembic upgrade head
+
+      - name: Unit and integration tests
+        working-directory: backend
+        run: python -m pytest tests -q
+
+      - name: Agent evaluation
+        working-directory: backend
+        # Fully stubbed and offline on purpose: a rate that moves means the CODE
+        # changed, not that a provider sampled differently. It measures
+        # judgement across a labelled set and exits non-zero when any rate falls
+        # below its threshold.
+        run: python -m app.scripts.eval_interview
+
+  # ---------------------------------------------------------------------------
   deploy-staged:
     name: Build, migrate and stage
+    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 45
 

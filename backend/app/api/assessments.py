@@ -81,24 +81,29 @@ async def _staff_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID
 async def _refresh_setup_status(session: AsyncSession, job: Job) -> None:
     """A job is open to candidates once the PPI FRAMEWORK is approved.
 
-    CHANGED 2026-08-04, client decision: the technical question bank no longer
-    gates anything. It used to be the other half of this condition, and a job
-    stayed at `questions_pending_review` until a recruiter pressed Finalize on
-    it. That step is removed -- generated questions are usable immediately.
+    CHANGED 2026-08-04: the technical question bank stopped gating anything. It
+    used to be the other half of this condition, and a job stayed at
+    `questions_pending_review` until a recruiter pressed Finalize on it.
 
-    The FRAMEWORK review is deliberately KEPT, and the two are not the same
-    thing. The framework is the fixed evaluation criteria every candidate on
-    this job is graded against, it is frozen once anyone has been assessed, and
-    a report states a grade against those exact criteria. A human confirming it
-    is the product's comparability guarantee. The technical bank carries no such
-    promise: each question is scored against its own rubric, and a weak question
-    costs one item on one report rather than making two reports incomparable.
+    CHANGED 2026-08-06: the bank stopped EXISTING. Technical questions are
+    written per candidate during the conversation, so there is no per-job list
+    for anyone to approve.
 
-    `questions_approved_at` is left on the model and still stamped by the
-    finalize route, which survives so an existing client and the historic rows
-    that carry a timestamp both keep working. It simply no longer decides
-    anything -- deliberately not dropped in the same change that stops reading
-    it, so a rollback needs no data restore.
+    The FRAMEWORK review is deliberately KEPT through both changes, and the
+    reason is the same one each time. The framework is the fixed evaluation
+    criteria every candidate on this job is graded against, it is frozen once
+    anyone has been assessed, and a report states a grade against those exact
+    criteria. A human confirming it is the product's only comparability
+    guarantee. A technical question carried no such promise even when it was
+    stored: it is scored against its own rubric, so a weak one costs one item on
+    one report rather than making two reports incomparable.
+
+    `questions_approved_at` is left on the model and is now written by NOTHING
+    -- the route that stamped it went with the bank. It is deliberately not
+    dropped in the same change that stopped using it, so a rollback needs no
+    data restore, and `_setup_out` reports the framework's state under that name
+    so a client still reading the old field cannot conclude a ready job is
+    unready.
     """
     target = READY_FOR_CANDIDATES if job.framework_approved_at is not None else PENDING_REVIEW
     if job.assessment_status != target:
