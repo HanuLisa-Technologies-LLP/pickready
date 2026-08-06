@@ -39,6 +39,21 @@ interface Exchange {
   answeredAt: Date;
 }
 
+/** The backend rejects an answer over this length with a 422. Enforced here so
+ *  a candidate who has just written a long, careful answer is stopped at the
+ *  boundary rather than losing it to a validation error after they press Send. */
+const MAX_ANSWER = 10000;
+
+/** Show the counter only when it starts to matter. A permanent character count
+ *  on an interview answer reads as a word limit and makes people write to it. */
+const COUNTER_FROM = MAX_ANSWER - 1000;
+
+/** Where an unsent draft is kept. The page promises "you can close this page
+ *  and come back", and that was true of SAVED answers and false of the one
+ *  being typed -- a refresh, a tab crash or a phone call lost it. Scoped per
+ *  application so two open assessments cannot overwrite each other. */
+const draftKey = (linkId: string) => `pickready:assessment-draft:${linkId}`;
+
 export default function UnifiedAssessmentPage() {
   const { link_id: linkId } = useParams<{ link_id: string }>();
   const { toast } = useToast();
@@ -53,6 +68,7 @@ export default function UnifiedAssessmentPage() {
   // the transcript can record it once the candidate answers.
   const promptShownAt = React.useRef<Date>(new Date());
   const endRef = React.useRef<HTMLDivElement | null>(null);
+  const inputRef = React.useRef<HTMLTextAreaElement | null>(null);
 
   React.useEffect(() => {
     apiPost<Conversation>(
@@ -69,6 +85,29 @@ export default function UnifiedAssessmentPage() {
       .finally(() => setLoading(false));
   }, [linkId, toast]);
 
+  // Restore an unsent draft. Runs once per application, before the candidate
+  // can type, so it cannot clobber something they have already started.
+  React.useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(draftKey(linkId));
+      if (saved) setAnswer(saved);
+    } catch {
+      // A browser with storage disabled or a full quota. Losing draft
+      // persistence is not worth failing the assessment over.
+    }
+  }, [linkId]);
+
+  // Persist it as they type. Cheap, synchronous and debounced by React's own
+  // batching; a candidate mid-sentence when their phone rings keeps their work.
+  React.useEffect(() => {
+    try {
+      if (answer) window.localStorage.setItem(draftKey(linkId), answer);
+      else window.localStorage.removeItem(draftKey(linkId));
+    } catch {
+      /* see above */
+    }
+  }, [answer, linkId]);
+
   // Auto-scroll. A conversation that grows off the bottom of the viewport and
   // leaves the reader to find the new message is the single most obvious way a
   // chat stops feeling like one. `behavior: smooth` follows the thread rather
@@ -78,40 +117,88 @@ export default function UnifiedAssessmentPage() {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [exchanges.length, conversation?.prompt, sending]);
 
-  // A new question is on screen: start its clock.
+  // A new question is on screen: start its clock, and put the cursor back in
+  // the box. Without the refocus the candidate has to reach for the mouse
+  // between every one of 45 questions, which is the kind of friction that makes
+  // a long assessment feel longer than it is.
   React.useEffect(() => {
-    if (conversation?.prompt) promptShownAt.current = new Date();
+    if (!conversation?.prompt) return;
+    promptShownAt.current = new Date();
+    inputRef.current?.focus();
   }, [conversation?.prompt]);
 
+  /**
+   * Send the answer, showing it IMMEDIATELY.
+   *
+   * WHY OPTIMISTIC, AND WHY IT MATTERS MORE THAN IT USED TO
+   * -------------------------------------------------------
+   * This request is not a save. Since the assessment became adaptive the server
+   * may make up to three model calls on one turn -- classify the answer, decide
+   * whether to challenge or probe it, then write the next question -- so it can
+   * legitimately take several seconds.
+   *
+   * The page used to hold the candidate's text in the textarea for that whole
+   * time and only move it into the transcript once the response arrived. Every
+   * turn therefore ended with the interface visibly doing nothing to the thing
+   * the candidate had just acted on, which reads as a dropped click and invites
+   * a second press.
+   *
+   * The answer now moves into the transcript on the press, and the typing
+   * indicator explains the wait. On failure the exchange is rolled back and the
+   * text is returned to the box, so nothing is ever silently lost -- which is
+   * the property that makes optimism safe here rather than merely faster.
+   */
   const respond = async () => {
-    if (!conversation?.prompt || !answer.trim()) return;
+    if (!conversation?.prompt || !answer.trim() || sending) return;
     const currentPrompt = conversation.prompt;
     const currentAnswer = answer.trim();
+    const optimistic: Exchange = {
+      prompt: currentPrompt,
+      answer: currentAnswer,
+      askedAt: promptShownAt.current,
+      answeredAt: new Date(),
+    };
+
     setSending(true);
+    setExchanges((items) => [...items, optimistic]);
+    setAnswer("");
+
     try {
       const next = await apiPost<Conversation>(
         `/api/v2/assessments/conversations/${conversation.conversation_id}/respond`,
         { answer: currentAnswer }
       );
-      setExchanges((items) => [
-        ...items,
-        {
-          prompt: currentPrompt,
-          answer: currentAnswer,
-          askedAt: promptShownAt.current,
-          answeredAt: new Date(),
-        },
-      ]);
       setConversation(next);
-      setAnswer("");
     } catch (error) {
+      // Roll the turn back completely. Identity comparison rather than an
+      // index: nothing else can append while `sending` is true, but a rollback
+      // that removed "the last item" would be wrong the moment that changes.
+      setExchanges((items) => items.filter((item) => item !== optimistic));
+      setAnswer(currentAnswer);
       toast({
         title: "Could not save your response",
-        description: error instanceof Error ? error.message : undefined,
+        description:
+          error instanceof Error
+            ? error.message
+            : "Your answer is still in the box. Please try sending it again.",
         variant: "destructive",
       });
     } finally {
       setSending(false);
+    }
+  };
+
+  /**
+   * Cmd/Ctrl+Enter sends; plain Enter does not.
+   *
+   * The reverse of an instant-messaging default, and deliberately so: these
+   * answers are paragraphs, and a bare Enter that submitted would fire
+   * mid-thought on the first line break. The hint under the box says which.
+   */
+  const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      void respond();
     }
   };
 
@@ -203,14 +290,32 @@ export default function UnifiedAssessmentPage() {
                 Your answer
               </label>
               <Textarea
+                ref={inputRef}
                 id="assessment-answer"
-                rows={6}
+                rows={5}
                 value={answer}
                 disabled={sending}
+                maxLength={MAX_ANSWER}
                 onChange={(event) => setAnswer(event.target.value)}
+                onKeyDown={onKeyDown}
                 placeholder="Share a specific, honest example."
+                // Grows with the answer instead of making a long one scroll
+                // inside five fixed rows. Capped so it cannot push the question
+                // it is answering off the top of the screen.
+                className="max-h-[40vh] min-h-[8rem] resize-y"
               />
-              <div className="flex justify-end">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs">
+                  {/* Stated rather than left to be discovered: a candidate who
+                      assumes Enter sends has already lost a paragraph by the
+                      time they find out it does not. */}
+                  Press Ctrl+Enter (Cmd+Enter on Mac) to send.
+                  {answer.length >= COUNTER_FROM ? (
+                    <span className="ml-2 font-medium">
+                      {MAX_ANSWER - answer.length} characters left
+                    </span>
+                  ) : null}
+                </p>
                 <Button
                   size="lg"
                   disabled={sending || !answer.trim()}
@@ -221,7 +326,7 @@ export default function UnifiedAssessmentPage() {
                   ) : (
                     <Send className="h-4 w-4" aria-hidden="true" />
                   )}
-                  {sending ? "Saving" : "Send response"}
+                  {sending ? "Sending" : "Send response"}
                 </Button>
               </div>
             </div>
@@ -250,10 +355,10 @@ function Dot({ delay }: { delay: string }) {
 /** Time of day, e.g. "14:32". Deliberately no date: the whole conversation
  *  happens in one sitting, and a date on every bubble is noise. */
 function formatTime(value: Date): string {
-    return value.toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+  return value.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 /**
