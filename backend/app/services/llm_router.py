@@ -302,23 +302,86 @@ def _record_attempt(
         )
 
 
+async def _persist_key_health(statement: str, params: dict) -> bool:
+    """Write one key-health row on the breaker's OWN session.
+
+    THE BUG THIS FIXES, AND IT WAS A BAD ONE
+    ----------------------------------------
+    Both health writes used to run on the CALLER's session and finish with
+    `await session.commit()`. On a Celery task that is harmless. On a request
+    handler it is not: `commit()` ends the handler's transaction in the middle
+    of the request, so the `async with session.begin()` block that FastAPI's
+    dependency opened is closed underneath it and every subsequent statement
+    raises
+
+        InvalidRequestError: Can't operate on closed transaction inside
+        context manager.
+
+    Traced live on 2026-08-06 in `assessments.respond`. The sequence is: write
+    the candidate's answer and flush, classify the answer (a model call), the
+    call fails often enough to condemn a key, the breaker commits, and the very
+    next read -- loading the transcript to write the following question --
+    raises. The candidate gets a 500 mid-assessment.
+
+    Note WHEN that happens: a key is condemned exactly when providers are
+    failing, which is precisely the moment the degradation paths exist to carry
+    the candidate through. The bookkeeping meant to protect availability was
+    destroying it, and only under the conditions it was written for.
+
+    Its own session is the fix, and it is also simply correct: breaker state is
+    not part of the caller's unit of work. It must persist whether or not the
+    caller's transaction commits, and it must not drag the caller's uncommitted
+    work in with it.
+
+    Returns True when the row was written. Never raises -- bookkeeping must not
+    crash a task, and a lost health update costs one extra failed attempt later.
+    """
+    try:
+        from app.core.db import get_session_factory
+
+        factory = get_session_factory()
+        async with factory() as own:
+            # `llm_provider_keys` is a platform table with no tenant column and
+            # no RLS policy, so this needs no tenant scoping.
+            await own.execute(text(statement), params)
+            await own.commit()
+        return True
+    except Exception:  # noqa: BLE001
+        logger.debug("llm_router.key_health_write_failed", exc_info=True)
+        return False
+
+
+async def _try_persist_key_health(statement: str, params: dict) -> bool:
+    """`_persist_key_health` with a second net under it.
+
+    The implementation above already swallows everything, so this looks
+    redundant and is not: both callers run INSIDE a candidate's live turn, and
+    this is the exact shape of bug that was just removed from this module -- a
+    piece of bookkeeping taking down the request it was supposed to be invisible
+    to. A future edit that lets an exception out of the writer must not be able
+    to reach the caller.
+    """
+    try:
+        return await _persist_key_health(statement, params)
+    except Exception:  # noqa: BLE001
+        logger.debug("llm_router.key_health_write_raised", exc_info=True)
+        return False
+
+
 async def _record_failure(key: _RouterKey, session: AsyncSession | None) -> None:
     st = _state(key.fingerprint)
     st.consecutive_failures += 1
     if st.consecutive_failures >= _FAILURE_THRESHOLD:
         st.unhealthy_until = time.monotonic() + _COOLDOWN_SECONDS
-        if key.db_id is not None and session is not None:
-            try:
-                await session.execute(
-                    text(
-                        "UPDATE llm_provider_keys SET healthy = false, last_error_at = :at "
-                        "WHERE id = :id"
-                    ),
-                    {"at": datetime.now(timezone.utc), "id": key.db_id},
-                )
-                await session.commit()
-            except Exception:  # noqa: BLE001 — breaker bookkeeping must never crash the task
-                await session.rollback()
+        if key.db_id is not None:
+            # `session` is deliberately no longer used for this. See
+            # `_persist_key_health`: committing the caller's transaction here
+            # 500ed a candidate's turn every time a key was condemned mid-request.
+            await _try_persist_key_health(
+                "UPDATE llm_provider_keys SET healthy = false, last_error_at = :at "
+                "WHERE id = :id",
+                {"at": datetime.now(timezone.utc), "id": key.db_id},
+            )
 
 
 async def _record_success(key: _RouterKey, session: AsyncSession | None) -> None:
@@ -335,24 +398,23 @@ async def _record_success(key: _RouterKey, session: AsyncSession | None) -> None
     st.consecutive_failures = 0
     st.unhealthy_until = 0.0
     needs_db_clear = was_tripped or not key.db_healthy
-    if needs_db_clear and key.db_id is not None and session is not None:
-        try:
-            await session.execute(
-                text(
-                    "UPDATE llm_provider_keys "
-                    "SET healthy = true, last_error_at = NULL "
-                    "WHERE id = :id AND (healthy = false OR last_error_at IS NOT NULL)"
-                ),
-                {"id": key.db_id},
-            )
-            await session.commit()
+    if needs_db_clear and key.db_id is not None:
+        # Own session, for the same reason as `_record_failure`. This one is if
+        # anything worse on the caller's: a SUCCESS is the common case, so the
+        # stray commit fired on ordinary healthy traffic and not only during an
+        # outage.
+        written = await _try_persist_key_health(
+            "UPDATE llm_provider_keys "
+            "SET healthy = true, last_error_at = NULL "
+            "WHERE id = :id AND (healthy = false OR last_error_at IS NOT NULL)",
+            {"id": key.db_id},
+        )
+        if written:
             key.db_healthy = True
             logger.info(
                 "llm_router.key_recovered provider=%s fingerprint=%s",
                 key.provider, key.fingerprint,
             )
-        except Exception:  # noqa: BLE001
-            await session.rollback()
 
 
 # ── Key loading ──────────────────────────────────────────────────────────────

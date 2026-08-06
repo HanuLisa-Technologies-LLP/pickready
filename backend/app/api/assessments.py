@@ -965,6 +965,37 @@ async def _write_next_question(
     """
     if index >= len(prompts):
         return
+    try:
+        await _write_next_question_inner(session, job, link, conversation, prompts, index)
+    except Exception as exc:  # noqa: BLE001
+        # WRITING THE NEXT QUESTION MUST NEVER COST THE CANDIDATE THIS TURN.
+        #
+        # By the time this runs the candidate's answer is already recorded and
+        # the index already advanced. Everything here is an ENHANCEMENT of the
+        # question they will read next, and the stored text is always a correct
+        # thing to ask, so any failure has exactly one right answer: leave
+        # `delivered_prompt` NULL and move on.
+        #
+        # It is not hypothetical. `llm_router` used to commit the CALLER's
+        # transaction when it condemned a key, which closed the request's
+        # transaction and made the next read raise -- so a provider outage 500ed
+        # a candidate mid-assessment. That root cause is fixed
+        # (`llm_router._persist_key_health`), and this stays as the guard that
+        # makes the whole step non-load-bearing whatever the next such bug is.
+        logger.warning(
+            "assessments.next_question_unavailable conversation_id=%s error=%s",
+            conversation.id, type(exc).__name__,
+        )
+
+
+async def _write_next_question_inner(
+    session: AsyncSession,
+    job: Job,
+    link: JobCandidateLink,
+    conversation: AssessmentConversation,
+    prompts: list[tuple[str, str, str]],
+    index: int,
+) -> None:
     domain, key, stored = prompts[index]
     # Read AFTER the caller's flush so the turn just written is part of the
     # memory this question is conditioned on. Reading a stale transcript would

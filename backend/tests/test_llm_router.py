@@ -43,7 +43,16 @@ def _clean_breaker():
 
 
 class _FakeSession:
-    """Records the UPDATE statements the router issues against the key table."""
+    """The CALLER's session. Records anything the router does to it.
+
+    Since 2026-08-06 the correct recording is NOTHING. Key-health bookkeeping
+    runs on its own session (`_persist_key_health`), because it used to call
+    `commit()` on this one -- which, on a request handler, ends the handler's
+    transaction mid-request and makes every later statement raise
+    "Can't operate on closed transaction inside context manager". Traced live in
+    `assessments.respond`: a candidate got a 500 mid-assessment every time a
+    provider key was condemned during their turn.
+    """
 
     def __init__(self):
         self.statements: list[tuple[str, dict]] = []
@@ -59,6 +68,23 @@ class _FakeSession:
 
     async def rollback(self):  # pragma: no cover — only on a DB error path
         self.rollbacks += 1
+
+
+@pytest.fixture
+def health_writes(monkeypatch):
+    """Capture what the breaker persists, without needing a database.
+
+    Patches the router's OWN-session writer, which is the seam that replaced
+    writing through the caller's session.
+    """
+    captured: list[tuple[str, dict]] = []
+
+    async def _capture(statement: str, params: dict) -> bool:
+        captured.append((statement, params))
+        return True
+
+    monkeypatch.setattr(llm_router, "_persist_key_health", _capture)
+    return captured
 
 
 def _key(db_healthy: bool = True, fp: str = "db:k1") -> _RouterKey:
@@ -85,37 +111,93 @@ async def test_record_success_clears_in_memory_breaker():
 
 
 @pytest.mark.asyncio
-async def test_record_success_restores_db_flag_after_a_restart():
+async def test_record_success_restores_db_flag_after_a_restart(health_writes):
     """The regression: fresh process (empty breaker), row loaded as unhealthy.
     The old code only wrote healthy = true when THIS process tripped the
     breaker, so the row stayed false forever."""
     key = _key(db_healthy=False)
     session = _FakeSession()
     await llm_router._record_success(key, session)
-    assert session.commits == 1
-    sql = session.statements[0][0].lower()
+    assert len(health_writes) == 1
+    sql = health_writes[0][0].lower()
     assert "healthy = true" in sql
     assert "last_error_at = null" in sql
     assert key.db_healthy is True
+    # THE PROPERTY THAT MATTERS MOST: the caller's transaction is untouched.
+    assert session.statements == []
+    assert session.commits == 0
 
 
 @pytest.mark.asyncio
-async def test_record_success_on_a_healthy_key_does_not_write():
+async def test_record_success_on_a_healthy_key_does_not_write(health_writes):
     session = _FakeSession()
     await llm_router._record_success(_key(db_healthy=True), session)
+    assert health_writes == []
     assert session.statements == []
 
 
 @pytest.mark.asyncio
-async def test_record_failure_trips_only_at_the_threshold():
+async def test_record_failure_trips_only_at_the_threshold(health_writes):
     key = _key()
     session = _FakeSession()
     await llm_router._record_failure(key, session)
     assert not llm_router._is_skippable(key)          # 1 failure: still usable
     await llm_router._record_failure(key, session)
     assert llm_router._is_skippable(key)              # 2 failures: circuit open
-    sql = session.statements[-1][0].lower()
+    sql = health_writes[-1][0].lower()
     assert "healthy = false" in sql
+    assert session.statements == []
+    assert session.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_the_breaker_never_commits_the_callers_transaction(health_writes):
+    """The bug this file's `_FakeSession` docstring describes, stated directly.
+
+    A key is condemned exactly when providers are failing -- which is precisely
+    when the degradation paths exist to carry a candidate through their
+    assessment. Committing the caller's transaction there meant the bookkeeping
+    written to protect availability was the thing destroying it, and only under
+    the conditions it was written for.
+    """
+    session = _FakeSession()
+    key = _key(db_healthy=False, fp="db:never-commit")
+    for _ in range(_FAILURE_THRESHOLD + 1):
+        await llm_router._record_failure(key, session)
+    await llm_router._record_success(key, session)
+
+    assert health_writes, "the breaker must still persist key health somewhere"
+    assert session.commits == 0
+    assert session.rollbacks == 0
+    assert session.statements == []
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_database_does_not_break_the_health_write(monkeypatch):
+    """The REAL writer swallows its own errors and reports False.
+
+    Bookkeeping must not crash a task: a lost health update costs one extra
+    failed attempt later, which is strictly better than a failed request.
+    """
+    def _no_engine():
+        raise RuntimeError("no engine")
+
+    monkeypatch.setattr("app.core.db.get_session_factory", _no_engine)
+    assert await llm_router._persist_key_health("UPDATE x SET y = 1", {}) is False
+
+
+@pytest.mark.asyncio
+async def test_a_raising_health_write_never_reaches_the_caller(monkeypatch):
+    """And if the writer itself ever regressed into raising, neither breaker
+    entry point may propagate it -- they run inside a candidate's live turn."""
+    async def _boom(statement, params):
+        raise RuntimeError("database unreachable")
+
+    monkeypatch.setattr(llm_router, "_persist_key_health", _boom)
+    key = _key(db_healthy=False, fp="db:write-fails")
+
+    await llm_router._record_success(key, _FakeSession())
+    assert key.db_healthy is False  # not claimed as recovered on a failed write
 
 
 # ── Half-open recovery from the persisted flag ──────────────────────────────
@@ -249,7 +331,9 @@ async def test_chain_exhaustion_still_raises_without_leaking_key_material(monkey
 
 
 @pytest.mark.asyncio
-async def test_success_after_recovery_clears_the_breaker_end_to_end(monkeypatch):
+async def test_success_after_recovery_clears_the_breaker_end_to_end(
+    monkeypatch, health_writes
+):
     key = _key(db_healthy=False, fp="db:recovered")
     session = _FakeSession()
     monkeypatch.setattr(llm_router, "_load_keys", _returns([key]))
@@ -263,7 +347,10 @@ async def test_success_after_recovery_clears_the_breaker_end_to_end(monkeypatch)
     )
     assert key.db_healthy is True
     assert not llm_router._is_skippable(key)
-    assert session.commits == 1
+    assert len(health_writes) == 1
+    # End to end through the real entry point, the caller's transaction is still
+    # its own. This is the assertion that would have caught the 500.
+    assert session.commits == 0
 
 
 def _returns(keys):
