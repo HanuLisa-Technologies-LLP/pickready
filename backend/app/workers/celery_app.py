@@ -131,6 +131,25 @@ celery_app.conf.update(
             "task": "pickready.remind_unapproved_technical_questions",
             "schedule": 3600.0,
         },
+        # Repair jobs whose PPI framework never landed (added 2026-08-06).
+        #
+        # Framework generation was fire-and-forget at job creation and nothing
+        # ever checked it produced rows. Measured live: 19 of 35 jobs, across
+        # three whole tenants, had `framework_generated_at` stamped and ZERO
+        # competencies -- so every one of those jobs was permanently unusable
+        # while every dashboard reported it as generated.
+        #
+        # Every 15 minutes rather than hourly: a broken job blocks its entire
+        # candidate pipeline, and the task is a cheap EXISTS scan that does
+        # nothing at all when there is nothing to fix. It is deliberately
+        # separate from the reminder above, which chases a HUMAN who has not
+        # reviewed; this chases a MACHINE that did not finish, and conflating
+        # the two is how the reminder ended up filtering out exactly the jobs
+        # that needed it.
+        "reconcile-job-setup": {
+            "task": "pickready.reconcile_job_setup",
+            "schedule": 900.0,
+        },
         # Credit reconciliation for abandoned assessments (killer-spec §3.2).
         # Hourly rather than once a day: the sweep is idempotent, and an hourly
         # cadence means a reminder goes out near its 24h/72h mark instead of

@@ -8,12 +8,12 @@ import pytest
 
 from app.services import functional_assessment as fa
 from app.services import ppi
+from app.services import technical_interview as ti
 from app.services.functional_assessment import (
     PPI_QUESTION_COUNTS,
     TECHNICAL_QUESTION_COUNTS,
     _fallback_remark_25,
     _fallback_remark_45,
-    _question_fallback,
     _unanswered_remark,
     answers_by_key,
     assessment_graph,
@@ -53,7 +53,7 @@ def test_ppi_counts_follow_the_grade_table() -> None:
 
 @pytest.mark.parametrize("grade,tech", list(TECHNICAL_QUESTION_COUNTS.items()))
 def test_blended_conversation_total(grade, tech) -> None:
-    """One conversation = the job's technical bank + this candidate's PPI set."""
+    """One conversation = this candidate's technical slots + their PPI set."""
     total = tech + PPI_QUESTION_COUNTS[grade]
     assert total == tech + PPI_QUESTION_COUNTS[grade]
     if grade == "non_managerial":
@@ -89,40 +89,33 @@ def test_validation_is_not_asked_in_the_conversation() -> None:
     assert "validation" not in source.lower().replace("validation_json", "")
 
 
-# ── Technical bank sizing ────────────────────────────────────────────────────
+# ── The preset bank is gone ──────────────────────────────────────────────────
 
-@pytest.mark.parametrize("grade,expected", list(TECHNICAL_QUESTION_COUNTS.items()))
-def test_deterministic_topup_always_meets_the_exact_count(grade, expected) -> None:
-    job = SimpleNamespace(title="Backend Engineer", level=None, jd_json={"skills": ["Python", "SQL"]})
-    rows = _question_fallback(job, expected)
-    assert len(rows) == expected
-    assert all(row["prompt"] and row["skill"] and row["rubric"] for row in rows)
+def test_the_preset_technical_bank_generator_is_gone() -> None:
+    """Regression guard on the 2026-08-06 withdrawal.
+
+    A company can no longer create, edit, store or assign technical questions;
+    they are written per candidate during the conversation. Re-introducing a
+    per-job generator would put every applicant back on the same stored strings
+    without anything in the product announcing it.
+    """
+    assert not hasattr(fa, "generate_question_bank")
+    assert not hasattr(fa, "_question_fallback")
 
 
-def test_topup_works_with_a_single_skill() -> None:
-    job = SimpleNamespace(title="Analyst", level=None, jd_json={"skills": ["Excel"]})
-    assert len(_question_fallback(job, 20)) == 20
+def test_the_preset_bank_routes_are_gone() -> None:
+    """The five Company Portal routes behind the bank no longer exist.
 
+    Asserted on the router rather than by calling them: an unregistered path
+    404s, and a 404 is indistinguishable from a typo in a test. This checks that
+    nothing is REGISTERED, which is the actual claim.
+    """
+    from app.api import assessments
 
-class _StubSession:
-    """Just enough AsyncSession for generate_question_bank."""
-
-    def __init__(self, existing: list | None = None) -> None:
-        self.added: list = []
-        self._existing = existing or []
-
-    async def execute(self, *a, **k):
-        rows = self._existing
-        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
-
-    def add_all(self, rows) -> None:
-        self.added.extend(rows)
-
-    def add(self, row) -> None:
-        self.added.append(row)
-
-    async def flush(self) -> None:
-        return None
+    paths = {route.path for route in assessments.router.routes}
+    assert "/jobs/{job_id}/questions" not in paths
+    assert "/jobs/{job_id}/questions/{question_id}" not in paths
+    assert "/jobs/{job_id}/finalize" not in paths
 
 
 def _job(grade: str = "managerial") -> SimpleNamespace:
@@ -136,47 +129,43 @@ def _job(grade: str = "managerial") -> SimpleNamespace:
     )
 
 
-@pytest.mark.asyncio
+# ── The deterministic coverage plan ──────────────────────────────────────────
+# This is what replaced the preset bank's comparability guarantee, so it is
+# tested at least as hard as the bank was.
+
 @pytest.mark.parametrize("grade,expected", list(TECHNICAL_QUESTION_COUNTS.items()))
-async def test_generate_question_bank_never_exceeds_or_falls_short(monkeypatch, grade, expected) -> None:
-    """LLM returns a deliberately wrong count; the bank still lands exactly."""
-    async def _chat(*a, **k):
-        return '{"questions":[{"skill":"Python","prompt":"Explain GIL trade-offs in depth.","rubric":{"0_39":"a","40_59":"b","60_74":"c","75_89":"d","90_100":"e"}}]}'
-
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    job = _job(grade)
-    rows = await fa.generate_question_bank(_StubSession(), job)
-    assert len(rows) == expected
-    assert [row.ordinal for row in rows] == list(range(1, expected + 1))
-    assert all(row.rubric_json for row in rows)
+def test_skill_plan_is_exactly_the_graded_count(grade, expected) -> None:
+    plan = ti.skill_plan(_job(grade))
+    assert len(plan) == expected
+    assert all(skill for skill in plan)
 
 
-@pytest.mark.asyncio
-async def test_generation_never_approves_the_job(monkeypatch) -> None:
-    """The review gate (spec §5, §11). Generation prepares; a human approves.
+def test_skill_plan_is_identical_for_every_candidate_on_a_job() -> None:
+    """THE comparability guarantee for the technical half.
 
-    This is the assertion that would have caught the 2026-07-25 removal of the
-    gate being silently reintroduced by a generator.
+    Two candidates get different QUESTIONS; they must be probed on the same
+    SKILLS, in the same order, or their reports cannot be compared. The plan is
+    a pure function of the job, so this is a property of the code rather than of
+    how carefully a caller uses it.
     """
-    async def _chat(*a, **k):
-        return '{"questions":[]}'
-
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    job = _job("managerial")
-    await fa.generate_question_bank(_StubSession(), job)
-    assert job.assessment_status == "questions_pending_review"
-    assert job.questions_approved_at is None
-    assert job.questions_generated_at is not None
+    job = _job("non_managerial")
+    assert ti.skill_plan(job) == ti.skill_plan(job)
 
 
-@pytest.mark.asyncio
-async def test_generate_question_bank_survives_llm_outage(monkeypatch) -> None:
-    async def _boom(*a, **k):
-        raise RuntimeError("all providers down")
+def test_skill_plan_cycles_rather_than_repeating_one_skill() -> None:
+    """A JD with three skills and twenty slots covers each of them, not the
+    first one twenty times."""
+    plan = ti.skill_plan(_job("non_managerial"))
+    assert set(plan) >= {"Python", "SQL", "Docker"}
+    assert plan[:3] == ["Python", "SQL", "Docker"]
 
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _boom)
-    rows = await fa.generate_question_bank(_StubSession(), _job("managerial"))
-    assert len(rows) == 17
+
+def test_skill_plan_survives_a_jd_with_no_declared_skills() -> None:
+    job = _job("cxo")
+    job.jd_json = {}
+    plan = ti.skill_plan(job)
+    assert len(plan) == 12
+    assert all(skill == "Engineer" for skill in plan)
 
 
 # ── Scoring ──────────────────────────────────────────────────────────────────

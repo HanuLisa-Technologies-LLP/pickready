@@ -630,30 +630,36 @@ def run_matching(job_id: str):
 
 
 @celery_app.task(
-    name="pickready.generate_technical_questions",
+    name="pickready.generate_ppi_framework",
     autoretry_for=(Exception,),
     dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=5,
 )
-def generate_technical_questions(job_id: str):
-    """Job setup: the technical bank AND the PPI framework (spec §11).
+def generate_ppi_framework(job_id: str):
+    """Job setup: the job's PPI evaluation framework (spec §11).
 
-    The spec calls for the two generators to run "in parallel", meaning they are
-    INDEPENDENT of each other -- neither reads what the other writes, and a
-    failure in one does not invalidate the other. They are nonetheless awaited
-    in sequence here: an AsyncSession is not safe to use from two concurrent
-    tasks, and both of these read and write through the same one. Giving each
-    its own session would have them contend for a row lock on the same `jobs`
-    row for a wall-clock saving nobody is waiting on -- this runs in a worker,
-    after the recruiter has already been told the job is being prepared.
+    THE TECHNICAL BANK USED TO BE GENERATED HERE TOO, AND THAT WAS THE BUG.
+    -----------------------------------------------------------------------
+    This task ran `generate_question_bank` FIRST and `generate_framework`
+    second, in one session. Any failure in the first half therefore took the
+    second half with it -- and the framework is the half that gates the job.
+    Measured on the live database on 2026-08-06: 19 of 35 jobs, across three
+    entire tenants, carried `framework_generated_at` with ZERO competency rows.
+    Every one of those jobs was permanently stuck at `questions_pending_review`
+    with an empty framework a recruiter could not approve, which is what "the
+    portal does not work for other companies" was.
 
-    NEITHER approves anything. The job is left in `questions_pending_review`
-    until a recruiter finalises both halves; that is the single manual step in
-    the pipeline, and the reminder task below is what stops it going silent.
+    The preset bank is gone (2026-08-06), so the coupling is gone with it. This
+    task now does exactly one thing, which is also why it could be renamed: a
+    task named for half the work it did was part of how the failure stayed
+    unreadable.
+
+    It approves nothing. The job stays at `questions_pending_review` until a
+    recruiter saves the framework -- the single manual step in the pipeline, and
+    the product's only comparability guarantee.
     """
     from app.models.job import Job
-    from app.services.functional_assessment import generate_question_bank
     from app.services.ppi import generate_framework
 
     async def _task():
@@ -661,12 +667,110 @@ def generate_technical_questions(job_id: str):
             job = await session.get(Job, uuid.UUID(str(job_id)))
             if job is None:
                 raise ValueError(f"Job {job_id} not found")
-            rows = await generate_question_bank(session, job)
             framework = await generate_framework(session, job)
             await session.commit()
             logger.info(
-                "job_setup.generated job_id=%s grade=%s questions=%d competencies=%d status=%s",
-                job_id, job.assessment_grade, len(rows), len(framework), job.assessment_status,
+                "job_setup.framework_generated job_id=%s grade=%s competencies=%d status=%s",
+                job_id, job.assessment_grade, len(framework), job.assessment_status,
+            )
+    _run(_task())
+
+
+#: The retired name, still registered. A beat entry, a queued message and a
+#: worker registration cannot all be changed atomically during a rolling deploy,
+#: so a task already sitting on the broker under the old name must still find a
+#: handler when it is delivered. Delegates rather than duplicating.
+@celery_app.task(
+    name="pickready.generate_technical_questions",
+    autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
+    retry_backoff=True,
+    max_retries=5,
+)
+def generate_technical_questions(job_id: str):
+    """DEPRECATED alias for `pickready.generate_ppi_framework`.
+
+    Nothing enqueues this any more. It exists so an in-flight message from a
+    pre-2026-08-06 deploy is handled rather than dead-lettered, and it does the
+    only half of its old job that still exists.
+    """
+    logger.info("job_setup.legacy_task_name job_id=%s", job_id)
+    generate_ppi_framework(job_id)
+
+
+@celery_app.task(name="pickready.reconcile_job_setup")
+def reconcile_job_setup():
+    """Find every job whose framework never landed, and generate it.
+
+    THE RULE THIS ENFORCES: a timestamp is not evidence that work happened.
+
+    `framework_generated_at` was stamped on 19 jobs that have no competency rows
+    at all. Nothing noticed, because every health check in the product asked the
+    stamp rather than the table -- including the reminder task, which filters on
+    `framework_generated_at IS NOT NULL` and so specifically EXCLUDED the jobs
+    whose generation had failed. The one safeguard on the manual step was blind
+    to the failure that most needed it.
+
+    This asks the table. It runs on the beat schedule, is idempotent
+    (`generate_framework` returns existing rows untouched), and is bounded per
+    run so a tenant with a thousand broken jobs cannot occupy a worker
+    indefinitely -- the next tick picks up where this one stopped.
+
+    Deliberately NOT scoped to a tenant. The defect was never tenant-specific;
+    it only looked that way because the three demo tenants were seeded by a
+    script that wrote competencies directly.
+    """
+    from app.models.assessment import JobCompetency
+    from app.models.job import Job
+    from app.services.ppi import generate_framework
+
+    #: Bounded per tick. Each job is one LLM call with a deterministic fallback,
+    #: so 25 is a few minutes of worker time at worst.
+    BATCH = 25
+
+    async def _task():
+        async with _worker_session() as session:
+            # Jobs with no ACTIVE competency row. `is_active` matters: a
+            # framework whose rows were all soft-deleted is as unusable as one
+            # that was never generated, and the recruiter sees the same empty
+            # screen in both cases.
+            has_framework = (
+                select(JobCompetency.job_id)
+                .where(
+                    JobCompetency.job_id == Job.id,
+                    JobCompetency.is_active.is_(True),
+                )
+                .exists()
+            )
+            jobs = (
+                await session.execute(
+                    select(Job)
+                    .where(Job.archived_at.is_(None), ~has_framework)
+                    .order_by(Job.created_at)
+                    .limit(BATCH)
+                )
+            ).scalars().all()
+            if not jobs:
+                logger.debug("job_setup.reconcile_noop, every job has a framework")
+                return
+            repaired = 0
+            for job in jobs:
+                try:
+                    rows = await generate_framework(session, job)
+                except Exception as exc:  # noqa: BLE001
+                    # One job's failure must not abandon the other 24. Logged at
+                    # warning because a repair that cannot repair is something an
+                    # operator should see.
+                    logger.warning(
+                        "job_setup.reconcile_failed job_id=%s tenant_id=%s error=%s",
+                        job.id, job.tenant_id, type(exc).__name__,
+                    )
+                    continue
+                if rows:
+                    repaired += 1
+            await session.commit()
+            logger.info(
+                "job_setup.reconciled examined=%d repaired=%d", len(jobs), repaired
             )
     _run(_task())
 

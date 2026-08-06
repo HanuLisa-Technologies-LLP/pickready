@@ -6,26 +6,17 @@ from pydantic import BaseModel, Field
 from app.services.ppi import CATEGORIES
 
 
-class TechnicalQuestionIn(BaseModel):
-    skill: str = Field(min_length=1, max_length=255)
-    prompt: str = Field(min_length=10)
-    rubric: dict
-
-
-class TechnicalQuestionOut(TechnicalQuestionIn):
-    id: uuid.UUID
-    ordinal: int
-    is_active: bool
-
-
-class QuestionBankOut(BaseModel):
-    job_id: uuid.UUID
-    status: str
-    grade: str | None
-    questions: list[TechnicalQuestionOut]
-    #: True once a recruiter has finalised the bank. The job still needs the PPI
-    #: framework approved before it reaches `ready_for_candidates`.
-    approved: bool = False
+# REMOVED 2026-08-06: `TechnicalQuestionIn`, `TechnicalQuestionOut` and
+# `QuestionBankOut`, the request and response shapes of the Company Portal's
+# preset technical question bank.
+#
+# A company can no longer create, edit, store or assign technical questions.
+# They are written per candidate, during the conversation, from the JD, that
+# candidate's resume and the live transcript (`services/technical_interview`),
+# so there is nothing on a job for a form to submit and nothing stored for a
+# screen to list. The routes went with them; the schemas are removed rather than
+# deprecated because a response model nothing returns is a contract that quietly
+# reads as still supported.
 
 
 # ── The job's PPI framework (spec §6.2, §6.3) ────────────────────────────────
@@ -70,18 +61,31 @@ class FrameworkOut(BaseModel):
 class JobSetupOut(BaseModel):
     """The single manual step in the pipeline (spec §11), as one payload.
 
-    Both halves are generated in parallel and approved independently; the job
-    becomes available to candidates only when both are done.
+    That step is now the PPI FRAMEWORK and nothing else. The technical bank
+    stopped gating anything on 2026-08-04 and stopped existing on 2026-08-06, so
+    `ready_for_candidates` tracks `framework_approved` exactly.
+
+    `questions_approved` is retained and always reports the framework's own
+    approval state. It is not a second gate: it is here so a client build that
+    still reads the field cannot conclude a ready job is unready and hide the
+    invite control. It is deprecated and should be dropped once no client reads
+    it.
     """
 
     job_id: uuid.UUID
     status: str
     grade: str | None
+    #: DEPRECATED, mirrors `framework_approved`. See the class docstring.
     questions_approved: bool
     framework_approved: bool
     ready_for_candidates: bool
     generated_at: datetime | None = None
     approved_at: datetime | None = None
+    #: True when this job has no usable framework and one has been enqueued.
+    #: Populated so the setup screen can say "we are preparing this" instead of
+    #: rendering an empty list that looks like a finished, empty framework --
+    #: which is exactly what 19 of 35 live jobs were showing.
+    framework_pending: bool = False
 
 
 # ── The PPI Assessment Report (spec §10) ─────────────────────────────────────
@@ -162,3 +166,56 @@ class ConversationOut(BaseModel):
     status: str
     prompt: str | None
     progress_label: str
+
+
+# ── The recruiter's view of what was actually asked and answered ─────────────
+# A report states a grade; this is the evidence behind it. A recruiter deciding
+# whether to interview someone, and a candidate disputing a grade, both need the
+# transcript, and until 2026-08-06 the only way to read one was a psql session.
+
+
+class TranscriptExchangeOut(BaseModel):
+    """One question and the answer it received.
+
+    Paired rather than returned as a flat message list. `assessment_messages`
+    stores speakers in sequence, which is the right shape to write and the wrong
+    shape to read: a client rendering a Q&A view would have to re-pair them, and
+    every client would re-pair them slightly differently. The pairing is done
+    once, server-side, by the module that knows how follow-ups are keyed.
+    """
+
+    #: 1-based position in the conversation, counting exchanges rather than
+    #: messages, so it matches the "Question 7 of 45" the candidate saw.
+    ordinal: int
+    #: technical | ppi. Provenance for the reader, never a filter that hides
+    #: anything: the candidate experienced one conversation and so does this.
+    domain: str
+    #: What the candidate actually READ, which is not always what was stored --
+    #: the interviewer writes the question for this candidate at this point.
+    question: str
+    #: Verbatim, as submitted, after the inbound guard defanged attack framing.
+    #: Never re-worded and never summarised: a summary of an answer is not
+    #: evidence of what someone said.
+    answer: str
+    #: The skill or competency this exchange was filed under, as a WORD. This is
+    #: what the answer was scored against, so it is what makes the transcript
+    #: readable as evidence rather than as a wall of text.
+    criterion: str | None = None
+    #: True when this exchange was a follow-up or a re-ask rather than one of
+    #: the planned questions. It shares its predecessor's criterion by design.
+    follow_up: bool = False
+    asked_at: datetime | None = None
+
+
+class TranscriptOut(BaseModel):
+    job_candidate_link_id: uuid.UUID
+    candidate_name: str | None = None
+    job_title: str | None = None
+    status: str
+    #: Present only once the conversation is complete.
+    completed_at: datetime | None = None
+    exchanges: list[TranscriptExchangeOut]
+    #: Total exchanges available, for a client paging through a long interview.
+    total: int
+    limit: int
+    offset: int

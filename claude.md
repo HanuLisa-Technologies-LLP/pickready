@@ -1,5 +1,161 @@
 # claude.md, PickReady Build Conventions
 
+## Current hard rules, per-candidate technical questions + loop engineering (2026-08-06)
+
+- **There is no preset technical question bank, and a company can never author
+  one again.** `technical_questions` was a per-JOB list of stored strings a
+  company created, edited and finalised through the Company Portal, and every
+  applicant read the same strings whatever their resume said. The five routes
+  (`GET/POST/PUT/DELETE /jobs/{id}/questions`, `POST /jobs/{id}/finalize`), the
+  screens behind them, the generator and its schemas are DELETED, not
+  deprecated. Pinned by `test_the_preset_technical_bank_generator_is_gone` and
+  `test_the_preset_bank_routes_are_gone`. The TABLE survives unread: reports
+  written before today were scored against those rows, and dropping it turns
+  "what was this candidate actually asked?" into an unanswerable question.
+- **A generated question is only sound if its RUBRIC was generated WITH it.**
+  This is what unlocked the change. The old rule forbade generating a technical
+  question mid-conversation (`interviewer.MODE_REWORD`) because the answer was
+  scored against a preset question's stored rubric, so a fresh question would be
+  graded against a rubric for a question nobody was asked.
+  `technical_interview.write_question` writes both in ONE call and persists both
+  before the candidate reads either. That is a STRONGER guarantee than the bank
+  gave, where a recruiter could edit a stored prompt in the UI and leave its
+  rubric behind.
+- **The coverage plan stays deterministic; only the questions vary.**
+  `technical_interview.skill_plan` is a PURE function of the JD and the grade,
+  so every candidate for a job is probed on the same skills in the same order.
+  That is what keeps two reports comparable now that no two candidates are asked
+  the same words. Counts are unchanged: 20/17/15/12. Same rule the PPI framework
+  follows, applied to the technical half.
+- **Every generative task runs inside `services/agent_loop.run_loop`:
+  plan -> execute -> evaluate -> (reflect -> improve)* -> verify.** Success
+  criteria are DETERMINISTIC code, never an LLM judge -- the moment the guard
+  matters most is the moment the provider is down, and a judge makes the
+  criteria unfalsifiable as well as adding a second flaky dependency. A
+  rejection is fed back VERBATIM as an instruction, which is the whole point: "you
+  returned three of the five rubric bands" is a defect a model fixes when told,
+  and the one-shot code it replaced threw the response away and shipped a canned
+  string. Bounded TWICE -- `max_attempts` AND `deadline_seconds`, checked BEFORE
+  each attempt, because N attempts at the per-task timeout is a multiple of what
+  the user experiences. `run_loop` NEVER raises; it returns `fallback` with
+  `degraded=True`, and `LoopResult.degraded` is the honest record that gets
+  counted. Interactive loops get 2 attempts / 26s; background ones 3 / 240s.
+- **A TIMESTAMP IS NOT EVIDENCE THAT WORK HAPPENED.** Measured on the live
+  database 2026-08-06: 19 of 35 jobs, across three entire tenants, carried
+  `framework_generated_at` and had ZERO competency rows. Every one of those jobs
+  was permanently stuck at `questions_pending_review` with an empty framework
+  nobody could approve, so no candidate on any of them could ever be assessed --
+  and that IS what "the portal does not work for other companies" was. It stayed
+  invisible because every health check asked the stamp rather than the table,
+  including `remind_unapproved_technical_questions`, which filters on
+  `framework_generated_at IS NOT NULL` and therefore specifically EXCLUDED the
+  jobs whose generation had failed. Three changes, and all three are load-bearing:
+  `ppi.generate_framework` now stamps ONLY when rows exist; the setup and
+  framework GETs repair on read and report `framework_pending`; and
+  `pickready.reconcile_job_setup` sweeps every tenant every 15 minutes asking
+  the TABLE. Verified by repairing all 19 live jobs with every LLM provider
+  down, on the deterministic fallback.
+- **Job setup generates ONE thing, and that is why it could be renamed.**
+  `pickready.generate_technical_questions` ran the bank generator FIRST and the
+  framework generator second in one session, so any failure in the first half
+  took the gating half with it. The task is now
+  `pickready.generate_ppi_framework`; the old name stays registered as a
+  delegating alias, because a beat entry, a queued message and a worker
+  registration cannot be changed atomically during a rolling deploy.
+- **A recruiter can read what a candidate was actually asked and answered**
+  (`GET /assessments/transcripts/links/{link_id}`, `view_review_screen`). Keyed
+  on the LINK, not the report: the transcript exists from the first answer and
+  the report does not exist until the assessment finishes, so hanging it off the
+  report would make the stalled-assessment case -- the one a recruiter most
+  wants -- unreachable. Exchanges are paired SERVER-SIDE, because the follow-up
+  rule (a probe reuses its parent's `question_key`, which is exactly how the
+  scorers file it) would otherwise be reimplemented per client and drift.
+  Paginated from day one; a non-managerial interview is up to 120 messages. No
+  score, no rubric, no required level and no number crosses this boundary, and
+  an answer is never re-worded or summarised -- a summary of an answer is not
+  evidence of what someone said.
+
+## Current hard rules, the conversational agent (2026-08-05)
+
+- **"The pipeline passed" is not evidence that anything works.** On 2026-08-04
+  every deploy was green, every revision was promoted, and production was
+  serving the newest commit -- while three reported features did not work. The
+  mechanisms were a change that shipped half of itself, a seed script judged by
+  its exit code rather than by the rows it wrote, and smoke tests that only ever
+  asserted status codes. A green run means the service answers HTTP. Verify a
+  claim against the thing a user touches: a row count from the live database, a
+  grep of the DEPLOYED image (`docker run --rm --entrypoint sh <digest> -c
+  'grep -rl ... /app'`), or an actual API response. Never against the source
+  tree, and never against a `--no-traffic` staged revision.
+- **How freely a question may be generated is decided by HOW ITS ANSWER IS
+  SCORED, never by preference.** A PPI answer is scored against its COMPETENCY
+  across every answer filed under it, so the question is written fresh each turn
+  from the JD, the resume, the competency and the transcript
+  (`interviewer.MODE_GENERATE`). A technical answer is scored against THAT
+  QUESTION'S own stored prompt and `rubric_json`
+  (`functional_assessment._llm_score`), so only the phrasing may move
+  (`MODE_REWORD`) and `_substance_preserved` refuses a rewrite that dropped a
+  named technology. Generating a fresh technical question would grade an answer
+  against a rubric written for a question nobody was asked.
+- **The COVERAGE PLAN stays deterministic: which criterion, in what order, how
+  many.** That is what keeps two candidates comparable, keeps billing where it
+  is, and makes a run reproducible. What varies per candidate is how each
+  criterion is approached, never which criteria there are.
+- **A non-answer is never met with silence.** `answer_classification.classify`
+  separates substantive / empty / gibberish / off_topic / evasive. Empty and
+  gibberish are settled DETERMINISTICALLY with no model call, because the model
+  being down is exactly when the guard matters; off_topic and evasive need the
+  model, because they are well-formed prose that does not answer the question.
+  Every degradation path returns "substantive": a false "evasive" silently
+  penalises a real answer, and "I have not used Kafka" is a complete answer.
+  The challenge WORDING is keyed by label -- telling a candidate who wrote three
+  coherent paragraphs that their reply "did not come through" proves the agent
+  cannot tell prose from keyboard mash.
+- **A re-ask is not a follow-up.** It costs no follow-up budget, is bounded to
+  one per base question by the `pending_prompt` mechanism, and changes no
+  scoring. Follow-up budget SCALES with interview length
+  (`interviewer.follow_up_budget`, 15 at 45 questions, 7 at a CXO's 22): the
+  flat 5 it replaced meant 89% of a non-managerial interview could not react to
+  anything the candidate said.
+- **NO TEMPLATED ACKNOWLEDGMENTS, and this has been violated once already.**
+  `_CONNECTORS` prepended one of eight canned openers to every question by
+  `position % 8`, so "Appreciate the detail." answered gibberish. Pinned by
+  `test_no_canned_acknowledgments_in_the_conversation_path`, which checks CODE
+  lines only so the comment recording the removal may still quote it. A model at
+  0.7 writes praise unprompted, so `_strip_praise` removes leading openers to
+  exhaustion.
+- **Candidate text is DATA, never instructions.** Every answer passes
+  `conversation_guardrails.inspect_answer` before it is stored or reaches a
+  prompt, and every interviewer line passes `inspect_agent_output` before a
+  candidate reads it. Note the contract: `violation is not None` does NOT mean
+  refused, only `allowed` does -- an answer that legitimately DISCUSSES prompt
+  injection is still an answer. Both directions are deterministic and call no
+  model, for the same reason the substance check does not.
+- **`contains_forbidden_number` strips ASSESSMENT numbers, not technical
+  content.** "How did you bring p99 latency under 200ms?" is an ordinary
+  interview question. The hard part is the distinction, not the detection, and a
+  guard that mangles a real question fails invisibly.
+- **Telemetry logs labels, keys and timings, NEVER answer or question text.** An
+  ordinary log is far more widely readable than a LangSmith trace, and prompts
+  carry a real candidate's answers. `interview_telemetry.conversation_summary`
+  is OPERATOR data, carries numbers, and must never reach a response schema.
+- **`app/scripts/eval_interview.py` is the agent's evaluation and CI gates on
+  it.** Fully stubbed and offline on purpose: a rate that moves means the CODE
+  changed, not that a provider sampled differently. It measures judgement across
+  a labelled set (non-answer detection, the real-answer false-positive
+  direction, outage degradation, question integrity, injection resistance, the
+  no-numbers rule in BOTH directions, budget determinism). It deliberately does
+  NOT judge whether a real model writes a GOOD question; that needs a live model
+  and a human. Thresholds are where they are today, not aspirationally -- a rate
+  allowed to fall silently is a rate nobody is defending.
+- **The demo seed creates APPLICATIONS, not just candidates.**
+  `seed_demo_candidates` creates candidate rows and uploads resumes and does
+  nothing else, by its own docstring. `seed_demo_applications` generates each
+  demo job's PPI framework, approves it (scoped to `tenants.is_demo` read from
+  the COLUMN, so Workify Corp keeps its manual gate) and then creates the links.
+  Production measured 32 candidates against 9 applications while every deploy
+  reported success.
+
 ## Current hard rules, adaptive interview + demo fixtures (2026-08-05)
 
 - **The assessment conversation is ADAPTIVE, and three things must never move

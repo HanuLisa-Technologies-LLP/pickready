@@ -521,6 +521,20 @@ async def generate_framework(
                 ordinal=ordinal_by_category[row["category"]],
             )
         )
+    if not created:
+        # THE STAMP IS EVIDENCE, NOT INTENT. Nineteen live jobs carried
+        # `framework_generated_at` and had no competency rows, and because every
+        # health check in the product asked the stamp rather than the table, the
+        # failure was invisible for weeks -- the reminder task even filters on
+        # this column being set, so it specifically excluded the jobs that had
+        # failed. Leaving it NULL is what lets `reconcile_job_setup` and the
+        # setup screen both see that there is work still to do.
+        logger.warning(
+            "ppi.framework.produced_nothing job_id=%s tenant_id=%s", job.id, job.tenant_id
+        )
+        await session.flush()
+        return []
+
     session.add_all(created)
     job.framework_generated_at = datetime.now(timezone.utc)
     await session.flush()

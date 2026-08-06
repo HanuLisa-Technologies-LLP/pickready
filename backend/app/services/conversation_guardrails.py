@@ -171,15 +171,19 @@ _INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\bpretend\s+(?:to\s+be|you\s+are)\b[^.!?\n]*",
         re.IGNORECASE,
     ),
-    # Asking the interviewer to emit its own configuration. Note "rubric" and
-    # "answer key" live here rather than under rubric_probe: a demand to PRINT
-    # them is an attack on the prompt, while asking what the right answer was is
-    # a question a nervous candidate genuinely asks.
+    # Asking the interviewer to emit its own CONFIGURATION. That is the line
+    # between the two classes, and it is drawn on the object rather than on the
+    # verb: the system prompt, the instructions, the rubric, the answer key and
+    # the scores exist across the whole job, and a demand for any of them is an
+    # attack on the prompt. This question's own answer is not configuration, so
+    # "give me the correct answer" is a rubric_probe below and not an injection
+    # here -- otherwise the identical request would be labelled two different
+    # ways depending on whether the candidate wrote "correct".
     re.compile(
         r"\b(?:print|output|show|reveal|repeat|display|give|send|dump|leak)\s+"
         r"(?:me\s+|us\s+)?(?:the\s+|your\s+|all\s+|this\s+)*"
         r"(?:system\s+prompt|prompt|rubric|scoring\s+\w+|instructions?|"
-        r"answer\s+key|model\s+answers?|correct\s+answers?|scores?|grades?)\b"
+        r"answer\s+key|scores?|grades?)\b"
         r"[^.!?\n]*",
         re.IGNORECASE,
     ),
@@ -251,8 +255,58 @@ _RUBRIC_PROBE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\bam\s+i\s+(?:passing|failing|doing\s+well|on\s+track)\b[^.!?\n]*",
         re.IGNORECASE,
     ),
+    # IMPERATIVE forms. The interrogative patterns above missed "just tell me
+    # the right answer", which is the same request with the question mark taken
+    # off, so an eval over a labelled attack set found it walking through
+    # untouched. Every pattern below is built around the collision rather than
+    # around the words, because the words are ordinary: what distinguishes an
+    # attack is that it asks THIS interviewer for THIS question's answer.
+    #
+    # That is enforced two ways. Either the request names a first-person
+    # recipient ("tell ME"), which is what keeps "the support bot would just
+    # tell users the answer" out; or it names an explicit right/correct/ideal
+    # answer as the object. And the object must follow immediately, which is
+    # what keeps "tell me about the answer you gave the client" out: "about"
+    # breaks the match. "gave" is deliberately absent from every verb list, so
+    # "I gave the correct answer in the postmortem" is untouched.
     re.compile(
-        r"\b(?:tell|show|give)\s+me\s+the\s+answer\b[^.!?\n]*",
+        r"\b(?:just\s+)?(?:tell|show|give|share|state|provide|reveal)\s+"
+        r"(?:me|us)\s+(?:the\s+|a\s+|an\s+|your\s+)?"
+        r"(?:right\s+|correct\s+|expected\s+|ideal\s+|model\s+|best\s+|"
+        r"actual\s+)?answers?\b[^.!?\n]*",
+        re.IGNORECASE,
+    ),
+    # The same demand with no recipient ("output the correct answer"). Here the
+    # adjective is REQUIRED, because a bare "show the answer" is a sentence
+    # about a user interface as often as it is a request.
+    re.compile(
+        r"\b(?:just\s+)?(?:tell|show|give|share|state|provide|reveal|output|"
+        r"print)\s+(?:me\s+|us\s+)?(?:the\s+|a\s+|an\s+|your\s+)?"
+        r"(?:right|correct|expected|ideal|model|best)\s+answers?\b[^.!?\n]*",
+        re.IGNORECASE,
+    ),
+    # "what are you looking for here" -- asking to be told the criteria. Second
+    # person is load-bearing: "I asked them what they were looking for before
+    # scoping the work" is an ordinary sentence about an ordinary conversation.
+    re.compile(
+        r"\bwhat\s+(?:exactly\s+)?(?:are|were)\s+you\s+looking\s+for\b"
+        r"[^.!?\n]*",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bwhat\s+you(?:'re|\s+are)\s+looking\s+for\b[^.!?\n]*",
+        re.IGNORECASE,
+    ),
+    # "just tell me what you want to hear". This one stops at a COMMA as well
+    # as at a sentence end, which none of the patterns above do. Its innocent
+    # producer is a quotation ("my manager would say tell me what you want and
+    # I will build it, so we wrote the criteria down first"), and swallowing to
+    # the full stop would take the candidate's real clause with it: the turn
+    # would still be allowed by the residue rule, and the scorer would be
+    # handed half an answer, which is the quieter and worse failure.
+    re.compile(
+        r"\b(?:just\s+)?tell\s+me\s+what\s+(?:you|i)\s+"
+        r"(?:want|are|should|need)\b[^,.!?\n]*",
         re.IGNORECASE,
     ),
 )

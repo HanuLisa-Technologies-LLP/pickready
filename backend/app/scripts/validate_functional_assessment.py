@@ -6,7 +6,11 @@ from sqlalchemy import func, select, text
 
 from app.core.db import get_session_factory
 from app.core.security import AUDIENCE_ORG, create_access_token
-from app.models.assessment import FunctionalSkillsReport, ReportDimension, TechnicalQuestion
+from app.models.assessment import (
+    CandidateTechnicalQuestion,
+    FunctionalSkillsReport,
+    ReportDimension,
+)
 from app.models.candidate import Candidate, JobCandidateLink
 from app.models.enums import Role
 from app.models.job import Job
@@ -35,7 +39,11 @@ async def main() -> None:
             await session.execute(select(ReportDimension).where(ReportDimension.report_id == report.id))
         ).scalars().all()
         report_count = (await session.execute(select(func.count(FunctionalSkillsReport.id)))).scalar_one()
-        question_count = (await session.execute(select(func.count(TechnicalQuestion.id)))).scalar_one()
+        # Per CANDIDATE as of 2026-08-06, so this counts slots across every
+        # application rather than stored bank rows across every job.
+        question_count = (
+            await session.execute(select(func.count(CandidateTechnicalQuestion.id)))
+        ).scalar_one()
         mock_links = (
             await session.execute(
                 select(func.count(JobCandidateLink.id))

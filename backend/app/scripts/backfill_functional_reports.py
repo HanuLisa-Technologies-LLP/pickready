@@ -18,20 +18,17 @@ from app.models.assessment import (
     FunctionalSkillsReport,
     JobCompetency,
     ReportDimension,
-    TechnicalQuestion,
 )
 from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
-from app.services import ppi
+from app.services import ppi, technical_interview
 from app.services.application_validation import VALIDATION_FIELDS
 from app.services.functional_assessment import (
     MATCHING_DIMENSIONS,
     _fallback_remark_25,
     _fallback_remark_45,
-    _question_fallback,
     _stable_score,
     infer_grade_fallback,
-    technical_question_count,
 )
 
 MOCK_EMAIL_SUFFIX = "@candidates.pickready.test"
@@ -63,34 +60,11 @@ async def backfill(apply: bool) -> dict[str, int]:
             if not links:
                 continue
             counts["jobs"] += 1
-            questions = (
-                await session.execute(
-                    select(TechnicalQuestion).where(
-                        TechnicalQuestion.job_id == job.id,
-                        TechnicalQuestion.is_active.is_(True),
-                    ).order_by(TechnicalQuestion.ordinal)
-                )
-            ).scalars().all()
-            if not questions:
-                # Grade drives the count (spec §5): 20/17/15/12.
-                definitions = _question_fallback(
-                    job, technical_question_count(job.assessment_grade or infer_grade_fallback(job))
-                )
-                questions = [
-                    TechnicalQuestion(
-                        tenant_id=job.tenant_id,
-                        job_id=job.id,
-                        ordinal=index,
-                        skill=definition["skill"],
-                        prompt=definition["prompt"],
-                        rubric_json=definition["rubric"],
-                    )
-                    for index, definition in enumerate(definitions, 1)
-                ]
-                if apply:
-                    session.add_all(questions)
-                    await session.flush()
-                counts["questions"] += len(questions)
+            # Technical questions are per CANDIDATE as of 2026-08-06, so they
+            # are created per link below rather than once per job here. The
+            # per-job block that used to live at this point built preset
+            # `TechnicalQuestion` rows from a JD-derived fallback bank; there is
+            # no such bank any more.
 
             grade = job.assessment_grade or infer_grade_fallback(job)
             # A demo job is finalised outright: the review gate exists so a
@@ -192,14 +166,21 @@ async def backfill(apply: bool) -> dict[str, int]:
                         "remark": _fallback_remark_45(competency.name),
                         "ordinal": ordinal_by_category[competency.category],
                     })
-                for ordinal, question in enumerate(questions, 1):
+                # ONE row per DISTINCT skill, from the job's deterministic
+                # coverage plan. `report_dimensions` is UNIQUE on
+                # (report_id, category, name) and the plan deliberately probes
+                # each skill several times, so iterating the plan directly would
+                # raise IntegrityError. `dict.fromkeys` dedupes while keeping
+                # plan order, which is the order the real scorer emits.
+                plan = list(dict.fromkeys(technical_interview.skill_plan(job)))
+                for ordinal, skill in enumerate(plan, 1):
                     dimensions.append({
                         "category": "technical",
-                        "name": question.skill,
-                        "description": question.prompt,
-                        "score": _stable_score(f"mock:{link.id}:{question.skill}"),
+                        "name": skill,
+                        "description": None,
+                        "score": _stable_score(f"mock:{link.id}:{skill}"),
                         "required_level": None,
-                        "remark": _fallback_remark_25(question.skill),
+                        "remark": _fallback_remark_25(skill),
                         "ordinal": ordinal,
                     })
                 assessed = [row for row in dimensions if row["category"] != "matching"]

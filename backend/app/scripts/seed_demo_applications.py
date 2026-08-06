@@ -30,7 +30,7 @@ The same measurement found that 30 of the 33 demo jobs had ZERO competencies:
     Sarkar / Python Backend Developer    5 / 5 / 5   framework approved
     every other demo job                 0 / 0 / 0   NOT approved
 
-`pickready.generate_technical_questions` (which generates the framework too)
+`pickready.generate_ppi_framework`
 had evidently never run for them. So even with applications seeded, those jobs
 answer 409 to `select-candidates` and nobody can be invited. Seeding the
 applications alone would have produced a demo that still did not work, and a

@@ -1,4 +1,5 @@
 """Job setup review, the unified conversation, and the PPI Assessment Report."""
+import logging
 import time
 import uuid
 from datetime import datetime, timezone
@@ -19,10 +20,10 @@ from app.models.assessment import (
     AssessmentConversation,
     AssessmentMessage,
     CandidateQuestion,
+    CandidateTechnicalQuestion,
     FunctionalSkillsReport,
     JobCompetency,
     ReportDimension,
-    TechnicalQuestion,
 )
 from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
@@ -35,10 +36,9 @@ from app.schemas.assessments import (
     FrameworkOut,
     FunctionalReportOut,
     JobSetupOut,
-    QuestionBankOut,
     RadarChartOut,
-    TechnicalQuestionIn,
-    TechnicalQuestionOut,
+    TranscriptExchangeOut,
+    TranscriptOut,
 )
 from app.services import capabilities as caps
 from app.services import (
@@ -49,6 +49,7 @@ from app.services import (
     interview_telemetry,
     interviewer,
     ppi,
+    technical_interview,
 )
 from app.services.audit import audit
 from app.services.functional_assessment import (
@@ -61,6 +62,8 @@ from app.services.functional_assessment import (
 )
 from app.services.rating import GRADES, grade_for_percent
 from app.workers.celery_app import celery_app
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -103,21 +106,57 @@ async def _refresh_setup_status(session: AsyncSession, job: Job) -> None:
     await session.flush()
 
 
-def _setup_out(job: Job) -> JobSetupOut:
+def _setup_out(job: Job, *, framework_pending: bool = False) -> JobSetupOut:
+    approved = job.framework_approved_at is not None
     return JobSetupOut(
         job_id=job.id,
         status=job.assessment_status,
         grade=job.assessment_grade,
-        questions_approved=job.questions_approved_at is not None,
-        framework_approved=job.framework_approved_at is not None,
+        # Deprecated, and deliberately MIRRORS the framework rather than
+        # reporting `questions_approved_at`. That column tracked the technical
+        # bank, which no longer exists; a client still reading this field would
+        # otherwise see False forever on every job and hide the invite control
+        # on a job that is perfectly ready.
+        questions_approved=approved,
+        framework_approved=approved,
         ready_for_candidates=job.assessment_status == READY_FOR_CANDIDATES,
-        generated_at=job.questions_generated_at or job.framework_generated_at,
-        approved_at=(
-            max(job.questions_approved_at, job.framework_approved_at)
-            if job.questions_approved_at and job.framework_approved_at
-            else None
-        ),
+        generated_at=job.framework_generated_at,
+        approved_at=job.framework_approved_at,
+        framework_pending=framework_pending,
     )
+
+
+async def _framework_repair_pending(session: AsyncSession, job: Job) -> bool:
+    """Whether this job has no usable framework, enqueueing one if so.
+
+    WHY THIS EXISTS
+    ---------------
+    Framework generation was fire-and-forget at job creation and nothing ever
+    checked it landed. Measured on the live database 2026-08-06: 19 of 35 jobs
+    carried `framework_generated_at` and had ZERO competency rows. Three whole
+    tenants were in that state for every one of their jobs, which is what "the
+    portal does not work for other companies" actually was -- a recruiter opened
+    the setup screen, saw an empty list, had nothing to approve, and so no
+    candidate on any of those jobs could ever be assessed.
+
+    Worse, the stamp made it invisible. `remind_unapproved_technical_questions`
+    chases jobs where `framework_generated_at IS NOT NULL`, so a job that never
+    produced rows was excluded from the very reminder meant to catch it. A
+    timestamp was being treated as evidence that work happened, which is the
+    exact failure this repo has a standing rule about.
+
+    So the read path repairs. Enqueueing here is safe and bounded:
+    `ppi.generate_framework` is idempotent, and Celery deduplicates nothing but
+    the task is a no-op when rows already exist. The recruiter is told the state
+    (`framework_pending`) instead of being shown an empty list that looks like a
+    finished, empty framework.
+    """
+    rows = await ppi.load_framework(session, job.id)
+    if rows:
+        return False
+    celery_app.send_task("pickready.generate_ppi_framework", args=[str(job.id)])
+    logger.info("assessments.framework_repair_enqueued job_id=%s", job.id)
+    return True
 
 
 @router.get("/jobs/{job_id}/setup", response_model=JobSetupOut)
@@ -126,117 +165,31 @@ async def job_setup(
     user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> JobSetupOut:
-    return _setup_out(await _staff_job(session, user, job_id))
-
-
-# ── Technical question bank ──────────────────────────────────────────────────
-
-
-def _question_out(row: TechnicalQuestion) -> TechnicalQuestionOut:
-    return TechnicalQuestionOut(
-        id=row.id,
-        ordinal=row.ordinal,
-        skill=row.skill,
-        prompt=row.prompt,
-        rubric=row.rubric_json,
-        is_active=row.is_active,
-    )
-
-
-def _bank_out(job: Job, rows: list[TechnicalQuestion]) -> QuestionBankOut:
-    return QuestionBankOut(
-        job_id=job.id,
-        status=job.assessment_status,
-        grade=job.assessment_grade,
-        questions=[_question_out(row) for row in rows],
-        approved=job.questions_approved_at is not None,
-    )
-
-
-@router.get("/jobs/{job_id}/questions", response_model=QuestionBankOut)
-async def question_bank(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> QuestionBankOut:
     job = await _staff_job(session, user, job_id)
-    rows = (
-        await session.execute(
-            select(TechnicalQuestion).where(TechnicalQuestion.job_id == job.id).order_by(TechnicalQuestion.ordinal)
-        )
-    ).scalars().all()
-    return _bank_out(job, list(rows))
+    return _setup_out(job, framework_pending=await _framework_repair_pending(session, job))
 
 
-@router.post("/jobs/{job_id}/questions", response_model=TechnicalQuestionOut, status_code=status.HTTP_201_CREATED)
-async def add_question(
-    job_id: uuid.UUID,
-    body: TechnicalQuestionIn,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> TechnicalQuestionOut:
-    job = await _staff_job(session, user, job_id)
-    ordinal = (
-        await session.execute(select(func.coalesce(func.max(TechnicalQuestion.ordinal), 0)).where(TechnicalQuestion.job_id == job.id))
-    ).scalar_one() + 1
-    row = TechnicalQuestion(tenant_id=job.tenant_id, job_id=job.id, ordinal=ordinal, skill=body.skill, prompt=body.prompt, rubric_json=body.rubric)
-    session.add(row)
-    await session.flush()
-    return _question_out(row)
-
-
-@router.put("/jobs/{job_id}/questions/{question_id}", response_model=TechnicalQuestionOut)
-async def update_question(
-    job_id: uuid.UUID,
-    question_id: uuid.UUID,
-    body: TechnicalQuestionIn,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> TechnicalQuestionOut:
-    job = await _staff_job(session, user, job_id)
-    row = await session.get(TechnicalQuestion, question_id)
-    if row is None or row.job_id != job.id:
-        raise HTTPException(status_code=404, detail="Question not found")
-    row.skill, row.prompt, row.rubric_json = body.skill, body.prompt, body.rubric
-    row.updated_at = datetime.now(timezone.utc)
-    await session.flush()
-    return _question_out(row)
-
-
-@router.delete("/jobs/{job_id}/questions/{question_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_question(
-    job_id: uuid.UUID,
-    question_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> None:
-    job = await _staff_job(session, user, job_id)
-    row = await session.get(TechnicalQuestion, question_id)
-    if row is None or row.job_id != job.id:
-        raise HTTPException(status_code=404, detail="Question not found")
-    row.is_active = False
-    await session.flush()
-
-
-@router.post("/jobs/{job_id}/finalize", response_model=QuestionBankOut)
-async def finalize_questions(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> QuestionBankOut:
-    """Approve the technical bank. Half of the manual step (spec §5, §11)."""
-    job = await _staff_job(session, user, job_id)
-    rows = (
-        await session.execute(
-            select(TechnicalQuestion).where(TechnicalQuestion.job_id == job.id, TechnicalQuestion.is_active.is_(True)).order_by(TechnicalQuestion.ordinal)
-        )
-    ).scalars().all()
-    if not rows:
-        raise HTTPException(status_code=422, detail="At least one active technical question is required")
-    job.questions_approved_at = datetime.now(timezone.utc)
-    await _refresh_setup_status(session, job)
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id, action="technical_questions_finalized", target_type="job", target_id=job.id, metadata={"question_count": len(rows)})
-    return _bank_out(job, list(rows))
+# ── The technical question bank: REMOVED 2026-08-06 ──────────────────────────
+#
+# Five routes lived here: GET/POST/PUT/DELETE `/jobs/{id}/questions` and
+# `POST /jobs/{id}/finalize`. They were the Company Portal's preset technical
+# bank -- a per-job list of stored strings a company authored, edited and
+# finalised, which every applicant to that job then read verbatim.
+#
+# The feature is withdrawn. Technical questions are written per candidate,
+# during the conversation, from the JD, that candidate's resume and everything
+# said so far (`services/technical_interview`). There is nothing on a job to
+# create, edit, store or assign, so there is no route.
+#
+# They are DELETED rather than left returning 410. A route that answers is a
+# route a client keeps calling, and the frontend screens behind these went in
+# the same change; a 404 from an unregistered path is the honest answer to a
+# request for a feature that does not exist.
+#
+# `job.questions_approved_at` is still stamped on nothing and read by nothing.
+# It was already inert before this change (2026-08-04 stopped it gating
+# anything) and is deliberately not dropped here, so a rollback needs no data
+# restore.
 
 
 # ── The PPI framework (spec §6.2, §6.3) ──────────────────────────────────────
@@ -255,9 +208,25 @@ def _competency_out(row: JobCompetency) -> CompetencyOut:
     )
 
 
-async def _framework_out(session: AsyncSession, job: Job) -> FrameworkOut:
+#: Shown when a job has no framework at all and one has just been enqueued.
+#: Distinct from `framework_is_complete`'s reasons, which describe a framework
+#: that EXISTS and is short of a category minimum. An empty list means the
+#: generator has not landed, and telling a recruiter "add at least 5 Primary
+#: Skills" in that state sends them to hand-build 15 competencies the product
+#: was supposed to write for them.
+FRAMEWORK_PREPARING = (
+    "We are still preparing the evaluation criteria for this role. This "
+    "normally takes under a minute. Refresh the page shortly."
+)
+
+
+async def _framework_out(
+    session: AsyncSession, job: Job, *, pending: bool | None = None
+) -> FrameworkOut:
     rows = await ppi.load_framework(session, job.id)
     ok, reason = ppi.framework_is_complete(rows)
+    if not rows and pending:
+        reason = FRAMEWORK_PREPARING
     return FrameworkOut(
         job_id=job.id,
         status=job.assessment_status,
@@ -275,7 +244,11 @@ async def get_framework(
     session: AsyncSession = Depends(get_tenant_db),
 ) -> FrameworkOut:
     job = await _staff_job(session, user, job_id)
-    return await _framework_out(session, job)
+    # Self-healing read. See `_framework_repair_pending`: a job whose generator
+    # never landed used to render as an empty framework indistinguishable from a
+    # finished one, and nothing anywhere retried.
+    pending = await _framework_repair_pending(session, job)
+    return await _framework_out(session, job, pending=pending)
 
 
 def _reject_culture(name: str) -> None:
@@ -547,6 +520,172 @@ _IMMUTABLE_DETAIL = (
 )
 
 
+# ── The recruiter's view of what was asked and answered ──────────────────────
+#
+# A report states a grade. This is the evidence behind it, and until 2026-08-06
+# the only way to read it was a psql session against `assessment_messages`.
+#
+# WHY IT IS SHAPED THIS WAY, given it has to hold for a long time:
+#
+#   * PAIRED SERVER-SIDE. `assessment_messages` stores speakers in sequence,
+#     which is the right shape to write and the wrong shape to read. Pairing in
+#     the client means every client re-implements the follow-up and re-ask rules
+#     (a probe shares its parent's question_key and is NOT a new question), and
+#     they will drift. It is done once, here, by the module that owns those rules.
+#
+#   * PAGINATED FROM DAY ONE. A non-managerial interview is 45 base questions
+#     plus up to 15 probes: 120 messages, several of them long. Returning all of
+#     it grows without bound as grades get longer and is the kind of endpoint
+#     that works fine until the first CXO pipeline with 200 candidates.
+#
+#   * KEYED ON THE LINK, not on the report. The transcript exists the moment the
+#     candidate answers question one; the report does not exist until they
+#     finish. A recruiter chasing a stalled assessment needs the former, and
+#     hanging this off the report would make exactly that case unreachable.
+#
+#   * CRITERION RESOLVED, NOT LEAKED. Each exchange carries the skill or
+#     competency it was filed under, as a WORD. That is what makes a transcript
+#     readable as evidence. No score, no rubric and no required level crosses
+#     this boundary -- the rubric is internal scoring machinery, and the
+#     no-numbers rule covers this response like every other.
+
+#: Bounded so one request cannot ask for an entire tenant's interview history.
+#: 200 comfortably holds the longest single interview the product can produce
+#: (45 base + 15 probes), so the common case is one page.
+TRANSCRIPT_MAX_LIMIT = 200
+TRANSCRIPT_DEFAULT_LIMIT = 100
+
+
+async def _criterion_labels(
+    session: AsyncSession, link: JobCandidateLink
+) -> dict[str, str]:
+    """{question_key: human label} for every key this candidate could produce.
+
+    Both scorers key on a row id, so the raw transcript is a wall of UUIDs. This
+    resolves them in two queries rather than one per exchange -- the N+1 here
+    would be 60 round trips on an ordinary interview.
+    """
+    labels: dict[str, str] = {}
+    for row in await technical_interview.load_for_link(session, link.id):
+        labels[str(row.id)] = row.skill
+    competencies = (
+        await session.execute(
+            select(JobCompetency.id, JobCompetency.name).where(
+                JobCompetency.job_id == link.job_id
+            )
+        )
+    ).all()
+    for competency_id, name in competencies:
+        labels[str(competency_id)] = name
+    return labels
+
+
+@router.get("/transcripts/links/{link_id}", response_model=TranscriptOut)
+async def get_transcript(
+    link_id: uuid.UUID,
+    limit: int = TRANSCRIPT_DEFAULT_LIMIT,
+    offset: int = 0,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> TranscriptOut:
+    """Every question this candidate was asked and every answer they gave.
+
+    Gated on `view_review_screen`, the same capability that opens the report:
+    someone who may read the grade may read the evidence for it, and someone who
+    may not read the grade certainly may not read the candidate's raw answers.
+    """
+    limit = max(1, min(TRANSCRIPT_MAX_LIMIT, limit))
+    offset = max(0, offset)
+
+    link = await session.get(JobCandidateLink, link_id)
+    if link is None or link.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="Application not found")
+    conversation = (
+        await session.execute(
+            select(AssessmentConversation).where(
+                AssessmentConversation.job_candidate_link_id == link.id
+            )
+        )
+    ).scalars().first()
+    candidate_name = (
+        await session.execute(select(Candidate.full_name).where(Candidate.id == link.candidate_id))
+    ).scalar_one_or_none()
+    job_title = (
+        await session.execute(select(Job.title).where(Job.id == link.job_id))
+    ).scalar_one_or_none()
+
+    if conversation is None:
+        # Invited but never opened, or not invited at all. An empty transcript
+        # is the correct answer and a 404 is not: the recruiter asked a
+        # reasonable question about a real application and "nothing yet" is the
+        # true answer to it.
+        return TranscriptOut(
+            job_candidate_link_id=link.id,
+            candidate_name=candidate_name,
+            job_title=job_title,
+            status="not_started",
+            exchanges=[],
+            total=0,
+            limit=limit,
+            offset=offset,
+        )
+
+    messages = (
+        await session.execute(
+            select(AssessmentMessage)
+            .where(AssessmentMessage.conversation_id == conversation.id)
+            .order_by(AssessmentMessage.ordinal)
+        )
+    ).scalars().all()
+    labels = await _criterion_labels(session, link)
+
+    # Pair each agent line with the candidate line that answered it. Walking the
+    # ordinals rather than zipping alternate rows: the last question of an
+    # abandoned assessment has no answer, and zipping would silently pair it
+    # with someone else's.
+    exchanges: list[TranscriptExchangeOut] = []
+    seen_keys: set[str] = set()
+    pending: AssessmentMessage | None = None
+    for message in messages:
+        if message.speaker == "agent":
+            pending = message
+            continue
+        if pending is None:
+            continue
+        key = pending.question_key or ""
+        # A follow-up or re-ask reuses its parent's key by design, which is
+        # exactly how the scorers file it as more evidence for one question. It
+        # is therefore also how we recognise one here, with no extra column.
+        follow_up = key in seen_keys
+        if key:
+            seen_keys.add(key)
+        exchanges.append(
+            TranscriptExchangeOut(
+                ordinal=len(exchanges) + 1,
+                domain=pending.domain,
+                question=pending.content,
+                answer=message.content,
+                criterion=labels.get(key),
+                follow_up=follow_up,
+                asked_at=pending.created_at,
+            )
+        )
+        pending = None
+
+    total = len(exchanges)
+    return TranscriptOut(
+        job_candidate_link_id=link.id,
+        candidate_name=candidate_name,
+        job_title=job_title,
+        status=conversation.status,
+        completed_at=conversation.completed_at,
+        exchanges=exchanges[offset : offset + limit],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
 @router.patch("/reports/links/{link_id}", status_code=status.HTTP_403_FORBIDDEN)
 async def patch_report_forbidden(link_id: uuid.UUID) -> None:
     raise HTTPException(status_code=403, detail=_IMMUTABLE_DETAIL)
@@ -612,22 +751,21 @@ async def _candidate_link(session: AsyncSession, user: CurrentUser, link_id: uui
 async def _conversation_prompts(
     session: AsyncSession, job: Job, link: JobCandidateLink
 ) -> list[tuple[str, str, str]]:
-    """The single blended sequence: the job's technical bank + this candidate's
-    PPI questions, round-robin interleaved and conversationally connected.
+    """The single blended sequence: this candidate's technical slots + their PPI
+    questions, round-robin interleaved.
 
     The candidate never sees or interacts with two bots and is never told which
     engine scores which answer (spec §8).
 
-    `question_key` carries the TechnicalQuestion id and the JobCompetency id
-    respectively -- the two scorers key on exactly these.
+    `question_key` carries the CandidateTechnicalQuestion id and the
+    JobCompetency id respectively -- the two scorers key on exactly these.
+
+    CHANGED 2026-08-06: the technical half reads per-CANDIDATE rows rather than
+    the job's preset bank. The sequence length and the interleaving are
+    identical, and so is the key contract: a stable row id from the first turn,
+    so no scorer ever sees a key appear mid-conversation.
     """
-    technical = (
-        await session.execute(
-            select(TechnicalQuestion)
-            .where(TechnicalQuestion.job_id == job.id, TechnicalQuestion.is_active.is_(True))
-            .order_by(TechnicalQuestion.ordinal)
-        )
-    ).scalars().all()
+    technical = await technical_interview.load_for_link(session, link.id)
     candidate_questions = (
         await session.execute(
             select(CandidateQuestion)
@@ -659,18 +797,21 @@ async def _ensure_conversation_ready(
 ) -> None:
     """Transient prep, never a human gate.
 
-    The job has already passed the recruiter's review by the time this runs; if
-    the technical bank or this candidate's PPI questions are somehow missing,
-    generation is enqueued (Celery, never inline -- claude.md rule 4) and the
-    candidate is asked to retry in a moment.
+    The technical half is created INLINE and the PPI half is not, and the
+    asymmetry is deliberate rather than an inconsistency:
+
+      * `technical_interview.ensure_slots` writes rows from a PURE function of
+        the job's JD (`skill_plan`). No model call, no network, microseconds.
+        Deferring that to a worker would make a candidate wait and retry for
+        work the request could have finished before the response was written.
+        The QUESTIONS are still generated by a model, one at a time, later --
+        this only reserves the slots and their skills.
+
+      * PPI questions ARE a model call, per candidate, against the job's
+        framework, so they stay in Celery (claude.md rule 4) and the candidate
+        is asked to retry in a moment.
     """
-    has_technical = (
-        await session.execute(
-            select(func.count())
-            .select_from(TechnicalQuestion)
-            .where(TechnicalQuestion.job_id == job.id, TechnicalQuestion.is_active.is_(True))
-        )
-    ).scalar_one()
+    await technical_interview.ensure_slots(session, job, link)
     has_ppi = (
         await session.execute(
             select(func.count())
@@ -678,12 +819,9 @@ async def _ensure_conversation_ready(
             .where(CandidateQuestion.job_candidate_link_id == link.id)
         )
     ).scalar_one()
-    if has_technical and has_ppi:
+    if has_ppi:
         return
-    if not has_technical:
-        celery_app.send_task("pickready.generate_technical_questions", args=[str(job.id)])
-    if not has_ppi:
-        celery_app.send_task("pickready.generate_candidate_questions", args=[str(link.id)])
+    celery_app.send_task("pickready.generate_candidate_questions", args=[str(link.id)])
     raise HTTPException(
         status_code=409,
         detail="We are preparing your assessment. Please try again in a moment.",
@@ -730,11 +868,34 @@ async def start_conversation(
             )
     prompts = await _conversation_prompts(session, job, link)
     index = min(conversation.next_question_index, len(prompts))
+
+    # THE FIRST QUESTION IS WRITTEN HERE, and it has to be.
+    #
+    # Every other base question is written on the request that answers its
+    # predecessor, so by the time it is shown `delivered_prompt` is populated.
+    # Question one has no predecessor. Before 2026-08-06 that did not matter --
+    # the first question was a preset technical string, which is what a preset
+    # bank is for -- but the blend puts a technical slot first, and a technical
+    # slot now starts life holding the deterministic fallback probe. Without
+    # this every candidate's opening question would be the generic
+    # "Describe a demanding situation where you applied X", which is precisely
+    # the scripted feel the whole change exists to remove.
+    #
+    # Guarded on `delivered_prompt is None` so re-opening a part-finished
+    # assessment does not rewrite the question the candidate is already looking
+    # at, and skipped entirely when a probe is outstanding.
+    if (
+        conversation.pending_prompt is None
+        and conversation.delivered_prompt is None
+        and index < len(prompts)
+    ):
+        await _write_next_question(session, job, link, conversation, prompts, index)
+
     # A pending follow-up outranks the next base question: the candidate left
     # mid-probe and must come back to the probe, not skip past it.
-    # `delivered_prompt` is the wording composed for this base question on the
-    # previous turn; it is NULL on the first question and whenever a rewrite was
-    # unavailable, and the stored text is the correct fallback in both cases.
+    # `delivered_prompt` is the wording written for this base question; it is
+    # NULL only when generation was unavailable, and the stored text is the
+    # correct fallback then.
     prompt = conversation.pending_prompt or (
         (conversation.delivered_prompt or prompts[index][2])
         if index < len(prompts)
@@ -749,65 +910,115 @@ async def start_conversation(
 
 
 
-async def _turn_context(
+async def _resume_excerpt(session: AsyncSession, link: JobCandidateLink) -> str:
+    """This candidate's resume text, or empty.
+
+    Read per turn rather than cached on the conversation: a candidate may
+    replace the resume on their profile, and the questions should be grounded in
+    what the application actually carries now.
+    """
+    if link.profile_id is None:
+        return ""
+    return (
+        await session.execute(
+            select(Profile.resume_text).where(Profile.id == link.profile_id)
+        )
+    ).scalar_one_or_none() or ""
+
+
+async def _write_next_question(
     session: AsyncSession,
     job: Job,
     link: JobCandidateLink,
-    domain: str,
-    question_key: str,
-) -> dict[str, str]:
-    """Everything the interviewer needs to write the next question.
+    conversation: AssessmentConversation,
+    prompts: list[tuple[str, str, str]],
+    index: int,
+) -> None:
+    """Write the base question at `index` for THIS candidate at THIS point, and
+    stash it on `conversation.delivered_prompt`.
 
-    The JD and the resume are the two things that make a question specific to
-    this role and this person; the competency is what makes the answer
-    gradeable. Without all three the agent can only recite.
+    BOTH HALVES ARE NOW GENERATED, BY DIFFERENT AGENTS, FOR DIFFERENT REASONS
+    -------------------------------------------------------------------------
+      ppi        `interviewer.compose_next_question` in MODE_GENERATE. A PPI
+                 answer is scored against its COMPETENCY across every answer
+                 filed under it, so the question may be written fresh.
 
-    `mode` is decided by how the answer will be SCORED, never by preference:
+      technical  `technical_interview.write_question`. Until 2026-08-06 this was
+                 MODE_REWORD -- the phrasing could move but the substance could
+                 not -- because the answer was scored against a preset question's
+                 stored rubric, and a fresh question would have been graded
+                 against a rubric for a question nobody was asked. That objection
+                 is answered by generating the RUBRIC WITH THE QUESTION and
+                 persisting both before the candidate reads either, which is
+                 exactly what `write_question` does. The rubric now always
+                 belongs to the question actually asked.
 
-      * ppi        -> MODE_GENERATE. Scored against the COMPETENCY across every
-                      answer filed under it, so the question may be written
-                      fresh from the JD, the resume and the transcript.
-      * technical  -> MODE_REWORD. Scored against THAT QUESTION'S own stored
-                      prompt and rubric_json, so generating a fresh one would
-                      grade the answer against a rubric written for a question
-                      nobody was asked.
-
-    Read per turn rather than cached on the conversation because a recruiter may
-    edit the JD or a competency mid-pipeline, and the next question should
-    reflect what the job says now.
+    Both paths degrade to the stored text, which is always a correct thing to
+    ask: for PPI it is the question pre-generated for this competency from this
+    resume, and for technical it is the deterministic probe `ensure_slots` wrote
+    from the job's own skill plan.
     """
-    resume_excerpt = ""
-    if link.profile_id is not None:
-        resume_excerpt = (
-            await session.execute(
-                select(Profile.resume_text).where(Profile.id == link.profile_id)
+    if index >= len(prompts):
+        return
+    domain, key, stored = prompts[index]
+    # Read AFTER the caller's flush so the turn just written is part of the
+    # memory this question is conditioned on. Reading a stale transcript would
+    # have the interviewer talk as though the last answer had not been given.
+    memory = await _transcript_rows(session, conversation.id)
+    asked_before = [row["content"] for row in memory if row.get("speaker") == "agent"]
+    resume = await _resume_excerpt(session, link)
+
+    if domain == "technical":
+        row = None
+        try:
+            row = await session.get(CandidateTechnicalQuestion, uuid.UUID(str(key)))
+        except (ValueError, TypeError):
+            row = None
+        if row is None:
+            # The slot vanished under us, which should be impossible. Showing
+            # the stored text is the honest degradation; refusing the turn would
+            # cost the candidate their assessment over a bookkeeping fault.
+            logger.info("assessments.technical_slot_missing key=%s", key)
+            written = stored
+        else:
+            result = await technical_interview.write_question(
+                session=session,
+                job=job,
+                row=row,
+                resume_excerpt=resume,
+                transcript=memory,
+                asked_before=asked_before,
             )
-        ).scalar_one_or_none() or ""
-
-    if domain != "ppi":
-        return {
-            "mode": interviewer.MODE_REWORD,
-            "competency": "",
-            "competency_hint": "",
-            "jd_excerpt": job.jd_markdown or "",
-            "resume_excerpt": resume_excerpt,
-        }
-
-    # `question_key` carries the JobCompetency id for a PPI question, which is
-    # exactly the criterion this turn has to probe and the key its answer will
-    # be filed under.
-    competency = None
-    try:
-        competency = await session.get(JobCompetency, uuid.UUID(str(question_key)))
-    except (ValueError, TypeError):
+            written = result.value["question"]
+    else:
+        # `key` carries the JobCompetency id for a PPI question: the criterion
+        # this turn must probe and the key its answer will be filed under.
         competency = None
-    return {
-        "mode": interviewer.MODE_GENERATE if competency else interviewer.MODE_REWORD,
-        "competency": competency.name if competency else "",
-        "competency_hint": (competency.description or "") if competency else "",
-        "jd_excerpt": job.jd_markdown or "",
-        "resume_excerpt": resume_excerpt,
-    }
+        try:
+            competency = await session.get(JobCompetency, uuid.UUID(str(key)))
+        except (ValueError, TypeError):
+            competency = None
+        written = await interviewer.compose_next_question(
+            session=session,
+            question=stored,
+            transcript=memory,
+            mode=(
+                interviewer.MODE_GENERATE if competency else interviewer.MODE_REWORD
+            ),
+            competency=competency.name if competency else "",
+            competency_hint=(competency.description or "") if competency else "",
+            jd_excerpt=job.jd_markdown or "",
+            resume_excerpt=resume,
+            asked_before=asked_before,
+        )
+
+    # OUTBOUND GUARD, on the way IN to storage rather than on the way out, so
+    # the transcript records exactly the text the candidate will read. A
+    # generated question is written by a model that has just been shown a JD, a
+    # resume and a criterion -- precisely the context from which a grade or a
+    # required level could leak into interviewer speech.
+    conversation.delivered_prompt = conversation_guardrails.inspect_agent_output(written)
+    await session.flush()
 
 
 async def _transcript_rows(
@@ -1030,36 +1241,20 @@ async def respond(
     # spend a second sequential model call on a request a candidate is waiting
     # on. Also skipped once the questions run out, for the same reason.
     if not conversation.pending_prompt and next_index < len(prompts):
-        next_domain, next_key, next_stored = prompts[next_index]
-        # Re-read AFTER the flush above so the turn just written is part of the
-        # memory this question is conditioned on. Reading the stale list would
-        # have the interviewer talk as though the last answer had not been given.
-        memory = await _transcript_rows(session, conversation.id)
-        context = await _turn_context(session, job, link, next_domain, next_key)
-        written = await interviewer.compose_next_question(
-            session=session,
-            question=next_stored,
-            transcript=memory,
-            mode=context["mode"],
-            competency=context["competency"],
-            competency_hint=context["competency_hint"],
-            jd_excerpt=context["jd_excerpt"],
-            resume_excerpt=context["resume_excerpt"],
-            asked_before=[
-                row["content"] for row in memory if row.get("speaker") == "agent"
-            ],
+        await _write_next_question(
+            session, job, link, conversation, prompts, next_index
         )
-        # OUTBOUND GUARD, on the way in to storage rather than on the way out,
-        # so the transcript records exactly the text the candidate will read.
-        # A generated question is written by a model that has just been shown a
-        # JD, a resume and a competency, which is precisely the context from
-        # which a grade or a required level could leak into interviewer speech.
-        conversation.delivered_prompt = conversation_guardrails.inspect_agent_output(written)
-        await session.flush()
 
     # A pending follow-up is what the candidate sees next. The progress label
     # deliberately keeps counting BASE questions, so a probe does not make the
     # interview look longer than it is or push the count past its own total.
+    #
+    # `prompts[next_index][2]` is deliberately re-read from the ORIGINAL list
+    # rather than refetched: for a technical slot `write_question` has just
+    # overwritten the row's prompt in place, and the delivered text is what the
+    # candidate reads anyway. This branch is only reached when delivery was
+    # unavailable, and then the pre-generation text is exactly the right thing
+    # to show.
     next_prompt = conversation.pending_prompt or (
         (conversation.delivered_prompt or prompts[next_index][2])
         if next_index < len(prompts)

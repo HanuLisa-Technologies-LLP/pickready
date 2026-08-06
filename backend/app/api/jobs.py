@@ -391,10 +391,16 @@ async def create_job(
     if body.publish:
         # Databank matching runs the moment a job is published (FR-4.2), async.
         celery_app.send_task("pickready.run_matching", args=[str(job.id)])
-    # The technical bank is generated from the JD as soon as the JD exists;
-    # it does not wait for publish, so an unpublished draft is never the thing
+    # The PPI framework is generated from the JD as soon as the JD exists; it
+    # does not wait for publish, so an unpublished draft is never the thing
     # holding up the assessment.
-    celery_app.send_task("pickready.generate_technical_questions", args=[str(job.id)])
+    #
+    # This enqueue is now BACKED UP by `pickready.reconcile_job_setup` on the
+    # beat schedule. It used to be the only attempt the job ever got, and when
+    # it failed -- a broker hiccup, an exhausted retry budget, an exception in
+    # the technical-bank half that used to share this task -- the job was
+    # silently unusable forever. Nineteen live jobs were in exactly that state.
+    celery_app.send_task("pickready.generate_ppi_framework", args=[str(job.id)])
     # Load the GENERATED posting-window columns before serialising. The mapper
     # asks for them via RETURNING (models/job.eager_defaults), but a direct
     # publish re-stamps `posting_start_date` after the INSERT, which expires

@@ -39,6 +39,7 @@ import { PostingWindowBanner } from "@/components/posting-window";
 import { EmailCompositionModal } from "@/components/email-composition-modal";
 import { JobSetupReview } from "@/components/job-setup-review";
 import { PPIReportModal } from "@/components/ppi-report-modal";
+import { AssessmentTranscriptModal } from "@/components/assessment-transcript";
 import { ResumeViewer } from "@/components/resume-viewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -188,6 +189,7 @@ export default function OrgJobDetailPage() {
   const [reloadKey, setReloadKey] = React.useState(0);
 
   const [reportRow, setReportRow] = React.useState<RankedCandidate | null>(null);
+  const [transcriptRow, setTranscriptRow] = React.useState<RankedCandidate | null>(null);
   const [resumeRow, setResumeRow] = React.useState<RankedCandidate | null>(null);
   const [emailRows, setEmailRows] = React.useState<RankedCandidate[]>([]);
   const [selectedRows, setSelectedRows] = React.useState<RankedCandidate[]>([]);
@@ -717,8 +719,10 @@ export default function OrgJobDetailPage() {
       ) : null}
 
       {/* The one manual step (spec §11): the PPI framework is reviewed and
-          saved here before any candidate can be invited. The technical
-          questions are shown for editing but gate nothing. */}
+          saved here before any candidate can be invited. Technical questions
+          are no longer shown -- they are written per candidate during the
+          assessment, and what each person was actually asked is on their own
+          row in the table below. */}
       {job ? <JobSetupReview jobId={jobId} /> : null}
 
       {job ? <PipelineFunnel jobId={jobId} reloadKey={reloadKey} /> : null}
@@ -728,6 +732,7 @@ export default function OrgJobDetailPage() {
         jobId={jobId}
         reloadKey={reloadKey}
         onOpenReport={setReportRow}
+        onOpenTranscript={setTranscriptRow}
         onOpenResume={setResumeRow}
         onEmail={canEmail ? setEmailRows : undefined}
         onSelectionChange={setSelectedRows}
@@ -741,6 +746,14 @@ export default function OrgJobDetailPage() {
         onOpenChange={(open) => !open && setReportRow(null)}
         linkId={reportRow?.link_id ?? null}
         candidateName={reportRow?.full_name ?? ""}
+        jobTitle={job?.title}
+      />
+
+      <AssessmentTranscriptModal
+        open={transcriptRow !== null}
+        onOpenChange={(open) => !open && setTranscriptRow(null)}
+        linkId={transcriptRow?.link_id ?? null}
+        candidateName={transcriptRow?.full_name ?? ""}
         jobTitle={job?.title}
       />
 

@@ -100,33 +100,23 @@ interface Framework {
   blocking_reason: string | null;
 }
 
-interface TechnicalQuestion {
-  id: string;
-  ordinal: number;
-  skill: string;
-  prompt: string;
-  rubric: Record<string, string>;
-  is_active: boolean;
-}
-
-interface QuestionBank {
-  job_id: string;
-  status: string;
-  grade: string | null;
-  questions: TechnicalQuestion[];
-  approved: boolean;
-}
-
 interface Setup {
   job_id: string;
   status: string;
   grade: string | null;
   // `questions_approved` is still returned by the API and is deliberately NOT
-  // declared here. It is stamped by the surviving finalize route and read by
-  // nothing; leaving it off the type is what stops it being wired back into a
-  // blocking message by someone reading the payload rather than this file.
+  // declared here. It now just mirrors `framework_approved`, and leaving it off
+  // the type is what stops it being wired back into a blocking message by
+  // someone reading the payload rather than this file.
   framework_approved: boolean;
   ready_for_candidates: boolean;
+  /**
+   * The framework has not been generated yet and the backend has just enqueued
+   * one. Distinct from "generated and short of a minimum": 19 of 35 live jobs
+   * were in this state with nothing retrying, and the screen rendered an empty
+   * list indistinguishable from a finished, empty framework.
+   */
+  framework_pending?: boolean;
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -159,9 +149,14 @@ function SetupStatus({ setup }: { setup: Setup }) {
       <p className="text-sm font-semibold">Framework pending review</p>
       <p className="mt-1 text-xs">
         No candidate can be invited to this job until you save the PPI framework
-        below. Applications still arrive in the meantime, and the technical
-        questions are already live.
+        below. Applications still arrive in the meantime.
       </p>
+      {setup.framework_pending ? (
+        <p className="mt-2 text-xs">
+          We are still writing the criteria for this role. This normally takes
+          under a minute; refresh the page shortly.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -366,37 +361,30 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
   const { toast } = useToast();
   const [setup, setSetup] = React.useState<Setup | null>(null);
   const [framework, setFramework] = React.useState<Framework | null>(null);
-  const [bank, setBank] = React.useState<QuestionBank | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
 
   /**
-   * The three halves are fetched INDEPENDENTLY.
+   * The two halves are fetched INDEPENDENTLY.
    *
-   * A single Promise.all here meant that one rejection took all three down: a
-   * job whose framework or question bank has not been generated yet answers
-   * 404, which is the NORMAL state for a job created moments ago, and the whole
-   * component then had null state and returned null. The entire assessment
-   * surface disappeared from the job page, which reads to a customer as
-   * "assessments are not available" rather than "not generated yet". Each part
-   * now degrades to absent on its own and the cards below say so in place.
+   * A single Promise.all here meant that one rejection took the other down: a
+   * job whose framework has not been generated yet answers 404, which is the
+   * NORMAL state for a job created moments ago, and the whole component then
+   * had null state and returned null. The entire assessment surface disappeared
+   * from the job page, which reads to a customer as "assessments are not
+   * available" rather than "not generated yet". Each part now degrades to
+   * absent on its own and the card below says so in place.
    */
   const load = React.useCallback(async () => {
-    const [setupRes, frameworkRes, bankRes] = await Promise.allSettled([
+    const [setupRes, frameworkRes] = await Promise.allSettled([
       apiGet<Setup>(`${BASE}/${jobId}/setup`),
       apiGet<Framework>(`${BASE}/${jobId}/framework`),
-      apiGet<QuestionBank>(`${BASE}/${jobId}/questions`),
     ]);
     setSetup(setupRes.status === "fulfilled" ? setupRes.value : null);
     setFramework(frameworkRes.status === "fulfilled" ? frameworkRes.value : null);
-    setBank(bankRes.status === "fulfilled" ? bankRes.value : null);
     // Only a total failure is worth interrupting the recruiter for. One missing
     // half is explained in place by the card it belongs to.
-    if (
-      setupRes.status === "rejected" &&
-      frameworkRes.status === "rejected" &&
-      bankRes.status === "rejected"
-    ) {
+    if (setupRes.status === "rejected" && frameworkRes.status === "rejected") {
       toast({
         title: "Couldn't load the assessment setup",
         description: errorMessage(
@@ -444,16 +432,15 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
   // Nothing came back at all. Rendering null here is what made the one manual
   // step in the pipeline look like a feature the customer had not been given;
   // say what the state is and offer a way to look again.
-  if (!setup && !framework && !bank) {
+  if (!setup && !framework) {
     return (
       <Card>
         <CardHeader>
           <CardTitle>Assessment setup</CardTitle>
           <CardDescription>
-            The PPI framework and the technical questions for this job are not
-            available yet. Both are generated from the job description shortly
-            after a job is created. The framework has to be saved before any
-            candidate can be invited; the questions go live on their own.
+            The PPI framework for this job is not available yet. It is generated
+            from the job description shortly after a job is created, and has to
+            be saved before any candidate can be invited.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -472,9 +459,6 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
   }
 
   const frozen = Boolean(framework?.approved);
-  const activeQuestions = (bank?.questions ?? []).filter(
-    (question) => question.is_active
-  );
 
   return (
     <div className="space-y-5">
@@ -602,157 +586,20 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
         </CardContent>
       </Card>
 
-      {/* ── Technical question bank ───────────────────────────────────────── */}
-      <Card>
-        <CardHeader>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <CardTitle>Technical questions</CardTitle>
-              <CardDescription>
-                Generated once for this job from its required skills. Every candidate answers
-                the same set, which is what keeps their technical scores comparable. Each
-                question is scored against its own rubric, never open-ended judgement.
-              </CardDescription>
-            </div>
-            {/* No "Finalised" badge. It rendered from `bank.approved`, which
-                only a route nothing calls any more can set, so on every job
-                created since 2026-08-04 it was permanently absent and implied
-                an approval step that no longer exists. The questions' real
-                state is stated in words below: they are live. */}
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {activeQuestions.length === 0 ? (
-            <p className="text-sm">
-              {bank
-                ? "These questions are still being prepared. They are written from the job's required skills, and appear here a few moments after the job is created. Refresh to check."
-                : "The question bank for this job is not available yet. It is written from the job's required skills shortly after the job is created. Refresh to check."}
-            </p>
-          ) : (
-            <ol className="space-y-2">
-              {activeQuestions.map((question) => (
-                <QuestionRow
-                  key={question.id}
-                  jobId={jobId}
-                  question={question}
-                  busy={busy}
-                  mutate={mutate}
-                />
-              ))}
-            </ol>
-          )}
-          {/* The "Finalise questions" button was REMOVED on 2026-08-04 (client
-              decision). Technical questions are usable the moment they are
-              generated, so there is nothing here for a recruiter to unblock.
-              Editing and removing individual questions above still works and
-              still takes effect immediately.
+      {/* The Technical questions card was REMOVED on 2026-08-06 (client
+          decision, and the routes behind it went in the same change).
 
-              The PPI framework's Save step is a different control and is
-              deliberately still present: the framework is the fixed criteria
-              every candidate on this job is graded against, and a human
-              confirming it is what makes two reports comparable. */}
-          {activeQuestions.length > 0 ? (
-            <p className="text-sm">
-              These questions are live. Any edit you make here applies to
-              candidates who have not answered them yet.
-            </p>
-          ) : null}
-        </CardContent>
-      </Card>
+          A company can no longer create, edit, store or assign technical
+          questions. They are written per candidate DURING the assessment,
+          from the job description, that candidate's resume and the live
+          transcript, and each one carries the rubric generated with it.
+
+          Nothing replaces the card. A screen listing questions that do not
+          exist yet -- because they are written when they are asked, and
+          differ per candidate -- would be a screen that is empty for every
+          job forever. What a recruiter can now see instead is what each
+          candidate was ACTUALLY asked, on the candidate's own row: see
+          `components/assessment-transcript.tsx`. */}
     </div>
-  );
-}
-
-function QuestionRow({
-  jobId,
-  question,
-  busy,
-  mutate,
-}: {
-  jobId: string;
-  question: TechnicalQuestion;
-  busy: boolean;
-  mutate: (action: () => Promise<unknown>, failureTitle: string) => Promise<boolean>;
-}) {
-  const [editing, setEditing] = React.useState(false);
-  const [skill, setSkill] = React.useState(question.skill);
-  const [prompt, setPrompt] = React.useState(question.prompt);
-
-  React.useEffect(() => {
-    setSkill(question.skill);
-    setPrompt(question.prompt);
-  }, [question]);
-
-  return (
-    <li className="rounded-md border p-3">
-      {editing ? (
-        <div className="space-y-2">
-          <Input value={skill} onChange={(e) => setSkill(e.target.value)} placeholder="Skill" />
-          <Textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            rows={3}
-            placeholder="Question"
-          />
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              disabled={busy || !skill.trim() || prompt.trim().length < 10}
-              onClick={async () => {
-                const ok = await mutate(
-                  () =>
-                    apiPut(`${BASE}/${jobId}/questions/${question.id}`, {
-                      skill: skill.trim(),
-                      prompt: prompt.trim(),
-                      // The rubric travels unchanged: it is what makes the
-                      // score defensible when a client asks why a candidate was
-                      // rated a certain way, and it is not editable here.
-                      rubric: question.rubric,
-                    }),
-                  "Couldn't save that question"
-                );
-                if (ok) setEditing(false);
-              }}
-            >
-              Save
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
-              Cancel
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-wide">{question.skill}</p>
-            <p className="mt-1 text-sm">{question.prompt}</p>
-          </div>
-          <div className="flex shrink-0 gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setEditing(true)}
-              aria-label={`Edit question ${question.ordinal}`}
-            >
-              <Pencil className="h-3.5 w-3.5" aria-hidden />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={busy}
-              onClick={() =>
-                void mutate(
-                  () => apiDelete(`${BASE}/${jobId}/questions/${question.id}`),
-                  "Couldn't remove that question"
-                )
-              }
-              aria-label={`Remove question ${question.ordinal}`}
-            >
-              <Trash2 className="h-3.5 w-3.5" aria-hidden />
-            </Button>
-          </div>
-        </div>
-      )}
-    </li>
   );
 }

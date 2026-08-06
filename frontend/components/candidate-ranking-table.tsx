@@ -29,7 +29,14 @@
 //     candidate appear on two pages, or on none, as scores change.
 
 import * as React from "react";
-import { ChevronLeft, ChevronRight, FileText, Mail, MessageSquareText } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  Mail,
+  MessageSquareText,
+  MessagesSquare,
+} from "lucide-react";
 
 import { apiGet, apiPost } from "@/lib/api";
 import type {
@@ -63,6 +70,7 @@ export interface CandidateRankingTableHandle {
 export function CandidateRankingTable({
   jobId,
   onOpenReport,
+  onOpenTranscript,
   onOpenResume,
   onEmail,
   onSelectionChange,
@@ -71,6 +79,13 @@ export function CandidateRankingTable({
 }: {
   jobId: string;
   onOpenReport: (row: RankedCandidate) => void;
+  /**
+   * Open the question-and-answer transcript. Separate from the report on
+   * purpose, and available EARLIER than it: the transcript exists the moment
+   * the candidate answers question one, while the report does not exist until
+   * they finish. A recruiter chasing a stalled assessment needs the former.
+   */
+  onOpenTranscript: (row: RankedCandidate) => void;
   onOpenResume: (row: RankedCandidate) => void;
   /** Omit to hide the email action (caller lacks send_outreach). */
   onEmail?: (rows: RankedCandidate[]) => void;
@@ -268,6 +283,7 @@ export function CandidateRankingTable({
               <TableHead className="w-[110px]">Resume</TableHead>
               <TableHead className="w-[180px]">AI Rating &amp; Report</TableHead>
               <TableHead className="w-[110px]">PPI Report</TableHead>
+              <TableHead className="w-[110px]">Q&amp;A</TableHead>
               {canDecide ? <TableHead className="w-[130px]">Team review</TableHead> : null}
               {canDecide ? <TableHead className="w-[130px]">Decision</TableHead> : null}
             </TableRow>
@@ -362,6 +378,24 @@ export function CandidateRankingTable({
                     >
                       <FileText className="h-3.5 w-3.5" />
                       {row.has_report ? "Open" : "Pending"}
+                    </Button>
+                  </TableCell>
+                  <TableCell className="pt-4">
+                    {/* Deliberately NOT disabled on `has_report`. The
+                        transcript is the evidence, not the conclusion: it
+                        exists as soon as the candidate answers anything, and
+                        the case a recruiter most wants it for is the assessment
+                        that stalled halfway and therefore has no report. The
+                        modal states "not opened yet" when there is nothing. */}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1"
+                      title="See the questions this candidate was asked and how they answered"
+                      onClick={() => onOpenTranscript(row)}
+                    >
+                      <MessagesSquare className="h-3.5 w-3.5" />
+                      View
                     </Button>
                   </TableCell>
                   {canDecide ? (

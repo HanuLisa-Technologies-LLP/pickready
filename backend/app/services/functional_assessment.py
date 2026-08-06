@@ -4,8 +4,17 @@ TWO scoring processes fan out in parallel from one unified transcript and join
 at report synthesis (spec §9). Both consume the ACTUAL candidate answers, keyed
 by the `question_key` stamped on every message:
 
-  technical  -> str(TechnicalQuestion.id)      scored against that question's rubric
-  ppi        -> str(JobCompetency.id)          scored against the job's framework
+  technical  -> str(CandidateTechnicalQuestion.id)  against that question's own
+                                                    rubric
+  ppi        -> str(JobCompetency.id)               against the job's framework
+
+CHANGED 2026-08-06: the technical half is no longer a per-job preset bank a
+company authored and edited. Each question is written for THIS candidate at the
+moment it is asked, together with its rubric, by
+`services/technical_interview`. Scoring is unchanged in shape -- an answer is
+graded against the rubric belonging to the question that produced it -- and is
+now unchanged in fact as well, because a rubric can no longer be left behind by
+an edit to a stored prompt.
 
 There is no third scorer. Validation stopped being an agent on 2026-07-30: it is
 six mandatory fields on the application form, and it flows from
@@ -45,14 +54,14 @@ from app.models.assessment import (
     AssessmentConversation,
     AssessmentMessage,
     CandidateQuestion,
+    CandidateTechnicalQuestion,
     FunctionalSkillsReport,
     JobCompetency,
     ReportDimension,
-    TechnicalQuestion,
 )
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
-from app.services import answer_quality, llm_router, ppi
+from app.services import answer_quality, llm_router, ppi, technical_interview
 from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELDS
 from app.services.rating import (
     GRADES,
@@ -75,7 +84,6 @@ __all__ = [
     "assessment_graph",
     "band_index_for",
     "build_radar_charts",
-    "generate_question_bank",
     "infer_grade",
     "infer_grade_fallback",
     "rating_label",
@@ -84,13 +92,13 @@ __all__ = [
     "word_count",
 ]
 
-# Technical question count per grade (spec §5). Unchanged by the PPI release.
-TECHNICAL_QUESTION_COUNTS: dict[str, int] = {
-    "non_managerial": 20,
-    "managerial": 17,
-    "leadership": 15,
-    "cxo": 12,
-}
+# Technical question count per grade (spec §5). Unchanged by the PPI release and
+# unchanged by the 2026-08-06 move to per-candidate questions: the questions are
+# written differently, not fewer of them. Re-exported from the module that owns
+# the technical half so the table has ONE definition -- two copies of a
+# per-grade mapping is exactly how the product's old five-label rating scales
+# drifted apart.
+TECHNICAL_QUESTION_COUNTS: dict[str, int] = technical_interview.TECHNICAL_QUESTION_COUNTS
 
 #: Re-exported so callers have one import for both halves of the conversation.
 PPI_QUESTION_COUNTS = ppi.PPI_QUESTION_COUNTS
@@ -153,7 +161,7 @@ RADAR_BANDS: tuple[str, ...] = GRADES
 
 
 def technical_question_count(grade: str | None) -> int:
-    return TECHNICAL_QUESTION_COUNTS.get(grade or "", TECHNICAL_QUESTION_COUNTS["non_managerial"])
+    return technical_interview.technical_question_count(grade)
 
 
 def rating_label(score: int | float | None) -> str | None:
@@ -314,252 +322,18 @@ async def infer_grade(job: Job, session: AsyncSession) -> str:
         return infer_grade_fallback(job)
 
 
-# ── Technical question bank ─────────────────────────────────────────────────
-
-_DEFAULT_RUBRIC = {
-    "0_39": "No relevant example or materially incorrect approach.",
-    "40_59": "Partial knowledge with limited practical evidence.",
-    "60_74": "Sound practical approach with a credible example.",
-    "75_89": "Strong depth, trade-offs, and measurable outcomes.",
-    "90_100": "Exceptional depth, judgement, outcomes, and transferable insight.",
-}
-
-_FALLBACK_ANGLES = (
-    "Describe a demanding situation where you applied {skill}. What did you decide, implement, measure, and learn?",
-    "Walk me through how you would diagnose a problem involving {skill}. What would you check first, and why?",
-    "What trade-offs have you had to make when working with {skill}? Give a concrete example and its outcome.",
-    "How do you verify that your work involving {skill} is correct and holds up in production or under review?",
-    "Describe the most complex piece of work you have delivered using {skill}. What made it hard?",
-)
-
-
-#: A technical dimension's name is shown to the client verbatim, so it must read
-#: as a SKILL ("PostgreSQL", "Incident response"), never as a whole JD sentence.
-_MAX_SKILL_LABEL = 60
-
-
-def _topic_label(sentence: str) -> str:
-    """Condense a JD responsibility/accountability line into a short topic label.
-
-    Takes the leading clause, drops a leading verb like "Build"/"Design" so the
-    label reads as a subject rather than an instruction, and truncates on a word
-    boundary. "Design MongoDB schemas and indexes that support the product's
-    access patterns" -> "MongoDB schemas and indexes".
-    """
-    clause = re.split(r"[,;:.]| that | which | so that ", sentence.strip(), maxsplit=1)[0]
-    words = clause.split()
-    if words and words[0].lower() in {
-        "build", "design", "implement", "maintain", "write", "own", "run",
-        "define", "deliver", "monitor", "manage", "support", "create",
-        "develop", "integrate", "profile", "diagnose", "model", "take",
-    }:
-        words = words[1:]
-    if words and words[0].lower() in {"and", "the", "a", "an"}:
-        words = words[1:]
-    label = " ".join(words).strip(" -,")
-    while len(label) > _MAX_SKILL_LABEL and " " in label:
-        label = label.rsplit(" ", 1)[0]
-    label = label.strip(" -,")
-    return (label[:1].upper() + label[1:]) if label else ""
-
-
-def _jd_skills(job: Job) -> list[str]:
-    """The JD's declared skills -- the canonical technical dimensions.
-
-    Only `jd.skills` is treated as a skill. Responsibilities and accountabilities
-    are prose, and using them verbatim put sentences like "Generative features
-    degrade gracefully rather than failing outright" in the report's Technical
-    section as if they were a skill. They are still mined, but only as condensed
-    topic labels and only when the declared skills cannot supply enough variety.
-    """
-    jd = job.jd_json or {}
-    skills: list[str] = []
-    seen: set[str] = set()
-    for item in jd.get("skills") or []:
-        value = str(item).strip()
-        if value and value.casefold() not in seen:
-            seen.add(value.casefold())
-            skills.append(value[:_MAX_SKILL_LABEL])
-    if not skills:
-        skills = [job.title[:_MAX_SKILL_LABEL]]
-    return skills
-
-
-def _jd_topics(job: Job) -> list[str]:
-    """Condensed topic labels mined from JD prose, for banks that need more
-    variety than the declared skills alone can provide."""
-    jd = job.jd_json or {}
-    topics: list[str] = []
-    seen = {s.casefold() for s in _jd_skills(job)}
-    for field in ("responsibilities", "accountabilities"):
-        value = jd.get(field)
-        items = value if isinstance(value, list) else ([value] if isinstance(value, str) else [])
-        for item in items:
-            label = _topic_label(str(item))
-            if label and label.casefold() not in seen:
-                seen.add(label.casefold())
-                topics.append(label)
-    return topics
-
-
-def _question_fallback(job: Job, count: int | None = None) -> list[dict[str, Any]]:
-    """Deterministic top-up bank: cycles the JD skills across question angles so
-    an exact count is always reachable without repeating a prompt verbatim."""
-    skills = _jd_skills(job)
-    target = count if count is not None else min(len(skills), 8)
-    if len(skills) * len(_FALLBACK_ANGLES) < target:
-        skills = skills + _jd_topics(job)
-    rows: list[dict[str, Any]] = []
-    skill_cycle = cycle(skills)
-    angle_index = 0
-    while len(rows) < target:
-        skill = next(skill_cycle)
-        angle = _FALLBACK_ANGLES[angle_index % len(_FALLBACK_ANGLES)]
-        rows.append(
-            {
-                "skill": skill[:255],
-                "prompt": angle.format(skill=skill),
-                "rubric": dict(_DEFAULT_RUBRIC),
-            }
-        )
-        if len(rows) % len(skills) == 0:
-            angle_index += 1
-    return rows[:target]
-
-
-def _valid_question(row: Any) -> bool:
-    return (
-        isinstance(row, dict)
-        and bool(str(row.get("skill", "")).strip())
-        and bool(str(row.get("prompt", "")).strip())
-        and isinstance(row.get("rubric"), dict)
-        and bool(row["rubric"])
-    )
-
-
-async def generate_question_bank(session: AsyncSession, job: Job) -> list[TechnicalQuestion]:
-    """Generate the job's technical bank ONCE and leave it AWAITING REVIEW.
-
-    The bank is generated per JOB, not per candidate, so every applicant to a
-    role answers the same technical questions and their scores are comparable.
-    Generation NEVER approves: the recruiter finalises the bank (and the PPI
-    framework) before the job reaches `ready_for_candidates` (spec §5, §11).
-    """
-    existing = (
-        await session.execute(select(TechnicalQuestion).where(TechnicalQuestion.job_id == job.id))
-    ).scalars().all()
-    grade = job.assessment_grade if job.assessment_grade in TECHNICAL_QUESTION_COUNTS else await infer_grade(job, session)
-    required = technical_question_count(grade)
-
-    if existing:
-        job.assessment_grade = grade
-        active = [row for row in existing if row.is_active]
-        # Legacy banks predate the grade-driven counts and can be short. Top up
-        # deterministically rather than regenerating -- every candidate on a job
-        # must keep seeing the same questions.
-        if len(active) < required:
-            existing_prompts = {row.prompt.strip().lower() for row in existing}
-            ordinal = max((row.ordinal for row in existing), default=0)
-            added: list[TechnicalQuestion] = []
-            for filler in _question_fallback(job, (required - len(active)) * 3):
-                if len(active) + len(added) >= required:
-                    break
-                if filler["prompt"].strip().lower() in existing_prompts:
-                    continue
-                existing_prompts.add(filler["prompt"].strip().lower())
-                ordinal += 1
-                added.append(
-                    TechnicalQuestion(
-                        tenant_id=job.tenant_id,
-                        job_id=job.id,
-                        ordinal=ordinal,
-                        skill=str(filler["skill"])[:255],
-                        prompt=str(filler["prompt"]),
-                        rubric_json=filler["rubric"],
-                    )
-                )
-            while len(active) + len(added) < required:
-                ordinal += 1
-                added.append(
-                    TechnicalQuestion(
-                        tenant_id=job.tenant_id,
-                        job_id=job.id,
-                        ordinal=ordinal,
-                        skill=job.title[:255],
-                        prompt=f"Question {ordinal}: describe another concrete example of your work relevant to {job.title}.",
-                        rubric_json=dict(_DEFAULT_RUBRIC),
-                    )
-                )
-            session.add_all(added)
-            existing = list(existing) + added
-        await session.flush()
-        return existing
-
-    questions: list[dict[str, Any]] = []
-    try:
-        # Task-type routing: the technical bank prefers Gemini for grounded,
-        # specific probes (config/llm_providers.TASK_ROUTES).
-        raw = await llm_router.chat_completion(
-            "technical_questions",
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        f"Generate exactly {required} defensible technical assessment questions for this job, "
-                        "drawn from the required skills, tools, and responsibilities in the job description. "
-                        "Each question carries its own scoring rubric. Return JSON "
-                        "{\"questions\":[{\"skill\":\"...\",\"prompt\":\"...\","
-                        "\"rubric\":{\"0_39\":\"...\",\"40_59\":\"...\",\"60_74\":\"...\","
-                        "\"75_89\":\"...\",\"90_100\":\"...\"}}]}. Rubrics must be observable and job-specific."
-                    ),
-                },
-                {"role": "user", "content": json.dumps({"title": job.title, "level": job.level, "grade": grade, "jd": job.jd_json})},
-            ],
-            response_format_json=True,
-            session=session,
-        )
-        parsed = json.loads(raw).get("questions", [])
-        questions = [row for row in parsed if _valid_question(row)]
-    except Exception:
-        logger.warning("technical_questions.llm_unavailable job_id=%s, using deterministic bank", job.id)
-        questions = []
-
-    questions = questions[:required]
-    if len(questions) < required:
-        seen = {str(row["prompt"]).strip().lower() for row in questions}
-        for filler in _question_fallback(job, required * 2):
-            if len(questions) >= required:
-                break
-            if filler["prompt"].strip().lower() in seen:
-                continue
-            seen.add(filler["prompt"].strip().lower())
-            questions.append(filler)
-    while len(questions) < required:  # pathological: single skill, angles exhausted
-        index = len(questions) + 1
-        questions.append(
-            {
-                "skill": job.title[:255],
-                "prompt": f"Question {index}: describe another concrete example of your work relevant to {job.title}.",
-                "rubric": dict(_DEFAULT_RUBRIC),
-            }
-        )
-
-    rows = [
-        TechnicalQuestion(
-            tenant_id=job.tenant_id,
-            job_id=job.id,
-            ordinal=index,
-            skill=str(question["skill"])[:255],
-            prompt=str(question["prompt"]),
-            rubric_json=question["rubric"],
-        )
-        for index, question in enumerate(questions, 1)
-    ]
-    session.add_all(rows)
-    job.assessment_grade = grade
-    job.questions_generated_at = datetime.now(timezone.utc)
-    await session.flush()
-    return rows
+# ── The technical half ────────────────────────────────────────────────────
+# The per-JOB preset bank and its generator lived here until 2026-08-06.
+# Both are gone: `services/technical_interview` writes each technical
+# question for ONE candidate, together with its rubric, at the moment it is
+# asked. The JD-skill helpers moved there with it, because the deterministic
+# coverage plan is now that module's job.
+#
+# What remains here is the SCORER, unchanged in shape: every technical
+# answer is still graded against the rubric belonging to the question that
+# produced it. It is now unchanged in FACT as well -- a rubric can no longer
+# be left behind by an edit to a stored prompt, because there is no stored
+# prompt for anyone to edit.
 
 
 # ── Scoring primitives ──────────────────────────────────────────────────────
@@ -735,7 +509,7 @@ class AssessmentState(TypedDict, total=False):
     profile: Profile | None
     transcript: list[dict[str, Any]]
     answers: dict[str, list[str]]
-    questions: list[TechnicalQuestion]
+    questions: list[CandidateTechnicalQuestion]
     competencies: list[JobCompetency]
     candidate_questions: list[CandidateQuestion]
     grade: str
@@ -782,11 +556,17 @@ async def technical_node(state: AssessmentState) -> dict:
     """Score every technical answer against THAT question's own rubric (spec §5),
     then report ONE dimension per distinct JD skill.
 
-    A grade-sized bank asks several questions about the same skill, so scoring
+    A grade-sized plan asks several questions about the same skill, so scoring
     stays per-question and rubric-bound while the report aggregates those scores
     into a single entry for the skill. `report_dimensions` is UNIQUE on
     (report_id, category, name), so emitting one row per question would raise
-    IntegrityError on any bank that probed a skill twice.
+    IntegrityError on any plan that probed a skill twice -- and the plan probes
+    every declared skill several times by design (technical_interview.skill_plan).
+
+    The questions are this CANDIDATE's, written during their own conversation,
+    and each carries the rubric generated with it. Grouping by `skill` is what
+    keeps the report comparable across candidates even though no two of them
+    were asked the same words: the skills are the deterministic part.
 
     Technical items are not a rendered section of the PPI report (§10.3), but
     they ARE scored and they anchor suggested interview questions (§10.3, last
@@ -795,7 +575,7 @@ async def technical_node(state: AssessmentState) -> dict:
     answers = state.get("answers") or answers_by_key(state.get("transcript"))
     mode = "no_transcript" if not answers else "llm_rubric"
 
-    by_skill: dict[str, list[TechnicalQuestion]] = {}
+    by_skill: dict[str, list[CandidateTechnicalQuestion]] = {}
     for question in state["questions"]:
         by_skill.setdefault(question.skill, []).append(question)
 
@@ -1193,23 +973,12 @@ async def run_assessment(
         else:
             transcript = []
 
-    questions = (
-        await session.execute(
-            select(TechnicalQuestion)
-            .where(TechnicalQuestion.job_id == job.id, TechnicalQuestion.is_active.is_(True))
-            .order_by(TechnicalQuestion.ordinal)
-        )
-    ).scalars().all()
-    if not questions:
-        logger.info("functional_assessment.generating_bank_on_demand job_id=%s", job.id)
-        await generate_question_bank(session, job)
-        questions = (
-            await session.execute(
-                select(TechnicalQuestion)
-                .where(TechnicalQuestion.job_id == job.id, TechnicalQuestion.is_active.is_(True))
-                .order_by(TechnicalQuestion.ordinal)
-            )
-        ).scalars().all()
+    # This candidate's OWN technical questions, each carrying the rubric that
+    # was written with it. `ensure_slots` is idempotent and creates nothing when
+    # rows already exist, so this is a read on every normal run; it repairs only
+    # the case where a report is being written for a link that never opened a
+    # conversation, which the "no transcript" report path deliberately allows.
+    questions = await technical_interview.ensure_slots(session, job, link)
 
     competencies = await ppi.load_framework(session, job.id)
     if not competencies:

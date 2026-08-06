@@ -54,6 +54,36 @@ def _stub_classifier(monkeypatch):
     # `api.assessments` imported the module, not the symbol, so patching the
     # module attribute is enough and there is no second binding to keep in step.
 
+    # The same reasoning, for the same reason, applied to the technical question
+    # writer added on 2026-08-06. `respond` now writes the NEXT base question
+    # before it returns, and for a technical slot that is a live model call
+    # through `technical_interview.write_question`. Unstubbed it reaches the
+    # router on this hand-driven session and, when every provider is down, the
+    # router's own key bookkeeping rolls the transaction back underneath the
+    # test -- which fails as a confusing "closed transaction" error a long way
+    # from anything these tests are about.
+    from app.services import agent_loop
+    from app.services import technical_interview as ti
+
+    async def _written(*, row, **kwargs):
+        return agent_loop.LoopResult(
+            value={"question": row.prompt, "rubric": dict(row.rubric_json or {})},
+            degraded=False,
+            attempts=1,
+        )
+
+    monkeypatch.setattr(ti, "write_question", _written)
+
+    # And the PPI half's writer, for the same reason: a blended conversation
+    # alternates the two, so stubbing only one still leaves every other turn
+    # making a live call.
+    from app.services import interviewer
+
+    async def _composed(*, question, **kwargs):
+        return question
+
+    monkeypatch.setattr(interviewer, "compose_next_question", _composed)
+
 
 async def _factory_or_skip():
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -84,7 +114,7 @@ class _Fx:
 async def _seed(factory, fx: _Fx, question_count: int) -> None:
     from app.core.db import superadmin_scope
     from app.models import Candidate, Job, JobStatus, LinkSource, Tenant
-    from app.models.assessment import AssessmentConversation, TechnicalQuestion
+    from app.models.assessment import AssessmentConversation, CandidateTechnicalQuestion
     from app.models.candidate import JobCandidateLink
 
     now = datetime.now(timezone.utc)
@@ -107,15 +137,23 @@ async def _seed(factory, fx: _Fx, question_count: int) -> None:
                 s.add(JobCandidateLink(id=fx.link_id, tenant_id=fx.tenant_id,
                                        job_id=fx.job_id, candidate_id=fx.cand_id,
                                        source=LinkSource.fresh, status="applied"))
+                # The link must exist before anything references it.
+                await s.flush()
+                # Technical questions are PER CANDIDATE as of 2026-08-06, so
+                # they hang off the link rather than the job. Seeded directly
+                # rather than through `technical_interview.ensure_slots`: these
+                # tests drive `respond` alone, and a fixture that called the
+                # real slot builder would couple every flow assertion to the
+                # JD-skill plan, which is tested on its own elsewhere.
                 for ordinal in range(question_count):
                     qid = uuid.uuid4()
                     fx.q_ids.append(qid)
-                    s.add(TechnicalQuestion(
+                    s.add(CandidateTechnicalQuestion(
                         id=qid, tenant_id=fx.tenant_id, job_id=fx.job_id,
+                        job_candidate_link_id=fx.link_id,
                         skill=f"Skill {ordinal}", prompt=f"Question {ordinal}?",
-                        ordinal=ordinal, is_active=True, rubric_json={},
+                        ordinal=ordinal, rubric_json={},
                     ))
-                # The link must exist before the conversation references it.
                 await s.flush()
                 s.add(AssessmentConversation(
                     id=fx.conv_id, tenant_id=fx.tenant_id, job_id=fx.job_id,
