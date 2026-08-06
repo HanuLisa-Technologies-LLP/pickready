@@ -203,18 +203,38 @@ async def run_loop(
     def _elapsed_ms() -> int:
         return int((time.monotonic() - started) * 1000)
 
+    # The longest attempt seen so far, and the best available estimate of what
+    # the NEXT one will cost. See the deadline check below.
+    longest_attempt = 0.0
+
     for attempt in range(1, max(1, max_attempts) + 1):
-        # Checked BEFORE the call, not after. Starting an attempt with no time
-        # left is how a "bounded" loop overruns its bound by a full timeout.
-        if time.monotonic() - started >= deadline_seconds:
+        # THE DEADLINE HAS TO PREDICT, NOT JUST OBSERVE.
+        #
+        # This originally read `elapsed >= deadline_seconds`, which sounds
+        # right and is not. Measured: one `conversation_turn` call is bounded by
+        # the router at 24s and the interactive deadline is 26s, so after a slow
+        # first attempt elapsed is 24, `24 >= 26` is False, attempt two starts,
+        # and the true worst case is 48 seconds -- with a candidate watching a
+        # text box. The loop would have been advertising a bound it did not have.
+        #
+        # Refusing to START an attempt there is not enough either; the question
+        # is whether the attempt can FINISH inside the budget. So the check is
+        # against elapsed PLUS what an attempt has actually been costing. A fast
+        # first attempt (300ms) still permits a second, which is the case the
+        # retry exists for; a slow one does not, which is the case the deadline
+        # exists for. Self-tuning, and it needs no per-task configuration.
+        elapsed = time.monotonic() - started
+        if elapsed + longest_attempt >= deadline_seconds:
             reasons = reasons or ("the loop ran out of time before this attempt",)
             logger.info(
-                "agent_loop.deadline name=%s attempts=%d elapsed_ms=%d",
-                name, attempts, _elapsed_ms(),
+                "agent_loop.deadline name=%s attempts=%d elapsed_ms=%d "
+                "longest_attempt_ms=%d",
+                name, attempts, _elapsed_ms(), int(longest_attempt * 1000),
             )
             break
 
         attempts = attempt
+        attempt_started = time.monotonic()
         try:
             candidate = await execute(reflection)
         except Exception as exc:  # noqa: BLE001
@@ -223,6 +243,12 @@ async def run_loop(
             # that was not JSON at all all mean the same thing here: this
             # attempt produced nothing usable. Logged at info because a
             # degradation is expected operation, not an incident.
+            #
+            # The duration counts even though the attempt failed, and especially
+            # then: a TIMEOUT is the slowest and most informative thing that can
+            # happen, and ignoring it would let the loop keep starting attempts
+            # it has no time for.
+            longest_attempt = max(longest_attempt, time.monotonic() - attempt_started)
             error = type(exc).__name__
             reasons = (f"the previous attempt failed with {error}",)
             logger.info(
@@ -232,6 +258,7 @@ async def run_loop(
             reflection = ""  # nothing to reflect on; just try again
             continue
 
+        longest_attempt = max(longest_attempt, time.monotonic() - attempt_started)
         critique = evaluate(candidate)
         if critique.ok:
             if verify is not None:

@@ -130,14 +130,24 @@ async def test_every_attempt_raising_still_returns_the_fallback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_deadline_is_checked_before_an_attempt_starts() -> None:
-    """A "bounded" loop that checks its deadline AFTER each call overruns its
-    bound by a full timeout. It has to decline to start what it cannot finish."""
+async def test_a_slow_attempt_stops_the_loop_starting_another() -> None:
+    """THE deadline has to PREDICT, not just observe.
+
+    Checking `elapsed >= deadline` sounds right and is not. Measured on the real
+    numbers: one `conversation_turn` call is bounded by the router at 24s and
+    the interactive deadline is 26s, so after a slow first attempt elapsed is
+    24, `24 >= 26` is False, attempt two starts, and the true worst case is 48
+    seconds -- with a candidate watching a text box. The loop would have been
+    advertising a bound it did not have.
+
+    So the check is against elapsed PLUS what an attempt has actually been
+    costing: an attempt that cannot finish inside the budget is never started.
+    """
     attempts = {"n": 0}
 
     async def execute(_reflection: str) -> str:
         attempts["n"] += 1
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.08)
         return "slow"
 
     result = await agent_loop.run_loop(
@@ -146,12 +156,64 @@ async def test_the_deadline_is_checked_before_an_attempt_starts() -> None:
         evaluate=_reject_all,
         fallback="fb",
         max_attempts=10,
-        deadline_seconds=0.06,
+        # Two attempts would fit by elapsed time alone (0.08 < 0.12), and must
+        # not: after one, 0.08 + 0.08 >= 0.12, so a second cannot FINISH.
+        deadline_seconds=0.12,
     )
     assert result.degraded is True
-    # One attempt fits inside 0.06s; the second is refused before it is started.
-    assert attempts["n"] < 10
+    assert attempts["n"] == 1
     assert result.value == "fb"
+
+
+@pytest.mark.asyncio
+async def test_a_fast_attempt_still_permits_a_retry() -> None:
+    """The predictive check must not become a ban on retrying at all -- the
+    retry is the reason the loop exists. A 1ms attempt leaves room for another.
+    """
+    attempts = {"n": 0}
+
+    async def execute(_reflection: str) -> str:
+        attempts["n"] += 1
+        return "second" if attempts["n"] > 1 else "first"
+
+    def evaluate(value: str):
+        return agent_loop.ok() if value == "second" else agent_loop.reject("again")
+
+    result = await agent_loop.run_loop(
+        name="t",
+        execute=execute,
+        evaluate=evaluate,
+        fallback="fb",
+        max_attempts=2,
+        deadline_seconds=agent_loop.INTERACTIVE_DEADLINE,
+    )
+    assert result.value == "second"
+    assert attempts["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_attempt_counts_toward_the_estimate() -> None:
+    """A timeout is the slowest and most informative thing that can happen.
+    Ignoring its duration because it raised would let the loop keep starting
+    attempts it has no time for."""
+    attempts = {"n": 0}
+
+    async def execute(_reflection: str) -> str:
+        attempts["n"] += 1
+        await asyncio.sleep(0.08)
+        raise TimeoutError("provider timed out")
+
+    result = await agent_loop.run_loop(
+        name="t",
+        execute=execute,
+        evaluate=_accept_all,
+        fallback="fb",
+        max_attempts=10,
+        deadline_seconds=0.12,
+    )
+    assert result.degraded is True
+    assert attempts["n"] == 1
+    assert result.error == "TimeoutError"
 
 
 @pytest.mark.asyncio
