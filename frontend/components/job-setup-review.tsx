@@ -37,7 +37,7 @@ import { RATING_GRADES, type RatingGrade } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { Textarea } from "./ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { RatingLabel } from "@/components/rating-label";
 import {
@@ -100,7 +100,7 @@ interface Framework {
   blocking_reason: string | null;
 }
 
-interface Setup {
+export interface Setup {
   job_id: string;
   status: string;
   grade: string | null;
@@ -125,7 +125,7 @@ function errorMessage(error: unknown, fallback: string): string {
 
 // ── Status strip ─────────────────────────────────────────────────────────────
 
-function SetupStatus({ setup }: { setup: Setup }) {
+export function SetupStatus({ setup }: { setup: Setup }) {
   if (setup.ready_for_candidates) {
     return (
       <div className="rounded-lg border border-emerald-700 bg-emerald-50 p-4 dark:bg-emerald-950/40">
@@ -156,6 +156,11 @@ function SetupStatus({ setup }: { setup: Setup }) {
           We are still writing the criteria for this role. This normally takes
           under a minute; refresh the page shortly.
         </p>
+      ) : null}
+      {!setup.framework_pending ? (
+        <Button asChild size="sm" className="mt-3">
+          <a href="#ppi-framework">Review and save framework</a>
+        </Button>
       ) : null}
     </div>
   );
@@ -434,7 +439,7 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
   // say what the state is and offer a way to look again.
   if (!setup && !framework) {
     return (
-      <Card>
+      <Card id="ppi-framework" className="scroll-mt-24">
         <CardHeader>
           <CardTitle>Assessment setup</CardTitle>
           <CardDescription>
