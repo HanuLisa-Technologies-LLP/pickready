@@ -55,7 +55,12 @@ from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["is_enabled", "trace_content_enabled", "trace_llm"]
+__all__ = [
+    "is_enabled",
+    "trace_agent_loop",
+    "trace_content_enabled",
+    "trace_llm",
+]
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -162,3 +167,84 @@ class _Handle:
             self._run.end(outputs=outputs)
         except Exception:  # noqa: BLE001
             logger.debug("tracing.end_failed")
+
+
+@contextlib.contextmanager
+def trace_agent_loop(
+    name: str,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> Iterator[Any]:
+    """Trace one complete generate/critique/revise loop as a LangSmith chain.
+
+    Individual model calls remain child LLM traces at the router chokepoint.
+    This parent records only operational quality metadata: iteration count,
+    token budget, deterministic gate result and typed defect categories. It
+    never sends candidate text, even when content tracing is enabled.
+    """
+    if not is_enabled():
+        yield None
+        return
+
+    try:
+        from langsmith import trace as ls_trace
+    except Exception:  # noqa: BLE001
+        logger.debug("tracing.langsmith_unavailable")
+        yield None
+        return
+
+    try:
+        manager = ls_trace(
+            name=f"agent_loop:{name}",
+            run_type="chain",
+            inputs={"loop_name": name},
+            tags=["pickready", "agent-loop", name],
+            metadata=metadata or {},
+        )
+        run = manager.__enter__()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("tracing.loop_disabled_for_call error=%s", type(exc).__name__)
+        yield None
+        return
+
+    try:
+        yield _LoopHandle(run)
+    finally:
+        try:
+            manager.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            logger.debug("tracing.loop_exit_failed")
+
+
+class _LoopHandle:
+    """Failure-tolerant writer for loop-level, non-content telemetry."""
+
+    __slots__ = ("_run",)
+
+    def __init__(self, run: Any) -> None:
+        self._run = run
+
+    def end(
+        self,
+        *,
+        attempts: int,
+        degraded: bool,
+        elapsed_ms: int,
+        generated_tokens: int,
+        defects: list[dict[str, str]],
+        error: str | None,
+    ) -> None:
+        try:
+            self._run.end(
+                outputs={
+                    "attempts": attempts,
+                    "degraded": degraded,
+                    "gate_result": "degraded" if degraded else "passed",
+                    "elapsed_ms": elapsed_ms,
+                    "generated_tokens": generated_tokens,
+                    "defects": defects,
+                    "error": error,
+                }
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("tracing.loop_end_failed")

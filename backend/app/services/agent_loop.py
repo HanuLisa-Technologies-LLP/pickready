@@ -60,23 +60,36 @@ too much is a timeout.
 from __future__ import annotations
 
 import logging
+import json
+import math
+import re
 import time
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
+from itertools import combinations
 from typing import Any, Awaitable, Callable, Generic, Sequence, TypeVar
+
+from app.services import tracing
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "Critique",
+    "Defect",
     "LoopResult",
     "INTERACTIVE_ATTEMPTS",
     "INTERACTIVE_DEADLINE",
     "BACKGROUND_ATTEMPTS",
     "BACKGROUND_DEADLINE",
+    "INTERACTIVE_TOKEN_BUDGET",
+    "BACKGROUND_TOKEN_BUDGET",
     "ok",
     "reject",
+    "reject_defects",
     "run_loop",
     "reflection_text",
+    "banned_phrase_gate",
+    "similarity_gate",
 ]
 
 T = TypeVar("T")
@@ -94,6 +107,21 @@ INTERACTIVE_DEADLINE = 26.0
 BACKGROUND_ATTEMPTS = 3
 BACKGROUND_DEADLINE = 240.0
 
+# Cumulative generated-output ceilings across every attempt in one logical
+# loop. Provider calls also carry an exact per-call max_tokens cap in
+# llm_router; these loop ceilings stop retries multiplying that cost silently.
+INTERACTIVE_TOKEN_BUDGET = 4_096
+BACKGROUND_TOKEN_BUDGET = 12_000
+
+
+@dataclass(frozen=True)
+class Defect:
+    """One machine-readable reason an output failed a deterministic gate."""
+
+    type: str
+    location: str
+    detail: str
+
 
 @dataclass(frozen=True)
 class Critique:
@@ -108,6 +136,23 @@ class Critique:
 
     ok: bool
     reasons: tuple[str, ...] = ()
+    defects: tuple[Defect, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Backward-compatible construction still becomes structured. Existing
+        # callers may pass reasons positionally; every Critique leaving this
+        # object nevertheless carries typed defects for revision and tracing.
+        if not self.ok and not self.defects:
+            reasons = self.reasons or ("the output did not meet the criteria",)
+            object.__setattr__(
+                self,
+                "defects",
+                tuple(Defect("quality", "output", reason) for reason in reasons),
+            )
+        elif self.defects and not self.reasons:
+            object.__setattr__(
+                self, "reasons", tuple(defect.detail for defect in self.defects)
+            )
 
     def __bool__(self) -> bool:  # `if critique:` reads naturally
         return self.ok
@@ -123,6 +168,17 @@ def reject(*reasons: str) -> Critique:
     that says nothing, but neither should it have to filter its own list."""
     cleaned = tuple(reason.strip() for reason in reasons if reason and reason.strip())
     return Critique(False, cleaned or ("the output did not meet the criteria",))
+
+
+def reject_defects(*defects: Defect) -> Critique:
+    cleaned = tuple(
+        defect
+        for defect in defects
+        if defect.detail and defect.detail.strip()
+    )
+    if not cleaned:
+        cleaned = (Defect("quality", "output", "the output did not meet the criteria"),)
+    return Critique(False, defects=cleaned)
 
 
 @dataclass
@@ -144,11 +200,16 @@ class LoopResult(Generic[T]):
     attempts: int = 0
     #: Why the last attempt was rejected, for telemetry. Never shown to a user.
     reasons: tuple[str, ...] = ()
+    #: Structured equivalents of reasons, retained for telemetry and targeted
+    #: revision. `reasons` remains for caller compatibility and readable logs.
+    defects: tuple[Defect, ...] = ()
     #: Wall clock spent, milliseconds.
     elapsed_ms: int = 0
     #: Set when an attempt raised rather than merely failing the criteria. The
     #: two look identical to a caller and are very different to an operator.
     error: str | None = field(default=None)
+    #: Conservative serialized-output token estimate accumulated over attempts.
+    generated_tokens: int = 0
 
 
 def reflection_text(reasons: Sequence[str]) -> str:
@@ -169,7 +230,22 @@ def reflection_text(reasons: Sequence[str]) -> str:
     )
 
 
-async def run_loop(
+def _estimated_tokens(value: Any) -> int:
+    """Conservative, SDK-independent generated-token estimate.
+
+    Provider adapters do not expose one common usage object, so waiting for an
+    exact counter would leave several providers unbounded. Four serialized
+    characters per token is the standard conservative English/JSON estimate;
+    the router's exact per-call ``max_tokens`` remains the outer hard ceiling.
+    """
+    try:
+        serialized = json.dumps(value, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001
+        serialized = str(value)
+    return max(1, math.ceil(len(serialized) / 4))
+
+
+async def _run_loop_inner(
     *,
     name: str,
     execute: Callable[[str], Awaitable[T]],
@@ -178,6 +254,7 @@ async def run_loop(
     verify: Callable[[T], Critique] | None = None,
     max_attempts: int = INTERACTIVE_ATTEMPTS,
     deadline_seconds: float = INTERACTIVE_DEADLINE,
+    max_generated_tokens: int = INTERACTIVE_TOKEN_BUDGET,
 ) -> LoopResult[T]:
     """Run `execute` until `evaluate` accepts it, bounded twice over.
 
@@ -197,8 +274,10 @@ async def run_loop(
     started = time.monotonic()
     reflection = ""
     reasons: tuple[str, ...] = ()
+    defects: tuple[Defect, ...] = ()
     attempts = 0
     error: str | None = None
+    generated_tokens = 0
 
     def _elapsed_ms() -> int:
         return int((time.monotonic() - started) * 1000)
@@ -226,6 +305,9 @@ async def run_loop(
         elapsed = time.monotonic() - started
         if elapsed + longest_attempt >= deadline_seconds:
             reasons = reasons or ("the loop ran out of time before this attempt",)
+            defects = defects or (
+                Defect("deadline", "loop", reasons[0]),
+            )
             logger.info(
                 "agent_loop.deadline name=%s attempts=%d elapsed_ms=%d "
                 "longest_attempt_ms=%d",
@@ -251,6 +333,7 @@ async def run_loop(
             longest_attempt = max(longest_attempt, time.monotonic() - attempt_started)
             error = type(exc).__name__
             reasons = (f"the previous attempt failed with {error}",)
+            defects = (Defect("execution", f"attempt[{attempt}]", reasons[0]),)
             logger.info(
                 "agent_loop.attempt_error name=%s attempt=%d error=%s",
                 name, attempt, error,
@@ -259,6 +342,19 @@ async def run_loop(
             continue
 
         longest_attempt = max(longest_attempt, time.monotonic() - attempt_started)
+        generated_tokens += _estimated_tokens(candidate)
+        if generated_tokens > max(1, max_generated_tokens):
+            reasons = (
+                f"the loop exceeded its {max_generated_tokens}-token generated "
+                "output budget",
+            )
+            defects = (Defect("budget", "loop.generated_output", reasons[0]),)
+            logger.info(
+                "agent_loop.token_budget name=%s attempts=%d generated_tokens=%d "
+                "budget=%d",
+                name, attempts, generated_tokens, max_generated_tokens,
+            )
+            break
         critique = evaluate(candidate)
         if critique.ok:
             if verify is not None:
@@ -273,8 +369,10 @@ async def run_loop(
                         degraded=True,
                         attempts=attempts,
                         reasons=final.reasons,
+                        defects=final.defects,
                         elapsed_ms=_elapsed_ms(),
                         error=error,
+                        generated_tokens=generated_tokens,
                     )
             return LoopResult(
                 value=candidate,
@@ -282,9 +380,11 @@ async def run_loop(
                 attempts=attempts,
                 elapsed_ms=_elapsed_ms(),
                 error=error,
+                generated_tokens=generated_tokens,
             )
 
         reasons = critique.reasons
+        defects = critique.defects
         reflection = reflection_text(reasons)
         logger.info(
             "agent_loop.rejected name=%s attempt=%d reasons=%s",
@@ -300,9 +400,65 @@ async def run_loop(
         degraded=True,
         attempts=attempts,
         reasons=reasons,
+        defects=defects,
         elapsed_ms=_elapsed_ms(),
         error=error,
+        generated_tokens=generated_tokens,
     )
+
+
+async def run_loop(
+    *,
+    name: str,
+    execute: Callable[[str], Awaitable[T]],
+    evaluate: Callable[[T], Critique],
+    fallback: T,
+    verify: Callable[[T], Critique] | None = None,
+    max_attempts: int = INTERACTIVE_ATTEMPTS,
+    deadline_seconds: float = INTERACTIVE_DEADLINE,
+    max_generated_tokens: int = INTERACTIVE_TOKEN_BUDGET,
+) -> LoopResult[T]:
+    """Run a bounded loop and emit one loop-level LangSmith chain trace.
+
+    Individual model attempts remain traced as child LLM calls by
+    ``llm_router``. The parent trace contains no prompt or candidate content;
+    it records attempts, cost, deterministic gate status and typed defects.
+    """
+    with tracing.trace_agent_loop(
+        name,
+        metadata={
+            "max_attempts": max_attempts,
+            "deadline_seconds": deadline_seconds,
+            "max_generated_tokens": max_generated_tokens,
+        },
+    ) as run:
+        result = await _run_loop_inner(
+            name=name,
+            execute=execute,
+            evaluate=evaluate,
+            fallback=fallback,
+            verify=verify,
+            max_attempts=max_attempts,
+            deadline_seconds=deadline_seconds,
+            max_generated_tokens=max_generated_tokens,
+        )
+        if run is not None:
+            run.end(
+                attempts=result.attempts,
+                degraded=result.degraded,
+                elapsed_ms=result.elapsed_ms,
+                generated_tokens=result.generated_tokens,
+                defects=[
+                    {
+                        "type": defect.type,
+                        "location": defect.location,
+                        "detail": defect.detail,
+                    }
+                    for defect in result.defects
+                ],
+                error=result.error,
+            )
+        return result
 
 
 # ── Criteria worth sharing ───────────────────────────────────────────────────
@@ -337,3 +493,82 @@ def require_length(text: str, *, maximum: int, what: str = "the text") -> Critiq
             f"{len(text)}"
         )
     return ok()
+
+
+def _normalised_words(value: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", str(value or "").casefold())
+
+
+def banned_phrase_gate(
+    text: str,
+    banned_phrases: Sequence[str],
+    *,
+    location: str = "output",
+    close_variant_threshold: float = 0.88,
+) -> Critique:
+    """Reject exact banned phrases and deterministic close variants.
+
+    The comparison is word-normalised, so punctuation/casing changes do not
+    evade it. A bounded sliding window catches cosmetic substitutions without
+    asking an LLM to judge its own prose.
+    """
+    words = _normalised_words(text)
+    defects: list[Defect] = []
+    for phrase in banned_phrases:
+        banned_words = _normalised_words(phrase)
+        if not banned_words:
+            continue
+        width = len(banned_words)
+        target = " ".join(banned_words)
+        matched = False
+        for candidate_width in range(max(1, width - 1), width + 2):
+            for start in range(0, max(0, len(words) - candidate_width + 1)):
+                window = " ".join(words[start : start + candidate_width])
+                if (
+                    target in window
+                    or window in target
+                    or SequenceMatcher(None, target, window).ratio()
+                    >= close_variant_threshold
+                ):
+                    defects.append(
+                        Defect(
+                            "banned_phrase",
+                            location,
+                            f"remove the banned or near-template phrase: {phrase}",
+                        )
+                    )
+                    matched = True
+                    break
+            if matched:
+                break
+    return reject_defects(*defects) if defects else ok()
+
+
+def similarity_gate(
+    texts: Sequence[str],
+    *,
+    maximum: float,
+    location: str = "outputs",
+) -> Critique:
+    """Reject a collection containing two overly similar generated strings."""
+    defects: list[Defect] = []
+    normalised = [" ".join(_normalised_words(text)) for text in texts]
+    for (left_index, left), (right_index, right) in combinations(
+        enumerate(normalised), 2
+    ):
+        if not left or not right:
+            continue
+        score = SequenceMatcher(None, left, right).ratio()
+        if score > maximum:
+            defects.append(
+                Defect(
+                    "similarity",
+                    f"{location}[{left_index},{right_index}]",
+                    (
+                        "rewrite the two outputs so their language is "
+                        f"candidate-specific; similarity {score:.3f} exceeds "
+                        f"{maximum:.3f}"
+                    ),
+                )
+            )
+    return reject_defects(*defects) if defects else ok()

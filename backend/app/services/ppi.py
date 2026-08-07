@@ -528,6 +528,7 @@ async def generate_framework(
         fallback=_normalise(_fallback_framework(job)),
         max_attempts=agent_loop.BACKGROUND_ATTEMPTS,
         deadline_seconds=agent_loop.BACKGROUND_DEADLINE,
+        max_generated_tokens=agent_loop.BACKGROUND_TOKEN_BUDGET,
     )
     if result.degraded:
         logger.warning(

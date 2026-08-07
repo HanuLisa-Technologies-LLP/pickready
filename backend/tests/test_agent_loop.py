@@ -258,6 +258,112 @@ def test_a_critique_is_truthy_only_when_it_passed() -> None:
     assert bool(agent_loop.reject("no")) is False
 
 
+def test_rejections_always_carry_typed_defects() -> None:
+    critique = agent_loop.reject("name the missing evidence")
+    assert critique.defects == (
+        agent_loop.Defect("quality", "output", "name the missing evidence"),
+    )
+    assert critique.reasons == ("name the missing evidence",)
+
+
+@pytest.mark.asyncio
+async def test_generated_token_budget_is_a_hard_loop_ceiling() -> None:
+    calls = {"n": 0}
+
+    async def execute(_reflection: str) -> str:
+        calls["n"] += 1
+        return "x" * 400
+
+    result = await agent_loop.run_loop(
+        name="token-bound",
+        execute=execute,
+        evaluate=_reject_all,
+        fallback="fb",
+        max_attempts=10,
+        max_generated_tokens=50,
+    )
+
+    assert calls["n"] == 1
+    assert result.degraded is True
+    assert result.generated_tokens > 50
+    assert result.defects[0].type == "budget"
+
+
+def test_banned_phrase_gate_catches_punctuation_and_close_variants() -> None:
+    exact = agent_loop.banned_phrase_gate(
+        "The account is credible, but not exhaustive.",
+        ["credible but not exhaustive"],
+    )
+    close = agent_loop.banned_phrase_gate(
+        "The account remains credible yet not exhaustive.",
+        ["credible but not exhaustive"],
+        close_variant_threshold=0.72,
+    )
+
+    assert exact.defects[0].type == "banned_phrase"
+    assert close.defects[0].type == "banned_phrase"
+
+
+def test_similarity_gate_names_the_conflicting_pair() -> None:
+    critique = agent_loop.similarity_gate(
+        [
+            "The candidate tuned Kafka partitions after measuring consumer lag.",
+            "The candidate tuned Kafka partitions after measuring the consumer lag.",
+            "They redesigned a PostgreSQL index from an actual query plan.",
+        ],
+        maximum=0.85,
+        location="narratives",
+    )
+
+    assert critique.ok is False
+    assert critique.defects[0].type == "similarity"
+    assert critique.defects[0].location == "narratives[0,1]"
+
+
+@pytest.mark.asyncio
+async def test_loop_trace_receives_gate_and_budget_metadata(monkeypatch) -> None:
+    ended: list[dict] = []
+
+    class Handle:
+        def end(self, **payload):
+            ended.append(payload)
+
+    class Trace:
+        def __enter__(self):
+            return Handle()
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        agent_loop.tracing,
+        "trace_agent_loop",
+        lambda *_args, **_kwargs: Trace(),
+    )
+
+    async def execute(_reflection: str) -> str:
+        return "accepted"
+
+    result = await agent_loop.run_loop(
+        name="traced",
+        execute=execute,
+        evaluate=_accept_all,
+        fallback="fb",
+    )
+
+    assert result.degraded is False
+    assert ended == [
+        {
+            "attempts": 1,
+            "degraded": False,
+            "elapsed_ms": result.elapsed_ms,
+            "generated_tokens": result.generated_tokens,
+            "defects": [],
+            "error": None,
+        }
+    ]
+
+
 def test_reflection_is_empty_when_there_is_nothing_to_reflect_on() -> None:
     assert agent_loop.reflection_text([]) == ""
 

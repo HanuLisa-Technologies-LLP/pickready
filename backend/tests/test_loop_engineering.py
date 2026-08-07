@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.services import agent_loop
 from app.services import functional_assessment as fa
 from app.services import interviewer, ppi
 
@@ -31,7 +32,7 @@ async def test_a_remark_outside_the_word_contract_is_regenerated(monkeypatch) ->
         calls.append(messages)
         if len(calls) == 1:
             return "Too short."
-        return " ".join(["word"] * 27)
+        return "query " + " ".join(["word"] * 26)
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
     out = await fa.bounded_remark(None, "PostgreSQL", "they tuned the query plan", 25, 30)
@@ -73,13 +74,13 @@ async def test_one_transient_failure_no_longer_abandons_the_remark(monkeypatch) 
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("transient 503")
-        return " ".join(["word"] * 27)
+        return "evidence " + " ".join(["word"] * 26)
 
     monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
     out = await fa.bounded_remark(None, "PostgreSQL", "evidence", 25, 30)
 
     assert calls["n"] == 2
-    assert out == " ".join(["word"] * 27)
+    assert out == "evidence " + " ".join(["word"] * 26)
     assert out != fa._fallback_remark_25("PostgreSQL")
 
 
@@ -121,6 +122,81 @@ async def test_a_total_outage_still_returns_the_canned_remark(monkeypatch) -> No
     monkeypatch.setattr(fa.llm_router, "chat_completion", _boom)
     out = await fa.bounded_remark(None, "PostgreSQL", "evidence", 45, 50)
     assert 45 <= fa.word_count(out) <= 50
+    assert agent_loop.banned_phrase_gate(
+        out, fa.REPORT_BANNED_PHRASES
+    ).ok
+
+
+@pytest.mark.asyncio
+async def test_report_remark_revises_a_banned_template_phrase(monkeypatch) -> None:
+    attempts: list[list[dict]] = []
+    rejected = (
+        "The conversation produced usable evidence for PostgreSQL and the "
+        + " ".join(["candidate"] * 19)
+    )
+    accepted = "PostgreSQL query planning " + " ".join(["evidence"] * 24)
+
+    async def _chat(task_type, messages, **kwargs):
+        attempts.append(messages)
+        return rejected if len(attempts) == 1 else accepted
+
+    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
+    out = await fa.bounded_remark(
+        None,
+        "PostgreSQL",
+        "The candidate explained PostgreSQL query planning.",
+        25,
+        30,
+    )
+
+    assert out == accepted
+    assert len(attempts) == 2
+    assert "banned" in attempts[1][-1]["content"].lower()
+
+
+@pytest.mark.asyncio
+async def test_interview_probes_use_the_loop_and_named_gaps(monkeypatch) -> None:
+    attempts: list[list[dict]] = []
+    dimensions = [
+        {
+            "category": "primary_skill",
+            "name": f"Capability {letter}",
+            "score": 30 + index,
+            "remark": f"Evidence gap for capability {letter}.",
+        }
+        for index, letter in enumerate("ABCDEFGH")
+    ]
+    valid = [
+        "For Capability A, which production constraint forced you to abandon your first design?",
+        "On Capability B, how did you verify the result rather than trusting the initial signal?",
+        "Probe Capability C by asking what they personally implemented and what the team supplied.",
+        "For Capability D, change the delivery deadline and ask how their technical trade-off would move.",
+        "Explore Capability E through a failed attempt and the evidence that prompted recovery.",
+        "On Capability F, ask which stakeholder objection materially changed the final approach.",
+        "For Capability G, request the concrete artifact that proves the reported outcome held.",
+        "Probe Capability H by removing a key dependency and asking for an alternative implementation.",
+    ]
+
+    async def _chat(task_type, messages, **kwargs):
+        attempts.append(messages)
+        payload = (
+            {"probes": ["Describe one recent situation in detail."]}
+            if len(attempts) == 1
+            else {"probes": valid}
+        )
+        return json.dumps(payload)
+
+    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
+    probes = await fa.generate_suggested_questions(
+        None,
+        job_title="Platform Engineer",
+        dimensions=dimensions,
+    )
+
+    assert probes == valid
+    assert len(attempts) == 2
+    assert "eight to ten" in attempts[1][-1]["content"]
+    assert all("Capability" in probe for probe in probes)
 
 
 # ── The PPI framework: filler a human has to fix by hand ─────────────────────

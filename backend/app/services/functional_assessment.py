@@ -44,6 +44,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from itertools import cycle
+from pathlib import Path
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -406,6 +407,17 @@ async def _llm_score(session: AsyncSession | None, question: str, rubric: dict |
 # Remarks are generated COMPLETE inside their word contract and never truncated
 # (CLAUDE.md hard rule). Out-of-range output is regenerated in full.
 
+REPORT_BANNED_PHRASES: tuple[str, ...] = (
+    "produced usable evidence for",
+    "credible but not exhaustive",
+    "approaches this work in practice",
+    "describe one recent situation in detail",
+)
+
+_PROBE_PROMPT = (
+    Path(__file__).resolve().parents[2] / "prompts" / "report_interview_probes.txt"
+).read_text(encoding="utf-8")
+
 def _fallback_remark_25(name: str) -> str:
     candidates = [
         (
@@ -430,14 +442,16 @@ def _fallback_remark_45(name: str) -> str:
     """
     candidates = [
         (
-            f"The conversation produced usable evidence for {name}, with examples showing how the candidate approaches "
-            "this work in practice. The account is credible but not exhaustive, so an interviewer should press for a second "
-            "situation, the reasoning behind the decision taken, and the outcome the candidate personally owned."
+            f"The available answer record links {name} to actions the candidate described and outcomes they reported. "
+            "One conversation cannot establish consistency across situations, so an interviewer should request another "
+            "example, examine the decision trade-offs, and confirm which result the candidate personally owned from "
+            "start to finish."
         ),
         (
-            "The conversation produced usable evidence here, with examples showing how the candidate approaches this work "
-            "in practice. The account is credible but not exhaustive, so an interviewer should press for a second situation, "
-            "the reasoning behind the decision that was taken, and the outcome the candidate personally owned."
+            "The available answer record links this area to actions the candidate described and outcomes they reported. "
+            "One conversation cannot establish consistency across situations, so an interviewer should request another "
+            "example, examine the decision trade-offs, and confirm which result the candidate personally owned from "
+            "start to finish."
         ),
     ]
     return next(value for value in candidates if 45 <= word_count(value) <= 50)
@@ -532,21 +546,60 @@ async def bounded_remark(
         ).strip()
 
     def evaluate(value: str) -> agent_loop.Critique:
-        reasons: list[str] = []
+        defects: list[agent_loop.Defect] = []
         if not value:
-            reasons.append("return the remark itself, not an empty response")
+            defects.append(
+                agent_loop.Defect(
+                    "empty",
+                    f"remark.{name}",
+                    "return the remark itself, not an empty response",
+                )
+            )
         words = word_count(value)
         if not (minimum <= words <= maximum):
-            reasons.append(
-                f"write between {minimum} and {maximum} words; the previous "
-                f"attempt was {words}"
+            defects.append(
+                agent_loop.Defect(
+                    "length",
+                    f"remark.{name}",
+                    (
+                        f"write between {minimum} and {maximum} words; the previous "
+                        f"attempt was {words}"
+                    ),
+                )
             )
         if conversation_guardrails.contains_forbidden_number(value):
-            reasons.append(
-                "state no score, percentage, rating out of a total, or "
-                "percentile; describe the evidence in words only"
+            defects.append(
+                agent_loop.Defect(
+                    "numeric_score",
+                    f"remark.{name}",
+                    (
+                        "state no score, percentage, rating out of a total, or "
+                        "percentile; describe the evidence in words only"
+                    ),
+                )
             )
-        return agent_loop.reject(*reasons) if reasons else agent_loop.ok()
+        defects.extend(
+            agent_loop.banned_phrase_gate(
+                value,
+                REPORT_BANNED_PHRASES,
+                location=f"remark.{name}",
+            ).defects
+        )
+        evidence_terms = {
+            token
+            for token in re.findall(r"[a-z0-9]+", evidence.casefold())
+            if len(token) >= 5
+        }
+        output_terms = set(re.findall(r"[a-z0-9]+", value.casefold()))
+        if evidence_terms and not evidence_terms.intersection(output_terms):
+            defects.append(
+                agent_loop.Defect(
+                    "evidence_anchor",
+                    f"remark.{name}",
+                    "quote or paraphrase at least one concrete term from the supplied evidence",
+                )
+            )
+        return agent_loop.reject_defects(*defects) if defects else agent_loop.ok()
 
     result = await agent_loop.run_loop(
         name="report_remark",
@@ -558,6 +611,7 @@ async def bounded_remark(
         # in a report a client reads.
         max_attempts=agent_loop.BACKGROUND_ATTEMPTS,
         deadline_seconds=agent_loop.BACKGROUND_DEADLINE,
+        max_generated_tokens=agent_loop.BACKGROUND_TOKEN_BUDGET,
     )
     return result.value
 
@@ -860,10 +914,14 @@ def _suggested_questions(dimensions: list[dict[str, Any]]) -> list[str]:
         pool = sorted(dimensions, key=lambda item: item["score"])
 
     angles = (
-        "Ask {name}: describe one recent situation in detail, and what you personally decided.",
+        "Ask {name}: walk through a recent case, the choice you made, and the result you owned.",
         "Explore {name}: what would you do differently now, and what changed your view?",
         "Probe {name}: walk through a case where your approach did not work, and how you recovered.",
         "On {name}, ask for the evidence they would point to that the outcome actually held.",
+        "For {name}, ask which constraint most changed the solution and why.",
+        "On {name}, ask how they verified the result rather than assuming it worked.",
+        "For {name}, ask what they personally implemented and what belonged to the wider team.",
+        "Probe {name} by changing one key constraint and asking how their approach would adapt.",
     )
     # One pass over the weakest items first, then widen by asking a different
     # angle of the same items -- eight is the floor even when only two items
@@ -883,6 +941,117 @@ def _suggested_questions(dimensions: list[dict[str, Any]]) -> list[str]:
             "Ask for one further worked example relevant to this role and the candidate's personal contribution."
         )
     return questions[:10]
+
+
+async def generate_suggested_questions(
+    session: AsyncSession,
+    *,
+    job_title: str,
+    dimensions: list[dict[str, Any]],
+) -> list[str]:
+    """Generate gap-anchored probes through the shared bounded loop.
+
+    Report synthesis is called by the Celery assessment task, so this
+    multi-attempt generation never adds latency to an HTTP request.
+    """
+    fallback = _suggested_questions(dimensions)
+    anchorable = [
+        row for row in dimensions if row["category"] != CATEGORY_MATCHING
+    ]
+    ordered = sorted(anchorable, key=lambda item: item["score"])
+    gaps = [
+        {
+            "name": row["name"],
+            "rating": grade_for_percent(row["score"]),
+            "evidence_summary": row.get("remark")
+            or "No answer evidence was recorded.",
+        }
+        for row in ordered
+    ]
+    payload = json.dumps(
+        {"job_title": job_title, "evidence_gaps": gaps},
+        ensure_ascii=False,
+    )
+
+    async def execute(reflection: str) -> list[str]:
+        messages = [
+            {"role": "system", "content": _PROBE_PROMPT},
+            {"role": "user", "content": payload},
+        ]
+        if reflection:
+            messages.append({"role": "user", "content": reflection})
+        raw = await llm_router.chat_completion(
+            "report_synthesis",
+            messages,
+            response_format_json=True,
+            session=None,
+        )
+        parsed = json.loads(raw)
+        return [
+            str(item).strip()
+            for item in parsed.get("probes", [])
+            if str(item).strip()
+        ]
+
+    def evaluate(probes: list[str]) -> agent_loop.Critique:
+        defects: list[agent_loop.Defect] = []
+        if not 8 <= len(probes) <= 10:
+            defects.append(
+                agent_loop.Defect(
+                    "count",
+                    "interview_probes",
+                    (
+                        "return eight to ten probes; the previous attempt "
+                        f"returned {len(probes)}"
+                    ),
+                )
+            )
+        names = [str(row["name"]) for row in ordered]
+        for index, probe in enumerate(probes):
+            if names and not any(
+                name.casefold() in probe.casefold() for name in names
+            ):
+                defects.append(
+                    agent_loop.Defect(
+                        "role_anchor",
+                        f"interview_probes[{index}]",
+                        "name the exact supplied skill or competency this probe investigates",
+                    )
+                )
+            if conversation_guardrails.contains_forbidden_number(probe):
+                defects.append(
+                    agent_loop.Defect(
+                        "numeric_score",
+                        f"interview_probes[{index}]",
+                        "remove scores, percentages, ratings out of a total, and percentiles",
+                    )
+                )
+        defects.extend(
+            agent_loop.banned_phrase_gate(
+                "\n".join(probes),
+                REPORT_BANNED_PHRASES,
+                location="interview_probes",
+            ).defects
+        )
+        defects.extend(
+            agent_loop.similarity_gate(
+                probes,
+                maximum=0.84,
+                location="interview_probes",
+            ).defects
+        )
+        return agent_loop.reject_defects(*defects) if defects else agent_loop.ok()
+
+    result = await agent_loop.run_loop(
+        name="report_interview_probes",
+        execute=execute,
+        evaluate=evaluate,
+        fallback=fallback,
+        max_attempts=agent_loop.BACKGROUND_ATTEMPTS,
+        deadline_seconds=agent_loop.BACKGROUND_DEADLINE,
+        max_generated_tokens=agent_loop.BACKGROUND_TOKEN_BUDGET,
+    )
+    return result.value
 
 
 async def synthesis_node(state: AssessmentState) -> dict:
@@ -918,7 +1087,11 @@ async def synthesis_node(state: AssessmentState) -> dict:
         *PPI_REMARK_WORDS,
     )
 
-    probes = _suggested_questions(dimensions)
+    probes = await generate_suggested_questions(
+        session,
+        job_title=state["job"].title,
+        dimensions=dimensions,
+    )
 
     validation = dict(state["validation"])
     modes = {state.get("technical_mode", "llm_rubric"), state.get("ppi_mode", "llm_rubric")}
