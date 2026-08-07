@@ -27,7 +27,8 @@ FROM python:3.12-slim AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    FASTEMBED_CACHE_PATH=/opt/fastembed-cache
 
 # libpq5 is the runtime half of libpq-dev; curl is kept for container-level
 # health probing. Neither pulls in a compiler.
@@ -40,6 +41,11 @@ WORKDIR /app
 COPY --from=builder /wheels /wheels
 RUN pip install --no-index --find-links=/wheels /wheels/* \
     && rm -rf /wheels
+
+# Bake the small English BGE model into the image. Runtime downloads make the
+# first AI Reach request slow and fail on an egress-restricted Cloud Run
+# revision, so image build is the only reliable place to fetch model weights.
+RUN python -c "from fastembed import TextEmbedding; list(TextEmbedding(model_name='BAAI/bge-small-en-v1.5', cache_dir='/opt/fastembed-cache').passage_embed(['warmup']))"
 
 COPY . .
 
@@ -55,7 +61,7 @@ RUN sed -i 's/\r$//' /app/docker-entrypoint.sh \
 # not do it as uid 0. Cloud Run has no compose file to select a user, so the
 # image selects one itself.
 RUN useradd --create-home --uid 10001 pickready \
-    && chown -R pickready:pickready /app
+    && chown -R pickready:pickready /app /opt/fastembed-cache
 
 USER pickready
 

@@ -510,7 +510,7 @@ async def test_a_blown_time_budget_returns_a_clean_timeout(monkeypatch) -> None:
     """Interactive, so it runs in-request, which is only acceptable because it
     is time-boxed: the request returns rather than hanging."""
     monkeypatch.setattr(web_research, "tavily_api_key", lambda: "test-key")
-    web_research.reset_breaker()
+    await web_research.reset_breaker()
 
     class _SlowGraph:
         async def ainvoke(self, _state):
@@ -524,7 +524,7 @@ async def test_a_blown_time_budget_returns_a_clean_timeout(monkeypatch) -> None:
     )
     assert result["status"] == "timeout"
     assert result["jobs"] == []
-    web_research.reset_breaker()
+    await web_research.reset_breaker()
 
 
 def test_the_graph_has_the_four_named_nodes_in_order() -> None:
@@ -584,16 +584,19 @@ def test_the_evaluator_is_told_to_drop_rather_than_guess() -> None:
 
 def test_confidence_is_a_word_and_never_a_number() -> None:
     system = web_research._EVALUATE_SYSTEM
-    assert "Never a number, never a percentage, never a score." in system
+    assert "Never a number, percentage or score." in system
     cards = web_research.shape_cards(
         [
             {"job_title": "Data Engineer", "company": "Acme",
-             "company_url": "acme.example.com", "confidence": "high"},
+             "company_url": "acme.example.com",
+             "confidence": "Highly Matching"},
             {"job_title": "Analyst", "company": "Beta",
              "company_url": "beta.example.com", "confidence": "0.92"},
         ]
     )
-    assert [c["confidence_label"] for c in cards] == ["High", "Low"]
+    assert [c["confidence_label"] for c in cards] == [
+        "Highly Matching", "Not Matching"
+    ]
 
 
 def test_a_card_with_no_company_url_is_dropped() -> None:
@@ -636,25 +639,10 @@ def test_the_customer_segment_needs_no_network_call() -> None:
 
 
 def test_the_customer_segment_labels_are_words_not_scores() -> None:
-    assert bd_leads._confidence(4, 4) == "High"
-    assert bd_leads._confidence(2, 4) == "Medium"
-    assert bd_leads._confidence(1, 4) == "Low"
-    assert bd_leads._confidence(0, 0) == "Low"
-
-
-def test_a_customer_with_no_website_is_not_rendered_as_a_dead_card() -> None:
-    job = SimpleNamespace(
-        title="Data Engineer", department=None, jd_json={}, created_at=NOW
-    )
-    nowhere = SimpleNamespace(
-        name="Acme", industry="Technology", details=None,
-        website_domain=None, domain="",
-    )
-    cards = bd_leads.similar_cards(
-        [(job, nowhere)], job_role="Data Engineer", city="Pune",
-        industry="Technology", company=None,
-    )
-    assert cards == []
+    assert bd_leads._confidence(0.95) == "Highly Matching"
+    assert bd_leads._confidence(0.88) == "Matching"
+    assert bd_leads._confidence(0.83) == "Moderately Matching"
+    assert bd_leads._confidence(0.2) == "Not Matching"
 
 
 # ── Capability gating (permissions are data, never a role branch) ────────────

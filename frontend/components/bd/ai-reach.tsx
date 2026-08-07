@@ -13,8 +13,7 @@
 // and `unavailable` each carry a `message` written for the user, so the empty
 // state says what actually happened rather than "no results".
 //
-// CONFIDENCE IS A WORD. High, Medium or Low, never a number, a percentage, a
-// bar or a progress meter (CLAUDE.md, no numbers reach a client).
+// CONFIDENCE IS AN APPROVED MATCHING WORD, never a number, percentage or meter.
 
 import * as React from "react";
 import { ExternalLink, Globe, Presentation, Search, Sparkles, Users } from "lucide-react";
@@ -70,6 +69,8 @@ const STATUS_FALLBACK: Record<BDSegmentStatus, string> = {
   ok: "Nothing matched this search.",
   unconfigured: "Web search is not set up on this deployment.",
   timeout: "The web search took too long and was stopped.",
+  breaker_open: "Web search is paused briefly after repeated provider failures.",
+  quota_exhausted: "The web search provider's quota is exhausted.",
   unavailable: "Web search could not be reached just now.",
 };
 
@@ -337,6 +338,10 @@ function statusWord(status: BDSegmentStatus): string {
       return "Not set up";
     case "timeout":
       return "Timed out";
+    case "breaker_open":
+      return "Retrying later";
+    case "quota_exhausted":
+      return "Quota exhausted";
     case "unavailable":
       return "Unavailable";
     default:

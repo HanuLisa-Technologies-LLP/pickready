@@ -47,9 +47,10 @@ __all__ = [
 Channel = Literal["personal", "social"]
 SocialSource = Literal["linkedin", "google", "facebook", "instagram", "x"]
 
-#: The three word labels AI Reach may return. A word, never a number: no score,
-#: percentage or rank ever reaches a client (CLAUDE.md hard rule).
-ConfidenceLabel = Literal["High", "Medium", "Low"]
+#: The approved four word-only ratings. Similarity stays internal.
+ConfidenceLabel = Literal[
+    "Highly Matching", "Matching", "Moderately Matching", "Not Matching"
+]
 
 DEFAULT_PAGE_SIZE = 25
 MAX_PAGE_SIZE = 100
@@ -345,19 +346,23 @@ class JobCardOut(BaseModel):
     contact_email: str | None = None
     contact_phone: str | None = None
     contact_source_url: str | None = None
-    #: High | Medium | Low. A word, never a number.
-    confidence_label: ConfidenceLabel = "Medium"
+    #: Approved word-only rating. A similarity number never crosses the API.
+    confidence_label: ConfidenceLabel = "Moderately Matching"
 
 
 class SegmentOut(BaseModel):
     """One of the two segments AI Reach returns.
 
     `status` is what lets the internet segment fail politely: `ok`,
-    `unconfigured` (no web search key on this deployment), `timeout`, or
-    `unavailable`. `message` is plain English for the empty state.
+    `unconfigured` (no web search key on this deployment), `timeout`,
+    `breaker_open`, `quota_exhausted`, or `unavailable`. `message` is plain
+    English for the empty state.
     """
 
-    status: Literal["ok", "unconfigured", "timeout", "unavailable"] = "ok"
+    status: Literal[
+        "ok", "unconfigured", "timeout", "breaker_open", "quota_exhausted",
+        "unavailable",
+    ] = "ok"
     message: str | None = None
     jobs: list[JobCardOut] = Field(default_factory=list)
 

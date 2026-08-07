@@ -140,6 +140,11 @@ resolve_connection_strings() {
 
   if [ -z "${DATABASE_URL:-}" ]; then
     local pw
+    # Do not use the Secret Manager entry named DATABASE_URL. Its existing
+    # version is a stale host/credential DSN confirmed not to authenticate in
+    # Phase 0. Compose the supported Cloud SQL socket DSN from
+    # POSTGRES_PASSWORD below; DATABASE_URL remains only an explicit operator
+    # override for controlled diagnostics.
     # Never echoed, never written to the log, never passed through a temp file.
     pw="$(gcloud secrets versions access latest --secret=POSTGRES_PASSWORD 2>/dev/null | tr -d '\r\n')"
     [ -n "$pw" ] || die "secret POSTGRES_PASSWORD is empty or unreadable; the deployer needs roles/secretmanager.secretAccessor."

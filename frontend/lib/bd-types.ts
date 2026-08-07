@@ -4,8 +4,8 @@
 // its own file rather than in lib/types.ts so the BD surface can evolve without
 // touching the shared type module three other portals depend on.
 //
-// NO NUMBERS reach the client for rated output: `confidence_label` is a WORD
-// (High, Medium, Low), never a score, percentage, rank or progress meter.
+// NO NUMBERS reach the client for rated output: `confidence_label` is one of
+// the approved matching words, never a score, percentage, rank or meter.
 
 /** `bd_leads.channel`. Personal Reach and Social Reach are one funnel. */
 export type BDChannel = "personal" | "social";
@@ -171,8 +171,11 @@ export interface AIReachQuery {
   company?: string | null;
 }
 
-/** High, Medium or Low. A word, never a number. */
-export type ConfidenceLabel = "High" | "Medium" | "Low";
+export type ConfidenceLabel =
+  | "Highly Matching"
+  | "Matching"
+  | "Moderately Matching"
+  | "Not Matching";
 
 export interface BDJobCard {
   job_title: string;
@@ -196,7 +199,13 @@ export interface BDJobCard {
  * A segment's outcome. The two segments fail INDEPENDENTLY: the internet one
  * timing out must never blank the one computed from our own customers.
  */
-export type BDSegmentStatus = "ok" | "unconfigured" | "timeout" | "unavailable";
+export type BDSegmentStatus =
+  | "ok"
+  | "unconfigured"
+  | "timeout"
+  | "breaker_open"
+  | "quota_exhausted"
+  | "unavailable";
 
 export interface BDSegment {
   status: BDSegmentStatus;

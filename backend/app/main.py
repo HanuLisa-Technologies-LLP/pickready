@@ -10,6 +10,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api import (
@@ -146,4 +147,10 @@ app.include_router(bd.router, prefix="/api/v2/bd", tags=["bd-v2"])
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    # This endpoint is the staged-deploy gate, so a process-only response would
+    # allow a revision with broken Cloud SQL credentials/networking to promote.
+    from app.core.db import get_session_factory
+
+    async with get_session_factory()() as session:
+        await session.execute(text("SELECT 1"))
+    return {"status": "ok", "database": "ok"}

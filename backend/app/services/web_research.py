@@ -54,7 +54,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
+import math
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
@@ -88,8 +88,9 @@ MAX_CARDS = 12
 _FAILURE_THRESHOLD = 3
 _COOLDOWN_SECONDS = 5 * 60
 
-_consecutive_failures = 0
-_unavailable_until = 0.0
+_BREAKER_FAILURE_KEY = "pickready:web-research:breaker:failures"
+_BREAKER_OPEN_KEY = "pickready:web-research:breaker:open"
+_redis_client: Any | None = None
 
 UNCONFIGURED_MESSAGE = (
     "Web search is not configured on this deployment, so the internet results "
@@ -98,6 +99,10 @@ UNCONFIGURED_MESSAGE = (
 )
 TIMEOUT_MESSAGE = (
     "The web search took too long to answer. Please try again in a moment."
+)
+QUOTA_MESSAGE = (
+    "The web search provider's quota is exhausted. Customer database matches "
+    "are still available; an operator must restore the web-search quota."
 )
 UNAVAILABLE_MESSAGE = (
     "The web search is temporarily unavailable. Please try again shortly."
@@ -112,32 +117,91 @@ class WebResearchError(RuntimeError):
     """Raised only for programming errors. Node failures become state."""
 
 
-def reset_breaker() -> None:
-    """Clear the breaker. Used by tests and by an operator recovering a key."""
-    global _consecutive_failures, _unavailable_until
-    _consecutive_failures = 0
-    _unavailable_until = 0.0
+def _breaker_redis():
+    """Shared breaker store. A Redis outage fails open, never per-replica."""
+    global _redis_client
+    if _redis_client is None:
+        try:
+            import redis.asyncio as redis_asyncio
+
+            from app.core.config import get_settings
+
+            _redis_client = redis_asyncio.from_url(
+                get_settings().redis_url,
+                encoding="utf-8",
+                decode_responses=True,
+                socket_connect_timeout=1,
+                socket_timeout=1,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "web_research.breaker_store_unavailable error=%s",
+                type(exc).__name__,
+            )
+            return None
+    return _redis_client
 
 
-def _breaker_open() -> bool:
-    return time.monotonic() < _unavailable_until
-
-
-def _record_failure() -> None:
-    global _consecutive_failures, _unavailable_until
-    _consecutive_failures += 1
-    if _consecutive_failures >= _FAILURE_THRESHOLD:
-        _unavailable_until = time.monotonic() + _COOLDOWN_SECONDS
+async def reset_breaker() -> bool:
+    """Manual reset path; automatic reset is Redis key expiry."""
+    client = _breaker_redis()
+    if client is None:
+        return False
+    try:
+        await client.delete(_BREAKER_FAILURE_KEY, _BREAKER_OPEN_KEY)
+        return True
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "web_research.circuit_open failures=%d cooldown_s=%d",
-            _consecutive_failures, _COOLDOWN_SECONDS,
+            "web_research.breaker_reset_failed error=%s", type(exc).__name__
+        )
+        return False
+
+
+async def _breaker_retry_after() -> int:
+    client = _breaker_redis()
+    if client is None:
+        return 0
+    try:
+        ttl = int(await client.ttl(_BREAKER_OPEN_KEY))
+        return max(0, ttl)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "web_research.breaker_read_failed error=%s", type(exc).__name__
+        )
+        return 0
+
+
+async def _record_failure() -> None:
+    client = _breaker_redis()
+    if client is None:
+        return
+    try:
+        count = int(await client.incr(_BREAKER_FAILURE_KEY))
+        await client.expire(_BREAKER_FAILURE_KEY, _COOLDOWN_SECONDS)
+        if count >= _FAILURE_THRESHOLD:
+            await client.set(_BREAKER_OPEN_KEY, "1", ex=_COOLDOWN_SECONDS)
+            logger.warning(
+                "web_research.circuit_open failures=%d cooldown_s=%d",
+                count,
+                _COOLDOWN_SECONDS,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "web_research.breaker_write_failed error=%s", type(exc).__name__
         )
 
 
-def _record_success() -> None:
-    global _consecutive_failures, _unavailable_until
-    _consecutive_failures = 0
-    _unavailable_until = 0.0
+async def _record_success() -> None:
+    await reset_breaker()
+
+
+def _breaker_message(retry_after: int) -> str:
+    minutes = max(1, math.ceil(retry_after / 60))
+    unit = "minute" if minutes == 1 else "minutes"
+    return (
+        "Web search paused after repeated provider failures. "
+        f"It will retry automatically in about {minutes} {unit}."
+    )
 
 
 def tavily_api_key() -> str:
@@ -192,8 +256,27 @@ def plan_queries(
 
 # ── Node 2: search ───────────────────────────────────────────────────────────
 
-async def _tavily_search(query: str, api_key: str) -> list[dict[str, Any]]:
-    """One advanced Tavily search. Returns [] on any failure, never raises.
+@dataclass(frozen=True)
+class SearchBatch:
+    results: tuple[dict[str, Any], ...] = ()
+    failure: str | None = None
+
+
+def _provider_failure(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    name = type(exc).__name__.casefold()
+    if status_code == 429 or any(
+        marker in name for marker in ("quota", "usage", "ratelimit", "rate_limit")
+    ):
+        return "quota_exhausted"
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timeout" in name:
+        return "timeout"
+    return "unavailable"
+
+
+async def _tavily_search(query: str, api_key: str) -> SearchBatch:
+    """One advanced Tavily search with a typed operational outcome.
 
     The tavily-python client is synchronous, so it runs in a worker thread and
     the whole call is bounded by `TAVILY_TIMEOUT_SECONDS`.
@@ -202,7 +285,7 @@ async def _tavily_search(query: str, api_key: str) -> list[dict[str, Any]]:
         from tavily import TavilyClient
     except ImportError:
         logger.warning("web_research.tavily_client_missing")
-        return []
+        return SearchBatch(failure="unavailable")
 
     def _call() -> dict[str, Any]:
         client = TavilyClient(api_key=api_key)
@@ -220,12 +303,17 @@ async def _tavily_search(query: str, api_key: str) -> list[dict[str, Any]]:
         )
     except Exception as exc:  # noqa: BLE001 - a search failure is state, not a crash
         # The key is never in this message: only the exception TYPE is logged.
+        failure = _provider_failure(exc)
         logger.info(
-            "web_research.search_failed error=%s", type(exc).__name__
+            "web_research.search_failed error=%s outcome=%s",
+            type(exc).__name__,
+            failure,
         )
-        return []
+        return SearchBatch(failure=failure)
     results = payload.get("results") if isinstance(payload, dict) else None
-    return [r for r in (results or []) if isinstance(r, dict)]
+    return SearchBatch(
+        results=tuple(r for r in (results or []) if isinstance(r, dict))
+    )
 
 
 def merge_results(batches: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -277,9 +365,9 @@ _EVALUATE_SYSTEM = (
     "it from the result, drop the result.\n"
     "5. job_url is the specific posting only when the result clearly is that "
     "posting. Otherwise use null. Never invent a URL.\n"
-    "6. confidence is one of the words High, Medium or Low. Never a number, "
-    "never a percentage, never a score. Use High only when the role, the city "
-    "and the company are all evidenced by the retrieved content.\n\n"
+    "6. confidence is one of Highly Matching, Matching, Moderately Matching "
+    "or Not Matching. Never a number, percentage or score. Use Highly Matching "
+    "only when the role, city and company are all evidenced.\n\n"
     "7. You may include contact_name, contact_role, contact_email, "
     "contact_phone and contact_source_url only when the retrieved page "
     "explicitly publishes them as a professional HR, talent acquisition, "
@@ -291,7 +379,8 @@ _EVALUATE_SYSTEM = (
     "\"job_url\": str|null, \"contact_name\": str|null, "
     "\"contact_role\": str|null, \"contact_email\": str|null, "
     "\"contact_phone\": str|null, \"contact_source_url\": str|null, "
-    "\"confidence\": \"High\"|\"Medium\"|\"Low\"}]}. "
+    "\"confidence\": \"Highly Matching\"|\"Matching\"|"
+    "\"Moderately Matching\"|\"Not Matching\"}]}. "
     "An empty list is a valid and correct answer."
 )
 
@@ -334,7 +423,12 @@ def build_evaluate_prompt(
     ]
 
 
-_ALLOWED_CONFIDENCE = {"high": "High", "medium": "Medium", "low": "Low"}
+_ALLOWED_CONFIDENCE = {
+    "highly matching": "Highly Matching",
+    "matching": "Matching",
+    "moderately matching": "Moderately Matching",
+    "not matching": "Not Matching",
+}
 
 
 def parse_evaluation(raw: str) -> list[dict[str, Any]]:
@@ -400,7 +494,7 @@ def shape_cards(evaluated: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         job_url = _normalise_url(item.get("job_url"))
         confidence = _ALLOWED_CONFIDENCE.get(
-            str(item.get("confidence") or "").strip().lower(), "Low"
+            str(item.get("confidence") or "").strip().lower(), "Not Matching"
         )
         city = str(item.get("city") or "").strip() or None
         industry = str(item.get("industry") or "").strip() or None
@@ -475,9 +569,13 @@ async def _plan_node(state: ResearchState) -> dict:
     if not ctx.api_key:
         return {"queries": [], "status": "unconfigured",
                 "message": UNCONFIGURED_MESSAGE}
-    if _breaker_open():
-        return {"queries": [], "status": "unavailable",
-                "message": UNAVAILABLE_MESSAGE}
+    retry_after = await _breaker_retry_after()
+    if retry_after:
+        return {
+            "queries": [],
+            "status": "breaker_open",
+            "message": _breaker_message(retry_after),
+        }
     queries = plan_queries(ctx.job_role, ctx.city, ctx.industry, ctx.company)
     if not queries:
         return {"queries": [], "status": "ok", "message": NO_RESULTS_MESSAGE}
@@ -489,14 +587,36 @@ async def _search_node(state: ResearchState) -> dict:
     queries = state.get("queries") or []
     if state.get("status") != "ok" or not queries:
         return {"hit_count": 0}
-    batches = await asyncio.gather(
+    batches: list[SearchBatch] = await asyncio.gather(
         *(_tavily_search(query, ctx.api_key) for query in queries)
     )
-    ctx.hits = merge_results(list(batches))
+    ctx.hits = merge_results([list(batch.results) for batch in batches])
     if not ctx.hits:
-        _record_failure()
+        failures = {batch.failure for batch in batches if batch.failure}
+        if failures:
+            await _record_failure()
+            if "quota_exhausted" in failures:
+                return {
+                    "hit_count": 0,
+                    "status": "quota_exhausted",
+                    "message": QUOTA_MESSAGE,
+                }
+            if failures == {"timeout"}:
+                return {
+                    "hit_count": 0,
+                    "status": "timeout",
+                    "message": TIMEOUT_MESSAGE,
+                }
+            return {
+                "hit_count": 0,
+                "status": "unavailable",
+                "message": UNAVAILABLE_MESSAGE,
+            }
+        # A successful search with no hits is not a provider failure and must
+        # never trip the circuit.
+        await _record_success()
         return {"hit_count": 0, "message": NO_RESULTS_MESSAGE}
-    _record_success()
+    await _record_success()
     return {"hit_count": len(ctx.hits)}
 
 
@@ -581,11 +701,11 @@ async def search_jobs(
             timeout=budget_seconds,
         )
     except asyncio.TimeoutError:
-        _record_failure()
+        await _record_failure()
         logger.info("web_research.budget_exceeded budget_s=%.0f", budget_seconds)
         return {"status": "timeout", "message": TIMEOUT_MESSAGE, "jobs": []}
     except Exception as exc:  # noqa: BLE001 - never surface an internal error
-        _record_failure()
+        await _record_failure()
         logger.warning("web_research.failed error=%s", type(exc).__name__)
         return {"status": "unavailable", "message": UNAVAILABLE_MESSAGE,
                 "jobs": []}

@@ -655,3 +655,25 @@ async def ai_reach_search(
         similar_to_customers=similar_segment,
         from_internet=internet_segment,
     )
+
+
+@router.post("/ai-reach/web-search/reset")
+async def reset_ai_reach_web_search(
+    session: AsyncSession = Depends(get_bd_db),
+    user: CurrentUser = Depends(require_bd_capability(USE_AI_REACH)),
+) -> dict[str, str]:
+    """Audited operator reset; normal recovery happens automatically by TTL."""
+    if not await web_research.reset_breaker():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The shared web-search breaker store could not be reached.",
+        )
+    await audit(
+        session,
+        tenant_id=None,
+        actor_user_id=user.user_id,
+        action="ai_reach_web_search_breaker_reset",
+        target_type="service",
+        target_id="web_research",
+    )
+    return {"status": "reset"}

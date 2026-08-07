@@ -22,12 +22,15 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
+import math
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Iterator, Sequence
 
-from sqlalchemy import Select, Text, or_, select
+from sqlalchemy import Select, or_, select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.bd import (
@@ -36,13 +39,32 @@ from app.models.bd import (
     TENANT_PROSPECT,
     BDLead,
 )
-from app.models.job import Job
-from app.models.tenant import CUSTOMER_ACTIVE, CUSTOMER_ARCHIVED, Tenant
+from app.models.tenant import CUSTOMER_ARCHIVED, Tenant
 from app.schemas.bd import CSV_COLUMNS, BDCustomerOut, JobCardOut
+from app.services.reach_embeddings import (
+    ReachEmbeddingError,
+    embed_passages,
+    embed_query,
+)
+
+logger = logging.getLogger(__name__)
 
 #: How many "similar to our customers" cards the segment returns. A dashboard
 #: panel, not a search results page.
 SIMILAR_LIMIT = 12
+SIMILARITY_THRESHOLD = 0.82
+
+_ROLE_ALIASES = {
+    "front end": "frontend",
+    "back end": "backend",
+    "dev ops": "devops",
+    "machine-learning": "machine learning",
+    "ml engineer": "machine learning engineer",
+}
+_GENERIC_ROLE_TOKENS = {
+    "developer", "engineer", "specialist", "professional", "senior", "junior",
+    "lead", "manager", "software",
+}
 
 
 def _now(now: datetime | None = None) -> datetime:
@@ -372,127 +394,257 @@ def csv_filename(now: datetime | None = None) -> str:
 
 # ── AI Reach, segment 1: our OWN customer database ───────────────────────────
 
-def _confidence(hits: int, possible: int) -> str:
-    """Turn a match count into one of the three WORD labels.
-
-    The count never leaves this function. No score, percentage or rank reaches
-    the client (CLAUDE.md hard rule), so the conversion happens server side and
-    the API carries the word only.
-    """
-    if possible <= 0:
-        return "Low"
-    ratio = hits / possible
-    if ratio >= 0.75:
-        return "High"
-    if ratio >= 0.4:
-        return "Medium"
-    return "Low"
+@dataclass(frozen=True)
+class ReachCandidate:
+    job_id: uuid.UUID
+    title: str
+    skills: tuple[str, ...]
+    vector: tuple[float, ...] | None
+    tenant_name: str
+    tenant_industry: str | None
+    website_domain: str | None
+    tenant_domain: str | None
+    jd_json: dict
 
 
-def _company_url(tenant: Tenant) -> str:
-    host = (tenant.website_domain or tenant.domain or "").strip()
-    if not host:
-        return ""
-    if host.startswith("http://") or host.startswith("https://"):
-        return host
-    return f"https://{host}"
+@dataclass(frozen=True)
+class RankedReachCandidate:
+    candidate: ReachCandidate
+    similarity: float
 
 
-def similar_query(job_role: str, city: str, industry: str, company: str | None) -> Select:
-    """Jobs at PickReady's OWN customers that look like the search.
+def normalize_role(value: str) -> str:
+    """Canonical role text used by the query and catalogue documents."""
+    normalized = re.sub(r"[/_.()+-]+", " ", (value or "").casefold())
+    normalized = " ".join(normalized.split())
+    for source, target in _ROLE_ALIASES.items():
+        normalized = normalized.replace(source, target)
+    return " ".join(normalized.split())
 
-    ASSUMPTION (2026-07-28): `jobs` has no city column in this schema, so the
-    city term is matched against the job's structured JD text and department
-    alongside the customer's own profile prose. A job that matches on role and
-    industry but cannot evidence the city still surfaces, at a LOWER confidence
-    label, rather than being dropped: the BD team is looking for leads, and a
-    near miss they can judge beats a silent omission.
-    """
-    role_pattern = f"%{(job_role or '').strip()}%"
-    city_pattern = f"%{(city or '').strip()}%"
-    industry_pattern = f"%{(industry or '').strip()}%"
 
-    conditions = [
-        Job.title.ilike(role_pattern),
-        Tenant.industry.ilike(industry_pattern),
-        Job.jd_json.cast(Text).ilike(city_pattern),
-    ]
-    if company:
-        conditions.append(Tenant.name.ilike(f"%{company.strip()}%"))
-
+def role_embedding_text(title: str, skills: Sequence[str]) -> str:
+    clean_skills = sorted(
+        {normalize_role(skill) for skill in skills if normalize_role(skill)}
+    )
     return (
-        select(Job, Tenant)
-        .join(Tenant, Tenant.id == Job.tenant_id)
-        .where(
-            Job.archived_at.is_(None),
-            Tenant.status.in_((CUSTOMER_ACTIVE, TENANT_PROSPECT)),
-            or_(*conditions),
-        )
-        .order_by(Job.created_at.desc(), Job.id)
-        .limit(SIMILAR_LIMIT)
+        f"Job role: {normalize_role(title)}\n"
+        f"Primary skills: {', '.join(clean_skills)}"
     )
 
 
-def similar_cards(
-    rows: Iterable[tuple[Job, Tenant]],
-    *,
-    job_role: str,
-    city: str,
-    industry: str,
-    company: str | None,
-) -> list[JobCardOut]:
-    """Shape the customer-database rows into the same card the internet segment
-    emits, so the UI renders one component twice."""
-    role = (job_role or "").strip().lower()
-    town = (city or "").strip().lower()
-    sector = (industry or "").strip().lower()
-    firm = (company or "").strip().lower()
+def _vector(value: object) -> tuple[float, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return tuple(float(item) for item in value)
+    raw = str(value).strip().removeprefix("[").removesuffix("]")
+    if not raw:
+        return None
+    try:
+        return tuple(float(item) for item in raw.split(","))
+    except ValueError:
+        return None
 
-    cards: list[JobCardOut] = []
-    for job, tenant in rows:
-        blob = " ".join(
-            str(part or "").lower()
-            for part in (job.title, job.department, job.jd_json, tenant.details)
+
+def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
+    if not left or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if not left_norm or not right_norm:
+        return 0.0
+    return max(-1.0, min(1.0, dot / (left_norm * right_norm)))
+
+
+def _distinctive_tokens(value: str) -> set[str]:
+    tokens = set(normalize_role(value).split())
+    distinctive = tokens - _GENERIC_ROLE_TOKENS
+    return distinctive or tokens
+
+
+def _lexical_role_similarity(query: str, title: str) -> float:
+    wanted = _distinctive_tokens(query)
+    available = set(normalize_role(title).split())
+    return len(wanted & available) / len(wanted) if wanted else 0.0
+
+
+def rank_role_candidates(
+    query: str,
+    query_vector: Sequence[float] | None,
+    candidates: Sequence[ReachCandidate],
+    *,
+    threshold: float = SIMILARITY_THRESHOLD,
+) -> list[RankedReachCandidate]:
+    """Return only semantically relevant roles, best match first."""
+    ranked: list[RankedReachCandidate] = []
+    for candidate in candidates:
+        semantic = (
+            _cosine(query_vector, candidate.vector)
+            if query_vector is not None and candidate.vector is not None
+            else 0.0
         )
-        checks = [
-            bool(role) and role in (job.title or "").lower(),
-            bool(sector) and sector in (tenant.industry or "").lower(),
-            bool(town) and town in blob,
-        ]
-        possible = sum(1 for term in (role, sector, town) if term)
-        if firm:
-            checks.append(firm in (tenant.name or "").lower())
-            possible += 1
-        url = _company_url(tenant)
-        if not url:
-            # Every card must open a company website. A card with nowhere to go
-            # is a dead click, so it is dropped rather than rendered.
-            continue
-        cards.append(
-            JobCardOut(
-                job_title=job.title,
-                company=tenant.name,
-                city=city or None,
-                industry=tenant.industry,
-                company_url=url,
-                job_url=None,
-                source_domain=(tenant.website_domain or tenant.domain),
-                confidence_label=_confidence(sum(1 for c in checks if c), possible),  # type: ignore[arg-type]
-            )
+        # Short role queries contain generic nouns. This exact-vocabulary
+        # guard makes "Java Developer" robust without letting "Developer"
+        # admit every unrelated developer role.
+        lexical = _lexical_role_similarity(query, candidate.title)
+        # BGE role vectors are intentionally broad: "Java Developer" and
+        # "Full Stack Developer" are semantically related, but the latter is
+        # not an honest search result. Distinctive query vocabulary supplies a
+        # deterministic precision term while the embedding supplies synonym
+        # and phrasing recall.
+        role_similarity = (semantic * 0.80) + (lexical * 0.20)
+        if role_similarity >= threshold:
+            ranked.append(RankedReachCandidate(candidate, role_similarity))
+    return sorted(
+        ranked,
+        key=lambda item: (
+            -item.similarity,
+            normalize_role(item.candidate.title),
+            item.candidate.tenant_name.casefold(),
+            str(item.candidate.job_id),
+        ),
+    )
+
+
+def _confidence(similarity: float, possible: int | None = None) -> str:
+    """Project the internal similarity onto the approved word-only scale.
+
+    ``possible`` remains accepted while older callers transition from the
+    historical substring hit-count implementation.
+    """
+    if possible is not None:
+        similarity = similarity / possible if possible else 0.0
+    if similarity >= 0.90:
+        return "Highly Matching"
+    if similarity >= 0.86:
+        return "Matching"
+    if similarity >= SIMILARITY_THRESHOLD:
+        return "Moderately Matching"
+    return "Not Matching"
+
+
+def _candidate_from_row(row) -> ReachCandidate:
+    mapping = row._mapping
+    skills = tuple(mapping["primary_skills"] or ())
+    if not skills:
+        skills = tuple(
+            skill
+            for skill in (mapping["jd_json"] or {}).get("skills", [])
+            if isinstance(skill, str)
         )
-    return cards
+    return ReachCandidate(
+        job_id=mapping["job_id"],
+        title=mapping["title"],
+        skills=skills,
+        vector=_vector(mapping["reach_embedding"]),
+        tenant_name=mapping["tenant_name"],
+        tenant_industry=mapping["tenant_industry"],
+        website_domain=mapping["website_domain"],
+        tenant_domain=mapping["tenant_domain"],
+        jd_json=mapping["jd_json"] or {},
+    )
 
 
 async def similar_to_customers(
     session: AsyncSession, *, job_role: str, city: str, industry: str,
     company: str | None = None,
 ) -> list[JobCardOut]:
-    """Segment 1 of AI Reach. No external network call, so it always works even
-    when the web search key is absent or the internet segment times out."""
+    """Semantic customer-catalogue search with a hard role threshold."""
     rows = (
-        await session.execute(similar_query(job_role, city, industry, company))
+        await session.execute(
+            sql_text(
+                """
+                SELECT j.id AS job_id, j.title, j.jd_json,
+                       j.reach_embedding::text AS reach_embedding,
+                       t.name AS tenant_name, t.industry AS tenant_industry,
+                       t.website_domain, t.domain AS tenant_domain,
+                       COALESCE(
+                         array_agg(c.name ORDER BY c.ordinal)
+                           FILTER (WHERE c.category = 'primary_skill'
+                                        AND c.is_active),
+                         ARRAY[]::varchar[]
+                       ) AS primary_skills
+                  FROM jobs j
+                  JOIN tenants t ON t.id = j.tenant_id
+             LEFT JOIN job_competencies c ON c.job_id = j.id
+                 WHERE j.archived_at IS NULL
+                   AND t.status IN ('active', 'prospect')
+                   AND (:company = '' OR t.name ILIKE :company_pattern)
+              GROUP BY j.id, j.title, j.jd_json, j.reach_embedding,
+                       t.name, t.industry, t.website_domain, t.domain
+                """
+            ),
+            {
+                "company": (company or "").strip(),
+                "company_pattern": f"%{(company or '').strip()}%",
+            },
+        )
     ).all()
-    return similar_cards(
-        [(row[0], row[1]) for row in rows],
-        job_role=job_role, city=city, industry=industry, company=company,
-    )
+    candidates = [_candidate_from_row(row) for row in rows]
+
+    query_vector: tuple[float, ...] | None = None
+    missing = [candidate for candidate in candidates if candidate.vector is None]
+    try:
+        query_vector = tuple(
+            await embed_query(role_embedding_text(job_role, ()))
+        )
+        vectors = await embed_passages(
+            [
+            role_embedding_text(candidate.title, candidate.skills)
+            for candidate in missing
+            ]
+        )
+        replacements = {
+            candidate.job_id: tuple(vector)
+            for candidate, vector in zip(missing, vectors)
+        }
+        for candidate, vector in zip(missing, vectors):
+            await session.execute(
+                sql_text(
+                    "UPDATE jobs SET reach_embedding = CAST(:vector AS vector) "
+                    "WHERE id = :job_id"
+                ),
+                {
+                    "job_id": str(candidate.job_id),
+                    "vector": "[" + ",".join(str(value) for value in vector) + "]",
+                },
+            )
+        candidates = [
+            ReachCandidate(
+                **{
+                    **candidate.__dict__,
+                    "vector": replacements.get(candidate.job_id, candidate.vector),
+                }
+            )
+            for candidate in candidates
+        ]
+    except ReachEmbeddingError:
+        # Exact distinctive-role matching is the honest degraded path. It
+        # remains thresholded and never pads with unrelated titles.
+        logger.warning("bd.ai_reach_embedding_unavailable")
+
+    ranked = rank_role_candidates(job_role, query_vector, candidates)
+    cards: list[JobCardOut] = []
+    for item in ranked[:SIMILAR_LIMIT]:
+        candidate = item.candidate
+        host = (candidate.website_domain or candidate.tenant_domain or "").strip()
+        if not host:
+            continue
+        company_url = (
+            host if host.startswith(("http://", "https://")) else f"https://{host}"
+        )
+        location = candidate.jd_json.get("location")
+        cards.append(
+            JobCardOut(
+                job_title=candidate.title,
+                company=candidate.tenant_name,
+                city=location if isinstance(location, str) else None,
+                industry=candidate.tenant_industry,
+                company_url=company_url,
+                job_url=None,
+                source_domain=(candidate.website_domain or candidate.tenant_domain),
+                confidence_label=_confidence(item.similarity),
+            )
+        )
+    return cards
