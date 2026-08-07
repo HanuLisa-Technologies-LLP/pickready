@@ -12,8 +12,6 @@ from sqlalchemy import func, or_, select
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.db import get_session, tenant_scope, superadmin_scope
-
 from app.api.deps import (
     REFRESH_COOKIE,
     CurrentUser,
@@ -22,7 +20,7 @@ from app.api.deps import (
     set_auth_cookies,
 )
 from app.core.config import get_settings
-from app.core.db import get_session, tenant_scope, superadmin_scope
+from app.core.db import get_identity_session, tenant_scope, superadmin_scope
 from app.core.security import (
     ALGORITHM,
     AUDIENCE_CANDIDATE,
@@ -33,6 +31,7 @@ from app.core.security import (
     create_refresh_token,
 )
 from app.models.enums import OTPChannel, Role, UserStatus
+from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.auth import (
     CandidateRegisterIn,
@@ -145,12 +144,17 @@ async def _finalize_single(
         create_access_token(user.id, user.role.value, user.tenant_id, audience=audience),
         create_refresh_token(user.id, audience=audience),
     )
-    return OTPVerifyOut(user=_user_out(user), capabilities=await _capabilities(session, user))
+    return OTPVerifyOut(
+        user=await _user_out(session, user),
+        capabilities=await _capabilities(session, user),
+    )
 
 
 @router.post("/firebase/session", response_model=OTPVerifyOut)
 async def firebase_session(
-    body: FirebaseSessionIn, response: Response, session: AsyncSession = Depends(get_session)
+    body: FirebaseSessionIn,
+    response: Response,
+    session: AsyncSession = Depends(get_identity_session),
 ) -> OTPVerifyOut:
     """Exchange a verified Firebase ID token for a portal-scoped app session.
 
@@ -280,7 +284,18 @@ async def firebase_session(
     )
 
 
-def _user_out(user: User) -> UserOut:
+async def _user_out(session: AsyncSession, user: User) -> UserOut:
+    if user.tenant_id is not None:
+        async with tenant_scope(session, user.tenant_id):
+            workspace_name = (
+                await session.execute(
+                    select(Tenant.name).where(Tenant.id == user.tenant_id)
+                )
+            ).scalar_one_or_none() or "Unknown workspace"
+    elif user.role == Role.candidate:
+        workspace_name = "Candidate workspace"
+    else:
+        workspace_name = "PickReady"
     return UserOut(
         id=user.id,
         role=user.role,
@@ -289,6 +304,7 @@ def _user_out(user: User) -> UserOut:
         email=user.email,
         email_verified=user.email_verified_at is not None,
         phone_verified=user.phone_verified_at is not None,
+        workspace_name=workspace_name,
     )
 
 
@@ -319,7 +335,7 @@ _set_auth_cookies = set_auth_cookies
 
 
 async def register_candidate(
-    body: CandidateRegisterIn, session: AsyncSession = Depends(get_session)
+    body: CandidateRegisterIn, session: AsyncSession = Depends(get_identity_session)
 ) -> CandidateRegisterOut:
     """Candidate self sign-up (FR-9.1, register first / log in later). Creates
     the account only — the candidate then signs in from the unified login via
@@ -338,7 +354,7 @@ async def register_candidate(
 
 
 async def request_otp(
-    body: OTPRequestIn, session: AsyncSession = Depends(get_session)
+    body: OTPRequestIn, session: AsyncSession = Depends(get_identity_session)
 ) -> OTPRequestOut:
     audience = AUDIENCE_CANDIDATE if body.audience == "candidate" else AUDIENCE_ORG
     try:
@@ -384,7 +400,9 @@ def _context_out(ctx: otp_service.LoginContext) -> ContextOut:
 
 
 async def verify_otp(
-    body: OTPVerifyIn, response: Response, session: AsyncSession = Depends(get_session)
+    body: OTPVerifyIn,
+    response: Response,
+    session: AsyncSession = Depends(get_identity_session),
 ) -> OTPVerifyOut:
     try:
         result = await otp_service.verify_challenge(
@@ -435,18 +453,59 @@ async def verify_otp(
     if result.authenticated:
         _set_auth_cookies(response, result.access_token, result.refresh_token)
         return OTPVerifyOut(
-            user=_user_out(result.user),
+            user=await _user_out(session, result.user),
             capabilities=await _capabilities(session, result.user),
         )
     # Client first-login dual OTP still pending — no cookies yet (FR-1.2).
     return OTPVerifyOut(
-        user=_user_out(result.user), pending_channels=result.pending_channels
+        user=await _user_out(session, result.user),
+        pending_channels=result.pending_channels,
+    )
+
+
+@router.post("/workspaces", response_model=OTPVerifyOut)
+async def available_workspaces(
+    current: CurrentUser = Depends(get_current_any),
+    session: AsyncSession = Depends(get_identity_session),
+) -> OTPVerifyOut:
+    """Return the workspaces belonging to the current proven identity.
+
+    This is the in-session counterpart to the login chooser. The access token
+    proves the current identity; the returned short-lived, single-use context
+    token is still required to finalize a selection. No tenant data is returned
+    here, only identity rows and their human-readable workspace labels.
+    """
+    source = await session.get(User, current.user_id)
+    if source is None or source.status == UserStatus.disabled:
+        raise HTTPException(status_code=401, detail="Account unavailable")
+    identifier = source.email or source.phone
+    if not identifier:
+        raise HTTPException(
+            status_code=409,
+            detail="This account has no verified identifier for workspace switching",
+        )
+
+    eligible = otp_service.eligible_login_users(
+        await otp_service._find_users(session, identifier),
+        owner_email=get_settings().owner_email,
+    )
+    contexts = await otp_service._build_contexts(session, eligible)
+    token = otp_service.make_context_token(
+        identifier,
+        [context.user_id for context in contexts],
+        source_user_id=source.id,
+    )
+    return OTPVerifyOut(
+        contexts=[_context_out(context) for context in contexts],
+        context_token=token,
     )
 
 
 @router.post("/select-context", response_model=OTPVerifyOut)
 async def select_context(
-    body: SelectContextIn, response: Response, session: AsyncSession = Depends(get_session)
+    body: SelectContextIn,
+    response: Response,
+    session: AsyncSession = Depends(get_identity_session),
 ) -> OTPVerifyOut:
     """Exchange a context_token (proof of OTP success) for cookies as one of
     the identifier's users (contract rev 2). Single-use."""
@@ -464,21 +523,31 @@ async def select_context(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     if result.authenticated:
+        token_payload = otp_service.decode_context_token(body.context_token)
+        selected_workspace = await _user_out(session, result.user)
         await record_auth_event(
             session, action=AUTH_CONTEXT_SELECTED,
             actor_user_id=result.user.id, tenant_id=result.user.tenant_id,
-            metadata={"role": result.user.role.value},
+            metadata={
+                "role": result.user.role.value,
+                "workspace_name": selected_workspace.workspace_name,
+                "selected_tenant_id": (
+                    str(result.user.tenant_id) if result.user.tenant_id else None
+                ),
+                "source_user_id": token_payload.get("source_user_id"),
+            },
         )
         await session.commit()
         _set_auth_cookies(response, result.access_token, result.refresh_token)
         return OTPVerifyOut(
-            user=_user_out(result.user),
+            user=selected_workspace,
             capabilities=await _capabilities(session, result.user),
         )
     await session.commit()
     # Client first-login dual OTP still pending for this workspace.
     return OTPVerifyOut(
-        user=_user_out(result.user), pending_channels=result.pending_channels
+        user=await _user_out(session, result.user),
+        pending_channels=result.pending_channels,
     )
 
 
@@ -502,7 +571,9 @@ def _dead_session(detail: str) -> JSONResponse:
 
 @router.post("/refresh")
 async def refresh(
-    request: Request, response: Response, session: AsyncSession = Depends(get_session)
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_identity_session),
 ):
     token = request.cookies.get(REFRESH_COOKIE)
     if not token:
@@ -547,9 +618,12 @@ async def logout(response: Response) -> dict:
 @router.get("/me", response_model=MeOut)
 async def me(
     current: CurrentUser = Depends(get_current_any),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_identity_session),
 ) -> MeOut:
     user = await session.get(User, current.user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown user")
-    return MeOut(user=_user_out(user), capabilities=await _capabilities(session, user))
+    return MeOut(
+        user=await _user_out(session, user),
+        capabilities=await _capabilities(session, user),
+    )

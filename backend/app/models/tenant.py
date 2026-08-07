@@ -10,12 +10,16 @@ from app.models.enums import Role
 
 
 class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
-    """One row per client company engagement. Global table (no RLS).
+    """One row per client company engagement, protected by RLS.
 
     The company *profile* (industry / culture / details) lives here rather than
     on `companies` because it is captured at Owner-console onboarding time,
     before the client has ever signed in and authored their company page. The
     `companies` row remains the client-authored, candidate-facing page.
+
+    RLS uses ``id`` as the tenant discriminator. Provider/BD administration and
+    pre-tenant identity lookup use explicit bypass scopes; ordinary org
+    sessions see exactly their own row.
     """
     __tablename__ = "tenants"
 

@@ -3,11 +3,13 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LogOut, Menu, type LucideIcon } from "lucide-react";
+import { Building2, LogOut, Menu, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
 import { Logo } from "@/components/brand";
+import { WorkspaceContentBoundary } from "@/components/workspace-boundary";
+import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -71,20 +73,23 @@ function AccountBlock({ compact = false }: { compact?: boolean }) {
   return (
     <div className={cn("space-y-3", compact ? "p-4" : "p-4")}>
       {user ? (
-        <div className="flex items-center gap-3 rounded-lg bg-secondary px-3 py-2.5">
-          <span
-            aria-hidden="true"
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-600 text-xs font-semibold text-white"
-          >
-            {(user.full_name || user.email || "?").slice(0, 1).toUpperCase()}
-          </span>
-          <div className="min-w-0">
-            <p className="truncate text-xs font-semibold">
-              {user.full_name || user.email}
-            </p>
-            <p className="truncate text-xs opacity-80">{user.email}</p>
+        <>
+          <div className="flex items-center gap-3 rounded-lg bg-secondary px-3 py-2.5">
+            <span
+              aria-hidden="true"
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-600 text-xs font-semibold text-white"
+            >
+              {(user.full_name || user.email || "?").slice(0, 1).toUpperCase()}
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-xs font-semibold">
+                {user.full_name || user.email}
+              </p>
+              <p className="truncate text-xs opacity-80">{user.email}</p>
+            </div>
           </div>
-        </div>
+          <WorkspaceSwitcher />
+        </>
       ) : null}
       <Button
         variant="outline"
@@ -154,6 +159,20 @@ export function AppShell({
           <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em] opacity-70">
             {title}
           </p>
+          {user ? (
+            <div
+              className="mt-3 flex items-center gap-2 rounded-lg border border-brand-600/20 bg-brand-100/60 px-3 py-2"
+              data-active-workspace={user.workspace_name}
+            >
+              <Building2 className="h-4 w-4 shrink-0 text-brand-600" aria-hidden="true" />
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.12em]">
+                  Active workspace
+                </p>
+                <p className="truncate text-sm font-bold">{user.workspace_name}</p>
+              </div>
+            </div>
+          ) : null}
         </div>
         <Separator />
         {railNav()}
@@ -184,7 +203,9 @@ export function AppShell({
             </SheetContent>
           </Sheet>
           <Logo variant="mark" height={32} href="/" />
-          <span className="truncate text-sm font-semibold">{title}</span>
+          <span className="min-w-0 truncate text-sm font-semibold">
+            {user?.workspace_name ?? title}
+          </span>
           <Button
             variant="ghost"
             size="icon"
@@ -197,7 +218,9 @@ export function AppShell({
         </header>
 
         <main className="mx-auto w-full max-w-[1400px] flex-1 px-6 py-6 md:px-10 md:py-8">
-          {loading && !user ? <ShellSkeleton /> : children}
+          <WorkspaceContentBoundary user={user}>
+            {loading && !user ? <ShellSkeleton /> : children}
+          </WorkspaceContentBoundary>
         </main>
       </div>
     </div>

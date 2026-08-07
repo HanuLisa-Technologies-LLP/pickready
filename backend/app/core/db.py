@@ -64,11 +64,29 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """Raw session dependency — no tenant var set. Use only for global tables
-    (auth bootstrap, tenants, llm_provider_keys). Tenant-scoped work must go
-    through `tenant_scope`."""
+    """Raw session dependency with no tenant variable, for global tables only.
+
+    Auth bootstrap uses ``get_identity_session``; tenant-scoped work must go
+    through ``tenant_scope``. Only genuinely global tables belong here."""
     async with get_session_factory()() as session:
         yield session
+
+
+async def get_identity_session() -> AsyncIterator[AsyncSession]:
+    """RLS-bypassed session used only while resolving an identity.
+
+    Login, refresh, ``/auth/me`` and the workspace chooser must read ``users``
+    across tenants before (or while validating) a tenant context. Now that
+    ``users`` and ``tenants`` are RLS protected, that structural exception is
+    explicit here instead of leaving both tables globally readable.
+
+    Business endpoints must never use this dependency: they already know their
+    tenant and belong in ``tenant_scope``. Auth handlers still bind each issued
+    token to exactly one user and tenant and audit context selection.
+    """
+    async with get_session_factory()() as session:
+        async with superadmin_scope(session):
+            yield session
 
 
 def _app_role() -> str | None:

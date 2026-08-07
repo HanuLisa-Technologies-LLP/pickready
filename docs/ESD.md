@@ -203,6 +203,14 @@ belonging to more than one workspace, choosing between workspaces the backend
 has already resolved. That is a disambiguation among real memberships, not a
 declaration of intent.
 
+Every authenticated shell persistently renders the active workspace name.
+`POST /auth/workspaces` reopens the server-resolved chooser for an existing
+session. Selection overwrites the portal cookie, records the previous and
+selected contexts in the append-only audit log, disables authenticated HTTP
+caching, and changes a tenant-keyed React boundary so all page-local state is
+remounted even when switching within the same route. Billing and company-profile
+pages require an explicit destination confirmation before switching.
+
 The removed picker was a hint, never an authorization. Selecting "Provider
 owner" granted nothing, so a wrong guess produced a refusal indistinguishable
 from a broken account.
@@ -218,6 +226,12 @@ BD sessions use the owner audience but carry no customer tenant context and are 
 ### 7.3 Session storage
 
 Access, refresh, and session-hint values are stored in secure HTTP-only cookies. Refresh rotation and logout are server-controlled. Browser JavaScript does not need direct access to bearer tokens.
+
+`tenants` and `users` have enabled and forced PostgreSQL RLS. Ordinary company
+sessions see only their selected tenant. Login, refresh, and workspace
+resolution are the documented structural exception: they use the explicit
+identity-resolution bypass scope because memberships must be found before a
+tenant is known. Business endpoints cannot use that scope.
 
 ### 7.4 Compatibility code
 

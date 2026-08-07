@@ -11,7 +11,12 @@ from app.models.enums import OTPChannel, Role, UserStatus
 
 class User(Base, UUIDPKMixin, CreatedAtMixin):
     """tenant_id is NULL for super_admin (platform-wide) and candidates
-    (external actors; candidate data lives in `candidates`)."""
+    (external actors; candidate data lives in `candidates`).
+
+    Tenant users are RLS-isolated. Login and workspace selection are the
+    structural exception because they must resolve memberships before a tenant
+    exists; those handlers use ``get_identity_session`` explicitly.
+    """
     __tablename__ = "users"
     __table_args__ = (
         UniqueConstraint("tenant_id", "email", "role", name="uq_users_tenant_email_role"),

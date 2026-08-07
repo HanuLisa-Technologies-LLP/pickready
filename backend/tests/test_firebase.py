@@ -17,15 +17,21 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.api.auth import _phone_aliases, firebase_session, select_context
-from app.api.deps import ACCESS_COOKIE
+from app.api.auth import (
+    _phone_aliases,
+    available_workspaces,
+    firebase_session,
+    select_context,
+)
+from app.api.deps import ACCESS_COOKIE, CurrentUser
 from app.core.config import get_settings
 from app.models.candidate import Candidate
 from app.models.enums import Role, UserStatus
-from app.models.tenant import Tenant
+from app.models.tenant import AuditLog, Tenant
 from app.models.user import User
 from app.schemas.auth import FirebaseSessionIn, SelectContextIn
 from app.services import firebase_auth
+from app.services.otp import decode_context_token
 from app.services.firebase_auth import FirebaseIdentity, assert_provider_allowed
 from fastapi import HTTPException, Response
 
@@ -249,7 +255,41 @@ async def test_multi_context_returns_chooser_then_select_issues_cookies() -> Non
             )
         assert sel.user is not None
         assert sel.user.id == pick
+        assert sel.user.workspace_name == "FB-Multi-A"
         assert ACCESS_COOKIE in _cookie_names(sel_response)
+
+        # A live session can reopen the chooser without a full sign-out. The
+        # token records the previous context for the selection audit trail.
+        async with factory() as session:
+            choices = await available_workspaces(
+                CurrentUser(
+                    user_id=pick,
+                    tenant_id=ta,
+                    role=Role.recruiter,
+                    audience="pickready:org",
+                ),
+                session,
+            )
+        assert {context.tenant_name for context in choices.contexts or []} == {
+            "FB-Multi-A",
+            "FB-Multi-B",
+        }
+        assert decode_context_token(choices.context_token)["source_user_id"] == str(pick)
+
+        async with factory() as session:
+            audit_row = (
+                await session.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.action == "context_selected",
+                        AuditLog.actor_user_id == pick,
+                    )
+                    .order_by(AuditLog.at.desc())
+                )
+            ).scalars().first()
+        assert audit_row is not None
+        assert audit_row.metadata_json["workspace_name"] == "FB-Multi-A"
+        assert audit_row.at is not None
     finally:
         monkeypatch.undo()
         await _cleanup_users(factory, created, [ta, tb])

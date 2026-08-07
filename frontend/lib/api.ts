@@ -86,6 +86,10 @@ async function rawFetch(path: string, opts: RequestOptions): Promise<Response> {
       headers,
       body,
       credentials: "include",
+      // Authenticated resources are workspace-relative even when their URL is
+      // identical. Never let the browser reuse tenant A's response after the
+      // session cookie has switched to tenant B.
+      cache: "no-store",
       signal: opts.signal,
     });
   } catch (cause) {

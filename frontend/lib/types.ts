@@ -19,6 +19,7 @@ export interface User {
   email: string;
   email_verified: boolean;
   phone_verified: boolean;
+  workspace_name: string;
 }
 
 /** Capability strings resolved by the RBAC engine ("*" = owner/all). */

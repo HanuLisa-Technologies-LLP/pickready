@@ -45,6 +45,9 @@ class UserOut(BaseModel):
     email: str | None
     email_verified: bool
     phone_verified: bool
+    # Rendered by every authenticated shell so a legitimate multi-tenant user
+    # can always see which workspace owns the current session cookie.
+    workspace_name: str
 
 
 class ContextOut(BaseModel):

@@ -329,7 +329,11 @@ def dispatch_targets(
 # ── Context tokens (signed, single-use) ──────────────────────────────────────
 
 def make_context_token(
-    identifier: str, user_ids: Sequence[uuid.UUID | str], *, now: datetime | None = None
+    identifier: str,
+    user_ids: Sequence[uuid.UUID | str],
+    *,
+    now: datetime | None = None,
+    source_user_id: uuid.UUID | str | None = None,
 ) -> str:
     """Short-TTL JWT proving OTP success for `identifier`, listing the user
     contexts it may be exchanged for. Single-use via the jti ledger."""
@@ -344,6 +348,10 @@ def make_context_token(
         "iat": now,
         "exp": now + timedelta(minutes=CONTEXT_TOKEN_TTL_MINUTES),
     }
+    if source_user_id is not None:
+        # Present only for an in-session workspace switch. It gives the audit
+        # trail an unambiguous previous context without granting authority.
+        payload["source_user_id"] = str(source_user_id)
     return pyjwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 

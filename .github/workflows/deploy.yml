@@ -15,6 +15,8 @@ name: Deploy to Cloud Run
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   # Manual reruns for a rollback or a re-promote, without an empty commit.
   workflow_dispatch:
 
@@ -122,10 +124,49 @@ jobs:
         # below its threshold.
         run: python -m app.scripts.eval_interview
 
+  frontend-test:
+    name: Frontend tests, lint and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXT_PUBLIC_FIREBASE_API_KEY: ci-placeholder
+      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ci.pickready.test
+      NEXT_PUBLIC_FIREBASE_PROJECT_ID: ci-pickready
+      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ci-pickready
+      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "000000000000"
+      NEXT_PUBLIC_FIREBASE_APP_ID: ci-placeholder
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Component and utility tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Production build
+        working-directory: frontend
+        run: npm run build
+
   # ---------------------------------------------------------------------------
   deploy-staged:
     name: Build, migrate and stage
-    needs: test
+    needs: [test, frontend-test]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -230,7 +271,7 @@ jobs:
     needs: deploy-staged
     # needs already implies success, but saying so keeps the gate obvious to
     # anyone editing this file later.
-    if: success()
+    if: github.event_name != 'pull_request' && success()
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
