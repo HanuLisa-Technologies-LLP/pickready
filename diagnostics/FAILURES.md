@@ -137,3 +137,46 @@ deliberately failure-tolerant, so this did not break the report loop.
 Resolving this requires a valid key with read access to the owning LangSmith
 workspace. No secret was written to the repository, and no customer data was
 used in the verification execution.
+
+---
+
+## 8. Execution-session closeout (2026-08-07)
+
+Several earlier entries above describe Phase 0 state and are retained for
+auditability, but are now resolved:
+
+- The systemic cross-tenant audit was completed under Change 8 and is a
+  blocking real-Postgres CI suite.
+- Changes 1, 2, 3, 5, 6, 7, 8 and 9 were implemented, staged, smoke-tested,
+  promoted, and production-verified. Their individual evidence files contain
+  the exact revisions and run ids.
+- Change 10 now has a real 24-hour Cloud Monitoring baseline, cold-start count,
+  per-route log percentiles, resource percentiles, and Cloud SQL review.
+- `/health` now checks the database and the staged/production pipeline relies
+  on it.
+- The stale `DATABASE_URL` version 2 is disabled and deployments explicitly
+  compose the runtime URL from `POSTGRES_PASSWORD`.
+
+Items still honestly open:
+
+1. The Change 10 after-window is approximately five minutes with two complete
+   Monitoring minute points, not 24 hours. It is labeled as such in
+   `LATENCY_BEFORE_AFTER.md`; a scheduled 24-hour follow-up is still needed for
+   a controlled long-window comparison.
+2. Cloud SQL had no slow-query logging or Query Insights during the baseline,
+   so “zero entries” was not treated as proof of no slow queries. Query Insights
+   is now enabled for future evidence.
+3. Change 4 remains flag-off. Retention period, operational data-request
+   process, and full legal review are deliberately unresolved.
+4. Change 9’s LangSmith read-access issue in section 7 remains unresolved.
+5. The user explicitly waived live-browser checks for this execution. No
+   missing browser screenshot is represented as completed; DOM tests, direct
+   production HTTP, SQL/object checks, deployed-bundle checks, and CI smoke
+   evidence were used instead.
+6. Host-only full pytest runs report two failures because the local Postgres
+   credential is stale. The same enum/database tests pass in the deployment CI
+   job against its real PostgreSQL service with migrations and RLS enabled.
+
+The first Change 4 run (`31206381523`) was blocked before staging by the banned
+em-dash source audit. The single punctuation offender in the new consent copy
+was removed and the pipeline was rerun; no failed revision reached traffic.
