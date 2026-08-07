@@ -856,6 +856,8 @@ def run_functional_assessment(link_id: str):
                         "domain": message.domain,
                         "question_key": message.question_key,
                         "content": message.content,
+                        "answer_label": message.answer_label,
+                        "evidence_gap": message.evidence_gap,
                     }
                     for message in messages
                 ]

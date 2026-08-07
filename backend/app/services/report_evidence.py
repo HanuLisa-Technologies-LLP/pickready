@@ -57,6 +57,7 @@ def build_evidence_payload(
     question_keys: list[str],
     questions: list[str],
     answers: list[str],
+    recorded_gaps: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build one explainable evidence row without numerical grading."""
     joined = " ".join(answers).strip()
@@ -74,6 +75,7 @@ def build_evidence_payload(
         f"The response was filed against {skill} from the role's {category.replace('_', ' ')} framework."
     ] if joined else []
     gaps: list[str] = []
+    gaps.extend(recorded_gaps or [])
     if not joined:
         gaps.append("No substantive answer was recorded for this criterion.")
     if joined and not examples:
@@ -115,7 +117,7 @@ def extract_payloads(
     }
     lookup = {**technical, **ppi}
     grouped: dict[tuple[str, str], dict[str, Any]] = defaultdict(
-        lambda: {"keys": [], "questions": [], "answers": []}
+        lambda: {"keys": [], "questions": [], "answers": [], "recorded_gaps": []}
     )
     for message in transcript:
         key = str(message.get("question_key") or "")
@@ -132,6 +134,12 @@ def extract_payloads(
             answer = str(message.get("content") or "").strip()
             if answer:
                 bucket["answers"].append(answer)
+            if message.get("evidence_gap"):
+                label = str(message.get("answer_label") or "non-substantive")
+                bucket["recorded_gaps"].append(
+                    f"Re-ask limit reached after a {label.replace('_', ' ')} "
+                    "answer; the response was retained as an explicit evidence gap."
+                )
 
     # Include every planned criterion, including explicit no-evidence rows.
     for key, (category, skill, question) in lookup.items():
@@ -148,6 +156,7 @@ def extract_payloads(
             question_keys=data["keys"],
             questions=data["questions"],
             answers=data["answers"],
+            recorded_gaps=data["recorded_gaps"],
         )
         for (category, skill), data in grouped.items()
     ]

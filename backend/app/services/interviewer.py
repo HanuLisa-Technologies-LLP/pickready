@@ -360,6 +360,12 @@ _CHALLENGE_BY_LABEL: dict[str, str] = {
         "the one asked. Acknowledge briefly what they did address, then steer "
         "them back to what you actually asked and ask it again clearly."
     ),
+    "shallow": (
+        "The candidate addressed the right topic but did not provide the "
+        "specific example, action, reasoning, measurement, or outcome the "
+        "question requested. Name the missing kind of evidence and ask for it "
+        "directly."
+    ),
     "evasive": (
         "The candidate talked around the question: generalities, no specifics, "
         "or a softer version of what was asked. Name the specific thing you "
@@ -411,6 +417,10 @@ _CHALLENGE_FALLBACK: dict[str, str] = {
     "off_topic": (
         "That reads as an answer to something else. Could you come back to what "
         "I asked?"
+    ),
+    "shallow": (
+        "You are on the right topic, but I still need a concrete example and "
+        "what you personally did. Could you add those details?"
     ),
     "evasive": (
         "Could you be more specific? A concrete example of your own would help "

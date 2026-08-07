@@ -3,29 +3,44 @@
 // The unified assessment conversation.
 //
 // One question at a time, rendered as a transcript: the asked question on the
-// left, the candidate's saved answer on the right. Nothing here shows a score,
-// a percentage or a question count out of a total, because the candidate is
-// never rated to their face and the client is never shown a number at all.
-// `progress_label` is whatever the backend chose to say, and it is displayed
-// verbatim.
+// left, the candidate's saved answer on the right. Progress is shown as a
+// completion percentage and a base-question count; those are navigation, not a
+// candidate score. Re-asks and probes deliberately leave both values unchanged.
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowLeft, CheckCircle2, Loader2, Send } from "lucide-react";
+import {
+  ArrowLeft,
+  CheckCircle2,
+  Loader2,
+  Pencil,
+  Send,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { useParams } from "next/navigation";
 
 import { PageHeader } from "@/components/app-shell";
+import {
+  AssessmentProgress,
+  AssessmentSteps,
+} from "@/components/assessment-progress";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
-import { apiPost } from "@/lib/api";
+import { apiPatch, apiPost } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 
 interface Conversation {
   conversation_id: string;
   status: "active" | "completed";
   prompt: string | null;
   progress_label: string;
+  answered_questions: number;
+  total_questions: number;
+  is_reask: boolean;
+  answer_message_id?: string | null;
 }
 
 interface Exchange {
@@ -37,6 +52,7 @@ interface Exchange {
    *  are the times the candidate actually saw and sent the message. */
   askedAt: Date;
   answeredAt: Date;
+  messageId?: string;
 }
 
 /** The backend rejects an answer over this length with a 422. Enforced here so
@@ -57,6 +73,7 @@ const draftKey = (linkId: string) => `pickready:assessment-draft:${linkId}`;
 export default function UnifiedAssessmentPage() {
   const { link_id: linkId } = useParams<{ link_id: string }>();
   const { toast } = useToast();
+  const { user } = useAuth();
   const [conversation, setConversation] = React.useState<Conversation | null>(
     null
   );
@@ -168,6 +185,13 @@ export default function UnifiedAssessmentPage() {
         `/api/v2/assessments/conversations/${conversation.conversation_id}/respond`,
         { answer: currentAnswer }
       );
+      setExchanges((items) =>
+        items.map((item) =>
+          item === optimistic
+            ? { ...item, messageId: next.answer_message_id ?? undefined }
+            : item
+        )
+      );
       setConversation(next);
     } catch (error) {
       // Roll the turn back completely. Identity comparison rather than an
@@ -187,6 +211,22 @@ export default function UnifiedAssessmentPage() {
       setSending(false);
     }
   };
+
+  const saveEditedAnswer = async (index: number, edited: string) => {
+    const exchange = exchanges[index];
+    if (!conversation || !exchange?.messageId) return;
+    await apiPatch(
+      `/api/v2/assessments/conversations/${conversation.conversation_id}/answers/${exchange.messageId}`,
+      { answer: edited }
+    );
+    setExchanges((items) =>
+      items.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, answer: edited } : item
+      )
+    );
+  };
+
+  const candidateInitials = initials(user?.full_name || "You");
 
   /**
    * Cmd/Ctrl+Enter sends; plain Enter does not.
@@ -217,15 +257,33 @@ export default function UnifiedAssessmentPage() {
         }
       />
 
-      <div className="mx-auto max-w-3xl space-y-4">
+      <div className="mx-auto max-w-5xl">
+        <AssessmentSteps
+          answered={conversation?.answered_questions ?? 0}
+          total={conversation?.total_questions ?? 45}
+        />
+        <div className="mt-6 grid gap-6 lg:grid-cols-[15rem_minmax(0,1fr)]">
+          <AssessmentProgress
+            answered={conversation?.answered_questions ?? 0}
+            total={conversation?.total_questions ?? 45}
+          />
+          <div className="min-w-0 space-y-4">
         {exchanges.map((exchange, index) => (
           <React.Fragment key={index}>
             <Bubble side="asked" at={exchange.askedAt}>
               {exchange.prompt}
             </Bubble>
-            <Bubble side="answered" at={exchange.answeredAt}>
-              {exchange.answer}
-            </Bubble>
+            <EditableAnswerBubble
+              answer={exchange.answer}
+              at={exchange.answeredAt}
+              initials={candidateInitials}
+              canEdit={
+                Boolean(exchange.messageId) &&
+                index === exchanges.length - 1 &&
+                conversation?.status === "active"
+              }
+              onSave={(edited) => saveEditedAnswer(index, edited)}
+            />
           </React.Fragment>
         ))}
 
@@ -276,8 +334,11 @@ export default function UnifiedAssessmentPage() {
           <>
             <div className="sm:mr-10">
               <div className="rounded-2xl rounded-tl-md border border-border bg-surface p-5 shadow-card">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-brand-600">
-                  {conversation.progress_label}
+                <AssessorHeader at={promptShownAt.current} />
+                <p className="mt-3 text-xs font-semibold uppercase tracking-[0.12em] text-brand-600">
+                  {conversation.is_reask
+                    ? `Re-asking ${conversation.progress_label}`
+                    : conversation.progress_label}
                 </p>
                 <p className="mt-2 text-pretty leading-7">
                   {conversation.prompt}
@@ -316,18 +377,29 @@ export default function UnifiedAssessmentPage() {
                     </span>
                   ) : null}
                 </p>
-                <Button
-                  size="lg"
-                  disabled={sending || !answer.trim()}
-                  onClick={() => void respond()}
-                >
-                  {sending ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Send className="h-4 w-4" aria-hidden="true" />
-                  )}
-                  {sending ? "Sending" : "Send response"}
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={sending || !answer}
+                    onClick={() => setAnswer("")}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    Clear
+                  </Button>
+                  <Button
+                    size="lg"
+                    disabled={sending || !answer.trim()}
+                    onClick={() => void respond()}
+                  >
+                    {sending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    ) : (
+                      <Send className="h-4 w-4" aria-hidden="true" />
+                    )}
+                    {sending ? "Sending" : "Send"}
+                  </Button>
+                </div>
               </div>
             </div>
           </>
@@ -337,6 +409,8 @@ export default function UnifiedAssessmentPage() {
             so the view lands below the newest message instead of pinning its
             top edge to the bottom of the viewport. */}
         <div ref={endRef} aria-hidden="true" />
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -359,6 +433,125 @@ function formatTime(value: Date): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return (parts[0]?.[0] || "Y") + (parts[1]?.[0] || "");
+}
+
+function AssessorHeader({ at }: { at: Date }) {
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="grid h-7 w-7 place-items-center rounded-full bg-brand-100 text-brand-700">
+        <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+      </span>
+      <span className="font-semibold">AI Assessor</span>
+      <time className="ml-auto" dateTime={at.toISOString()}>
+        {formatTime(at)}
+      </time>
+    </div>
+  );
+}
+
+function EditableAnswerBubble({
+  answer,
+  at,
+  initials: badge,
+  canEdit,
+  onSave,
+}: {
+  answer: string;
+  at: Date;
+  initials: string;
+  canEdit: boolean;
+  onSave: (edited: string) => Promise<void>;
+}) {
+  const { toast } = useToast();
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(answer);
+  const [saving, setSaving] = React.useState(false);
+
+  const save = async () => {
+    if (!draft.trim() || draft.trim() === answer) {
+      setEditing(false);
+      setDraft(answer);
+      return;
+    }
+    setSaving(true);
+    try {
+      await onSave(draft.trim());
+      setEditing(false);
+    } catch (error) {
+      toast({
+        title: "Could not edit your response",
+        description: error instanceof Error ? error.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="sm:ml-10">
+      <div className="rounded-2xl rounded-tr-md border border-brand-600/30 bg-brand-100/70 p-5 text-sm leading-7">
+        <div className="mb-3 flex items-center gap-2 text-xs">
+          <span className="grid h-7 w-7 place-items-center rounded-full bg-brand-600 font-semibold text-white">
+            {badge.toUpperCase()}
+          </span>
+          <span className="font-semibold">You</span>
+          <time className="ml-auto" dateTime={at.toISOString()}>
+            {formatTime(at)}
+          </time>
+          {canEdit && !editing ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setEditing(true)}
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+              Edit
+            </Button>
+          ) : null}
+        </div>
+        {editing ? (
+          <div className="space-y-2">
+            <Textarea
+              value={draft}
+              maxLength={MAX_ANSWER}
+              onChange={(event) => setDraft(event.target.value)}
+            />
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={saving}
+                onClick={() => {
+                  setDraft(answer);
+                  setEditing(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={saving || !draft.trim()}
+                onClick={() => void save()}
+              >
+                {saving ? "Saving" : "Save edit"}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <p className="whitespace-pre-wrap">{answer}</p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -386,9 +579,11 @@ function Bubble({
             : "rounded-2xl rounded-tr-md border border-brand-600/30 bg-brand-100/70 p-5 text-sm leading-7"
         }
       >
+        {asked && at ? <AssessorHeader at={at} /> : null}
+        {asked && at ? <div className="h-3" aria-hidden="true" /> : null}
         {children}
       </div>
-      {at ? (
+      {at && !asked ? (
         <p
           className={`mt-1 text-[11px] ${asked ? "text-left" : "text-right"}`}
         >

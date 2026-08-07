@@ -391,6 +391,143 @@ async def test_without_a_follow_up_the_flow_is_unchanged(monkeypatch) -> None:
 
 # ── Fixture plumbing ─────────────────────────────────────────────────────────
 
+@pytest.mark.asyncio
+async def test_irrelevant_answer_holds_counter_then_valid_reask_advances_one(
+    monkeypatch,
+) -> None:
+    """A rejected turn must not consume a paid base-question slot."""
+    from app.api import assessments as mod
+    from app.core.db import superadmin_scope
+    from app.services.answer_classification import Classification
+
+    monkeypatch.setattr(mod.celery_app, "send_task", lambda *a, **k: None)
+    verdicts = iter(
+        [
+            Classification(
+                label="off_topic",
+                confidence="high",
+                reason="answers a different question",
+                needs_rechallenge=True,
+                scorable=True,
+            ),
+            Classification(
+                label="substantive",
+                confidence="high",
+                reason="direct and specific",
+                needs_rechallenge=False,
+                scorable=True,
+            ),
+        ]
+    )
+
+    async def _classify(**kwargs):
+        return next(verdicts)
+
+    async def _challenge(**kwargs):
+        return (
+            "That describes a database migration, not consumer lag. "
+            "Please answer the Kafka question."
+        )
+
+    async def _none(**kwargs):
+        return None
+
+    monkeypatch.setattr(mod.answer_classification, "classify", _classify)
+    monkeypatch.setattr(mod.interviewer, "challenge_non_answer", _challenge)
+    monkeypatch.setattr(mod.interviewer, "next_follow_up", _none)
+
+    engine, factory = await _factory_or_skip()
+    fx = _Fx()
+    try:
+        await _seed(factory, fx, question_count=3)
+        _patch_link(monkeypatch, fx)
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    rejected = await _respond(
+                        mod,
+                        fx,
+                        s,
+                        answer="I migrated Postgres to another region.",
+                    )
+                    accepted = await _respond(mod, fx, s, answer=_ANSWER)
+
+        assert rejected.answered_questions == 0
+        assert rejected.is_reask is True
+        assert rejected.progress_label == "Question 1 of 3"
+        assert accepted.answered_questions == 1
+        assert accepted.is_reask is False
+        assert accepted.progress_label == "Question 2 of 3"
+    finally:
+        await _cleanup(factory, fx)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reask_cap_records_evidence_gap_and_moves_on(monkeypatch) -> None:
+    """Repeated non-answers are bounded and remain explicit in evidence."""
+    from app.api import assessments as mod
+    from app.core.db import superadmin_scope
+    from app.models.assessment import AssessmentMessage
+    from app.services.answer_classification import Classification
+
+    monkeypatch.setattr(mod.celery_app, "send_task", lambda *a, **k: None)
+
+    async def _invalid(**kwargs):
+        return Classification(
+            label="shallow",
+            confidence="high",
+            reason="names the topic but supplies no requested evidence",
+            needs_rechallenge=True,
+            scorable=True,
+        )
+
+    async def _challenge(**kwargs):
+        return (
+            "You named the topic but not the evidence requested. "
+            "Please give one specific example."
+        )
+
+    monkeypatch.setattr(mod.answer_classification, "classify", _invalid)
+    monkeypatch.setattr(mod.interviewer, "challenge_non_answer", _challenge)
+
+    engine, factory = await _factory_or_skip()
+    fx = _Fx()
+    try:
+        await _seed(factory, fx, question_count=3)
+        _patch_link(monkeypatch, fx)
+        async with factory() as s:
+            async with s.begin():
+                async with superadmin_scope(s):
+                    first = await _respond(mod, fx, s, answer="Kafka.")
+                    second = await _respond(mod, fx, s, answer="Consumer lag.")
+                    capped = await _respond(mod, fx, s, answer="Performance.")
+
+        assert first.answered_questions == 0
+        assert second.answered_questions == 0
+        assert capped.answered_questions == 1
+        assert capped.is_reask is False
+
+        async with factory() as s:
+            async with superadmin_scope(s):
+                last_answer = (
+                    await s.execute(
+                        select(AssessmentMessage)
+                        .where(
+                            AssessmentMessage.conversation_id == fx.conv_id,
+                            AssessmentMessage.speaker == "candidate",
+                        )
+                        .order_by(AssessmentMessage.ordinal.desc())
+                        .limit(1)
+                    )
+                ).scalar_one()
+        assert last_answer.answer_label == "shallow"
+        assert last_answer.evidence_gap is True
+    finally:
+        await _cleanup(factory, fx)
+        await engine.dispose()
+
+
 async def _link_stub(*args, **kwargs):  # replaced per-test by _patch_link
     raise NotImplementedError
 

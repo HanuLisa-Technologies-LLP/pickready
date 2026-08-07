@@ -67,7 +67,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from app.services import answer_quality, llm_router
+from app.services import agent_loop, answer_quality, llm_router
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,7 @@ LABELS: tuple[str, ...] = (
     "empty",
     "gibberish",
     "off_topic",
+    "shallow",
     "evasive",
 )
 
@@ -88,7 +89,9 @@ LABELS: tuple[str, ...] = (
 #: from LABELS because a model returning "empty" or "gibberish" would be
 #: contradicting the deterministic pass that already cleared this text, and the
 #: deterministic pass is the one that gets to be right about those.
-_MODEL_LABELS: frozenset[str] = frozenset({"substantive", "off_topic", "evasive"})
+_MODEL_LABELS: frozenset[str] = frozenset(
+    {"substantive", "off_topic", "shallow", "evasive"}
+)
 
 _CONFIDENCE_WORDS: frozenset[str] = frozenset({"high", "medium", "low"})
 
@@ -115,9 +118,11 @@ _SYSTEM = (
     "will grade its quality separately.\n"
     "- off_topic: coherent prose that answers a DIFFERENT question than the one "
     "asked.\n"
-    "- evasive: talks around the question, stays entirely in generalities, "
-    "dodges the specific thing asked, or answers a softer version of the "
-    "question.\n"
+    "- shallow: addresses the right topic, but does not provide the specific "
+    "example, action, reasoning, measurement, or outcome the question asks "
+    "for.\n"
+    "- evasive: deliberately talks around the question, dodges the specific "
+    "thing asked, or answers a softer version of it.\n"
     "\n"
     "RULES THAT OVERRIDE EVERYTHING ABOVE:\n"
     "- A NEGATIVE ANSWER IS A REAL ANSWER. 'I have not used Kafka', 'I have "
@@ -260,6 +265,48 @@ def _interpret(raw: str | None) -> Classification:
     )
 
 
+def _gate(raw: str | None) -> agent_loop.Critique:
+    """Accept only a complete classifier payload.
+
+    This is deliberately separate from ``_interpret``. The latter degrades a
+    malformed provider response for a caller that cannot retry; this gate gives
+    the shared bounded loop one chance to tell the provider exactly what was
+    malformed and obtain a corrected verdict.
+    """
+    try:
+        payload = json.loads(raw or "")
+    except Exception:  # noqa: BLE001
+        return agent_loop.reject_defects(
+            agent_loop.Defect(
+                "schema", "classification", "return one valid JSON object"
+            )
+        )
+    if not isinstance(payload, dict):
+        return agent_loop.reject_defects(
+            agent_loop.Defect(
+                "schema", "classification", "return a JSON object, not a list or scalar"
+            )
+        )
+    label = str(payload.get("label") or "").strip().lower()
+    if label not in _MODEL_LABELS:
+        return agent_loop.reject_defects(
+            agent_loop.Defect(
+                "label",
+                "classification.label",
+                "use exactly one allowed relevance label",
+            )
+        )
+    if not str(payload.get("reason") or "").strip():
+        return agent_loop.reject_defects(
+            agent_loop.Defect(
+                "schema",
+                "classification.reason",
+                "include a short reason for the relevance verdict",
+            )
+        )
+    return agent_loop.ok()
+
+
 async def classify(
     *,
     session: Any,
@@ -282,23 +329,41 @@ async def classify(
         "candidate_reply": (answer or "")[:MAX_ANSWER_CHARS],
         "conversation_so_far": _recent(transcript),
     }
-    try:
-        raw = await llm_router.invoke_llm(
+    async def _execute(reflection: str) -> str:
+        messages = [
+            {"role": "system", "content": _SYSTEM},
+            {"role": "user", "content": json.dumps(payload)},
+        ]
+        if reflection:
+            messages.append({"role": "user", "content": reflection})
+        return await llm_router.invoke_llm(
             "conversation_turn",
-            [
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": json.dumps(payload)},
-            ],
+            messages,
             response_format_json=True,
             session=session,
         )
-    except Exception as exc:  # noqa: BLE001
-        # Deliberately broad, and logged at info rather than error: an outage, a
-        # timeout and a non-JSON body all have the same correct handling, and
-        # none of them is something an operator must act on mid-assessment.
-        logger.info(
-            "answer_classification.unavailable error=%s", type(exc).__name__
-        )
-        return _degraded("llm_unavailable")
 
-    return _interpret(raw)
+    fallback = json.dumps(
+        {
+            "label": "substantive",
+            "confidence": "low",
+            "reason": "classification_loop_degraded",
+        }
+    )
+    result = await agent_loop.run_loop(
+        name="assessment_answer_relevance",
+        execute=_execute,
+        evaluate=_gate,
+        fallback=fallback,
+        max_attempts=agent_loop.INTERACTIVE_ATTEMPTS,
+        deadline_seconds=agent_loop.INTERACTIVE_DEADLINE,
+        max_generated_tokens=1_000,
+    )
+    if result.degraded:
+        logger.info(
+            "answer_classification.degraded attempts=%d reasons=%s error=%s",
+            result.attempts,
+            list(result.reasons),
+            result.error,
+        )
+    return _interpret(result.value)

@@ -161,11 +161,19 @@ class ConversationMessageIn(BaseModel):
     answer: str = Field(min_length=1, max_length=10000)
 
 
+class ConversationAnswerEditIn(BaseModel):
+    answer: str = Field(min_length=1, max_length=10000)
+
+
 class ConversationOut(BaseModel):
     conversation_id: uuid.UUID
     status: str
     prompt: str | None
     progress_label: str
+    answered_questions: int
+    total_questions: int
+    is_reask: bool = False
+    answer_message_id: uuid.UUID | None = None
 
 
 # ── The recruiter's view of what was actually asked and answered ─────────────

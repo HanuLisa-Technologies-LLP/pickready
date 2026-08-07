@@ -74,12 +74,13 @@ QUESTION = "Tell me about a time you tuned Kafka consumer lag in production."
 # ── The public shape other code imports ─────────────────────────────────────
 
 
-def test_labels_are_the_five_kinds() -> None:
+def test_labels_include_shallow_as_a_distinct_relevance_failure() -> None:
     assert LABELS == (
         "substantive",
         "empty",
         "gibberish",
         "off_topic",
+        "shallow",
         "evasive",
     )
 

@@ -190,6 +190,12 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     pending_prompt: Mapped[str | None] = mapped_column(Text)
     pending_question_key: Mapped[str | None] = mapped_column(String(80))
     pending_domain: Mapped[str | None] = mapped_column(String(20))
+    # A probe follows an accepted answer; a re-ask keeps the base-question
+    # counter still. NULL preserves pre-migration pending rows as probes.
+    pending_kind: Mapped[str | None] = mapped_column(String(20))
+    reasks_used: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     # Persisted rather than counted from the transcript: an interview that can
     # ask "one more thing" must be provably finite, and a stored counter holds
     # even if a message fails to persist or a request is retried.
@@ -250,6 +256,12 @@ class AssessmentMessage(Base, UUIDPKMixin, CreatedAtMixin):
     domain: Mapped[str] = mapped_column(String(20), nullable=False)
     question_key: Mapped[str | None] = mapped_column(String(255))
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # Candidate-message-only relevance decision. Agent messages retain the
+    # nullable/default values.
+    answer_label: Mapped[str | None] = mapped_column(String(30))
+    evidence_gap: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
 
 class ReportSkillEvidence(Base, UUIDPKMixin, CreatedAtMixin):

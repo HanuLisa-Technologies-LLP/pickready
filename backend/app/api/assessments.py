@@ -32,6 +32,7 @@ from app.models.tenant import Tenant
 from app.schemas.assessments import (
     CompetencyIn,
     CompetencyOut,
+    ConversationAnswerEditIn,
     ConversationMessageIn,
     ConversationOut,
     DimensionOut,
@@ -72,6 +73,7 @@ router = APIRouter()
 
 READY_FOR_CANDIDATES = "ready_for_candidates"
 PENDING_REVIEW = "questions_pending_review"
+MAX_REASKS_PER_QUESTION = 2
 
 
 async def _staff_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID) -> Job:
@@ -955,6 +957,9 @@ async def start_conversation(
         status=conversation.status,
         prompt=prompt,
         progress_label=f"Question {index + 1} of {len(prompts)}" if index < len(prompts) else "Conversation complete",
+        answered_questions=index,
+        total_questions=len(prompts),
+        is_reask=conversation.pending_kind == "reask",
     )
 
 
@@ -1142,6 +1147,11 @@ async def respond(
     prompts = await _conversation_prompts(session, job, link)
     index = conversation.next_question_index
     pending = conversation.pending_prompt
+    # Rows created before 0045 have NULL here; every historical pending prompt
+    # was a probe, so that is the safe compatibility meaning.
+    pending_kind = (conversation.pending_kind or "probe") if pending else None
+    answering_reask = pending_kind == "reask"
+    answering_probe = pending_kind == "probe"
     # A pending follow-up means the candidate is answering the PROBE, not the
     # next scripted question. Completion therefore cannot be decided by the
     # index alone: the last base question may still have a follow-up
@@ -1162,6 +1172,7 @@ async def respond(
         conversation.pending_prompt = None
         conversation.pending_question_key = None
         conversation.pending_domain = None
+        conversation.pending_kind = None
     else:
         domain, key, prompt = prompts[index]
         # Log what the candidate actually READ, not what was stored for them.
@@ -1172,7 +1183,6 @@ async def respond(
         # both the scorers' input and this agent's own memory.
         prompt = conversation.delivered_prompt or prompt
         conversation.delivered_prompt = None
-        conversation.next_question_index += 1
 
     ordinal = (
         await session.execute(select(func.coalesce(func.max(AssessmentMessage.ordinal), 0)).where(AssessmentMessage.conversation_id == conversation.id))
@@ -1191,21 +1201,31 @@ async def respond(
     # AND nothing resembling an answer is left underneath it.
     guard = conversation_guardrails.inspect_answer(body.answer)
     answer_text = guard.sanitized.strip()
+    candidate_message = AssessmentMessage(
+        tenant_id=job.tenant_id,
+        conversation_id=conversation.id,
+        ordinal=ordinal + 2,
+        speaker="candidate",
+        domain=domain,
+        question_key=key,
+        content=answer_text,
+    )
     session.add_all([
         AssessmentMessage(tenant_id=job.tenant_id, conversation_id=conversation.id, ordinal=ordinal + 1, speaker="agent", domain=domain, question_key=key, content=prompt),
-        AssessmentMessage(tenant_id=job.tenant_id, conversation_id=conversation.id, ordinal=ordinal + 2, speaker="candidate", domain=domain, question_key=key, content=answer_text),
+        candidate_message,
     ])
     await session.flush()
 
-    # Decide how to react to this answer. Only after a BASE question: two
-    # consecutive reactions on one point reads as cross-examination, and it is
-    # also what would let one evasive candidate consume the whole budget.
-    if not pending:
+    # A probe is supplemental evidence for an already accepted base answer, so
+    # it never advances the base counter. A base answer and a relevance re-ask
+    # are classified: only an accepted one advances the counter.
+    if not answering_probe:
         transcript = await _transcript_rows(session, conversation.id)
         reaction = None
         action = "advanced"
         answer_label = "substantive"
         degraded = False
+        needs_rechallenge = False
 
         if not guard.allowed:
             # A refused turn is still transcribed above: the record of what was
@@ -1213,9 +1233,8 @@ async def respond(
             # a model call grading an attack, so this short-circuits to the same
             # re-ask mechanism a non-answer uses -- same question_key, no
             # follow-up budget, bounded to one per question.
-            reaction = guard.candidate_message
-            action = "rechallenged"
             answer_label = f"guarded_{guard.violation}"
+            needs_rechallenge = True
         else:
             # ONE classification decides what happens next. Gibberish and empty
             # are settled deterministically (no model call, because the model
@@ -1238,21 +1257,42 @@ async def respond(
             )
             answer_label = verdict.label
             degraded = verdict.confidence == "low"
+            needs_rechallenge = verdict.needs_rechallenge
 
-            if verdict.needs_rechallenge:
-                # A re-ask costs no follow-up budget and changes no scoring:
-                # the answer is already recorded, and gibberish already grades
-                # Not Matching through the existing unanswered path.
+        candidate_message.answer_label = answer_label
+
+        # Re-asks are bounded per base question. The counter stays still while
+        # one is outstanding. Once the cap is exhausted the answer remains in
+        # the transcript with evidence_gap=true and the interview moves on, so
+        # a candidate cannot be trapped in an infinite loop.
+        if (
+            needs_rechallenge
+            and conversation.reasks_used < MAX_REASKS_PER_QUESTION
+        ):
+            if not guard.allowed:
+                reaction = guard.candidate_message
+            else:
                 reaction = await interviewer.challenge_non_answer(
                     session=session,
                     question=prompt,
                     answer=answer_text,
                     transcript=transcript,
-                    label=verdict.label,
+                    label=answer_label,
                 )
-                action = "rechallenged" if reaction else "advanced"
+            if reaction:
+                conversation.reasks_used += 1
+                action = "rechallenged"
 
-            if reaction is None:
+        if reaction is None:
+            # Either the answer was relevant, the re-ask cap was reached, or a
+            # challenge could not be composed. Every one of those outcomes
+            # closes exactly one base slot. Invalid outcomes are explicit gaps.
+            conversation.next_question_index += 1
+            conversation.reasks_used = 0
+            if needs_rechallenge:
+                candidate_message.evidence_gap = True
+                action = "advanced_with_gap"
+            elif not answering_reask:
                 reaction = await interviewer.next_follow_up(
                     session=session,
                     question=prompt,
@@ -1279,6 +1319,9 @@ async def respond(
             conversation.pending_prompt = conversation_guardrails.inspect_agent_output(reaction)
             conversation.pending_question_key = key
             conversation.pending_domain = domain
+            conversation.pending_kind = (
+                "reask" if action == "rechallenged" else "probe"
+            )
 
         # One structured line per turn. Labels, keys and timings only, never
         # answer or question text: an ordinary log is far more widely readable
@@ -1345,4 +1388,95 @@ async def respond(
         status=conversation.status,
         prompt=next_prompt,
         progress_label=f"Question {next_index + 1} of {len(prompts)}" if next_index < len(prompts) else "Conversation complete",
+        answered_questions=next_index,
+        total_questions=len(prompts),
+        is_reask=conversation.pending_kind == "reask",
+        answer_message_id=candidate_message.id,
     )
+
+
+@router.patch(
+    "/conversations/{conversation_id}/answers/{message_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def edit_latest_answer(
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: ConversationAnswerEditIn,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> Response:
+    """Edit the most recent saved answer while the assessment is active.
+
+    Earlier answers are already inputs to later adaptive questions, so changing
+    one would make the transcript disagree with the conversation that occurred.
+    The latest answer is safe to correct, but it must still pass the same
+    relevance guard that allowed the counter to advance.
+    """
+    conversation = await session.get(AssessmentConversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if conversation.status != "active":
+        raise HTTPException(
+            status_code=409,
+            detail="Completed assessment responses are permanent and cannot be edited.",
+        )
+    await _candidate_link(session, user, conversation.job_candidate_link_id)
+    message = await session.get(AssessmentMessage, message_id)
+    if (
+        message is None
+        or message.conversation_id != conversation.id
+        or message.speaker != "candidate"
+    ):
+        raise HTTPException(status_code=404, detail="Response not found")
+    latest_id = (
+        await session.execute(
+            select(AssessmentMessage.id)
+            .where(
+                AssessmentMessage.conversation_id == conversation.id,
+                AssessmentMessage.speaker == "candidate",
+            )
+            .order_by(AssessmentMessage.ordinal.desc())
+            .limit(1)
+        )
+    ).scalar_one()
+    if latest_id != message.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Only your most recent response can be edited.",
+        )
+
+    guard = conversation_guardrails.inspect_answer(body.answer)
+    edited = guard.sanitized.strip()
+    if not guard.allowed:
+        raise HTTPException(status_code=422, detail=guard.candidate_message)
+    question = (
+        await session.execute(
+            select(AssessmentMessage.content).where(
+                AssessmentMessage.conversation_id == conversation.id,
+                AssessmentMessage.speaker == "agent",
+                AssessmentMessage.ordinal == message.ordinal - 1,
+            )
+        )
+    ).scalar_one_or_none()
+    verdict = await answer_classification.classify(
+        session=session,
+        question=question or "",
+        answer=edited,
+        transcript=await _transcript_rows(session, conversation.id),
+    )
+    if verdict.needs_rechallenge:
+        detail = {
+            "gibberish": "That edit did not come through as an answer.",
+            "empty": "Please enter an answer before saving.",
+            "off_topic": "That edit answers a different question.",
+            "shallow": "That edit still needs the specific example or detail requested.",
+            "evasive": "That edit still does not address the specific question.",
+        }.get(verdict.label, "That edit does not answer the question.")
+        raise HTTPException(status_code=422, detail=detail)
+
+    message.content = edited
+    message.answer_label = verdict.label
+    message.evidence_gap = False
+    await session.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
