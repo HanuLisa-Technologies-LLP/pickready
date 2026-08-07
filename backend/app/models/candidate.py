@@ -60,10 +60,14 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
     )
     source_tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    # Every binary lives in Cloudinary. These fields are deliberately kept on
-    # the profile so one application is an immutable snapshot of its resume.
-    resume_url: Mapped[str | None] = mapped_column(String(1000))  # Cloudinary secure URL
+    # Every binary lives in the private GCS bucket. These fields remain on the
+    # profile so one application is an immutable snapshot of its resume.
+    resume_url: Mapped[str | None] = mapped_column(String(1000))
     resume_public_id: Mapped[str | None] = mapped_column(String(512), index=True)
+    resume_storage_provider: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="gcs"
+    )
+    resume_legacy_public_id: Mapped[str | None] = mapped_column(String(512))
     resume_original_filename: Mapped[str | None] = mapped_column(String(255))
     resume_mime_type: Mapped[str | None] = mapped_column(String(255))
     resume_size_bytes: Mapped[int | None] = mapped_column(Integer)

@@ -1,0 +1,24 @@
+{
+  "rule": [
+    {
+      "action": {
+        "type": "Delete"
+      },
+      "condition": {
+        "age": 30,
+        "matchesPrefix": [
+          "quarantine/",
+          "migration-staging/"
+        ]
+      }
+    },
+    {
+      "action": {
+        "type": "AbortIncompleteMultipartUpload"
+      },
+      "condition": {
+        "age": 7
+      }
+    }
+  ]
+}

@@ -3,11 +3,13 @@ interview scheduling (FR-4.3/4.4, FR-7.x, FR-8.x)."""
 import html
 import io
 import uuid
+from urllib.parse import urlencode
 from datetime import datetime, timezone
 
 from docx import Document
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+import jwt
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,6 +65,7 @@ from app.services.resume_storage import (
     ResumeStorageError,
     store_resume,
 )
+from app.services.resume_access import issue_resume_token, verify_resume_token
 from app.workers.celery_app import celery_app
 
 router = APIRouter()
@@ -353,6 +356,7 @@ td{{border:1px solid #bbb;padding:.45rem;vertical-align:top}}
 async def resume_file(
     profile_id: uuid.UUID,
     download: bool = Query(default=False),
+    access_token: str | None = Query(default=None),
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> Response:
@@ -375,6 +379,22 @@ async def resume_file(
     )
     if not full_access and not link.hm_access_granted:
         raise HTTPException(status_code=403, detail="Profile access not granted")
+    if access_token is None:
+        query = urlencode(
+            {
+                "download": str(download).lower(),
+                "access_token": issue_resume_token(profile_id, user.tenant_id),
+            }
+        )
+        return RedirectResponse(
+            url=f"/api/v2/candidates/profiles/{profile_id}/resume-file?{query}",
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            headers={"Cache-Control": "private, no-store"},
+        )
+    try:
+        verify_resume_token(access_token, profile_id, user.tenant_id)
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=403, detail="Resume link is invalid or expired") from exc
     try:
         content = await fetch_resume_bytes(profile)
     except ResumeStorageError as exc:

@@ -1,7 +1,7 @@
 """Resume storage + candidate self-upload guarantees.
 
 Two layers, matching the repo's convention (see test_seed / test_rls):
-- DB-free unit tests on `store_resume` / `read_validated_resume` with Cloudinary
+- DB-free unit tests on `store_resume` / `read_validated_resume` with GCS
   fully mocked (no real network) — always run.
 - One live integration test proving a candidate `apply` creates a FRESH Profile
   every time (claude.md rule 6). It SKIPS cleanly when no database is reachable
@@ -35,14 +35,14 @@ def _upload(
 
 
 class _FakeSettings:
-    def __init__(self, cloudinary_url: str) -> None:
-        self.cloudinary_url = cloudinary_url
+    def __init__(self, gcs_bucket: str) -> None:
+        self.gcs_bucket = gcs_bucket
 
 
 def _asset() -> ResumeAsset:
     return ResumeAsset(
-        public_id="pickready/resumes/test",
-        secure_url="https://res.cloudinary.com/x/raw/upload/cv.pdf",
+        public_id="resumes/test",
+        secure_url="gs://test-private/resumes/test",
         original_filename="cv.pdf",
         mime_type="application/pdf",
         size_bytes=24,
@@ -56,20 +56,20 @@ def _asset() -> ResumeAsset:
 
 async def test_store_resume_returns_metadata_on_success(monkeypatch) -> None:
     monkeypatch.setattr(resume_storage, "get_settings",
-                        lambda: _FakeSettings("cloudinary://key:secret@cloud"))
-    monkeypatch.setattr(resume_storage, "_cloudinary_resource", lambda _public_id: None)
-
-    import cloudinary.uploader
-
-    def fake_upload(data, **kwargs):
-        assert kwargs["resource_type"] == "raw"
-        assert kwargs["public_id"].startswith("pickready/resumes/")
-        return {"public_id": kwargs["public_id"], "secure_url": "https://res.cloudinary.com/x/raw/upload/cv.pdf", "bytes": len(data)}
-
-    monkeypatch.setattr(cloudinary.uploader, "upload", fake_upload)
+                        lambda: _FakeSettings("test-private"))
+    monkeypatch.setattr(
+        resume_storage,
+        "_upload_or_get_existing",
+        lambda data, sha, filename, mime: {
+            "object_name": f"resumes/{sha}",
+            "size": len(data),
+            "generation": "1",
+            "created_at": datetime.now(timezone.utc),
+        },
+    )
 
     asset = await cand_mod.store_resume(_upload())
-    assert asset.secure_url == "https://res.cloudinary.com/x/raw/upload/cv.pdf"
+    assert asset.secure_url.startswith("gs://test-private/resumes/")
     assert asset.original_filename == "cv.pdf"
 
 
@@ -80,17 +80,14 @@ async def test_store_resume_rejects_unconfigured_storage(monkeypatch) -> None:
     assert exc.value.status_code == 503
 
 
-async def test_store_resume_reports_cloudinary_failure(monkeypatch) -> None:
+async def test_store_resume_reports_gcs_failure(monkeypatch) -> None:
     monkeypatch.setattr(resume_storage, "get_settings",
-                        lambda: _FakeSettings("cloudinary://key:secret@cloud"))
-    monkeypatch.setattr(resume_storage, "_cloudinary_resource", lambda _public_id: None)
+                        lambda: _FakeSettings("test-private"))
 
-    import cloudinary.uploader
+    def boom(*args, **kwargs):
+        raise cand_mod.HTTPException(status_code=503, detail="gcs down")
 
-    def boom(data, **kwargs):
-        raise RuntimeError("cloudinary down")
-
-    monkeypatch.setattr(cloudinary.uploader, "upload", boom)
+    monkeypatch.setattr(resume_storage, "_upload_or_get_existing", boom)
     # Storage failure must not propagate — the upload flow degrades to no URL.
     with pytest.raises(cand_mod.HTTPException) as exc:
         await cand_mod.store_resume(_upload())
