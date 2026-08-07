@@ -28,7 +28,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-FOOTER = "Confidential — Permanent Assessment Record."
+FOOTER = "Confidential " + chr(8212) + " Permanent Assessment Record."
 PURPLE = colors.HexColor("#5028E0")
 INK = colors.HexColor("#172033")
 MUTED = colors.HexColor("#64748B")
@@ -132,7 +132,7 @@ def _dimension_cards(
     cards: list[list[Any]] = []
     for row in items:
         required = _value(row, "required_level")
-        label = f"<b>{_text(_value(row, 'name'))}</b> — {_text(_value(row, 'grade'))}"
+        label = f"<b>{_text(_value(row, 'name'))}</b> - {_text(_value(row, 'grade'))}"
         if required:
             label += (
                 "<br/><font color='#64748B'>Role requires: "
@@ -191,7 +191,7 @@ def render_report_pdf(
         rightMargin=18 * mm,
         topMargin=16 * mm,
         bottomMargin=19 * mm,
-        title=f"PPI Assessment Report — {candidate_name}",
+        title=f"PPI Assessment Report - {candidate_name}",
         author="PickReady",
     )
     base = getSampleStyleSheet()
