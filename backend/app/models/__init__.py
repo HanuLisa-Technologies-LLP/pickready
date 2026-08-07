@@ -9,6 +9,7 @@ from app.models.assessment import (
     FunctionalSkillsReport,
     JobCompetency,
     ReportDimension,
+    ReportSkillEvidence,
     TechnicalQuestion,
 )
 from app.models.bd import (
@@ -132,6 +133,7 @@ __all__ = [
     "SOCIAL_SOURCES",
     "TENANT_PROSPECT",
     "ReportDimension",
+    "ReportSkillEvidence",
     "RolePermission",
     "SubmittedVia",
     "TAX_DOCUMENT_TYPES",

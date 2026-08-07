@@ -252,6 +252,56 @@ class AssessmentMessage(Base, UUIDPKMixin, CreatedAtMixin):
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class ReportSkillEvidence(Base, UUIDPKMixin, CreatedAtMixin):
+    """Structured evidence extracted from one completed conversation.
+
+    The six JSON arrays preserve concrete snippets and explicit absences rather
+    than compressing the transcript into another opaque score. A report
+    narrative can therefore cite what this candidate actually said, while the
+    full transcript remains the immutable source record.
+    """
+
+    __tablename__ = "report_skill_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "category",
+            "skill",
+            name="uq_report_skill_evidence",
+        ),
+        Index(
+            "ix_report_skill_evidence_conversation",
+            "conversation_id",
+            "category",
+        ),
+        Index("ix_report_skill_evidence_tenant", "tenant_id"),
+    )
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("assessment_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    category: Mapped[str] = mapped_column(String(20), nullable=False)
+    skill: Mapped[str] = mapped_column(String(255), nullable=False)
+    question_keys: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    technical_precision: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    depth: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    problem_solving_structure: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    role_relevance: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    concrete_examples: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    explicit_gaps: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+
 class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     __tablename__ = "functional_skills_reports"
     __table_args__ = (

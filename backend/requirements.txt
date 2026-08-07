@@ -35,6 +35,8 @@ langchain-openai>=0.2
 # empty "from the internet" segment when the client or TAVILY_API_KEY is absent.
 tavily-python>=0.5
 pypdf>=4.3
+reportlab>=4.2
+Pillow>=10.4
 python-docx>=1.1
 python-multipart>=0.0.9
 cloudinary>=1.40

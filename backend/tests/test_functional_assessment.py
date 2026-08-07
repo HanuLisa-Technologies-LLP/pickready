@@ -317,7 +317,7 @@ async def test_unprobed_competency_is_graded_as_no_evidence() -> None:
     )
     row = out["ppi"][0]
     assert row["score"] == fa.UNANSWERED_SCORE
-    assert "no usable evidence" in row["remark"]
+    assert "No substantive answer" in row["remark"]
     assert 45 <= word_count(row["remark"]) <= 50
 
 

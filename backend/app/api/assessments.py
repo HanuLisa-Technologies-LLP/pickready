@@ -1,11 +1,12 @@
 """Job setup review, the unified conversation, and the PPI Assessment Report."""
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +28,7 @@ from app.models.assessment import (
 )
 from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
+from app.models.tenant import Tenant
 from app.schemas.assessments import (
     CompetencyIn,
     CompetencyOut,
@@ -61,6 +63,7 @@ from app.services.functional_assessment import (
     rating_label,
 )
 from app.services.rating import GRADES, grade_for_percent
+from app.services.report_pdf import render_report_pdf
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -504,6 +507,47 @@ async def get_report(
         radar_series=list(RADAR_SERIES),
         synthesized_at=report.synthesized_at,
         immutable=True,
+    )
+
+
+@router.get("/reports/links/{link_id}/pdf")
+async def download_report_pdf(
+    link_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> Response:
+    """Download the immutable report with tenant-scoped authorization."""
+    report_out = await get_report(link_id=link_id, user=user, session=session)
+    link = await session.get(JobCandidateLink, link_id)
+    if link is None or link.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="Report not found")
+    candidate = await session.get(Candidate, link.candidate_id)
+    job = await session.get(Job, link.job_id)
+    tenant = await session.get(Tenant, link.tenant_id)
+    candidate_name = (candidate.full_name if candidate else None) or "Candidate"
+    job_title = (job.title if job else None) or "Role"
+    tenant_name = (tenant.name if tenant else None) or "PickReady customer"
+    payload = render_report_pdf(
+        report_out,
+        candidate_name=candidate_name,
+        job_title=job_title,
+        tenant_name=tenant_name,
+        generated_at=report_out.synthesized_at,
+    )
+    safe_name = (
+        re.sub(r"[^A-Za-z0-9_-]+", "-", candidate_name).strip("-")
+        or "candidate"
+    )
+    return Response(
+        content=payload,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="ppi-assessment-report-{safe_name}.pdf"'
+            ),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

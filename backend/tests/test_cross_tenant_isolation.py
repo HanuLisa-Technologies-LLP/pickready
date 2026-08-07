@@ -27,8 +27,10 @@ class TenantGraph:
     candidate: uuid.UUID
     profile: uuid.UUID
     link: uuid.UUID
+    conversation: uuid.UUID
     report: uuid.UUID
     dimension: uuid.UUID
+    evidence: uuid.UUID
     competency: uuid.UUID
     invite: uuid.UUID
     company: uuid.UUID
@@ -40,8 +42,10 @@ RESOURCE_IDS = {
     "jobs": ("id", "job"),
     "candidates": ("id", "candidate"),
     "job_candidate_links": ("id", "link"),
+    "assessment_conversations": ("id", "conversation"),
     "functional_skills_reports": ("id", "report"),
     "report_dimensions": ("id", "dimension"),
+    "report_skill_evidence": ("id", "evidence"),
     "job_competencies": ("id", "competency"),
     "staff_invites": ("id", "invite"),
     "companies": ("id", "company"),
@@ -51,7 +55,7 @@ RESOURCE_IDS = {
 
 
 def _graph() -> TenantGraph:
-    return TenantGraph(*(uuid.uuid4() for _ in range(11)))
+    return TenantGraph(*(uuid.uuid4() for _ in range(13)))
 
 
 async def _factory_or_skip():
@@ -131,6 +135,16 @@ async def _seed_graph(session, graph: TenantGraph, label: str) -> None:
     )
     await session.execute(
         text(
+            "INSERT INTO assessment_conversations "
+            "(id, tenant_id, job_id, job_candidate_link_id, grade, status, "
+            " next_question_index, follow_ups_used, reminders_sent) "
+            "VALUES (:conversation, :tenant, :job, :link, 'non_managerial', "
+            " 'completed', 1, 0, 0)"
+        ),
+        values,
+    )
+    await session.execute(
+        text(
             "INSERT INTO report_dimensions "
             "(id, tenant_id, report_id, category, name, score, remark, ordinal) "
             "VALUES (:dimension, :tenant, :report, 'primary_skill', :label, 90, :remark, 1)"
@@ -142,6 +156,18 @@ async def _seed_graph(session, graph: TenantGraph, label: str) -> None:
             "INSERT INTO job_competencies "
             "(id, tenant_id, job_id, category, name, ordinal) "
             "VALUES (:competency, :tenant, :job, 'primary_skill', :label, 1)"
+        ),
+        values,
+    )
+    await session.execute(
+        text(
+            "INSERT INTO report_skill_evidence "
+            "(id, tenant_id, conversation_id, category, skill, question_keys, "
+            " technical_precision, depth, problem_solving_structure, "
+            " role_relevance, concrete_examples, explicit_gaps, extracted_at, created_at) "
+            "VALUES (:evidence, :tenant, :conversation, 'primary_skill', :label, "
+            " '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, "
+            " '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, now(), now())"
         ),
         values,
     )

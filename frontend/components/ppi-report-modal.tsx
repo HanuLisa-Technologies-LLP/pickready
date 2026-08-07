@@ -13,7 +13,7 @@
 // -> Suggested interview questions.
 
 import * as React from "react";
-import { Loader2, Lock } from "lucide-react";
+import { Download, Loader2, Lock } from "lucide-react";
 
 import { apiGet } from "@/lib/api";
 import { useToast } from "@/components/ui/toast";
@@ -28,6 +28,7 @@ import {
   FunctionalSkillsReportView,
   type FunctionalReport,
 } from "@/components/functional-skills-report";
+import { Button } from "@/components/ui/button";
 
 export function PPIReportModal({
   open,
@@ -77,10 +78,23 @@ export function PPIReportModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-5xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>
-            PPI Assessment Report, {candidateName}
-            {jobTitle ? ` (${jobTitle})` : ""}
-          </DialogTitle>
+          <div className="flex flex-wrap items-start justify-between gap-3 pr-8">
+            <DialogTitle>
+              PPI Assessment Report, {candidateName}
+              {jobTitle ? ` (${jobTitle})` : ""}
+            </DialogTitle>
+            {linkId && report ? (
+              <Button asChild size="sm" variant="outline">
+                <a
+                  href={`/api/v2/assessments/reports/links/${linkId}/pdf`}
+                  download
+                >
+                  <Download className="mr-2 h-4 w-4" aria-hidden />
+                  Download PDF
+                </a>
+              </Button>
+            ) : null}
+          </div>
           <DialogDescription className="flex items-center gap-1.5">
             <Lock className="h-3.5 w-3.5" aria-hidden />
             This report is a permanent record and cannot be edited or deleted.

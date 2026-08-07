@@ -185,7 +185,8 @@ else
   # routes are absent" is also true of an image where the whole router failed
   # to load.
   for present in \
-    '/api/v2/assessments/transcripts/links/{link_id}'
+    '/api/v2/assessments/transcripts/links/{link_id}' \
+    '/api/v2/assessments/reports/links/{link_id}/pdf'
   do
     if grep -qF "\"${present}\"" "$BODY_FILE"; then
       pass "${present} is registered"

@@ -817,10 +817,16 @@ def generate_candidate_questions(link_id: str):
     max_retries=5,
 )
 def run_functional_assessment(link_id: str):
-    from app.models.assessment import AssessmentConversation, AssessmentMessage
+    from app.models.assessment import (
+        AssessmentConversation,
+        AssessmentMessage,
+        CandidateTechnicalQuestion,
+        JobCompetency,
+    )
     from app.models.candidate import JobCandidateLink
     from app.models.job import Job
     from app.services.functional_assessment import run_assessment
+    from app.services.report_evidence import persist_skill_evidence
 
     async def _task():
         async with _worker_session() as session:
@@ -853,6 +859,33 @@ def run_functional_assessment(link_id: str):
                     }
                     for message in messages
                 ]
+                technical_questions = (
+                    await session.execute(
+                        select(CandidateTechnicalQuestion)
+                        .where(
+                            CandidateTechnicalQuestion.job_candidate_link_id
+                            == link.id
+                        )
+                        .order_by(CandidateTechnicalQuestion.ordinal)
+                    )
+                ).scalars().all()
+                competencies = (
+                    await session.execute(
+                        select(JobCompetency)
+                        .where(
+                            JobCompetency.job_id == job.id,
+                            JobCompetency.is_active.is_(True),
+                        )
+                        .order_by(JobCompetency.category, JobCompetency.ordinal)
+                    )
+                ).scalars().all()
+                await persist_skill_evidence(
+                    session,
+                    conversation=conversation,
+                    transcript=transcript,
+                    technical_questions=list(technical_questions),
+                    competencies=list(competencies),
+                )
             await run_assessment(session, job, link, transcript)
             await session.commit()
     _run(_task())

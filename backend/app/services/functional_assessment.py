@@ -457,17 +457,98 @@ def _fallback_remark_45(name: str) -> str:
     return next(value for value in candidates if 45 <= word_count(value) <= 50)
 
 
+def _evidence_anchor(evidence: str) -> str:
+    """A short, candidate-specific phrase safe to embed in a fallback."""
+    ignored = {
+        "answer",
+        "answers",
+        "candidate",
+        "candidates",
+        "evidence",
+        "item",
+        "question",
+        "questions",
+        "skill",
+        "their",
+        "this",
+    }
+    words = [
+        token
+        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9+'-]*", evidence)
+        if token.casefold() not in ignored
+    ]
+    return " ".join(words[:4]) or "the available account"
+
+
+def rating_differentiated_fallback(
+    evidence: str,
+    rating: str,
+    minimum: int,
+    maximum: int,
+) -> str:
+    """A safe evidence-anchored fallback with a distinct contract per rating."""
+    anchor = _evidence_anchor(evidence)
+    if minimum < 40:
+        templates = {
+            "Highly Matching": (
+                "The candidate gave a specific example involving {anchor}, connecting personal action to an outcome. "
+                "Interview verification should test whether the demonstrated strength holds under comparable role constraints."
+            ),
+            "Matching": (
+                "The answer connects {anchor} to relevant work and supports dependable capability. "
+                "A focused interview probe should confirm independent ownership, decision trade-offs, and consistency."
+            ),
+            "Moderately Matching": (
+                "The answer mentions {anchor} but leaves the candidate's personal decision, technical depth, or outcome unclear. "
+                "Interviewers should probe the missing detail before relying on this evidence."
+            ),
+            "Not Matching": (
+                "The conversation did not establish capability beyond {anchor}; no clear owned action or outcome was demonstrated. "
+                "A direct probe should distinguish missing knowledge from an unexpressed example."
+            ),
+        }
+    else:
+        templates = {
+            "Highly Matching": (
+                "The candidate tied {anchor} to a specific situation, explained the action personally taken, and identified the resulting outcome. "
+                "That detail demonstrates highly matching capability in this area. Interview verification should now test whether the same judgement "
+                "and depth remain consistent when constraints, scale, or stakeholders change."
+            ),
+            "Matching": (
+                "The candidate connected {anchor} to relevant work, with enough detail to confirm matching capability and a credible personal contribution. "
+                "The account leaves one useful verification area: interviewers should probe the hardest trade-off, how the result was checked, and whether "
+                "the candidate could repeat the approach independently."
+            ),
+            "Moderately Matching": (
+                "The answer referred to {anchor}, but only partly connected the situation to a personal decision, precise action, or verified outcome. "
+                "This is incomplete evidence. Interviewers should probe the gap directly, asking what the candidate personally changed, how they measured "
+                "the result, and what they learned."
+            ),
+            "Not Matching": (
+                "The conversation did not establish capability beyond {anchor}; it contained no sufficiently clear owned action, technical reasoning, or outcome "
+                "for this area. Interviewers should treat the criterion as unresolved and use a direct role-specific probe to distinguish missing knowledge "
+                "from capability the candidate simply did not express."
+            ),
+        }
+    value = templates.get(rating, templates["Matching"]).format(anchor=anchor)
+    if minimum <= word_count(value) <= maximum:
+        return value
+    # Long names and unusual evidence cannot affect these templates; this is a
+    # last-resort guard if their wording is edited without updating the tests.
+    return _fallback_remark_45("this area") if minimum >= 40 else _fallback_remark_25("this area")
+
+
 def _unanswered_remark(name: str, minimum: int) -> str:
     """Factual remark for an item the candidate produced no evidence for."""
     if minimum >= 45:
         candidates = [
             (
-                f"The conversation produced no usable evidence for {name}. The candidate did not describe a situation that "
+                f"No substantive answer addressed {name} during the completed assessment conversation. The candidate did not describe a situation that "
                 "shows this capability, so nothing here can be graded on demonstrated behaviour. An interviewer should treat "
                 "it as an open question and probe it directly before drawing a conclusion."
             ),
             (
-                "The conversation produced no usable evidence for this item. The candidate did not describe a situation that "
+                "No substantive answer addressed this item during the completed assessment conversation. The candidate did not describe a situation that "
                 "shows the capability, so nothing here can be graded on demonstrated behaviour. An interviewer should treat "
                 "it as an open question and probe it directly before drawing a conclusion."
             ),
@@ -492,6 +573,8 @@ async def bounded_remark(
     evidence: str,
     minimum: int = 25,
     maximum: int = 30,
+    *,
+    rating: str | None = None,
 ) -> str:
     """A COMPLETE remark inside the word contract, never truncated.
 
@@ -522,14 +605,26 @@ async def bounded_remark(
          precisely where "demonstrates strong 8/10 capability" comes from. It is
          now a rejection reason, so the model is told and writes it again.
     """
-    fallback = _fallback_remark_45(name) if minimum >= 45 else _fallback_remark_25(name)
+    fallback = (
+        rating_differentiated_fallback(evidence, rating, minimum, maximum)
+        if rating
+        else (_fallback_remark_45(name) if minimum >= 45 else _fallback_remark_25(name))
+    )
 
     system = (
         f"Write one complete, evidence-based assessment remark of exactly {minimum}-{maximum} words "
         f"for '{name}'. Ground every clause in the specific evidence supplied: quote or paraphrase what "
         "this candidate actually said. Do not use templated phrasing that would fit any candidate, and "
         "do not include a score, percentage, grade, recommendation, or heading. "
-        f"Evidence: {evidence}"
+        + (
+            {
+                "Highly Matching": "Cite the specific example, personal action, and outcome. ",
+                "Matching": "Confirm the demonstrated evidence and name exactly one useful probe area. ",
+                "Moderately Matching": "Diagnose the precise partial gap and name what needs probing. ",
+                "Not Matching": "State what was absent and propose a probe that distinguishes missing knowledge from unexpressed capability. ",
+            }.get(rating or "", "")
+        )
+        + f"Evidence: {evidence}"
     )
 
     async def execute(reflection: str) -> str:
@@ -658,7 +753,11 @@ async def _matching_dimensions(state: AssessmentState) -> list[dict[str, Any]]:
                 "score": max(0, min(100, score)),
                 "required_level": None,
                 "remark": await bounded_remark(
-                    state["session"], name, evidence, *MATCHING_REMARK_WORDS
+                    state["session"],
+                    name,
+                    evidence,
+                    *MATCHING_REMARK_WORDS,
+                    rating=grade_for_percent(max(0, min(100, score))),
                 ),
                 "ordinal": ordinal,
             }
@@ -735,7 +834,11 @@ async def technical_node(state: AssessmentState) -> dict:
                 f"{' '.join(answered)[:600]}"
             )
             remark = await bounded_remark(
-                state["session"], skill, evidence, *MATCHING_REMARK_WORDS
+                state["session"],
+                skill,
+                evidence,
+                *MATCHING_REMARK_WORDS,
+                rating=grade_for_percent(aggregate),
             )
         rows.append(
             {
@@ -825,6 +928,7 @@ async def ppi_node(state: AssessmentState) -> dict:
                     competency.name,
                     f"the candidate's own answers probing this item: {combined[:800]}",
                     *PPI_REMARK_WORDS,
+                    rating=grade_for_percent(score),
                 ),
             }
         )
@@ -1007,6 +1111,29 @@ async def generate_suggested_questions(
                 )
             )
         names = [str(row["name"]) for row in ordered]
+        not_matching = [
+            str(row["name"])
+            for row in ordered
+            if grade_for_percent(row["score"]) == "Not Matching"
+        ]
+        if not_matching:
+            first_block = probes[: min(len(not_matching), len(probes))]
+            missing_priority = [
+                name
+                for name in not_matching
+                if not any(name.casefold() in probe.casefold() for probe in first_block)
+            ]
+            if missing_priority:
+                defects.append(
+                    agent_loop.Defect(
+                        "priority",
+                        "interview_probes",
+                        (
+                            "place probes for every Not Matching criterion first; "
+                            "the first block missed " + ", ".join(missing_priority)
+                        ),
+                    )
+                )
         for index, probe in enumerate(probes):
             if names and not any(
                 name.casefold() in probe.casefold() for name in names
@@ -1085,6 +1212,7 @@ async def synthesis_node(state: AssessmentState) -> dict:
             f"Stronger evidence: {strong_names}. Weaker or unevidenced: {weak_names}."
         ),
         *PPI_REMARK_WORDS,
+        rating=grade_for_percent(overall_score),
     )
 
     probes = await generate_suggested_questions(
