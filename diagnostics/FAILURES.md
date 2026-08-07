@@ -119,3 +119,21 @@ Stated plainly so it is not mistaken for coverage:
 - `/health` returns a hardcoded `{"status":"ok"}` and **touches no database**
   (`app/main.py:147-149`). It is not a liveness signal for anything but the
   process.
+
+---
+
+## 7. Change 9 LangSmith trace links cannot be retrieved
+
+Change 9's loop-level LangSmith instrumentation is deployed and the production
+runtime receives `LANGSMITH_API_KEY` from Secret Manager. A synthetic,
+non-customer production loop was executed as Cloud Run Job execution
+`pickready-migrate-cbht9`; the job completed successfully.
+
+The current stored key returns HTTP 403 from the LangSmith sessions/runs API in
+both the US and EU API regions. Consequently the live run cannot be read back
+and an honest dashboard trace link cannot be attached. The SDK integration is
+deliberately failure-tolerant, so this did not break the report loop.
+
+Resolving this requires a valid key with read access to the owning LangSmith
+workspace. No secret was written to the repository, and no customer data was
+used in the verification execution.
