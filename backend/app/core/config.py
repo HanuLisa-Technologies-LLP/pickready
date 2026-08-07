@@ -106,9 +106,6 @@ class Settings(BaseSettings):
     # tenant-scoped, short-lived application signature.
     gcs_bucket: str = "pick-ready-503913-private-assets"
     resume_signed_url_ttl_seconds: int = 300
-    # Temporary migration-only credential. Removed after the production object
-    # copy is verified and no profile retains a Cloudinary reference.
-    cloudinary_url: str = ""
 
     # Payments  -  Razorpay Subscriptions. The Key ID is public (Checkout needs it
     # in the browser and reads it from GET /billing/config); the Key Secret and

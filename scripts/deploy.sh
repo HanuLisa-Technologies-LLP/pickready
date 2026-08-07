@@ -70,7 +70,7 @@ DEPLOY_OUT="${DEPLOY_OUT:-${REPO_ROOT}/.deploy-state.env}"
 # whole deploy with a type conflict if it is. POSTGRES_PASSWORD is consumed
 # here to compose DATABASE_URL and is not needed by the app. NEXT_PUBLIC_* are
 # frontend BUILD arguments, not backend runtime config.
-SECRET_EXCLUDE_RE='^(DATABASE_URL|REDIS_URL|POSTGRES_PASSWORD|NEXT_PUBLIC_.*)$'
+SECRET_EXCLUDE_RE='^(DATABASE_URL|REDIS_URL|POSTGRES_PASSWORD|CLOUDINARY_URL|NEXT_PUBLIC_.*)$'
 
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }

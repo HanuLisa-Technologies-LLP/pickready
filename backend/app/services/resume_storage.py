@@ -2,8 +2,7 @@
 
 Resume bytes never persist on the application filesystem. Durable database
 references use ``gs://`` object names; a raw bucket URL is never returned to a
-browser. The Cloudinary reader is temporary and read-only so already stored
-profiles remain available during the one-time production migration.
+browser.
 """
 from __future__ import annotations
 
@@ -13,7 +12,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-import httpx
 from fastapi import HTTPException, UploadFile, status
 from google.cloud import storage
 from google.api_core.exceptions import PreconditionFailed
@@ -254,50 +252,13 @@ def _fetch_gcs_bytes(object_name: str) -> bytes:
     return data
 
 
-def _configure_cloudinary() -> None:
-    settings = get_settings()
-    if not settings.cloudinary_url:
-        raise ResumeStorageError("Legacy resume storage is not configured.")
-    import cloudinary
-
-    cloudinary.config(cloudinary_url=settings.cloudinary_url, secure=True)
-
-
-async def _fetch_legacy_cloudinary(profile: Any) -> bytes:
-    """Temporary read-only bridge used until the migration reaches zero."""
-    _configure_cloudinary()
-    import cloudinary.utils
-
-    metadata = profile.resume_metadata_json or {}
-    download_url = cloudinary.utils.private_download_url(
-        profile.resume_public_id,
-        "",
-        resource_type=metadata.get("resource_type") or "raw",
-        type=metadata.get("delivery_type") or "upload",
-    )
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=10.0),
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(download_url)
-            response.raise_for_status()
-    except httpx.HTTPError as exc:
-        raise ResumeStorageError(
-            "Legacy storage could not be reached while retrieving the resume."
-        ) from exc
-    if not response.content:
-        raise ResumeStorageError("Legacy storage returned an empty resume file.")
-    return response.content
-
-
 async def fetch_resume_bytes(profile: Any) -> bytes:
     if not profile_has_resume(profile):
         raise ResumeStorageError("The resume file is missing its storage metadata.")
     provider = getattr(profile, "resume_storage_provider", None)
-    if provider == "gcs" or str(profile.resume_url).startswith("gs://"):
-        return await run_in_threadpool(_fetch_gcs_bytes, profile.resume_public_id)
-    return await _fetch_legacy_cloudinary(profile)
+    if provider != "gcs" and not str(profile.resume_url).startswith("gs://"):
+        raise ResumeStorageError("The resume has not been migrated to private storage.")
+    return await run_in_threadpool(_fetch_gcs_bytes, profile.resume_public_id)
 
 
 async def delete_resume_asset(asset: ResumeAsset) -> None:

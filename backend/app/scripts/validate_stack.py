@@ -408,12 +408,12 @@ def _env_check():
     settings = get_settings()
     hard = {
         "FIREBASE_SERVICE_ACCOUNT_JSON": settings.firebase_service_account_json,
-        "CLOUDINARY_URL": settings.cloudinary_url,
+        "GCS_BUCKET": settings.gcs_bucket,
     }
     missing_hard = [k for k, v in hard.items() if not v]
     if missing_hard:
         return FAIL, f"missing required env: {', '.join(missing_hard)}"
-    return PASS, "FIREBASE_SERVICE_ACCOUNT_JSON + CLOUDINARY_URL present"
+    return PASS, "FIREBASE_SERVICE_ACCOUNT_JSON + GCS_BUCKET present"
 
 
 def _smtp_env_check():

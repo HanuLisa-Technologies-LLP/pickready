@@ -281,7 +281,7 @@ async def preview_resume(
     """Render a DOCX resume inside PickReady as safe, monochrome HTML.
 
     Browsers cannot natively display Word documents. The server downloads only
-    the trusted Cloudinary asset already stored on the profile, extracts
+    the trusted private asset already stored on the profile, extracts
     paragraphs and tables with python-docx, HTML-escapes every value, and
     returns a same-app preview. PDF/image previews continue to use the browser's
     native viewer.

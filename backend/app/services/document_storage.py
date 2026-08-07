@@ -1,4 +1,4 @@
-"""Cloudinary-backed storage for customer compliance documents.
+"""Private GCS-backed storage for customer compliance documents.
 
 The sibling of `services/resume_storage`, and deliberately a separate module
 rather than a parameter on it: a resume is a candidate artefact with its own
@@ -10,7 +10,7 @@ Everything else mirrors resume_storage on purpose, because those behaviours
 were chosen for good reasons and diverging would be a silent regression:
 
   * bytes never touch the application filesystem;
-  * the Cloudinary public id is CONTENT-ADDRESSED (sha256), so a retry after a
+  * the GCS object name is CONTENT-ADDRESSED (sha256), so a retry after a
     lost response resolves to the asset already stored instead of creating a
     second one;
   * a lost response is re-checked against the deterministic id before the
@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
+from google.api_core.exceptions import PreconditionFailed
+from google.cloud import storage
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
@@ -45,7 +47,7 @@ ALLOWED_DOCUMENT_CONTENT_TYPES = {
     "application/octet-stream",
 }
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
-CLOUDINARY_FOLDER = "pickready/compliance"
+GCS_PREFIX = "compliance"
 
 _MIME_BY_EXTENSION = {
     ".pdf": "application/pdf",
@@ -155,67 +157,66 @@ async def read_validated_document(file: UploadFile) -> tuple[bytes, str, str]:
     return data, filename, _MIME_BY_EXTENSION[extension]
 
 
-def _configure_cloudinary() -> None:
+def _bucket() -> storage.Bucket:
     settings = get_settings()
-    if not settings.cloudinary_url:
+    if not settings.gcs_bucket:
         raise _error(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Document storage is not configured. Please try again shortly or "
-            "contact support.",
+            "Document storage is not configured. Please try again shortly or contact support.",
             retryable=True,
         )
-    import cloudinary
-
-    cloudinary.config(cloudinary_url=settings.cloudinary_url, secure=True)
-
-
-def _resource(public_id: str) -> dict[str, Any] | None:
-    import cloudinary.api
-
-    try:
-        return cloudinary.api.resource(public_id, resource_type="raw")
-    except Exception:
-        # A missing asset and an unavailable admin API both fall through to
-        # the upload path, which is idempotent on the same public id.
-        return None
+    return storage.Client().bucket(settings.gcs_bucket)
 
 
 def _upload_or_get_existing(
     data: bytes, sha256: str, filename: str, mime_type: str
 ) -> dict[str, Any]:
-    _configure_cloudinary()
-    public_id = f"{CLOUDINARY_FOLDER}/{sha256}"
-    existing = _resource(public_id)
-    if existing:
-        return existing
-
-    import cloudinary.uploader
-
+    public_id = f"{GCS_PREFIX}/{sha256}"
+    blob = _bucket().blob(public_id)
     try:
-        return cloudinary.uploader.upload(
-            data,
-            resource_type="raw",
-            public_id=public_id,
-            overwrite=False,
-            unique_filename=False,
-            use_filename=False,
-            filename_override=filename,
-            context={
+        if not blob.exists():
+            blob.metadata = {
                 "original_filename": filename,
                 "mime_type": mime_type,
                 "sha256": sha256,
-            },
-        )
+            }
+            try:
+                blob.upload_from_string(
+                    data, content_type=mime_type, if_generation_match=0
+                )
+            except PreconditionFailed:
+                pass
+        blob.reload()
     except Exception as exc:
-        existing = _resource(public_id)
-        if existing:
-            return existing
         raise _error(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "We could not securely store this document. Nothing was saved; "
             "please retry.",
             retryable=True,
         ) from exc
+    return {
+        "public_id": public_id,
+        "secure_url": f"gs://{get_settings().gcs_bucket}/{public_id}",
+        "bytes": blob.size,
+        "created_at": blob.time_created,
+    }
+
+
+def _download(public_id: str) -> bytes:
+    try:
+        data = _bucket().blob(public_id).download_as_bytes()
+    except Exception as exc:
+        raise _error(
+            status.HTTP_502_BAD_GATEWAY,
+            "The document could not be loaded.",
+        ) from exc
+    if not data:
+        raise _error(status.HTTP_502_BAD_GATEWAY, "The document is empty.")
+    return data
+
+
+async def fetch_document_bytes(public_id: str) -> bytes:
+    return await run_in_threadpool(_download, public_id)
 
 
 def _as_utc(value: Any) -> datetime:

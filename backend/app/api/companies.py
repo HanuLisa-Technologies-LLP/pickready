@@ -24,7 +24,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1173,7 +1173,7 @@ async def download_own_compliance_document(
     inline: bool = False,
     user: CurrentUser = Depends(require_capability(caps.MANAGE_COMPLIANCE_DOCUMENTS)),
     session: AsyncSession = Depends(get_tenant_db),
-) -> RedirectResponse:
+) -> Response:
     """View or download one of the customer's own filed documents.
 
     Addressed by TYPE rather than id, because the HR Head's page is a list of
@@ -1184,7 +1184,14 @@ async def download_own_compliance_document(
     row = await _own_document(session, tenant_id, document_type)
     if row is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    target = row.file_url if inline else document_storage.attachment_url(row.file_url)
-    return RedirectResponse(
-        url=target, status_code=status.HTTP_307_TEMPORARY_REDIRECT
+    content = await document_storage.fetch_document_bytes(row.file_public_id or "")
+    disposition = "inline" if inline else "attachment"
+    return Response(
+        content=content,
+        media_type=row.mime_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{row.file_name.replace(chr(34), "")}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
     )

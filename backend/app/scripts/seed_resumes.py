@@ -216,7 +216,7 @@ async def seed_resume_corpus(
         try:
             asset = await store_resume(upload)
         except Exception as exc:
-            log.error("seed_resumes: Cloudinary upload failed for %s: %s", path.name, exc)
+            log.error("seed_resumes: private storage upload failed for %s: %s", path.name, exc)
             continue
         uploaded += 1
 
@@ -254,9 +254,9 @@ async def seed_resume_corpus(
         celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
         action = "repaired" if existing is not None else "added"
         print(f"  + {action} resume candidate {ident['full_name']} <{ident['email']}> "
-              f"(cloudinary_public_id={asset.public_id})")
+              f"(gcs_object={asset.public_id})")
 
     print(f"  = resume corpus: {created} new candidate(s), "
-          f"{repaired} repaired profile(s), {uploaded} uploaded to Cloudinary, "
+          f"{repaired} repaired profile(s), {uploaded} uploaded to private GCS, "
           f"{len(files)} file(s) scanned")
     return created

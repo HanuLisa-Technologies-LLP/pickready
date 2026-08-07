@@ -24,7 +24,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,7 +49,7 @@ from app.schemas.provider import (
 )
 from app.services import provider_analytics
 from app.services.audit import audit
-from app.services.document_storage import attachment_url
+from app.services.document_storage import fetch_document_bytes
 
 router = APIRouter()
 
@@ -505,7 +505,7 @@ async def download_compliance_document(
     inline: bool = Query(
         default=False, description="true serves for viewing, false forces a download."
     ),
-) -> RedirectResponse:
+) -> Response:
     """Redirect to the stored asset.
 
     Streaming the bytes through the API would buy nothing — the storage URL is
@@ -524,7 +524,16 @@ async def download_compliance_document(
         target_id=document.id,
         metadata={"document_type": document.document_type, "inline": inline},
     )
-    target = document.file_url if inline else attachment_url(document.file_url)
+    content = await fetch_document_bytes(document.file_public_id or "")
     # 307, not 302: the method must be preserved and the redirect must not be
     # cached as permanent — the underlying asset URL can change on replace.
-    return RedirectResponse(url=target, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    disposition = "inline" if inline else "attachment"
+    return Response(
+        content=content,
+        media_type=document.mime_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{document.file_name.replace(chr(34), "")}"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
