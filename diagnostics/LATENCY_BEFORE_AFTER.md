@@ -3,6 +3,10 @@
 Measurement started: 2026-08-07 23:20 IST  
 Project/region: `pick-ready-503913` / `asia-south1`
 
+Implementation: `c0c1eb808aa1e571a2d667615534b92b824f4d3f`
+
+Deployment run: `31205454230`
+
 ## Real 24-hour baseline
 
 Cloud Monitoring `run.googleapis.com/request_latencies`, 24-hour aligned
