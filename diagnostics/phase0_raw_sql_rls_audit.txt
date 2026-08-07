@@ -1,0 +1,199 @@
+﻿===== 0.2a ALEMBIC HEAD (deployed schema version) =====
+     version_num      
+----------------------
+ 0041_carry_in_flight
+(1 row)
+
+===== 0.2b TENANTS (the real customer table) =====
+                  id                  |     name      | status | is_demo |  industry  |          created_at           
+--------------------------------------+---------------+--------+---------+------------+-------------------------------
+ 10000000-0000-4000-8000-000000000003 | Specter & Co. | active | t       | Other      | 2026-07-31 10:35:59.992687+00
+ 10000000-0000-4000-8000-000000000002 | ACRM Corp     | active | t       | Other      | 2026-07-31 10:35:59.992687+00
+ 10000000-0000-4000-8000-000000000001 | Sarkar Corp   | active | t       | Technology | 2026-07-31 10:35:59.992687+00
+ bee37680-cf16-4dd7-b3eb-3ee453b86a57 | Workify Corp  | active | f       | Technology | 2026-07-31 17:12:36.857902+00
+(4 rows)
+
+===== 0.2c PER-TENANT DATA VOLUME =====
+     name      | status | is_demo | users | jobs | links | company_page | tenant_caps 
+---------------+--------+---------+-------+------+-------+--------------+-------------
+ ACRM Corp     | active | t       |     3 |    0 |     0 |            0 |           0
+ Sarkar Corp   | active | t       |     4 |    0 |     0 |            0 |           0
+ Specter & Co. | active | t       |     3 |    0 |     0 |            0 |           0
+ Workify Corp  | active | f       |     2 |    0 |     0 |            0 |           0
+(4 rows)
+
+===== 0.2d GLOBAL CAPABILITY TEMPLATE (tenant_id IS NULL) =====
+      role      | caps | allowed 
+----------------+------+---------
+ bd             |    3 |       3
+ client         |   22 |      22
+ hiring_manager |   22 |      22
+ hr_manager     |   22 |      22
+ recruiter      |   22 |      22
+ super_admin    |    3 |       3
+(6 rows)
+
+===== 0.2e PER-TENANT CAPABILITY OVERRIDES =====
+ name | role | caps | allowed 
+------+------+------+---------
+(0 rows)
+
+===== 0.2f CHANGE-8 SMOKING GUN: duplicated company profile text across tenants =====
+    tenant     | is_demo | about_prefix 
+---------------+---------+--------------
+ ACRM Corp     | t       | <null>
+ Sarkar Corp   | t       | <null>
+ Specter & Co. | t       | <null>
+ Workify Corp  | f       | <null>
+(4 rows)
+
+===== 0.2g about_company values shared by MORE THAN ONE tenant =====
+ about_prefix | tenants_sharing | which 
+--------------+-----------------+-------
+(0 rows)
+
+===== 0.2h same check for work_life =====
+ work_life_prefix | tenants_sharing | which 
+------------------+-----------------+-------
+(0 rows)
+
+===== 0.2i PHANTOM SEEDED STAFF (fill_staff fingerprint) =====
+    tenant     | seeded_users | total_users 
+---------------+--------------+-------------
+ Specter & Co. |            0 |           3
+ Sarkar Corp   |            0 |           4
+ ACRM Corp     |            0 |           3
+ Workify Corp  |            0 |           2
+(4 rows)
+
+===== 0.3a RLS ENABLED / FORCED PER TABLE =====
+           tablename           | rls_enabled | rls_forced | policies 
+-------------------------------+-------------+------------+----------
+ alembic_version               | f           | f          |        0
+ audit_log                     | f           | f          |        0
+ llm_provider_keys             | f           | f          |        0
+ otp_challenges                | f           | f          |        0
+ pricing_plans                 | f           | f          |        0
+ tenants                       | f           | f          |        0
+ users                         | f           | f          |        0
+ webhook_events                | f           | f          |        0
+ assessment_conversations      | t           | t          |        1
+ assessment_messages           | t           | t          |        1
+ bd_leads                      | t           | t          |        1
+ billing_transactions          | t           | t          |        1
+ candidate_questions           | t           | t          |        1
+ candidate_team_reviews        | t           | t          |        1
+ candidate_technical_questions | t           | t          |        1
+ candidates                    | t           | t          |        1
+ companies                     | t           | t          |        1
+ compliance_documents          | t           | t          |        1
+ credit_ledger                 | t           | t          |        1
+ email_log                     | t           | t          |        1
+ email_templates               | t           | t          |        1
+ functional_skills_reports     | t           | t          |        1
+ hiring_managers               | t           | t          |        1
+ interviews                    | t           | t          |        1
+ job_approvals                 | t           | t          |        1
+ job_candidate_links           | t           | t          |        1
+ job_competencies              | t           | t          |        1
+ jobs                          | t           | t          |        1
+ old_profile_reviews           | t           | t          |        1
+ pipeline_status               | t           | t          |        1
+ profiles                      | t           | t          |        1
+ report_dimensions             | t           | t          |        1
+ role_permissions              | t           | t          |        1
+ staff_invites                 | t           | t          |        1
+ technical_questions           | t           | t          |        1
+ verification_requests         | t           | t          |        1
+(36 rows)
+
+===== 0.3b POLICY QUAL EXPRESSIONS =====
+           tablename           |                   policyname                   | cmd |                                                                                                       qual                                                                                                       
+-------------------------------+------------------------------------------------+-----+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ assessment_conversations      | assessment_conversations_tenant_isolation      | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ assessment_messages           | assessment_messages_tenant_isolation           | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ bd_leads                      | bd_leads_platform_only                         | ALL | (current_setting('app.bypass_rls'::text, true) = 'on'::text)
+ billing_transactions          | billing_transactions_tenant_isolation          | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ candidate_questions           | candidate_questions_tenant_isolation           | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ candidate_team_reviews        | candidate_team_reviews_tenant_isolation        | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ candidate_technical_questions | candidate_technical_questions_tenant_isolation | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ candidates                    | candidates_databank                            | ALL | ((tenant_id IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ companies                     | companies_tenant_isolation                     | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ compliance_documents          | compliance_documents_tenant_isolation          | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ credit_ledger                 | credit_ledger_tenant_isolation                 | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ email_log                     | email_log_tenant_isolation                     | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ email_templates               | email_templates_tenant_isolation               | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ functional_skills_reports     | functional_skills_reports_tenant_isolation     | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ hiring_managers               | hiring_managers_tenant_isolation               | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ interviews                    | interviews_tenant_isolation                    | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ job_approvals                 | job_approvals_tenant_isolation                 | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ job_candidate_links           | job_candidate_links_tenant_isolation           | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ job_competencies              | job_competencies_tenant_isolation              | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ jobs                          | jobs_tenant_isolation                          | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ old_profile_reviews           | old_profile_reviews_tenant_isolation           | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ pipeline_status               | pipeline_status_tenant_isolation               | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ profiles                      | profiles_databank                              | ALL | ((source_tenant_id IS NULL) OR (source_tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text) OR (EXISTS ( SELECT 1+
+                               |                                                |     |    FROM candidates c                                                                                                                                                                                            +
+                               |                                                |     |   WHERE ((c.id = profiles.candidate_id) AND (c.consent_databank = true)))))
+ report_dimensions             | report_dimensions_tenant_isolation             | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ role_permissions              | role_permissions_tenant_or_global              | ALL | ((tenant_id IS NULL) OR (tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ staff_invites                 | staff_invites_tenant_isolation                 | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ technical_questions           | technical_questions_tenant_isolation           | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+ verification_requests         | verification_requests_tenant_isolation         | ALL | ((tenant_id = (NULLIF(current_setting('app.tenant_id'::text, true), ''::text))::uuid) OR (current_setting('app.bypass_rls'::text, true) = 'on'::text))
+(28 rows)
+
+===== 0.3c APP ROLE ATTRIBUTES (is it superuser / bypassrls / owner?) =====
+    rolname    | rolsuper | rolbypassrls | rolcanlogin 
+---------------+----------+--------------+-------------
+ pickready_app | f        | f            | f
+ postgres      | f        | f            | t
+ pickready     | f        | f            | t
+(3 rows)
+
+===== 0.3d TABLE OWNERSHIP =====
+           tablename           | tableowner 
+-------------------------------+------------
+ alembic_version               | pickready
+ assessment_conversations      | pickready
+ assessment_messages           | pickready
+ audit_log                     | pickready
+ bd_leads                      | pickready
+ billing_transactions          | pickready
+ candidate_questions           | pickready
+ candidate_team_reviews        | pickready
+ candidate_technical_questions | pickready
+ candidates                    | pickready
+ companies                     | pickready
+ compliance_documents          | pickready
+ credit_ledger                 | pickready
+ email_log                     | pickready
+ email_templates               | pickready
+ functional_skills_reports     | pickready
+ hiring_managers               | pickready
+ interviews                    | pickready
+ job_approvals                 | pickready
+ job_candidate_links           | pickready
+ job_competencies              | pickready
+ jobs                          | pickready
+ llm_provider_keys             | pickready
+ old_profile_reviews           | pickready
+ otp_challenges                | pickready
+ pipeline_status               | pickready
+ pricing_plans                 | pickready
+ profiles                      | pickready
+ report_dimensions             | pickready
+ role_permissions              | pickready
+ staff_invites                 | pickready
+ technical_questions           | pickready
+ tenants                       | pickready
+ users                         | pickready
+ verification_requests         | pickready
+ webhook_events                | pickready
+(36 rows)
+
+===== 0.3e JOB SETUP HEALTH (framework stamped but zero competency rows) =====
+ stamped | stamped_but_empty | total_jobs 
+---------+-------------------+------------
+       0 |                 0 |          0
+(1 row)
+
