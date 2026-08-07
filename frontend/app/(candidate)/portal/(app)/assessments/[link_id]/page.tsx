@@ -25,6 +25,7 @@ import {
   AssessmentProgress,
   AssessmentSteps,
 } from "@/components/assessment-progress";
+import { OptionalProctoringConsent } from "@/components/optional-proctoring-consent";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -258,6 +259,7 @@ export default function UnifiedAssessmentPage() {
       />
 
       <div className="mx-auto max-w-5xl">
+        <OptionalProctoringConsent />
         <AssessmentSteps
           answered={conversation?.answered_questions ?? 0}
           total={conversation?.total_questions ?? 45}

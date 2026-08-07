@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     gcs_bucket: str = "pick-ready-503913-private-assets"
     resume_signed_url_ttl_seconds: int = 300
 
+    # Scaffolding only. Legal retention, data-request workflow and review remain
+    # unresolved, so production must keep this disabled.
+    proctoring_enabled: bool = False
+
     # Payments  -  Razorpay Subscriptions. The Key ID is public (Checkout needs it
     # in the browser and reads it from GET /billing/config); the Key Secret and
     # the webhook secret are server-side only and never reach a response body,

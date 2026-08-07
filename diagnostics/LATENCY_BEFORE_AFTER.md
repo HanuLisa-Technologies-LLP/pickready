@@ -68,6 +68,34 @@ baseline shows tail latency, not resource saturation, is the problem.
 
 ## After window
 
-The post-deploy comparison uses the real elapsed window available in this
-execution session; it will not be mislabeled as 24 hours. Populate after the
-optimized production revision receives traffic.
+Optimized revisions were promoted at approximately 18:13 UTC:
+
+- backend `pickready-backend-00136-fug` — 100%
+- frontend `pickready-frontend-00131-pos` — 100%
+
+Cloud Monitoring had two complete one-minute distribution points available
+between 18:13 and 18:18 UTC (a real ~5-minute elapsed window; deliberately not
+described as 24 hours):
+
+| Service | p50 | p95 | p99 |
+|---|---:|---:|---:|
+| pickready-backend | 38.24 ms | 494.20 ms | 505.29 ms |
+| pickready-frontend | 575.25 ms | 599.91 ms | 602.10 ms |
+
+Cold starts in that window were one per service: the expected initial creation
+of each new revision. No subsequent scale-from-zero cold start occurred.
+
+A separate 20-request end-to-end probe from India (includes network/TLS, so it
+is not substituted for the server metric above) measured:
+
+| Target | p50 | p95 | p99 | HTTP |
+|---|---:|---:|---:|---:|
+| backend `/health` | 108.5 ms | 128.3 ms | 419.8 ms | 200 |
+| frontend `/login` | 323.3 ms | 413.2 ms | 623.2 ms | 200 |
+
+Production is at Alembic `0047_latency_indexes`; all three new indexes exist.
+Both services report `minScale=1` and startup CPU boost enabled. The short
+after-window traffic mix differs from the 24-hour baseline, so the apparent
+tail improvement is encouraging but not claimed as a controlled 24-hour
+comparison. The document preserves the real baseline for a later 24-hour
+follow-up.
