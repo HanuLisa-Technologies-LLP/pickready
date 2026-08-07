@@ -222,6 +222,34 @@ PROBE 2 — INTERLEAVED x10 on a warm connection pool
   0 mismatches / 10
 ```
 
+### A second, independent run — and why its output looks alarming but is not
+
+An earlier probe of the same endpoints, written against Python `urllib` instead
+of `curl` and using its own separately-minted tokens, ran to completion after a
+long hang. Its Probe 1 agrees with the `curl` run exactly — each tenant received
+its own profile, HTTP 200. Its Probe 2 and 3 print this:
+
+```
+  1. sent=ACRM Corp      received=<unparsed 200>   *** MISMATCH ***
+  2. sent=Workify Corp   received=None             *** MISMATCH ***
+  …
+  [Workify Corp] /api/v1/jobs   HTTP 401  {"detail":"Signature has expired"}
+```
+
+**Both are defects in my probe script, not in the product.** The tokens carried a
+900-second TTL (`exp: now + 900`) and the script hung far longer than that on
+`urllib`, so every call after the first returned 401 — which Probe 3 states
+outright. `json.loads(body).get("company_name")` on a 401 body yields `None`, and
+the script flagged `None` as a mismatch. The single `<unparsed 200>` is a
+truncation bug: responses were clipped at 400 characters
+(`r.read().decode()[:400]`), which cuts ACRM's long profile mid-JSON.
+
+The distinction that matters: **no response in either run ever contained another
+tenant's data.** Every flagged "mismatch" is `None` or unparsed output — never
+tenant B's name returned under tenant A's token. The run corroborates the `curl`
+result rather than contradicting it. Recorded here because the raw file reads as
+"6/6 MISMATCH" to anyone who does not check why.
+
 Data-contamination check — is one tenant's prose sitting in another's row?
 
 ```
