@@ -36,6 +36,14 @@ class CompetencyIn(BaseModel):
     required_level: str
 
 
+class BulkCompetencyIn(BaseModel):
+    """Paste-friendly creation of up to 100 skills/competencies."""
+
+    category: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
+    names: list[str] = Field(min_length=1, max_length=100)
+    required_level: str
+
+
 class CompetencyOut(BaseModel):
     id: uuid.UUID
     category: str

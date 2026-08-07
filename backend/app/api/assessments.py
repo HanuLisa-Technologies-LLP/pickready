@@ -30,6 +30,7 @@ from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
 from app.models.tenant import Tenant
 from app.schemas.assessments import (
+    BulkCompetencyIn,
     CompetencyIn,
     CompetencyOut,
     ConversationAnswerEditIn,
@@ -314,6 +315,50 @@ async def add_competency(
     session.add(row)
     await session.flush()
     return _competency_out(row)
+
+
+@router.post(
+    "/jobs/{job_id}/framework/bulk",
+    response_model=list[CompetencyOut],
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_competencies_bulk(
+    job_id: uuid.UUID,
+    body: BulkCompetencyIn,
+    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> list[CompetencyOut]:
+    """Add a pasted list atomically, preserving order and removing duplicates."""
+    job = await _staff_job(session, user, job_id)
+    _reject_frozen(job)
+    names = list(dict.fromkeys(name.strip() for name in body.names if name.strip()))
+    if not names:
+        raise HTTPException(status_code=422, detail="Add at least one name.")
+    if body.category == ppi.CATEGORY_BEHAVIOURAL:
+        for name in names:
+            _reject_culture(name)
+    ordinal = (
+        await session.execute(
+            select(func.coalesce(func.max(JobCompetency.ordinal), 0)).where(
+                JobCompetency.job_id == job.id,
+                JobCompetency.category == body.category,
+            )
+        )
+    ).scalar_one()
+    rows = [
+        JobCompetency(
+            tenant_id=job.tenant_id,
+            job_id=job.id,
+            category=body.category,
+            name=name,
+            required_level=ppi.required_level_score(body.required_level),
+            ordinal=ordinal + index,
+        )
+        for index, name in enumerate(names, start=1)
+    ]
+    session.add_all(rows)
+    await session.flush()
+    return [_competency_out(row) for row in rows]
 
 
 @router.put("/jobs/{job_id}/framework/{competency_id}", response_model=CompetencyOut)

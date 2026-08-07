@@ -185,7 +185,12 @@ export default function OrgJobDetailPage() {
   // gone by the time anyone looked.
   const [jobError, setJobError] = React.useState<string | null>(null);
 
-  const [matchingBusy, setMatchingBusy] = React.useState(false);
+  const [matchingState, setMatchingState] = React.useState<
+    "idle" | "running" | "done" | "error"
+  >("idle");
+  const [matchingMessage, setMatchingMessage] = React.useState(
+    "Ready to score candidates."
+  );
   const [reloadKey, setReloadKey] = React.useState(0);
 
   const [reportRow, setReportRow] = React.useState<RankedCandidate | null>(null);
@@ -333,7 +338,8 @@ export default function OrgJobDetailPage() {
   };
 
   const runMatching = async () => {
-    setMatchingBusy(true);
+    setMatchingState("running");
+    setMatchingMessage("AI matching is running. Keep this page open or continue working.");
     try {
       const res = await apiPost<{ candidate_count: number }>(
         `/jobs/${jobId}/run-matching`
@@ -344,17 +350,23 @@ export default function OrgJobDetailPage() {
           res.candidate_count === 1 ? "" : "s"
         }. Results appear here as they finish.`,
       });
+      setMatchingState("done");
+      setMatchingMessage(
+        `${res.candidate_count} candidate${res.candidate_count === 1 ? "" : "s"} queued successfully. Results refresh as they finish.`
+      );
       // Matching runs as a background task; refresh shortly so early results
       // land without the recruiter having to reload the page.
       window.setTimeout(() => setReloadKey((k) => k + 1), 4000);
     } catch (e) {
+      setMatchingState("error");
+      setMatchingMessage(
+        e instanceof Error ? e.message : "AI matching could not be started."
+      );
       toast({
         title: "Could not start matching",
         description: e instanceof Error ? e.message : undefined,
         variant: "destructive",
       });
-    } finally {
-      setMatchingBusy(false);
     }
   };
 
@@ -674,56 +686,63 @@ export default function OrgJobDetailPage() {
       ) : null}
 
       {/* ── Run AI matching ─────────────────────────────────────────────── */}
-      {canRunMatching ? (
-        <div className="mb-6 flex flex-wrap items-center gap-3">
-          <Button
-            variant="secondary"
-            disabled={matchingBusy || !job}
-            onClick={() => void runMatching()}
-          >
-            {matchingBusy ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <Sparkles className="h-4 w-4" aria-hidden="true" />
-            )}
-            {matchingBusy ? "Starting" : "Run AI matching"}
-          </Button>
-          <p className="text-xs leading-5">
-            Rates every candidate linked to this job and refreshes the list
-            below.
-          </p>
-        </div>
-      ) : null}
-
       {/* ── Assessment selection (spec §3.1) ─────────────────────────────── */}
-      {canEmail ? (
-        <div className="mb-6 flex flex-wrap items-center gap-3">
-          <Button
-            disabled={inviting || invitable.length === 0}
-            onClick={() => void sendInvitations()}
-          >
-            {inviting ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <Send className="h-4 w-4" aria-hidden="true" />
-            )}
-            Send assessment invitations
-            {invitable.length > 0 ? ` (${invitable.length})` : ""}
-          </Button>
-          <p className="text-xs leading-5">
-            {selectedRows.length === 0
-              ? "Tick the candidates worth assessing. Only those you invite can take the assessment, and only they get a PPI Assessment Report."
-              : `${invitable.length} of ${selectedRows.length} selected can be invited; the rest are already past this stage.`}
-          </p>
-        </div>
-      ) : null}
-
       {/* The one manual step (spec §11): the PPI framework is reviewed and
           saved here before any candidate can be invited. Technical questions
           are no longer shown -- they are written per candidate during the
           assessment, and what each person was actually asked is on their own
           row in the table below. */}
       {job ? <JobSetupReview jobId={jobId} /> : null}
+
+      <div className="my-6 space-y-3 rounded-xl border border-border p-4">
+        {canRunMatching ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="secondary"
+              disabled={matchingState === "running" || !job}
+              onClick={() => void runMatching()}
+            >
+              {matchingState === "running" ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Sparkles className="h-4 w-4" aria-hidden="true" />
+              )}
+              {matchingState === "running" ? "AI matching running" : "Run AI matching"}
+            </Button>
+            <p
+              role="status"
+              data-state={matchingState}
+              className={cn(
+                "text-xs leading-5",
+                matchingState === "error" && "text-destructive"
+              )}
+            >
+              {matchingMessage}
+            </p>
+          </div>
+        ) : null}
+        {canEmail ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              disabled={inviting || invitable.length === 0}
+              onClick={() => void sendInvitations()}
+            >
+              {inviting ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Send className="h-4 w-4" aria-hidden="true" />
+              )}
+              Send assessment invitations
+              {invitable.length > 0 ? ` (${invitable.length})` : ""}
+            </Button>
+            <p className="text-xs leading-5">
+              {selectedRows.length === 0
+                ? "Tick candidates below, then return here to send their assessment invitations."
+                : `${invitable.length} of ${selectedRows.length} selected can be invited; the rest are already past this stage.`}
+            </p>
+          </div>
+        ) : null}
+      </div>
 
       {job ? <PipelineFunnel jobId={jobId} reloadKey={reloadKey} /> : null}
 

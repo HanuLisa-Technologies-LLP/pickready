@@ -288,15 +288,20 @@ function CompetencyRow({
 function AddCompetency({
   category,
   onAdd,
+  onBulkAdd,
 }: {
   category: Category;
   onAdd: (next: { category: Category; name: string; description: string | null; required_level: RatingGrade }) => Promise<void>;
+  onBulkAdd: (next: { category: Category; names: string[]; required_level: RatingGrade }) => Promise<void>;
 }) {
   const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [level, setLevel] = React.useState<RatingGrade>("Matching");
   const [busy, setBusy] = React.useState(false);
+  const names = Array.from(
+    new Set(name.split(/[\n,]+/).map((value) => value.trim()).filter(Boolean))
+  );
 
   if (!open) {
     return (
@@ -308,10 +313,15 @@ function AddCompetency({
   }
   return (
     <div className="space-y-2 rounded-md border border-dashed p-3">
-      <Input
+      <Textarea
         value={name}
         onChange={(e) => setName(e.target.value)}
-        placeholder={category === "behavioural" ? "Behaviour" : "Skill"}
+        placeholder={
+          category === "behavioural"
+            ? "Paste one behaviour per line"
+            : "Paste one skill per line (10+ supported)"
+        }
+        rows={4}
       />
       <Textarea
         value={description}
@@ -334,16 +344,20 @@ function AddCompetency({
       <div className="flex gap-2">
         <Button
           size="sm"
-          disabled={busy || !name.trim()}
+          disabled={busy || names.length === 0}
           onClick={async () => {
             setBusy(true);
             try {
-              await onAdd({
-                category,
-                name: name.trim(),
-                description: description.trim() || null,
-                required_level: level,
-              });
+              if (names.length > 1) {
+                await onBulkAdd({ category, names, required_level: level });
+              } else {
+                await onAdd({
+                  category,
+                  name: names[0],
+                  description: description.trim() || null,
+                  required_level: level,
+                });
+              }
               setName("");
               setDescription("");
               setOpen(false);
@@ -352,7 +366,7 @@ function AddCompetency({
             }
           }}
         >
-          Add
+          Add {names.length > 1 ? `${names.length} entries` : ""}
         </Button>
         <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
           Cancel
@@ -542,6 +556,12 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
                         mutate(
                           () => apiPost(`${BASE}/${jobId}/framework`, next),
                           "Couldn't add that entry"
+                        ).then(() => undefined)
+                      }
+                      onBulkAdd={(next) =>
+                        mutate(
+                          () => apiPost(`${BASE}/${jobId}/framework/bulk`, next),
+                          "Couldn't add those entries"
                         ).then(() => undefined)
                       }
                     />
