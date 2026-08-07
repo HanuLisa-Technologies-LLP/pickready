@@ -13,6 +13,7 @@
 // -> Suggested interview questions.
 
 import * as React from "react";
+import dynamic from "next/dynamic";
 import { Download, Loader2, Lock } from "lucide-react";
 
 import { apiGet } from "@/lib/api";
@@ -24,11 +25,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  FunctionalSkillsReportView,
-  type FunctionalReport,
-} from "@/components/functional-skills-report";
+import type { FunctionalReport } from "@/components/functional-skills-report";
 import { Button } from "@/components/ui/button";
+
+// Recharts is sizeable and only needed after a recruiter opens a report.
+const FunctionalSkillsReportView = dynamic(
+  () =>
+    import("@/components/functional-skills-report").then(
+      (module) => module.FunctionalSkillsReportView
+    ),
+  { loading: () => <div className="h-64 animate-pulse rounded-lg bg-muted" /> }
+);
 
 export function PPIReportModal({
   open,

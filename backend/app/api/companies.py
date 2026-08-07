@@ -84,6 +84,7 @@ from app.schemas.provider import (
 from app.services import capabilities as caps
 from app.services import document_storage
 from app.services import rbac
+from app.services import tenant_cache
 from app.services.audit import audit
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
 from app.workers.celery_app import celery_app
@@ -194,8 +195,14 @@ async def get_company_profile(
     Never 404s: a tenant that has not authored a profile yet gets empty
     sections rather than an error, so the page opens straight into the form.
     """
+    cache_key = f"pickready:tenant:{user.tenant_id}:company_profile"
+    cached = await tenant_cache.get_json(cache_key)
+    if cached is not None:
+        return CompanyProfileOut.model_validate(cached)
     company = await _get_company(session, user)
-    return await _company_profile_out(session, user.tenant_id, company)
+    output = await _company_profile_out(session, user.tenant_id, company)
+    await tenant_cache.set_json(cache_key, output.model_dump(mode="json"), ttl=120)
+    return output
 
 
 @router.patch("/me/profile", response_model=CompanyProfileOut)
@@ -229,6 +236,7 @@ async def update_company_profile(
     if "benefits" in sent:
         company.benefits_text = body.benefits
     await session.flush()
+    await tenant_cache.delete(f"pickready:tenant:{user.tenant_id}:company_profile")
     await audit(
         session,
         tenant_id=user.tenant_id,

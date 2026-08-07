@@ -53,6 +53,7 @@ from app.services import (
     interview_telemetry,
     interviewer,
     ppi,
+    tenant_cache,
     technical_interview,
 )
 from app.services.audit import audit
@@ -65,7 +66,6 @@ from app.services.functional_assessment import (
     rating_label,
 )
 from app.services.rating import GRADES, grade_for_percent
-from app.services.report_pdf import render_report_pdf
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -258,8 +258,20 @@ async def get_framework(
     # Self-healing read. See `_framework_repair_pending`: a job whose generator
     # never landed used to render as an empty framework indistinguishable from a
     # finished one, and nothing anywhere retried.
+    cache_key = f"pickready:tenant:{job.tenant_id}:job_competencies:{job.id}"
+    cached = await tenant_cache.get_json(cache_key)
+    if cached is not None:
+        return FrameworkOut.model_validate(cached)
     pending = await _framework_repair_pending(session, job)
-    return await _framework_out(session, job, pending=pending)
+    output = await _framework_out(session, job, pending=pending)
+    await tenant_cache.set_json(cache_key, output.model_dump(mode="json"), ttl=120)
+    return output
+
+
+async def _invalidate_framework(job: Job) -> None:
+    await tenant_cache.delete(
+        f"pickready:tenant:{job.tenant_id}:job_competencies:{job.id}"
+    )
 
 
 def _reject_culture(name: str) -> None:
@@ -314,6 +326,7 @@ async def add_competency(
     )
     session.add(row)
     await session.flush()
+    await _invalidate_framework(job)
     return _competency_out(row)
 
 
@@ -358,6 +371,7 @@ async def add_competencies_bulk(
     ]
     session.add_all(rows)
     await session.flush()
+    await _invalidate_framework(job)
     return [_competency_out(row) for row in rows]
 
 
@@ -382,6 +396,7 @@ async def update_competency(
     row.required_level = ppi.required_level_score(body.required_level)
     row.updated_at = datetime.now(timezone.utc)
     await session.flush()
+    await _invalidate_framework(job)
     return _competency_out(row)
 
 
@@ -401,6 +416,7 @@ async def remove_competency(
     row.is_active = False
     row.updated_at = datetime.now(timezone.utc)
     await session.flush()
+    await _invalidate_framework(job)
 
 
 @router.post("/jobs/{job_id}/framework/finalize", response_model=FrameworkOut)
@@ -431,6 +447,7 @@ async def finalize_framework(
             }
         },
     )
+    await _invalidate_framework(job)
     return await _framework_out(session, job)
 
 
@@ -474,6 +491,7 @@ async def reopen_framework(
         target_type="job",
         target_id=job.id,
     )
+    await _invalidate_framework(job)
     return await _framework_out(session, job)
 
 
@@ -574,6 +592,10 @@ async def download_report_pdf(
     candidate_name = (candidate.full_name if candidate else None) or "Candidate"
     job_title = (job.title if job else None) or "Role"
     tenant_name = (tenant.name if tenant else None) or "PickReady customer"
+    # ReportLab is heavy and PDF downloads are infrequent; keep it off the API
+    # startup path so ordinary requests do not pay its import cost.
+    from app.services.report_pdf import render_report_pdf
+
     payload = render_report_pdf(
         report_out,
         candidate_name=candidate_name,

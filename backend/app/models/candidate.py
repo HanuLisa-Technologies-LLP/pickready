@@ -19,7 +19,10 @@ class Candidate(Base, UUIDPKMixin, CreatedAtMixin):
     """tenant_id NULL: a candidate profile can be shared across tenants via
     the Databank (ESD §4). consent_databank mirrors Aspect 40 (FR-4.2)."""
     __tablename__ = "candidates"
-    __table_args__ = (Index("ix_candidates_email", "email"),)
+    __table_args__ = (
+        Index("ix_candidates_email", "email"),
+        Index("ix_candidates_tenant_created", "tenant_id", "created_at"),
+    )
 
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     user_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -54,7 +57,10 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
     """The Profile (PRD glossary): resume + 40-aspect responses + employer
     verification for one candidate. Embedding powers the semantic stage."""
     __tablename__ = "profiles"
-    __table_args__ = (Index("ix_profiles_candidate", "candidate_id"),)
+    __table_args__ = (
+        Index("ix_profiles_candidate", "candidate_id"),
+        Index("ix_profiles_source_tenant_created", "source_tenant_id", "created_at"),
+    )
 
     candidate_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("candidates.id", ondelete="CASCADE"), nullable=False
@@ -130,6 +136,7 @@ class JobCandidateLink(Base, UUIDPKMixin, CreatedAtMixin):
     __table_args__ = (
         UniqueConstraint("job_id", "candidate_id", name="uq_jcl_job_candidate"),
         Index("ix_jcl_job", "job_id"),
+        Index("ix_jcl_tenant_job_created", "tenant_id", "job_id", "created_at"),
     )
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(

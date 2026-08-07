@@ -26,6 +26,48 @@ from app.models.enums import Role
 from app.models.tenant import RolePermission
 from app.models.user import User
 from app.services.capabilities import ALL_CAPABILITIES
+from app.services import tenant_cache
+
+
+def _role_cache_key(tenant_id: uuid.UUID | None, role: Role) -> str:
+    return f"pickready:tenant:{tenant_id or 'global'}:role_permissions:{role.value}"
+
+
+async def _permission_rows(
+    session: AsyncSession, tenant_id: uuid.UUID | None, role: Role
+) -> list[tuple[str | None, str, bool]]:
+    key = _role_cache_key(tenant_id, role)
+    cached = await tenant_cache.get_json(key)
+    if isinstance(cached, list):
+        return [(row[0], row[1], bool(row[2])) for row in cached]
+    conditions = [RolePermission.tenant_id.is_(None)]
+    if tenant_id is not None:
+        conditions.append(RolePermission.tenant_id == tenant_id)
+    rows = (
+        await session.execute(
+            select(
+                RolePermission.tenant_id,
+                RolePermission.capability,
+                RolePermission.allowed,
+            ).where(RolePermission.role == role, or_(*conditions))
+        )
+    ).all()
+    serializable = [
+        [str(row.tenant_id) if row.tenant_id else None, row.capability, row.allowed]
+        for row in rows
+    ]
+    await tenant_cache.set_json(key, serializable, ttl=120)
+    return [(row[0], row[1], row[2]) for row in serializable]
+
+
+async def invalidate_role_permissions(
+    tenant_id: uuid.UUID | None, roles: list[Role] | None = None
+) -> None:
+    if tenant_id is None:
+        await tenant_cache.delete_pattern("pickready:tenant:*:role_permissions:*")
+        return
+    for role in roles or list(Role):
+        await tenant_cache.delete(_role_cache_key(tenant_id, role))
 
 
 def resolve_permission(
@@ -103,21 +145,10 @@ async def has_capability(
     tid = uuid.UUID(str(tenant_id)) if tenant_id else None
     overrides = await _user_overrides(session, user_id)
 
-    conditions = [RolePermission.tenant_id.is_(None)]
-    if tid is not None:
-        conditions.append(RolePermission.tenant_id == tid)
+    rows = await _permission_rows(session, tid, role)
 
-    stmt = select(
-        RolePermission.tenant_id, RolePermission.capability, RolePermission.allowed
-    ).where(
-        RolePermission.role == role,
-        RolePermission.capability == capability,
-        or_(*conditions),
-    )
-    rows = (await session.execute(stmt)).all()
-
-    tenant_rows = {r.capability: r.allowed for r in rows if r.tenant_id is not None}
-    global_rows = {r.capability: r.allowed for r in rows if r.tenant_id is None}
+    tenant_rows = {r[1]: r[2] for r in rows if r[0] is not None}
+    global_rows = {r[1]: r[2] for r in rows if r[0] is None}
     return resolve_permission(tenant_rows, global_rows, capability, overrides)
 
 
@@ -155,17 +186,10 @@ async def resolve_role_capabilities(
     tid = uuid.UUID(str(tenant_id)) if tenant_id else None
     overrides = await _user_overrides(session, user_id)
 
-    conditions = [RolePermission.tenant_id.is_(None)]
-    if tid is not None:
-        conditions.append(RolePermission.tenant_id == tid)
+    rows = await _permission_rows(session, tid, role)
 
-    stmt = select(
-        RolePermission.tenant_id, RolePermission.capability, RolePermission.allowed
-    ).where(RolePermission.role == role, or_(*conditions))
-    rows = (await session.execute(stmt)).all()
-
-    tenant_rows = {r.capability: r.allowed for r in rows if r.tenant_id is not None}
-    global_rows = {r.capability: r.allowed for r in rows if r.tenant_id is None}
+    tenant_rows = {r[1]: r[2] for r in rows if r[0] is not None}
+    global_rows = {r[1]: r[2] for r in rows if r[0] is None}
     return resolve_capability_set(tenant_rows, global_rows, user_overrides=overrides)
 
 

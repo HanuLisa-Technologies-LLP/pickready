@@ -367,7 +367,7 @@ deploy_backend() {  # deploy_backend FRONTEND_URL
     --service-account="$RUNTIME_SA" \
     --allow-unauthenticated \
     --memory=2Gi --cpu=2 --timeout=300 \
-    --min-instances=0 --max-instances=10 \
+    --min-instances=1 --max-instances=10 --cpu-boost \
     --network="$NETWORK" --subnet="$SUBNET" --vpc-egress=private-ranges-only \
     --add-cloudsql-instances="$SQL_CONNECTION_NAME" \
     "--set-env-vars=$(build_env "FRONTEND_URL=${frontend_url}")" \
@@ -412,7 +412,7 @@ deploy_frontend() {  # deploy_frontend BACKEND_URL
     --service-account="$RUNTIME_SA" \
     --allow-unauthenticated \
     --memory=1Gi --cpu=1 \
-    --min-instances=0 --max-instances=10 \
+    --min-instances=1 --max-instances=10 --cpu-boost \
     "--set-env-vars=^@^NODE_ENV=production@BACKEND_INTERNAL_URL=${backend_url}${extra:+@${extra}}" \
     $tflags >/dev/null
 

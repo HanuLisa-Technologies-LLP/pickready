@@ -238,6 +238,9 @@ async def create_tenant(
     session.add(client_user)
     _seed_permissions(session, tenant.id)
     await session.flush()
+    await rbac.invalidate_role_permissions(
+        body.tenant_id, list({Role(entry.role) for entry in body.entries})
+    )
 
     await audit(
         session, tenant_id=tenant.id, actor_user_id=user.user_id,
