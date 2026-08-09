@@ -780,7 +780,9 @@ export default function OrgJobDetailPage() {
         open={resumeRow !== null}
         onOpenChange={(open) => !open && setResumeRow(null)}
         resumeUrl={resumeRow?.resume_url}
+        profileId={resumeRow?.profile_id}
         resumeFileName={resumeRow?.resume_filename}
+        resumeMimeType={resumeRow?.resume_mime_type}
         candidateName={resumeRow?.full_name ?? ""}
       />
 

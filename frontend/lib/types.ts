@@ -523,6 +523,9 @@ export interface RankedCandidate {
   source?: CandidateSource | null;
   tier?: Tier | null;
   archived_at?: string | null;
+  /** The application's Profile. Resumes live in private storage, so this is
+   *  the handle the viewer and the download endpoint are keyed on. */
+  profile_id?: string | null;
   resume_url?: string | null;
   resume_filename?: string | null;
   resume_mime_type?: string | null;

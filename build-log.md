@@ -7,6 +7,88 @@ would otherwise re-introduce, the entry says so.
 
 ---
 
+## 2026-08-09 — Four reported bugs
+
+Client change request, items 11 to 14.
+
+### Product
+
+- **Resumes open and download again in the recruiter portal**, from the job
+  page's candidate table. They had been unreadable there since resumes moved to
+  private storage.
+- **Word resumes preview inside the app** instead of showing "This Word document
+  cannot be previewed because its profile reference is missing" and offering
+  only a download.
+- **The assessment invitation link works.** It had been going out as a
+  placeholder that resolved to nothing, so an invited candidate had no way to
+  open their assessment and no way to say so.
+- **A Provider can delete a Business Development account** from the BD page,
+  after retyping the address. Any leads that account owned stay on the BD board
+  and become unassigned.
+
+### Technical
+
+**11 and 12 are one defect, and it is not in the storage layer.**
+`services/job_candidates` SELECTed `l.profile_id` and then dropped it building
+the row payload. Resumes are private objects, so `resume_url` is not fetchable
+by a browser and every read goes through
+`/candidates/profiles/{id}/resume-file`; with no profile id the viewer had
+nothing to ask for, fell through to its "missing its secure profile reference"
+panel, and pointed Download at a storage scheme the browser ignores. Fixed in
+the payload, the response schema (`RankedCandidateOut.profile_id` -- an
+undeclared key is dropped silently by Pydantic, which is how this can look
+present in a service and be absent in the browser) and the two call sites.
+
+The second half of 12 is preview ROUTING: a private object name carries no
+extension, so a DOCX with no recorded original filename was classified framable
+and handed to an iframe, which renders nothing. `kindFromMimeType` now decides
+when the filename cannot, and the filename still wins when it has an extension.
+
+**13 is not a URL-construction bug and no test of URL construction would have
+found it.** `settings.frontend_url` was read correctly and
+`/portal/assessments/{link_id}` is the right route. The URL was handed to the
+prompt and the MODEL wrote `link.to.assessment` into the body instead. What was
+missing was a check that the link SURVIVED the draft: `link_defects` is now a
+deterministic criterion inside the existing `agent_loop`, so a bad link is
+rejected and fed back verbatim, and a persistent failure degrades to the
+template, which has always carried the real link. `repair_link` is a last line
+of defence on both paths, because a candidate who receives a dead link cannot
+complete an assessment and has no way to report it except giving up.
+
+The guard has to DISTINGUISH, not just detect: a dotted token needs three
+segments to count as a hostname, which separates `link.to.assessment` from
+prose like "Node.js" or "readypick.ai". A guard that mangles a good email fails
+invisibly, one wasted round of latency at a time, so both directions are
+tested.
+
+**14 reverses a standing rule** ("there is no delete route: a BD rep owns
+leads"). The reason for that rule is now what the handler protects instead:
+`DELETE /admin/bd-users/{id}` requires the email retyped (same guard as the
+tenant delete, intent rather than typing precision) and RELEASES the rep's
+leads by setting `owner_user_id` to NULL. A rep leaving must never take the
+pipeline with them, and that failure would be silent: nobody notices the leads
+are gone until they ask after a deal that no longer exists. Customers promoted
+from a signed agreement are untouched by construction, since
+`promoted_tenant_id` hangs off the lead. Disable survives and is still the right
+control for someone who may come back.
+
+### Tests
+
+- `backend/tests/test_resume_access_row.py` pins the profile id on the payload
+  AND through the response schema, the null case for a link with no profile
+  yet, and that no score crept into a client-facing row.
+- `backend/tests/test_assessment_link_integrity.py` pins four shapes of
+  invented link, a dropped link, repair in both directions, the template's own
+  link, and three pieces of ordinary prose that must NOT be mistaken for one.
+- `frontend/components/resume-viewer.test.tsx` pins MIME routing, the
+  authenticated preview fetch, and that Download never emits a storage scheme.
+- `backend/tests/test_bd_accounts.py` replaces its "never deletes" test with the
+  lead-release, confirmation, and still-owner-gated guarantees.
+
+Full backend suite: 1322 passed. Frontend: 44 passed.
+
+---
+
 ## 2026-08-09 — Application form content and field changes
 
 Client change request, items 1 to 10.

@@ -13,13 +13,17 @@
 // is therefore load-bearing, it is the answer to "I added them, why can they
 // not get in".
 //
-// There is no delete. A BD rep owns leads, so the reversible switch is Disable,
-// mirroring Archive on the customer list.
+// Disable is still the RIGHT control for someone who may come back: it is
+// reversible and keeps their lead ownership intact. Delete was added on
+// 2026-08-09 at the client's request for accounts created in error or addresses
+// that must genuinely leave. It is irreversible, so it asks for the email to be
+// retyped, and it RELEASES the rep's leads rather than deleting them: a rep
+// leaving must never take the company's pipeline with them.
 
 import * as React from "react";
-import { Plus, Pencil, Power, PowerOff, UserRound } from "lucide-react";
+import { Plus, Pencil, Power, PowerOff, Trash2, UserRound } from "lucide-react";
 
-import { apiGet, apiPatch, apiPost } from "@/lib/api";
+import { apiDelete, apiGet, apiPatch, apiPost } from "@/lib/api";
 import type { BDUser } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
@@ -82,6 +86,10 @@ export default function BusinessDevelopmentPage() {
 
   const [editing, setEditing] = React.useState<BDUser | null>(null);
   const [togglingId, setTogglingId] = React.useState<string | null>(null);
+
+  const [deleting, setDeleting] = React.useState<BDUser | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = React.useState("");
+  const [deleteBusy, setDeleteBusy] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -192,6 +200,45 @@ export default function BusinessDevelopmentPage() {
     }
   };
 
+  // The confirmation is about intent, not typing precision, so it mirrors the
+  // server's own check rather than inventing a stricter one the server would
+  // then accept anyway.
+  const deleteConfirmed =
+    deleting !== null &&
+    ["delete", deleting.email.trim().toLowerCase()].includes(
+      deleteConfirm.trim().toLowerCase()
+    );
+
+  const confirmDelete = async () => {
+    if (!deleting || !deleteConfirmed) return;
+    setDeleteBusy(true);
+    try {
+      const result = await apiDelete<{ email: string; leads_released: number }>(
+        `/admin/bd-users/${deleting.id}?confirm=${encodeURIComponent(
+          deleteConfirm.trim()
+        )}`
+      );
+      setUsers((current) => current.filter((row) => row.id !== deleting.id));
+      toast({
+        title: "Account deleted",
+        description:
+          result.leads_released > 0
+            ? `${result.email} is removed. Their leads are now unassigned on the BD board and can be reassigned.`
+            : `${result.email} is removed. They owned no leads.`,
+      });
+      setDeleting(null);
+      setDeleteConfirm("");
+    } catch (error) {
+      toast({
+        title: "Could not delete this account",
+        description: error instanceof Error ? error.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
+
   return (
     <div>
       <PageHeader
@@ -298,6 +345,18 @@ export default function BusinessDevelopmentPage() {
                             </>
                           )}
                         </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-1 text-destructive"
+                          data-testid={`delete-bd-${user.id}`}
+                          onClick={() => {
+                            setDeleteConfirm("");
+                            setDeleting(user);
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" /> Delete
+                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -383,6 +442,64 @@ export default function BusinessDevelopmentPage() {
             </Button>
             <Button disabled={saving} onClick={() => void save()}>
               {saving ? "Saving…" : editing ? "Save changes" : "Add member"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={deleting !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleting(null);
+            setDeleteConfirm("");
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Delete this Business Development account?</DialogTitle>
+            <DialogDescription>
+              This cannot be undone. If this person may come back, Disable is
+              reversible and keeps their leads assigned to them.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-md border p-3">
+              <p className="text-sm font-medium">{deleting?.email}</p>
+              <p className="mt-2 text-sm">
+                Any leads they own stay on the BD board and become unassigned,
+                ready to be reassigned. Customers created from their signed
+                agreements are not affected.
+              </p>
+            </div>
+            <FormField
+              label={`Type ${deleting?.email ?? ""} to confirm`}
+              htmlFor="bd-delete-confirm"
+            >
+              <Input
+                id="bd-delete-confirm"
+                value={deleteConfirm}
+                disabled={deleteBusy}
+                autoComplete="off"
+                onChange={(event) => setDeleteConfirm(event.target.value)}
+              />
+            </FormField>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={deleteBusy}
+              onClick={() => setDeleting(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleteBusy || !deleteConfirmed}
+              onClick={() => void confirmDelete()}
+            >
+              {deleteBusy ? "Deleting…" : "Delete account"}
             </Button>
           </DialogFooter>
         </DialogContent>

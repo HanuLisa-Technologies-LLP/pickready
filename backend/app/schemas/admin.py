@@ -273,6 +273,19 @@ class BDUserOut(BaseModel):
     signed_in: bool = False
 
 
+class BDUserDeleteOut(BaseModel):
+    """DELETE /admin/bd-users/{id} — what the irreversible action actually did.
+
+    `leads_released` is reported rather than left implicit: the leads a deleted
+    rep owned are set to unassigned, not deleted, and the Provider needs to know
+    how many rows are now waiting to be reassigned on the BD board.
+    """
+
+    id: uuid.UUID
+    email: str
+    leads_released: int = 0
+
+
 class BDUserCreateIn(BaseModel):
     """POST /admin/bd-users — reserve a Business Development account.
 

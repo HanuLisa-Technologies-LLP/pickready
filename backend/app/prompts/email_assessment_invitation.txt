@@ -13,7 +13,8 @@ Write an encouraging email of 130-180 words that:
    complete an assessment for this role.
 2. Explains what it covers in plain terms  -  questions about their technical
    experience and how they work  -  and roughly how long it takes.
-3. Includes the link on its own line, exactly as given above.
+3. Includes the link on its own line, copied from "Link to the assessment"
+   above character for character.
 4. Reassures them their progress is saved if they need to stop partway.
 
 Rules:
@@ -24,6 +25,9 @@ Rules:
   proctoring, or scoring  -  none of those apply.
 - NEVER state or imply a score, rating, percentage, band, or rank.
 - Plain prose. No markdown, no bullet characters, no emoji.
+- NEVER invent, shorten, paraphrase or describe a web address. Write the link
+  given above and no other. Placeholder text such as "link.to.assessment" is
+  not a link; a candidate who receives one cannot open their assessment.
 
 Return ONLY valid JSON:
 {{
