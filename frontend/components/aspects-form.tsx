@@ -5,7 +5,7 @@
 
 import * as React from "react";
 
-import { ASPECTS, type AspectDef } from "@/lib/aspects";
+import { ASPECTS, aspectDisplayNo, type AspectDef } from "@/lib/aspects";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,11 +21,26 @@ import {
 
 export type AspectAnswers = Record<number, string | number | boolean | null>;
 
-// ASSUMPTION: the PRD does not mark individual aspects optional. Forty hard-
-// required questions is a hostile form, so the genuinely discretionary
+// ASSUMPTION: the PRD does not mark individual aspects optional. A form of
+// hard-required questions is a hostile form, so the genuinely discretionary
 // free-text items are optional and everything else is required. Booleans are
-// never "missing", an untouched switch reads as an explicit No.
-export const OPTIONAL_ASPECT_IDS = [12, 13, 18, 22, 27, 33, 35];
+// otherwise never "missing", an untouched switch reads as an explicit No.
+// Ids 13 and 33 were retired on 2026-08-09 and are gone from this list with the
+// questions themselves.
+export const OPTIONAL_ASPECT_IDS = [12, 18, 22, 27, 35];
+
+// The two Verification & Consent items are MANDATORY (client decision,
+// 2026-08-09): they used to render "(optional)" purely because they are
+// booleans and a switch has no unanswered state. They are now asked as an
+// explicit Yes / No with no preselected value, so "required" means the
+// candidate STATED a position -- it does not mean they must consent. A default
+// that reads as consent nobody chose would be worse than the label was.
+export const REQUIRED_BOOLEAN_ASPECT_IDS = [39, 40];
+
+function isOptional(aspect: AspectDef): boolean {
+  if (REQUIRED_BOOLEAN_ASPECT_IDS.includes(aspect.id)) return false;
+  return OPTIONAL_ASPECT_IDS.includes(aspect.id) || aspect.type === "boolean";
+}
 
 function isAnswered(value: string | number | boolean | null | undefined): boolean {
   if (typeof value === "boolean") return true;
@@ -41,8 +56,7 @@ export function missingAspects(
   return ASPECTS.filter(
     (a) =>
       !excludeIds.includes(a.id) &&
-      !OPTIONAL_ASPECT_IDS.includes(a.id) &&
-      a.type !== "boolean" &&
+      !isOptional(a) &&
       !isAnswered(answers[a.id])
   );
 }
@@ -53,10 +67,7 @@ export function aspectProgress(
   excludeIds: number[] = []
 ): { answered: number; total: number; percent: number } {
   const required = ASPECTS.filter(
-    (a) =>
-      !excludeIds.includes(a.id) &&
-      !OPTIONAL_ASPECT_IDS.includes(a.id) &&
-      a.type !== "boolean"
+    (a) => !excludeIds.includes(a.id) && !isOptional(a)
   );
   const answered = required.filter((a) => isAnswered(answers[a.id])).length;
   const total = required.length;
@@ -83,6 +94,24 @@ function AspectControl({
     : {};
   switch (aspect.type) {
     case "boolean":
+      // A mandatory consent is asked, not toggled: no preselected value, so an
+      // untouched control cannot be read back as a Yes the candidate never gave.
+      if (REQUIRED_BOOLEAN_ASPECT_IDS.includes(aspect.id)) {
+        return (
+          <Select
+            value={value === true ? "Yes" : value === false ? "No" : ""}
+            onValueChange={(v) => onChange(v === "Yes")}
+          >
+            <SelectTrigger id={`aspect-${aspect.id}`} {...flag}>
+              <SelectValue placeholder="Select Yes or No" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="Yes">Yes</SelectItem>
+              <SelectItem value="No">No</SelectItem>
+            </SelectContent>
+          </Select>
+        );
+      }
       return (
         <div className="flex items-center gap-3">
           <Switch
@@ -193,9 +222,7 @@ export function AspectsForm({
 
       {categories.map((category) => {
         const rows = visible.filter((a) => a.category === category);
-        const need = rows.filter(
-          (a) => !OPTIONAL_ASPECT_IDS.includes(a.id) && a.type !== "boolean"
-        );
+        const need = rows.filter((a) => !isOptional(a));
         const done = need.filter((a) => isAnswered(answers[a.id])).length;
         return (
           <fieldset key={category} className="space-y-4">
@@ -210,8 +237,7 @@ export function AspectsForm({
               ) : null}
             </legend>
             {rows.map((aspect) => {
-              const optional =
-                OPTIONAL_ASPECT_IDS.includes(aspect.id) || aspect.type === "boolean";
+              const optional = isOptional(aspect);
               const isInvalid = invalid.has(aspect.id);
               return (
                 <div key={aspect.id} className="space-y-2">
@@ -220,7 +246,7 @@ export function AspectsForm({
                     className={cn(isInvalid && "text-destructive")}
                   >
                     <span className="mr-1.5">
-                      {aspect.id}.
+                      {aspectDisplayNo(aspect.id) ?? aspect.id}.
                     </span>
                     {aspect.question}
                     {optional ? (
@@ -259,6 +285,20 @@ export function AspectsReadout({
   aspects: { aspect_id: number; question?: string; answer: unknown }[];
 }) {
   const byId = new Map(aspects.map((a) => [a.aspect_id, a]));
+  const known = new Set(ASPECTS.map((a) => a.id));
+  // Answers to questions retired on 2026-08-09. An application submitted before
+  // that date is a record of what the candidate was actually asked, and a
+  // recruiter reading it must still see every answer they gave; dropping the
+  // rows because the question is no longer on the form would quietly rewrite
+  // history. They carry their own stored `question` text.
+  const retired = aspects
+    .filter((a) => !known.has(a.aspect_id) && a.answer !== null && a.answer !== undefined && a.answer !== "")
+    .sort((a, b) => a.aspect_id - b.aspect_id);
+  const renderAnswer = (answer: unknown): string => {
+    if (answer === null || answer === undefined || answer === "") return "-";
+    if (typeof answer === "boolean") return answer ? "Yes" : "No";
+    return String(answer);
+  };
   return (
     <div className="space-y-6">
       {Array.from(new Set(ASPECTS.map((a) => a.category))).map((category) => {
@@ -271,22 +311,14 @@ export function AspectsReadout({
             <dl className="space-y-2">
               {rows.map((def) => {
                 const resp = byId.get(def.id);
-                const answer = resp?.answer;
-                let display: string;
-                if (answer === null || answer === undefined || answer === "") {
-                  display = "-";
-                } else if (typeof answer === "boolean") {
-                  display = answer ? "Yes" : "No";
-                } else {
-                  display = String(answer);
-                }
+                const display = renderAnswer(resp?.answer);
                 return (
                   <div
                     key={def.id}
                     className="grid grid-cols-1 gap-1 rounded-md border p-3 sm:grid-cols-2"
                   >
                     <dt className="text-sm">
-                      <span className="mr-1.5">{def.id}.</span>
+                      <span className="mr-1.5">{aspectDisplayNo(def.id) ?? def.id}.</span>
                       {resp?.question ?? def.question}
                     </dt>
                     <dd className="text-sm font-medium">{display}</dd>
@@ -297,6 +329,26 @@ export function AspectsReadout({
           </div>
         );
       })}
+      {retired.length > 0 ? (
+        <div data-testid="retired-aspects">
+          <h3 className="mb-2 border-b pb-1 text-sm font-semibold uppercase tracking-wide">
+            Previously asked
+          </h3>
+          <dl className="space-y-2">
+            {retired.map((resp) => (
+              <div
+                key={resp.aspect_id}
+                className="grid grid-cols-1 gap-1 rounded-md border p-3 sm:grid-cols-2"
+              >
+                <dt className="text-sm">
+                  {resp.question ?? `Question ${resp.aspect_id}`}
+                </dt>
+                <dd className="text-sm font-medium">{renderAnswer(resp.answer)}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      ) : null}
     </div>
   );
 }

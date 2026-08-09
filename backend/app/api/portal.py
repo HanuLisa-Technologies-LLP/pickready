@@ -91,10 +91,19 @@ class ApplyContextOut(BaseModel):
     #: them submit an application with no validation data behind it.
     profile_complete: bool = False
     profile_missing: list[str] = []
-    #: The six mandatory validation fields (spec §7), served from the backend so
+    #: The mandatory validation fields (spec §7), served from the backend so
     #: the form the candidate fills in and the answers the report renders cannot
     #: drift apart. Every one of them is required.
     validation_fields: list[dict] = []
+    #: Copy shown above those fields. Served rather than hardcoded in the page
+    #: for the same reason the fields are: it states the reuse behaviour, and
+    #: `validation_values` below is the behaviour it states.
+    validation_intro: str = ""
+    #: The candidate's answers from their most recent application, prefilled so
+    #: they type this once. They are still SUBMITTED per application and still
+    #: snapshotted onto that application's own `validation_json`; what is reused
+    #: is the typing, not the record.
+    validation_values: dict[str, str] = {}
 
 # ── The 40-aspect questionnaire ─────────────────────────────────────────────
 # ASSUMPTION: the PRD references "the 40-aspect questionnaire" but does not
@@ -726,6 +735,18 @@ async def apply_context(
         )
     ).scalars().first()
     answers = candidate.profile_form_json or {}
+    # The mandatory fields are answered once and reused. Sourced from the most
+    # recent application rather than a profile column so each application keeps
+    # its own snapshot of what was true when it was submitted (the rule that put
+    # them on the link in the first place); only the TYPING is saved.
+    previous = (
+        await session.execute(
+            select(JobCandidateLink.validation_json)
+            .where(JobCandidateLink.candidate_id == candidate.id)
+            .order_by(JobCandidateLink.created_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
     return ApplyContextOut(
         job_id=job.id,
         already_applied=existing is not None,
@@ -734,6 +755,8 @@ async def apply_context(
         profile_complete=profile_form.is_complete(answers),
         profile_missing=profile_form.missing_required(answers),
         validation_fields=[dict(field) for field in application_validation.VALIDATION_FIELDS],
+        validation_intro=application_validation.SECTION_INTRO,
+        validation_values=application_validation.reusable_defaults(previous),
     )
 
 

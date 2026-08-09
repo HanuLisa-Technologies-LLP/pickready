@@ -31,6 +31,9 @@ export interface ValidationFieldSpec {
   type: "text" | "select" | "date" | "textarea" | string;
   options?: string[];
   hint?: string;
+  /** Named documents the readiness answer refers to. Served by the backend so
+   *  a candidate is never asked to attest to a set they cannot see. */
+  documents?: string[];
 }
 
 export type ValidationValues = Record<string, string>;
@@ -58,16 +61,25 @@ export function missingValidationFields(
   return missing;
 }
 
+/** Fallback only. The real copy is served with the field list
+ *  (`apply-context.validation_intro`) so it cannot drift from the behaviour. */
+export const VALIDATION_INTRO_FALLBACK =
+  "The following information is mandatory. You need to fill this information " +
+  "only one time and automatically applicable to all other jobs which you " +
+  "apply, otherwise you edit.";
+
 export function ApplicationValidationForm({
   fields,
   values,
   onChange,
   disabled,
+  intro,
 }: {
   fields: ValidationFieldSpec[];
   values: ValidationValues;
   onChange: (next: ValidationValues) => void;
   disabled?: boolean;
+  intro?: string;
 }) {
   if (fields.length === 0) return null;
   const set = (key: string, value: string) => onChange({ ...values, [key]: value });
@@ -75,7 +87,9 @@ export function ApplicationValidationForm({
   return (
     <section className="space-y-4" aria-label="Required application details">
       <div>
-        <h3 className="text-sm font-semibold">A few required details</h3>
+        <h3 className="text-sm font-semibold">
+          {intro?.trim() || VALIDATION_INTRO_FALLBACK}
+        </h3>
         <p className="mt-1 text-xs">
           Shared with the hiring team exactly as you write them. Nothing here is scored.
         </p>
@@ -122,6 +136,28 @@ export function ApplicationValidationForm({
             </div>
           ))}
       </div>
+      {/* The named document set. It sits outside the two-column grid because a
+          nine-item list inside a half-width cell is unreadable, and it is
+          rendered from the field spec rather than typed here so the list a
+          candidate attests to is the list the product actually asks for. */}
+      {fields
+        .filter((field) => (field.documents ?? []).length > 0)
+        .map((field) => (
+          <div
+            key={`${field.key}-documents`}
+            className="rounded-md border p-3"
+            data-testid={`validation-documents-${field.key}`}
+          >
+            <p className="text-xs font-semibold">
+              Documents required at onboarding
+            </p>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-xs">
+              {(field.documents ?? []).map((document) => (
+                <li key={document}>{document}</li>
+              ))}
+            </ul>
+          </div>
+        ))}
       {fields
         .filter((field) => field.type === "textarea")
         .map((field) => (

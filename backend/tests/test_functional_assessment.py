@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.services import application_validation
 from app.services import functional_assessment as fa
 from app.services import ppi
 from app.services import technical_interview as ti
@@ -329,7 +330,6 @@ async def test_validation_node_carries_the_application_fields_verbatim() -> None
         "current_ctc": "18 LPA",
         "expected_ctc": "26 LPA",
         "notice_period": "60 days",
-        "joining_date": "2026-09-01",
         "document_readiness": "All documents ready",
         "role_interest": "I want to work on larger distributed systems.",
     }
@@ -344,6 +344,64 @@ async def test_validation_node_carries_the_application_fields_verbatim() -> None
     assert "score" not in value and "rating" not in value and "grade" not in value
     labels = [field["label"] for field in value["fields"]]
     assert "Why does this role interest you?" in labels
+
+
+def test_the_earliest_joining_date_is_no_longer_a_mandatory_field() -> None:
+    """Removed 2026-08-09, client decision.
+
+    Asserted at the field list rather than the form, because the field list is
+    what the apply page renders AND what the report's Validation section reads:
+    a stray entry here would put the question back on both at once.
+    """
+    assert "joining_date" not in application_validation.MANDATORY_KEYS
+    labels = [field["label"] for field in application_validation.VALIDATION_FIELDS]
+    assert not any("joining" in label.lower() for label in labels)
+    # It is no longer accepted from a client either, so a stale page cannot
+    # keep writing a key nothing asks for.
+    assert "joining_date" not in application_validation.normalise(
+        {"joining_date": "2026-09-01", "current_ctc": "18 LPA"}
+    )
+    # And its absence must not be reported to the candidate as a gap.
+    assert not any(
+        "joining" in message.lower()
+        for message in application_validation.missing_fields({})
+    )
+
+
+def test_document_readiness_names_the_documents_it_refers_to() -> None:
+    """A readiness answer that lists nothing asks the candidate to attest to a
+    set they cannot see (client report, 2026-08-09)."""
+    field = next(
+        f
+        for f in application_validation.VALIDATION_FIELDS
+        if f["key"] == "document_readiness"
+    )
+    assert len(field["documents"]) >= 5
+    joined = " ".join(field["documents"]).lower()
+    for expected in ("pan", "identity", "pay slip"):
+        assert expected in joined
+
+
+def test_the_mandatory_fields_carry_forward_to_the_next_application() -> None:
+    """Filled once, reused, still snapshotted per application."""
+    previous = {
+        "current_ctc": " 18 LPA ",
+        "notice_period": "60 days",
+        "unknown_key": "dropped",
+    }
+    defaults = application_validation.reusable_defaults(previous)
+    assert defaults["current_ctc"] == "18 LPA"
+    assert defaults["notice_period"] == "60 days"
+    assert "unknown_key" not in defaults
+    # A candidate with no history starts empty rather than erroring.
+    assert application_validation.reusable_defaults(None) == {}
+
+
+def test_the_intro_states_the_reuse_behaviour_and_breaks_no_copy_rule() -> None:
+    intro = application_validation.SECTION_INTRO
+    assert "mandatory" in intro
+    assert "only one time" in intro
+    assert chr(8212) not in intro  # no em dash in any string (platform audit)
 
 
 @pytest.mark.asyncio
