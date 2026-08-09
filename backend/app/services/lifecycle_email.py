@@ -136,6 +136,102 @@ _FALLBACK_SUBJECTS: dict[str, str] = {
 }
 
 
+# ── The link an email must actually carry ───────────────────────────────────
+# Which context key holds the one URL each email type is allowed to contain.
+# An email type absent from this table carries no link and is not link-checked.
+_REQUIRED_LINK_KEY: dict[str, str] = {
+    EMAIL_TYPE_ASSESSMENT_INVITATION: "assessment_link",
+    EMAIL_TYPE_ASSESSMENT_REMINDER: "assessment_link",
+    EMAIL_TYPE_QUESTION_BANK_REMINDER: "job_link",
+}
+
+#: Anything that reads as a URL. Three shapes, and the third is the one that
+#: caused the bug: a model handed "Link to the assessment: <real url>" wrote
+#: "link.to.assessment" into the body instead, which is not a host, resolves to
+#: NXDOMAIN, and looked enough like a link that it shipped.
+#:
+#: A dotted token needs THREE segments to count, which is what separates
+#: "link.to.assessment" from ordinary prose like "Node.js" or "readypick.ai".
+#: The guard has to distinguish, not merely detect: rejecting a good email over
+#: a technology name would fail invisibly, one round of latency at a time.
+_URL_LIKE_RE = re.compile(
+    r"""(?:
+          [a-z][a-z0-9+.-]*://\S+          # scheme://...
+        | www\.[^\s<>"']+                   # www....
+        | [A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+){2,}(?:/[^\s<>"']*)?   # a.b.c
+    )""",
+    re.VERBOSE | re.IGNORECASE,
+)
+
+
+def urls_in(text: str) -> list[str]:
+    """Every URL-like token in a body, stripped of trailing sentence
+    punctuation so "…/assessments/abc." is compared as the link it is."""
+    return [match.rstrip(".,;:)]}>\"'") for match in _URL_LIKE_RE.findall(text or "")]
+
+
+def link_defects(email_type: str, ctx: dict[str, Any], body: str) -> list[str]:
+    """Why this body's links are wrong, phrased as instructions to fix them.
+
+    Returned VERBATIM to the model on the next attempt (agent_loop's contract):
+    "the link you wrote is not the one you were given" is precisely the defect a
+    model corrects when told, and the one-shot code this replaced shipped it.
+    """
+    key = _REQUIRED_LINK_KEY.get(email_type)
+    if key is None:
+        return []
+    expected = str(ctx.get(key) or "").strip()
+    if not expected:
+        # No link to carry (a reminder drafted without one). Then the email must
+        # invent none either, which is the same failure in a quieter form.
+        stray = urls_in(body)
+        return (
+            [
+                "include no link or web address at all: none was provided, so "
+                f"remove {stray[0]}"
+            ]
+            if stray
+            else []
+        )
+    reasons: list[str] = []
+    if expected not in body:
+        reasons.append(
+            "include this exact link on its own line, copied character for "
+            f"character and not paraphrased or shortened: {expected}"
+        )
+    wrong = [url for url in urls_in(body) if url not in expected]
+    if wrong:
+        reasons.append(
+            f"remove the invented web address {wrong[0]}; the only link this "
+            f"email may contain is {expected}"
+        )
+    return reasons
+
+
+def repair_link(email_type: str, ctx: dict[str, Any], body: str) -> str:
+    """Last line of defence, applied to AI and deterministic bodies alike.
+
+    `run_loop` degrading to the template is the designed path and the template
+    carries the real link, so this should never fire. It exists because the cost
+    of the two outcomes is not symmetric: a candidate who receives a dead link
+    cannot complete an assessment and has no way to report it except giving up.
+    """
+    key = _REQUIRED_LINK_KEY.get(email_type)
+    if key is None:
+        return body
+    expected = str(ctx.get(key) or "").strip()
+    cleaned = body
+    for url in urls_in(cleaned):
+        if expected and url in expected:
+            continue
+        cleaned = cleaned.replace(url, expected)
+    if expected and expected not in cleaned:
+        cleaned = f"{cleaned.rstrip()}\n\n{expected}\n"
+    # Replacing a stray URL with an empty expected link can leave a dangling
+    # label line; collapse the blank runs that creates.
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
 class UnknownEmailType(ValueError):
     """Raised for an email type outside the six."""
 
@@ -417,6 +513,13 @@ async def draft(
                     "state no score, rating, percentage or rank anywhere in the "
                     "subject or the body"
                 )
+            # The link is the entire point of an invitation. A model given
+            # "Link to the assessment: <url>" wrote "link.to.assessment" into
+            # the body, which resolves to NXDOMAIN; every candidate who received
+            # it was told to complete an assessment they could not open.
+            # Deterministic, like every other criterion here: the moment this
+            # matters most is when the provider is having a bad day.
+            reasons.extend(link_defects(email_type, ctx, draft_body))
             return agent_loop.reject(*reasons) if reasons else agent_loop.ok()
 
         result = await agent_loop.run_loop(
@@ -442,6 +545,8 @@ async def draft(
 
     if subject is None or body is None:
         subject, body = fallback_draft(email_type, ctx)
+
+    body = repair_link(email_type, ctx, body)
 
     return {
         "email_type": email_type,

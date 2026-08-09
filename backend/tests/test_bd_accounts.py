@@ -74,6 +74,27 @@ class _Session:
                 obj.created_at = NOW
 
 
+class _DeleteSession(_Session):
+    """`_Session` plus the two things the delete handler needs: an UPDATE that
+    reports a rowcount, and `delete`."""
+
+    def __init__(self, rows: list | None = None, released: int = 0):
+        super().__init__(rows)
+        self.released = released
+        self.updates = 0
+        self.deleted: list = []
+
+    async def execute(self, query):
+        # The handler's only non-SELECT is the lead release.
+        if query.__class__.__name__ == "Update":
+            self.updates += 1
+            return SimpleNamespace(rowcount=self.released)
+        return _Result(self.rows)
+
+    async def delete(self, obj) -> None:
+        self.deleted.append(obj)
+
+
 def _bd_row(**overrides):
     base = dict(
         id=uuid.uuid4(),
@@ -222,14 +243,84 @@ def test_the_bd_routes_are_all_gated_by_the_superadmin_session() -> None:
         assert deps.get_superadmin_db in names, route.path
 
 
-def test_the_owner_console_never_deletes_a_bd_user() -> None:
-    """A BD rep owns leads. Disable is the reversible hide; there is no delete
-    route to call."""
-    assert not any(
-        "DELETE" in (getattr(route, "methods", None) or set())
+# ── Delete (client decision, 2026-08-09) ─────────────────────────────────────
+# This REVERSES the previous "there is no delete route" rule, and the reason
+# that rule existed is what these tests now guard instead: a BD rep owns leads,
+# and a lead is the pipeline, not the rep. Deleting the account must release
+# the leads, never delete them, and never touch a promoted customer.
+
+@pytest.mark.asyncio
+async def test_deleting_a_bd_user_releases_their_leads_instead_of_deleting_them(
+    no_audit,
+) -> None:
+    row = _bd_row(email="rep@pickready.example")
+    session = _DeleteSession([row], released=3)
+    out = await admin_api.delete_bd_user(
+        row.id, confirm="rep@pickready.example", user=_owner(), session=session
+    )
+    assert session.deleted == [row]
+    assert out.leads_released == 3
+    # The UPDATE that ran is a release to unassigned, not a DELETE of the leads.
+    assert session.updates == 1
+    assert no_audit[0]["action"] == "bd_user_deleted"
+    assert no_audit[0]["metadata"]["leads_released"] == 3
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_bd_user_needs_the_email_retyped(no_audit) -> None:
+    row = _bd_row(email="rep@pickready.example")
+    session = _DeleteSession([row])
+    for wrong in ("", "rep@pickready", "yes", "Rep One"):
+        with pytest.raises(HTTPException) as caught:
+            await admin_api.delete_bd_user(
+                row.id, confirm=wrong, user=_owner(), session=session
+            )
+        assert caught.value.status_code == 400
+    assert session.deleted == []
+    assert session.updates == 0
+
+
+@pytest.mark.asyncio
+async def test_the_delete_confirmation_is_about_intent_not_typing(no_audit) -> None:
+    """Same guard as the tenant delete: case and whitespace insensitive, and a
+    literal DELETE is accepted."""
+    for typed in ("  REP@PickReady.example ", "delete", "DELETE"):
+        row = _bd_row(email="rep@pickready.example")
+        session = _DeleteSession([row])
+        await admin_api.delete_bd_user(
+            row.id, confirm=typed, user=_owner(), session=session
+        )
+        assert session.deleted == [row]
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_unknown_bd_user_is_a_404(no_audit) -> None:
+    session = _DeleteSession([])
+    with pytest.raises(HTTPException) as caught:
+        await admin_api.delete_bd_user(
+            uuid.uuid4(), confirm="delete", user=_owner(), session=session
+        )
+    assert caught.value.status_code == 404
+
+
+def test_delete_is_the_only_new_verb_and_is_still_owner_gated() -> None:
+    """Adding a destructive route must not have widened who can reach it."""
+    delete_routes = [
+        route
         for route in admin_api.router.routes
         if getattr(route, "path", "").startswith("/bd-users")
-    )
+        and "DELETE" in (getattr(route, "methods", None) or set())
+    ]
+    assert len(delete_routes) == 1
+    assert delete_routes[0].path == "/bd-users/{bd_user_id}"
+    names = {dep.call for dep in delete_routes[0].dependant.dependencies}
+    assert deps.get_superadmin_db in names
+
+
+def test_disable_survives_as_the_reversible_alternative() -> None:
+    """Delete did not replace Disable. Disable is still correct for a rep who
+    may come back: it is reversible and keeps their lead ownership intact."""
+    assert "status" in set(BDUserUpdateIn.model_fields)
 
 
 # ── Listing ──────────────────────────────────────────────────────────────────

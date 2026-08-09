@@ -76,6 +76,7 @@ def _now(now: datetime | None = None) -> datetime:
 def lead_predicates(
     *,
     channel: str | None = None,
+    social_source: str | None = None,
     search: str | None = None,
     agreement: bool | None = None,
     include_archived: bool = False,
@@ -88,10 +89,19 @@ def lead_predicates(
     (`agreement=None` WAS sent) from "the caller did not filter on agreement"
     (`agreement` absent). Without it, `?agreement=` could not express "show me
     the leads nobody has decided yet", which is the BD team's working queue.
+
+    `social_source` narrows to one platform. It exists because Personal Reach
+    and Social Reach merged into one BD Reach screen on 2026-08-09: with one
+    table in front of the rep, "show me only the LinkedIn ones" has to be a
+    SQL filter for the same reason every other filter here is one. Narrowing a
+    fetched page in the browser would make the result count depend on which
+    page happened to be loaded.
     """
     predicates = []
     if channel:
         predicates.append(BDLead.channel == channel)
+    if social_source:
+        predicates.append(BDLead.social_source == social_source)
     if not include_archived:
         predicates.append(BDLead.archived_at.is_(None))
     if owner_user_id is not None:

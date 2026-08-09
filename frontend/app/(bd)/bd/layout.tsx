@@ -20,7 +20,6 @@
 import {
   Building2,
   Settings,
-  Share2,
   Sparkles,
   UserRoundSearch,
 } from "lucide-react";
@@ -33,16 +32,16 @@ export default function BDLayout({ children }: { children: React.ReactNode }) {
   const { hasCapability } = useAuth();
 
   const nav = [
+    // One reach section since 2026-08-09. Personal Reach and Social Reach were
+    // the same funnel over the same table; where a lead came from is a column
+    // on this page, not a second nav item.
     hasCapability(BD_CAPABILITIES.manageLeads)
       ? {
           href: "/bd",
-          label: "Personal Reach",
+          label: "BD Reach",
           icon: UserRoundSearch,
           exact: true,
         }
-      : null,
-    hasCapability(BD_CAPABILITIES.manageLeads)
-      ? { href: "/bd/social", label: "Social Reach", icon: Share2 }
       : null,
     hasCapability(BD_CAPABILITIES.useAIReach)
       ? { href: "/bd/ai-reach", label: "AI Reach", icon: Sparkles }

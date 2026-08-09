@@ -1,15 +1,12 @@
-import { ReachPage } from "@/components/bd/reach-page";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "Social Reach" };
-
-// The same funnel as Personal Reach, with one extra column: a social lead
-// carries the platform it came from, and that source is required.
-export default function SocialReachPage() {
-  return (
-    <ReachPage
-      channel="social"
-      title="Social Reach"
-      description="Companies found on LinkedIn, Google, Facebook, Instagram or X, and how far each one has got."
-    />
-  );
+// Social Reach merged into BD Reach on 2026-08-09.
+//
+// The route survives as a redirect rather than being deleted: reps have this
+// URL bookmarked and it is pasted in internal threads, and a 404 on a page
+// someone used yesterday reads as the portal being broken rather than as a
+// screen having moved. The source filter on BD Reach is where the social leads
+// now live.
+export default function SocialReachRedirect() {
+  redirect("/bd");
 }

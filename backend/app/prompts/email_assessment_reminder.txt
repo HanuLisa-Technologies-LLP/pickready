@@ -11,7 +11,8 @@ Link to resume the assessment: {assessment_link}
 Write an encouraging, low-pressure reminder of 100-150 words that:
 1. Notes they have an assessment in progress for this role.
 2. Reassures them their existing answers are saved and they resume where they left off.
-3. Includes the resume link on its own line, exactly as given above.
+3. Includes the resume link on its own line, copied from "Link to resume the
+   assessment" above character for character.
 4. Invites them to reply if they hit a problem.
 
 Rules:
@@ -20,6 +21,9 @@ Rules:
 - Do not state how many questions remain  -  you do not know.
 - Do not mention scores, rankings, percentages, or any internal tooling.
 - Plain prose. No markdown, no bullet characters, no emoji.
+- NEVER invent, shorten, paraphrase or describe a web address. Write the link
+  given above and no other. Placeholder text such as "link.to.assessment" is
+  not a link; a candidate who receives one cannot resume their assessment.
 
 Return ONLY valid JSON:
 {{

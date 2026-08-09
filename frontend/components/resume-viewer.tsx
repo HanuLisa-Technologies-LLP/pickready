@@ -49,6 +49,30 @@ export interface ResumeDescriptor {
  * Cloudinary `raw` uploads are frequently extension-less, those are optimistic
  * framing attempts, guarded by the load/timeout fallback below.
  */
+/**
+ * Preview strategy for a stored MIME type, when the filename cannot decide.
+ *
+ * Private-storage object names carry no extension, so a DOCX whose original
+ * filename was not recorded used to be classified "framable" and handed to an
+ * iframe, which renders nothing. The MIME type recorded at upload is the more
+ * reliable signal and is checked first.
+ */
+export function kindFromMimeType(mimeType?: string | null): ResumeKind | null {
+  const value = (mimeType ?? "").toLowerCase().split(";")[0].trim();
+  if (!value) return null;
+  if (
+    value === "application/msword" ||
+    value === "application/rtf" ||
+    value === "text/rtf" ||
+    value.startsWith("application/vnd.openxmlformats-officedocument.wordprocessing") ||
+    value === "application/vnd.oasis.opendocument.text"
+  )
+    return "word";
+  if (value === "application/pdf" || value.startsWith("image/") || value === "text/plain")
+    return "framable";
+  return "unsupported";
+}
+
 export function describeResumeUrl(url: string): ResumeDescriptor {
   let pathname = url;
   try {
@@ -129,6 +153,7 @@ export function ResumeViewer({
   resumeUrl,
   profileId,
   resumeFileName,
+  resumeMimeType,
   candidateName,
 }: {
   open: boolean;
@@ -138,6 +163,9 @@ export function ResumeViewer({
   /** Profile used by the authenticated server-side DOCX renderer. */
   profileId?: string | null;
   resumeFileName?: string | null;
+  /** MIME type recorded at upload. Decides the preview strategy when the
+   *  stored object name carries no extension. */
+  resumeMimeType?: string | null;
   /** Shown in the modal header so the reviewer keeps their place. */
   candidateName: string;
 }) {
@@ -146,13 +174,17 @@ export function ResumeViewer({
   >("loading");
   const [documentPreviewUrl, setDocumentPreviewUrl] = React.useState<string | null>(null);
 
-  const descriptor = React.useMemo(
-    () =>
-      resumeUrl
-        ? describeResumeUrl(resumeFileName?.trim() || resumeUrl)
-        : null,
-    [resumeFileName, resumeUrl]
-  );
+  const descriptor = React.useMemo(() => {
+    if (!resumeUrl) return null;
+    const base = describeResumeUrl(resumeFileName?.trim() || resumeUrl);
+    // The filename wins when it actually carries an extension; otherwise the
+    // recorded MIME type decides, so a DOCX stored under an extension-less
+    // private object name is still routed to the server-side renderer instead
+    // of being handed to an iframe that renders nothing.
+    if (base.extension) return base;
+    const fromMime = kindFromMimeType(resumeMimeType);
+    return fromMime ? { ...base, kind: fromMime } : base;
+  }, [resumeFileName, resumeMimeType, resumeUrl]);
   const downloadUrl = React.useMemo(
     () =>
       profileId

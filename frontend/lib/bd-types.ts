@@ -117,8 +117,14 @@ export interface BDLeadFormValues {
   contact_email: string;
   contact_phone: string;
   notes: string;
-  /** Required for a social lead, absent from a personal one. */
-  social_source: BDSocialSource | "";
+  /** Where the lead came from, as ANSWERED on the merged BD Reach form:
+   *  a platform slug, `"direct"` for a company approached directly, or `""`
+   *  for a question nobody has answered yet. It is not the stored column:
+   *  `bd_leads.social_source` is NULL on a personal lead and the channel is
+   *  derived from this answer (see `channelForSource`). Keeping the two apart
+   *  is what lets the form tell "direct" from "unanswered", which a nullable
+   *  column cannot. */
+  social_source: BDSocialSource | "direct" | "";
 }
 
 // ---- Customers ----

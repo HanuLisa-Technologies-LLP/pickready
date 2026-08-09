@@ -523,6 +523,9 @@ export interface RankedCandidate {
   source?: CandidateSource | null;
   tier?: Tier | null;
   archived_at?: string | null;
+  /** The application's Profile. Resumes live in private storage, so this is
+   *  the handle the viewer and the download endpoint are keyed on. */
+  profile_id?: string | null;
   resume_url?: string | null;
   resume_filename?: string | null;
   resume_mime_type?: string | null;
@@ -914,6 +917,43 @@ export interface DashboardJobMetrics {
 export interface DashboardSummary {
   jobs: DashboardJobMetrics[];
   total_jobs_worked: number;
+}
+
+// ---- AI Dashboard (2026-08-09) ----
+// Mirrors backend/app/schemas/dashboard.py. Every field is a COUNT OF THINGS;
+// nothing here is a score, percentage, rank or band, and `grade` is one of the
+// four word labels from services/rating, sent by the server so the client never
+// derives a grade from a number it should not have.
+
+export interface AIGradeCount {
+  grade: string;
+  candidates: number;
+}
+
+export interface AIAssessmentFunnel {
+  invited: number;
+  started: number;
+  completed: number;
+  reports_ready: number;
+}
+
+export interface AIFrameworkHealth {
+  ready_for_candidates: number;
+  awaiting_approval: number;
+  /** Jobs with NO competency rows. Measured against the table, never against a
+   *  generated-at timestamp: a job in this state is stuck and nobody on it can
+   *  be assessed. */
+  pending_generation: number;
+}
+
+export interface AIDashboard {
+  jobs_with_ai_framework: number;
+  framework: AIFrameworkHealth;
+  assessments: AIAssessmentFunnel;
+  /** In rating order, best first, every grade present even at zero. */
+  grades: AIGradeCount[];
+  reports_on_fallback: number;
+  total_reports: number;
 }
 
 // ---- Billing, subscriptions and credits (killer-spec Parts 2 and 3) ----

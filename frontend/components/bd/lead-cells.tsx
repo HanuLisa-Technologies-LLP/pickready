@@ -1,6 +1,6 @@
 "use client";
 
-// The small cells shared by the Personal Reach and Social Reach tables, and by
+// The small cells shared by the BD Reach table and by
 // their stacked-card layout under `md`. Kept here so the table and the cards
 // render the same thing rather than two drifting copies.
 
@@ -34,7 +34,10 @@ export function formatStamp(value: string | null | undefined): string | null {
 }
 
 export function SourceBadge({ source }: { source: BDSocialSource | null }) {
-  if (!source) return <span className="text-sm">Not set</span>;
+  // NULL is not "unknown": a personal lead cannot carry a source, by database
+  // constraint. On the merged BD Reach table that column is always shown, so it
+  // has to say what the absence MEANS rather than reading as missing data.
+  if (!source) return <span className="text-sm">Approached directly</span>;
   return <Badge variant="brand">{SOCIAL_SOURCE_LABELS[source]}</Badge>;
 }
 

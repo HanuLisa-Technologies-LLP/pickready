@@ -367,6 +367,7 @@ export function ProfileReview({
               resumeUrl={profile?.resume_url}
               profileId={profile?.id ?? profile?.profile_id}
               resumeFileName={profile?.resume_original_filename}
+              resumeMimeType={profile?.resume_mime_type}
               candidateName={
                 selected.candidate.full_name || selected.candidate.email
               }

@@ -284,7 +284,7 @@ export function BDCustomersPage() {
                       <Badge variant="brand">
                         {customer.social_source
                           ? SOCIAL_SOURCE_LABELS[customer.social_source]
-                          : "Personal reach"}
+                          : "Approached directly"}
                       </Badge>
                     </TableCell>
                   </TableRow>

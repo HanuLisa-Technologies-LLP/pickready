@@ -505,6 +505,10 @@ class RankedCandidateOut(BaseModel):
     tier: str | None = None
     archived_at: datetime | None = None
 
+    #: The application's Profile. Resumes live in private storage, so this is
+    #: the only handle the viewer and the download endpoint can use; a row
+    #: without it renders as an unreadable resume.
+    profile_id: uuid.UUID | None = None
     resume_url: str | None = None
     resume_filename: str | None = None
     resume_mime_type: str | None = None

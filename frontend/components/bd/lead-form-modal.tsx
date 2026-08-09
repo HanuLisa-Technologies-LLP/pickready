@@ -1,17 +1,21 @@
 "use client";
 
-// Create or edit one BD lead, for either reach channel.
+// Create or edit one BD lead.
 //
-// The channel is fixed by the page that opened this modal and is never a field:
-// moving a lead between Personal Reach and Social Reach would either strip a
-// real source or invent one, so `POST /bd/leads` takes the channel once and
-// `PATCH` refuses it afterwards.
+// Personal Reach and Social Reach merged into one BD Reach section on
+// 2026-08-09, so the rep no longer picks a screen and thereby a channel. They
+// pick a SOURCE: "Approached directly" or one of the five platforms. The
+// `bd_leads.channel` column is unchanged and is now DERIVED from that answer,
+// which is the whole of the merge as far as storage is concerned.
 //
-// SOURCE IS THE ONE ASYMMETRY. A social lead REQUIRES a source and a personal
+// SOURCE IS STILL THE ASYMMETRY. A social lead REQUIRES a source and a personal
 // lead FORBIDS one, enforced by a Postgres CHECK constraint. This form enforces
-// the same rule up front: the select only exists on the social channel, and it
-// blocks the save when it is empty, so the database never has to answer for a
-// shape the UI could have caught.
+// the same rule up front, so the database never has to answer for a shape the
+// UI could have caught.
+//
+// The channel remains IMMUTABLE after creation (`PATCH` refuses it), so the
+// source select is disabled when editing: switching it would either strip a
+// real source or invent one.
 
 import * as React from "react";
 
@@ -73,10 +77,17 @@ export function leadToForm(lead: BDLead): BDLeadFormValues {
 
 export type LeadFormErrors = Partial<Record<keyof BDLeadFormValues, string>>;
 
-export function validateLead(
-  values: BDLeadFormValues,
-  channel: BDChannel
-): LeadFormErrors {
+/** The "no platform" choice. A Select cannot hold an empty string as a value,
+ *  so the direct option needs a token of its own. */
+export const DIRECT_SOURCE = "direct";
+
+/** The channel a chosen source implies. `channel` stops being something the rep
+ *  picks and becomes a fact about where the lead came from. */
+export function channelForSource(source: string): BDChannel {
+  return source && source !== DIRECT_SOURCE ? "social" : "personal";
+}
+
+export function validateLead(values: BDLeadFormValues): LeadFormErrors {
   const errors: LeadFormErrors = {};
   if (!values.company_name.trim()) {
     errors.company_name = "A lead needs a company name.";
@@ -84,21 +95,21 @@ export function validateLead(
   if (values.contact_email.trim() && !EMAIL_RE.test(values.contact_email.trim())) {
     errors.contact_email = "Enter a valid email address, or leave it blank.";
   }
-  if (channel === "social" && !values.social_source) {
+  if (!values.social_source) {
+    // Unanswered, not "personal". A blank select is a question nobody answered,
+    // and defaulting it would silently file every hurried lead as direct.
     errors.social_source =
-      "A social lead needs a source. Choose LinkedIn, Google, Facebook, Instagram or X.";
+      "Say where this lead came from: approached directly, or LinkedIn, Google, Facebook, Instagram or X.";
   }
   return errors;
 }
 
 export function LeadFormModal({
-  channel,
   lead,
   saving,
   onCancel,
   onSave,
 }: {
-  channel: BDChannel;
   /** Absent for a create. */
   lead?: BDLead | null;
   saving: boolean;
@@ -106,9 +117,15 @@ export function LeadFormModal({
   onSave: (values: BDLeadFormValues) => void;
 }) {
   const editing = Boolean(lead);
-  const [values, setValues] = React.useState<BDLeadFormValues>(
-    lead ? leadToForm(lead) : EMPTY_LEAD_FORM
-  );
+  const [values, setValues] = React.useState<BDLeadFormValues>(() => {
+    if (!lead) return EMPTY_LEAD_FORM;
+    const form = leadToForm(lead);
+    // A stored personal lead has no source by construction; show it as the
+    // direct choice rather than as an unanswered select.
+    return form.social_source
+      ? form
+      : { ...form, social_source: DIRECT_SOURCE };
+  });
   const [errors, setErrors] = React.useState<LeadFormErrors>({});
 
   const set = <K extends keyof BDLeadFormValues>(
@@ -119,14 +136,14 @@ export function LeadFormModal({
       const next = { ...current, [key]: value };
       // Re-validate as they type, but only ever clear errors they have fixed.
       setErrors((shown) =>
-        Object.keys(shown).length ? validateLead(next, channel) : shown
+        Object.keys(shown).length ? validateLead(next) : shown
       );
       return next;
     });
   };
 
   const submit = () => {
-    const found = validateLead(values, channel);
+    const found = validateLead(values);
     setErrors(found);
     if (Object.keys(found).length) return;
     onSave(values);
@@ -138,9 +155,9 @@ export function LeadFormModal({
         <DialogHeader>
           <DialogTitle>{editing ? "Edit lead" : "Add lead"}</DialogTitle>
           <DialogDescription>
-            {channel === "social"
-              ? "A company found through social reach. The source is required."
-              : "A company approached directly by the team."}
+            {editing
+              ? "Where a lead came from is fixed once it is added, so the source cannot be changed here."
+              : "A company the team is working. Say where it came from and the rest is the same either way."}
           </DialogDescription>
         </DialogHeader>
 
@@ -161,28 +178,38 @@ export function LeadFormModal({
             />
           </FormField>
 
-          {channel === "social" ? (
-            <FormField label="Source" required error={errors.social_source}>
-              <Select
-                value={values.social_source || undefined}
-                disabled={saving}
-                onValueChange={(source) =>
-                  set("social_source", source as BDSocialSource)
-                }
-              >
-                <SelectTrigger aria-invalid={Boolean(errors.social_source)}>
-                  <SelectValue placeholder="Where the lead came from" />
-                </SelectTrigger>
-                <SelectContent>
-                  {SOCIAL_SOURCES.map((source) => (
-                    <SelectItem key={source} value={source}>
-                      {SOCIAL_SOURCE_LABELS[source]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </FormField>
-          ) : null}
+          <FormField
+            label="Source"
+            required
+            error={errors.social_source}
+            hint={
+              editing
+                ? "Fixed once a lead is added."
+                : "Approached directly, or the platform it was found on."
+            }
+          >
+            <Select
+              value={values.social_source || undefined}
+              disabled={saving || editing}
+              onValueChange={(source) =>
+                set("social_source", source as BDSocialSource)
+              }
+            >
+              <SelectTrigger aria-invalid={Boolean(errors.social_source)}>
+                <SelectValue placeholder="Where the lead came from" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={DIRECT_SOURCE}>
+                  Approached directly
+                </SelectItem>
+                {SOCIAL_SOURCES.map((source) => (
+                  <SelectItem key={source} value={source}>
+                    {SOCIAL_SOURCE_LABELS[source]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FormField>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <FormField label="Industry" htmlFor="lead-industry">

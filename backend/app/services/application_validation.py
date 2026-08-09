@@ -1,8 +1,9 @@
 """Mandatory application fields -- validation, captured not assessed (spec §7).
 
-Validation stopped being an agent on 2026-07-30. It is now six mandatory fields
+Validation stopped being an agent on 2026-07-30. It is now five mandatory fields
 on the application form itself, submitted together with the candidate's resume
-before they can proceed to the assessment conversation.
+before they can proceed to the assessment conversation. It was six until
+2026-08-09, when the earliest joining date was removed (see VALIDATION_FIELDS).
 
 Three consequences, all deliberate:
 
@@ -29,12 +30,41 @@ __all__ = [
     "DOCUMENT_READINESS_OPTIONS",
     "MANDATORY_KEYS",
     "NOTICE_PERIOD_OPTIONS",
+    "REQUIRED_DOCUMENTS",
     "ROLE_INTEREST_MAX_CHARS",
     "ROLE_INTEREST_MIN_CHARS",
+    "SECTION_INTRO",
     "VALIDATION_FIELDS",
     "missing_fields",
     "normalise",
+    "reusable_defaults",
 ]
+
+#: Shown above the mandatory fields. It states the REUSE behaviour, which is a
+#: fact about the product rather than reassurance: the answers are prefilled on
+#: every later application from the last one submitted, and the candidate edits
+#: them when something has changed. `reusable_defaults` is what makes the
+#: sentence true, so the two live in the same module and cannot drift.
+SECTION_INTRO = (
+    "The following information is mandatory. You need to fill this information "
+    "only one time and automatically applicable to all other jobs which you "
+    "apply, otherwise you edit."
+)
+
+#: Named because "All documents ready" listing nothing told the candidate to
+#: attest to a set they could not see. This is the set the readiness answer
+#: refers to; it is displayed beside the field and is never scored.
+REQUIRED_DOCUMENTS: tuple[str, ...] = (
+    "Government photo identity (Aadhaar, passport, or driving licence)",
+    "PAN card",
+    "Class X and Class XII certificates",
+    "Degree certificates and consolidated marksheets",
+    "Relieving or experience letters from every previous employer",
+    "Latest three months of pay slips",
+    "Most recent Form 16 or income tax return acknowledgement",
+    "Provident Fund account number or UAN",
+    "Passport size photograph",
+)
 
 NOTICE_PERIOD_OPTIONS: tuple[str, ...] = (
     "Immediate",
@@ -79,17 +109,21 @@ VALIDATION_FIELDS: tuple[dict[str, Any], ...] = (
         "type": "select",
         "options": list(NOTICE_PERIOD_OPTIONS),
     },
-    {
-        "key": "joining_date",
-        "label": "Earliest joining date",
-        "type": "date",
-    },
+    # `joining_date` (Earliest joining date) was removed on 2026-08-09, client
+    # decision. It was a mandatory field that duplicated the notice period a
+    # candidate had already answered one field earlier, and a date typed months
+    # before an offer is not evidence of anything. Reports written before today
+    # still carry the key in their own `validation_json` and still render it;
+    # `normalise` simply stops accepting new values for it. No column was
+    # dropped because there is none: the six fields are keys inside
+    # `job_candidate_links.validation_json`.
     {
         "key": "document_readiness",
         "label": "Document readiness",
         "type": "select",
         "options": list(DOCUMENT_READINESS_OPTIONS),
-        "hint": "Identity, education and employment documents for onboarding.",
+        "hint": "Your readiness to produce the documents listed below.",
+        "documents": list(REQUIRED_DOCUMENTS),
     },
     {
         "key": "role_interest",
@@ -102,8 +136,22 @@ VALIDATION_FIELDS: tuple[dict[str, Any], ...] = (
 MANDATORY_KEYS: tuple[str, ...] = tuple(field["key"] for field in VALIDATION_FIELDS)
 
 
+def reusable_defaults(previous: dict[str, Any] | None) -> dict[str, Any]:
+    """The answers a candidate's NEXT application starts pre-filled with.
+
+    The rule that these fields live on the APPLICATION and not the candidate
+    profile is unchanged and is the reason this returns a copy rather than
+    moving the storage: current CTC and notice period are true when they are
+    answered and stale a quarter later, so every application keeps its own
+    immutable snapshot of what was stated at the time. What the candidate is
+    spared is RETYPING, not the chance to correct: the values arrive filled in
+    and every one of them is editable before submitting.
+    """
+    return normalise(previous)
+
+
 def normalise(payload: dict[str, Any] | None) -> dict[str, Any]:
-    """Trim and keep only the six known keys. Unknown keys are dropped, not
+    """Trim and keep only the known keys. Unknown keys are dropped, not
     stored: this blob renders straight into the report, so it accepts exactly
     the fields the form defines and nothing a caller invents."""
     source = payload or {}

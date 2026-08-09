@@ -187,10 +187,11 @@ export default function PublicApplyPage() {
   const [missingIds, setMissingIds] = React.useState<number[]>([]);
   const [missingPersonal, setMissingPersonal] = React.useState<string[]>([]);
   const [submitted, setSubmitted] = React.useState(false);
-  // The six mandatory fields (spec §7), defined server-side so the form and the
+  // The mandatory fields (spec §7), defined server-side so the form and the
   // report's Validation section cannot drift apart.
   const [validationFields, setValidationFields] = React.useState<ValidationFieldSpec[]>([]);
   const [validation, setValidation] = React.useState<ValidationValues>({});
+  const [validationIntro, setValidationIntro] = React.useState("");
   const errorRef = React.useRef<HTMLDivElement | null>(null);
 
   // Prefill the applicant's name once the candidate session is known.
@@ -275,12 +276,22 @@ export default function PublicApplyPage() {
       applied_at?: string | null;
       resume?: StoredResume;
       validation_fields?: ValidationFieldSpec[];
+      validation_intro?: string;
+      validation_values?: ValidationValues;
     }>(`/portal/jobs/${jobUuid}/apply-context`)
       .then((ctx) => {
         if (!active) return;
         setAlreadyApplied(Boolean(ctx.already_applied));
         setAppliedAt(ctx.applied_at ?? null);
         setValidationFields(ctx.validation_fields ?? []);
+        setValidationIntro(ctx.validation_intro ?? "");
+        // Filled in once and carried forward. Merged UNDER anything already
+        // typed on this page so arriving defaults cannot overwrite an edit the
+        // candidate has started making.
+        const carried = ctx.validation_values ?? {};
+        if (Object.keys(carried).length > 0) {
+          setValidation((current) => ({ ...carried, ...current }));
+        }
         const stored = ctx.resume ?? { has_resume: false };
         setStoredResume(stored);
         if (stored.has_resume) setResumeMode("reuse");
@@ -770,6 +781,7 @@ export default function PublicApplyPage() {
                       values={validation}
                       onChange={setValidation}
                       disabled={busy}
+                      intro={validationIntro}
                     />
 
                     <Separator />

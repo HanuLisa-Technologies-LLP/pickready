@@ -42,6 +42,7 @@ from app.models.invite import (
     invite_expiry,
     invite_state,
 )
+from app.models.bd import BDLead
 from app.models.job import Job
 from app.models.tenant import AuditLog, RolePermission, Tenant
 from app.models.user import User
@@ -51,6 +52,7 @@ from app.schemas.admin import (
     PermissionOut,
     PermissionsUpdateIn,
     BDUserCreateIn,
+    BDUserDeleteOut,
     BDUserOut,
     BDUserUpdateIn,
     OwnerStaffOut,
@@ -811,6 +813,68 @@ async def update_bd_user(
         metadata={"changed": sorted(changes), "status": bd_user.status.value},
     )
     return _bd_user_out(bd_user)
+
+
+@router.delete("/bd-users/{bd_user_id}", response_model=BDUserDeleteOut)
+async def delete_bd_user(
+    bd_user_id: uuid.UUID,
+    confirm: str = Query(
+        ...,
+        description="Retype the account's email address (or 'DELETE') to "
+                    "confirm this irreversible action.",
+    ),
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_superadmin_db),
+) -> BDUserDeleteOut:
+    """Permanently remove a Business Development account.
+
+    Added 2026-08-09 at the client's request. It reverses the standing "there is
+    no delete route" position, and the reason that position existed is exactly
+    what this handler has to protect: a BD rep OWNS LEADS
+    (`bd_leads.owner_user_id`), and a lead is the pipeline, not the rep.
+
+    So the cascade is deliberately asymmetric:
+
+      * Leads are RELEASED, never deleted. `owner_user_id` is set NULL and the
+        rows stay on the BD board as unassigned, ready to be reassigned. A rep
+        leaving must not take the company's pipeline with them, and the
+        alternative failure is silent: nobody notices the leads are gone until
+        someone asks after a deal that no longer exists.
+      * A lead that was promoted to a TENANT is untouched by construction, since
+        `bd_leads.promoted_tenant_id` hangs off the lead and not off the rep.
+        Deleting a salesperson can never archive a paying customer.
+      * The `audit_log` rows naming this user survive. They are append-only
+        history and answer "who created this lead", which outlives the account.
+
+    Disable remains, and remains the right answer for someone who may come back:
+    it is reversible and it keeps their ownership intact. This is for an account
+    created in error or an address that must genuinely leave the system.
+    """
+    bd_user = await _load_bd_user(session, bd_user_id)
+    email = bd_user.email or ""
+    # Same guard as the tenant delete: retype the thing being destroyed. The
+    # check is about intent, not typing precision.
+    if not confirmation_matches(confirm, email):
+        raise HTTPException(
+            status_code=400,
+            detail="Confirmation does not match the account's email address",
+        )
+
+    released = await session.execute(
+        update(BDLead)
+        .where(BDLead.owner_user_id == bd_user_id)
+        .values(owner_user_id=None)
+    )
+    leads_released = released.rowcount or 0
+
+    await session.delete(bd_user)
+    await session.flush()
+    await audit(
+        session, tenant_id=None, actor_user_id=user.user_id,
+        action="bd_user_deleted", target_type="user", target_id=bd_user_id,
+        metadata={"email": email, "leads_released": leads_released},
+    )
+    return BDUserDeleteOut(id=bd_user_id, email=email, leads_released=leads_released)
 
 
 # ── Org-portal: the caller's own company profile ─────────────────────────────

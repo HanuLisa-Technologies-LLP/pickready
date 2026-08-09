@@ -5,9 +5,12 @@
     Candidate Portal  the public candidate surface
     BD Portal         this module: the team that FINDS the customers
 
-Five pages: Personal Reach, Social Reach, AI Reach, Customers, Settings.
-Personal and Social Reach are the same funnel over one `bd_leads` table
-discriminated by `channel` (see models/bd.py for why one table, not two).
+Four pages: BD Reach, AI Reach, Customers, Settings. BD Reach was two screens
+(Personal Reach and Social Reach) until 2026-08-09; they were always the same
+funnel over one `bd_leads` table discriminated by `channel` (see models/bd.py
+for why one table, not two), so the merge is a UI consolidation and the column
+is unchanged. Omitting `channel` on the list has always meant "both", and that
+is now what the screen sends.
 
 SESSION AND PERMISSIONS
 -----------------------
@@ -42,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, get_current_user
 from app.core.db import get_session_factory, superadmin_scope
 from app.core.security import AUDIENCE_OWNER
-from app.models.bd import CHANNEL_SOCIAL, BDLead
+from app.models.bd import CHANNEL_SOCIAL, SOCIAL_SOURCES, BDLead
 from app.models.user import User
 from app.schemas.bd import (
     DEFAULT_PAGE_SIZE,
@@ -198,6 +201,11 @@ async def list_leads(
     channel: str | None = Query(
         default=None, description="personal | social. Omit for both."
     ),
+    social_source: str | None = Query(
+        default=None,
+        description="Narrow to one platform (linkedin, google, facebook, "
+                    "instagram, x). Omit for every source.",
+    ),
     search: str | None = Query(
         default=None,
         description="Matches company, industry, location, contact name, email, "
@@ -220,9 +228,13 @@ async def list_leads(
     session: AsyncSession = Depends(get_bd_db),
     _user: CurrentUser = Depends(require_bd_capability(MANAGE_BD_LEADS)),
 ) -> LeadListOut:
-    """Personal Reach and Social Reach, both served from here.
+    """BD Reach, the one lead funnel.
 
-    Search, the channel and agreement filters and pagination all run IN SQL,
+    Omitting `channel` lists both, which is what the merged screen does; the
+    parameter survives because `channel` is still a real column and the source
+    filter narrows on it.
+
+    Search, the channel, source and agreement filters and pagination all run IN SQL,
     before the page is cut. Filtering a fetched page in the browser would make
     "3 of 108 leads match" depend on which page happened to be loaded, which is
     the same reason the Provider Portal's customer list works this way.
@@ -230,6 +242,11 @@ async def list_leads(
     if channel is not None and channel not in ("personal", "social"):
         raise HTTPException(
             status_code=422, detail="channel must be personal or social"
+        )
+    if social_source is not None and social_source not in SOCIAL_SOURCES:
+        raise HTTPException(
+            status_code=422,
+            detail="social_source must be one of " + ", ".join(SOCIAL_SOURCES),
         )
     # `agreement=` (present but empty) means "undecided"; an absent key means
     # "do not filter". Only the raw query string can tell them apart.
@@ -248,6 +265,7 @@ async def list_leads(
 
     predicates = bd_leads.lead_predicates(
         channel=channel,
+        social_source=social_source,
         search=search,
         agreement=agreement_value,
         include_archived=include_archived,
