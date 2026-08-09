@@ -7,6 +7,112 @@ would otherwise re-introduce, the entry says so.
 
 ---
 
+## 2026-08-09 — BD Reach, and an AI Dashboard for the Customer Portal
+
+Client change request, items 15 and 16.
+
+### Product
+
+**Personal Reach and Social Reach are one section, BD Reach.** They were always
+the same funnel over the same table: same company fields, same contact, same six
+progress checkboxes, same agreement decision. The split forced a rep to decide
+which screen a company belonged on before they could work it, and made "how many
+leads are we working" a question with two answers. Where a lead came from is now
+a column on one table and a filter above it, and adding a lead asks for the
+source instead of asking which page you are on. The old `/bd/social` URL
+redirects rather than 404s.
+
+**The Customer Portal has an AI Dashboard.** The Dashboard beside it answers
+"where are my candidates in the pipeline"; this one answers "what has the AI done
+for us, and is any of it stuck":
+
+- Job setup: jobs ready for candidates, jobs awaiting your approval, and jobs
+  whose framework still needs generating.
+- Assessments: invited, started, completed, reports ready.
+- How candidates graded: a headcount against each of the four grade words.
+- How the reports were produced: how many were scored offline because the AI
+  providers were unreachable.
+
+### Technical
+
+**15 is a UI consolidation; `bd_leads.channel` is untouched.** The API has always
+treated an omitted `channel` as "both", which is what the merged screen now
+sends. Two things had to move:
+
+- `social_source` became a SQL filter (`lead_predicates`). With one table in
+  front of the rep, "show me only the LinkedIn ones" is a filter, and narrowing
+  a fetched page in the browser would make the result count depend on which page
+  happened to be loaded. An unknown source is a 422, not a silent match-all: a
+  misspelled filter that quietly returns everything shows a rep the whole
+  pipeline while they believe they are looking at one slice.
+- The channel is now DERIVED from the source the rep picks
+  (`channelForSource`). A Postgres CHECK still requires a social lead to carry a
+  source and forbids one on a personal lead, so the two are computed together in
+  one place rather than set in two that could disagree. The form distinguishes
+  "approached directly" from "unanswered", which a nullable column cannot, and
+  refuses to default the unanswered case: defaulting it would file every hurried
+  lead as direct. The channel stays immutable after creation, so the source
+  select is disabled when editing.
+- The export was one file per screen, so the source was implicit in the
+  filename. With one screen it is a column, or the sheet loses the distinction.
+
+**16 is new.** `GET /dashboard/ai-insights`, tenant-scoped by RLS, gated on the
+same `view_dashboard` capability as the existing dashboard. Three decisions
+worth keeping:
+
+- **Framework health asks the TABLE.** "Needs generating" counts jobs with no
+  `job_competencies` rows, never jobs missing `framework_generated_at`. That is
+  the 2026-08-06 finding restated: 19 of 35 live jobs carried the stamp with
+  zero rows, were permanently stuck, and no health check saw it because every
+  one of them asked the stamp. `reconcile_job_setup` repairs these; this is
+  where a customer can see one that has not been repaired yet.
+- **No number reaches the client.** Scores ARE read, to decide which grade a
+  candidate falls under, and not one of them reaches the response: what is
+  returned is the word and a headcount. Every grade is present even at zero,
+  because omitting the empty ones reads as "nobody landed there" rather than
+  "nobody has been assessed".
+- **The overall grade is read the way the report reads it.** `overall_score` is
+  null on reports written before migration 0030, which recompute it from their
+  dimensions on read; that recomputation is reproduced here rather than skipped.
+  Skipping it would undercount the customer's own history and look like data
+  loss, and a divergent rule would count a candidate under one grade here and
+  show them another on their report. `deterministic_fallback` is matched
+  literally rather than as "not llm_rubric", because `no_transcript` means the
+  candidate answered nothing, which is not the AI failing.
+
+The nav item is listed unconditionally, exactly like Dashboard beside it: both
+are gated server-side and the Company Admin does not hold `view_dashboard` by
+default, so a nav gate would show one of the pair and hide the other. Both pages
+render the 403 as "not part of your access" rather than as a fault, because it
+does not improve on a reload.
+
+### Tests
+
+- `backend/tests/test_bd_portal.py`: omitted channel lists both, the source
+  filter is a WHERE clause, the direct filter does not constrain
+  `social_source`, and an unknown source is refused.
+- `frontend/components/bd/lead-form-modal.test.tsx`: the channel derived from
+  every source, an unanswered source rejected rather than defaulted, and a
+  stored personal lead shown as directly approached rather than as unanswered.
+- `backend/tests/test_ai_dashboard.py`: no score-shaped field on any schema, a
+  grade is a word from the one rating scale, every grade reported even at zero,
+  framework health asserted against the parsed ATTRIBUTES so the comment
+  explaining the rule may still name the column it forbids, and only a provider
+  outage counting as scored offline.
+
+Verified against the live database across five tenants: grades now sum to the
+report count per tenant (Sarkar Corp 216, ACRM Corp 177, Specter & Co. 180), and
+the first cut of the query returned all zeros because it read a
+`report_dimensions` category that does not exist. Full backend suite: 1336
+passed. Frontend: 52 passed, `next build` clean including `/org/ai-dashboard`.
+
+**Not verified in a browser.** Both surfaces are behind an authenticated portal
+and this environment has no interactive login, so the checks above are the
+build, the unit suites and a live-database run of the endpoint. The 16-item
+staging pass still needs a human.
+
+---
+
 ## 2026-08-09 — Four reported bugs
 
 Client change request, items 11 to 14.

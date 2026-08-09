@@ -19,6 +19,7 @@ import {
   LayoutDashboard,
   Settings,
   ShieldCheck,
+  Sparkles,
   Users,
 } from "lucide-react";
 
@@ -53,6 +54,13 @@ export default function OrgLayout({
     // sections every new job snapshots into its JD.
     { href: "/org/profile", label: "Company Profile", icon: FileText },
     { href: "/org/dashboard", label: "Dashboard", icon: LayoutDashboard },
+    // AI Dashboard (2026-08-09). Separate from Dashboard on purpose: that page
+    // answers "where are my candidates in the pipeline", this one answers
+    // "what has the AI done, and is any of it stuck". Listed unconditionally,
+    // exactly like Dashboard beside it: both are gated on `view_dashboard`
+    // SERVER-side, and the Company Admin does not hold it by default, so a nav
+    // gate here would show one of the pair and hide the other.
+    { href: "/org/ai-dashboard", label: "AI Dashboard", icon: Sparkles },
     // Billing. Gated on `view_billing`, which the three staff roles hold as
     // read-only: a recruiter whose assessment invitations have stopped sending
     // has to be able to SEE that the credit pool is in deficit. Only the

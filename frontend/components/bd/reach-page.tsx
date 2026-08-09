@@ -1,12 +1,18 @@
 "use client";
 
-// Personal Reach and Social Reach.
+// BD Reach.
 //
-// ONE component, two pages. The two screens are the same funnel over the same
-// `bd_leads` table (`GET /bd/leads?channel=personal|social`): same company
+// ONE component, ONE page since 2026-08-09. Personal Reach and Social Reach
+// were always the same funnel over the same `bd_leads` table: same company
 // fields, same primary contact, same six progress checkboxes, same agreement
-// decision. The only difference is that a social lead carries the platform it
-// came from, so `channel` is a prop rather than a second copy of this file.
+// decision. The only difference was that a social lead carries the platform it
+// came from, which is a COLUMN, not a category, so it is now a column on one
+// table and a filter above it.
+//
+// `bd_leads.channel` is untouched and still discriminates the rows; what is
+// gone is the idea that a rep chooses which of two screens a company belongs
+// on. The list request simply omits `channel=`, which the API has always
+// treated as "both".
 //
 // THREE THINGS WORTH KNOWING BEFORE EDITING:
 //
@@ -33,8 +39,10 @@ import { apiErrorMessage } from "@/lib/validation-errors";
 import {
   PROGRESS_FLAGS,
   PROGRESS_SHORT_LABELS,
-  type BDChannel,
+  SOCIAL_SOURCES,
+  SOCIAL_SOURCE_LABELS,
   type BDLead,
+  type BDSocialSource,
   type BDLeadFormValues,
   type BDLeadListResponse,
 } from "@/lib/bd-types";
@@ -77,7 +85,10 @@ import {
   SourceBadge,
   type AgreementChoice,
 } from "@/components/bd/lead-cells";
-import { LeadFormModal } from "@/components/bd/lead-form-modal";
+import {
+  LeadFormModal,
+  channelForSource,
+} from "@/components/bd/lead-form-modal";
 
 const PAGE_SIZE = 25;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -123,17 +134,23 @@ function agreementConsequence(
   return null;
 }
 
+/** The source filter, above the table. `all` sends no channel at all. */
+type SourceFilter = "all" | "direct" | BDSocialSource;
+
+const SOURCE_FILTER_LABELS: Record<string, string> = {
+  all: "All sources",
+  direct: "Approached directly",
+  ...SOCIAL_SOURCE_LABELS,
+};
+
 export function ReachPage({
-  channel,
   title,
   description,
 }: {
-  channel: BDChannel;
   title: string;
   description: string;
 }) {
   const { toast } = useToast();
-  const social = channel === "social";
 
   const [leads, setLeads] = React.useState<BDLead[]>([]);
   const [total, setTotal] = React.useState(0);
@@ -145,6 +162,7 @@ export function ReachPage({
   const [agreementFilter, setAgreementFilter] =
     React.useState<AgreementFilter>("all");
   const [showArchived, setShowArchived] = React.useState(false);
+  const [sourceFilter, setSourceFilter] = React.useState<SourceFilter>("all");
   const [page, setPage] = React.useState(1);
 
   const [creating, setCreating] = React.useState(false);
@@ -167,16 +185,23 @@ export function ReachPage({
   // of a narrower result set just shows an empty table.
   React.useEffect(() => {
     setPage(1);
-  }, [search, agreementFilter, showArchived, channel]);
+  }, [search, agreementFilter, showArchived, sourceFilter]);
 
   const load = React.useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     const params = new URLSearchParams({
-      channel,
       page: String(page),
       page_size: String(PAGE_SIZE),
     });
+    // Omitting `channel` is how the API has always meant "both". "Approached
+    // directly" is the personal channel; a named platform is the social one,
+    // narrowed further below.
+    if (sourceFilter === "direct") params.set("channel", "personal");
+    else if (sourceFilter !== "all") {
+      params.set("channel", "social");
+      params.set("social_source", sourceFilter);
+    }
     if (search) params.set("search", search);
     if (showArchived) params.set("include_archived", "true");
     // `agreement=true|false` filters on a decision. An EMPTY value is the
@@ -196,7 +221,7 @@ export function ReachPage({
     } finally {
       setLoading(false);
     }
-  }, [channel, page, search, showArchived, agreementFilter]);
+  }, [sourceFilter, page, search, showArchived, agreementFilter]);
 
   React.useEffect(() => {
     void load();
@@ -307,16 +332,28 @@ export function ReachPage({
       contact_phone: values.contact_phone.trim(),
       notes: values.notes.trim(),
     };
-    // Only a social lead may carry a source. Sending the key at all on a
-    // personal lead is refused by the API, and rightly so.
-    if (social) body.social_source = values.social_source || null;
     return body;
+  };
+
+  /** A social lead REQUIRES a source and a personal one FORBIDS it (a Postgres
+   *  CHECK enforces both). Since the merge the rep picks the source and the
+   *  channel follows from it, so the two are derived together here rather than
+   *  being set in two places that could disagree. */
+  const channelFields = (values: BDLeadFormValues) => {
+    const channel = channelForSource(values.social_source);
+    return {
+      channel,
+      social_source: channel === "social" ? values.social_source : null,
+    };
   };
 
   const createLead = async (values: BDLeadFormValues) => {
     setSaving(true);
     try {
-      await apiPost("/bd/leads", { channel, ...buildBody(values) });
+      await apiPost("/bd/leads", {
+        ...channelFields(values),
+        ...buildBody(values),
+      });
       setCreating(false);
       toast({ title: "Lead added", description: values.company_name.trim() });
       // Refetch rather than splice: the list is a server-filtered, sorted page
@@ -377,12 +414,10 @@ export function ReachPage({
   };
 
   const emptyMessage = showArchived
-    ? "No archived leads on this channel."
-    : search || agreementFilter !== "all"
+    ? "No archived leads."
+    : search || agreementFilter !== "all" || sourceFilter !== "all"
       ? "No leads match this search."
-      : social
-        ? "No social leads yet. Add the first company you found."
-        : "No leads yet. Add the first company the team approached.";
+      : "No leads yet. Add the first company the team is working.";
 
   return (
     <TooltipProvider delayDuration={200}>
@@ -399,9 +434,15 @@ export function ReachPage({
                 </a>
               </Button>
               <ExportXlsxButton
-                fileName={`pickready-${channel}-reach`}
+                fileName="pickready-bd-reach"
                 rows={leads.map((lead) => ({
                   company: lead.company_name,
+                  // The export used to be one file per screen, so the source
+                  // was implicit in the filename. With one screen it has to be
+                  // a column, or the sheet loses the distinction entirely.
+                  source: lead.social_source
+                    ? SOCIAL_SOURCE_LABELS[lead.social_source]
+                    : "Approached directly",
                   industry: lead.industry ?? "",
                   location: lead.location ?? "",
                   contact: lead.contact_name ?? "",
@@ -439,6 +480,27 @@ export function ReachPage({
             />
           </div>
           <div className="flex flex-wrap items-center gap-4">
+            {/* What used to be the choice between two screens. It narrows in
+                SQL, like every other filter here: narrowing a fetched page in
+                the browser would make the result count depend on which page
+                happened to be loaded. */}
+            <Select
+              value={sourceFilter}
+              onValueChange={(value) => setSourceFilter(value as SourceFilter)}
+            >
+              <SelectTrigger className="w-[190px]" aria-label="Filter by source">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(["all", "direct", ...SOCIAL_SOURCES] as SourceFilter[]).map(
+                  (value) => (
+                    <SelectItem key={value} value={value}>
+                      {SOURCE_FILTER_LABELS[value]}
+                    </SelectItem>
+                  )
+                )}
+              </SelectContent>
+            </Select>
             <Select
               value={agreementFilter}
               onValueChange={(value) =>
@@ -497,7 +559,7 @@ export function ReachPage({
                 <TableHeader>
                   <TableRow>
                     <TableHead className="min-w-[190px]">Company</TableHead>
-                    {social ? <TableHead>Source</TableHead> : null}
+                    <TableHead>Source</TableHead>
                     <TableHead className="min-w-[210px]">
                       Primary contact
                     </TableHead>
@@ -525,11 +587,9 @@ export function ReachPage({
                             "No details yet"}
                         </span>
                       </TableCell>
-                      {social ? (
-                        <TableCell>
-                          <SourceBadge source={lead.social_source} />
-                        </TableCell>
-                      ) : null}
+                      <TableCell>
+                        <SourceBadge source={lead.social_source} />
+                      </TableCell>
                       <TableCell>
                         <span className="block text-sm">
                           {lead.contact_name || "No contact name"}
@@ -602,7 +662,7 @@ export function ReachPage({
                           .join(", ") || lead.website || "No details yet"}
                       </p>
                     </div>
-                    {social ? <SourceBadge source={lead.social_source} /> : null}
+                    <SourceBadge source={lead.social_source} />
                   </div>
 
                   <div className="mt-3 space-y-0.5 text-sm">
@@ -691,7 +751,6 @@ export function ReachPage({
 
         {creating ? (
           <LeadFormModal
-            channel={channel}
             saving={saving}
             onCancel={() => setCreating(false)}
             onSave={(values) => void createLead(values)}
@@ -701,7 +760,6 @@ export function ReachPage({
         {editing ? (
           <LeadFormModal
             key={editing.id}
-            channel={channel}
             lead={editing}
             saving={saving}
             onCancel={() => setEditing(null)}

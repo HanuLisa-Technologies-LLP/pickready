@@ -455,6 +455,50 @@ def test_archived_leads_are_hidden_by_default_and_reachable_on_request() -> None
     )
 
 
+# ── BD Reach: one funnel (2026-08-09) ────────────────────────────────────────
+# Personal Reach and Social Reach merged into one screen. `channel` is still a
+# real column and omitting it has always meant "both"; what is new is that the
+# source narrowing has to happen in SQL, because with one table in front of the
+# rep "show me only the LinkedIn ones" is a filter rather than a different page.
+
+def test_omitting_the_channel_lists_both_kinds_of_lead() -> None:
+    """This is what the merged screen sends, and it is not new behaviour: the
+    predicate builder has always treated an absent channel as no filter."""
+    assert "channel" not in " ".join(str(p) for p in bd_leads.lead_predicates())
+
+
+def test_the_source_filter_is_a_where_clause_not_a_python_filter() -> None:
+    """Narrowing a fetched page in the browser would make the result count
+    depend on which page happened to be loaded, exactly as it would for
+    search."""
+    predicates = bd_leads.lead_predicates(channel="social", social_source="linkedin")
+    joined = " ".join(str(p) for p in predicates)
+    assert "bd_leads.social_source =" in joined
+    assert "bd_leads.channel =" in joined
+    assert "WHERE" in _sql(bd_leads.lead_list_query(predicates, page=1, page_size=25))
+
+
+def test_a_directly_approached_lead_is_still_reachable_on_its_own() -> None:
+    """The "Approached directly" filter is the personal channel, and personal
+    leads carry no source, so it must not also constrain `social_source`."""
+    joined = " ".join(str(p) for p in bd_leads.lead_predicates(channel="personal"))
+    assert "bd_leads.channel =" in joined
+    assert "social_source" not in joined
+
+
+def test_an_unknown_source_is_refused_rather_than_silently_ignored() -> None:
+    """A filter that quietly matches everything when it is misspelled shows a
+    rep the whole pipeline while they believe they are looking at one slice."""
+    import inspect
+
+    from app.api import bd as bd_api
+    from app.models.bd import SOCIAL_SOURCES
+
+    source = inspect.getsource(bd_api.list_leads)
+    assert "social_source not in SOCIAL_SOURCES" in source
+    assert "linkedin" in SOCIAL_SOURCES
+
+
 def test_the_agreement_filter_distinguishes_undecided_from_unfiltered() -> None:
     """`?agreement=` (undecided) and no key at all are different questions.
     Collapsing them would make the BD team's working queue unexpressible."""
