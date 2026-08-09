@@ -7,6 +7,64 @@ would otherwise re-introduce, the entry says so.
 
 ---
 
+## 2026-08-09 — Resume preview: the redirect pointed at a route that does not exist
+
+Follow-up to item 11/12, found in production after the first deploy.
+
+### Product
+
+Resumes open and download. Before this, PDF resumes showed "Preview could not
+be loaded" and the Download button did nothing, while Word resumes rendered
+fine.
+
+### Technical
+
+**It was neither the format nor the storage.** `resume_file` answers the first,
+token-less request with a 307 back to ITSELF carrying a short-lived access
+token. That target was written out by hand as
+`/api/v2/candidates/profiles/{id}/resume-file`, and the `candidates` router is
+mounted at `/api/v1` only. Every resume view and every download 307ed to a path
+that does not exist and 404ed, for every profile and every format, from the
+moment private storage made this endpoint the only way to read a file.
+
+It PRESENTED as a format bug because of which endpoint each format uses: a DOCX
+is rendered by `resume-preview`, which has no redirect and always worked, so
+only PDFs visibly failed. It presented as a "fresh candidates only" bug because
+the seeded demo corpus is mostly DOCX. Neither reading was right, and both would
+have sent someone into the storage layer.
+
+Found from the Cloud Run request log, not from the source tree: two paired
+entries per click, a 307 on `/api/v1/...` immediately followed by a 404 on
+`/api/v2/...`. That pairing is what named the cause in one look.
+
+The fix takes the redirect target from `request.url.path`, so the mount and the
+redirect cannot drift again.
+
+**Note on the earlier fix.** Adding `profile_id` to the candidate row was
+necessary and not sufficient: it got the viewer as far as calling the endpoint,
+which then 404ed on its own redirect. The first defect hid the second, and the
+API-level verification done after that deploy could not have caught it, because
+the route existed and answered; it was the redirect TARGET that did not.
+
+### Tests
+
+`backend/tests/test_resume_file_redirect.py` asserts the property that was
+actually violated: the redirect target resolves to a route the app serves,
+checked against the app's own OpenAPI surface rather than against a hardcoded
+prefix, which is the same mistake in a different place. Also pinned: the
+redirect follows whatever prefix it was called through, the token and the
+download flag survive it, and both resume endpoints stay under one prefix
+(that split is the only reason a broken URL looked like a broken format).
+
+Verified to catch the bug rather than pass vacuously: 4 of the 5 fail against
+the previous code. The first draft of the suite DID pass vacuously, because
+this FastAPI version keeps included routers as wrapper objects with an empty
+`path`, so walking `app.routes` reported only the four built-in doc routes.
+
+Full backend suite: 1341 passed. Frontend: 52 passed.
+
+---
+
 ## 2026-08-09 — BD Reach, and an AI Dashboard for the Customer Portal
 
 Client change request, items 15 and 16.

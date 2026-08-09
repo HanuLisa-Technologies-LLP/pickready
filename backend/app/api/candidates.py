@@ -7,7 +7,17 @@ from urllib.parse import urlencode
 from datetime import datetime, timezone
 
 from docx import Document
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 import jwt
 from sqlalchemy import func, select
@@ -354,13 +364,23 @@ td{{border:1px solid #bbb;padding:.45rem;vertical-align:top}}
 
 @router.get("/profiles/{profile_id}/resume-file")
 async def resume_file(
+    request: Request,
     profile_id: uuid.UUID,
     download: bool = Query(default=False),
     access_token: str | None = Query(default=None),
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> Response:
-    """Proxy an authorized resume without exposing a raw storage URL."""
+    """Proxy an authorized resume without exposing a raw storage URL.
+
+    The token round trip below redirects to THIS route. The target is taken
+    from `request.url.path`, never written out by hand: this router is mounted
+    at `/api/v1` only, and a hardcoded `/api/v2/candidates/...` here meant every
+    resume view and every download 307ed to a path that does not exist and
+    404ed. It read as a broken file (or, since only PDFs take this path while
+    DOCX goes to `resume-preview`, as a broken FORMAT) rather than as a broken
+    URL. Deriving the path means the mount and the redirect cannot drift again.
+    """
     profile = await session.get(Profile, profile_id)
     if profile is None or not profile.resume_url:
         raise HTTPException(status_code=404, detail="Resume not found")
@@ -387,7 +407,7 @@ async def resume_file(
             }
         )
         return RedirectResponse(
-            url=f"/api/v2/candidates/profiles/{profile_id}/resume-file?{query}",
+            url=f"{request.url.path}?{query}",
             status_code=status.HTTP_307_TEMPORARY_REDIRECT,
             headers={"Cache-Control": "private, no-store"},
         )
