@@ -7,6 +7,81 @@ would otherwise re-introduce, the entry says so.
 
 ---
 
+## 2026-08-12 — The rest of the final-stage pass
+
+Prompts, router telemetry, rate limiting, pagination, query budgets, the
+authorization surface, and one real defect on the candidate's job board.
+
+### Product
+
+**A job description edit now reaches the candidate's New Jobs board.** It did
+not. `jobs.embedding` is built from the JD, and editing the JD left the vector
+alone, so candidates kept being ranked against a description nobody could read
+any more. Nothing corrected it, ever. It stayed invisible because the matching
+pipeline re-embeds on every run and therefore never reads the stale value; the
+board reads it directly and never recomputes.
+
+**A dead or throttled provider key can now be named.** Per-provider counters
+answered "is Groq degraded?"; with seven keys on a provider, one dead key reads
+as mild degradation and is healthy on six. The Provider Portal can now see
+which KEY, how slow, how many tokens, and which task_type spent them.
+
+**Two public endpoints stopped being free to hammer.** The assessment
+invitation resolver and the sign-in exchange are rate limited, with a message
+that says the limit and when to come back rather than "Request failed".
+
+**Every paginated list answers "is there a next page?" the same way.**
+
+### Technical
+
+**Prompts.** Ten system prompts moved out of `services/` into `app/prompts`,
+loaded through a registry that stamps each with a version that is intent PLUS
+bytes (`ppi_framework_system@1+98ce13bc`) -- a declared number the author bumps,
+and a digest that changes whether or not they remembered to. Substitution is
+`string.Template`, because every one of these prompts ends by specifying a JSON
+shape and `str.format` raises on the first brace; that is not theoretical, it is
+the bug that made every challenge a candidate ever saw the canned fallback. All
+ten are asserted BYTE FOR BYTE against a snapshot of what the code sent before.
+The first version of that check compared against `git show HEAD~1` and skipped:
+the container has no git and CI checkout is shallow, so the one assertion that
+mattered turned itself off in both places and reported nine green skips.
+
+`backend/prompts/` (one file) was folded into `app/prompts/` (fourteen). Both
+reached the image only because the Dockerfile does `COPY . .`.
+
+**Router telemetry.** Provider callers were discarding the usage block every
+provider returns. Per-key counters now carry attempts, failures, throttles, avg
+AND max latency, tokens, estimated cost and a per-task breakdown, filed under a
+fingerprint that carries no key material. Pricing is DATA, labelled estimated,
+with `priced` so an unpriced provider's 0.0 never reads as free. The breaker is
+now driven through REAL failures rather than pre-seeded state -- which surfaced
+that two keys on one provider are round-robined, so a "bad key first" assumption
+does not hold and those tests are written across providers.
+
+**Rate limiting** fails OPEN on a Redis outage, deliberately: failing closed
+turns a cache blip into an outage of the candidate portal, for a mechanism whose
+only job is to slow abuse, and nothing downstream is unsafe because a counter
+did not run. Only the first `X-Forwarded-For` entry is trusted; the rest is
+caller-supplied.
+
+**Pagination** gained `total_pages`/`has_next`/`has_previous` as COMPUTED
+fields, using the names the richest existing response already used. Additive
+only. Two responses keep their own min-one-page convention for an empty set,
+documented rather than quietly changed, because a shipped client renders it.
+
+**Query budget.** `x-query-count` was emitted on every response and consumed by
+nothing. Measured across the eight hottest reads: 3 to 11 queries, all inside
+budget, and flat at 6 across 32 versus 37 candidates. The candidate ranking
+table is not N+1.
+
+**Authorization surface.** 102 mutating routes swept; every one resolves to a
+gate. 61 `require_capability`, 11 owner-audience, 7 candidate session, 7 BD
+capability, 4 signed-token, 3 always-refuse, 1 self-service, 6 public by design
+with a written reason each. No hole was found; the value is the next route.
+
+
+---
+
 ## 2026-08-11 — The platform audit was scanning zero files locally
 
 Found by CI failing on a change that passed the full suite in the container.
