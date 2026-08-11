@@ -124,6 +124,16 @@ jobs:
         # below its threshold.
         run: python -m app.scripts.eval_interview
 
+      - name: Report and matching evaluation
+        working-directory: backend
+        # The second eval, added 2026-08-11. `eval_interview` measures the
+        # agent that TALKS to a candidate; this one measures what gets
+        # PERSISTED: grade boundaries, remark word bands in every branch
+        # including the outage fallbacks, no number reaching a client, no
+        # third-party instrument named, culture refused, counts by grade.
+        # Offline and deterministic for the same reason as the first.
+        run: python -m app.scripts.eval_report
+
   frontend-test:
     name: Frontend tests, lint and build
     runs-on: ubuntu-latest
@@ -158,9 +168,29 @@ jobs:
         working-directory: frontend
         run: npm run lint
 
+      - name: Design token contrast
+        working-directory: frontend
+        # The purple field affordance is only worth having if it is actually
+        # visible. This computes the WCAG ratios from the HSL triples in
+        # globals.css and fails below 3:1 for a control boundary. The first
+        # value written by hand was 2.66:1, so this is not theoretical.
+        run: npm run contrast
+
       - name: Production build
         working-directory: frontend
         run: npm run build
+
+      - name: Visual QA (production build)
+        working-directory: frontend
+        # Playwright, against the BUILT app rather than the dev server: no
+        # horizontal overflow at three viewports, no console errors, computed
+        # field contrast on the rendered page, and scroll-triggered motion in
+        # both the default and reduced-motion modes.
+        run: |
+          npx playwright install --with-deps chromium
+          npx next start -p 3100 &
+          npx wait-on -t 60000 http://127.0.0.1:3100/
+          npm run qa:visual -- http://127.0.0.1:3100
 
   # ---------------------------------------------------------------------------
   deploy-staged:

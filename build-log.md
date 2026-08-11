@@ -7,6 +7,63 @@ would otherwise re-introduce, the entry says so.
 
 ---
 
+## 2026-08-11 — A second agent evaluation, and CI gates on it
+
+### Product
+
+Nothing a user can see. This is the measurement that keeps the two most
+expensive kinds of bad output from reaching a client unnoticed: an applicant
+list in the wrong order, and a report with a short remark, a stray number, or a
+licensed instrument's name in it.
+
+### Technical
+
+**`app/scripts/eval_report.py`, 121 cases across 14 measurements, all at 1.00.**
+`eval_interview` measures the agent that TALKS to a candidate. This measures
+what gets PERSISTED:
+
+* grade boundaries from both sides, inclusive upward, on both the 0-100 and the
+  1-10 entry points;
+* that `matching.matching_label` and `functional_assessment.rating_label` are
+  still thin aliases over the one scale in `services/rating`;
+* that a stronger profile outranks a weaker one, which is the matching agent's
+  only externally observable promise since the score itself never leaves the
+  server;
+* that no weightage table has come back, asserted as a MEASUREMENT (moving any
+  one parameter by 20 moves the overall by the same amount, whichever parameter
+  it was) rather than by grepping for a symbol;
+* remark word bands in EVERY branch, including the outage fallbacks, because
+  the fallback is what a client reads when a provider is down;
+* no third-party instrument named, in both directions, so the detector cannot
+  fire on "discuss" or "oceanic";
+* no score-shaped number in client prose, in both directions, so "p99 latency
+  under 200ms" survives;
+* four radar charts, no numbers on any axis label, and the overall chart still
+  excluding technical;
+* culture refused, and four legitimate competencies that resemble it accepted;
+* question counts by grade, including the surprising direction (more questions
+  for a junior candidate);
+* an unanswered question grading Not Matching;
+* probe anchors on exactly Moderately Matching and below;
+* report reuse still retired.
+
+**Writing it found one thing, and it was in the eval, not the code.** The first
+version asserted `matching_label` against a 0-100 score. A matching PARAMETER is
+stored 1-10 and everything else is 0-100, so it reported eight false failures.
+Both scales are now asserted explicitly, and the agreement between them as well,
+because that is the mistake a CALLER makes too.
+
+**CI now runs both evals, the contrast check and the visual QA.** The frontend
+job gained `npm run contrast` (WCAG ratios computed from the token values) and a
+Playwright pass against the BUILT app. Not against the dev server: the dev
+container's HMR websocket cannot connect over the Windows bind mount and nothing
+hydrates there, so a dev-server QA run measures the container rather than the
+app. That cost an hour of chasing a blank hero that turned out to be present and
+correct in every production build.
+
+
+---
+
 ## 2026-08-11 — The assessment invitation link forces sign-in, and lands on that assessment
 
 ### Product
