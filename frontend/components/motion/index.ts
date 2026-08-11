@@ -11,6 +11,8 @@ export {
   Stagger,
   StaggerItem,
   Reveal,
+  RevealStagger,
+  Pressable,
   HoverLift,
   EASE,
   type MotionDirection,

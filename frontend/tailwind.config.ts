@@ -45,6 +45,16 @@ const config: Config = {
         canvas: "hsl(var(--canvas) / <alpha-value>)",
         surface: "hsl(var(--surface) / <alpha-value>)",
 
+        // --- interactive field affordance ---------------------------------
+        // `border-field` is the idle boundary of anything you can click or
+        // type into; `border-field-hover` is the saturation step-up. `input`
+        // already resolves to the idle one, so a primitive that reads
+        // `border-input` gets it without any call-site change.
+        field: {
+          DEFAULT: "hsl(var(--field-border) / <alpha-value>)",
+          hover: "hsl(var(--field-border-hover) / <alpha-value>)",
+        },
+
         // --- shadcn aliases (kept so existing primitives keep working) ----
         border: "hsl(var(--border) / <alpha-value>)",
         input: "hsl(var(--input) / <alpha-value>)",

@@ -21,8 +21,11 @@ const buttonVariants = cva(
           "bg-brand-600 text-white shadow-brand hover:bg-brand-700 active:bg-brand-700",
         destructive:
           "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
+        // `border-input` is the field token, so an outline button reads as
+        // clickable at rest on a white card instead of only under the
+        // pointer. The solid `default` variant is deliberately untouched.
         outline:
-          "border border-input bg-surface shadow-card hover:border-brand-600/40 hover:bg-brand-100/60 hover:text-accent-foreground",
+          "border border-input bg-surface shadow-card hover:border-field-hover hover:bg-brand-100/60 hover:text-accent-foreground",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-brand-100 hover:text-accent-foreground",
         ghost: "hover:bg-brand-100/70 hover:text-accent-foreground",
@@ -40,11 +43,12 @@ const buttonVariants = cva(
       variant: "default",
       size: "default",
     },
-  }
+  },
 );
 
 export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+  extends
+    React.ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof buttonVariants> {
   asChild?: boolean;
 }
@@ -59,7 +63,7 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         {...props}
       />
     );
-  }
+  },
 );
 Button.displayName = "Button";
 

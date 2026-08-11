@@ -7,7 +7,12 @@ import {
   ShieldCheck,
 } from "lucide-react";
 
-import { Reveal, Stagger, StaggerItem } from "@/components/motion";
+import {
+  HoverLift,
+  Reveal,
+  RevealStagger,
+  StaggerItem,
+} from "@/components/motion";
 import { FeatureCard } from "./feature-card";
 
 const FEATURES = [
@@ -19,15 +24,15 @@ const FEATURES = [
   },
   {
     icon: Layers,
-    title: "Assessment by grade",
+    title: "One conversation, not four bots",
     description:
-      "Each role carries a grade, and the grade sets the shape of the assessment: technical questions drawn from the job, plus a fixed behavioural set.",
+      "Technical depth and behavioural evidence come out of a single interview that follows what the candidate says. Nobody is handed four separate threads to finish.",
   },
   {
     icon: FileCheck2,
     title: "One profile, many applications",
     description:
-      "A candidate keeps a main resume and a profile they fill in once. Each application is an immutable snapshot of what was actually sent.",
+      "A candidate keeps a main resume and a profile they fill in once, and it stays theirs to take elsewhere. Each application is an immutable snapshot of what was actually sent.",
   },
   {
     icon: GitBranch,
@@ -72,13 +77,15 @@ export function Features() {
           </p>
         </Reveal>
 
-        <Stagger className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <RevealStagger className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map((feature) => (
-            <StaggerItem key={feature.title}>
-              <FeatureCard {...feature} />
+            <StaggerItem key={feature.title} className="h-full">
+              <HoverLift className="h-full">
+                <FeatureCard {...feature} />
+              </HoverLift>
             </StaggerItem>
           ))}
-        </Stagger>
+        </RevealStagger>
       </div>
     </section>
   );

@@ -222,6 +222,95 @@ export function Reveal({
 }
 
 /**
+ * RevealStagger: `Stagger`, but triggered by scroll rather than by mount.
+ *
+ * This exists because the landing page had the two confused. `Stagger` and
+ * `FadeIn` animate on MOUNT, which for a section below the fold means the
+ * animation runs, finishes, and is over before the element is ever on screen.
+ * The user then scrolls to a section that is simply static -- the motion was
+ * paid for and never seen. Marketing sections want this one; an app panel that
+ * really does appear on mount wants `Stagger`.
+ */
+export function RevealStagger({
+  children,
+  className,
+  delay = 0,
+  step = 0.06,
+  amount = 0.15,
+  as = "div",
+}: Omit<BaseMotionProps, "direction" | "distance" | "duration"> & {
+  step?: number;
+  amount?: number;
+}) {
+  const reduced = usePrefersReducedMotion();
+  const Component = motion[as];
+
+  if (reduced) {
+    return <div className={className}>{children}</div>;
+  }
+
+  const container: Variants = {
+    hidden: {},
+    show: { transition: { staggerChildren: step, delayChildren: delay } },
+  };
+
+  return (
+    <Component
+      className={className}
+      variants={container}
+      initial="hidden"
+      whileInView="show"
+      viewport={{ once: true, amount }}
+    >
+      {children}
+    </Component>
+  );
+}
+
+/**
+ * Pressable: the tap half of a micro-interaction. Scales down a little while
+ * the pointer is held, which is the cheapest way to make a CTA feel like a
+ * physical control rather than a link with a background.
+ *
+ * Wrap the button, do not replace it -- the child keeps its own semantics,
+ * focus ring and disabled handling.
+ */
+export function Pressable({
+  children,
+  className,
+  /** How far it rises on hover, in pixels. 0 disables the lift. */
+  lift = 1,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  lift?: number;
+}) {
+  const reduced = usePrefersReducedMotion();
+
+  // `inline-flex` keeps the wrapper the size of the button in a row layout.
+  // `[&>*]:w-full` is what stops it changing the layout it was dropped into:
+  // in a `flex-col` CTA stack the wrapper stretches to the container, and
+  // without this the button inside would shrink to its text and the full-width
+  // mobile CTA would quietly become a small one.
+  const shape = cn("inline-flex [&>*]:w-full", className);
+
+  if (reduced) {
+    return <div className={shape}>{children}</div>;
+  }
+
+  return (
+    <motion.div
+      className={shape}
+      whileHover={{ y: -lift }}
+      whileTap={{ scale: 0.97 }}
+      transition={{ duration: 0.15, ease: EASE }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+/**
  * HoverLift: a card that rises very slightly under the pointer. Purely
  * decorative, so it is the first thing reduced motion removes.
  */

@@ -8,8 +8,17 @@ import { ArrowRight, Check, Loader2 } from "lucide-react";
 import { apiGet, apiPost, isAuthError } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { openCheckout } from "@/lib/razorpay";
-import type { BillingConfig, PricingPlan, SubscribeResponse } from "@/lib/types";
-import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
+import type {
+  BillingConfig,
+  PricingPlan,
+  SubscribeResponse,
+} from "@/lib/types";
+import {
+  HoverLift,
+  Reveal,
+  RevealStagger,
+  StaggerItem,
+} from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -67,18 +76,19 @@ const POOL_COPY = [
 
 /** The shared feature strip. Identical on every plan, said once. */
 const INCLUDED = [
-  "Unlimited jobs",
-  "Unlimited team members",
+  "Unlimited jobs, drawing on one pool",
+  "Unlimited team members, no per seat fee",
   "Four parameter AI matching",
-  "Per job technical assessment",
-  "PickReady Functional Index",
+  "Technical questions written per candidate",
+  "PickReady Profile Intelligence",
   "One continuous candidate conversation",
   "Full PPI Assessment Report",
+  "Four radar charts, no numbers on them",
   "Candidate databank",
   "Ten stage hiring pipeline",
   "AI drafted lifecycle emails",
   "Compliance document vault",
-  "Every profile stays yours",
+  "Every profile stays yours, and stays exportable",
 ];
 
 function formatInr(value: number): string {
@@ -134,7 +144,10 @@ export function Pricing() {
           keyId: session.razorpay_key_id,
           subscriptionId: session.subscription_id,
           planName: session.plan.name,
-          prefill: { email: user.email ?? undefined, name: user.full_name ?? undefined },
+          prefill: {
+            email: user.email ?? undefined,
+            name: user.full_name ?? undefined,
+          },
           onSuccess: async (payload) => {
             try {
               await apiPost("/billing/checkout/verify", payload);
@@ -165,7 +178,8 @@ export function Pricing() {
           toast({
             variant: "destructive",
             title: "Checkout could not open",
-            description: "Check that your browser is not blocking payment scripts, then retry.",
+            description:
+              "Check that your browser is not blocking payment scripts, then retry.",
           });
         }
       } catch (error) {
@@ -183,7 +197,7 @@ export function Pricing() {
         setBusySlug(null);
       }
     },
-    [router, toast, user]
+    [router, toast, user],
   );
 
   const plans = config?.plans ?? [];
@@ -191,7 +205,7 @@ export function Pricing() {
   return (
     <section id="pricing" className="relative scroll-mt-24 py-24 sm:py-28">
       <div className="mx-auto max-w-6xl px-6 lg:px-10">
-        <FadeIn className="max-w-2xl">
+        <Reveal className="max-w-2xl">
           <Badge variant="brand" className="px-3 py-1 text-xs font-semibold">
             Pricing
           </Badge>
@@ -202,7 +216,7 @@ export function Pricing() {
             Pick the volume that fits your hiring. Every plan is the whole
             product, and every job you post draws from the same pool.
           </p>
-        </FadeIn>
+        </Reveal>
 
         {/* Cards. `sm:grid-cols-2 xl:grid-cols-4` so they STACK on a phone and
             pair on a tablet, rather than squeezing four columns into 375px. */}
@@ -226,7 +240,7 @@ export function Pricing() {
         {/* Enterprise: a full-width banner, not a fifth column. It has no
             self-serve checkout, so giving it a Subscribe-shaped card would be
             promising a button that cannot exist. */}
-        <FadeIn
+        <Reveal
           delay={0.05}
           className="mt-5 flex flex-col gap-5 rounded-2xl border border-border bg-surface p-7 shadow-card sm:flex-row sm:items-center sm:justify-between"
         >
@@ -246,22 +260,20 @@ export function Pricing() {
               Contact us
             </a>
           </Button>
-        </FadeIn>
+        </Reveal>
 
         {/* The shared feature strip. Said once, for all four plans. */}
-        <FadeIn
+        <Reveal
           delay={0.08}
           className="mt-10 rounded-2xl border border-border bg-brand-100/40 p-7"
         >
-          <p className="text-base font-semibold">
-            Everything, on every plan
-          </p>
+          <p className="text-base font-semibold">Everything, on every plan</p>
           <p className="mt-2 max-w-3xl text-pretty leading-7">
             The list below is not a comparison table. Every item is on the
             Starter plan and on the Pro plan alike. What changes between them is
             how many applications you can run in a month.
           </p>
-          <Stagger
+          <RevealStagger
             as="ul"
             delay={0.05}
             className="mt-6 grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3"
@@ -277,13 +289,13 @@ export function Pricing() {
                 </span>
               </StaggerItem>
             ))}
-          </Stagger>
-        </FadeIn>
+          </RevealStagger>
+        </Reveal>
 
         {/* How the pool works / Jobs and renewals. */}
         <div className="mt-10 grid gap-5 lg:grid-cols-2">
           {POOL_COPY.map((block, index) => (
-            <FadeIn
+            <Reveal
               key={block.title}
               delay={0.05 * index}
               className="rounded-2xl border border-border bg-surface p-7 shadow-card"
@@ -296,7 +308,7 @@ export function Pricing() {
                   </p>
                 ))}
               </div>
-            </FadeIn>
+            </Reveal>
           ))}
         </div>
       </div>
@@ -319,13 +331,13 @@ function PlanCard({
 }) {
   const recommended = plan.slug === RECOMMENDED_SLUG;
   return (
-    <FadeIn
+    <Reveal
       delay={0.04 * index}
       className={cn(
         "flex h-full flex-col rounded-2xl border bg-surface p-6 shadow-card transition-transform duration-200 motion-safe:hover:-translate-y-1",
         recommended
           ? "border-brand-600 shadow-pop ring-1 ring-brand-600/30"
-          : "border-border"
+          : "border-border",
       )}
     >
       <div className="flex items-center justify-between gap-2">
@@ -335,15 +347,15 @@ function PlanCard({
 
       <p className="mt-5 text-3xl font-bold tracking-tight">
         {formatInr(plan.price_inr)}
-        <span className="ml-1 align-baseline text-sm font-medium">
-          / month
-        </span>
+        <span className="ml-1 align-baseline text-sm font-medium">/ month</span>
       </p>
 
       <dl className="mt-5 space-y-2 text-sm leading-6">
         <div className="flex items-baseline justify-between gap-3">
           <dt>Applications</dt>
-          <dd className="font-semibold">{plan.applications_per_month} a month</dd>
+          <dd className="font-semibold">
+            {plan.applications_per_month} a month
+          </dd>
         </div>
         <div className="flex items-baseline justify-between gap-3">
           <dt>Works out at</dt>
@@ -390,6 +402,6 @@ function PlanCard({
           to start today.
         </p>
       ) : null}
-    </FadeIn>
+    </Reveal>
   );
 }

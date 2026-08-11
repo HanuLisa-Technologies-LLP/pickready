@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowRight, ShieldCheck, Sparkles } from "lucide-react";
 
 import { BorderBeam, DotPattern, Marquee } from "@/components/magicui";
-import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
+import { FadeIn, Pressable, Stagger, StaggerItem } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -66,18 +66,22 @@ export function Hero() {
             </p>
 
             <div className="mt-9 flex flex-col gap-3 sm:flex-row sm:items-center">
-              <Button asChild size="xl" className="group">
-                <Link href="/register?role=candidate">
-                  Get started
-                  <ArrowRight
-                    className="transition-transform duration-150 group-hover:translate-x-0.5"
-                    aria-hidden="true"
-                  />
-                </Link>
-              </Button>
-              <Button asChild size="xl" variant="outline">
-                <Link href="/login?initial_context=all">Log in</Link>
-              </Button>
+              <Pressable>
+                <Button asChild size="xl" className="group">
+                  <Link href="/register?role=candidate">
+                    Get started
+                    <ArrowRight
+                      className="transition-transform duration-150 group-hover:translate-x-0.5"
+                      aria-hidden="true"
+                    />
+                  </Link>
+                </Button>
+              </Pressable>
+              <Pressable>
+                <Button asChild size="xl" variant="outline">
+                  <Link href="/login?initial_context=all">Log in</Link>
+                </Button>
+              </Pressable>
             </div>
 
             <p className="mt-6 flex items-start gap-2 text-sm">

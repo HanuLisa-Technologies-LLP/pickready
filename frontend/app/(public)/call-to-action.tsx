@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 
 import { DotPattern } from "@/components/magicui";
-import { Reveal } from "@/components/motion";
+import { Pressable, Reveal } from "@/components/motion";
 import { Button } from "@/components/ui/button";
 
 export function CallToAction() {
@@ -38,27 +38,31 @@ export function CallToAction() {
               wording.
             </p>
             <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
-              <Button
-                asChild
-                size="xl"
-                className="group bg-white text-brand-700 shadow-none hover:bg-white/90"
-              >
-                <Link href="/register?role=candidate">
-                  Get started
-                  <ArrowRight
-                    className="transition-transform duration-150 group-hover:translate-x-0.5"
-                    aria-hidden="true"
-                  />
-                </Link>
-              </Button>
-              <Button
-                asChild
-                size="xl"
-                variant="outline"
-                className="border-white/40 bg-transparent text-white shadow-none hover:border-white hover:bg-white/10 hover:text-white"
-              >
-                <Link href="/login?initial_context=all">Log in</Link>
-              </Button>
+              <Pressable>
+                <Button
+                  asChild
+                  size="xl"
+                  className="group bg-white text-brand-700 shadow-none hover:bg-white/90"
+                >
+                  <Link href="/register?role=candidate">
+                    Get started
+                    <ArrowRight
+                      className="transition-transform duration-150 group-hover:translate-x-0.5"
+                      aria-hidden="true"
+                    />
+                  </Link>
+                </Button>
+              </Pressable>
+              <Pressable>
+                <Button
+                  asChild
+                  size="xl"
+                  variant="outline"
+                  className="border-white/40 bg-transparent text-white shadow-none hover:border-white hover:bg-white/10 hover:text-white"
+                >
+                  <Link href="/login?initial_context=all">Log in</Link>
+                </Button>
+              </Pressable>
             </div>
           </div>
         </div>

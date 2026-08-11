@@ -40,6 +40,23 @@
     --canvas: 240 25% 98%; /* #F7F7FB  page background */
     --border-token: 240 15% 91%; /* #E4E4ED  borders, dividers */
 
+    /* --- interactive field affordance (2026-08-11) ------------------------
+       A dropdown, a text input and a toggle used to carry `--border-token`,
+       the same near-white hairline as a divider, so on a white card they read
+       as decoration rather than as something you can click. That hairline is
+       ~1.2:1 against the surface: below the 3:1 WCAG 1.4.11 asks of a control
+       boundary, which is the measurable form of "you cannot see the field".
+
+       These two tokens are the fix, and they are TOKENS rather than a class on
+       each primitive for the same reason `--muted-foreground` is: the shadcn
+       generated files are not hand-edited, so the only place a rule can be
+       applied once and hold everywhere is the variable they already read.
+
+       Both are verified by `scripts/check-contrast.mjs`, which computes the
+       ratio from these exact triples. Do not adjust either by eye. */
+    --field-border: 258 44% 65%; /* idle */
+    --field-border-hover: 258 70% 52%; /* hover and open, saturation steps up */
+
     /* --- shadcn semantic aliases ----------------------------------------- */
     --background: var(--canvas);
     --foreground: var(--ink);
@@ -59,7 +76,11 @@
     --destructive: 0 72% 42%;
     --destructive-foreground: 0 0% 100%;
     --border: var(--border-token);
-    --input: var(--border-token);
+    /* `--input` is what every field primitive resolves `border-input` to, so
+       pointing it at the field token is the whole of the "fields are visible
+       at rest" change. `--border` stays the neutral hairline: a divider is not
+       a control and tinting it would make the affordance meaningless. */
+    --input: var(--field-border);
     --ring: var(--brand-600);
     --radius: 0.75rem;
 
@@ -87,6 +108,12 @@
     --canvas: 240 43% 4%; /* #06060F */
     --border-token: 240 15% 15%; /* #22222E */
 
+    /* Dark theme runs the affordance the other way: the field border is
+       LIGHTER than the near-black surface it sits on. Same 3:1 bar, same
+       script checks it. */
+    --field-border: 253 46% 55%; /* #6F55C4 */
+    --field-border-hover: 253 100% 74%; /* #9179FF */
+
     --background: var(--canvas);
     --foreground: var(--ink);
     --card: var(--surface);
@@ -104,7 +131,7 @@
     --destructive: 0 72% 55%;
     --destructive-foreground: 0 0% 100%;
     --border: var(--border-token);
-    --input: var(--border-token);
+    --input: var(--field-border);
     --ring: var(--brand-600);
 
     /* The rating ramp keeps its hue in dark mode but swaps fg/bg roles so the

@@ -7,6 +7,66 @@ would otherwise re-introduce, the entry says so.
 
 ---
 
+## 2026-08-11 — Interactive fields you can see, and a motion pass that runs when you look at it
+
+### Product
+
+**Every field on the public site now looks like a field before you touch it.**
+Dropdowns, text inputs, textareas, toggles and outline buttons carried the same
+near-white hairline as a divider, so on a white card they read as decoration.
+They now carry a purple-tinted border at rest, deepen under the pointer, and
+land on the brand colour with a ring when focused. The solid purple buttons that
+already worked are untouched, and the black-and-white base theme is unchanged.
+
+**The landing page moves when you scroll to it.** Sections below the fold were
+animating on MOUNT, which means the animation ran and finished before the
+section was ever on screen: the motion was paid for and never seen, and by the
+time a reader arrived the section was static. Those sections now reveal as they
+come into view, cards lift under the pointer, and the calls to action respond to
+a press. All of it collapses to nothing under `prefers-reduced-motion`.
+
+**The product's actual differentiators are in the copy**, in the sections that
+already existed rather than as a badge list: one conversation instead of four
+bot threads, radar charts with no numbers on them, one shared credit pool,
+unlimited seats with no per-seat fee, and a candidate profile that stays the
+candidate's. Two stale names were corrected while doing it: the page still
+advertised "PickReady Functional Index" and "PickReady Fit Intelligence", and
+the product is PickReady Profile Intelligence.
+
+### Technical
+
+**The affordance is a TOKEN, not a class on each primitive**, for the same
+reason `--muted-foreground` is: the shadcn generated files are not hand-edited,
+so the only place a rule can be applied once and hold everywhere is the variable
+they already read. `--field-border` and `--field-border-hover` are new;
+`--input` now points at the first of them, which is what `border-input` resolves
+to in every field primitive in the repo. `--border` deliberately stays the
+neutral hairline: a divider is not a control, and tinting it too would make the
+affordance mean nothing.
+
+**The values are computed, not chosen by eye.** `frontend/scripts/check-contrast.mjs`
+reads the HSL triples out of `globals.css`, converts to sRGB and asserts WCAG
+ratios: 3:1 (1.4.11, non-text) for a control boundary against both the card
+surface and the page canvas, 4.5:1 (1.4.3) for anything printed in the brand
+colour. The first value written here was 2.66:1 and the script rejected it. All
+12 assertions pass in both themes; the light idle border is 3.39:1 on a card and
+3.22:1 on the canvas.
+
+**The switch needed the opposite treatment.** Its unchecked track read
+`bg-input`, which after this change would have made an OFF toggle a saturated
+purple, i.e. exactly what ON looks like. The affordance moved to its border and
+the fill stays neutral until it is switched on.
+
+**`Reveal`/`RevealStagger` versus `FadeIn`/`Stagger` is now a real distinction.**
+`FadeIn` animates on mount and is right for a panel that genuinely appears;
+`Reveal` animates on scroll and is right for a marketing section. Confusing the
+two is invisible in review and obvious in use. `Pressable` is new for the tap
+half of a CTA, and it carries `[&>*]:w-full` so dropping it around a button in a
+`flex-col` stack does not silently shrink a full-width mobile CTA to its text.
+
+
+---
+
 ## 2026-08-09 — Resume preview: the redirect pointed at a route that does not exist
 
 Follow-up to item 11/12, found in production after the first deploy.
