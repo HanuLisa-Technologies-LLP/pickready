@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy import (
     Computed, DateTime, Enum, ForeignKey, Index, Integer, String, Text,
 )
+from sqlalchemy import event, inspect, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -185,4 +186,54 @@ class JobApproval(Base, UUIDPKMixin):
     remarks: Mapped[str | None] = mapped_column(Text)
     decided_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default="now()", nullable=False
+    )
+
+
+# ── Derived-column invalidation (2026-08-11) ─────────────────────────────────
+#
+# `jobs.embedding` is DERIVED from the JD, and until now nothing said so.
+# Editing a job description updated `jd_markdown` and `jd_json` and left the
+# vector alone, which is invisible in the matching pipeline (it re-embeds the
+# JD on every run, so it never reads the stale value) and NOT invisible on the
+# candidate's New Jobs board: `services/job_relevance` reads `jobs.embedding`
+# directly and never recomputes it. So after a JD edit, every candidate kept
+# being ranked against a job description nobody can read any more, and there
+# was no point at which that would correct itself.
+#
+# A listener rather than six lines in four handlers. There are already six
+# sites that write these fields; the seventh is the one that forgets, and
+# forgetting produces no error, just a quietly wrong ranking.
+#
+# NULL is the right invalidation, not a recompute: `job_relevance` documents
+# that a job without an embedding falls back to keyword scoring, which ranks
+# against the CURRENT text. Ranking on current keywords beats ranking on a
+# stale vector, and `matching.run_matching` writes a fresh vector on its next
+# run.
+
+#: Every column `matching._jd_text` reads. Change one and the vector is stale.
+_EMBEDDING_SOURCE_FIELDS = ("title", "department", "level", "jd_json")
+
+
+@event.listens_for(Job, "after_update")
+def _invalidate_job_embedding(mapper, connection, target: "Job") -> None:  # noqa: ARG001
+    """NULL the vector when the text it was built from changes.
+
+    `after_update`, and a statement of its own, because `jobs.embedding` is a
+    pgvector column that is NOT mapped on this class -- it is written with raw
+    SQL by `matching.run_matching`. Setting an attribute here would change a
+    Python object and never reach the database, which is the quietest possible
+    way for this fix to not work.
+
+    Runs on the flush's own connection, so it is inside the caller's
+    transaction: a rolled-back JD edit does not lose the embedding with it.
+    """
+    state = inspect(target)
+    changed = any(
+        state.attrs[field].history.has_changes()
+        for field in _EMBEDDING_SOURCE_FIELDS
+    )
+    if not changed:
+        return
+    connection.execute(
+        text("UPDATE jobs SET embedding = NULL WHERE id = :id"), {"id": target.id}
     )
