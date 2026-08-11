@@ -235,3 +235,49 @@ class TranscriptOut(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ── The assessment invitation link (2026-08-11) ──────────────────────────────
+
+class InvitationResolveOut(BaseModel):
+    """What the invitation landing page needs to decide where to send someone.
+
+    ONE response shape covers the whole flow -- signed out, signed in as the
+    wrong person, expired, already submitted, ready -- because the page's job
+    is to branch, and a branch is far harder to get wrong when the states are
+    an enum in one payload than when they are spread across status codes.
+
+    `state` is the branch. Everything else is context for the copy.
+    """
+
+    #: One of:
+    #:   needs_auth        the link is good, nobody is signed in
+    #:   wrong_account     signed in, but not as the invited candidate
+    #:   ready             go to the assessment
+    #:   in_progress       partly answered, same destination, different copy
+    #:   completed         already submitted; the report is the destination
+    #:   not_invited       the recruiter has not invited this application
+    #:   expired           the signed link is past its lifetime
+    #:   window_closed     the 30 + 5 day posting window has ended
+    #:   invalid           not one of our links
+    state: str
+    #: Where to send the browser once the state allows it. Always a path on
+    #: this site, never an absolute URL: an open redirect in an emailed link is
+    #: exactly the thing a phisher would want from this endpoint.
+    redirect_to: str | None = None
+    #: Masked, e.g. `as***@example.com`. Only populated for `wrong_account`, so
+    #: the candidate can tell which of their addresses was invited.
+    invited_email_masked: str | None = None
+    #: The email currently signed in, unmasked -- the caller already knows it.
+    signed_in_email: str | None = None
+    job_title: str | None = None
+    company_name: str | None = None
+    #: Human-readable, already resolved server-side. The page renders this
+    #: rather than mapping the state to copy itself, so the email, the API and
+    #: the page cannot describe the same situation three different ways.
+    message: str
+    #: True when a prior report for this candidate is under the six-month
+    #: window, so the page can explain why they are answering questions again.
+    #: Never a reason to skip the assessment: under PPI the framework is
+    #: generated from each job's own JD, so nothing is portable between jobs.
+    recent_prior_report: bool = False

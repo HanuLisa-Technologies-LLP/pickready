@@ -463,7 +463,7 @@ async def _autosend_lifecycle_email(
     from app.models.candidate import Candidate, JobCandidateLink
     from app.models.email_log import STATUS_QUEUED, EmailLog
     from app.models.job import Job
-    from app.services import lifecycle_email
+    from app.services import assessment_invite, lifecycle_email
 
     link = await session.get(JobCandidateLink, uuid.UUID(str(link_id)))
     if link is None:
@@ -494,7 +494,12 @@ async def _autosend_lifecycle_email(
         "candidate_name": candidate.full_name or "there",
         "job_title": job.title,
         "company_name": tenant.name if tenant else "our team",
-        "assessment_link": f"{frontend}/portal/assessments/{link.id}",
+        # Same signed link as the recruiter-drafted path. Built through the
+        # one builder so a reminder and an invitation can never point at
+        # different things (services/assessment_invite).
+        "assessment_link": assessment_invite.assessment_link_url(
+            frontend, link_id=link.id, email=candidate.email
+        ),
         **(extra_context or {}),
     }
     draft = await lifecycle_email.draft(email_type, context, session=session)

@@ -19,6 +19,7 @@ import {
   type FirebaseExchangeResult,
 } from "@/lib/firebase-session";
 import { homePathForRole, useAuth } from "@/lib/auth-context";
+import { currentNextPath, withNext } from "@/lib/next-destination";
 import type { AuthContextsResponse, AuthSession } from "@/lib/types";
 import { AuthDivider, AuthLink, AuthShell } from "@/components/auth-shell";
 import { InlineError } from "@/components/page-primitives";
@@ -52,7 +53,11 @@ export function RegisterFlow() {
   const finish = React.useCallback(
     (session: AuthSession) => {
       setSession(session.user, session.capabilities ?? []);
-      router.replace(homePathForRole(session.user.role));
+      // Registering from an assessment invitation must land on the assessment,
+      // not on the jobs board. This flow used to ignore `next` entirely, so
+      // "Create one" threw away a destination the sign-in page beside it
+      // honoured.
+      router.replace(currentNextPath() ?? homePathForRole(session.user.role));
     },
     [router, setSession]
   );
@@ -133,7 +138,10 @@ export function RegisterFlow() {
       footer={
         contexts ? null : (
           <>
-            Already registered? <AuthLink href="/login">Sign in</AuthLink>
+            Already registered?{" "}
+            <AuthLink href={withNext("/login", currentNextPath())}>
+              Sign in
+            </AuthLink>
           </>
         )
       }

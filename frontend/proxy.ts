@@ -37,6 +37,11 @@ const PUBLIC_PREFIXES = [
   "/apply",
   "/portal/outreach", // public tokenized outreach completion
   "/verify-employment", // public employer verification form
+  // Assessment invitation landing. It MUST render signed-out: its whole
+  // job is to resolve the token and then send the candidate through
+  // /login carrying itself as `next`. Gating it here would bounce them
+  // to a login with no destination, which is the bug it exists to fix.
+  "/assessments/invite",
   "/Readypick-corporate-deck.pptx", // shareable BD collateral
 ];
 
@@ -121,7 +126,11 @@ export function proxy(request: NextRequest) {
   if (!hasSession(request)) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
-    url.searchParams.set("next", pathname);
+    // Carry the QUERY too, not just the path. A destination like
+    // /portal/assessments/<id>?from=email loses its meaning without it, and
+    // the whole point of `next` is that the person lands where they were
+    // going rather than on a generic dashboard.
+    url.searchParams.set("next", pathname + request.nextUrl.search);
     return NextResponse.redirect(url);
   }
 

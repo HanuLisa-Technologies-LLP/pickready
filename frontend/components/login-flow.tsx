@@ -18,6 +18,7 @@ import {
   type RequestedPortal,
 } from "@/lib/firebase-session";
 import { homePathForRole, useAuth } from "@/lib/auth-context";
+import { currentNextPath, withNext } from "@/lib/next-destination";
 import type { AuthContextsResponse, AuthSession } from "@/lib/types";
 import { AuthDivider, AuthLink, AuthShell } from "@/components/auth-shell";
 import { InlineError } from "@/components/page-primitives";
@@ -57,15 +58,10 @@ export function LoginFlow({
   const finish = React.useCallback(
     (session: AuthSession) => {
       setSession(session.user, session.capabilities ?? []);
-      const requested =
-        typeof window === "undefined"
-          ? null
-          : new URLSearchParams(window.location.search).get("next");
-      const safeNext =
-        requested && requested.startsWith("/") && !requested.startsWith("//")
-          ? requested
-          : null;
-      router.replace(safeNext ?? homePathForRole(session.user.role));
+      // Read at finish time rather than from a hook: the flow can rewrite the
+      // URL between mount and completion. `currentNextPath` is the shared
+      // same-origin guard (lib/next-destination).
+      router.replace(currentNextPath() ?? homePathForRole(session.user.role));
     },
     [router, setSession]
   );
@@ -170,7 +166,10 @@ export function LoginFlow({
       footer={
         contexts ? null : (
           <>
-            Need an account? <AuthLink href="/register">Create one</AuthLink>
+            Need an account?{" "}
+            <AuthLink href={withNext("/register", currentNextPath())}>
+              Create one
+            </AuthLink>
           </>
         )
       }

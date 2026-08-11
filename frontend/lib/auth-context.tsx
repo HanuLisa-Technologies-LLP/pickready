@@ -36,6 +36,11 @@ const PUBLIC_PREFIXES = [
   "/apply",
   "/portal/outreach",
   "/verify-employment",
+  // Assessment invitation landing. It MUST render signed-out: its whole
+  // job is to resolve the token and then send the candidate through
+  // /login carrying itself as `next`. Gating it here would bounce them
+  // to a login with no destination, which is the bug it exists to fix.
+  "/assessments/invite",
 ];
 
 function isPublicPath(pathname: string): boolean {

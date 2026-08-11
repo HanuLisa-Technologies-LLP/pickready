@@ -216,6 +216,31 @@ async def get_current_candidate(request: Request) -> CurrentUser:
     return user
 
 
+async def get_optional_candidate(request: Request) -> CurrentUser | None:
+    """The candidate session if there is one, otherwise None -- never a 401.
+
+    Exactly one kind of endpoint needs this: a tokenized link that has to
+    answer "is this person signed in, and are they the RIGHT person?" in a
+    single call. Requiring auth would make the unauthenticated case a 401 the
+    page cannot distinguish from an expired link; making it public would leave
+    the wrong-account check with nothing to compare against.
+
+    A malformed or expired cookie is treated as absent rather than as an error,
+    for the same reason: the page's job is to send them to sign in, and a
+    stale cookie is the most ordinary way to arrive here.
+    """
+    token = _extract_token(request)
+    if not token:
+        return None
+    try:
+        user = _payload_to_user(_decode_or_401(token, AUDIENCE_CANDIDATE))
+    except HTTPException:
+        return None
+    if user.role != Role.candidate:
+        return None
+    return user
+
+
 async def get_current_any(request: Request) -> CurrentUser:
     """Any portal — used only by /auth/me and /auth/logout."""
     token = _extract_token(request)

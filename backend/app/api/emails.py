@@ -34,7 +34,7 @@ from app.schemas.emails import (
     EmailSendOut,
 )
 from app.services import capabilities as caps
-from app.services import lifecycle_email
+from app.services import assessment_invite, lifecycle_email
 from app.services.audit import audit
 from app.services.matching import RANKING_COMMENT_KEYS, ranking_payload
 from app.workers.celery_app import celery_app
@@ -118,7 +118,12 @@ async def draft_emails(
             "job_title": job.title,
             "company_name": company_name,
             "strengths": _strengths_prose(link.match_breakdown_json),
-            "assessment_link": f"{frontend}/portal/assessments/{link.id}",
+            # Signed, expiring, and bound to this candidate's address, so the
+            # click has to pass through the candidate portal sign-in before it
+            # can reach an assessment (services/assessment_invite).
+            "assessment_link": assessment_invite.assessment_link_url(
+                frontend, link_id=link.id, email=candidate.email
+            ),
             "job_link": f"{frontend}/org/jobs/{job.id}",
             **body.context,
         }

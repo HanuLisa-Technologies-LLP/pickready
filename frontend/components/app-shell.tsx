@@ -128,9 +128,19 @@ export function AppShell({
 
   React.useEffect(() => {
     if (!loading && !user) {
-      router.replace("/login");
+      // Remember where they were. This used to be a bare `/login`, which is
+      // what made an emailed assessment link land the candidate on the jobs
+      // board after signing in: they had been sent to the right page, the
+      // shell bounced them, and the destination was thrown away on the way
+      // out. `finish()` in the login flow only honours a same-origin path, so
+      // this cannot be turned into an open redirect.
+      const here =
+        typeof window === "undefined"
+          ? pathname
+          : window.location.pathname + window.location.search;
+      router.replace(`/login?next=${encodeURIComponent(here)}`);
     }
-  }, [loading, user, router]);
+  }, [loading, user, router, pathname]);
 
   // Close the mobile sheet whenever the route changes, otherwise it stays open
   // over the page the user just navigated to.

@@ -7,6 +7,82 @@ would otherwise re-introduce, the entry says so.
 
 ---
 
+## 2026-08-11 — The assessment invitation link forces sign-in, and lands on that assessment
+
+### Product
+
+**Clicking the link in an assessment email now always goes through sign-in
+first, and then to the assessment it was sent for.** Before this it went
+straight at `/portal/assessments/<application id>`, the portal shell noticed
+there was no session and redirected to `/login` with no destination attached, so
+signing in landed the candidate on the jobs board. They had been sent to the
+right page and the app threw the destination away on the way out.
+
+Four situations that used to be one generic failure now each say what happened
+and what to do:
+
+* **Signed in as someone else.** Refused, with the invited address shown masked
+  beside the address currently signed in, and a button that signs out and comes
+  back. The assessment is never attached to whoever happens to be signed in.
+* **The link is too old.** Told it expired, and to ask for a new invitation.
+* **Already submitted.** Shown their application rather than an empty
+  assessment or a restart.
+* **Assessed for another role recently.** Told why they are answering questions
+  again before they start typing, then a button through to the assessment.
+
+A posting that has closed says so as well, and none of these refusals hands out
+a link to the assessment.
+
+### Technical
+
+**The email carries a signed token, not an application id.** `services/assessment_invite`
+mints a JWT bound to BOTH the application link and the invited email, with its
+own audience (`pickready:assessment-invite`) and purpose claim, so it can never
+be replayed as a session token and no portal dependency will accept it. Both
+directions are asserted in the tests. TTL is 36 days -- the 30-day window plus
+its 5-day grace plus a day -- so the signature is never what expires first: a
+dead link should always have a product reason the candidate can be told about.
+
+**One builder, `assessment_link_url`.** The recruiter-drafted path
+(`api/emails.draft_emails`) and the automatic path (`workers/tasks`) both call
+it, so an invitation and a reminder cannot point at different things. A
+candidate with no email on record still gets the old direct URL: `emails_match`
+refuses the empty string for everybody, so minting an unbound token would turn a
+rare data gap into a dead link.
+
+**`GET /assessments/invitations/{token}` answers 200 for every outcome**,
+including the refusals, and puts the refusal in a `state` field. A 401/404/410
+would collapse five different situations into "something went wrong", which is
+the generic-error failure this codebase keeps having to undo. The ORDER of the
+checks is the design and is pinned by tests: token validity, then whether the
+application exists, then whether anyone is signed in, then whether it is the
+RIGHT person, then the window, then already-submitted, then invited. Identity
+before state, so somebody holding a link cannot learn whether that candidate
+finished their assessment.
+
+**Three places were dropping the destination and all three are fixed.**
+`AppShell` redirected to a bare `/login`; the register flow ignored `next`
+entirely, so "Create one" lost what the sign-in page beside it honoured; and the
+middleware set `next` from the path without the query. `lib/next-destination`
+is now the single same-origin guard for all of them -- `//evil.example` and
+absolute URLs are dropped rather than followed, which matters because `next`
+here originates in an email.
+
+**The landing page is public by necessity.** Gating `/assessments/invite/*`
+would bounce the visitor to a login before the token had been read, which is the
+behaviour being replaced. It renders nothing but a routing decision.
+
+### Tests
+
+`tests/test_assessment_invitation_link.py`, 35 assertions: token round-trip,
+expired versus invalid as distinct reasons, cross-audience replay in both
+directions, email matching including the dangerous empty-equals-empty case, and
+one test per resolver state plus the two orderings that carry a disclosure risk.
+Full suite: 1376 passing.
+
+
+---
+
 ## 2026-08-11 — Interactive fields you can see, and a motion pass that runs when you look at it
 
 ### Product

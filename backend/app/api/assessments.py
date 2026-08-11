@@ -14,6 +14,8 @@ from app.api.deps import (
     CurrentUser,
     get_candidate_db,
     get_current_candidate,
+    get_optional_candidate,
+    get_public_db,
     get_tenant_db,
     require_capability,
 )
@@ -29,6 +31,7 @@ from app.models.assessment import (
 from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
 from app.models.tenant import Tenant
+from app.models.user import User
 from app.schemas.assessments import (
     BulkCompetencyIn,
     CompetencyIn,
@@ -39,6 +42,7 @@ from app.schemas.assessments import (
     DimensionOut,
     FrameworkOut,
     FunctionalReportOut,
+    InvitationResolveOut,
     JobSetupOut,
     RadarChartOut,
     TranscriptExchangeOut,
@@ -47,12 +51,15 @@ from app.schemas.assessments import (
 from app.services import capabilities as caps
 from app.services import (
     answer_classification,
+    assessment_invite,
     conversation_guardrails,
     credit_reconciliation,
     hiring_pipeline,
     interview_telemetry,
     interviewer,
+    job_posting,
     ppi,
+    retake,
     tenant_cache,
     technical_interview,
 )
@@ -817,6 +824,181 @@ async def put_report_forbidden(link_id: uuid.UUID) -> None:
 @router.delete("/reports/links/{link_id}", status_code=status.HTTP_403_FORBIDDEN)
 async def delete_report_forbidden(link_id: uuid.UUID) -> None:
     raise HTTPException(status_code=403, detail=_IMMUTABLE_DETAIL)
+
+
+# ── The assessment invitation link (2026-08-11) ──────────────────────────────
+#
+# The email now carries a signed token rather than a raw application id, and it
+# lands on a PUBLIC page whose only job is to route. This endpoint is what that
+# page asks. It is deliberately the one place that knows the order the checks
+# run in, because the order is the whole design:
+#
+#   token validity -> is the application still real -> is anyone signed in ->
+#   is it the RIGHT person -> is the posting window still open -> has this
+#   already been submitted -> has the recruiter actually invited them
+#
+# Signature before world, identity before state. Checking "already submitted"
+# before "wrong account" would tell a stranger holding the link whether a
+# particular candidate had finished their assessment.
+
+_INVITE_STATE_MESSAGES = {
+    "expired": (
+        "This assessment link has expired. Ask the hiring team to send a new "
+        "invitation and it will work straight away."
+    ),
+    "invalid": (
+        "This assessment link could not be read. It may have been broken by "
+        "your email client, so try copying the whole address from the message."
+    ),
+    "window_closed": (
+        "This job posting has closed, so the assessment is no longer open. "
+        "Nothing you have already sent is lost."
+    ),
+    "not_invited": (
+        "This assessment is not open to you yet. The hiring team invites "
+        "candidates individually, and you will be emailed if they invite you."
+    ),
+    "needs_auth": (
+        "Sign in to your candidate account to open this assessment."
+    ),
+    "ready": "Your assessment is ready.",
+    "in_progress": (
+        "You have already started this assessment. Your saved answers are "
+        "still there and you will pick up where you left off."
+    ),
+    "completed": (
+        "You have already submitted this assessment. There is nothing more to "
+        "answer."
+    ),
+    "gone": (
+        "That application is no longer available. If you believe this is a "
+        "mistake, reply to the invitation email and the hiring team can check."
+    ),
+}
+
+
+def _invite_out(
+    state: str,
+    *,
+    redirect_to: str | None = None,
+    message: str | None = None,
+    **extra: Any,
+) -> InvitationResolveOut:
+    return InvitationResolveOut(
+        state=state,
+        redirect_to=redirect_to,
+        message=message or _INVITE_STATE_MESSAGES.get(state, "This link could not be opened."),
+        **extra,
+    )
+
+
+@router.get("/invitations/{token}", response_model=InvitationResolveOut)
+async def resolve_invitation(
+    token: str,
+    user: CurrentUser | None = Depends(get_optional_candidate),
+    session: AsyncSession = Depends(get_public_db),
+) -> InvitationResolveOut:
+    """Resolve an emailed assessment link into exactly one next step.
+
+    Answers 200 for every outcome, including the refusals. That is deliberate:
+    the caller is a landing page that must render a specific explanation for
+    each state, and a 401/404/410 would collapse five different situations into
+    "something went wrong" -- which is the generic-error failure this codebase
+    keeps having to fix. The refusal is in the `state` field, and no state
+    carries a `redirect_to` it has not earned.
+    """
+    try:
+        payload = assessment_invite.verify(token)
+    except assessment_invite.InviteTokenError as exc:
+        return _invite_out(exc.reason)
+
+    link_id = uuid.UUID(str(payload["link_id"]))
+    invited_email = str(payload.get("email") or "")
+
+    link = await session.get(JobCandidateLink, link_id)
+    if link is None:
+        return _invite_out("gone")
+    job = await session.get(Job, link.job_id)
+    if job is None:
+        return _invite_out("gone")
+    tenant = await session.get(Tenant, link.tenant_id)
+    context = {
+        "job_title": job.title,
+        "company_name": tenant.name if tenant else None,
+    }
+
+    # Signed out. The page sends them to /login carrying this same URL as
+    # `next`, which is the whole point of the change: the candidate comes back
+    # HERE after signing in, not to the jobs board.
+    if user is None:
+        return _invite_out(
+            "needs_auth",
+            invited_email_masked=assessment_invite.mask_email(invited_email),
+            **context,
+        )
+
+    account = await session.get(User, user.user_id)
+    signed_in_email = account.email if account else None
+    if not assessment_invite.emails_match(invited_email, signed_in_email):
+        # Never silently attach the assessment to whoever happens to be signed
+        # in. Both addresses are reported (one masked) because "wrong account"
+        # with no way to tell which account is right is an unactionable error.
+        return _invite_out(
+            "wrong_account",
+            invited_email_masked=assessment_invite.mask_email(invited_email),
+            signed_in_email=signed_in_email,
+            message=(
+                "This invitation was sent to a different email address. Sign "
+                "out and sign back in with the account it was sent to."
+            ),
+            **context,
+        )
+
+    conversation = (
+        await session.execute(
+            select(AssessmentConversation).where(
+                AssessmentConversation.job_candidate_link_id == link.id
+            )
+        )
+    ).scalars().first()
+
+    # Already submitted wins over the window: a candidate who finished on the
+    # last day should be shown their submission, not told the job has closed.
+    if conversation is not None and conversation.completed_at is not None:
+        return _invite_out(
+            "completed",
+            redirect_to=f"/portal/applications?application={link.id}",
+            **context,
+        )
+
+    if not job_posting.can_edit_application(
+        applied_at=link.created_at,
+        posting_start=job.posting_start_date,
+        posting_end_date=job.posting_end_date,
+        grace_period_end_date=job.grace_period_end_date,
+    ):
+        return _invite_out("window_closed", **context)
+
+    if conversation is None or conversation.invitation_sent_at is None:
+        return _invite_out("not_invited", **context)
+
+    # The six-month classification. Under PPI nothing is portable between jobs
+    # (services/retake), so this never skips the assessment -- it only supplies
+    # the sentence explaining why the candidate is answering questions again.
+    recent_prior = False
+    try:
+        decision = await retake.decide(session, link.candidate_id, link.job_id)
+        recent_prior = decision.decision == retake.DECISION_REUSE
+    except Exception:  # pragma: no cover - classification is never load-bearing
+        logger.exception("invitation.retake_classification_failed link_id=%s", link.id)
+
+    started = conversation.started_at is not None
+    return _invite_out(
+        "in_progress" if started else "ready",
+        redirect_to=f"/portal/assessments/{link.id}",
+        recent_prior_report=recent_prior,
+        **context,
+    )
 
 
 # ── The unified candidate conversation (spec §8) ─────────────────────────────
