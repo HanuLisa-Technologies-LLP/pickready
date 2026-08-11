@@ -377,3 +377,57 @@ def configured_key_count() -> dict[str, int]:
     for provider, _slot, _value in env_key_slots():
         counts[provider] += 1
     return counts
+
+
+# ── Token pricing, for cost attribution (2026-08-11) ─────────────────────────
+#
+# Prices are USD per MILLION tokens, as DATA here rather than inline in the
+# router, for the same reason provider order and timeouts are: a commercial
+# number changes on someone else's schedule and must be editable without
+# touching the retry loop.
+#
+# THESE ARE ESTIMATES AND ARE LABELLED AS SUCH EVERYWHERE THEY SURFACE.
+# The router reports `estimated_cost_usd`, never `cost`. Three reasons a figure
+# here cannot be the invoice:
+#
+#   * two of the three providers are used on free or promotional tiers, where
+#     the real marginal cost is zero and the useful number is the one that says
+#     what it WOULD cost at list price;
+#   * OpenRouter prices per underlying model and routes between them; and
+#   * providers round and batch differently from what their usage block says.
+#
+# What the number IS good for is the comparison the operator actually needs:
+# which task_type and which key are consuming the budget. That ordering is
+# stable even when the absolute figure is not.
+#
+# A provider missing from this table costs 0.0 and is reported with
+# `priced=False`, so "we have no price for this" never silently reads as
+# "this was free".
+TOKEN_PRICES_USD_PER_MILLION: dict[str, dict[str, float]] = {
+    # Groq, Llama-class models on the free/developer tier.
+    "groq": {"prompt": 0.05, "completion": 0.08},
+    # Gemini Flash-class.
+    "gemini": {"prompt": 0.075, "completion": 0.30},
+    # OpenRouter varies by underlying model; this is a mid-range placeholder.
+    "openrouter": {"prompt": 0.20, "completion": 0.60},
+}
+
+
+def estimate_cost_usd(provider: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """Estimated list-price cost of one call, in USD.
+
+    Returns 0.0 for an unpriced provider. Callers that need to distinguish
+    "free" from "unknown" should check `is_priced`.
+    """
+    prices = TOKEN_PRICES_USD_PER_MILLION.get(provider)
+    if not prices:
+        return 0.0
+    return (
+        prompt_tokens * prices.get("prompt", 0.0)
+        + completion_tokens * prices.get("completion", 0.0)
+    ) / 1_000_000
+
+
+def is_priced(provider: str) -> bool:
+    """True when a price is on file, so a 0.0 can be read correctly."""
+    return provider in TOKEN_PRICES_USD_PER_MILLION

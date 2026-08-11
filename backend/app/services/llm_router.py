@@ -75,6 +75,8 @@ from app.config.llm_providers import (
     MIN_USEFUL_MAX_TOKENS,
     PROVIDER_MODELS,
     DEFAULT_TEMPERATURE,
+    estimate_cost_usd,
+    is_priced,
     max_tokens_for,
     temperature_for,
     provider_order,
@@ -147,6 +149,75 @@ class _ProviderStats:
                 round(self.total_latency_ms / self.attempts, 1) if self.attempts else None
             ),
         }
+
+
+@dataclass
+class _KeyStats:
+    """Rolling counters for ONE key. Monitoring only, never routing input.
+
+    Per-PROVIDER counters already existed and answer "is Groq degraded?". They
+    cannot answer the two questions an operator actually has when a bill or a
+    latency graph moves: WHICH of the seven keys on that provider is failing,
+    and WHICH task_type is spending the budget. A provider with one dead key
+    out of seven looks mildly degraded in aggregate and is completely healthy
+    on six of them.
+
+    Keyed by fingerprint (`db:<uuid>` / `env:<name>`), which is the same
+    non-secret handle the breaker and the logs already use. No key material is
+    stored here, and `as_dict` is safe to serve to an admin console.
+    """
+
+    attempts: int = 0
+    successes: int = 0
+    failures: int = 0
+    throttles: int = 0
+    total_latency_ms: float = 0.0
+    #: The worst single attempt. An average hides the one call that took 40s,
+    #: and that call is the one a candidate was waiting through.
+    max_latency_ms: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    #: How many successful calls actually reported usage. Without it, zero
+    #: tokens cannot be told apart from a provider that does not report them.
+    calls_with_usage: int = 0
+    #: {task_type: attempts}. Which work this key is being spent on.
+    by_task: dict[str, int] = field(default_factory=dict)
+    provider: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "attempts": self.attempts,
+            "successes": self.successes,
+            "failures": self.failures,
+            "throttles": self.throttles,
+            "success_rate": (
+                round(self.successes / self.attempts, 3) if self.attempts else None
+            ),
+            "avg_latency_ms": (
+                round(self.total_latency_ms / self.attempts, 1)
+                if self.attempts
+                else None
+            ),
+            # NOT `or None`: a sub-millisecond call is 0.0, and reporting that
+            # as "no data" would hide the fastest calls rather than the slowest.
+            "max_latency_ms": (
+                round(self.max_latency_ms, 1) if self.attempts else None
+            ),
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "calls_with_usage": self.calls_with_usage,
+            # Named "estimated" everywhere it surfaces. `priced` is what stops
+            # a 0.0 from an unpriced provider reading as "this was free".
+            "estimated_cost_usd": round(self.estimated_cost_usd, 6),
+            "priced": is_priced(self.provider) if self.provider else False,
+            "by_task": dict(sorted(self.by_task.items())),
+        }
+
+
+#: Rolling per-KEY counters, by fingerprint.
+_key_stats: dict[str, _KeyStats] = {}
 
 
 # In-memory breaker state, keyed by fingerprint. Worker processes are
@@ -277,6 +348,57 @@ def provider_stats() -> dict[str, dict[str, Any]]:
 def reset_provider_stats() -> None:
     """Clear the monitoring counters (used by tests and the admin console)."""
     _stats.clear()
+    _key_stats.clear()
+
+
+def _key_stat(fingerprint: str, provider: str) -> _KeyStats:
+    stat = _key_stats.get(fingerprint)
+    if stat is None:
+        stat = _KeyStats(provider=provider)
+        _key_stats[fingerprint] = stat
+    return stat
+
+
+def key_stats() -> dict[str, dict[str, Any]]:
+    """Snapshot of per-key counters, by fingerprint.
+
+    Contains NO key material: a fingerprint is `db:<uuid>` or `env:<name>`,
+    which is what the breaker and every log line in this module already use.
+    """
+    return {
+        fingerprint: stat.as_dict()
+        for fingerprint, stat in sorted(_key_stats.items())
+    }
+
+
+def _record_key_attempt(
+    key: "_RouterKey",
+    task_type: str,
+    latency_ms: float,
+    *,
+    success: bool,
+    throttled: bool = False,
+    usage: "_ProviderResult | None" = None,
+) -> None:
+    """One attempt, attributed to the KEY that made it and the TASK it served."""
+    stat = _key_stat(key.fingerprint, key.provider)
+    stat.attempts += 1
+    stat.total_latency_ms += latency_ms
+    stat.max_latency_ms = max(stat.max_latency_ms, latency_ms)
+    stat.by_task[task_type] = stat.by_task.get(task_type, 0) + 1
+    if success:
+        stat.successes += 1
+    else:
+        stat.failures += 1
+    if throttled:
+        stat.throttles += 1
+    if usage is not None and (usage.prompt_tokens or usage.completion_tokens):
+        stat.prompt_tokens += usage.prompt_tokens
+        stat.completion_tokens += usage.completion_tokens
+        stat.calls_with_usage += 1
+        stat.estimated_cost_usd += estimate_cost_usd(
+            key.provider, usage.prompt_tokens, usage.completion_tokens
+        )
 
 
 def _record_attempt(
@@ -578,6 +700,58 @@ def probe_each_provider_first(chain: list[_RouterKey]) -> list[_RouterKey]:
 
 # ── Provider calls (httpx, no SDKs) ─────────────────────────────────────────
 
+
+@dataclass(frozen=True)
+class _ProviderResult:
+    """One provider response: the text, and what it cost in tokens.
+
+    The token counts used to be thrown away -- every provider returns them and
+    the router read only `content` -- so the product could say which PROVIDER
+    was slow and never which KEY or which task_type was spending the budget.
+
+    Counts default to 0 rather than None so accounting never has to branch. A
+    provider that omits usage therefore under-reports rather than crashing, and
+    `_KeyStats.calls_with_usage` records how often that happened, so a zero can
+    be read as "nothing was sent" or "nothing was reported" rather than being
+    ambiguous.
+    """
+
+    content: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+def as_provider_result(value: "_ProviderResult | str") -> _ProviderResult:
+    """Normalise whatever a provider caller returned.
+
+    The three real callers return a `_ProviderResult`. A bare string is still
+    accepted and wrapped, for two reasons that are not the same:
+
+      * tests substitute simple string-returning stubs into
+        `_PROVIDER_CALLERS`, and a change to how the router ACCOUNTS should not
+        require rewriting every routing test; and
+      * a caller that returns a string is a working call with unknown usage,
+        which is a strictly better outcome than an AttributeError inside the
+        retry loop. Accounting is monitoring; it must never be the thing that
+        fails a request.
+
+    Unknown usage lands as zero tokens and does NOT increment
+    `calls_with_usage`, so it stays distinguishable from a genuinely empty one.
+    """
+    if isinstance(value, _ProviderResult):
+        return value
+    return _ProviderResult(content=str(value))
+
+
+def _openai_style_result(payload: dict) -> _ProviderResult:
+    """Groq and OpenRouter both speak the OpenAI response shape."""
+    usage = payload.get("usage") or {}
+    return _ProviderResult(
+        content=payload["choices"][0]["message"]["content"],
+        prompt_tokens=int(usage.get("prompt_tokens") or 0),
+        completion_tokens=int(usage.get("completion_tokens") or 0),
+    )
+
 def _openai_style_payload(
     model: str, messages: list[dict], json_mode: bool, max_tokens: int,
     temperature: float,
@@ -612,7 +786,7 @@ async def _call_groq(
         ),
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    return _openai_style_result(resp.json())
 
 
 async def _call_openrouter(
@@ -627,7 +801,7 @@ async def _call_openrouter(
         ),
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    return _openai_style_result(resp.json())
 
 
 async def _call_gemini(
@@ -667,7 +841,15 @@ async def _call_gemini(
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    # Gemini reports usage under a different key and with different names than
+    # the OpenAI-shaped providers. Normalised here so the router has ONE shape
+    # to account against, rather than a per-provider branch in the attempt loop.
+    usage = data.get("usageMetadata") or {}
+    return _ProviderResult(
+        content=data["candidates"][0]["content"]["parts"][0]["text"],
+        prompt_tokens=int(usage.get("promptTokenCount") or 0),
+        completion_tokens=int(usage.get("candidatesTokenCount") or 0),
+    )
 
 
 _PROVIDER_CALLERS = {
@@ -819,6 +1001,7 @@ async def _attempt(state: RouterState) -> dict:
             ),
             timeout=limit,
         )
+        result = as_provider_result(result)
     except (
         httpx.HTTPError, KeyError, IndexError, ValueError, asyncio.TimeoutError
     ) as exc:
@@ -829,6 +1012,11 @@ async def _attempt(state: RouterState) -> dict:
             isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
         )
         _record_attempt(key.provider, latency_ms, success=False, throttled=throttled)
+        # A failed attempt still costs latency and still belongs to a key. It
+        # is the failures, not the successes, that identify the bad slot.
+        _record_key_attempt(
+            key, ctx.task_type, latency_ms, success=False, throttled=throttled
+        )
         await _record_failure(key, ctx.session)
         # The HTTP status is the whole diagnosis (401 bad key, 402 out of
         # credit, 429 quota) and it was previously logged at INFO, which the
@@ -887,16 +1075,33 @@ async def _attempt(state: RouterState) -> dict:
 
     latency_ms = (time.monotonic() - started) * 1000
     _record_attempt(key.provider, latency_ms, success=True)
+    _record_key_attempt(
+        key, ctx.task_type, latency_ms, success=True, usage=result
+    )
     await _record_success(key, ctx.session)
+    cost = estimate_cost_usd(
+        key.provider, result.prompt_tokens, result.completion_tokens
+    )
+    # Tokens and cost on the SUCCESS line, per key and per task. This is what
+    # makes "which key is spending the budget, on what" answerable from an
+    # ordinary log rather than from a tracing dashboard -- and prompts carry a
+    # real candidate's answers, so an ordinary log is the only place this
+    # detail may live. Never the key itself, only its fingerprint.
     logger.info(
         "llm_router.attempt task_type=%s provider=%s fingerprint=%s "
-        "latency_ms=%.0f outcome=success",
+        "latency_ms=%.0f outcome=success prompt_tokens=%d completion_tokens=%d "
+        "estimated_cost_usd=%.6f priced=%s",
         ctx.task_type, key.provider, key.fingerprint, latency_ms,
+        result.prompt_tokens, result.completion_tokens, cost,
+        is_priced(key.provider),
     )
     return {
         "current_index": index + 1,
         "attempts": attempts + 1,
-        "result": result,
+        # The graph and every caller upstream expect the TEXT. Usage was
+        # accounted for above and deliberately does not travel further: a
+        # response schema is not the place for operator data.
+        "result": result.content,
     }
 
 

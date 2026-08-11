@@ -31,6 +31,7 @@ from app.api.deps import (
     get_tenant_db,
     require_capability,
 )
+from app.config import llm_providers
 from app.core.config import get_settings
 from app.models.candidate import Candidate, Profile
 from app.models.enums import Role, UserStatus
@@ -73,6 +74,7 @@ from app.services.audit import audit
 from app.services.capabilities import DEFAULT_PERMISSION_MATRIX
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
 from app.workers.celery_app import celery_app
+from app.services import llm_router
 
 router = APIRouter()
 
@@ -1011,3 +1013,44 @@ async def list_audit_log(
         stmt = stmt.where(AuditLog.tenant_id == tenant_id)
     rows = (await session.execute(stmt)).scalars().all()
     return [AuditLogOut.model_validate(r) for r in rows]
+
+
+# ── LLM roster observability (2026-08-11) ────────────────────────────────────
+
+@router.get("/llm/stats")
+async def llm_stats(
+    session: AsyncSession = Depends(get_superadmin_db),
+) -> dict:
+    """Per-provider and per-KEY health, latency, tokens and estimated cost.
+
+    `llm_router.provider_stats()` has existed for a long time and was exposed
+    NOWHERE, which makes it a monitoring surface nobody can read. Per-key
+    counters were added on 2026-08-11 for the two questions the aggregate
+    cannot answer: which of the seven keys on a provider is failing, and which
+    task_type is spending the budget. A provider with one dead key out of seven
+    reads as mildly degraded and is healthy on six.
+
+    Owner-only, through `get_superadmin_db`, which also writes the audit row.
+
+    No key material crosses this boundary. Counters are filed under a
+    FINGERPRINT (`db:<uuid>` / `env:<name>`), the same non-secret handle the
+    breaker and every log line already use, and that is asserted in
+    `tests/test_llm_key_telemetry.py` rather than left to review.
+
+    The cost figure is named `estimated_cost_usd` and carries `priced`. It is
+    list price from `config/llm_providers.TOKEN_PRICES_USD_PER_MILLION`, not an
+    invoice: two of the three providers run on free tiers. What it is good for
+    is the ordering -- which key, which task -- which stays right even when the
+    absolute number is not.
+
+    Counters are per PROCESS and reset on restart. That is a real limitation
+    and is stated in the payload rather than left for a reader to discover: a
+    zero here means "nothing since this worker started", never "nothing ever".
+    """
+    return {
+        "providers": llm_router.provider_stats(),
+        "keys": llm_router.key_stats(),
+        "configured_keys": llm_providers.configured_key_count(),
+        "scope": "this process, since it started",
+        "cost_basis": "list price estimate, not an invoice",
+    }
