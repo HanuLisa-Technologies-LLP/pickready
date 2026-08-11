@@ -68,6 +68,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.services import agent_loop, answer_quality, llm_router
+from app.prompts import registry
 
 logger = logging.getLogger(__name__)
 
@@ -107,43 +108,14 @@ TRANSCRIPT_TURNS = 6
 #: opening sentences far more often than at the end.
 MAX_ANSWER_CHARS = 4000
 
-_SYSTEM = (
-    "You are auditing one turn of a job interview. The candidate has replied to "
-    "a question. Decide whether the reply actually ANSWERS the question that "
-    "was asked.\n"
-    "\n"
-    "Choose exactly one label:\n"
-    "- substantive: the reply engages with the question that was asked. It may "
-    "be short, weak, unimpressive, or wrong. That is not your concern; a human "
-    "will grade its quality separately.\n"
-    "- off_topic: coherent prose that answers a DIFFERENT question than the one "
-    "asked.\n"
-    "- shallow: addresses the right topic, but does not provide the specific "
-    "example, action, reasoning, measurement, or outcome the question asks "
-    "for.\n"
-    "- evasive: deliberately talks around the question, dodges the specific "
-    "thing asked, or answers a softer version of it.\n"
-    "\n"
-    "RULES THAT OVERRIDE EVERYTHING ABOVE:\n"
-    "- A NEGATIVE ANSWER IS A REAL ANSWER. 'I have not used Kafka', 'I have "
-    "never led a team', 'I do not know' are all substantive. They answer the "
-    "question directly and honestly. NEVER label them evasive or off_topic.\n"
-    "- Brevity is not evasion. A complete short answer is a complete answer.\n"
-    "- Poor grammar, a second language, or clumsy phrasing is not evasion.\n"
-    "- Admitting limited experience and then describing something adjacent is "
-    "substantive, not off_topic: the candidate answered and then gave you the "
-    "nearest evidence they have.\n"
-    "- When you are genuinely unsure, choose substantive. Wrongly accusing a "
-    "real answer of being a dodge is the worst outcome available to you.\n"
-    "\n"
-    "confidence is one of the WORDS high, medium, low. Never a number.\n"
-    "reason is one short internal sentence for an engineer's log. It is never "
-    "shown to the candidate, so write what you observed, not a message to "
-    "them.\n"
-    "\n"
-    'Return JSON: {"label": <string>, "confidence": <string>, '
-    '"reason": <string>}.'
-)
+_SYSTEM_PROMPT_NAME = "answer_classification_system"
+
+#: The prompt text now lives in `app/prompts/answer_classification_system.txt`
+#: and is loaded through the registry, which stamps it with a version. Nothing
+#: about what is sent changed; what changed is that a wording edit is now a
+#: diff in a prompt file with a version to bump, rather than a string literal
+#: buried in a module full of code.
+_SYSTEM = registry.render(_SYSTEM_PROMPT_NAME)
 
 
 @dataclass(frozen=True)

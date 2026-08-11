@@ -50,6 +50,7 @@ from app.models.assessment import CandidateQuestion, JobCompetency
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
 from app.services import agent_loop, llm_router
+from app.prompts import registry
 from app.services.rating import (
     GRADE_HIGHLY,
     GRADE_MATCHING,
@@ -320,27 +321,16 @@ def _fallback_framework(job: Job) -> list[dict[str, Any]]:
     return rows
 
 
-_FRAMEWORK_SYSTEM_PROMPT = (
-    "You design the evaluation framework for one specific job, from its job "
-    "description alone. Produce THREE categories:\n"
-    f"  primary_skill  -- at least {MINIMUM_PER_CATEGORY}: the capabilities the role "
-    "cannot be performed without.\n"
-    f"  secondary_skill -- at least {MINIMUM_PER_CATEGORY}: supporting capabilities "
-    "that materially strengthen performance but are not disqualifying.\n"
-    f"  behavioural    -- at least {MINIMUM_PER_CATEGORY}: observable workplace "
-    "behaviours the role demands.\n"
-    "Recommend MORE than the minimum in any category when the job's complexity "
-    f"genuinely warrants it, up to {MAXIMUM_PER_CATEGORY} per category.\n\n"
-    "HARD RULE: never propose Culture, cultural fit, or any variant as a "
-    "behavioural competency. Cultural fit cannot be assessed accurately from a "
-    "single assessment and must not appear in the framework.\n\n"
-    "Each entry needs a short name (a skill or behaviour, never a sentence from "
-    "the job description), a one-line description of what it measures, and a "
-    "required_level stating how strongly THIS JOB needs it: one of exactly "
-    f"\"{GRADE_HIGHLY}\", \"{GRADE_MATCHING}\", \"{GRADE_MODERATELY}\". "
-    "Do not use numbers, percentages, or any other scale.\n\n"
-    "Return JSON {\"competencies\":[{\"category\":\"primary_skill\","
-    "\"name\":\"...\",\"description\":\"...\",\"required_level\":\"...\"}]}."
+#: Text in `app/prompts/ppi_framework_system.txt`, loaded through the registry so a
+#: wording change is a versioned diff in a prompt file rather than a string
+#: literal in a module of code. What is sent is unchanged.
+_FRAMEWORK_SYSTEM_PROMPT = registry.render(
+    "ppi_framework_system",
+    minimum_per_category=MINIMUM_PER_CATEGORY,
+    maximum_per_category=MAXIMUM_PER_CATEGORY,
+    grade_highly=GRADE_HIGHLY,
+    grade_matching=GRADE_MATCHING,
+    grade_moderately=GRADE_MODERATELY,
 )
 
 _MAX_NAME = 255
@@ -660,21 +650,10 @@ def _allocate(competencies: list[JobCompetency], total: int) -> list[JobCompeten
     return plan
 
 
-_QUESTION_SYSTEM_PROMPT = (
-    "You are writing assessment questions for ONE candidate applying to ONE "
-    "job. You are given the job description, the job's fixed evaluation "
-    "framework, and this candidate's resume.\n\n"
-    "Write exactly one question for each framework entry listed in "
-    "`allocation`, in the same order. Each question must probe THAT entry and "
-    "must be anchored in something specific from this candidate's own resume "
-    "-- a named employer, project, tool, or responsibility -- so it could not "
-    "have been asked of a different candidate unchanged.\n\n"
-    "Ask for concrete situations and what the candidate personally decided or "
-    "did. Do not ask yes/no questions, do not reveal how answers are scored, "
-    "and never mention scores, grades, or the framework itself.\n\n"
-    "Return JSON {\"questions\":[{\"index\":0,\"prompt\":\"...\"}]} with one "
-    "entry per allocation index."
-)
+#: Text in `app/prompts/ppi_candidate_questions_system.txt`, loaded through the registry so a
+#: wording change is a versioned diff in a prompt file rather than a string
+#: literal in a module of code. What is sent is unchanged.
+_QUESTION_SYSTEM_PROMPT = registry.render("ppi_candidate_questions_system")
 
 _GENERIC_ANGLES: tuple[str, ...] = (
     "Tell me about a specific situation where {name} was decisive in your work. What did you personally do, and what was the outcome?",

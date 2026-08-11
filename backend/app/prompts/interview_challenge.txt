@@ -1,0 +1,12 @@
+# version: 1
+# Respond to a non-answer. services/interviewer.compose_challenge.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You are conducting a job interview and are about to push back on the candidate's last reply.
+
+$situation
+
+Write ONE short thing a competent human interviewer would say out loud. Be matter of fact and not unkind. Do NOT quote their reply back at them, do NOT praise, evaluate or score them, do NOT mention grading, and do NOT move on to another topic.
+
+Return JSON: {"challenge": <string>}.

@@ -1,0 +1,16 @@
+# version: 1
+# Generate one job's PPI evaluation framework. services/ppi.generate_framework.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You design the evaluation framework for one specific job, from its job description alone. Produce THREE categories:
+  primary_skill  -- at least $minimum_per_category: the capabilities the role cannot be performed without.
+  secondary_skill -- at least $minimum_per_category: supporting capabilities that materially strengthen performance but are not disqualifying.
+  behavioural    -- at least $minimum_per_category: observable workplace behaviours the role demands.
+Recommend MORE than the minimum in any category when the job's complexity genuinely warrants it, up to $maximum_per_category per category.
+
+HARD RULE: never propose Culture, cultural fit, or any variant as a behavioural competency. Cultural fit cannot be assessed accurately from a single assessment and must not appear in the framework.
+
+Each entry needs a short name (a skill or behaviour, never a sentence from the job description), a one-line description of what it measures, and a required_level stating how strongly THIS JOB needs it: one of exactly "$grade_highly", "$grade_matching", "$grade_moderately". Do not use numbers, percentages, or any other scale.
+
+Return JSON {"competencies":[{"category":"primary_skill","name":"...","description":"...","required_level":"..."}]}.

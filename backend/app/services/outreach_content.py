@@ -23,6 +23,7 @@ from typing import Any
 from langchain_core.prompts import PromptTemplate
 
 from app.services import llm_router
+from app.prompts import registry
 
 logger = logging.getLogger(__name__)
 
@@ -42,19 +43,11 @@ WORD_MAX = 200
 _PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "email_generation.txt"
 _EMAIL_PROMPT = PromptTemplate.from_template(_PROMPT_PATH.read_text(encoding="utf-8"))
 
-_SYSTEM_PROMPT = (
-    "You are a warm, professional recruitment coordinator writing a short "
-    "outreach email to a candidate. Write 3-4 short paragraphs totalling "
-    f"between {WORD_MIN} and {WORD_MAX} words, this length is a hard "
-    "requirement. Keep it personable and free of hype. Address the candidate "
-    "by name, reference the specific job role and company, and, for a "
-    "'next_round' invitation, invite them to continue to the next round of "
-    "the process.\n"
-    "Respond with JSON ONLY, exactly this shape:\n"
-    '{"subject": "<email subject line>", '
-    '"body": "<plain-text email body, paragraphs separated by blank lines; '
-    'do NOT include a signature block or any HTML>"}\n'
-    "No prose outside the JSON."
+#: Text in `app/prompts/outreach_email_system.txt`, loaded through the registry so a
+#: wording change is a versioned diff in a prompt file rather than a string
+#: literal in a module of code. What is sent is unchanged.
+_SYSTEM_PROMPT = registry.render(
+    "outreach_email_system", word_min=WORD_MIN, word_max=WORD_MAX
 )
 
 

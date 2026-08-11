@@ -366,12 +366,10 @@ def _measure_prompt_templates_render() -> Result:
     intact. The defect above was a template that could not be rendered at all."""
     result = Result("prompt_templates_render")
     for label, situation in interviewer._CHALLENGE_BY_LABEL.items():
-        rendered = interviewer._CHALLENGE_SYSTEM.replace(
-            interviewer._SITUATION_SLOT, situation
-        )
+        rendered = interviewer.challenge_prompt(situation)
         result.record(situation in rendered, f"{label}: situation never reached the prompt")
         result.record(
-            interviewer._SITUATION_SLOT not in rendered, f"{label}: slot left unfilled"
+            "$situation" not in rendered, f"{label}: slot left unfilled"
         )
         result.record(
             '{"challenge":' in rendered, f"{label}: JSON contract was destroyed"

@@ -71,6 +71,7 @@ from app.services import (
     technical_interview,
 )
 from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELDS
+from app.prompts import registry
 from app.services.rating import (
     GRADES,
     MODERATE_OR_BELOW,
@@ -384,12 +385,9 @@ async def _llm_score(session: AsyncSession | None, question: str, rubric: dict |
             [
                 {
                     "role": "system",
-                    "content": (
-                        "You are scoring one assessment answer against a fixed rubric. "
-                        "Choose the rubric band the answer actually satisfies, then pick an integer "
-                        "inside that band's range. Do not reward length or confidence. "
-                        f"Rubric bands: {_rubric_text(rubric)}. "
-                        "Return JSON {\"score\": <integer 0-100>, \"band\": \"<band key>\"}."
+                    "content": registry.render(
+                        "assessment_answer_scoring",
+                        rubric_bands=_rubric_text(rubric),
                     ),
                 },
                 {"role": "user", "content": json.dumps({"question": question, "answer": answer})},
@@ -414,9 +412,11 @@ REPORT_BANNED_PHRASES: tuple[str, ...] = (
     "describe one recent situation in detail",
 )
 
-_PROBE_PROMPT = (
-    Path(__file__).resolve().parents[2] / "prompts" / "report_interview_probes.txt"
-).read_text(encoding="utf-8")
+#: Was read from `backend/prompts/`, a SECOND prompt directory holding this one
+#: file while `app/prompts/` held fourteen. Both reached the image only because
+#: the Dockerfile does `COPY . .`; the next one added would not have. One
+#: directory now, one loader.
+_PROBE_PROMPT = registry.render("report_interview_probes")
 
 def _fallback_remark_25(name: str) -> str:
     candidates = [

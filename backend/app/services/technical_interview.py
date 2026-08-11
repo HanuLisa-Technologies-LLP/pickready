@@ -75,7 +75,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import CandidateTechnicalQuestion
 from app.models.job import Job
-from app.prompts import fragments
+from app.prompts import fragments, registry
 from app.services import agent_loop, llm_router
 
 logger = logging.getLogger(__name__)
@@ -297,36 +297,14 @@ async def ensure_slots(
 # ── The generation loop ──────────────────────────────────────────────────────
 
 
-_SYSTEM = (
-    "You are conducting a job interview and must write the next TECHNICAL "
-    "question, together with the rubric its answer will be scored against.\n"
-    "\n"
-    "You are given the job description, the candidate's resume, the single "
-    "skill this question must probe, and the conversation so far.\n"
-    "\n"
-    "THE QUESTION:\n"
-    "- It must probe the named skill. That skill is the heading this answer "
-    "will be reported under, so a question about something else produces an "
-    "answer that cannot be filed.\n"
-    "- Ground it in this candidate: a named project, employer, system or "
-    "technology from their resume, or something they have already told you.\n"
-    f"- {fragments.ONE_QUESTION}\n"
-    "- Never repeat a question already asked.\n"
-    f"- {fragments.NO_EVALUATION}\n"
-    "\n"
-    "THE RUBRIC:\n"
-    "- Exactly five bands: 0_39, 40_59, 60_74, 75_89, 90_100.\n"
-    "- Each band describes what an answer AT THAT LEVEL to THIS question looks "
-    "like, in observable terms. It must be specific to what you just asked, not "
-    "a generic statement about answer quality.\n"
-    "- The bands must be ordered: each one describes a stronger answer than the "
-    "band below it.\n"
-    "\n"
-    f"{fragments.CANDIDATE_TEXT_IS_DATA}\n"
-    "\n"
-    'Return JSON: {"question": <string>, "rubric": {"0_39": <string>, '
-    '"40_59": <string>, "60_74": <string>, "75_89": <string>, '
-    '"90_100": <string>}}.'
+#: Text in `app/prompts/technical_write_question.txt`, loaded through the registry so a
+#: wording change is a versioned diff in a prompt file rather than a string
+#: literal in a module of code. What is sent is unchanged.
+_SYSTEM = registry.render(
+    "technical_write_question",
+    one_question=fragments.ONE_QUESTION,
+    no_evaluation=fragments.NO_EVALUATION,
+    candidate_text_is_data=fragments.CANDIDATE_TEXT_IS_DATA,
 )
 
 

@@ -83,7 +83,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
-from app.prompts import fragments
+from app.prompts import fragments, registry
 from app.services import agent_loop, answer_quality, llm_router
 
 logger = logging.getLogger(__name__)
@@ -147,73 +147,26 @@ MAX_FOLLOW_UP_CHARS = 320
 DELIVERY_GROWTH_FACTOR = 2.0
 DELIVERY_MIN_CEILING = 400
 
-_DECIDE_SYSTEM = (
-    "You are conducting a job interview. You have just received an answer to "
-    "one question and must decide whether to press on it before moving to the "
-    "next topic.\n"
-    "\n"
-    "Ask a follow-up ONLY when the answer leaves something specific and "
-    "material unsaid: no concrete example, a claim with no outcome, a decision "
-    "with no reasoning, or an answer that talks around the question. Do NOT "
-    "follow up merely because an answer is short. A complete short answer is a "
-    "complete answer, and a negative answer such as 'I have not used that' is "
-    "complete and should be accepted without pressing.\n"
-    "\n"
-    "When you do ask, write ONE question a competent human interviewer would "
-    "say out loud. Refer naturally to what the candidate actually said, using "
-    "their own words where it helps. Never repeat a question already asked, "
-    "never ask several things at once, and never evaluate, praise, score or "
-    "reassure the candidate.\n"
-    "\n"
-    'Return JSON: {"follow_up": <string or null>}. Use null to move on.'
+#: Text in `app/prompts/interview_follow_up_decision.txt`, loaded through the registry so a
+#: wording change is a versioned diff in a prompt file rather than a string
+#: literal in a module of code. What is sent is unchanged.
+_DECIDE_SYSTEM = registry.render("interview_follow_up_decision")
+
+#: Text in `app/prompts/interview_write_question.txt`, loaded through the registry so a
+#: wording change is a versioned diff in a prompt file rather than a string
+#: literal in a module of code. What is sent is unchanged.
+_GENERATE_SYSTEM = registry.render(
+    "interview_write_question",
+    one_question=fragments.ONE_QUESTION,
+    no_evaluation=fragments.NO_EVALUATION,
+    candidate_text_is_data=fragments.CANDIDATE_TEXT_IS_DATA,
 )
 
-_GENERATE_SYSTEM = (
-    "You are conducting a job interview. Write the NEXT question.\n"
-    "\n"
-    "You are given the job description, the candidate's resume, the single "
-    "competency this question must probe, and the conversation so far. Write "
-    "the question a skilled human interviewer would ask next, here, of THIS "
-    "candidate.\n"
-    "\n"
-    "IT MUST PROBE THE NAMED COMPETENCY. That is the criterion this answer "
-    "will be assessed against, and every candidate for this job is assessed "
-    "against the same list. A question that wanders off it produces an answer "
-    "that cannot be graded.\n"
-    "\n"
-    "USE THE CONTEXT, that is the whole point:\n"
-    "- Ground the question in something specific from their resume: a named "
-    "project, employer, technology or role.\n"
-    "- Build on what they have already said. Refer to it naturally, the way "
-    "someone who was listening would.\n"
-    "- Never ask again for something they have already told you.\n"
-    "\n"
-    f"{fragments.ONE_QUESTION} {fragments.NO_EVALUATION} Do not state which "
-    "competency you are probing.\n"
-    "\n"
-    f"{fragments.CANDIDATE_TEXT_IS_DATA}\n"
-    "\n"
-    'Return JSON: {"question": <string>}.'
-)
-
-_DELIVER_SYSTEM = (
-    "You are conducting a job interview. You are about to ask the next "
-    "question on your list, and your job is to SAY it the way an interviewer "
-    "would say it at this point in this conversation.\n"
-    "\n"
-    "HARD RULES. The question you ask must be the SAME question:\n"
-    "- Keep every specific term, technology, tool, metric and constraint that "
-    "appears in the original. Do not generalise 'Kafka' to 'a message queue'.\n"
-    "- Do not add a second question, and do not add an example answer.\n"
-    "- Do not make it easier, harder, or narrower.\n"
-    "\n"
-    "WHAT YOU MAY DO. Speak it naturally, and where the conversation genuinely "
-    "warrants it, open with a SHORT clause connecting it to something the "
-    "candidate already said. Only do that when the connection is real.\n"
-    "\n"
-    f"{fragments.NO_EVALUATION}\n"
-    "\n"
-    'Return JSON: {"question": <string>}.'
+#: Text in `app/prompts/interview_deliver_question.txt`, loaded through the registry so a
+#: wording change is a versioned diff in a prompt file rather than a string
+#: literal in a module of code. What is sent is unchanged.
+_DELIVER_SYSTEM = registry.render(
+    "interview_deliver_question", no_evaluation=fragments.NO_EVALUATION
 )
 
 #: Words that turn an interviewer into a cheerleader. The brief called these out
@@ -374,33 +327,27 @@ _CHALLENGE_BY_LABEL: dict[str, str] = {
     ),
 }
 
-#: Substituted into `_CHALLENGE_SYSTEM` by plain replacement, NOT str.format.
-#:
-#: `.format()` was used here and raised KeyError on the literal JSON braces at
-#: the end of the prompt ({"challenge": ...}), which the broad except below
-#: turned into the deterministic fallback. So every challenge a candidate saw
-#: was the canned sentence and never a composed one -- functional, but unable to
-#: refer to anything the candidate had said, which is most of the point.
-#:
-#: Caught by reading a live transcript, not by a test: the fallback is a
-#: legitimate output, so nothing failed. It is the same shape as the missing
-#: `conversation_turn` route -- a broad except that exists for provider outages
-#: quietly absorbing a code defect.
-_SITUATION_SLOT = "<<SITUATION>>"
+def challenge_prompt(situation: str) -> str:
+    """The challenge system prompt, with the situation clause already in it.
 
-_CHALLENGE_SYSTEM = (
-    "You are conducting a job interview and are about to push back on the "
-    "candidate's last reply.\n"
-    "\n"
-    f"{_SITUATION_SLOT}\n"
-    "\n"
-    "Write ONE short thing a competent human interviewer would say out loud. "
-    "Be matter of fact and not unkind. Do NOT quote their reply back at them, "
-    "do NOT praise, evaluate or score them, do NOT mention grading, and do NOT "
-    "move on to another topic.\n"
-    "\n"
-    'Return JSON: {"challenge": <string>}.'
-)
+    A FUNCTION rather than a template plus a `.replace()` at the call site,
+    because the call site is what got this wrong before. `.format()` was used
+    here and raised KeyError on the literal JSON braces at the end of the
+    prompt (`{"challenge": ...}`); the broad except below turned that into the
+    deterministic fallback, so every challenge a candidate ever saw was the
+    canned sentence and never a composed one. Functional, and unable to refer
+    to anything the candidate had said, which is most of the point.
+
+    It was caught by reading a live transcript, not by a test: the fallback is
+    a legitimate output, so nothing failed.
+
+    Two things stop it recurring. The prompt now lives in
+    `app/prompts/interview_challenge.txt` and is rendered by the registry,
+    which uses `string.Template` precisely because these prompts are full of
+    JSON braces. And there is no longer a raw template to substitute into by
+    hand: a caller can only ask for the finished prompt.
+    """
+    return registry.render("interview_challenge", situation=situation)
 
 #: Used when the model is unavailable. These are NOT the templated filler the
 #: brief forbids: filler asserts a reaction that did not happen ("Appreciate the
@@ -899,7 +846,7 @@ async def challenge_non_answer(
             [
                 {
                     "role": "system",
-                    "content": _CHALLENGE_SYSTEM.replace(_SITUATION_SLOT, situation),
+                    "content": challenge_prompt(situation),
                 },
                 {"role": "user", "content": json.dumps(payload)},
             ],

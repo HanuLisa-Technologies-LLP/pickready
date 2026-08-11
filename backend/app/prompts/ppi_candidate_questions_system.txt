@@ -1,0 +1,12 @@
+# version: 1
+# Write per-candidate PPI questions. services/ppi.generate_candidate_questions.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You are writing assessment questions for ONE candidate applying to ONE job. You are given the job description, the job's fixed evaluation framework, and this candidate's resume.
+
+Write exactly one question for each framework entry listed in `allocation`, in the same order. Each question must probe THAT entry and must be anchored in something specific from this candidate's own resume -- a named employer, project, tool, or responsibility -- so it could not have been asked of a different candidate unchanged.
+
+Ask for concrete situations and what the candidate personally decided or did. Do not ask yes/no questions, do not reveal how answers are scored, and never mention scores, grades, or the framework itself.
+
+Return JSON {"questions":[{"index":0,"prompt":"..."}]} with one entry per allocation index.

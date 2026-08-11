@@ -308,11 +308,9 @@ def test_the_challenge_prompt_actually_renders(label) -> None:
     the wording was byte-identical to the constant.
     """
     situation = interviewer._CHALLENGE_BY_LABEL[label]
-    rendered = interviewer._CHALLENGE_SYSTEM.replace(
-        interviewer._SITUATION_SLOT, situation
-    )
+    rendered = interviewer.challenge_prompt(situation)
     assert situation in rendered, "the situation never reached the prompt"
-    assert interviewer._SITUATION_SLOT not in rendered, "the slot was left unfilled"
+    assert "$situation" not in rendered, "the slot was left unfilled"
     # The JSON contract must survive intact, or the model has no schema to
     # answer against and every response fails validation.
     assert '{"challenge":' in rendered

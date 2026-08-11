@@ -1,3 +1,7 @@
+# version: 1
+# Suggested interview probes for the report. services/functional_assessment.
+#
+# Loaded through app/prompts/registry.py.
 Write eight to ten interview probes for one candidate and one job.
 
 Every probe must:

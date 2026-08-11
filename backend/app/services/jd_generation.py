@@ -37,6 +37,7 @@ from typing import Any
 
 from app import prompts
 from app.services import llm_router
+from app.prompts import registry
 
 logger = logging.getLogger(__name__)
 
@@ -92,23 +93,10 @@ _HEADING_TO_KEY: dict[str, str] = {
 #: Sections rendered and parsed as bullet lists.
 _LIST_SECTIONS = frozenset({"responsibilities", "accountabilities", "skills"})
 
-_SYSTEM_PROMPT = (
-    "You are an expert recruitment copywriter. Expand the staff brief into a "
-    "professional, well-structured job description. Cover the company culture "
-    "and context, role expectations, responsibilities, accountabilities, "
-    "required skills, education/eligibility, and experience.\n"
-    "Respond with JSON ONLY, exactly this shape:\n"
-    '{"description": "<complete candidate-facing job description>", '
-    '"reporting_to": "<who this role reports to, or null>", '
-    '"role": "<2-4 sentence role summary incl. company culture & expectations>", '
-    '"responsibilities": ["<responsibility>", ...], '
-    '"accountabilities": ["<accountability / outcome owned>", ...], '
-    '"education": "<education & eligibility requirements>", '
-    '"skills": ["<skill>", ...], '
-    '"experience_years": <integer years of experience required, or null>}\n'
-    "Use null for anything the brief does not support. No prose outside the JSON. "
-    "Never use an em dash or an en dash."
-)
+#: Text in `app/prompts/jd_generation_system.txt`, loaded through the registry so a
+#: wording change is a versioned diff in a prompt file rather than a string
+#: literal in a module of code. What is sent is unchanged.
+_SYSTEM_PROMPT = registry.render("jd_generation_system")
 
 
 # ── Robust parsing / coercion ────────────────────────────────────────────────
