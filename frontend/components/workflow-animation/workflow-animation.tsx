@@ -166,7 +166,13 @@ function Control({
       type="button"
       onClick={onClick}
       aria-label={label}
-      className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 bg-white/[0.045] text-white/70 transition hover:border-violet-400/40 hover:bg-violet-400/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+      // Same rule as the light-theme fields: visible AT REST, not only under
+      // the pointer. `border-white/10` composites to 1.30:1 against this
+      // section's near-black surface, so these playback controls were
+      // effectively invisible until you happened to hover them. Measured by
+      // scripts/visual-qa.mjs, which composites the alpha rather than
+      // comparing the raw rgba strings.
+      className="grid h-8 w-8 place-items-center rounded-lg border border-violet-400/70 bg-white/[0.045] text-white/80 transition hover:border-violet-300 hover:bg-violet-400/15 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
     >
       {React.cloneElement(children, { className: "h-3.5 w-3.5" })}
     </button>

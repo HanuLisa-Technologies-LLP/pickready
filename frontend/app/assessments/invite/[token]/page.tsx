@@ -69,7 +69,11 @@ export default function AssessmentInvitePage() {
 
   React.useEffect(() => {
     let cancelled = false;
-    apiGet<InvitationResolve>(`/assessments/invitations/${token}`)
+    // The assessments router is mounted at /api/v2 ONLY (backend/app/main.py).
+    // `API_BASE` defaults to /api/v1, so a relative path here would 404 -- the
+    // same mount-versus-path drift that broke resume previews on 2026-08-09.
+    // Written in full, exactly as the conversation endpoints beside it are.
+    apiGet<InvitationResolve>(`/api/v2/assessments/invitations/${token}`)
       .then((data) => {
         if (cancelled) return;
         if (data.state === "needs_auth") {
