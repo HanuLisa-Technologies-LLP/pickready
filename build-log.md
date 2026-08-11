@@ -7,6 +7,50 @@ would otherwise re-introduce, the entry says so.
 
 ---
 
+## 2026-08-11 — The platform audit was scanning zero files locally
+
+Found by CI failing on a change that passed the full suite in the container.
+
+### Product
+
+Nothing directly. Indirectly: six load-bearing rules -- no number reaches a
+client, no third-party instrument is named, Gmail SMTP is the only mail path,
+no OTP in any portal, no em dash in a user-visible string, and the interactive
+LLM latency cap -- were only really being checked in CI, and the local run that
+reported them green was checking nothing at all.
+
+### Technical
+
+`tests/test_platform_audit.py` resolved its scan root as
+`parents[2] / "backend" / "app"`. That is right for a git checkout and resolves
+to `/backend/app` inside the backend container, where the package lives at
+`/app/app`. The directory does not exist, `rglob` returned an empty list, and
+every sweep in the file passed over ZERO FILES -- in exactly the environment
+this project's own quick start runs tests in.
+
+It presented as nothing at all, which is the point. The suite was green, the
+file existed, and the rules read as defended.
+
+Three changes:
+
+* the scan root is resolved from the IMPORTED `app` package, which is correct
+  in both layouts (135 files in the container, where it previously found none);
+* the frontend tree is located by walking up for a `frontend/app`, and is
+  allowed to be absent in the backend container while the Python sweep is not;
+* `test_the_sweeps_actually_have_something_to_sweep` fails if the Python sweep
+  finds fewer than 50 files, so this class of silent emptying cannot return.
+
+No rule was actually being violated: with the sweep repaired, all 18 checks
+pass over the real tree. What was broken was the evidence, not the product.
+
+`eval_report.py` is exempted from the two instrument sweeps for the same reason
+`test_platform_audit.py` is: a detector cannot be written without naming what it
+detects. That exemption is what CI caught, and chasing it is what surfaced the
+empty-scan defect.
+
+
+---
+
 ## 2026-08-11 — A second agent evaluation, and CI gates on it
 
 ### Product

@@ -22,9 +22,41 @@ import re
 
 import pytest
 
-REPO = pathlib.Path(__file__).resolve().parents[2]
-BACKEND_APP = REPO / "backend" / "app"
-FRONTEND = REPO / "frontend"
+# ── Where the sources are, in BOTH layouts ──────────────────────────────────
+#
+# This used to be `parents[2] / "backend" / "app"`, which is correct for a
+# git checkout and resolves to `/backend/app` inside the backend container,
+# where the package actually lives at `/app/app`. That directory does not
+# exist, `rglob` returned nothing, and every sweep below passed by scanning
+# ZERO FILES -- in exactly the environment the project's own quick-start runs
+# tests in. The rules were only ever really checked in CI, and the local run
+# that "passed" was measuring nothing.
+#
+# Resolving from the imported package works in both layouts, and
+# `test_the_sweeps_actually_have_something_to_sweep` makes a future silent
+# emptying impossible.
+import app as _app_package
+
+BACKEND_APP = pathlib.Path(_app_package.__file__).resolve().parent
+
+
+def _find_frontend() -> pathlib.Path:
+    """The frontend tree, or a path that does not exist.
+
+    Absent inside the backend container, which is fine: the Python sweeps still
+    run there, and CI has both trees. What is NOT fine is not knowing which
+    case you are in, so `_frontend_sources` is allowed to be empty while
+    `_python_sources` is not.
+    """
+    for parent in pathlib.Path(__file__).resolve().parents:
+        candidate = parent / "frontend"
+        if (candidate / "app").exists():
+            return candidate
+    return pathlib.Path("/nonexistent-frontend")
+
+
+REPO = BACKEND_APP.parent.parent
+FRONTEND = _find_frontend()
 
 EM_DASH = chr(8212)
 
@@ -47,6 +79,30 @@ def _frontend_sources() -> list[pathlib.Path]:
     return files
 
 
+def test_the_sweeps_actually_have_something_to_sweep() -> None:
+    """The guard on every guard in this file.
+
+    Each test below is a repo-wide sweep, and a sweep over an empty file list
+    passes forever and protects nothing. That is not hypothetical: this module
+    resolved `BACKEND_APP` to a path that does not exist inside the backend
+    container, so every rule here was green while checking nothing, for as long
+    as the file has existed.
+
+    The frontend tree is legitimately absent in the backend container, so it is
+    reported rather than required.
+    """
+    python = _python_sources()
+    assert len(python) > 50, (
+        f"the Python sweep found {len(python)} files under {BACKEND_APP}; "
+        "these tests are not checking anything"
+    )
+    frontend = _frontend_sources()
+    if FRONTEND.exists():
+        assert len(frontend) > 50, (
+            f"the frontend sweep found {len(frontend)} files under {FRONTEND}"
+        )
+
+
 # ── No third-party instrument, anywhere, including comments ─────────────────
 
 FORBIDDEN_INSTRUMENTS = (
@@ -66,8 +122,14 @@ def test_no_third_party_assessment_instrument_is_named() -> None:
     comment, is the kind of thing that is read as a claim later."""
     offenders: list[str] = []
     for path in _python_sources() + _frontend_sources():
-        # This file names them in order to forbid them.
-        if path.name in {"test_platform_audit.py", "test_functional_assessment.py"}:
+        # These name them in order to forbid them. `eval_report.py` carries
+        # the labelled set the report evaluation measures against, and a
+        # detector cannot be written without naming what it detects.
+        if path.name in {
+            "test_platform_audit.py",
+            "test_functional_assessment.py",
+            "eval_report.py",
+        }:
             continue
         text = path.read_text(encoding="utf-8", errors="replace").lower()
         for term in FORBIDDEN_INSTRUMENTS:
@@ -81,7 +143,7 @@ def test_disc_is_only_ever_the_css_class() -> None:
     keeping separate so the useful signal is not drowned by false positives."""
     offenders: list[str] = []
     for path in _frontend_sources() + _python_sources():
-        if path.name == "test_platform_audit.py":
+        if path.name in {"test_platform_audit.py", "eval_report.py"}:
             continue
         for n, line in enumerate(
             path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
