@@ -30,7 +30,14 @@ import pytest
 
 from app.prompts import fragments, registry
 
-REPO = Path(registry.PROMPT_DIR).parents[2]
+#: `app/prompts` -> `app`. Resolved from the registry rather than from this
+#: file's own path, so it is correct both in a git checkout and inside the
+#: backend container, where the package lives at /app/app and the repo root
+#: does not exist. The first version used `parents[2]` and silently globbed an
+#: empty directory in the container -- the same vacuous-sweep failure this
+#: repository has already had to repair once in `test_platform_audit`.
+APP_ROOT = Path(registry.PROMPT_DIR).parent
+SERVICES = APP_ROOT / "services"
 SNAPSHOTS = json.loads(
     (Path(__file__).parent / "fixtures" / "prompt_snapshots.json").read_text(
         encoding="utf-8"
@@ -154,30 +161,65 @@ def test_there_is_exactly_one_prompt_directory() -> None:
     """`backend/prompts/` held one file while `app/prompts/` held fourteen.
     Both reached the image only because the Dockerfile does `COPY . .`; the
     next one added would not have."""
-    stray = REPO / "backend" / "prompts"
+    stray = APP_ROOT.parent / "prompts"
     assert not stray.exists(), (
         f"a second prompt directory reappeared at {stray}; there is one loader "
         "and it reads app/prompts"
     )
 
 
+def test_the_inline_sweep_has_something_to_sweep() -> None:
+    """The guard on the guard below.
+
+    A sweep over an empty directory passes forever. `test_platform_audit` spent
+    its entire life doing exactly that in this container, so the assertion is
+    made rather than assumed.
+    """
+    modules = list(SERVICES.glob("*.py"))
+    assert len(modules) > 30, f"the service sweep found {len(modules)} files in {SERVICES}"
+
+
 def test_no_prompt_is_left_inline_in_a_service() -> None:
     """Section 1's constraint, as a check rather than a habit.
 
-    Looks for the shape of a system prompt (a long literal that addresses the
-    model) in `app/services`, which is where all of them used to live.
+    Matches the SHAPE these are written in: a module-level assignment to a name
+    containing SYSTEM or PROMPT whose value is a string. The first version
+    matched any literal starting "You are ", which flagged two things that are
+    not prompts at all -- a default EMAIL TEMPLATE body ("You are invited to an
+    interview...") and a fallback sentence the interviewer SAYS to a candidate
+    ("You are on the right topic, but..."). A check that cries wolf twice out
+    of four gets ignored, so it is anchored on the assignment instead.
     """
-    services = (REPO / "backend" / "app" / "services").glob("*.py")
+    import ast
+
     offenders: list[str] = []
-    for path in services:
-        text = path.read_text(encoding="utf-8")
-        for index, line in enumerate(text.splitlines(), 1):
-            stripped = line.strip()
-            # A string literal, not a comment or a docstring line, that starts
-            # by addressing the model.
-            if stripped.startswith(('"You are ', "'You are ", '"You design ')):
-                offenders.append(f"{path.name}:{index}")
+    for path in sorted(SERVICES.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if not any("SYSTEM" in n or "PROMPT" in n for n in names):
+                continue
+            # `_SYSTEM_PROMPT_NAME` holds a prompt's NAME and `_PROMPT_PATH` a
+            # filesystem path. Both are how a prompt is REFERRED to, which is
+            # the thing being asked for, not a prompt inline.
+            if any(n.endswith(("_NAME", "_PATH", "_KEY")) for n in names):
+                continue
+            # A literal string, or a concatenation of them. A call
+            # (`registry.render(...)`) is the shape we want.
+            if not isinstance(node.value, (ast.Constant, ast.JoinedStr, ast.BinOp)):
+                continue
+            # Length is the last discriminator: a prompt is prose, and a short
+            # constant with PROMPT in its name is a label or a key.
+            try:
+                literal = ast.literal_eval(node.value)
+            except (ValueError, TypeError, SyntaxError):
+                literal = None
+            if isinstance(literal, str) and len(literal) < 120:
+                continue
+            offenders.append(f"{path.name}:{node.lineno} {names[0]}")
     assert not offenders, (
-        "system prompts are still inline; move them to app/prompts and load "
-        f"them through the registry: {offenders}"
+        "these system prompts are still inline; move them to app/prompts and "
+        f"load them through the registry: {offenders}"
     )

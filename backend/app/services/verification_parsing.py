@@ -13,6 +13,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services import llm_router
+from app.prompts import registry
 
 logger = logging.getLogger(__name__)
 
@@ -36,23 +37,10 @@ class VerificationParsingError(RuntimeError):
     pass
 
 
-_SYSTEM_PROMPT = (
-    "You extract structured employment-verification data from an HR "
-    "department's email reply about a former employee. Respond with JSON "
-    "only, exactly these keys: "
-    '{"designation": <str or null>, '
-    '"doj": <"YYYY-MM-DD" or null>, '
-    '"doe": <"YYYY-MM-DD" or null>, '
-    '"last_drawn_ctc": <str or null>, '
-    '"last_drawn_gross": <str or null>, '
-    '"noc_status": <str or null>, '
-    '"exit_formalities_complete": <true, false, or null>, '
-    '"bgv_status": <str or null>, '
-    '"proofs_details": <str or null>, '
-    '"prior_experience_details": <str or null>}. '
-    "Use null for anything the reply does not state. Do not guess or infer "
-    "values that are not explicitly present. No prose outside the JSON."
-)
+#: Text in `app/prompts/verification_reply_extraction_system.txt`, loaded through the registry so a
+#: wording change is a versioned diff in a prompt file rather than a string
+#: literal in a module of code. What is sent is unchanged.
+_SYSTEM_PROMPT = registry.render("verification_reply_extraction_system")
 
 
 async def parse_reply(

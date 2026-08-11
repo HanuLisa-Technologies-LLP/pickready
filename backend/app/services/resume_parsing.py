@@ -20,6 +20,7 @@ from app.models import Profile
 from app.services import llm_router
 from app.services.embeddings import embed
 from app.services.resume_storage import ResumeStorageError, fetch_resume_bytes, profile_has_resume
+from app.prompts import registry
 
 logger = logging.getLogger(__name__)
 
@@ -206,16 +207,10 @@ def extract_contact_identity(data: bytes, filename: str) -> dict[str, str | None
 
 # ── LLM structured extraction ────────────────────────────────────────────────
 
-_EXTRACTION_SYSTEM = (
-    "You extract structured data from resumes. Respond with JSON only, exactly "
-    "this shape: "
-    '{"skills": ["<skill>", ...], '
-    '"total_experience_years": <number or null>, '
-    '"education": [{"degree": "<str>", "institution": "<str>", "year": <int or null>}], '
-    '"employment_history": [{"company": "<str>", "title": "<str>", '
-    '"start": "<YYYY-MM or null>", "end": "<YYYY-MM or null (null = current)>"}]}. '
-    "Use null for anything not present in the resume. No prose outside the JSON."
-)
+#: Text in `app/prompts/resume_extraction_system.txt`, loaded through the registry so a
+#: wording change is a versioned diff in a prompt file rather than a string
+#: literal in a module of code. What is sent is unchanged.
+_EXTRACTION_SYSTEM = registry.render("resume_extraction_system")
 
 
 async def extract_structured_fields(

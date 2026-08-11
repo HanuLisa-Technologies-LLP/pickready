@@ -46,6 +46,7 @@ from app.services import llm_router, rating
 from app.services.embeddings import EmbeddingError, embed
 # Track A owns tier assignment (signature: assign_tier(score: float) -> Tier).
 from app.services.tiers import assign_tier
+from app.prompts import registry
 
 logger = logging.getLogger(__name__)
 
@@ -744,41 +745,11 @@ _WORD_RULE = (
     "candidate's profile, do not pad with filler, and do not truncate."
 )
 
-_SCORING_SYSTEM_PROMPT = (
-    "You are a recruitment matching engine. For EACH candidate, rate fit "
-    "against the job description on exactly four parameters, each an INTEGER "
-    "score from 1 (very poor fit) to 10 (excellent fit) plus a comment:\n"
-    "1. skills_match, the JD's Skills requirements vs the candidate's "
-    "experience, education, and certifications. Judge semantic skill "
-    "equivalence (comparable tools/frameworks count), not literal keyword "
-    "overlap.\n"
-    "2. experience_relevance, not just years of experience: has the candidate "
-    "performed the same function, at a comparable seniority/level?\n"
-    "3. role_alignment, the candidate's ACTUAL most recent designation and "
-    "core duties (use the 'current_designation_and_duties' field when present; "
-    "otherwise fall back to the resume) vs the JD's Role, Responsibilities, "
-    "and Accountabilities. Judge duties over titles, penalize title inflation "
-    "or deflation.\n"
-    "4. education_fit, degree level and specialization (use the "
-    "'education_aspects' field when present; otherwise fall back to resume "
-    "education) vs the JD's Education requirement.\n"
-    "When customer_success_patterns are supplied, use them only as a weak "
-    "calibration signal for what has previously progressed at this customer. "
-    "The current job description remains authoritative. Never infer or reuse "
-    "names, identity, protected traits, compensation, or historical bias, and "
-    "do not penalize a candidate merely for differing from earlier profiles.\n"
-    "Also write overall_comment: a genuinely holistic assessment of the "
-    "candidate for this job. It must be a fresh synthesis, NOT a "
-    "concatenation or restatement of the four parameter comments. Do NOT "
-    "compute or output any overall score, it is computed elsewhere.\n"
-    f"WORD-COUNT RULE (mandatory): {_WORD_RULE}\n"
-    'Respond with JSON only: {"results": [{"profile_id": "<uuid>", '
-    f'"skills_match": {{"score": <int 1-10>, "comment": "<{COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} words>"}}, '
-    f'"experience_relevance": {{"score": <int 1-10>, "comment": "<{COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} words>"}}, '
-    f'"role_alignment": {{"score": <int 1-10>, "comment": "<{COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} words>"}}, '
-    f'"education_fit": {{"score": <int 1-10>, "comment": "<{COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} words>"}}, '
-    f'"overall_comment": "<holistic, {COMMENT_MIN_WORDS}-{COMMENT_MAX_WORDS} words>"}}]}}, one entry per '
-    "candidate, no extra keys, no prose outside the JSON."
+#: Text in `app/prompts/matching_scoring_system.txt`, loaded through the registry so a
+#: wording change is a versioned diff in a prompt file rather than a string
+#: literal in a module of code. What is sent is unchanged.
+_SCORING_SYSTEM_PROMPT = registry.render(
+    "matching_scoring_system", word_rule=_WORD_RULE
 )
 
 

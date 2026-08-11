@@ -34,7 +34,7 @@ that says the limit and when to come back rather than "Request failed".
 
 ### Technical
 
-**Prompts.** Ten system prompts moved out of `services/` into `app/prompts`,
+**Prompts.** Sixteen system prompts moved out of `services/` into `app/prompts`,
 loaded through a registry that stamps each with a version that is intent PLUS
 bytes (`ppi_framework_system@1+98ce13bc`) -- a declared number the author bumps,
 and a digest that changes whether or not they remembered to. Substitution is
@@ -48,6 +48,18 @@ mattered turned itself off in both places and reported nine green skips.
 
 `backend/prompts/` (one file) was folded into `app/prompts/` (fourteen). Both
 reached the image only because the Dockerfile does `COPY . .`.
+
+**The guard against inline prompts found six that I had missed, twice.** The
+first version matched any literal starting "You are ", which flagged a default
+EMAIL TEMPLATE body ("You are invited to an interview...") and a sentence the
+interviewer SAYS to a candidate ("You are on the right topic, but...") -- two
+false positives out of four, which is how a check gets ignored. It is now
+anchored on the assignment shape (a module-level name containing SYSTEM or
+PROMPT, bound to a string of prose), and it excludes `_NAME`/`_PATH` constants,
+which are how a prompt is REFERRED to rather than inlined. And it was VACUOUS
+in the container for the same reason `test_platform_audit` was: it globbed a
+repo path that does not exist there, so it only ever ran in CI. Both fixed;
+sixteen prompts are now externalised and 30 are versioned.
 
 **Router telemetry.** Provider callers were discarding the usage block every
 provider returns. Per-key counters now carry attempts, failures, throttles, avg

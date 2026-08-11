@@ -567,6 +567,82 @@ def _unanswered_remark(name: str, minimum: int) -> str:
     return next(value for value in candidates if 25 <= word_count(value) <= 30)
 
 
+#: Capitalised words that are ordinary English rather than a named technology,
+#: employer or product. Without this the check would flag every sentence that
+#: begins with "Interview" or "Evidence", which is most of them.
+_ORDINARY_CAPITALISED: frozenset[str] = frozenset({
+    "a", "an", "the", "this", "that", "these", "those", "they", "their",
+    "he", "she", "his", "her", "it", "its", "we", "our", "you", "your",
+    "and", "but", "for", "with", "without", "while", "when", "where", "which",
+    "who", "whose", "what", "how", "why", "if", "then", "than", "there",
+    "here", "both", "each", "either", "neither", "all", "any", "some", "no",
+    "not", "only", "also", "however", "although", "though", "because",
+    "candidate", "candidates", "interview", "interviews", "interviewer",
+    "evidence", "experience", "answers", "answer", "discussion", "discussions",
+    "role", "roles", "work", "team", "teams", "delivery", "design", "designs",
+    "further", "strong", "clear", "limited", "little", "more", "most",
+    "recent", "recently", "across", "during", "given", "described",
+    "demonstrated", "confirmed", "probing", "probe", "probes", "should",
+    "would", "could", "may", "can", "will", "must", "one", "two", "three",
+    "several", "many", "few", "at", "in", "on", "of", "to", "from", "by",
+    "as", "is", "was", "were", "are", "be", "been", "has", "had", "have",
+    "do", "does", "did", "so", "such", "under", "over", "into", "about",
+})
+
+
+def invented_terms(value: str, *, evidence: str, name: str) -> list[str]:
+    """Proper nouns in a remark that appear NOWHERE in its source.
+
+    The loop already checks the other direction -- a remark must quote at least
+    one concrete term from the evidence. That catches a remark that says
+    nothing; it does not catch one that says too much. "Demonstrates strong
+    Kubernetes experience" for a candidate who never mentioned Kubernetes is
+    the failure mode a client would actually notice, and it passed every
+    existing check: right length, no number, anchored on some other term.
+
+    Deliberately CONSERVATIVE, in the direction that matters. A guard that
+    rejects a good remark costs a round of latency every time and, worse,
+    teaches the next reader to loosen it. So a token is only reported when all
+    of these hold:
+
+      * it is capitalised and NOT at the start of a sentence (a sentence-
+        initial capital carries no information about proper-noun-ness);
+      * it is not an ordinary English word;
+      * it does not appear in the evidence or in the dimension's own name --
+        the name comes from the job's framework, so naming the skill being
+        assessed is always legitimate;
+      * it is not a plain morphological variant of something that does (so
+        "Kafka" in the evidence permits "Kafka's").
+
+    Returns the offending tokens, so the rejection fed back to the model can
+    name them. `agent_loop`'s whole contract is that a rejection is an
+    instruction.
+    """
+    haystack = f"{evidence} {name}".casefold()
+    known = set(re.findall(r"[a-z0-9+#.]+", haystack))
+
+    invented: list[str] = []
+    # Split into sentences so the first word of each can be exempted.
+    for sentence in re.split(r"(?<=[.!?])\s+", value or ""):
+        tokens = re.findall(r"[A-Za-z][A-Za-z0-9+#.\-]*", sentence)
+        for position, token in enumerate(tokens):
+            if position == 0:
+                continue  # sentence-initial capitalisation means nothing
+            if not token[:1].isupper():
+                continue
+            folded = token.casefold().strip(".")
+            if folded in _ORDINARY_CAPITALISED or len(folded) < 3:
+                continue
+            stem = folded.rstrip("s").rstrip("'")
+            if folded in known or stem in known:
+                continue
+            if any(stem and stem in candidate for candidate in known):
+                continue
+            invented.append(token)
+    # Stable, de-duplicated, so the same defect reads the same way twice.
+    return sorted(set(invented))
+
+
 async def bounded_remark(
     session: AsyncSession | None,
     name: str,
@@ -692,6 +768,22 @@ async def bounded_remark(
                     "evidence_anchor",
                     f"remark.{name}",
                     "quote or paraphrase at least one concrete term from the supplied evidence",
+                )
+            )
+        # The other direction. The anchor check above catches a remark that
+        # references nothing; this catches one that references something that
+        # was never there.
+        fabricated = invented_terms(value, evidence=evidence, name=name)
+        if fabricated:
+            defects.append(
+                agent_loop.Defect(
+                    "invented_term",
+                    f"remark.{name}",
+                    (
+                        "do not name anything the candidate did not mention: "
+                        + ", ".join(fabricated[:3])
+                        + ". Write only about what is in the evidence supplied."
+                    ),
                 )
             )
         return agent_loop.reject_defects(*defects) if defects else agent_loop.ok()

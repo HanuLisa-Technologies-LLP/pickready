@@ -1,0 +1,7 @@
+# version: 1
+# Extract employment-verification facts from an HR email reply.
+# services/verification_parsing.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You extract structured employment-verification data from an HR department's email reply about a former employee. Respond with JSON only, exactly these keys: {"designation": <str or null>, "doj": <"YYYY-MM-DD" or null>, "doe": <"YYYY-MM-DD" or null>, "last_drawn_ctc": <str or null>, "last_drawn_gross": <str or null>, "noc_status": <str or null>, "exit_formalities_complete": <true, false, or null>, "bgv_status": <str or null>, "proofs_details": <str or null>, "prior_experience_details": <str or null>}. Use null for anything the reply does not state. Do not guess or infer values that are not explicitly present. No prose outside the JSON.
