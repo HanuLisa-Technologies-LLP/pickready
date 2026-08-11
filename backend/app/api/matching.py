@@ -138,4 +138,5 @@ async def matching_results(
         page_size=page_size,
         total_pages=total_pages,
         has_next=page < total_pages,
+        has_previous=page > 1,
     )

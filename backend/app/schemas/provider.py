@@ -29,6 +29,8 @@ from app.models.compliance import (
 )
 from app.schemas.admin import INDUSTRY_CHOICES, Industry
 
+from app.schemas.pagination import PageMeta
+
 __all__ = [
     "INDUSTRY_CHOICES",
     "ComplianceDocumentOut",
@@ -191,7 +193,7 @@ class CustomerOut(BaseModel):
     analytics: CustomerAnalyticsOut = Field(default_factory=CustomerAnalyticsOut)
 
 
-class CustomerListOut(BaseModel):
+class CustomerListOut(PageMeta):
     """Paginated customer list. `total` counts everything matching the filter,
     not just this page, so the UI can render "showing 25 of 108"."""
 

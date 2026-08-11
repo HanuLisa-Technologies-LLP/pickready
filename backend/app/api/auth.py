@@ -49,6 +49,7 @@ from app.schemas.auth import (
 from app.services import otp as otp_service
 from app.services import firebase_auth
 from app.services import rbac
+from app.services.rate_limit import rate_limit
 from app.services.audit import (
     AUTH_CONTEXT_SELECTED,
     AUTH_LOGIN_SUCCEEDED,
@@ -150,7 +151,13 @@ async def _finalize_single(
     )
 
 
-@router.post("/firebase/session", response_model=OTPVerifyOut)
+# Abuse control, not authorization (services/rate_limit). This verifies a
+# Firebase token and mints a session: anonymous, and the verification is a
+# network call to Google. Cheapest endpoint in the product to hit, one of the
+# most expensive to serve.
+@router.post("/firebase/session", response_model=OTPVerifyOut,
+    dependencies=[Depends(rate_limit("auth_exchange", limit=20, window=60))],
+)
 async def firebase_session(
     body: FirebaseSessionIn,
     response: Response,

@@ -74,6 +74,7 @@ from app.services.functional_assessment import (
 )
 from app.services.rating import GRADES, grade_for_percent
 from app.workers.celery_app import celery_app
+from app.services.rate_limit import rate_limit
 
 logger = logging.getLogger(__name__)
 
@@ -892,7 +893,13 @@ def _invite_out(
     )
 
 
-@router.get("/invitations/{token}", response_model=InvitationResolveOut)
+# Abuse control, not authorization (services/rate_limit). This endpoint is
+# unauthenticated and does real database work per call. 30/min is far above
+# anyone clicking a link from an email, and well below what probing for valid
+# tokens would need -- which is the only other reason to call it in volume.
+@router.get("/invitations/{token}", response_model=InvitationResolveOut,
+    dependencies=[Depends(rate_limit("assessment_invitation", limit=30, window=60))],
+)
 async def resolve_invitation(
     token: str,
     user: CurrentUser | None = Depends(get_optional_candidate),

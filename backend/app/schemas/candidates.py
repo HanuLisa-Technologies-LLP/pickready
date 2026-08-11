@@ -7,6 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.enums import LinkSource, PipelineStatus, Tier, VerificationStatus
 
+from app.schemas.pagination import PageMeta
+
 
 class CandidateOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -138,6 +140,18 @@ class LinkArchiveOut(BaseModel):
 
 
 class JobLinksOut(BaseModel):
+    """Deliberately NOT on `PageMeta`.
+
+    It already carried the derived fields, and it reports a MINIMUM of one page
+    (`max(1, ...)` in the handler) where `PageMeta` reports zero for an empty
+    result. Both readings are defensible and this one is already in a shipped
+    client, so it keeps its own: Section 1's rule is extend, never replace, and
+    changing a number an existing UI renders is a replacement.
+
+    `has_previous` is added so the vocabulary matches everywhere even though
+    the empty-set convention does not.
+    """
+
     job_id: uuid.UUID
     links: list[LinkOut]
     # Pagination. Defaults describe a single full page so an older client that
@@ -147,6 +161,7 @@ class JobLinksOut(BaseModel):
     page_size: int = 25
     total_pages: int = 1
     has_next: bool = False
+    has_previous: bool = False
 
 
 class RankingCommentsOut(BaseModel):

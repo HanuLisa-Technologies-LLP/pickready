@@ -23,6 +23,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.models.bd import CHANNELS, PROGRESS_FLAGS, PROGRESS_LABELS, SOCIAL_SOURCES
 
+from app.schemas.pagination import PageMeta
+
 __all__ = [
     "AIReachIn",
     "AIReachOut",
@@ -122,7 +124,7 @@ class LeadOut(BaseModel):
     updated_at: datetime | None = None
 
 
-class LeadListOut(BaseModel):
+class LeadListOut(PageMeta):
     """`total` counts every lead matching the filter, not just this page, so
     the UI can render "showing 25 of 108" honestly."""
 
@@ -254,7 +256,7 @@ class BDCustomerOut(BaseModel):
     agreement_at: datetime | None = None
 
 
-class BDCustomerListOut(BaseModel):
+class BDCustomerListOut(PageMeta):
     customers: list[BDCustomerOut]
     total: int
     page: int

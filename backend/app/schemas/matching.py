@@ -47,6 +47,16 @@ class MatchResultOut(BaseModel):
 
 
 class MatchResultsOut(BaseModel):
+    """Same shape and the same deliberate divergence as `JobLinksOut`.
+
+    It reports a MINIMUM of one page where `PageMeta` reports zero for an empty
+    result. Kept, for the same reason: the value is already rendered by a
+    shipped client and Section 1's rule is extend, never replace.
+
+    `has_previous` completes the vocabulary, so a client reads the same field
+    names everywhere even where the empty-set convention differs.
+    """
+
     job_id: uuid.UUID
     results: list[MatchResultOut]
     # Pagination. Defaults describe a single full page so an older client that
@@ -56,3 +66,4 @@ class MatchResultsOut(BaseModel):
     page_size: int = 25
     total_pages: int = 1
     has_next: bool = False
+    has_previous: bool = False

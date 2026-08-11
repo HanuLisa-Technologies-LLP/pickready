@@ -904,4 +904,5 @@ async def list_job_links(
         page_size=page_size,
         total_pages=total_pages,
         has_next=page < total_pages,
+        has_previous=page > 1,
     )
