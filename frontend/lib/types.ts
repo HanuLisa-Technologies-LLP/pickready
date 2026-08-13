@@ -3,6 +3,7 @@
 export type Role =
   | "super_admin"
   | "client"
+  | "recruitment_manager"
   | "hr_manager"
   | "recruiter"
   | "hiring_manager"
@@ -215,7 +216,11 @@ export interface CompanyPage {
 }
 
 /** Roles creatable through the staff page (contract rev 2). */
-export type StaffRole = "hr_manager" | "recruiter" | "hiring_manager";
+export type StaffRole =
+  | "recruitment_manager"
+  | "hr_manager"
+  | "recruiter"
+  | "hiring_manager";
 
 /** Row from GET /companies/me/staff (contract rev 2). */
 export interface StaffMember {
@@ -513,6 +518,25 @@ export interface ReviewProfileResponse {
   subunits_charged: number;
 }
 
+/** One mandatory application field and the candidate's exact answer. */
+export interface ValidationAnswer {
+  key: string;
+  question: string;
+  /** Exactly as submitted. Null when this application predates the field or the
+   *  candidate left it blank; the row still renders, saying "Not answered",
+   *  because "never asked" and "did not answer" look identical when a row is
+   *  simply missing and only one of them is the candidate's doing. */
+  answer: string | null;
+}
+
+/** One matching category this candidate was ACTUALLY scored on. */
+export interface MatchingCategoryResult {
+  key: string;
+  name: string;
+  comment: string | null;
+  label: RatingGrade | null;
+}
+
 export interface RankedCandidate {
   link_id: string;
   candidate_id: string;
@@ -571,6 +595,11 @@ export interface RankedCandidate {
   role_alignment_label?: MatchingLabel | null;
   education_label?: MatchingLabel | null;
   overall_label?: MatchingLabel | null;
+  validation_answers: Array<{
+    key: string;
+    question: string;
+    answer?: string | null;
+  }>;
 }
 
 export interface RankedCandidatesResponse {
@@ -697,6 +726,18 @@ export interface StaffPermissions {
   overrides: Record<string, boolean>;
   /** What actually applies: role defaults with the overlay on top. */
   effective: Capability[];
+  role_label?: string | null;
+  /** Capabilities the current manager is allowed to grant. */
+  grantable: Capability[];
+}
+
+export interface CompanyProfileResearch {
+  about_company: string;
+  work_life: string;
+  benefits: string;
+  sources: string[];
+  degraded: boolean;
+  message?: string | null;
 }
 
 /** The JD, whichever field name the backend used. Never undefined. */
@@ -919,42 +960,11 @@ export interface DashboardSummary {
   total_jobs_worked: number;
 }
 
-// ---- AI Dashboard (2026-08-09) ----
-// Mirrors backend/app/schemas/dashboard.py. Every field is a COUNT OF THINGS;
-// nothing here is a score, percentage, rank or band, and `grade` is one of the
-// four word labels from services/rating, sent by the server so the client never
-// derives a grade from a number it should not have.
-
-export interface AIGradeCount {
-  grade: string;
-  candidates: number;
-}
-
-export interface AIAssessmentFunnel {
-  invited: number;
-  started: number;
-  completed: number;
-  reports_ready: number;
-}
-
-export interface AIFrameworkHealth {
-  ready_for_candidates: number;
-  awaiting_approval: number;
-  /** Jobs with NO competency rows. Measured against the table, never against a
-   *  generated-at timestamp: a job in this state is stuck and nobody on it can
-   *  be assessed. */
-  pending_generation: number;
-}
-
-export interface AIDashboard {
-  jobs_with_ai_framework: number;
-  framework: AIFrameworkHealth;
-  assessments: AIAssessmentFunnel;
-  /** In rating order, best first, every grade present even at zero. */
-  grades: AIGradeCount[];
-  reports_on_fallback: number;
-  total_reports: number;
-}
+// ---- AI Dashboard: REMOVED (spec 30) ----
+// `AIGradeCount`, `AIAssessmentFunnel`, `AIFrameworkHealth` and `AIDashboard`
+// lived here. The feature was removed from the customer portal entirely: the
+// page, the component, the route and its response schemas all went in the same
+// change, so these types described a payload nothing sends.
 
 // ---- Billing, subscriptions and credits (killer-spec Parts 2 and 3) ----
 
@@ -1030,6 +1040,12 @@ export interface CreditSummary {
   usage_this_month_subunits: UsageBreakdown;
   in_deficit: boolean;
   deficit_message: string | null;
+  exhausted: boolean;
+  low_balance: boolean;
+  balance_fraction: number;
+  low_balance_threshold: number;
+  alert_message: string | null;
+  unlimited: boolean;
 }
 
 export interface CreditLedgerEntry {

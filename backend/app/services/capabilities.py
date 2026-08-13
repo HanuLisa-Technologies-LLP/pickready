@@ -135,9 +135,11 @@ _CUSTOMER_FULL_ACCESS: dict[str, bool] = {
 # PickReady's own sales console and has no tenant. Same two exclusions, and the
 # same reasoning, as migration 0031.
 DEFAULT_PERMISSION_MATRIX: dict[Role, dict[str, bool]] = {
+    Role.recruitment_manager: dict(_CUSTOMER_FULL_ACCESS),
     Role.hr_manager: dict(_CUSTOMER_FULL_ACCESS),
     Role.recruiter: dict(_CUSTOMER_FULL_ACCESS),
-    Role.hiring_manager: dict(_CUSTOMER_FULL_ACCESS),
+    # Bottom of the hierarchy: there is no subordinate role to manage.
+    Role.hiring_manager: {**_CUSTOMER_FULL_ACCESS, MANAGE_STAFF: False},
     # Company Admin: the same functional access, on the account they own.
     Role.client: dict(_CUSTOMER_FULL_ACCESS),
     # Business Development. Deliberately NOT given any recruitment capability:

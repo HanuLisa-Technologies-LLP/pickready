@@ -52,7 +52,9 @@ __all__ = [
     "credits_from_subunits",
     "grant",
     "has_credit_headroom",
+    "has_positive_balance",
     "is_demo_tenant",
+    "LOW_BALANCE_FRACTION",
     "summarize",
 ]
 
@@ -88,6 +90,47 @@ class BalanceSummary:
     @property
     def balance_credits(self) -> Decimal:
         return credits_from_subunits(self.balance_subunits)
+
+    @property
+    def exhausted(self) -> bool:
+        """The pool reads zero or worse: new work is blocked (spec §11).
+
+        Distinct from `in_deficit`, and the difference is the threshold. A
+        completed assessment is charged even into the negative, so `in_deficit`
+        is about work already performed; this is about work about to be started,
+        and at exactly zero there is nothing left to start it with.
+        """
+        return not self.unlimited and self.balance_subunits <= 0
+
+    @property
+    def low_balance(self) -> bool:
+        """Below the warning threshold, but not yet exhausted (spec §11).
+
+        Measured against what was GRANTED rather than against a fixed number of
+        credits, because a customer on the 50 bundle and a customer on the 200
+        do not mean the same thing by "running low".
+
+        False for a customer who was never granted anything: a brand-new account
+        with an empty ledger is not "running low", it has not started, and an
+        urgent top-up warning on first sign-in is noise that teaches people to
+        dismiss the one that matters.
+        """
+        if self.unlimited or self.exhausted or self.granted_subunits <= 0:
+            return False
+        return self.balance_subunits <= self.granted_subunits * LOW_BALANCE_FRACTION
+
+    @property
+    def balance_fraction(self) -> float:
+        """How much of the granted pool is left, 0.0 to 1.0.
+
+        For the progress meter beside the warning. Never a figure shown to a
+        CANDIDATE; the no-numbers rule is about rated output reaching a client,
+        and a customer reading their own credit balance is the one place in the
+        product where a number is the whole point.
+        """
+        if self.granted_subunits <= 0:
+            return 0.0
+        return max(0.0, min(1.0, self.balance_subunits / self.granted_subunits))
 
 
 async def balance_subunits(session: AsyncSession, tenant_id: uuid.UUID) -> int:
@@ -262,6 +305,50 @@ async def has_credit_headroom(session: AsyncSession, tenant_id: uuid.UUID) -> bo
     if await is_demo_tenant(session, tenant_id):
         return True
     return await balance_subunits(session, tenant_id) >= 0
+
+
+# ── Zero-balance gating (spec §11) ───────────────────────────────────────────
+# `has_credit_headroom` above answers "may this customer send NEW invitations?"
+# and goes false at a NEGATIVE balance, because a completed assessment is
+# charged even into the negative: the work is already done and refusing the
+# charge would only lose the revenue.
+#
+# Draft v4 adds a stricter, separate question with a different threshold. Two
+# actions are blocked the instant the pool reads ZERO, before the balance can go
+# negative at all:
+#
+#   * creating a job;
+#   * advancing any candidate into the assessment stage, across every job,
+#     existing or new, regardless of how many un-assessed applicants are already
+#     sitting in the pipeline.
+#
+# The threshold difference is the whole point and is not a subtlety to tidy
+# away. "Negative" is the right line for work already performed; "zero" is the
+# right line for work about to be started. Together they close the free-ATS gap:
+# a recruiter cannot use already-created jobs, or a backlog of applicants, to
+# keep assessing candidates once the quota is exhausted.
+
+#: Fraction of the granted pool at or below which the customer is warned. The
+#: client's number (spec: "below 30 percent"). Held here rather than in the API
+#: so the alert and the block are read from one module.
+LOW_BALANCE_FRACTION = 0.30
+
+
+async def has_positive_balance(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
+    """May this customer START new work? (spec §11)
+
+    Strictly greater than zero, and that is deliberate: at exactly zero there is
+    nothing left to spend, and letting one more assessment start would be a
+    credit spent from an empty pool.
+
+    A demonstration tenant is always true, checked FIRST, for the same reason as
+    `has_credit_headroom`: a demo company that has run assessments has a
+    negative ledger like any other, and asking the balance first would gate the
+    one set of accounts that must never be gated.
+    """
+    if await is_demo_tenant(session, tenant_id):
+        return True
+    return await balance_subunits(session, tenant_id) > 0
 
 
 async def summarize(session: AsyncSession, tenant_id: uuid.UUID) -> BalanceSummary:

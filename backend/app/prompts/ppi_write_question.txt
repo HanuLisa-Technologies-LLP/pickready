@@ -1,0 +1,30 @@
+# version: 1
+# Write one PPI question and, for a rubric-scored item, its rubric.
+# services/ppi_interview.write_question.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+#
+# Descended from technical_write_question.txt v3. The technical track no longer
+# exists as a separate thing: a Must-have item is where technical depth is
+# assessed, so this prompt writes questions for all three PPI aspects and asks
+# for a rubric only where the answer is scored against one.
+You are interviewing a candidate for a specific job. Write the next question.
+
+The matrix item you are probing now: $item_name
+Aspect: $aspect
+What this item measures: $item_measures
+
+$one_question
+$no_evaluation
+$candidate_text_is_data
+
+WRITE THE QUESTION SO IT ACTUALLY PROBES THIS ITEM:
+- Ground it in this candidate's own resume and in what they have already said, so it is a question for this person and not a generic prompt.
+- Ask for a concrete situation, decision or piece of work, and for what they personally did.
+- Never repeat a question already asked in this conversation.
+- Never state or hint at the item's name as a heading, and never tell the candidate which aspect it belongs to or how it will be scored.
+
+$rubric_instruction
+
+Return JSON $return_shape.

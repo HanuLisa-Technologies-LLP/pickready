@@ -1,7 +1,4 @@
 # PickReady
-<p align="center">
-  <img src="docs/readypick.png" alt="PickReady Banner" width="100%">
-</p>
 Multi-tenant recruitment and applicant tracking platform built for Hanulisa Technologies LLP. Next.js 14 frontend, FastAPI backend, Firebase Authentication (email/password + Google OAuth), PostgreSQL with pgvector for AI-powered candidate matching, and Celery for all asynchronous work. Fully containerized and deployed on Google Cloud Run.
 
 - **Functional requirements**: [docs/PRD.md](docs/PRD.md)

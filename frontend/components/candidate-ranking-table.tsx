@@ -32,6 +32,7 @@ import * as React from "react";
 import {
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   FileText,
   Mail,
   MessageSquareText,
@@ -62,9 +63,56 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { CandidateTeamReviewModal } from "@/components/candidate-team-review-modal";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export interface CandidateRankingTableHandle {
   reload: () => void;
+}
+
+function ValidationAnswersModal({
+  row,
+  open,
+  onOpenChange,
+}: {
+  row: RankedCandidate | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const answers = row?.validation_answers ?? [];
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Validation Q&amp;A</DialogTitle>
+          <DialogDescription>
+            {row?.full_name ?? "Candidate"}&apos;s application answers, shown exactly as submitted and without AI scoring.
+          </DialogDescription>
+        </DialogHeader>
+        {answers.length ? (
+          <dl className="divide-y rounded-xl border">
+            {answers.map((item) => (
+              <div key={item.key} className="p-4">
+                <dt className="text-sm font-semibold">{item.question}</dt>
+                <dd className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                  {item.answer?.trim() || "Not answered"}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <p className="rounded-xl border border-dashed p-5 text-sm">
+            No validation answers were recorded for this application.
+          </p>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 export function CandidateRankingTable({
@@ -109,6 +157,7 @@ export function CandidateRankingTable({
   // The row whose full AI report is open. Null closes the dialog.
   const [aiReportRow, setAiReportRow] = React.useState<RankedCandidate | null>(null);
   const [teamReviewRow, setTeamReviewRow] = React.useState<RankedCandidate | null>(null);
+  const [validationRow, setValidationRow] = React.useState<RankedCandidate | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -154,7 +203,7 @@ export function CandidateRankingTable({
   // Keep the empty-state cell spanning the WHOLE table as columns come and go
   // with the caller's capabilities, a hardcoded span leaves a ragged row.
   const selectable = Boolean(onEmail || onSelectionChange);
-  const columnCount = 6 + (selectable ? 1 : 0) + (canDecide ? 2 : 0);
+  const columnCount = 8 + (selectable ? 1 : 0) + (canDecide ? 2 : 0);
   const selectedRows = rows.filter((r) => selected.has(r.link_id));
 
   /**
@@ -284,6 +333,12 @@ export function CandidateRankingTable({
               <TableHead className="w-[180px]">AI Rating &amp; Report</TableHead>
               <TableHead className="w-[110px]">PPI Report</TableHead>
               <TableHead className="w-[110px]">Q&amp;A</TableHead>
+              {/* The validation questionnaire, as its own column (spec 29).
+                  Separate from Q&A on purpose: that one is what the ASSESSMENT
+                  asked, this one is what the APPLICATION FORM asked, and the
+                  two answer different questions about a candidate. Nothing here
+                  is rated or interpreted. */}
+              <TableHead className="w-[110px]">Validation</TableHead>
               {canDecide ? <TableHead className="w-[130px]">Team review</TableHead> : null}
               {canDecide ? <TableHead className="w-[130px]">Decision</TableHead> : null}
             </TableRow>
@@ -398,6 +453,18 @@ export function CandidateRankingTable({
                       View
                     </Button>
                   </TableCell>
+                  <TableCell className="pt-4">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="gap-1"
+                      title="See the mandatory application questions and this candidate's exact answers"
+                      onClick={() => setValidationRow(row)}
+                    >
+                      <ClipboardList className="h-3.5 w-3.5" />
+                      View
+                    </Button>
+                  </TableCell>
                   {canDecide ? (
                     <TableCell className="pt-4">
                       <Button
@@ -444,6 +511,13 @@ export function CandidateRankingTable({
         open={teamReviewRow !== null}
         onOpenChange={(next) => {
           if (!next) setTeamReviewRow(null);
+        }}
+      />
+      <ValidationAnswersModal
+        row={validationRow}
+        open={validationRow !== null}
+        onOpenChange={(next) => {
+          if (!next) setValidationRow(null);
         }}
       />
 

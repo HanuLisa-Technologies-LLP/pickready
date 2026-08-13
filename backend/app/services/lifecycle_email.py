@@ -151,7 +151,7 @@ _REQUIRED_LINK_KEY: dict[str, str] = {
 #: NXDOMAIN, and looked enough like a link that it shipped.
 #:
 #: A dotted token needs THREE segments to count, which is what separates
-#: "link.to.assessment" from ordinary prose like "Node.js" or "readypick.ai".
+#: "link.to.assessment" from ordinary prose like "Node.js" or "example.test".
 #: The guard has to distinguish, not merely detect: rejecting a good email over
 #: a technology name would fail invisibly, one round of latency at a time.
 _URL_LIKE_RE = re.compile(

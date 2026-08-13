@@ -1,38 +1,56 @@
-"""PickReady Profile Intelligence (PPI) -- the per-job evaluation framework.
+"""PickReady Profile Intelligence (PPI) -- the per-job evaluation matrix.
 
 PROPRIETARY: PPI is PickReady's own competency framework, derived from
 first-principles job analysis. It is NOT modelled on, named after, or derived
 from any licensed psychometric instrument, and no such instrument may ever be
 referenced in this file, the product UI, or the documentation.
 
-What replaced what (2026-07-30)
--------------------------------
-PPI supersedes the PickReady Functional Index (PFI). PFI was ONE fixed
-dimension set per grade, reused across every job in the product. PPI generates
-a FRESH framework for every job, from that job's own JD:
+THE THREE ASPECTS (Draft v4)
+----------------------------
+    must_have     the capabilities the role cannot be performed without. This
+                  is where technical depth now lives, folded in from what used
+                  to be a standalone Technical Assessment Agent.
+    nice_to_have  supporting capabilities that strengthen performance.
+    behavioural   observable workplace behaviours the role demands.
 
-    >= 5 Primary Skills, >= 5 Secondary Skills, >= 5 Behavioural Competencies
+They were Primary Skills, Secondary Skills and Behavioural Competencies. The
+first two were RENAMED, not replaced: the same criteria under names that say
+what they mean in hiring language, which is what makes the hard cap below read
+as the obvious rule rather than as an arbitrary weighting.
 
-The agent may recommend more than five of any category when the job's
-complexity warrants it. The trade the client accepted, explicitly: more precise
-to the specific role, at the cost of no longer having one fixed list to point
-to across the whole product.
+PPI IS THE SOLE OWNER OF DEPTH
+------------------------------
+Matching (`services/matching`) evaluates background and logistics from resume
+text alone -- coarse, inferred, never verified. PPI evaluates demonstrated
+depth and behaviour from a conversation. Same named territory in places, a
+different question, and no overlap. Nothing outside PPI assesses skill depth.
 
-The two things that must not be confused
-----------------------------------------
-1. **The framework is per JOB.** Generated once at job creation, reviewed and
-   saved by the Hiring Manager, then FIXED. Every candidate applying to that
-   job is graded against the same Primary Skills, Secondary Skills and
-   Behavioural Competencies -- that is the only reason two candidates' reports
-   are comparable.
-2. **The questions are per CANDIDATE.** Once the framework is saved, questions
-   probing it are generated individually from the JD, the saved framework, and
-   that candidate's own resume. Count is fixed by the candidate's GRADE, never
-   by the job (spec §6.1).
+TWO THINGS THAT MUST NOT BE CONFUSED
+------------------------------------
+1. **The matrix is per JOB.** Generated once from the JD and the reporting
+   authority's SWOT intake, reviewed and saved by the Hiring Manager, then
+   FIXED. Every candidate applying to that job is graded against the same items
+   -- that is the only reason two candidates' reports are comparable.
+2. **The questions are per CANDIDATE.** Once the matrix is saved, questions
+   probing it are generated individually from the JD, the saved matrix, and
+   that candidate's own resume. What varies is how an item is approached, never
+   which items there are.
+
+NO MINIMUM ITEM COUNT, AND A CEILING THAT IS NOT ARBITRARY
+----------------------------------------------------------
+Draft v4 removed the old floor of five per aspect: the agent recommends however
+many items the job genuinely needs. What replaced it is a CEILING, and it comes
+from a rule the product already had -- every item in the matrix is probed at
+least once, because an item that is graded and charted without being asked
+about is exactly the unfair output the review gate exists to prevent. The grade
+therefore bounds the matrix: a matrix cannot hold more items than its grade
+allows questions. `matrix_is_complete` refuses a save above that, naming the
+number to remove, rather than letting a job reach candidates whose reports would
+grade items nobody was asked about.
 
 "Culture" is refused as a Behavioural Competency, at generation and at save.
 Cultural fit cannot be assessed accurately in a single conversation, and PPI
-does not claim otherwise (spec §6.2).
+does not claim otherwise.
 """
 from __future__ import annotations
 
@@ -49,6 +67,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.assessment import CandidateQuestion, JobCompetency
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
+from app.models.job_setup import JobSwotIntake
 from app.services import agent_loop, llm_router
 from app.prompts import registry
 from app.services.rating import (
@@ -64,53 +83,65 @@ __all__ = [
     "CATEGORIES",
     "CATEGORY_BEHAVIOURAL",
     "CATEGORY_LABELS",
-    "CATEGORY_PRIMARY",
-    "CATEGORY_SECONDARY",
+    "CATEGORY_MUST_HAVE",
+    "CATEGORY_NICE_TO_HAVE",
     "FORBIDDEN_COMPETENCY_TERMS",
-    "MINIMUM_PER_CATEGORY",
-    "PPI_QUESTION_COUNTS",
+    "GRADE_QUESTION_RANGES",
     "REQUIRED_LEVEL_SCORES",
+    "RUBRIC_SCORED_CATEGORIES",
     "generate_candidate_questions",
     "generate_framework",
     "framework_is_complete",
     "is_forbidden_competency",
     "load_framework",
-    "ppi_question_count",
+    "load_swot",
+    "matrix_is_complete",
+    "max_questions",
+    "min_questions",
+    "resolve_question_target",
     "required_level_score",
+    "typical_split",
 ]
 
-# ── Categories ───────────────────────────────────────────────────────────────
+# ── Aspects ──────────────────────────────────────────────────────────────────
 
-CATEGORY_PRIMARY = "primary_skill"
-CATEGORY_SECONDARY = "secondary_skill"
+CATEGORY_MUST_HAVE = "must_have"
+CATEGORY_NICE_TO_HAVE = "nice_to_have"
 CATEGORY_BEHAVIOURAL = "behavioural"
 
-#: Ordered exactly as the report renders them (spec §10.3).
+#: Ordered exactly as the report renders them (spec §9.3).
 CATEGORIES: tuple[str, ...] = (
-    CATEGORY_PRIMARY,
-    CATEGORY_SECONDARY,
+    CATEGORY_MUST_HAVE,
+    CATEGORY_NICE_TO_HAVE,
     CATEGORY_BEHAVIOURAL,
 )
 
 CATEGORY_LABELS: dict[str, str] = {
-    CATEGORY_PRIMARY: "Primary Skills",
-    CATEGORY_SECONDARY: "Secondary Skills",
+    CATEGORY_MUST_HAVE: "Must-have",
+    CATEGORY_NICE_TO_HAVE: "Nice-to-have",
     CATEGORY_BEHAVIOURAL: "Behavioural Competencies",
 }
 
-#: The floor, not the target. A complex job legitimately gets more (spec §6.2).
-MINIMUM_PER_CATEGORY = 5
+#: The two aspects whose answers are scored against the question's OWN stored
+#: rubric. Behavioural is absent deliberately: there is no single correct answer
+#: to a behavioural question, so it is scored by judgement (spec §8). One
+#: scoring agent, two methods, and this frozenset is which is which.
+RUBRIC_SCORED_CATEGORIES: frozenset[str] = frozenset(
+    {CATEGORY_MUST_HAVE, CATEGORY_NICE_TO_HAVE}
+)
 
-#: Sanity ceiling. Not in the spec, but a framework of 40 competencies would
-#: give a non-managerial candidate fewer than one question per competency and
-#: make the radar charts unreadable. Generation is capped, not rejected.
-MAXIMUM_PER_CATEGORY = 10
+#: Structural floor: one item per aspect. NOT a count contract -- Draft v4
+#: deliberately removed those. An aspect with no items still gets a grade, a
+#: remark and a radar chart in the report, and there would be nothing behind
+#: any of the three.
+MINIMUM_PER_CATEGORY = 1
 
 
-# ── The Culture refusal (spec §6.2) ──────────────────────────────────────────
-# Enforced at BOTH ends: the generator is told not to produce it, and the save
-# handler refuses it. A prompt instruction is a request, not a guarantee, and
-# the Hiring Manager can type anything into the Edit control.
+# ── The Culture refusal (spec §5) ────────────────────────────────────────────
+# Enforced at THREE layers: the generator is told not to produce it, the save
+# handler refuses it, and a Postgres CHECK refuses the row. A prompt instruction
+# is a request rather than a guarantee, and the Hiring Manager's Edit control
+# can type anything.
 
 FORBIDDEN_COMPETENCY_TERMS: tuple[str, ...] = (
     "culture",
@@ -137,28 +168,95 @@ def is_forbidden_competency(name: str) -> bool:
     )
 
 
-# ── Question counts by CANDIDATE grade (spec §6.1) ───────────────────────────
+# ── Question volume by grade (spec §5.4) ─────────────────────────────────────
+# A RANGE per grade, resolved ONCE per job at setup from how many items that
+# job's matrix actually holds -- not a single fixed number per grade, and not a
+# number chosen per candidate.
+#
 # Note the direction: MORE questions for a junior candidate, fewer for a CXO.
-# That is deliberate and is the client's table verbatim -- a CXO's evidence is
-# broader per answer, and their time is the scarce resource.
+# That is the client's table verbatim and it is deliberate -- a CXO's evidence
+# is broader per answer, and their time is the scarce resource.
 
-PPI_QUESTION_COUNTS: dict[str, int] = {
-    "non_managerial": 25,
-    "managerial": 20,
-    "leadership": 15,
-    "cxo": 10,
+#: grade -> (minimum total, maximum total)
+GRADE_QUESTION_RANGES: dict[str, tuple[int, int]] = {
+    "non_managerial": (20, 28),
+    "managerial": (16, 22),
+    "leadership": (11, 16),
+    "cxo": (7, 11),
 }
 
+#: grade -> {aspect: (low, high)}. ILLUSTRATIVE, and the spec says so in as many
+#: words: "typical, illustrative sub-splits ... not a rigid per-job formula".
+#: They are held here because they are the client's stated shape of a balanced
+#: interview and they steer the remainder allocation when the matrix has fewer
+#: items than the grade's floor. Nothing REFUSES a split that falls outside
+#: them; only the grade TOTAL is enforced.
+TYPICAL_SPLITS: dict[str, dict[str, tuple[int, int]]] = {
+    "non_managerial": {
+        CATEGORY_MUST_HAVE: (7, 11),
+        CATEGORY_NICE_TO_HAVE: (4, 6),
+        CATEGORY_BEHAVIOURAL: (8, 12),
+    },
+    "managerial": {
+        CATEGORY_MUST_HAVE: (5, 8),
+        CATEGORY_NICE_TO_HAVE: (3, 5),
+        CATEGORY_BEHAVIOURAL: (8, 11),
+    },
+    "leadership": {
+        CATEGORY_MUST_HAVE: (2, 4),
+        CATEGORY_NICE_TO_HAVE: (1, 3),
+        CATEGORY_BEHAVIOURAL: (7, 10),
+    },
+    "cxo": {
+        CATEGORY_MUST_HAVE: (1, 2),
+        CATEGORY_NICE_TO_HAVE: (1, 2),
+        CATEGORY_BEHAVIOURAL: (5, 7),
+    },
+}
 
-def ppi_question_count(grade: str | None) -> int:
-    return PPI_QUESTION_COUNTS.get(grade or "", PPI_QUESTION_COUNTS["non_managerial"])
+DEFAULT_GRADE = "non_managerial"
+
+
+def _grade(grade: str | None) -> str:
+    return grade if grade in GRADE_QUESTION_RANGES else DEFAULT_GRADE
+
+
+def min_questions(grade: str | None) -> int:
+    return GRADE_QUESTION_RANGES[_grade(grade)][0]
+
+
+def max_questions(grade: str | None) -> int:
+    return GRADE_QUESTION_RANGES[_grade(grade)][1]
+
+
+def typical_split(grade: str | None) -> dict[str, tuple[int, int]]:
+    return TYPICAL_SPLITS[_grade(grade)]
+
+
+def resolve_question_target(grade: str | None, item_count: int) -> int:
+    """How many questions this job asks, resolved once at setup (spec §5.4).
+
+    The matrix size drives it, clamped into the grade's range:
+
+      * a matrix with more items than the grade's floor asks one question per
+        item, so every item the report grades was actually probed;
+      * a smaller matrix still asks the grade's minimum, and the surplus goes to
+        the aspects the typical split weights most heavily -- a four-item matrix
+        at non-managerial does not become a four-question interview.
+
+    Above the grade's ceiling the answer is not to truncate: `matrix_is_complete`
+    refuses the save instead, because silently dropping items would grade a
+    candidate on criteria nobody asked them about.
+    """
+    low, high = GRADE_QUESTION_RANGES[_grade(grade)]
+    return max(low, min(high, int(item_count)))
 
 
 # ── Required level ───────────────────────────────────────────────────────────
 # The radar plots TWO shapes: what the job needs and what the candidate showed
-# (spec §10.4). The job's shape comes from a required level the framework agent
-# assigns to each competency, stated as one of the same four grade WORDS the
-# client already reads -- never a number, at generation or at display.
+# (spec §9.4). The job's shape comes from a required level the matrix agent
+# assigns to each item, stated as one of the same four grade WORDS the client
+# already reads -- never a number, at generation or at display.
 #
 # It is stored as the band's representative internal score purely so it shares
 # the column type and the grade projection with the candidate's score; nothing
@@ -170,9 +268,9 @@ REQUIRED_LEVEL_SCORES: dict[str, int] = {
     GRADE_MODERATELY: 67,
 }
 
-#: A job that requires NOTHING of a competency would not have it in its
-#: framework, so "Not Matching" is not an offered requirement level. An
-#: unrecognised value settles on the middle band rather than raising.
+#: A job that requires NOTHING of an item would not have it in its matrix, so
+#: "Not Matching" is not an offered requirement level. An unrecognised value
+#: settles on the middle band rather than raising.
 DEFAULT_REQUIRED_LEVEL = REQUIRED_LEVEL_SCORES[GRADE_MATCHING]
 
 
@@ -180,9 +278,9 @@ def required_level_score(label: Any) -> int:
     return REQUIRED_LEVEL_SCORES.get(str(label).strip(), DEFAULT_REQUIRED_LEVEL)
 
 
-# ── Deterministic fallback framework ─────────────────────────────────────────
+# ── Deterministic fallback matrix ────────────────────────────────────────────
 # CLAUDE.md rule 9: degrade, never crash. With the whole LLM chain down, a job
-# still gets a usable framework built from its own JD, and the recruiter can
+# still gets a usable matrix built from its own JD, and the Hiring Manager can
 # edit it -- which is the review step the workflow already requires.
 
 _FALLBACK_BEHAVIOURAL: tuple[tuple[str, str], ...] = (
@@ -193,6 +291,12 @@ _FALLBACK_BEHAVIOURAL: tuple[tuple[str, str], ...] = (
     ("Adaptability", "Adjusts approach when priorities, constraints or information change."),
     ("Judgement", "Weighs incomplete evidence and commits to a decision they can defend."),
 )
+
+#: How many items the deterministic fallback builds per aspect. Small on
+#: purpose: this is the matrix a human is about to review, and a short honest
+#: matrix drawn from the JD's own words is more useful to review than a padded
+#: one full of mechanically derived names.
+_FALLBACK_PER_CATEGORY = 4
 
 
 def _jd_terms(job: Job, field: str) -> list[str]:
@@ -214,102 +318,83 @@ def _jd_terms(job: Job, field: str) -> list[str]:
     return out
 
 
-#: Words used to tell two padded competency names apart when the JD gave the
-#: fallback fewer distinct terms than the per-category floor. Must hold at least
-#: MINIMUM_PER_CATEGORY entries, since one pass of the padding loop may use each
-#: at most once.
-_PADDING_QUALIFIERS: tuple[str, ...] = (
-    "further",
-    "adjacent",
-    "broader",
-    "related",
-    "wider",
-    "applied",
-)
+def _swot_terms(swot: JobSwotIntake | None) -> list[str]:
+    """Short labels mined from the SWOT intake, for the offline fallback.
+
+    The fallback has no model, so it cannot reason about what the authority
+    said -- but their own phrases are still better raw material for a matrix a
+    human is about to edit than the JD alone, which is the input the SWOT was
+    collected to supplement.
+    """
+    if swot is None:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for area in ("strengths", "weaknesses"):
+        for item in getattr(swot, area, None) or []:
+            label = str(item).strip()
+            if not label:
+                continue
+            label = re.split(r"[,;:.]", label, maxsplit=1)[0].strip()[:120]
+            if label and label.casefold() not in seen:
+                seen.add(label.casefold())
+                out.append(label[:1].upper() + label[1:])
+    return out
 
 
-def _fallback_framework(job: Job) -> list[dict[str, Any]]:
-    """A framework built from the JD's own words, with no network call."""
-    skills = _jd_terms(job, "skills")
+def _fallback_framework(job: Job, swot: JobSwotIntake | None = None) -> list[dict[str, Any]]:
+    """A matrix built from the job's own words, with no network call.
+
+    No padding loop, and that is the change Draft v4 allowed. The old fallback
+    had to reach a floor of five per aspect and manufactured names like
+    "Kafka (further core)" to get there -- filler that landed on the one screen
+    a human is required to review. With no minimum to hit, the fallback returns
+    what the JD and SWOT actually support and stops.
+    """
+    pool = _swot_terms(swot) + _jd_terms(job, "skills")
     topics = _jd_terms(job, "responsibilities") + _jd_terms(job, "accountabilities")
-    pool = skills + [t for t in topics if t.casefold() not in {s.casefold() for s in skills}]
+    seen = {term.casefold() for term in pool}
+    pool += [topic for topic in topics if topic.casefold() not in seen]
     if not pool:
-        pool = [job.title]
+        pool = [job.title or "this role"]
 
+    must = pool[:_FALLBACK_PER_CATEGORY]
+    nice = pool[_FALLBACK_PER_CATEGORY : _FALLBACK_PER_CATEGORY * 2]
     rows: list[dict[str, Any]] = []
-    primary = pool[:MINIMUM_PER_CATEGORY]
-    secondary = pool[MINIMUM_PER_CATEGORY : MINIMUM_PER_CATEGORY * 2]
-
-    # Cycle the pool rather than emitting fewer than the minimum: the floor is
-    # a product contract, and a short framework silently narrows every report
-    # written against this job.
-    #
-    # WHY THIS IS A BOUNDED `for` AND NOT A `while`
-    # ---------------------------------------------
-    # The padding used to append only when the generated name happened to be
-    # new:
-    #
-    #     while len(secondary) < MINIMUM_PER_CATEGORY:
-    #         candidate = f"{next(filler)} (supporting)"
-    #         if candidate not in secondary:
-    #             secondary.append(candidate)
-    #
-    # `filler` cycles `pool`, so once every pool term had been used the loop
-    # regenerated names it had already rejected and made no further progress.
-    # Any job whose pool holds fewer than MINIMUM_PER_CATEGORY DISTINCT terms
-    # hung forever, and that is the NORMAL shape of a job created from
-    # `jd_markdown` alone, where `jd_json.skills` is [] and the pool is just the
-    # title. Observed in production 2026-08-01: `generate_technical_questions`
-    # spun until Celery's 600s soft time limit and then autoretried five times,
-    # holding one of the worker pool's two slots for the best part of an hour
-    # each. Every queued assessment task starved behind it, which is what
-    # "assessments are not available" looked like from the outside.
-    #
-    # The loop is now bounded by the shortfall it is filling and appends exactly
-    # one name per pass, so it terminates whatever the pool contains. The
-    # qualifier only has to make the name READ differently to the recruiter who
-    # reviews it; correctness no longer depends on it being unique, which is why
-    # a collision can no longer cost anything worse than one duplicate row that
-    # `_normalise` then drops.
-    def _pad(target: list[str], suffix: str) -> None:
-        taken = {name.casefold() for name in target}
-        filler = cycle(pool)
-        for attempt in range(MINIMUM_PER_CATEGORY):
-            if len(target) >= MINIMUM_PER_CATEGORY:
-                return
-            base = next(filler)
-            name = f"{base} ({suffix})"
-            if name.casefold() in taken:
-                # No digit here, deliberately. This name is rendered to the
-                # Hiring Manager on the setup screen and can survive review into
-                # a report, and claude.md's no-numbers rule is about what a
-                # client reads, not only about scores.
-                name = f"{base} ({_PADDING_QUALIFIERS[attempt]} {suffix})"
-            taken.add(name.casefold())
-            target.append(name)
-
-    _pad(primary, "core")
-    _pad(secondary, "supporting")
-
-    for name in primary:
+    for name in must:
         rows.append(
             {
-                "category": CATEGORY_PRIMARY,
+                "category": CATEGORY_MUST_HAVE,
                 "name": name,
                 "description": f"Core capability the job description names as required: {name}.",
                 "required_level": GRADE_HIGHLY,
             }
         )
-    for name in secondary:
+    for name in nice:
         rows.append(
             {
-                "category": CATEGORY_SECONDARY,
+                "category": CATEGORY_NICE_TO_HAVE,
                 "name": name,
                 "description": f"Supporting capability that strengthens delivery of the role: {name}.",
                 "required_level": GRADE_MATCHING,
             }
         )
-    for name, description in _FALLBACK_BEHAVIOURAL[:MINIMUM_PER_CATEGORY]:
+    if not nice:
+        # Every aspect needs at least one item or the report grades an empty
+        # section. Derived from the role rather than duplicated from must_have,
+        # so the Hiring Manager sees a placeholder to rename and not a repeat.
+        rows.append(
+            {
+                "category": CATEGORY_NICE_TO_HAVE,
+                "name": f"Adjacent experience for {job.title or 'this role'}"[:_MAX_NAME],
+                "description": (
+                    "Placeholder for the hiring team to rename during review: a "
+                    "supporting capability beyond those the job description names."
+                ),
+                "required_level": GRADE_MODERATELY,
+            }
+        )
+    for name, description in _FALLBACK_BEHAVIOURAL[:_FALLBACK_PER_CATEGORY]:
         rows.append(
             {
                 "category": CATEGORY_BEHAVIOURAL,
@@ -321,19 +406,29 @@ def _fallback_framework(job: Job) -> list[dict[str, Any]]:
     return rows
 
 
-#: Text in `app/prompts/ppi_framework_system.txt`, loaded through the registry so a
-#: wording change is a versioned diff in a prompt file rather than a string
-#: literal in a module of code. What is sent is unchanged.
-_FRAMEWORK_SYSTEM_PROMPT = registry.render(
-    "ppi_framework_system",
-    minimum_per_category=MINIMUM_PER_CATEGORY,
-    maximum_per_category=MAXIMUM_PER_CATEGORY,
-    grade_highly=GRADE_HIGHLY,
-    grade_matching=GRADE_MATCHING,
-    grade_moderately=GRADE_MODERATELY,
-)
-
 _MAX_NAME = 255
+
+
+def _maximum_total(job: Job) -> int:
+    """The most items this job's matrix may hold: one question each, at most."""
+    return max_questions(job.assessment_grade)
+
+
+def _framework_system_prompt(job: Job) -> str:
+    """Rendered per job, because the ceiling is a property of the job's grade.
+
+    Rendered at call time rather than at import: the old module-level constant
+    could not carry a value that varies per job, and a ceiling stated in the
+    prompt is what stops a generation the save handler would then have to
+    refuse.
+    """
+    return registry.render(
+        "ppi_framework_system",
+        maximum_total=_maximum_total(job),
+        grade_highly=GRADE_HIGHLY,
+        grade_matching=GRADE_MATCHING,
+        grade_moderately=GRADE_MODERATELY,
+    )
 
 
 def _valid_competency(row: Any) -> bool:
@@ -344,17 +439,23 @@ def _valid_competency(row: Any) -> bool:
     )
 
 
-def _normalise(rows: list[Any]) -> list[dict[str, Any]]:
-    """Clean, de-duplicate and cap a generated framework.
+def _normalise(rows: list[Any], *, maximum_total: int) -> list[dict[str, Any]]:
+    """Clean, de-duplicate and cap a generated matrix.
 
-    Culture entries are DROPPED here rather than rejected: refusing the whole
-    generation because one of eighteen entries was disallowed would send the
-    recruiter back to an empty screen for a problem the product can fix itself.
+    Culture entries are DROPPED here rather than rejected: refusing a whole
+    generation because one entry was disallowed would send the recruiter back to
+    an empty screen for a problem the product can fix itself.
+
+    The cap is on the TOTAL rather than per aspect, because that is the bound
+    that actually matters -- it is the grade's question ceiling, and every item
+    kept must be askable. Items are taken in the order the model returned them,
+    which is the order it ranked them.
     """
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    per_category: dict[str, int] = {}
     for row in rows:
+        if len(out) >= maximum_total:
+            break
         if not _valid_competency(row):
             continue
         category = str(row["category"])
@@ -365,10 +466,7 @@ def _normalise(rows: list[Any]) -> list[dict[str, Any]]:
         key = (category, name.casefold())
         if key in seen:
             continue
-        if per_category.get(category, 0) >= MAXIMUM_PER_CATEGORY:
-            continue
         seen.add(key)
-        per_category[category] = per_category.get(category, 0) + 1
         out.append(
             {
                 "category": category,
@@ -380,71 +478,72 @@ def _normalise(rows: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _top_up(rows: list[dict[str, Any]], job: Job) -> list[dict[str, Any]]:
-    """Guarantee the per-category minimum, drawing from the JD fallback."""
-    counts = {category: 0 for category in CATEGORIES}
-    for row in rows:
-        counts[row["category"]] += 1
-    if all(count >= MINIMUM_PER_CATEGORY for count in counts.values()):
+def _ensure_every_aspect(
+    rows: list[dict[str, Any]], job: Job, swot: JobSwotIntake | None
+) -> list[dict[str, Any]]:
+    """Guarantee one item per aspect, drawing from the JD fallback.
+
+    This is the whole of what remains of the old `_top_up`. It closes a
+    structural hole, not a count: an aspect with no items still renders a grade,
+    a remark and a radar chart, and there would be nothing behind any of them.
+    """
+    present = {row["category"] for row in rows}
+    missing = [category for category in CATEGORIES if category not in present]
+    if not missing:
         return rows
     existing = {(row["category"], row["name"].casefold()) for row in rows}
-    for filler in _fallback_framework(job):
-        category = filler["category"]
-        if counts[category] >= MINIMUM_PER_CATEGORY:
+    for filler in _fallback_framework(job, swot):
+        if filler["category"] not in missing:
             continue
-        key = (category, filler["name"].casefold())
+        key = (filler["category"], filler["name"].casefold())
         if key in existing:
             continue
         existing.add(key)
-        counts[category] += 1
+        missing.remove(filler["category"])
         rows.append(filler)
-    # The fallback offers exactly MINIMUM_PER_CATEGORY names per category, so a
-    # single collision with an LLM-generated name leaves the category one short,
-    # `framework_is_complete` then refuses the save, and the job is stranded at
-    # `questions_pending_review` with no way forward but hand-typing a
-    # competency. Close the floor explicitly rather than hoping the two name
-    # sets miss each other.
-    #
-    # Bounded by the shortfall, for the same reason as `_pad` above: a loop that
-    # only exits once a generated name happens to be new is a loop that can fail
-    # to exit at all.
-    for category in CATEGORIES:
-        for attempt in range(len(_PADDING_QUALIFIERS)):
-            if counts[category] >= MINIMUM_PER_CATEGORY:
-                break
-            name = f"{job.title} ({_PADDING_QUALIFIERS[attempt]} capability)"[:_MAX_NAME]
-            key = (category, name.casefold())
-            if key in existing:
-                continue
-            existing.add(key)
-            counts[category] += 1
-            rows.append(
-                {
-                    "category": category,
-                    "name": name,
-                    "description": (
-                        "Placeholder for the hiring team to rename during review: "
-                        "a capability this role needs beyond those the job "
-                        f"description names for {job.title}."
-                    ),
-                    "required_level": GRADE_MATCHING,
-                }
-            )
+        if not missing:
+            break
+    for category in list(missing):
+        rows.append(
+            {
+                "category": category,
+                "name": f"{job.title or 'This role'} ({CATEGORY_LABELS[category].lower()})"[:_MAX_NAME],
+                "description": (
+                    "Placeholder for the hiring team to rename during review: a "
+                    "capability this role needs beyond those the job description "
+                    "names."
+                ),
+                "required_level": GRADE_MATCHING,
+            }
+        )
     return rows
+
+
+async def load_swot(session: AsyncSession, job_id: Any) -> JobSwotIntake | None:
+    return (
+        await session.execute(
+            select(JobSwotIntake).where(JobSwotIntake.job_id == job_id)
+        )
+    ).scalars().first()
 
 
 async def generate_framework(
     session: AsyncSession, job: Job, *, replace: bool = False
 ) -> list[JobCompetency]:
-    """Generate the job's PPI framework and leave it AWAITING REVIEW.
+    """Generate the job's PPI matrix and leave it AWAITING REVIEW.
 
-    This never approves anything. The framework becomes the job's fixed
-    evaluation criteria only when the Hiring Manager saves it
-    (`POST /assessments/jobs/{id}/framework/finalize`), which is one half of
-    the single manual step in the pipeline (spec §11).
+    Generated from the JD **and** the reporting authority's SWOT intake
+    (spec §5.2). The intake is not a hard gate here: a job whose SWOT is missing
+    still gets a matrix from the JD alone rather than being stranded with none,
+    and the setup screen is what tells the team the intake is outstanding. What
+    IS gated is the job reaching candidates, which `_refresh_setup_status`
+    holds until both halves of the setup session are finalised.
 
-    Idempotent by default: a job that already has competencies keeps them, so a
-    Celery redelivery cannot discard a framework a human has already edited.
+    This never approves anything. The matrix becomes the job's fixed evaluation
+    criteria only when the Hiring Manager saves it (spec §5.3).
+
+    Idempotent by default: a job that already has items keeps them, so a Celery
+    redelivery cannot discard a matrix a human has already edited.
     """
     existing = (
         await session.execute(
@@ -456,20 +555,8 @@ async def generate_framework(
     if existing and not replace:
         return list(existing)
 
-    # ── Generation, inside the bounded loop ──────────────────────────────────
-    #
-    # WHY A LOOP RATHER THAN THE ONE-SHOT CALL THIS REPLACED
-    # ------------------------------------------------------
-    # `_top_up` has always guaranteed the per-category minimum, so a short
-    # generation never FAILED -- it was silently padded with mechanically
-    # derived names ("Kafka (supporting)", "Python (further core)"). That is a
-    # correct floor and a poor framework, and it lands on the one screen a human
-    # is required to review: the recruiter has to hand-fix filler the product
-    # could have asked the model to write properly.
-    #
-    # "You returned three secondary skills and I need five" is exactly the kind
-    # of defect a model corrects immediately when told. The top-up stays as the
-    # floor beneath the loop; it is now the last resort rather than the first.
+    swot = await load_swot(session, job.id)
+    maximum_total = _maximum_total(job)
     payload = json.dumps(
         {
             "title": job.title,
@@ -478,12 +565,14 @@ async def generate_framework(
             "experience_max_years": job.experience_max_years,
             "jd": job.jd_json,
             "jd_markdown": (job.jd_markdown or "")[:6000],
+            "swot_intake": (swot.captured() if swot is not None else None),
         }
     )
+    system_prompt = _framework_system_prompt(job)
 
     async def _execute(reflection: str) -> list[dict[str, Any]]:
         messages = [
-            {"role": "system", "content": _FRAMEWORK_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": payload},
         ]
         if reflection:
@@ -491,21 +580,28 @@ async def generate_framework(
         raw = await llm_router.chat_completion(
             "jd_generation", messages, response_format_json=True, session=session
         )
-        return _normalise(json.loads(raw).get("competencies", []))
+        return _normalise(
+            json.loads(raw).get("competencies", []), maximum_total=maximum_total
+        )
 
     def _evaluate(candidate: list[dict[str, Any]]) -> agent_loop.Critique:
-        counts = {category: 0 for category in CATEGORIES}
-        for row in candidate:
-            counts[row["category"]] += 1
-        short = [
-            f"{CATEGORY_LABELS[category]} (you returned {count}, "
-            f"at least {MINIMUM_PER_CATEGORY} are required)"
-            for category, count in counts.items()
-            if count < MINIMUM_PER_CATEGORY
+        """Deterministic criteria. The count is NOT one of them.
+
+        Draft v4 removed the per-aspect minimum, so "you returned three and I
+        need five" is no longer a defect -- three may be the right answer for
+        the job. What remains checkable is structural: every aspect has to be
+        represented, or the report grades an empty section.
+        """
+        present = {row["category"] for row in candidate}
+        missing = [
+            CATEGORY_LABELS[category]
+            for category in CATEGORIES
+            if category not in present
         ]
-        if short:
+        if missing:
             return agent_loop.reject(
-                "return more competencies in these categories: " + "; ".join(short)
+                "return at least one item in each aspect; these came back empty: "
+                + ", ".join(missing)
             )
         return agent_loop.ok()
 
@@ -513,9 +609,9 @@ async def generate_framework(
         name="ppi_framework",
         execute=_execute,
         evaluate=_evaluate,
-        # The JD-derived framework, which needs no network at all. This is what
+        # The JD-derived matrix, which needs no network at all. This is what
         # repaired 19 stranded live jobs on 2026-08-06 with every provider down.
-        fallback=_normalise(_fallback_framework(job)),
+        fallback=_normalise(_fallback_framework(job, swot), maximum_total=maximum_total),
         max_attempts=agent_loop.BACKGROUND_ATTEMPTS,
         deadline_seconds=agent_loop.BACKGROUND_DEADLINE,
         max_generated_tokens=agent_loop.BACKGROUND_TOKEN_BUDGET,
@@ -527,16 +623,12 @@ async def generate_framework(
         )
     rows = result.value
     if not rows:
-        rows = _normalise(_fallback_framework(job))
-    # The floor stays, beneath the loop. `_normalise` caps and de-duplicates, so
-    # even an accepted generation can land one short of a minimum after a
-    # collision, and `framework_is_complete` would then refuse the save and
-    # strand the job at `questions_pending_review` with no way forward.
-    rows = _top_up(rows, job)
+        rows = _normalise(_fallback_framework(job, swot), maximum_total=maximum_total)
+    rows = _ensure_every_aspect(rows, job, swot)
 
-    # Deactivate rather than delete on `replace`: a competency may already be
+    # Deactivate rather than delete on `replace`: an item may already be
     # referenced by a generated candidate question or a written report, and a
-    # regenerated framework must not orphan either.
+    # regenerated matrix must not orphan either.
     for row in existing:
         row.is_active = False
 
@@ -571,17 +663,24 @@ async def generate_framework(
 
     session.add_all(created)
     job.framework_generated_at = datetime.now(timezone.utc)
+    # Resolved here and not per candidate: every candidate on this job is asked
+    # the same NUMBER of questions, which is part of what makes two reports
+    # comparable. Recomputed on a regenerate because the matrix size moved.
+    job.question_target = resolve_question_target(job.assessment_grade, len(created))
     await session.flush()
     logger.info(
-        "ppi.framework.generated job_id=%s primary=%d secondary=%d behavioural=%d",
+        "ppi.framework.generated job_id=%s must_have=%d nice_to_have=%d "
+        "behavioural=%d target=%d swot=%s",
         job.id,
         *(sum(1 for c in created if c.category == cat) for cat in CATEGORIES),
+        job.question_target,
+        swot is not None and not swot.is_empty(),
     )
     return created
 
 
 async def load_framework(session: AsyncSession, job_id: Any) -> list[JobCompetency]:
-    """The job's active framework, in report order (primary, secondary, behavioural)."""
+    """The job's active matrix, in report order (must-have, nice-to-have, behavioural)."""
     rows = (
         await session.execute(
             select(JobCompetency)
@@ -592,67 +691,109 @@ async def load_framework(session: AsyncSession, job_id: Any) -> list[JobCompeten
     return sorted(rows, key=lambda row: (CATEGORIES.index(row.category), row.ordinal))
 
 
-def framework_is_complete(rows: list[JobCompetency]) -> tuple[bool, str | None]:
-    """Whether a framework may be saved as the job's fixed criteria.
+def matrix_is_complete(
+    rows: list[JobCompetency], grade: str | None
+) -> tuple[bool, str | None]:
+    """Whether a matrix may be saved as the job's fixed criteria.
 
-    Returns (ok, reason). The minimum is a product contract, not a suggestion:
-    a job saved with three Primary Skills would produce a radar chart with
-    three spokes and reports that are not comparable with the rest of the
-    product.
+    Two rules, and neither is a count contract in the sense the old floor of
+    five was:
+
+      * every aspect carries at least one item, because each aspect is graded,
+        remarked and charted in every report written against this job;
+      * the matrix holds no more items than the grade allows questions, because
+        every item is probed at least once and an item nobody was asked about
+        must never be graded.
+
+    The ceiling names the number to remove rather than truncating silently. The
+    Hiring Manager is looking at the matrix when this refusal arrives and is the
+    right person to choose which items go.
     """
+    active = [row for row in rows if row.is_active]
     for category in CATEGORIES:
-        count = sum(1 for row in rows if row.category == category and row.is_active)
-        if count < MINIMUM_PER_CATEGORY:
+        if not any(row.category == category for row in active):
             return False, (
-                f"{CATEGORY_LABELS[category]} needs at least {MINIMUM_PER_CATEGORY} "
-                f"entries before the framework can be saved. There are {count}."
+                f"{CATEGORY_LABELS[category]} has no items. Every aspect is graded "
+                "and charted on each candidate's report, so each one needs at "
+                "least one item before the matrix can be saved."
             )
+    ceiling = max_questions(grade)
+    if len(active) > ceiling:
+        surplus = len(active) - ceiling
+        return False, (
+            f"This matrix holds {len(active)} items and a "
+            f"{(grade or DEFAULT_GRADE).replace('_', '-')} assessment asks at most "
+            f"{ceiling} questions. Every item is probed at least once, so please "
+            f"remove {surplus} item{'s' if surplus != 1 else ''} before saving."
+        )
     offending = [
         row.name
-        for row in rows
-        if row.is_active
-        and row.category == CATEGORY_BEHAVIOURAL
-        and is_forbidden_competency(row.name)
+        for row in active
+        if row.category == CATEGORY_BEHAVIOURAL and is_forbidden_competency(row.name)
     ]
     if offending:
         return False, FORBIDDEN_COMPETENCY_DETAIL
     return True, None
 
 
-# ── Per-candidate question generation (spec §6.4) ────────────────────────────
+def framework_is_complete(
+    rows: list[JobCompetency], grade: str | None = None
+) -> tuple[bool, str | None]:
+    """Deprecated spelling of `matrix_is_complete`, kept for one release.
+
+    The routes and the workers were renamed together; this survives because the
+    name appears in tests and in the setup screen's error path, and a rename is
+    not worth a broken import on a rolling deploy.
+    """
+    return matrix_is_complete(rows, grade)
 
 
-def _allocate(competencies: list[JobCompetency], total: int) -> list[JobCompetency]:
-    """Spread `total` questions across the framework, one per competency first.
+# ── Per-candidate question generation (spec §5.6) ────────────────────────────
 
-    Every competency must be probed at least once -- an unprobed competency
-    still gets a grade and a remark in the report, and grading something the
-    candidate was never asked about is exactly the kind of unfair output the
-    review gate exists to prevent. Remainder goes to Primary Skills first, then
-    Behavioural, then Secondary: that is the order in which a hiring decision
-    actually leans on the evidence.
+
+def _allocation_priority(grade: str | None) -> dict[str, int]:
+    """Which aspect gets a surplus question first.
+
+    Ordered by the typical split's own weighting for this grade: whichever
+    aspect the client's table asks the most of is the one a spare question goes
+    to. That keeps the illustrative splits doing what the spec says they are for
+    -- shaping a balanced interview -- without any of them being enforced.
+    """
+    split = typical_split(grade)
+    ordered = sorted(CATEGORIES, key=lambda category: -split[category][1])
+    return {category: index for index, category in enumerate(ordered)}
+
+
+def _allocate(
+    competencies: list[JobCompetency], total: int, grade: str | None
+) -> list[JobCompetency]:
+    """Spread `total` questions across the matrix, one per item first.
+
+    Every item must be probed at least once -- an unprobed item still gets a
+    grade and a remark in the report, and grading something the candidate was
+    never asked about is exactly the unfair output the review gate exists to
+    prevent. `matrix_is_complete` refuses a matrix bigger than `total`, so the
+    truncation below is unreachable through the product's own save path and
+    exists only so a hand-written row cannot make this function lie about its
+    length.
     """
     if not competencies:
         return []
     plan = list(competencies[:total])
     if len(plan) >= total:
         return plan
-    priority = sorted(
-        competencies,
-        key=lambda row: (
-            {CATEGORY_PRIMARY: 0, CATEGORY_BEHAVIOURAL: 1, CATEGORY_SECONDARY: 2}[row.category],
-            row.ordinal,
-        ),
+    priority = _allocation_priority(grade)
+    extras = cycle(
+        sorted(competencies, key=lambda row: (priority[row.category], row.ordinal))
     )
-    extras = cycle(priority)
     while len(plan) < total:
         plan.append(next(extras))
     return plan
 
 
-#: Text in `app/prompts/ppi_candidate_questions_system.txt`, loaded through the registry so a
-#: wording change is a versioned diff in a prompt file rather than a string
-#: literal in a module of code. What is sent is unchanged.
+#: Text in `app/prompts/ppi_candidate_questions_system.txt`, loaded through the
+#: registry so a wording change is a versioned diff in a prompt file rather than
+#: a string literal in a module of code.
 _QUESTION_SYSTEM_PROMPT = registry.render("ppi_candidate_questions_system")
 
 _GENERIC_ANGLES: tuple[str, ...] = (
@@ -689,12 +830,17 @@ async def generate_candidate_questions(
     *,
     grade: str | None = None,
 ) -> list[CandidateQuestion]:
-    """Generate this candidate's PPI questions against the job's saved framework.
+    """Generate this candidate's questions against the job's saved matrix.
 
     Idempotent: a candidate who already has questions keeps exactly those. Two
-    candidates on the same job get DIFFERENT questions probing the SAME
-    framework -- that is what makes their reports comparable while keeping each
-    conversation relevant to the person in it (spec §6.4).
+    candidates on the same job get DIFFERENT questions probing the SAME matrix
+    -- that is what makes their reports comparable while keeping each
+    conversation relevant to the person in it (spec §5.6).
+
+    These rows are the WHOLE conversation now. A Must-have or Nice-to-have row
+    is re-written with its own rubric at the moment it is asked
+    (`services/ppi_interview.write_question`); the prompt stored here is the
+    deterministic probe that is asked if that generation is unavailable.
     """
     existing = (
         await session.execute(
@@ -709,8 +855,11 @@ async def generate_candidate_questions(
     framework = await load_framework(session, job.id)
     if not framework:
         framework = await generate_framework(session, job)
-    grade = grade or job.assessment_grade or "non_managerial"
-    allocation = _allocate(framework, ppi_question_count(grade))
+    grade = grade or job.assessment_grade or DEFAULT_GRADE
+    # The job's resolved target, not a per-candidate decision. Falls back to
+    # resolving it now for a job whose matrix predates `question_target`.
+    total = job.question_target or resolve_question_target(grade, len(framework))
+    allocation = _allocate(framework, total, grade)
     if not allocation:
         return []
 
@@ -759,7 +908,7 @@ async def generate_candidate_questions(
                 prompts[index] = prompt
     except Exception:
         logger.warning(
-            "ppi.questions.llm_unavailable link_id=%s, using framework-derived questions",
+            "ppi.questions.llm_unavailable link_id=%s, using matrix-derived questions",
             link.id,
         )
 
@@ -769,9 +918,9 @@ async def generate_candidate_questions(
         prompt = prompts.get(index) or _GENERIC_ANGLES[index % len(_GENERIC_ANGLES)].format(
             name=competency.name
         )
-        # A model that repeats itself would collapse several competencies into
-        # one probe; fall back to a distinct angle rather than storing a
-        # duplicate the candidate would visibly be asked twice.
+        # A model that repeats itself would collapse several items into one
+        # probe; fall back to a distinct angle rather than storing a duplicate
+        # the candidate would visibly be asked twice.
         if prompt.casefold() in seen_prompts:
             for offset in range(len(_GENERIC_ANGLES)):
                 alternative = _GENERIC_ANGLES[(index + offset) % len(_GENERIC_ANGLES)].format(
@@ -799,7 +948,17 @@ async def generate_candidate_questions(
     return rows
 
 
-# Import-time integrity checks -- these counts are a product contract (spec §6.1).
-assert set(PPI_QUESTION_COUNTS) == {"non_managerial", "managerial", "leadership", "cxo"}
+# Import-time integrity checks -- these ranges are a product contract (spec §5.4).
+assert set(GRADE_QUESTION_RANGES) == {"non_managerial", "managerial", "leadership", "cxo"}
+assert set(TYPICAL_SPLITS) == set(GRADE_QUESTION_RANGES)
+assert all(low <= high for low, high in GRADE_QUESTION_RANGES.values())
 assert set(CATEGORY_LABELS) == set(CATEGORIES)
+assert RUBRIC_SCORED_CATEGORIES < set(CATEGORIES)
 assert set(REQUIRED_LEVEL_SCORES) <= set(GRADES)
+# Every grade's typical split must be able to sit inside its own total range, or
+# the illustrative shape would contradict the rule that is actually enforced.
+assert all(
+    sum(low for low, _ in split.values()) <= GRADE_QUESTION_RANGES[grade][1]
+    and sum(high for _, high in split.values()) >= GRADE_QUESTION_RANGES[grade][0]
+    for grade, split in TYPICAL_SPLITS.items()
+)

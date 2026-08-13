@@ -147,7 +147,7 @@ async def _seed_graph(session, graph: TenantGraph, label: str) -> None:
         text(
             "INSERT INTO report_dimensions "
             "(id, tenant_id, report_id, category, name, score, remark, ordinal) "
-            "VALUES (:dimension, :tenant, :report, 'primary_skill', :label, 90, :remark, 1)"
+            "VALUES (:dimension, :tenant, :report, 'must_have', :label, 90, :remark, 1)"
         ),
         {**values, "remark": label},
     )
@@ -155,7 +155,7 @@ async def _seed_graph(session, graph: TenantGraph, label: str) -> None:
         text(
             "INSERT INTO job_competencies "
             "(id, tenant_id, job_id, category, name, ordinal) "
-            "VALUES (:competency, :tenant, :job, 'primary_skill', :label, 1)"
+            "VALUES (:competency, :tenant, :job, 'must_have', :label, 1)"
         ),
         values,
     )
@@ -165,7 +165,7 @@ async def _seed_graph(session, graph: TenantGraph, label: str) -> None:
             "(id, tenant_id, conversation_id, category, skill, question_keys, "
             " technical_precision, depth, problem_solving_structure, "
             " role_relevance, concrete_examples, explicit_gaps, extracted_at, created_at) "
-            "VALUES (:evidence, :tenant, :conversation, 'primary_skill', :label, "
+            "VALUES (:evidence, :tenant, :conversation, 'must_have', :label, "
             " '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, "
             " '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, now(), now())"
         ),

@@ -1,33 +1,32 @@
 "use client";
 
-// The single manual step in the pipeline (spec §11).
+// The one manual step in the pipeline (spec 10), and it has TWO halves that
+// are finalised in ONE setup session:
 //
-// Two things are generated in parallel when a job is created, and exactly ONE
-// of them gates candidates (client decision, 2026-08-04):
-//
-//   1. The PPI evaluation framework: Primary Skills, Secondary Skills and
-//      Behavioural Competencies, generated from the JD (spec §6.2, §6.3).
-//      A human MUST save it. It is the fixed criteria every candidate on this
-//      job is graded against, so a human confirming it is the product's only
+//   1. The PPI evaluation matrix: Must-have, Nice-to-have and Behavioural
+//      Competencies, generated from the JD AND the reporting authority's SWOT
+//      intake (spec 5.2, 5.3). The Hiring Manager reviews it with drag and
+//      drop and saves it. It is the fixed criteria every candidate on this job
+//      is graded against, so a human confirming it is the product's only
 //      guarantee that two reports are comparable.
-//   2. The technical question bank, generated from the JD (spec §5). It gates
-//      NOTHING. Questions are live the moment they are generated; a weak one
-//      costs one item on one report rather than making two reports
-//      incomparable, which is why only the framework half survived.
+//   2. The job's Matching category list, generated from the JD (spec 3.2). It
+//      decides how every sourced resume on this job is ranked, which is a
+//      comparability guarantee of the same kind, so it gates too.
 //
-// Everything else in the pipeline runs without human intervention. This screen
+// The SWOT intake sits above both and gates NEITHER on its own. It is an INPUT
+// to the matrix, so an intake nobody completed already shows up as a matrix
+// nobody approved; gating separately would give one problem two error messages.
+//
+// Everything after approval runs without human intervention. This screen
 // therefore has one job: make the outstanding work obvious, so the step does
-// not become a silent bottleneck. The status strip at the top says exactly what
-// is still blocking candidates, and the backend mails a reminder if it is left
+// not become a silent bottleneck. The status strip says exactly what is still
+// blocking candidates, and the backend mails a reminder if it is left
 // unapproved past the configured threshold.
 //
-// THE STATUS STRIP MUST NAME ONLY THE FRAMEWORK. It previously built its
-// outstanding list from `questions_approved` as well, so it told every
-// recruiter that "the technical questions" were blocking candidates while the
-// control that would have cleared them had been deleted in the same change.
-// The banner was unclearable by construction and read as the removed feature
-// still being present. A blocker the UI names must have a control that
-// satisfies it.
+// EVERY BLOCKER THE UI NAMES MUST HAVE A CONTROL THAT SATISFIES IT. The strip
+// previously listed the technical question bank, whose control had been deleted
+// in the same change, so it was unclearable by construction and read as a
+// removed feature still being present.
 
 import * as React from "react";
 import { Check, Loader2, Lock, Pencil, Plus, Trash2, Unlock } from "lucide-react";
@@ -40,6 +39,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "./ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { RatingLabel } from "@/components/rating-label";
+import { SwotIntakePanel } from "@/components/swot-intake";
+import { MatchingCategoriesCard } from "@/components/matching-categories";
 import {
   Card,
   CardContent,
@@ -57,21 +58,34 @@ import {
 
 const BASE = "/api/v2/assessments/jobs";
 
-type Category = "primary_skill" | "secondary_skill" | "behavioural";
+type Category = "must_have" | "nice_to_have" | "behavioural";
 
-const CATEGORY_ORDER: Category[] = ["primary_skill", "secondary_skill", "behavioural"];
+const CATEGORY_ORDER: Category[] = ["must_have", "nice_to_have", "behavioural"];
 
 const CATEGORY_LABEL: Record<Category, string> = {
-  primary_skill: "Primary Skills",
-  secondary_skill: "Secondary Skills",
+  must_have: "Must-have",
+  nice_to_have: "Nice-to-have",
   behavioural: "Behavioural Competencies",
 };
 
 const CATEGORY_HINT: Record<Category, string> = {
-  primary_skill: "Capabilities the role cannot be performed without.",
-  secondary_skill: "Supporting capabilities that strengthen performance without being disqualifying.",
+  must_have:
+    "Capabilities the role cannot be performed without. Technical depth is assessed here.",
+  nice_to_have:
+    "Supporting capabilities that strengthen performance without being disqualifying.",
   behavioural: "Observable workplace behaviours the role demands.",
 };
+
+/**
+ * Where an item may be DROPPED.
+ *
+ * Behavioural is deliberately absent. Spec 5.3 offers moving items "between
+ * Must-have and Nice-to-have", and the server refuses a move into Behavioural:
+ * a skill assessed by judgement rather than against a rubric would silently
+ * change how every candidate on the job is graded on it. The UI must not offer
+ * a drop the server will reject.
+ */
+const MOVE_TARGETS: Category[] = ["must_have", "nice_to_have"];
 
 /**
  * The three levels a job can require. "Not Matching" is deliberately absent: a
@@ -96,6 +110,15 @@ interface Framework {
   status: string;
   approved: boolean;
   competencies: Competency[];
+  /** The most items this matrix may hold: every item is probed at least once,
+   *  so the grade's question ceiling is the matrix's ceiling (spec 5.4). */
+  maximum_items: number;
+  /** How many questions this job's candidates will be asked, resolved from the
+   *  grade's range and the matrix size. Shown so the Hiring Manager can see
+   *  what adding an item actually costs the candidate. */
+  question_target: number;
+  /** There is NO minimum item count in Draft v4. Reported as one per aspect
+   *  purely because each aspect is graded and charted on every report. */
   minimum_per_category: number;
   blocking_reason: string | null;
 }
@@ -109,6 +132,11 @@ export interface Setup {
   // the type is what stops it being wired back into a blocking message by
   // someone reading the payload rather than this file.
   framework_approved: boolean;
+  /** The second half of the setup session (spec 3.2). */
+  matching_categories_finalized?: boolean;
+  /** Whether the reporting authority has finished the SWOT intake. Reported,
+   *  never a gate on its own: see the header. */
+  swot_complete?: boolean;
   ready_for_candidates: boolean;
   /**
    * The framework has not been generated yet and the backend has just enqueued
@@ -134,34 +162,54 @@ export function SetupStatus({ setup }: { setup: Setup }) {
           Ready for candidates
         </p>
         <p className="mt-1 text-xs">
-          The PPI framework is saved. Candidates you invite can now take the
-          assessment.
+          Both halves of the setup are saved. Candidates you invite can now take
+          the assessment, and everything after that runs on its own.
         </p>
       </div>
     );
   }
-  // Only the framework is named, because only the framework can be acted on.
-  // `setup.questions_approved` is deliberately NOT read here: the backend
-  // stopped gating on it and the button that set it is gone, so naming it
-  // would state a blocker no control on this page can clear.
+
+  // EVERY BLOCKER NAMED HERE HAS A CONTROL ON THIS PAGE THAT CLEARS IT.
+  //
+  // `setup.questions_approved` is deliberately NOT read: the backend stopped
+  // gating on it and the button that set it is gone, so naming it would state a
+  // blocker nothing can clear. The SWOT intake is not named as a blocker for a
+  // different reason: it does not gate. It is an input to the matrix, so an
+  // unfinished intake already shows up as a matrix nobody approved, and naming
+  // it separately would give one problem two error messages.
+  const outstanding: string[] = [];
+  if (!setup.framework_approved) outstanding.push("save the evaluation matrix");
+  if (setup.matching_categories_finalized === false) {
+    outstanding.push("save the matching categories");
+  }
+
   return (
     <div className="rounded-lg border border-amber-600 bg-amber-50 p-4 dark:bg-amber-950/40">
-      <p className="text-sm font-semibold">Framework pending review</p>
+      <p className="text-sm font-semibold">Job setup pending review</p>
       <p className="mt-1 text-xs">
-        No candidate can be invited to this job until you save the PPI framework
+        No candidate can be invited to this job until you{" "}
+        {outstanding.length > 0
+          ? outstanding.join(" and ")
+          : "finish the setup review"}{" "}
         below. Applications still arrive in the meantime.
       </p>
+      {setup.swot_complete === false ? (
+        <p className="mt-2 text-xs">
+          The role intake is unfinished. It is not a blocker on its own, but the
+          matrix is written from it, so answering it first is worth the two
+          minutes.
+        </p>
+      ) : null}
       {setup.framework_pending ? (
         <p className="mt-2 text-xs">
           We are still writing the criteria for this role. This normally takes
           under a minute; refresh the page shortly.
         </p>
-      ) : null}
-      {!setup.framework_pending ? (
+      ) : (
         <Button asChild size="sm" className="mt-3">
-          <a href="#ppi-framework">Review and save framework</a>
+          <a href="#ppi-framework">Review and save</a>
         </Button>
-      ) : null}
+      )}
     </div>
   );
 }
@@ -382,6 +430,12 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
   const [framework, setFramework] = React.useState<Framework | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [busy, setBusy] = React.useState(false);
+  // Drag-and-drop review (spec 5.3). Native HTML5 drag events rather than a
+  // drag library: the interaction is a single-column reorder with two drop
+  // zones, and a dependency for that is a build risk with nothing to show for
+  // it.
+  const [dragging, setDragging] = React.useState<string | null>(null);
+  const [dropTarget, setDropTarget] = React.useState<Category | null>(null);
 
   /**
    * The two halves are fetched INDEPENDENTLY.
@@ -441,6 +495,62 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
     [load, toast]
   );
 
+  /**
+   * Apply one drag gesture: reorder inside an aspect, or move an item between
+   * Must-have and Nice-to-have (spec 5.3).
+   *
+   * The WHOLE ordered list for each CHANGED aspect is sent, not a (from, to)
+   * pair. A pair has to be replayed against whatever the server currently
+   * holds, and two hiring managers dragging at once would interleave into an
+   * order neither of them saw; a full list is idempotent and always describes a
+   * state a human actually looked at. An aspect the client omits is left
+   * untouched, so a gesture inside one list cannot renumber another.
+   *
+   * `beforeId` is the item the drop landed ON, so the dragged item takes its
+   * place. A drop on the empty part of a list has no such anchor and appends,
+   * which is what dropping into a gap looks like to the person doing it.
+   */
+  const handleDrop = React.useCallback(
+    async (target: Category, beforeId: string | null) => {
+      const moved = dragging;
+      setDragging(null);
+      setDropTarget(null);
+      if (!moved || !framework || moved === beforeId) return;
+
+      const source = framework.competencies.find((row) => row.id === moved);
+      if (!source) return;
+
+      const groups = new Map<Category, string[]>();
+      for (const category of CATEGORY_ORDER) {
+        groups.set(
+          category,
+          framework.competencies
+            .filter((row) => row.category === category && row.id !== moved)
+            .map((row) => row.id)
+        );
+      }
+      const destination = groups.get(target) ?? [];
+      const at = beforeId ? destination.indexOf(beforeId) : -1;
+      if (at >= 0) destination.splice(at, 0, moved);
+      else destination.push(moved);
+
+      const changed: Category[] = [target];
+      if (source.category !== target) changed.push(source.category);
+
+      await mutate(
+        () =>
+          apiPost(`${BASE}/${jobId}/framework/reorder`, {
+            groups: changed.map((category) => ({
+              category,
+              competency_ids: groups.get(category) ?? [],
+            })),
+          }),
+        "Couldn't move that item"
+      );
+    },
+    [dragging, framework, jobId, mutate]
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-10">
@@ -457,9 +567,9 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
         <CardHeader>
           <CardTitle>Assessment setup</CardTitle>
           <CardDescription>
-            The PPI framework for this job is not available yet. It is generated
-            from the job description shortly after a job is created, and has to
-            be saved before any candidate can be invited.
+            The PPI evaluation matrix for this job is not available yet. It is
+            generated from the job description shortly after a job is created,
+            and has to be saved before any candidate can be invited.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -483,16 +593,23 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
     <div className="space-y-5">
       {setup ? <SetupStatus setup={setup} /> : null}
 
-      {/* ── PPI framework ─────────────────────────────────────────────────── */}
+      {/* The intake comes FIRST because it is an input to everything below it:
+          the matrix is generated from the job description and this together. */}
+      <SwotIntakePanel jobId={jobId} />
+
+      {/* The other half of the one setup session (spec 3.2). */}
+      <MatchingCategoriesCard jobId={jobId} />
+
+      {/* ── The PPI evaluation matrix ─────────────────────────────────────── */}
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle>PPI evaluation framework</CardTitle>
+              <CardTitle>PPI evaluation matrix</CardTitle>
               <CardDescription>
-                Generated from this job&apos;s description. Once saved it becomes the fixed
-                evaluation criteria for every candidate who applies, which is what makes their
-                reports comparable.
+                Generated from this job&apos;s description and the role intake above. Once
+                saved it becomes the fixed evaluation criteria for every candidate who
+                applies, which is what makes their reports comparable.
               </CardDescription>
             </div>
             {framework?.approved ? (
@@ -516,20 +633,80 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
             </p>
           ) : (
             <>
+            <p className="rounded-md border bg-muted/30 p-3 text-xs">
+              {framework.competencies.length} item
+              {framework.competencies.length === 1 ? "" : "s"} in this matrix, at
+              most {framework.maximum_items} for this grade. Candidates will be
+              asked {framework.question_target} question
+              {framework.question_target === 1 ? "" : "s"}. There is no minimum:
+              keep only what this role genuinely needs, because every item here
+              is probed at least once.
+              {frozen
+                ? null
+                : " Drag an item to reorder it, or drop it on the other list to move it between Must-have and Nice-to-have."}
+            </p>
+
             {CATEGORY_ORDER.map((category) => {
               const rows = framework.competencies.filter((row) => row.category === category);
-              const short = rows.length < framework.minimum_per_category;
+              const empty = rows.length === 0;
+              const droppable = !frozen && MOVE_TARGETS.includes(category);
               return (
-                <section key={category} className="space-y-2">
+                <section
+                  key={category}
+                  className={
+                    "space-y-2 rounded-md p-2 transition-colors " +
+                    (dropTarget === category ? "bg-muted ring-1 ring-inset" : "")
+                  }
+                  onDragOver={(event) => {
+                    if (!droppable || !dragging) return;
+                    // Default is "no drop"; preventing it is what makes this a
+                    // valid drop zone at all in the HTML5 drag API.
+                    event.preventDefault();
+                    setDropTarget(category);
+                  }}
+                  onDragLeave={() => {
+                    if (dropTarget === category) setDropTarget(null);
+                  }}
+                  onDrop={(event) => {
+                    if (!droppable) return;
+                    event.preventDefault();
+                    void handleDrop(category, null);
+                  }}
+                >
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <h4 className="text-sm font-semibold">{CATEGORY_LABEL[category]}</h4>
                     <span className="text-xs">
-                      {rows.length} of at least {framework.minimum_per_category}
-                      {short ? ", more needed" : ""}
+                      {rows.length} item{rows.length === 1 ? "" : "s"}
+                      {empty ? ", at least one needed" : ""}
                     </span>
                   </div>
                   <p className="text-xs">{CATEGORY_HINT[category]}</p>
                   {rows.map((competency) => (
+                    <div
+                      key={`drag-${competency.id}`}
+                      draggable={!frozen}
+                      onDragStart={() => setDragging(competency.id)}
+                      onDragEnd={() => {
+                        setDragging(null);
+                        setDropTarget(null);
+                      }}
+                      onDragOver={(event) => {
+                        if (frozen || !dragging || dragging === competency.id) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setDropTarget(category);
+                      }}
+                      onDrop={(event) => {
+                        if (frozen) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void handleDrop(category, competency.id);
+                      }}
+                      className={
+                        (frozen ? "" : "cursor-grab active:cursor-grabbing ") +
+                        (dragging === competency.id ? "opacity-50" : "")
+                      }
+                    >
                     <CompetencyRow
                       key={competency.id}
                       competency={competency}
@@ -548,6 +725,7 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
                         ).then(() => undefined)
                       }
                     />
+                    </div>
                   ))}
                   {frozen ? null : (
                     <AddCompetency
@@ -584,7 +762,7 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
                   onClick={() =>
                     void mutate(
                       () => apiPost(`${BASE}/${jobId}/framework/reopen`),
-                      "Couldn't reopen the framework"
+                      "Couldn't reopen the matrix"
                     )
                   }
                 >
@@ -597,12 +775,12 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
                   onClick={async () => {
                     const ok = await mutate(
                       () => apiPost(`${BASE}/${jobId}/framework/finalize`),
-                      "Couldn't save the framework"
+                      "Couldn't save the matrix"
                     );
-                    if (ok) toast({ title: "Framework saved" });
+                    if (ok) toast({ title: "Matrix saved" });
                   }}
                 >
-                  Save framework
+                  Save matrix
                 </Button>
               )}
             </div>

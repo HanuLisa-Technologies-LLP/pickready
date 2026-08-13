@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.services import role_hierarchy
+
 from app.api.companies import (
     MAX_HIRING_MANAGERS,
     ROLE_LABELS,
@@ -31,7 +33,8 @@ from app.models.invite import (
 
 # ── Role validation (400 on anything but the 3 staff roles) ──────────────────
 
-def test_the_three_staff_roles_are_accepted() -> None:
+def test_the_manageable_staff_roles_are_accepted() -> None:
+    assert validate_staff_role("recruitment_manager") == Role.recruitment_manager
     assert validate_staff_role("hr_manager") == Role.hr_manager
     assert validate_staff_role("recruiter") == Role.recruiter
     assert validate_staff_role("hiring_manager") == Role.hiring_manager
@@ -49,14 +52,124 @@ def test_unknown_role_strings_are_rejected(bogus: str) -> None:
         validate_staff_role(bogus)
 
 
-def test_staff_roles_constant_is_exactly_the_three() -> None:
-    assert STAFF_ROLES == {Role.hr_manager, Role.recruiter, Role.hiring_manager}
+def test_staff_roles_are_exactly_the_manageable_ones() -> None:
+    """The customer's Super Admin seat is NOT creatable from the portal.
+
+    It is minted at onboarding by the Provider. A portal that could mint another
+    one would let a Recruitment Manager promote themselves past every rule in
+    `services/role_hierarchy`.
+    """
+    assert STAFF_ROLES == {
+        Role.recruitment_manager,
+        Role.hr_manager,
+        Role.recruiter,
+        Role.hiring_manager,
+    }
+    assert Role.client not in STAFF_ROLES
 
 
-def test_every_staff_role_has_a_human_label() -> None:
-    # The flat model means all three are equally addable — each needs copy.
-    assert set(ROLE_LABELS) == STAFF_ROLES
+def test_every_role_in_the_hierarchy_has_a_human_label() -> None:
+    """Including `client`, which is not creatable but IS displayed: the team
+    screen lists the Super Admin alongside everyone else."""
+    assert STAFF_ROLES < set(ROLE_LABELS)
     assert ROLE_LABELS[Role.hiring_manager] == "Hiring Manager"
+    assert ROLE_LABELS[Role.client] == "Super Admin"
+    assert ROLE_LABELS[Role.recruitment_manager] == "Recruitment Manager"
+
+
+# ── The four-level hierarchy (spec §29) ──────────────────────────────────────
+
+def test_the_hierarchy_is_super_admin_then_manager_then_recruiter_then_hm() -> None:
+    assert role_hierarchy.rank(Role.client) < role_hierarchy.rank(
+        Role.recruitment_manager
+    )
+    assert role_hierarchy.rank(Role.recruitment_manager) < role_hierarchy.rank(
+        Role.recruiter
+    )
+    assert role_hierarchy.rank(Role.recruiter) < role_hierarchy.rank(
+        Role.hiring_manager
+    )
+
+
+def test_the_legacy_hr_manager_ranks_with_the_recruitment_manager() -> None:
+    """A role a customer already assigned must not silently change what its
+    holder can do. Demoting every existing HR Manager to the bottom of a new
+    ladder would do exactly that."""
+    assert role_hierarchy.rank(Role.hr_manager) == role_hierarchy.rank(
+        Role.recruitment_manager
+    )
+
+
+@pytest.mark.parametrize(
+    "actor,target",
+    [
+        (Role.client, Role.recruitment_manager),
+        (Role.client, Role.hiring_manager),
+        (Role.recruitment_manager, Role.recruiter),
+        (Role.recruiter, Role.hiring_manager),
+    ],
+)
+def test_a_higher_role_manages_a_lower_one(actor, target) -> None:
+    assert role_hierarchy.can_manage(actor, target) is True
+
+
+@pytest.mark.parametrize(
+    "actor,target",
+    [
+        # Upward: the whole point of the ladder.
+        (Role.hiring_manager, Role.recruiter),
+        (Role.recruiter, Role.client),
+        # Sideways: two Recruiters editing each other would make the hierarchy
+        # meaningless, because everyone at a level would hold everyone else's
+        # permissions.
+        (Role.recruiter, Role.recruiter),
+        (Role.client, Role.client),
+        (Role.recruitment_manager, Role.hr_manager),
+        # Roles the hierarchy does not place must be refused, not crash.
+        (Role.candidate, Role.recruiter),
+        (Role.recruiter, Role.candidate),
+        (None, Role.recruiter),
+    ],
+)
+def test_a_peer_or_a_superior_is_refused(actor, target) -> None:
+    assert role_hierarchy.can_manage(actor, target) is False
+
+
+def test_a_manager_can_only_grant_what_they_hold() -> None:
+    """Otherwise the hierarchy is a privilege-escalation ladder rather than a
+    ceiling: a Recruiter grants a Hiring Manager billing access, then has that
+    Hiring Manager grant it back."""
+    mine = {"create_job", "view_databank"}
+    assert role_hierarchy.grantable_capabilities(mine) == mine
+    assert "manage_billing" not in role_hierarchy.grantable_capabilities(mine)
+
+
+def test_subordinate_roles_are_offered_in_hierarchy_order() -> None:
+    offered = role_hierarchy.subordinate_roles(Role.client)
+    assert offered[0] in (Role.recruitment_manager, Role.hr_manager)
+    assert offered[-1] == Role.hiring_manager
+    assert Role.client not in offered
+    # A Hiring Manager is the bottom of the ladder and creates nobody.
+    assert role_hierarchy.subordinate_roles(Role.hiring_manager) == []
+
+
+def test_no_route_deletes_a_candidate_from_the_customer_portal() -> None:
+    """Spec §29: the Super Admin has full access EXCEPT deleting a candidate.
+
+    Enforced by ABSENCE, which is the strongest form: there is no delete route
+    to gate. An application is ARCHIVED, and the shared candidate record
+    survives because other tenants' applications point at it.
+    """
+    from app.api import candidates as candidates_api
+
+    for route in candidates_api.router.routes:
+        methods = getattr(route, "methods", set()) or set()
+        if "DELETE" not in methods:
+            continue
+        # The one DELETE that exists archives an application; it does not
+        # delete the candidate.
+        assert route.path == "/links/{link_id}", route.path
+        assert route.name == "archive_candidate_application"
 
 
 # ── Hiring Manager cap (FR-2.2: max 5 ACTIVE; HR/Recruiter uncapped) ─────────

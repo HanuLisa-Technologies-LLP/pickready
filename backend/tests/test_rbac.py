@@ -48,12 +48,15 @@ def test_default_matrix_uses_known_capabilities_only() -> None:
             assert capability in ALL_CAPABILITIES, capability
 
 
-def test_flat_staff_model_all_three_roles_identical() -> None:
+def test_hierarchy_roles_begin_with_the_same_operational_template() -> None:
     # PRD v1.0 §4 (FINAL): HR Manager, Recruiter, Hiring Manager are EQUAL.
+    rm = DEFAULT_PERMISSION_MATRIX[Role.recruitment_manager]
     hr = DEFAULT_PERMISSION_MATRIX[Role.hr_manager]
     rec = DEFAULT_PERMISSION_MATRIX[Role.recruiter]
     hm = DEFAULT_PERMISSION_MATRIX[Role.hiring_manager]
-    assert hr == rec == hm
+    assert rm == hr == rec
+    assert {**hm, MANAGE_STAFF: True} == rm
+    assert hm[MANAGE_STAFF] is False
     # ...and each grants at least the full operational set (all True).
     # `==` was too tight once the three staff roles were widened to the same
     # customer-side set migration 0031 seeds globally: the code template has to
@@ -63,16 +66,21 @@ def test_flat_staff_model_all_three_roles_identical() -> None:
     assert all(v is True for v in hr.values())
 
 
-def test_flat_staff_all_create_and_share_operational_caps() -> None:
+def test_every_hierarchy_role_has_operational_defaults() -> None:
     # Every staff role can create+publish jobs and reach the shared pipeline.
-    for role in (Role.hr_manager, Role.recruiter, Role.hiring_manager):
+    for role in (
+        Role.recruitment_manager,
+        Role.hr_manager,
+        Role.recruiter,
+        Role.hiring_manager,
+    ):
         grants = DEFAULT_PERMISSION_MATRIX[role]
         assert grants[CREATE_JOB] is True
         assert grants[SEND_OUTREACH] is True   # was recruiter-denied pre-flatten
         assert grants[VIEW_DATABANK] is True
 
 
-def test_staff_management_is_granted_to_the_customer_roles() -> None:
+def test_staff_management_stops_at_the_bottom_of_the_hierarchy() -> None:
     """MANAGE_STAFF belongs to the Company Admin AND to the staff roles.
 
     This test previously asserted the opposite — that MANAGE_STAFF was
@@ -84,8 +92,14 @@ def test_staff_management_is_granted_to_the_customer_roles() -> None:
     already not honouring. It is inverted here rather than deleted, so the
     grant stays deliberate and a future narrowing is a visible test change.
     """
-    for role in (Role.client, Role.hr_manager, Role.recruiter, Role.hiring_manager):
+    for role in (
+        Role.client,
+        Role.recruitment_manager,
+        Role.hr_manager,
+        Role.recruiter,
+    ):
         assert DEFAULT_PERMISSION_MATRIX[role][MANAGE_STAFF] is True
+    assert DEFAULT_PERMISSION_MATRIX[Role.hiring_manager][MANAGE_STAFF] is False
     # It is still NOT part of the bare operational set — a role added later
     # inherits _STAFF_OPERATIONAL without silently inheriting staff management.
     assert MANAGE_STAFF not in _STAFF_OPERATIONAL
@@ -163,7 +177,12 @@ def test_default_matrix_agrees_with_the_seed_migration() -> None:
             for capability, allowed in DEFAULT_PERMISSION_MATRIX[Role(role_name)].items()
             if allowed
         }
-        missing = sorted(set(seed.GRANTED_CAPABILITIES) - granted)
+        expected = set(seed.GRANTED_CAPABILITIES)
+        # Migration 0051 reverses this one flat-model grant: Hiring Manager is
+        # the bottom hierarchy tier and has no subordinate staff to manage.
+        if role_name == Role.hiring_manager.value:
+            expected.discard(MANAGE_STAFF)
+        missing = sorted(expected - granted)
         assert not missing, (
             f"role {role_name}: migration 0031 grants {missing} but the code "
             "template does not, so a console-created tenant would lose them"

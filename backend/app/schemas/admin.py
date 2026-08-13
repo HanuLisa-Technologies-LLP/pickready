@@ -40,7 +40,9 @@ Industry = Literal[
 # Roles the Owner may invite into a tenant. `client`, `super_admin` and
 # `candidate` are deliberately absent — the Owner invariant (services/owner.py)
 # is the backstop, this Literal is the first gate.
-StaffRoleName = Literal["hr_manager", "recruiter", "hiring_manager"]
+StaffRoleName = Literal[
+    "recruitment_manager", "hr_manager", "recruiter", "hiring_manager"
+]
 
 MAX_CULTURE = 5_000
 MAX_DETAILS = 20_000

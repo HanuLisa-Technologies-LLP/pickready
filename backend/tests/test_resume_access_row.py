@@ -41,6 +41,10 @@ def _row(**overrides) -> dict:
         "source_type": "applied",
         "archived_at": None,
         "breakdown": None,
+        # The validation questionnaire this row carries for the recruiter's
+        # Q&A column. None is what a link submitted before the fields existed
+        # looks like, which is the case worth having in the default fixture.
+        "validation": None,
         "full_name": "Asha Rao",
         "email": "asha@example.com",
         "resume_url": "gs://pickready-resumes-private/resumes/abc123",

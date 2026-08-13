@@ -158,7 +158,7 @@ export function PermissionMatrixModal({
           </DialogTitle>
           <DialogDescription>
             Leave a permission on &ldquo;Follows role&rdquo; and it tracks the{" "}
-            {data?.role?.replaceAll("_", " ") ?? "role"} default, including future
+            {data?.role_label ?? data?.role?.replaceAll("_", " ") ?? "role"} default, including future
             changes. Grant or revoke to pin it for this person only.
           </DialogDescription>
         </DialogHeader>
@@ -172,6 +172,7 @@ export function PermissionMatrixModal({
             {data.all_capabilities.map((capability) => {
               const state = stateOf(capability, overrides);
               const isOn = effective.has(capability);
+              const canGrant = (data.grantable ?? []).includes(capability);
               return (
                 <li
                   key={capability}
@@ -206,6 +207,12 @@ export function PermissionMatrixModal({
                         size="sm"
                         variant={state === value ? "default" : "outline"}
                         aria-pressed={state === value}
+                        disabled={value === "grant" && !canGrant}
+                        title={
+                          value === "grant" && !canGrant
+                            ? "You can only grant permissions you hold yourself."
+                            : undefined
+                        }
                         onClick={() => setState(capability, value)}
                       >
                         {text}

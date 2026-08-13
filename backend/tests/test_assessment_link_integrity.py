@@ -100,7 +100,7 @@ def test_the_link_still_passes_with_sentence_punctuation_after_it() -> None:
     "prose",
     [
         "You will be asked about Node.js and about how you work.",
-        "The team read your application at readypick.ai and liked it.",
+        "The team read your application at example.test and liked it.",
         "It takes about 30 to 40 minutes, i.e. one sitting.",
     ],
 )

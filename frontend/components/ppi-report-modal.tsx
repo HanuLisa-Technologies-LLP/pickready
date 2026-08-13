@@ -9,8 +9,8 @@
 // something the server would refuse.
 //
 // Section order is fixed (spec §10.3): AI Score -> Overall Assessment ->
-// Primary Skills -> Secondary Skills -> Behavioural Competencies -> Validation
-// -> Suggested interview questions.
+// Must-have -> Nice-to-have -> Behavioural Competencies -> Validation -> Gap
+// Analysis & Action Plan.
 
 import * as React from "react";
 import dynamic from "next/dynamic";

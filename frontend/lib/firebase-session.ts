@@ -53,6 +53,7 @@ export async function selectContext(
 export const ROLE_LABEL: Record<Role, string> = {
   super_admin: "Owner",
   client: "Client admin",
+  recruitment_manager: "Recruitment manager",
   hr_manager: "HR manager",
   recruiter: "Recruiter",
   hiring_manager: "Hiring manager",

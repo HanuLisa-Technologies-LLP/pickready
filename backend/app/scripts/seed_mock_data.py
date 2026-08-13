@@ -1461,8 +1461,8 @@ SEED_BEHAVIOURAL: tuple[tuple[str, str], ...] = (
 #: What a seeded job requires of each category, as an internal band score. Never
 #: displayed: the API projects it to one of the four grade words.
 SEED_REQUIRED_LEVEL: dict[str, int] = {
-    "primary_skill": 95,
-    "secondary_skill": 67,
+    "must_have": 95,
+    "nice_to_have": 67,
     "behavioural": 82,
 }
 
@@ -1509,12 +1509,12 @@ def seed_framework(jd_skills: list[str], title: str) -> list[dict[str, Any]]:
 
     for ordinal, name in enumerate(_take(0, "core"), 1):
         rows.append({
-            "category": "primary_skill", "name": name, "ordinal": ordinal,
+            "category": "must_have", "name": name, "ordinal": ordinal,
             "description": f"Core capability the job description names as required: {name}.",
         })
     for ordinal, name in enumerate(_take(5, "supporting"), 1):
         rows.append({
-            "category": "secondary_skill", "name": name, "ordinal": ordinal,
+            "category": "nice_to_have", "name": name, "ordinal": ordinal,
             "description": f"Supporting capability that strengthens delivery of the role: {name}.",
         })
     for ordinal, (name, description) in enumerate(SEED_BEHAVIOURAL, 1):

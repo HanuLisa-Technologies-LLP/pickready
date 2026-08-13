@@ -9,10 +9,10 @@
 // now lives here in the source and the save toast states the consequence once.
 
 import * as React from "react";
-import { Loader2, Save } from "lucide-react";
+import { ExternalLink, Loader2, Pencil, Save, Search } from "lucide-react";
 
-import { apiGet, apiPatch } from "@/lib/api";
-import type { CompanyProfile } from "@/lib/types";
+import { apiGet, apiPatch, apiPost } from "@/lib/api";
+import type { CompanyProfile, CompanyProfileResearch } from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
@@ -60,6 +60,9 @@ export default function CompanyProfilePage() {
   const [draft, setDraft] = React.useState<Draft>(EMPTY);
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
+  const [researching, setResearching] = React.useState(false);
+  const [research, setResearch] = React.useState<CompanyProfileResearch | null>(null);
+  const [editing, setEditing] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -97,6 +100,7 @@ export default function CompanyProfilePage() {
         benefits: draft.benefits.trim() || null,
       });
       setProfile(res);
+      setEditing(false);
       toast({
         title: "Company profile saved",
         description: "New jobs will use this text. Existing jobs are unchanged.",
@@ -109,6 +113,43 @@ export default function CompanyProfilePage() {
       });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const researchProfile = async () => {
+    setResearching(true);
+    setEditing(false);
+    try {
+      const result = await apiPost<CompanyProfileResearch>(
+        "/companies/me/profile/research"
+      );
+      setResearch(result);
+      if (!result.degraded) {
+        setDraft({
+          about_company: result.about_company,
+          work_life: result.work_life,
+          benefits: result.benefits,
+        });
+        toast({
+          title: "Research draft ready",
+          description: "Review the sources, then choose Edit draft before changing or saving it.",
+        });
+      } else {
+        toast({
+          title: "Company research could not produce a draft",
+          description: result.message ?? "No usable professional sources were found.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      setResearch(null);
+      toast({
+        title: "Company research failed",
+        description: error instanceof Error ? error.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setResearching(false);
     }
   };
 
@@ -136,6 +177,61 @@ export default function CompanyProfilePage() {
             <LoadingRows rows={3} label="Loading company profile" />
           ) : (
             <>
+              {canEdit ? (
+                <div className="rounded-xl border bg-secondary/35 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="font-medium">Professional company research</p>
+                      <p className="mt-1 text-sm">
+                        Builds a draft from the company website and professional sources before editing begins.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="outline"
+                        className="gap-1.5"
+                        disabled={researching || saving}
+                        onClick={() => void researchProfile()}
+                      >
+                        {researching ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Search className="h-4 w-4" />
+                        )}
+                        {researching ? "Researching" : "Research company"}
+                      </Button>
+                      {research ? (
+                        <Button
+                          className="gap-1.5"
+                          disabled={researching || editing}
+                          onClick={() => setEditing(true)}
+                        >
+                          <Pencil className="h-4 w-4" /> Edit draft
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                  {research?.message ? (
+                    <p role="alert" className="mt-3 text-sm text-destructive">
+                      {research.message}
+                    </p>
+                  ) : null}
+                  {research?.sources.length ? (
+                    <div className="mt-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide">Sources used</p>
+                      <ul className="mt-2 space-y-1 text-xs">
+                        {research.sources.map((source) => (
+                          <li key={source}>
+                            <a className="inline-flex items-center gap-1 underline" href={source} target="_blank" rel="noreferrer">
+                              {source} <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {SECTIONS.map((section) => {
                 const value = draft[section.key];
                 const length = value.trim().length;
@@ -154,7 +250,7 @@ export default function CompanyProfilePage() {
                     <Textarea
                       id={`profile-${section.key}`}
                       rows={6}
-                      readOnly={!canEdit}
+                      readOnly={!canEdit || !editing}
                       placeholder={section.placeholder}
                       value={value}
                       onChange={(e) =>
@@ -165,7 +261,7 @@ export default function CompanyProfilePage() {
                 );
               })}
 
-              {canEdit ? (
+              {canEdit && editing ? (
                 <Button
                   className="gap-1.5"
                   disabled={saving}

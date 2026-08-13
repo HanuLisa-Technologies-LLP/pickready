@@ -509,11 +509,11 @@ def test_an_unknown_band_lands_innermost_rather_than_raising() -> None:
 
 def _radar_rows():
     return [
-        {"category": ppi_service.CATEGORY_PRIMARY, "name": f"Primary {i}",
+        {"category": ppi_service.CATEGORY_MUST_HAVE, "name": f"Primary {i}",
          "score": 90 - i * 10, "required_level": 95, "ordinal": i + 1}
         for i in range(5)
     ] + [
-        {"category": ppi_service.CATEGORY_SECONDARY, "name": f"Secondary {i}",
+        {"category": ppi_service.CATEGORY_NICE_TO_HAVE, "name": f"Secondary {i}",
          "score": 70, "required_level": 67, "ordinal": i + 1}
         for i in range(5)
     ] + [

@@ -89,19 +89,45 @@ DOCUMENT_READINESS_OPTIONS: tuple[str, ...] = (
 ROLE_INTEREST_MIN_CHARS = 30
 ROLE_INTEREST_MAX_CHARS = 2000
 
+# ── CTC input format (spec §15) ──────────────────────────────────────────────
+# The client asked for a worked example beside the CTC boxes and for the values
+# to be in rupees. Both live HERE rather than in the form component, for the
+# same reason the field list does: the report renders the same fields the form
+# collected, and an example that exists only in the frontend is an example the
+# report cannot explain.
+#
+# THE EXAMPLE IS THE CLIENT'S OWN, in Indian digit grouping (lakh, then
+# thousand). It is a HINT, not a validator: a candidate who types "4 LPA",
+# "4,00,000" or "400000" has answered the question, and refusing any of them
+# would fail a real answer over punctuation. Nothing scores this field, so the
+# value reaches the recruiter exactly as typed (spec §14).
+CTC_EXAMPLE = "4,00,000"
+CTC_CURRENCY = "INR"
+CTC_CURRENCY_SYMBOL = "Rs."
+
 #: (key, label, type, options). `type` is what the frontend renders.
 VALIDATION_FIELDS: tuple[dict[str, Any], ...] = (
     {
         "key": "current_ctc",
         "label": "Current CTC",
         "type": "text",
-        "hint": "Your current annual fixed compensation.",
+        "hint": (
+            "Your current annual fixed compensation, in Indian rupees. "
+            f"For example {CTC_EXAMPLE}."
+        ),
+        "placeholder": CTC_EXAMPLE,
+        "currency": CTC_CURRENCY,
     },
     {
         "key": "expected_ctc",
         "label": "Expected CTC",
         "type": "text",
-        "hint": "The annual compensation you are looking for.",
+        "hint": (
+            "The annual compensation you are looking for, in Indian rupees. "
+            f"For example {CTC_EXAMPLE}."
+        ),
+        "placeholder": CTC_EXAMPLE,
+        "currency": CTC_CURRENCY,
     },
     {
         "key": "notice_period",
@@ -109,14 +135,21 @@ VALIDATION_FIELDS: tuple[dict[str, Any], ...] = (
         "type": "select",
         "options": list(NOTICE_PERIOD_OPTIONS),
     },
-    # `joining_date` (Earliest joining date) was removed on 2026-08-09, client
-    # decision. It was a mandatory field that duplicated the notice period a
-    # candidate had already answered one field earlier, and a date typed months
-    # before an offer is not evidence of anything. Reports written before today
-    # still carry the key in their own `validation_json` and still render it;
-    # `normalise` simply stops accepting new values for it. No column was
-    # dropped because there is none: the six fields are keys inside
-    # `job_candidate_links.validation_json`.
+    # RESTORED (Draft v4, spec §14, which lists joining date among the mandatory
+    # fields in as many words).
+    #
+    # It was removed on 2026-08-09 on the reasoning that it duplicated the
+    # notice period answered one field earlier, and that a date typed months
+    # before an offer is not evidence of anything. That reasoning is still
+    # sound and the client has asked for the field anyway, which is their call
+    # to make. Applications submitted between the two decisions simply have no
+    # value for it and render as not stated.
+    {
+        "key": "joining_date",
+        "label": "Earliest joining date",
+        "type": "date",
+        "hint": "The earliest date you could start, if an offer were made.",
+    },
     {
         "key": "document_readiness",
         "label": "Document readiness",

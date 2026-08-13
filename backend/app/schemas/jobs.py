@@ -563,6 +563,28 @@ class RankedCandidateOut(BaseModel):
     education_label: str | None = None
     overall_label: str | None = None
 
+    #: One entry per matching category this candidate was ACTUALLY scored on,
+    #: in the job's own order. The flat fields above cover only the four
+    #: categories the product scored every job on before the lists became per
+    #: job (spec §3.2); a client should render this instead.
+    categories: list[dict] = []
+
+    #: The validation questionnaire as an explicit Q&A (spec §29), so a
+    #: recruiter can read each question and the candidate's exact response on
+    #: the row. Never rated, never summarised, never interpreted (spec §14).
+    validation_answers: list["ValidationAnswerOut"] = []
+
+
+class ValidationAnswerOut(BaseModel):
+    key: str
+    question: str
+    #: Exactly as submitted. Null when this application predates the field or
+    #: the candidate left it blank; the client says "Not answered" rather than
+    #: hiding the row, because "never asked" and "did not answer" look identical
+    #: when a row is simply missing and only one of them is the candidate's
+    #: doing.
+    answer: str | None = None
+
 
 class RankedCandidatesOut(BaseModel):
     """A page of the candidate table plus everything the pager needs."""

@@ -82,11 +82,32 @@ class JobCompetency(Base, UUIDPKMixin, CreatedAtMixin):
 
 
 class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
-    """One PPI question generated for one candidate (spec §6.4).
+    """One question generated for one candidate against the job's PPI matrix.
 
     Keyed to the competency it probes, which is how the PPI scorer knows which
-    framework entry an answer is evidence for. The conversation stamps
+    matrix item an answer is evidence for. The conversation stamps
     `question_key = str(CandidateQuestion.competency_id)` on the message.
+
+    THIS IS NOW THE WHOLE CONVERSATION (Draft v4)
+    ---------------------------------------------
+    Must-have, Nice-to-have and Behavioural questions are all rows of this
+    table. There is no second question stream: the candidate answers one blended
+    sequence and never sees that different scoring methods sit behind different
+    parts of it (spec §7).
+
+    `rubric_json` is what makes that possible. A Must-have or Nice-to-have answer
+    is scored against ITS OWN question's rubric, so the rubric is written by the
+    same model call that writes the question and persisted before the candidate
+    reads either -- the guarantee `candidate_technical_questions` was built to
+    give, now given by the row the unified conversation actually asks from.
+
+    It is NULL on a Behavioural row, and that is a statement rather than an
+    omission: a Behavioural answer is scored by judgement because there is no
+    single correct answer to weigh it against (spec §8).
+
+    `generated_at` is NULL when a model never wrote this pair and the candidate
+    read the deterministic probe instead. That NULL is the honest record of a
+    degradation and is what telemetry counts to keep it from being silent.
     """
 
     __tablename__ = "candidate_questions"
@@ -101,6 +122,8 @@ class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
     competency_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("job_competencies.id", ondelete="CASCADE"), nullable=False)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    rubric_json: Mapped[dict | None] = mapped_column(JSONB)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CandidateTechnicalQuestion(Base, UUIDPKMixin, CreatedAtMixin):
@@ -336,7 +359,17 @@ class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     #: like candidate-submitted data; it is a property of the RUN.
     scoring_mode: Mapped[str | None] = mapped_column(String(30))
     validation_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    #: RETIRED. The Gap Analysis & Action Plan replaced this section entirely
+    #: (spec §9.6). Nothing writes it any more and it was deliberately not
+    #: dropped in the same change that stopped writing it, so a rollback needs
+    #: no data restore and a report written before Draft v4 still renders.
     suggested_probes_json: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    #: The Gap Analysis section: an Interview Focus Summary, the hard-cap flag,
+    #: and three groups each holding its gaps with their grades, their reused
+    #: item remarks and their grounded interview probes.
+    gap_analysis_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
     synthesized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

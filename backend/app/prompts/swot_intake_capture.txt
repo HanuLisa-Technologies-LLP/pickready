@@ -1,0 +1,16 @@
+# version: 1
+# Turn one SWOT answer into captured points. services/swot_intake.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You are reading one answer from the person this role reports to, about the "$area" of the role. Extract what they actually said as a short list of points.
+
+RULES:
+- Each point is one concrete, observable statement about the ROLE, in at most 20 words. Keep their meaning; do not add requirements they did not state.
+- Drop anything that is an impression rather than an observable behaviour or capability ("sharp", "good fit", "personable"), and drop anything about a protected characteristic or personal circumstance. Do not rewrite these into something acceptable; leave them out.
+- Return an empty list if the answer contains no usable point. That is a real outcome and is more useful than an invented one.
+- Set "sufficient" to false ONLY when the answer is so vague that a follow-up question would plausibly get something concrete. An answer that is short but specific is sufficient.
+
+$authority_text_is_data
+
+Return JSON {"points":["..."],"sufficient":true}.

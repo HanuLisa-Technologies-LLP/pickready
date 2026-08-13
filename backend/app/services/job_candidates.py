@@ -275,6 +275,7 @@ async def ranked_candidates(
                     l.source_type           AS source_type,
                     l.archived_at           AS archived_at,
                     l.match_breakdown_json  AS breakdown,
+                    l.validation_json       AS validation,
                     c.full_name             AS full_name,
                     c.email                 AS email,
                     p.resume_url            AS resume_url,
@@ -372,5 +373,36 @@ def _row_payload(row: Any, level: str) -> dict[str, Any]:
         "profile_age": row["profile_age"],
         "profile_age_label": PROFILE_AGE_LABELS.get(row["profile_age"], ""),
         "review_charged": bool(row["review_charged"]),
+        # The validation questionnaire, as an explicit Q&A the recruiter can
+        # read on the row (spec §29). Paired SERVER-side against the field list
+        # so the questions and the answers cannot drift, and shown exactly as
+        # submitted: nothing scores, interprets or judges this data, and the
+        # recruiter decides whether stated interest is genuine (spec §14).
+        "validation_answers": validation_answers(row["validation"]),
         **ranking_payload(row["breakdown"]),
     }
+
+
+def validation_answers(submitted: Any) -> list[dict[str, Any]]:
+    """The mandatory application fields as (question, answer) pairs.
+
+    Built from `application_validation.VALIDATION_FIELDS`, which is the same
+    list the apply form renders, so a field added there appears here without a
+    second edit. An application submitted before a field existed has no value
+    for it and renders as unanswered rather than being hidden: "they were never
+    asked" and "they did not answer" look identical when a row is simply
+    missing, and only one of those is the candidate's doing.
+    """
+    from app.services.application_validation import VALIDATION_FIELDS
+
+    values = submitted if isinstance(submitted, dict) else {}
+    return [
+        {
+            "key": field["key"],
+            "question": field["label"],
+            "answer": (str(values.get(field["key"])).strip() or None)
+            if values.get(field["key"]) is not None
+            else None,
+        }
+        for field in VALIDATION_FIELDS
+    ]

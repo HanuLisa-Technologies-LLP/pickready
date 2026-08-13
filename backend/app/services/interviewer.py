@@ -97,33 +97,36 @@ __all__ = [
     "challenge_non_answer",
 ]
 
-#: Floor for a short interview, and the value this was FIXED at until
-#: 2026-08-05. Five probes across a non-managerial assessment's 45 questions
-#: means at most 11% of the interview could react to anything the candidate
-#: said; the other 89% was a script whatever they typed. That is the structural
-#: reason it read as a form with a chat skin, and no amount of prompt tuning
-#: reaches it. `follow_up_budget` now scales the ceiling with the interview's
-#: actual length and this is only its lower bound.
-MAX_FOLLOW_UPS = 5
+#: Floor for a short interview.
+#:
+#: LOWERED FROM 5 (Draft v4), and it had to be. The floor was set when the
+#: shortest interview in the product was a CXO's 22 questions; the grade ranges
+#: now bottom out at 7, and five probes across seven questions is the
+#: interrogation the scaling was introduced to avoid. Two keeps a short
+#: interview able to press on something without the pressing becoming the
+#: interview.
+MAX_FOLLOW_UPS = 2
 
 #: Hard upper bound, whatever the arithmetic says. Bounds the candidate's time
 #: and the token spend per assessment, and keeps an interview that can ask "one
-#: more thing" provably finite.
+#: more thing" provably finite. Above what the ratio can currently produce
+#: (28 // 3 = 9), and deliberately kept there: it is a backstop against a future
+#: count change, not a number the arithmetic is tuned to reach.
 MAX_FOLLOW_UPS_CEILING = 15
 
-#: One probe per this many base questions. At 45 questions that is 15, the
-#: ceiling; at 22 (CXO) it is 7. Roughly "the interviewer pressed on a third of
-#: what I said", which is what an attentive human interview feels like.
+#: One probe per this many base questions. At 28 that is 9; at 7 (CXO) the floor
+#: takes over at 2. Roughly "the interviewer pressed on a third of what I said",
+#: which is what an attentive human interview feels like.
 QUESTIONS_PER_FOLLOW_UP = 3
 
 
 def follow_up_budget(question_count: int) -> int:
     """How many probes this conversation may spend, scaled to its length.
 
-    A fixed ceiling is wrong in both directions: five is nearly nothing across a
-    45-question non-managerial interview, and would be an interrogation across a
-    10-question CXO one. Clamped at both ends so the result is always between
-    MAX_FOLLOW_UPS and MAX_FOLLOW_UPS_CEILING.
+    A fixed ceiling is wrong in both directions: it is nearly nothing across a
+    long non-managerial interview and an interrogation across a short CXO one.
+    Clamped at both ends so the result is always between MAX_FOLLOW_UPS and
+    MAX_FOLLOW_UPS_CEILING.
     """
     scaled = int(question_count) // QUESTIONS_PER_FOLLOW_UP
     return max(MAX_FOLLOW_UPS, min(MAX_FOLLOW_UPS_CEILING, scaled))
@@ -134,8 +137,8 @@ def follow_up_budget(question_count: int) -> int:
 MAX_FOLLOW_UPS_PER_QUESTION = 1
 
 #: How much transcript either graph sees. Enough to refer back without resending
-#: an entire 45-question interview on every turn, which would blow the token
-#: ceiling on the later questions of a long assessment.
+#: an entire interview on every turn, which would blow the token ceiling on the
+#: later questions of a long assessment.
 TRANSCRIPT_TURNS = 6
 
 #: A follow-up longer than this is not a question, it is a speech.

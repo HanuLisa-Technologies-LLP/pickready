@@ -84,6 +84,21 @@ SEARCH_BUDGET_SECONDS = 30.0
 RESULTS_PER_QUERY = 6
 MAX_CARDS = 12
 
+#: The most hits that reach the evaluate prompt in one pass.
+#:
+#: RCA, production 2026-08-07 and 2026-08-12: three planned queries at
+#: RESULTS_PER_QUERY each put up to eighteen hits and ~16,000 characters of
+#: retrieved content into a single request. Groq answered 413 (payload too
+#: large) on EVERY key, every time. A 413 is a permanent failure that no retry
+#: can fix, so the router burned the whole Groq tier on each attempt before
+#: falling through to the next provider, and the request only ever succeeded
+#: when a provider with a larger limit happened to have quota.
+#:
+#: Twelve is MAX_CARDS: the shape step cannot emit more than that, so hits
+#: beyond it could never have reached the page even when the judge succeeded.
+#: Bounding here costs nothing that was ever displayed.
+MAX_EVALUATE_HITS = MAX_CARDS
+
 #: Circuit breaker, same idea as the LLM router's: after this many consecutive
 #: failures, skip Tavily entirely until the cooldown elapses.
 _FAILURE_THRESHOLD = 3
@@ -108,6 +123,16 @@ QUOTA_MESSAGE = (
 UNAVAILABLE_MESSAGE = (
     "The web search is temporarily unavailable. Please try again shortly."
 )
+#: Shown when the search worked but the verification pass could not run.
+#: Names what did not happen rather than implying the whole feature is down,
+#: because the results below it are real and the distinction decides whether a
+#: BD rep clicks them.
+UNVERIFIED_MESSAGE = (
+    "These results came back from the web but could not be checked for "
+    "relevance, because the verification step was unavailable. Read them with "
+    "that in mind."
+)
+
 NO_RESULTS_MESSAGE = (
     "No results from the web could be verified for this role, city and "
     "industry. Try a broader job role or a nearby city."
@@ -364,7 +389,7 @@ def build_evaluate_prompt(
     between the task and the untrusted data is unambiguous.
     """
     lines = []
-    for index, hit in enumerate(hits, start=1):
+    for index, hit in enumerate(hits[:MAX_EVALUATE_HITS], start=1):
         snippet = str(hit.get("content") or "")[:_SNIPPET_CHARS]
         lines.append(
             f"[{index}] url: {hit.get('url')}\n"
@@ -601,22 +626,141 @@ async def _evaluate_node(state: ResearchState) -> dict:
             "extraction", messages, response_format_json=True,
             session=ctx.session, timeout=EVALUATE_TIMEOUT_SECONDS,
         )
+        return {"evaluated": parse_evaluation(raw)}
     except LLMUnavailableError:
-        # Without a verifier there is nothing to stand behind the results, and
-        # unverified web hits are exactly what this node exists to prevent.
         logger.info("web_research.evaluate_unavailable")
+        return _unverified(ctx)
+    except Exception as exc:  # noqa: BLE001
+        # THIS NODE IS SUPPOSED TO BE TOTAL AND WAS NOT. That is the whole RCA
+        # of "the AI internet search does not work".
+        #
+        # Only `LLMUnavailableError` was caught. Every other failure -- a bare
+        # RuntimeError out of the router, a malformed response that
+        # `parse_evaluation` choked on -- escaped the node, escaped the graph,
+        # and landed in `search_jobs`' outer handler, which logged
+        # `web_research.failed error=RuntimeError` and returned "unavailable".
+        # Six perfectly good Tavily results were discarded every time, and from
+        # the outside it looked exactly like a search provider outage, which is
+        # why it was diagnosed as a missing API key for weeks.
+        logger.warning("web_research.evaluate_failed error=%s", type(exc).__name__)
+        return _unverified(ctx)
+
+
+def _unverified(ctx: "_ResearchContext") -> dict:
+    """The retrieved hits, kept but marked as unverified.
+
+    WHY THIS IS NOT A SILENT DEGRADATION
+    ------------------------------------
+    The previous behaviour discarded every result when the judge was
+    unavailable, on the reasoning that unverified web hits are what this node
+    exists to prevent. That reasoning conflates two different things. The judge
+    decides RELEVANCE to the requested role, city and industry; it is not what
+    makes a URL real. Tavily returns actual search results, so throwing them
+    away leaves a BD rep with an empty page when the honest answer is "here is
+    what the web returned, nobody has checked it for you".
+
+    So the results survive, at the LOWEST confidence word, and the message says
+    plainly that the verification step did not run. A reader is told exactly
+    what they are looking at, which is the opposite of a silent fallback.
+    """
+    kept: list[dict[str, Any]] = []
+    for hit in ctx.hits[:MAX_EVALUATE_HITS]:
+        url = _normalise_url(hit.get("url"))
+        title = " ".join(str(hit.get("title") or "").split())[:160]
+        if not url or not title:
+            continue
+        company = _company_from_url(url)
+        if not company:
+            continue
+        kept.append(
+            {
+                "job_title": title,
+                "company": company,
+                # The requested city and industry, echoed rather than
+                # extracted. Nothing has read the page, so claiming a location
+                # the search did not confirm would be exactly the invention the
+                # verifier exists to prevent; echoing the query is a statement
+                # about what was ASKED FOR and is true by construction.
+                "city": ctx.city or None,
+                "industry": ctx.industry or None,
+                "company_url": _site_root(url),
+                "job_url": url,
+                # The lowest word available. An unchecked hit must never
+                # outrank a verified one on the same page.
+                "confidence": "not matching",
+            }
+        )
+    if not kept:
         return {"evaluated": [], "status": "unavailable",
                 "message": UNAVAILABLE_MESSAGE}
-    return {"evaluated": parse_evaluation(raw)}
+    return {"evaluated": kept, "status": "unverified",
+            "message": UNVERIFIED_MESSAGE}
+
+
+def _site_root(url: str) -> str:
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+#: Hosts that are a job board rather than an employer. A card for one of these
+#: names the board as the company, which is wrong and unhelpful, so an
+#: unverified hit from one is dropped rather than mislabelled.
+_AGGREGATOR_HOSTS: frozenset[str] = frozenset(
+    {
+        "indeed", "naukri", "linkedin", "glassdoor", "monster", "shine",
+        "timesjobs", "foundit", "simplyhired", "ziprecruiter", "jobsearch",
+        "cutshort", "instahyre", "hirist", "iimjobs", "apna", "wellfound",
+        "angel", "internshala", "freshersworld", "jooble", "careerjet",
+        "google", "bing", "wikipedia", "youtube", "facebook", "twitter",
+        "reddit", "instagram", "quora", "medium",
+    }
+)
+
+
+def _company_from_url(url: str) -> str | None:
+    """A readable company name from a host, or None when there is not one.
+
+    Deliberately crude, because this path has no model to ask. "careers.zoho.com"
+    becomes "Zoho"; a job board becomes None, because a card claiming Indeed is
+    the employer is worse than no card. This only ever runs when the verifier
+    could not, and the result is labelled unverified either way.
+    """
+    host = urlparse(url).netloc.casefold()
+    host = host[4:] if host.startswith("www.") else host
+    parts = [part for part in host.split(".") if part]
+    if len(parts) < 2:
+        return None
+    # Skip a leading subdomain like "careers" or "jobs".
+    labels = parts[:-1]
+    if len(labels) > 1 and labels[0] in {"careers", "jobs", "job", "hire", "work"}:
+        labels = labels[1:]
+    name = labels[0]
+    if name in _AGGREGATOR_HOSTS or len(name) < 2:
+        return None
+    return name.replace("-", " ").title()
+
+
+#: Statuses whose `evaluated` list is worth shaping into cards. "ok" is the
+#: verified path; "unverified" is the degraded one, where the search worked and
+#: the judge did not. Every other status carries no results by construction.
+_SHAPEABLE_STATUSES: frozenset[str] = frozenset({"ok", "unverified"})
 
 
 async def _shape_node(state: ResearchState) -> dict:
-    if state.get("status") != "ok":
+    status = state.get("status")
+    if status not in _SHAPEABLE_STATUSES:
         return {"cards": []}
     cards = shape_cards(state.get("evaluated") or [])
+    if not cards:
+        # An unverified pass that shaped nothing has nothing to show and nothing
+        # to caveat, so it reports the ordinary empty result rather than a
+        # warning about results that are not there.
+        return {"cards": [], "status": "ok", "message": NO_RESULTS_MESSAGE}
     return {
         "cards": cards,
-        "message": None if cards else NO_RESULTS_MESSAGE,
+        # The caveat survives shaping: it is the whole reason the degraded path
+        # is allowed to return anything.
+        "message": state.get("message") if status == "unverified" else None,
     }
 
 

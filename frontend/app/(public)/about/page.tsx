@@ -58,7 +58,7 @@ export default function AboutPage() {
               The market moved. AI matured, candidate expectations changed and people teams needed more control over how evidence becomes a decision. PickReady takes the practical lessons from that journey and rebuilds the operating model from first principles.
             </p>
             <p>
-              Executive Search Inspired Profiles is not a decorative feature name. It means PickReady takes responsibility for discovery, screening, validation and delivery, then hands the customer the result instead of another list of tasks.
+              PickReady turns role requirements, candidate evidence and structured conversation into one clear assessment trail, so teams can spend interview time on the questions that matter.
             </p>
           </FadeIn>
         </div>

@@ -54,16 +54,19 @@ def _stub_classifier(monkeypatch):
     # `api.assessments` imported the module, not the symbol, so patching the
     # module attribute is enough and there is no second binding to keep in step.
 
-    # The same reasoning, for the same reason, applied to the technical question
-    # writer added on 2026-08-06. `respond` now writes the NEXT base question
-    # before it returns, and for a technical slot that is a live model call
-    # through `technical_interview.write_question`. Unstubbed it reaches the
-    # router on this hand-driven session and, when every provider is down, the
-    # router's own key bookkeeping rolls the transaction back underneath the
-    # test -- which fails as a confusing "closed transaction" error a long way
-    # from anything these tests are about.
+    # The same reasoning applied to the question writer. `respond` writes the
+    # NEXT question before it returns, and that is a live model call through
+    # `ppi_interview.write_question`. Unstubbed it reaches the router on this
+    # hand-driven session and, when every provider is down, the router's own key
+    # bookkeeping rolls the transaction back underneath the test -- which fails
+    # as a confusing "closed transaction" error a long way from anything these
+    # tests are about.
+    #
+    # ONE stub now covers the whole conversation. Before Draft v4 there were two
+    # writers to patch, a technical one and a PPI one, and stubbing only one
+    # still left every other turn making a live call.
     from app.services import agent_loop
-    from app.services import technical_interview as ti
+    from app.services import ppi_interview
 
     async def _written(*, row, **kwargs):
         return agent_loop.LoopResult(
@@ -72,17 +75,7 @@ def _stub_classifier(monkeypatch):
             attempts=1,
         )
 
-    monkeypatch.setattr(ti, "write_question", _written)
-
-    # And the PPI half's writer, for the same reason: a blended conversation
-    # alternates the two, so stubbing only one still leaves every other turn
-    # making a live call.
-    from app.services import interviewer
-
-    async def _composed(*, question, **kwargs):
-        return question
-
-    monkeypatch.setattr(interviewer, "compose_next_question", _composed)
+    monkeypatch.setattr(ppi_interview, "write_question", _written)
 
 
 async def _factory_or_skip():
@@ -114,7 +107,11 @@ class _Fx:
 async def _seed(factory, fx: _Fx, question_count: int) -> None:
     from app.core.db import superadmin_scope
     from app.models import Candidate, Job, JobStatus, LinkSource, Tenant
-    from app.models.assessment import AssessmentConversation, CandidateTechnicalQuestion
+    from app.models.assessment import (
+        AssessmentConversation,
+        CandidateQuestion,
+        JobCompetency,
+    )
     from app.models.candidate import JobCandidateLink
 
     now = datetime.now(timezone.utc)
@@ -139,19 +136,40 @@ async def _seed(factory, fx: _Fx, question_count: int) -> None:
                                        source=LinkSource.fresh, status="applied"))
                 # The link must exist before anything references it.
                 await s.flush()
-                # Technical questions are PER CANDIDATE as of 2026-08-06, so
-                # they hang off the link rather than the job. Seeded directly
-                # rather than through `technical_interview.ensure_slots`: these
-                # tests drive `respond` alone, and a fixture that called the
-                # real slot builder would couple every flow assertion to the
-                # JD-skill plan, which is tested on its own elsewhere.
+                # ONE question stream, from ONE table (Draft v4). Every
+                # question hangs off the link and points at a matrix item;
+                # there is no second technical list to interleave.
+                #
+                # Seeded directly rather than through
+                # `ppi.generate_candidate_questions`: these tests drive
+                # `respond` alone, and a fixture that called the real generator
+                # would couple every flow assertion to the matrix allocation,
+                # which is tested on its own elsewhere.
+                #
+                # The aspect cycles Must-have, Nice-to-have, Behavioural so the
+                # fixture exercises both scoring methods, which is the shape a
+                # real blended conversation has.
+                from app.services import ppi as _ppi
+
+                competency_ids = []
+                for index, category in enumerate(_ppi.CATEGORIES, 1):
+                    competency_id = uuid.uuid4()
+                    competency_ids.append(competency_id)
+                    s.add(JobCompetency(
+                        id=competency_id, tenant_id=fx.tenant_id, job_id=fx.job_id,
+                        category=category, name=f"Item {index}",
+                        description=f"What item {index} measures.",
+                        required_level=82, ordinal=index,
+                    ))
+                await s.flush()
                 for ordinal in range(question_count):
                     qid = uuid.uuid4()
                     fx.q_ids.append(qid)
-                    s.add(CandidateTechnicalQuestion(
+                    s.add(CandidateQuestion(
                         id=qid, tenant_id=fx.tenant_id, job_id=fx.job_id,
                         job_candidate_link_id=fx.link_id,
-                        skill=f"Skill {ordinal}", prompt=f"Question {ordinal}?",
+                        competency_id=competency_ids[ordinal % len(competency_ids)],
+                        prompt=f"Question {ordinal}?",
                         ordinal=ordinal, rubric_json={},
                     ))
                 await s.flush()

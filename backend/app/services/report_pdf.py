@@ -121,6 +121,57 @@ def _footer(canvas, document) -> None:
     canvas.restoreState()
 
 
+def _gap_analysis(report, styles) -> list:
+    """Gap Analysis & Action Plan (spec 9.6).
+
+    The retired suggested-question payload is retained in storage for schema
+    compatibility but is never rendered in a client-facing PDF.
+    """
+    story: list = []
+    gaps = _value(report, "gap_analysis", None) or {}
+    groups = _value(gaps, "groups", []) or []
+    if not groups:
+        return story
+
+    story.append(Paragraph("Gap Analysis & Action Plan", styles["Section"]))
+    focus = _value(gaps, "focus_summary", "")
+    if focus:
+        story.append(Paragraph(f"<b>{_text(focus)}</b>", styles["Body"]))
+        story.append(Spacer(1, 3 * mm))
+
+    for group in groups:
+        story.append(
+            Paragraph(f"<b>{_text(_value(group, 'label', ''))}</b>", styles["Body"])
+        )
+        cap = _value(group, "cap_statement", None)
+        if cap:
+            story.append(Paragraph(_text(cap), styles["Body"]))
+        items = _value(group, "items", []) or []
+        if not items:
+            story.append(
+                Paragraph(
+                    _text(_value(group, "no_gaps_statement", "No gaps identified.")),
+                    styles["Body"],
+                )
+            )
+        for item in items:
+            story.append(
+                Paragraph(
+                    f"<b>{_text(_value(item, 'name', ''))}</b>: "
+                    f"{_text(_value(item, 'grade', ''))}",
+                    styles["Body"],
+                )
+            )
+            remark = _value(item, "remark", None)
+            if remark:
+                story.append(Paragraph(_text(remark), styles["Body"]))
+            for probe in _value(item, "probes", []) or []:
+                story.append(Paragraph(f"&bull; {_text(probe)}", styles["Body"]))
+            story.append(Spacer(1, 2 * mm))
+        story.append(Spacer(1, 3 * mm))
+    return story
+
+
 def _dimension_cards(
     title: str,
     rows: Iterable[Any],
@@ -265,20 +316,14 @@ def render_report_pdf(
         )
 
     story.extend(_dimension_cards("AI Score", _value(report, "ai_score", []), styles))
-    story.extend(_dimension_cards("Primary Skills", _value(report, "primary_skills", []), styles))
-    story.extend(_dimension_cards("Secondary Skills", _value(report, "secondary_skills", []), styles))
+    story.extend(_dimension_cards("Must-have", _value(report, "must_have", []), styles))
+    story.extend(_dimension_cards("Nice-to-have", _value(report, "nice_to_have", []), styles))
     story.extend(_dimension_cards("Behavioural Competencies", _value(report, "behavioural", []), styles))
 
-    story.append(Paragraph("Suggested interview questions", styles["Section"]))
-    for index, question in enumerate(
-        _value(report, "suggested_interview_questions", []),
-        1,
-    ):
-        story.append(
-            Paragraph(f"<b>{index}.</b> {_text(question)}", styles["Body"])
-        )
-        story.append(Spacer(1, 2 * mm))
-
+    # Validation comes BEFORE Gap Analysis (spec 9.3). It is the candidate's own
+    # unrated submission and the Gap Analysis is the last word on the report, so
+    # this order is not cosmetic: it keeps every rated statement together and
+    # ends the document on what to do next.
     story.append(Paragraph("Validation", styles["Section"]))
     validation = _value(report, "validation", {}) or {}
     for field in validation.get("fields", []):
@@ -290,6 +335,8 @@ def render_report_pdf(
             )
         )
         story.append(Spacer(1, 1.5 * mm))
+
+    story.extend(_gap_analysis(report, styles))
 
     document.build(story, onFirstPage=_footer, onLaterPages=_footer)
     return output.getvalue()

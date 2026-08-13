@@ -23,6 +23,9 @@ from app.models.assessment import (
     AssessmentConversation,
     AssessmentMessage,
     CandidateQuestion,
+    # LEGACY, read-only: a transcript written before Draft v4 keyed its
+    # technical exchanges on this table, and the recruiter's transcript view
+    # still has to resolve those keys to a label.
     CandidateTechnicalQuestion,
     FunctionalSkillsReport,
     JobCompetency,
@@ -30,6 +33,7 @@ from app.models.assessment import (
 )
 from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
+from app.models.job_setup import SWOT_AREAS, JobSwotIntake
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.assessments import (
@@ -42,9 +46,13 @@ from app.schemas.assessments import (
     DimensionOut,
     FrameworkOut,
     FunctionalReportOut,
+    GapAnalysisOut,
     InvitationResolveOut,
     JobSetupOut,
+    MatrixReorderIn,
     RadarChartOut,
+    SwotAnswerIn,
+    SwotIntakeOut,
     TranscriptExchangeOut,
     TranscriptOut,
 )
@@ -59,9 +67,10 @@ from app.services import (
     interviewer,
     job_posting,
     ppi,
+    ppi_interview,
     retake,
+    swot_intake,
     tenant_cache,
-    technical_interview,
 )
 from app.services.audit import audit
 from app.services.functional_assessment import (
@@ -119,7 +128,21 @@ async def _refresh_setup_status(session: AsyncSession, job: Job) -> None:
     so a client still reading the old field cannot conclude a ready job is
     unready.
     """
-    target = READY_FOR_CANDIDATES if job.framework_approved_at is not None else PENDING_REVIEW
+    #: CHANGED (Draft v4): the setup session has TWO halves and the job is open
+    #: to candidates only when both are finalised (spec §10). The PPI matrix is
+    #: what every candidate is graded against; the Matching category list is what
+    #: every sourced resume is ranked against, and a job whose categories were
+    #: never confirmed would rank its whole pipeline against a list nobody read.
+    #:
+    #: The SWOT intake is deliberately NOT a third condition. It is an INPUT to
+    #: the matrix, so an intake nobody completed shows up here as a matrix nobody
+    #: approved; making it its own gate would give one problem two error messages
+    #: and two places to fix it.
+    ready = (
+        job.framework_approved_at is not None
+        and job.matching_categories_finalized_at is not None
+    )
+    target = READY_FOR_CANDIDATES if ready else PENDING_REVIEW
     if job.assessment_status != target:
         job.assessment_status = target
     await session.flush()
@@ -138,6 +161,8 @@ def _setup_out(job: Job, *, framework_pending: bool = False) -> JobSetupOut:
         # on a job that is perfectly ready.
         questions_approved=approved,
         framework_approved=approved,
+        matching_categories_finalized=job.matching_categories_finalized_at is not None,
+        swot_complete=job.swot_completed_at is not None,
         ready_for_candidates=job.assessment_status == READY_FOR_CANDIDATES,
         generated_at=job.framework_generated_at,
         approved_at=job.framework_approved_at,
@@ -243,7 +268,7 @@ async def _framework_out(
     session: AsyncSession, job: Job, *, pending: bool | None = None
 ) -> FrameworkOut:
     rows = await ppi.load_framework(session, job.id)
-    ok, reason = ppi.framework_is_complete(rows)
+    ok, reason = ppi.matrix_is_complete(rows, job.assessment_grade)
     if not rows and pending:
         reason = FRAMEWORK_PREPARING
     return FrameworkOut(
@@ -251,6 +276,12 @@ async def _framework_out(
         status=job.assessment_status,
         approved=job.framework_approved_at is not None,
         competencies=[_competency_out(row) for row in rows],
+        maximum_items=ppi.max_questions(job.assessment_grade),
+        # Computed from what the matrix holds RIGHT NOW rather than read from
+        # `job.question_target`, which is stamped at generation. The Hiring
+        # Manager is mid-edit on this screen and needs to see what the matrix in
+        # front of them would cost a candidate, not what the generated one did.
+        question_target=ppi.resolve_question_target(job.assessment_grade, len(rows)),
         minimum_per_category=ppi.MINIMUM_PER_CATEGORY,
         blocking_reason=None if ok else reason,
     )
@@ -433,13 +464,22 @@ async def finalize_framework(
     user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> FrameworkOut:
-    """Save the framework as the job's fixed evaluation criteria (spec §6.3)."""
+    """Save the matrix as the job's fixed evaluation criteria (spec §5.3).
+
+    The Save control at the end of the drag-and-drop review. From here the
+    matrix is what EVERY candidate on this job is graded against, and
+    `_reject_frozen` refuses to reopen it once anyone has been.
+    """
     job = await _staff_job(session, user, job_id)
     rows = await ppi.load_framework(session, job.id)
-    ok, reason = ppi.framework_is_complete(rows)
+    ok, reason = ppi.matrix_is_complete(rows, job.assessment_grade)
     if not ok:
         raise HTTPException(status_code=422, detail=reason)
     job.framework_approved_at = datetime.now(timezone.utc)
+    # Frozen with the matrix, and for the same reason. Every candidate on this
+    # job is asked the same NUMBER of questions, so the count has to stop moving
+    # at the moment the criteria do.
+    job.question_target = ppi.resolve_question_target(job.assessment_grade, len(rows))
     await _refresh_setup_status(session, job)
     await audit(
         session,
@@ -503,7 +543,151 @@ async def reopen_framework(
     return await _framework_out(session, job)
 
 
-# ── The PPI Assessment Report (spec §10) ─────────────────────────────────────
+# ── Drag-and-drop reordering of the matrix (spec §5.3) ───────────────────────
+
+
+@router.post("/jobs/{job_id}/framework/reorder", response_model=FrameworkOut)
+async def reorder_framework(
+    job_id: uuid.UUID,
+    body: MatrixReorderIn,
+    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> FrameworkOut:
+    """Apply one drag-and-drop gesture: reorder within an aspect, or move an
+    item between Must-have and Nice-to-have.
+
+    ONE route for both, because to the person dragging they are one gesture, and
+    a UI that had to guess which of two endpoints a drop belonged to would guess
+    wrong at exactly the boundary the feature exists to cross.
+
+    The client sends each changed aspect's WHOLE ordered list. That is
+    idempotent, it always describes a state a human actually looked at, and it
+    means a dropped or retried request cannot leave the matrix in an order
+    nobody chose. An aspect the client did not send is left untouched.
+
+    Behavioural is deliberately not a valid destination for a move. §5.3 offers
+    moving items "between Must-have and Nice-to-have"; a skill dragged into
+    Behavioural would be scored by judgement instead of against a rubric, which
+    silently changes how every candidate on the job is assessed on it.
+    """
+    job = await _staff_job(session, user, job_id)
+    _reject_frozen(job)
+    rows = {row.id: row for row in await ppi.load_framework(session, job.id)}
+
+    moved = 0
+    for group in body.groups:
+        if group.category == ppi.CATEGORY_BEHAVIOURAL and any(
+            rows[competency_id].category != ppi.CATEGORY_BEHAVIOURAL
+            for competency_id in group.competency_ids
+            if competency_id in rows
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "An item can be moved between Must-have and Nice-to-have, but "
+                    "not into Behavioural Competencies. A skill assessed by "
+                    "judgement rather than against a rubric would change how every "
+                    "candidate on this job is graded on it."
+                ),
+            )
+        for ordinal, competency_id in enumerate(group.competency_ids, 1):
+            row = rows.get(competency_id)
+            if row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="One of the items in this list is not on this job.",
+                )
+            if row.category != group.category:
+                # No culture check here: the only reachable destinations are
+                # Must-have and Nice-to-have, and the refusal above is what
+                # keeps it that way. A check on a branch that cannot be taken
+                # reads as protection and provides none.
+                row.category = group.category
+                moved += 1
+            row.ordinal = ordinal
+            row.updated_at = datetime.now(timezone.utc)
+
+    await session.flush()
+    await _invalidate_framework(job)
+    logger.info(
+        "assessments.matrix_reordered job_id=%s groups=%d moved=%d",
+        job.id, len(body.groups), moved,
+    )
+    return await _framework_out(session, job)
+
+
+# ── The Reporting Authority SWOT intake (spec §5.1) ──────────────────────────
+# A short conversation with the hiring manager or HR head about the ROLE, run at
+# every job setup and at every grade, whose output feeds the PPI matrix
+# generator alongside the JD.
+#
+# Gated on CREATE_JOB rather than on a new capability. The people who run this
+# intake are the ones who set a job up, the capability engine already grants
+# them exactly that, and a capability nobody can be given without a migration is
+# a capability that gets granted to everyone in a hurry the first time it blocks
+# someone.
+
+
+def _swot_out(job: Job, intake: JobSwotIntake, prompt: str | None) -> SwotIntakeOut:
+    area = None if swot_intake.is_complete(intake) else (
+        SWOT_AREAS[intake.area_index] if intake.area_index < len(SWOT_AREAS) else None
+    )
+    return SwotIntakeOut(
+        job_id=job.id,
+        status=intake.status,
+        complete=swot_intake.is_complete(intake),
+        current_area=area,
+        current_area_label=swot_intake.AREA_LABELS.get(area) if area else None,
+        prompt=prompt,
+        captured=intake.captured(),
+        areas_total=len(SWOT_AREAS),
+        areas_done=min(intake.area_index, len(SWOT_AREAS)),
+    )
+
+
+@router.get("/jobs/{job_id}/swot", response_model=SwotIntakeOut)
+async def get_swot_intake(
+    job_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> SwotIntakeOut:
+    job = await _staff_job(session, user, job_id)
+    intake = await swot_intake.get_or_create(session, job, conducted_by=user.user_id)
+    prompt = await swot_intake.open_question(session, job, intake)
+    return _swot_out(job, intake, prompt)
+
+
+@router.post("/jobs/{job_id}/swot/respond", response_model=SwotIntakeOut)
+async def respond_swot_intake(
+    job_id: uuid.UUID,
+    body: SwotAnswerIn,
+    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> SwotIntakeOut:
+    """Record one answer and return the next question.
+
+    Completing the intake REGENERATES the matrix, and that is the whole point of
+    running it: a matrix built from the JD alone is what the intake exists to
+    improve on. Regeneration is refused once the matrix is approved or anyone
+    has been assessed, so a late intake cannot move the criteria underneath a
+    report that already states a grade against them.
+    """
+    job = await _staff_job(session, user, job_id)
+    intake = await swot_intake.get_or_create(session, job, conducted_by=user.user_id)
+    if swot_intake.is_complete(intake):
+        return _swot_out(job, intake, None)
+
+    prompt = await swot_intake.submit_answer(session, job, intake, body.answer)
+    if swot_intake.is_complete(intake) and job.framework_approved_at is None:
+        celery_app.send_task(
+            "pickready.generate_ppi_framework", args=[str(job.id)], kwargs={"replace": True}
+        )
+        await _invalidate_framework(job)
+        logger.info("assessments.swot_complete_matrix_regenerating job_id=%s", job.id)
+    return _swot_out(job, intake, prompt)
+
+
+# ── The PPI Assessment Report (spec §9) ──────────────────────────────────────
 
 
 @router.get("/reports/links/{link_id}", response_model=FunctionalReportOut)
@@ -569,12 +753,21 @@ async def get_report(
         ai_score=grouped.get(CATEGORY_MATCHING, []),
         overall_grade=grade_for_percent(overall) or GRADES[-1],
         overall_summary=report.overall_summary,
-        primary_skills=grouped.get(ppi.CATEGORY_PRIMARY, []),
-        secondary_skills=grouped.get(ppi.CATEGORY_SECONDARY, []),
+        must_have=grouped.get(ppi.CATEGORY_MUST_HAVE, []),
+        nice_to_have=grouped.get(ppi.CATEGORY_NICE_TO_HAVE, []),
         behavioural=grouped.get(ppi.CATEGORY_BEHAVIOURAL, []),
+        # Empty on every report written from Draft v4 onward. A report written
+        # before it still carries rows here and still renders them.
         technical=grouped.get(CATEGORY_TECHNICAL, []),
         validation=report.validation_json,
-        suggested_interview_questions=report.suggested_probes_json,
+        gap_analysis=GapAnalysisOut.model_validate(report.gap_analysis_json or {}),
+        # Populated only where Gap Analysis is not: a pre-Draft-v4 report shows
+        # what it was actually written with rather than an empty section.
+        suggested_interview_questions=(
+            list(report.suggested_probes_json or [])
+            if not (report.gap_analysis_json or {})
+            else []
+        ),
         radar_charts=[RadarChartOut(**chart) for chart in charts],
         radar_bands=list(RADAR_BANDS),
         radar_series=list(RADAR_SERIES),
@@ -677,7 +870,10 @@ _IMMUTABLE_DETAIL = (
 
 #: Bounded so one request cannot ask for an entire tenant's interview history.
 #: 200 comfortably holds the longest single interview the product can produce
-#: (45 base + 15 probes), so the common case is one page.
+#: (28 base questions at non-managerial, plus follow-ups), so the common case is
+#: one page. Left at 200 rather than lowered with the question counts: the bound
+#: exists to stop an unbounded read, and a historic 45-question interview must
+#: still page the same way.
 TRANSCRIPT_MAX_LIMIT = 200
 TRANSCRIPT_DEFAULT_LIMIT = 100
 
@@ -687,13 +883,24 @@ async def _criterion_labels(
 ) -> dict[str, str]:
     """{question_key: human label} for every key this candidate could produce.
 
-    Both scorers key on a row id, so the raw transcript is a wall of UUIDs. This
-    resolves them in two queries rather than one per exchange -- the N+1 here
-    would be 60 round trips on an ordinary interview.
+    The scorer keys on a row id, so the raw transcript is a wall of UUIDs. This
+    resolves them in a fixed number of queries rather than one per exchange --
+    the N+1 here would be 60 round trips on an ordinary interview.
+
+    THREE key shapes, because a transcript outlives the design that wrote it:
+
+      CandidateQuestion.id           what the unified conversation stamps today
+      JobCompetency.id               what PPI questions were keyed on before
+                                     Draft v4
+      CandidateTechnicalQuestion.id  what the separate technical track was keyed
+                                     on, for conversations that ran before it
+                                     was folded into Must-have
+
+    All three are resolved rather than only the current one. A recruiter opening
+    a report written last month is the exact case this screen exists for, and an
+    unresolved key renders as a UUID beside the answer it labels.
     """
     labels: dict[str, str] = {}
-    for row in await technical_interview.load_for_link(session, link.id):
-        labels[str(row.id)] = row.skill
     competencies = (
         await session.execute(
             select(JobCompetency.id, JobCompetency.name).where(
@@ -701,8 +908,24 @@ async def _criterion_labels(
             )
         )
     ).all()
-    for competency_id, name in competencies:
+    by_competency = {competency_id: name for competency_id, name in competencies}
+    for competency_id, name in by_competency.items():
         labels[str(competency_id)] = name
+
+    for question in await ppi_interview.load_for_link(session, link.id):
+        name = by_competency.get(question.competency_id)
+        if name:
+            labels[str(question.id)] = name
+
+    legacy = (
+        await session.execute(
+            select(CandidateTechnicalQuestion.id, CandidateTechnicalQuestion.skill).where(
+                CandidateTechnicalQuestion.job_candidate_link_id == link.id
+            )
+        )
+    ).all()
+    for question_id, skill in legacy:
+        labels[str(question_id)] = skill
     return labels
 
 
@@ -1058,45 +1281,43 @@ async def _candidate_link(session: AsyncSession, user: CurrentUser, link_id: uui
 async def _conversation_prompts(
     session: AsyncSession, job: Job, link: JobCandidateLink
 ) -> list[tuple[str, str, str]]:
-    """The single blended sequence: this candidate's technical slots + their PPI
-    questions, round-robin interleaved.
+    """This candidate's questions, in one sequence (spec §7).
 
-    The candidate never sees or interacts with two bots and is never told which
-    engine scores which answer (spec §8).
+    ONE LIST, from ONE table. Until Draft v4 this function round-robin
+    interleaved two: a technical slot list and a PPI question list, produced by
+    two generators and consumed by two scorers. There is one PPI matrix now and
+    technical depth lives inside its Must-have items, so there is one stream and
+    no seam to hide -- the candidate never interacts with separate technical and
+    behavioural bots and never sees the scoring methods behind the conversation.
 
-    `question_key` carries the CandidateTechnicalQuestion id and the
-    JobCompetency id respectively -- the two scorers key on exactly these.
+    The order is the matrix's own: Must-have, Nice-to-have, Behavioural, which
+    is `ppi.generate_candidate_questions`' allocation order, held in `ordinal`.
+    That is deterministic per job, which is what keeps two candidates' reports
+    comparable.
 
-    CHANGED 2026-08-06: the technical half reads per-CANDIDATE rows rather than
-    the job's preset bank. The sequence length and the interleaving are
-    identical, and so is the key contract: a stable row id from the first turn,
-    so no scorer ever sees a key appear mid-conversation.
+    `question_key` carries the JobCompetency id, because that is what the scorer
+    files an answer under. The DOMAIN carries the aspect, so the recruiter's
+    transcript view can say which part of the matrix an exchange belonged to
+    without the candidate ever having been told.
     """
-    technical = await technical_interview.load_for_link(session, link.id)
-    candidate_questions = (
+    rows = (
         await session.execute(
-            select(CandidateQuestion)
+            select(CandidateQuestion, JobCompetency)
+            .join(JobCompetency, JobCompetency.id == CandidateQuestion.competency_id)
             .where(CandidateQuestion.job_candidate_link_id == link.id)
             .order_by(CandidateQuestion.ordinal)
         )
-    ).scalars().all()
-
-    tech = [("technical", str(row.id), row.prompt) for row in technical]
-    ppi_prompts = [("ppi", str(row.competency_id), row.prompt) for row in candidate_questions]
-
-    blended: list[tuple[str, str, str]] = []
-    longest = max(len(tech), len(ppi_prompts), 0)
-    for index in range(longest):
-        for group in (tech, ppi_prompts):
-            if index < len(group):
-                blended.append(group[index])
+    ).all()
 
     # Returned BARE. The conversational join between one question and the next
-    # is written per turn by `interviewer.compose_next_question` against the
-    # real transcript, so it can only claim a connection that actually exists.
-    # Anything canned here would be prepended before the candidate has said
-    # anything for it to respond to.
-    return blended
+    # is written per turn by the question writer against the real transcript, so
+    # it can only claim a connection that actually exists. Anything canned here
+    # would be prepended before the candidate has said anything for it to
+    # respond to.
+    return [
+        (competency.category, str(question.id), question.prompt)
+        for question, competency in rows
+    ]
 
 
 async def _ensure_conversation_ready(
@@ -1104,29 +1325,22 @@ async def _ensure_conversation_ready(
 ) -> None:
     """Transient prep, never a human gate.
 
-    The technical half is created INLINE and the PPI half is not, and the
-    asymmetry is deliberate rather than an inconsistency:
-
-      * `technical_interview.ensure_slots` writes rows from a PURE function of
-        the job's JD (`skill_plan`). No model call, no network, microseconds.
-        Deferring that to a worker would make a candidate wait and retry for
-        work the request could have finished before the response was written.
-        The QUESTIONS are still generated by a model, one at a time, later --
-        this only reserves the slots and their skills.
-
-      * PPI questions ARE a model call, per candidate, against the job's
-        framework, so they stay in Celery (claude.md rule 4) and the candidate
-        is asked to retry in a moment.
+    There used to be two halves here and an asymmetry worth explaining: the
+    technical slots were created inline because they came from a pure function
+    of the JD, while the PPI questions went to Celery because they were a model
+    call. Draft v4 left one half. Every question is generated per candidate
+    against the saved matrix, so the whole preparation is a model call, it stays
+    in Celery (CLAUDE.md rule 4), and the candidate is asked to retry in a
+    moment rather than made to wait on a request.
     """
-    await technical_interview.ensure_slots(session, job, link)
-    has_ppi = (
+    has_questions = (
         await session.execute(
             select(func.count())
             .select_from(CandidateQuestion)
             .where(CandidateQuestion.job_candidate_link_id == link.id)
         )
     ).scalar_one()
-    if has_ppi:
+    if has_questions:
         return
     celery_app.send_task("pickready.generate_candidate_questions", args=[str(link.id)])
     raise HTTPException(
@@ -1301,7 +1515,19 @@ async def _write_next_question_inner(
     prompts: list[tuple[str, str, str]],
     index: int,
 ) -> None:
-    domain, key, stored = prompts[index]
+    """Write the question at `index` for THIS candidate at THIS point.
+
+    ONE writer for all three aspects (`ppi_interview.write_question`), and the
+    method it uses inside varies by aspect rather than by caller: a Must-have or
+    Nice-to-have question is written together with the rubric its answer will be
+    graded against, and a Behavioural question is written without one because
+    there is no single correct answer to weigh a behavioural account against.
+
+    Degrades to the stored text, which is always a correct thing to ask: it is
+    the question `ppi.generate_candidate_questions` already wrote for this item
+    from this candidate's own resume.
+    """
+    _aspect, key, stored = prompts[index]
     # Read AFTER the caller's flush so the turn just written is part of the
     # memory this question is conditioned on. Reading a stale transcript would
     # have the interviewer talk as though the last answer had not been given.
@@ -1309,49 +1535,31 @@ async def _write_next_question_inner(
     asked_before = [row["content"] for row in memory if row.get("speaker") == "agent"]
     resume = await _resume_excerpt(session, link)
 
-    if domain == "technical":
+    row = None
+    try:
+        row = await session.get(CandidateQuestion, uuid.UUID(str(key)))
+    except (ValueError, TypeError):
         row = None
-        try:
-            row = await session.get(CandidateTechnicalQuestion, uuid.UUID(str(key)))
-        except (ValueError, TypeError):
-            row = None
-        if row is None:
-            # The slot vanished under us, which should be impossible. Showing
-            # the stored text is the honest degradation; refusing the turn would
-            # cost the candidate their assessment over a bookkeeping fault.
-            logger.info("assessments.technical_slot_missing key=%s", key)
-            written = stored
-        else:
-            result = await technical_interview.write_question(
-                session=session,
-                job=job,
-                row=row,
-                resume_excerpt=resume,
-                transcript=memory,
-                asked_before=asked_before,
-            )
-            written = result.value["question"]
+    competency = (
+        await session.get(JobCompetency, row.competency_id) if row is not None else None
+    )
+    if row is None or competency is None:
+        # The row vanished under us, which should be impossible. Showing the
+        # stored text is the honest degradation; refusing the turn would cost
+        # the candidate their assessment over a bookkeeping fault.
+        logger.info("assessments.question_row_missing key=%s", key)
+        written = stored
     else:
-        # `key` carries the JobCompetency id for a PPI question: the criterion
-        # this turn must probe and the key its answer will be filed under.
-        competency = None
-        try:
-            competency = await session.get(JobCompetency, uuid.UUID(str(key)))
-        except (ValueError, TypeError):
-            competency = None
-        written = await interviewer.compose_next_question(
+        result = await ppi_interview.write_question(
             session=session,
-            question=stored,
-            transcript=memory,
-            mode=(
-                interviewer.MODE_GENERATE if competency else interviewer.MODE_REWORD
-            ),
-            competency=competency.name if competency else "",
-            competency_hint=(competency.description or "") if competency else "",
-            jd_excerpt=job.jd_markdown or "",
+            job=job,
+            row=row,
+            competency=competency,
             resume_excerpt=resume,
+            transcript=memory,
             asked_before=asked_before,
         )
+        written = result.value["question"]
 
     # OUTBOUND GUARD, on the way IN to storage rather than on the way out, so
     # the transcript records exactly the text the candidate will read. A

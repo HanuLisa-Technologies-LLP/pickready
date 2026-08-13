@@ -19,7 +19,7 @@ from app.services.ppi import CATEGORIES
 # reads as still supported.
 
 
-# ── The job's PPI framework (spec §6.2, §6.3) ────────────────────────────────
+# ── The job's PPI matrix (spec §5.2, §5.3) ───────────────────────────────────
 
 
 class CompetencyIn(BaseModel):
@@ -53,31 +53,95 @@ class CompetencyOut(BaseModel):
     ordinal: int
 
 
+class CompetencyMoveIn(BaseModel):
+    """One aspect's order after a drag-and-drop move (spec 5.3).
+
+    The client sends the WHOLE ordered list for each aspect it changed, not a
+    (from, to) pair. A pair has to be replayed against whatever the server
+    currently holds, and two hiring managers dragging at once would interleave
+    into an order neither of them saw; a full list is idempotent and always
+    describes a state someone actually looked at.
+    """
+
+    category: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
+    #: Competency ids, in the order they should appear in this aspect.
+    competency_ids: list[uuid.UUID] = Field(max_length=200)
+
+
+class MatrixReorderIn(BaseModel):
+    #: One entry per aspect whose order or membership changed. An aspect that is
+    #: absent is left exactly as it is.
+    groups: list[CompetencyMoveIn] = Field(min_length=1, max_length=3)
+
+
 class FrameworkOut(BaseModel):
     job_id: uuid.UUID
     status: str
     approved: bool
-    #: Ordered primary_skill, secondary_skill, behavioural -- report order.
+    #: Ordered must_have, nice_to_have, behavioural -- report order.
     competencies: list[CompetencyOut]
-    #: Per-category minimum that must be met before the framework can be saved.
+    #: The most items this matrix may hold. Every item is probed at least once,
+    #: so the grade's question ceiling is the matrix's ceiling (spec 5.4).
+    maximum_items: int = 0
+    #: How many questions this job's candidates will be asked, resolved from the
+    #: grade's range and the matrix size. Shown so the Hiring Manager can see
+    #: what adding an item actually costs the candidate.
+    question_target: int = 0
+    #: There is NO minimum item count in Draft v4: the agent recommends what the
+    #: job needs. Reported as one per aspect purely because each aspect is
+    #: graded and charted on every report, so none of the three may be empty.
     minimum_per_category: int
-    #: Populated when the framework cannot yet be saved, so the UI can say why
+    #: Populated when the matrix cannot yet be saved, so the UI can say why
     #: rather than only disabling the Save control.
     blocking_reason: str | None = None
 
 
+# ── The Reporting Authority SWOT intake (spec 5.1) ───────────────────────
+
+
+class SwotAnswerIn(BaseModel):
+    answer: str = Field(min_length=1, max_length=6000)
+
+
+class SwotIntakeOut(BaseModel):
+    """The intake conversation, as one payload.
+
+    `captured` is what the PPI agent will read; `prompt` is what the reporting
+    authority is being asked right now. Both are returned every turn so the
+    screen can show the growing picture beside the question, which is what makes
+    a four-area conversation feel finite to someone doing it unpaid.
+    """
+
+    job_id: uuid.UUID
+    status: str
+    complete: bool
+    #: strengths | weaknesses | opportunities | threats, or null when finished.
+    current_area: str | None = None
+    current_area_label: str | None = None
+    prompt: str | None = None
+    #: area -> the points captured so far, in the authority's own terms.
+    captured: dict[str, list[str]] = {}
+    areas_total: int = 4
+    areas_done: int = 0
+
+
 class JobSetupOut(BaseModel):
-    """The single manual step in the pipeline (spec §11), as one payload.
+    """The one manual step in the pipeline (spec §10), as one payload.
 
-    That step is now the PPI FRAMEWORK and nothing else. The technical bank
-    stopped gating anything on 2026-08-04 and stopped existing on 2026-08-06, so
-    `ready_for_candidates` tracks `framework_approved` exactly.
+    Draft v4 made that step TWO halves finalised in ONE session: the PPI matrix
+    and the job's Matching category list. A job reaches "Ready for Candidates"
+    when both are stamped, and everything after that -- the candidate
+    conversation, scoring, report synthesis -- runs with no further human
+    involvement.
 
-    `questions_approved` is retained and always reports the framework's own
-    approval state. It is not a second gate: it is here so a client build that
-    still reads the field cannot conclude a ready job is unready and hide the
-    invite control. It is deprecated and should be dropped once no client reads
-    it.
+    The SWOT intake is REPORTED but does not gate on its own. It is an input to
+    the matrix, so an unfinished intake already shows up as a matrix nobody has
+    approved, and gating separately would give one problem two error messages.
+
+    `questions_approved` is retained and always reports the matrix's own approval
+    state. It is not a third gate: it is here so a client build that still reads
+    the field cannot conclude a ready job is unready and hide the invite control.
+    It is deprecated and should be dropped once no client reads it.
     """
 
     job_id: uuid.UUID
@@ -86,6 +150,10 @@ class JobSetupOut(BaseModel):
     #: DEPRECATED, mirrors `framework_approved`. See the class docstring.
     questions_approved: bool
     framework_approved: bool
+    #: The second half of the setup session (spec §3.2).
+    matching_categories_finalized: bool = False
+    #: Whether the reporting authority has finished the SWOT intake.
+    swot_complete: bool = False
     ready_for_candidates: bool
     generated_at: datetime | None = None
     approved_at: datetime | None = None
@@ -135,25 +203,70 @@ class RadarChartOut(BaseModel):
     axes: list[RadarAxisOut]
 
 
+class GapProbeItemOut(BaseModel):
+    """One gap, with its grade, its REUSED item remark, and its probes."""
+
+    name: str
+    grade: str
+    #: The same remark the item carries in its own section (spec 9.6). Reused,
+    #: never rewritten: one report states one assessment of an item.
+    remark: str | None = None
+    #: 25-30 words each, grounded in what the candidate actually said, advisory
+    #: only, never phrased as an advance or reject decision (spec 9.5, 9.6).
+    probes: list[str] = []
+
+
+class GapGroupOut(BaseModel):
+    category: str
+    label: str
+    items: list[GapProbeItemOut] = []
+    #: Said in words when the group is empty, rather than left as blank space.
+    no_gaps_statement: str | None = None
+    #: Present on the Must-have group when a Not Matching Must-have item has
+    #: capped the Overall Grade, so the reader is told rather than left to
+    #: cross-reference the Overall Assessment (spec 9.6).
+    cap_statement: str | None = None
+
+
+class GapAnalysisOut(BaseModel):
+    """Gap Analysis & Action Plan (spec 9.6).
+
+    Replaces the suggested-questions section entirely. Nothing about gaps or
+    probes appears anywhere else in the report.
+    """
+
+    #: One sentence naming the one or two items most worth interview time.
+    focus_summary: str = ""
+    must_have_cap_applied: bool = False
+    #: Must-have, Nice-to-have, Behavioural, in that order.
+    groups: list[GapGroupOut] = []
+
+
 class FunctionalReportOut(BaseModel):
     id: uuid.UUID
     job_candidate_link_id: uuid.UUID
     grade: str
-    # ── AI Score: the pre-assessment resume snapshot (§10.1) ─────────────────
+    # ── AI Score: the pre-assessment resume snapshot (9.1) ──────────────
     ai_score: list[DimensionOut]
-    # ── PPI Assessment (§10.3) ───────────────────────────────────────────────
+    # ── PPI Assessment (9.3) ────────────────────────────────────
     overall_grade: str
     overall_summary: str
-    primary_skills: list[DimensionOut]
-    secondary_skills: list[DimensionOut]
+    must_have: list[DimensionOut]
+    nice_to_have: list[DimensionOut]
     behavioural: list[DimensionOut]
-    #: Scored and used to anchor suggested questions; not a rendered section.
-    technical: list[DimensionOut]
-    #: The application's mandatory fields, as submitted. Never rated (§7).
+    #: LEGACY, and empty on every report written from Draft v4 onward: technical
+    #: depth is assessed inside Must-have. Populated only for a report written
+    #: against the standalone technical bank that no longer exists.
+    technical: list[DimensionOut] = []
+    #: The application's mandatory fields, as submitted. Never rated (6).
     validation: dict
-    #: 8-10, advisory input only (§10.3).
-    suggested_interview_questions: list[str]
-    #: Four charts: Overall, Primary Skills, Secondary Skills, Behavioural.
+    #: Gap Analysis & Action Plan (9.6).
+    gap_analysis: GapAnalysisOut = GapAnalysisOut()
+    #: RETIRED, replaced by `gap_analysis`. Non-empty only on a report written
+    #: before Draft v4, so an old report opened today still renders what it was
+    #: actually written with rather than an empty section.
+    suggested_interview_questions: list[str] = []
+    #: Four charts: Overall, Must-have, Nice-to-have, Behavioural.
     radar_charts: list[RadarChartOut] = []
     #: Ordered best-to-worst grade labels, for the chart legend and colour ramp.
     radar_bands: list[str] = []
@@ -203,8 +316,9 @@ class TranscriptExchangeOut(BaseModel):
     #: 1-based position in the conversation, counting exchanges rather than
     #: messages, so it matches the "Question 7 of 45" the candidate saw.
     ordinal: int
-    #: technical | ppi. Provenance for the reader, never a filter that hides
-    #: anything: the candidate experienced one conversation and so does this.
+    #: The aspect this exchange probed. Provenance for the reader, never a
+    #: filter that hides anything: the candidate experienced one conversation
+    #: and so does this.
     domain: str
     #: What the candidate actually READ, which is not always what was stored --
     #: the interviewer writes the question for this candidate at this point.

@@ -71,6 +71,13 @@ from app.models.enums import (
     VerificationStatus,
 )
 from app.models.job import Job, JobApproval
+from app.models.job_setup import (
+    SWOT_AREAS,
+    SWOT_STATUS_ACTIVE,
+    SWOT_STATUS_COMPLETE,
+    JobMatchingCategory,
+    JobSwotIntake,
+)
 from app.models.tenant import AuditLog, LLMProviderKey, RolePermission, Tenant
 from app.models.user import OTPChallenge, User
 
@@ -115,6 +122,11 @@ __all__ = [
     "Interview",
     "Job",
     "JobApproval",
+    "JobMatchingCategory",
+    "JobSwotIntake",
+    "SWOT_AREAS",
+    "SWOT_STATUS_ACTIVE",
+    "SWOT_STATUS_COMPLETE",
     "JobCandidateLink",
     "JobCompetency",
     "JobStatus",

@@ -154,7 +154,7 @@ async def test_five_fixture_assessments_are_created_in_real_postgres_and_cleaned
                     text(
                         "INSERT INTO job_competencies "
                         "(id, tenant_id, job_id, category, name, ordinal) "
-                        "VALUES (:id, :tenant, :job, 'primary_skill', "
+                        "VALUES (:id, :tenant, :job, 'must_have', "
                         "'Distributed Systems', 1)"
                     ),
                     {
@@ -313,15 +313,15 @@ def _report_fixture():
             for chart_index, title in enumerate(
                 (
                     "Overall",
-                    "Primary Skills",
-                    "Secondary Skills",
+                    "Must-have",
+                    "Nice-to-have",
                     "Behavioural Competencies",
                 )
             )
         ],
         ai_score=[dimension],
-        primary_skills=[dimension],
-        secondary_skills=[dimension],
+        must_have=[dimension],
+        nice_to_have=[dimension],
         behavioural=[dimension],
         suggested_interview_questions=[
             "For Distributed Systems, explain the hardest recovery trade-off you owned."
@@ -349,8 +349,10 @@ def test_pdf_contains_branding_all_sections_charts_and_confidential_footer() -> 
     assert "PickReady" in text
     assert "Change Six Fixture Candidate" in text
     assert "Platform Engineer" in text
-    assert "Primary Skills" in text
-    assert "Suggested interview questions" in text
+    assert "Must-have" in text
+    assert "Nice-to-have" in text
+    # Draft v4 removed the retired section completely, including legacy payloads.
+    assert "Suggested interview questions" not in text
     assert FOOTER in text
 
     image_objects = 0

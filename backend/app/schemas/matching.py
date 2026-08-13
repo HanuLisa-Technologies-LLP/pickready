@@ -1,7 +1,7 @@
 """Matching pipeline schemas (API_CONTRACT.md `/matching`)."""
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.enums import LinkSource, Tier
 from app.schemas.candidates import CandidateOut
@@ -39,6 +39,14 @@ class MatchResultOut(BaseModel):
     # 25-30 words each. "not_scored" means matching has not run for this link
     # yet (comments null); "ready" means all five comments are populated.
     ranking_status: str = "not_scored"
+    #: One entry per category this candidate was ACTUALLY scored on, in the
+    #: job's own order (spec §3.2). This is what a client should render: the
+    #: flat fields below describe only the four categories the product scored
+    #: every job on before the lists became per-job, and a job that added or
+    #: removed one has comments they cannot carry.
+    categories: list[dict] = []
+    #: DEPRECATED, see `categories`. Correct whenever the job kept the
+    #: long-standing category of the same name, null when it did not.
     skills_match_comment: str | None = None
     experience_comment: str | None = None
     role_alignment_comment: str | None = None
@@ -67,3 +75,40 @@ class MatchResultsOut(BaseModel):
     total_pages: int = 1
     has_next: bool = False
     has_previous: bool = False
+
+
+# ── The job's Matching category list (spec §3.2) ─────────────────────────────
+
+
+class MatchingCategoryIn(BaseModel):
+    """What the recruiter's add/edit control sends.
+
+    No `key`. The key is derived from the name server-side and never moves once
+    written: it is what a score is filed under, so letting a client set it would
+    let a rename orphan every score already stored against the category.
+    """
+
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class MatchingCategoryOut(BaseModel):
+    id: uuid.UUID
+    key: str
+    name: str
+    description: str | None = None
+    ordinal: int
+
+
+class MatchingCategoriesOut(BaseModel):
+    job_id: uuid.UUID
+    #: True once the recruiter has saved the list. From that point the list is
+    #: frozen: candidates have been ranked against it.
+    finalized: bool = False
+    categories: list[MatchingCategoryOut] = []
+    #: Enforced at save, not merely rendered (spec §3.2).
+    minimum: int = 5
+    maximum: int = 8
+    #: Populated when the list cannot yet be saved, so the UI can say why rather
+    #: than only disabling the Save control.
+    blocking_reason: str | None = None

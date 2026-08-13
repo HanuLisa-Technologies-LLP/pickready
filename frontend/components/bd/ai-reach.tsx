@@ -16,7 +16,7 @@
 // CONFIDENCE IS AN APPROVED MATCHING WORD, never a number, percentage or meter.
 
 import * as React from "react";
-import { ExternalLink, Globe, Presentation, Search, Sparkles, Users } from "lucide-react";
+import { ExternalLink, Globe, Search, Sparkles, Users } from "lucide-react";
 
 import { apiPost } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
@@ -117,12 +117,6 @@ export function AIReachPage() {
         description="Find companies that are hiring, from our own customer database and from the web."
         actions={
           <div className="flex flex-wrap gap-2">
-            <Button asChild variant="outline">
-              <a href="/Readypick-corporate-deck.pptx" download>
-                <Presentation className="h-4 w-4" aria-hidden="true" />
-                Corporate deck
-              </a>
-            </Button>
             {result ? <ExportXlsxButton
               fileName="pickready-ai-reach"
               rows={[

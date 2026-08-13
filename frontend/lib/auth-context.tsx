@@ -227,6 +227,7 @@ export function homePathForRole(role: Role): string {
     case "candidate":
       return "/portal";
     case "client":
+    case "recruitment_manager":
     case "hr_manager":
     case "recruiter":
     case "hiring_manager":

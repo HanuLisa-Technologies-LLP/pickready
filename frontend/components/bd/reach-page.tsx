@@ -32,7 +32,7 @@
 //    confirmation before the request is sent.
 
 import * as React from "react";
-import { Archive, Pencil, Plus, Presentation, Search } from "lucide-react";
+import { Archive, Pencil, Plus, Search } from "lucide-react";
 
 import { apiDelete, apiGet, apiPatch, apiPost } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
@@ -427,12 +427,6 @@ export function ReachPage({
           description={description}
           actions={
             <div className="flex flex-wrap gap-2">
-              <Button asChild variant="outline">
-                <a href="/Readypick-corporate-deck.pptx" download>
-                  <Presentation className="h-4 w-4" aria-hidden="true" />
-                  Corporate deck
-                </a>
-              </Button>
               <ExportXlsxButton
                 fileName="pickready-bd-reach"
                 rows={leads.map((lead) => ({

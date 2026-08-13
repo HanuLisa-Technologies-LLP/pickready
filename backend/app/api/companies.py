@@ -57,6 +57,7 @@ from app.models.invite import (
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.companies import (
+    CompanyProfileResearchOut,
     ApprovalLevelsIn,
     ApprovalLevelsOut,
     CompanyPageIn,
@@ -82,8 +83,10 @@ from app.schemas.provider import (
     document_slots,
 )
 from app.services import capabilities as caps
+from app.services import company_research
 from app.services import document_storage
 from app.services import rbac
+from app.services import role_hierarchy
 from app.services import tenant_cache
 from app.services.audit import audit
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
@@ -93,18 +96,19 @@ router = APIRouter()
 
 MAX_HIRING_MANAGERS = 5  # FR-2.2
 
-# Roles creatable via POST /companies/me/staff — client / super_admin /
-# candidate are explicitly NOT creatable here (contract rev 2).
-STAFF_ROLES: frozenset[Role] = frozenset(
-    {Role.hr_manager, Role.recruiter, Role.hiring_manager}
-)
+# Roles creatable via POST /companies/me/staff. `client` (the customer's Super
+# Admin), super_admin and candidate are explicitly NOT creatable here: the
+# Super Admin seat is minted at onboarding by the Provider, and a portal that
+# could mint another one would let a Recruitment Manager promote themselves past
+# every rule in `services/role_hierarchy`.
+STAFF_ROLES: frozenset[Role] = role_hierarchy.MANAGEABLE_ROLES
 
 
 # ── Pure staff rules (DB-free, unit-testable) ────────────────────────────────
 
 def validate_staff_role(role: str) -> Role:
-    """The 3 org staff roles only. Raises ValueError (mapped to 400) for
-    anything else — including client, super_admin, and candidate."""
+    """One of the manageable staff roles. Raises ValueError (mapped to 400) for
+    anything else, including client, super_admin, and candidate."""
     try:
         parsed = Role(role)
     except ValueError as exc:
@@ -114,6 +118,28 @@ def validate_staff_role(role: str) -> Role:
             f"role must be one of {sorted(r.value for r in STAFF_ROLES)}"
         )
     return parsed
+
+
+def ensure_can_manage(actor_role: Role | str | None, target_role: Role) -> None:
+    """Refuse a staff action against a peer or a superior (spec §29).
+
+    STRICTLY above, and the strictness is the point: two Recruiters editing each
+    other would make the hierarchy meaningless, because everyone at a level would
+    hold everyone else's permissions.
+
+    Raised as 403 rather than 404. The actor can see this person on their own
+    team screen, so pretending the row does not exist would be a lie they can
+    immediately disprove.
+    """
+    if not role_hierarchy.can_manage(actor_role, target_role):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You can only manage team members below you. A "
+                f"{role_hierarchy.ROLE_LABELS.get(target_role, target_role.value)} "
+                "is not below your own role."
+            ),
+        )
 
 
 def hiring_manager_cap_reached(
@@ -205,6 +231,56 @@ async def get_company_profile(
     return output
 
 
+@router.post("/me/profile/research", response_model=CompanyProfileResearchOut)
+async def research_company_profile(
+    user: CurrentUser = Depends(require_capability(caps.EDIT_COMPANY_PROFILE)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> CompanyProfileResearchOut:
+    """Draft this company's profile from the web, for a human to edit.
+
+    RETURNS A DRAFT AND WRITES NOTHING. The client decision is that the agent
+    populates the profile and an EXPLICIT Edit control lets the recruiter change
+    it as they need, so applying the draft is the PATCH above, made deliberately,
+    by a person who has read it. A route that saved on its own would rewrite the
+    sections every candidate reads without anyone approving the words.
+
+    Gated on EDIT_COMPANY_PROFILE rather than on a read capability, because a
+    draft is only useful to someone who can act on it, and this spends a web
+    search and a model call per call.
+    """
+    tenant = await session.get(Tenant, user.tenant_id)
+    company = await _get_company(session, user)
+    name = (tenant.name if tenant else None) or ""
+    if not name.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="This account has no company name to research.",
+        )
+    draft = await company_research.research_company(
+        session,
+        company=name,
+        website=(tenant.website_domain if tenant else None),
+        industry=(tenant.industry if tenant else None),
+    )
+    await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="company_profile_researched",
+        target_type="company",
+        target_id=(company.id if company else None),
+        metadata={"sources": draft.sources, "degraded": draft.degraded},
+    )
+    return CompanyProfileResearchOut(
+        about_company=draft.about_company,
+        work_life=draft.work_life,
+        benefits=draft.benefits,
+        sources=draft.sources,
+        degraded=draft.degraded,
+        message=draft.message,
+    )
+
+
 @router.patch("/me/profile", response_model=CompanyProfileOut)
 async def update_company_profile(
     body: CompanyProfileIn,
@@ -249,11 +325,9 @@ async def update_company_profile(
     return await _company_profile_out(session, user.tenant_id, company)
 
 
-ROLE_LABELS: dict[Role, str] = {
-    Role.hr_manager: "HR Manager",
-    Role.recruiter: "Recruiter",
-    Role.hiring_manager: "Hiring Manager",
-}
+#: One definition, in the module that owns the hierarchy, so a label and a
+#: rank can never disagree about what a role is called.
+ROLE_LABELS: dict[Role, str] = role_hierarchy.ROLE_LABELS
 
 
 def _staff_out(
@@ -444,8 +518,10 @@ async def list_staff(
     user: CurrentUser = Depends(require_capability(caps.MANAGE_STAFF)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> list[StaffOut]:
-    """All staff users of the tenant (contract rev 2). approval_level comes
-    from the hiring_managers mirror row where one exists."""
+    """Staff beneath the caller in the customer hierarchy."""
+    visible_roles = role_hierarchy.subordinate_roles(user.role)
+    if not visible_roles:
+        return []
     rows = (
         await session.execute(
             select(User, HiringManager.approval_level)
@@ -454,7 +530,7 @@ async def list_staff(
                 (HiringManager.user_id == User.id)
                 & (HiringManager.tenant_id == User.tenant_id),
             )
-            .where(User.tenant_id == user.tenant_id, User.role.in_(STAFF_ROLES))
+            .where(User.tenant_id == user.tenant_id, User.role.in_(visible_roles))
             .order_by(User.created_at)
         )
     ).all()
@@ -478,6 +554,8 @@ async def create_staff(
         ensure_owner_invariant(role, str(body.email))
     except OwnerRoleViolation as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    # Spec §29: a person may only create a role BELOW their own.
+    ensure_can_manage(user.role, role)
 
     if role == Role.hiring_manager:
         # FR-2.2: server-side cap on ACTIVE (not disabled) Hiring Managers.
@@ -522,6 +600,10 @@ async def create_staff(
     staff_user = User(
         tenant_id=user.tenant_id, role=role, email=str(body.email),
         phone=body.phone, full_name=body.full_name, status=UserStatus.invited,
+        # The reporting line: whoever created this seat. Recorded for display
+        # and for a future org chart; who may MANAGE whom is decided by rank in
+        # `services/role_hierarchy`, so a missing manager never grants access.
+        manager_user_id=user.user_id,
     )
     session.add(staff_user)
     await session.flush()
@@ -572,6 +654,11 @@ async def update_staff(
         role = validate_staff_role(body.role)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # BOTH ends are checked, and both are necessary. The role they hold NOW
+    # decides whether this person may be edited at all; the role they are being
+    # moved to decides whether the edit is a promotion past the actor.
+    ensure_can_manage(user.role, staff_user.role)
+    ensure_can_manage(user.role, role)
 
     if (
         role == Role.hiring_manager
@@ -645,6 +732,7 @@ async def resend_staff_invite(
     """Revoke the previous token and mint a fresh one (see INVITE_TTL_DAYS).
     Returns the new link so it can be copied even when SMTP is unconfigured."""
     staff_user = await _load_staff(session, user, user_id)
+    ensure_can_manage(user.role, staff_user.role)
     if staff_user.status == UserStatus.disabled:
         raise HTTPException(
             status_code=409,
@@ -682,6 +770,7 @@ async def reactivate_staff(
     straight back to `active`; someone who never signed in returns to `invited`
     so the invite flow still applies."""
     staff_user = await _load_staff(session, user, user_id)
+    ensure_can_manage(user.role, staff_user.role)
     if staff_user.status != UserStatus.disabled:
         raise HTTPException(status_code=409, detail="This account is already active")
 
@@ -706,6 +795,7 @@ async def deactivate_staff(
     roles are targetable; the client account cannot deactivate itself here.
     Any live invitation is revoked so a mailed link cannot be used later."""
     staff_user = await _load_staff(session, user, user_id)
+    ensure_can_manage(user.role, staff_user.role)
 
     staff_user.status = UserStatus.disabled
     now = datetime.now(timezone.utc)
@@ -830,6 +920,7 @@ async def get_staff_permissions(
     differently from "on, because you granted it to them".
     """
     staff_user = await _load_staff(session, user, user_id)
+    ensure_can_manage(user.role, staff_user.role)
     role_defaults = await rbac.resolve_role_capabilities(
         session, user.tenant_id, staff_user.role
     )
@@ -837,15 +928,22 @@ async def get_staff_permissions(
     effective = await rbac.resolve_role_capabilities(
         session, user.tenant_id, staff_user.role, staff_user.id
     )
+    # What the CALLER holds, which is exactly what they may grant (spec §29).
+    # Returned so the screen does not offer a switch the server will refuse.
+    mine = await rbac.resolve_role_capabilities(
+        session, user.tenant_id, user.role, user.user_id
+    )
     return StaffPermissionsOut(
         user_id=staff_user.id,
         role=staff_user.role.value,
+        role_label=role_hierarchy.ROLE_LABELS.get(staff_user.role),
         full_name=staff_user.full_name,
         email=staff_user.email,
         all_capabilities=list(caps.ALL_CAPABILITIES),
         role_defaults=role_defaults,
         overrides=overrides,
         effective=effective,
+        grantable=sorted(role_hierarchy.grantable_capabilities(set(mine))),
     )
 
 
@@ -863,14 +961,46 @@ async def update_staff_permissions(
     That is the behaviour a checkbox screen needs: unticking "granted" should
     mean "stop pinning this", not "leave the old pin in place".
 
-    Two guards:
+    Four guards now, and the two new ones are what makes the hierarchy real
+    (spec §29):
       * An unknown capability name is dropped, not stored (rbac.sanitize_
         overrides) — a typo must never sit in the database looking like a grant.
       * MANAGE_STAFF cannot be revoked from YOURSELF. A tenant that locks its
         last administrator out of staff management has no in-app way back.
+      * STRICTLY BENEATH. A peer or a superior cannot be edited, or the
+        hierarchy would mean nothing: everyone at a level would hold everyone
+        else's permissions.
+      * ONLY WHAT YOU HOLD. Without this the hierarchy is a privilege-escalation
+        ladder: a Recruiter grants a Hiring Manager `manage_billing`, then has
+        that Hiring Manager grant it back. Restricting a GRANT to the actor's own
+        effective set makes the capabilities in a tenant monotonically
+        non-increasing as you descend, which is what a hierarchy means.
+        REVOKING is deliberately unrestricted: it can only reduce what a
+        subordinate can do, and a manager who inherited a team must be able to
+        close a permission they were never given the ability to open.
     """
     staff_user = await _load_staff(session, user, user_id)
+    ensure_can_manage(user.role, staff_user.role)
     overrides = rbac.sanitize_overrides(body.overrides)
+
+    mine = set(
+        await rbac.resolve_role_capabilities(
+            session, user.tenant_id, user.role, user.user_id
+        )
+    )
+    escalating = sorted(
+        capability
+        for capability, allowed in overrides.items()
+        if allowed and capability not in mine
+    )
+    if escalating:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You can only grant permissions you hold yourself. These are "
+                "not yours to give: " + ", ".join(escalating)
+            ),
+        )
 
     if staff_user.id == user.user_id and overrides.get(caps.MANAGE_STAFF) is False:
         raise HTTPException(

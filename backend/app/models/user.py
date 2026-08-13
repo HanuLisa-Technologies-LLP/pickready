@@ -58,6 +58,19 @@ class User(Base, UUIDPKMixin, CreatedAtMixin):
     # `if role == ...` (claude.md rule 3).
     permissions_json: Mapped[dict | None] = mapped_column(JSONB)
 
+    # ── Who this person reports to (migration 0050, spec §29) ────────────────
+    # The customer portal is a four-level hierarchy and each level decides the
+    # permissions of the one beneath it. This records the reporting line inside
+    # a tenant; the RULE about who may manage whom is rank-based and lives in
+    # `services/role_hierarchy`, so a missing manager never grants access it
+    # would not otherwise have.
+    #
+    # ON DELETE SET NULL: a manager leaving must not cascade away their whole
+    # team, and a user whose manager is gone falls back to the rank rule alone.
+    manager_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+
 
 class OTPChallenge(Base, UUIDPKMixin, CreatedAtMixin):
     """Only the code hash is stored (HMAC, see core.security). Attempt counters

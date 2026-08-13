@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from app.api import jobs as jobs_api
 from app.api.deps import CurrentUser
@@ -40,10 +41,17 @@ class _Result:
     """A stand-in for a SQLAlchemy Result covering the two access shapes the
     job endpoints use.
 
-    The two are kept separate because one fake session serves two different
-    queries: `scalar_one_or_none()` answers the tenant-name lookup, while
-    `scalars().first()` answers the ORM company-profile lookup. Returning the
-    same value from both would hand a bare string to code expecting a Company.
+    The access shapes are kept separate because one fake session serves several
+    different queries: `scalar_one_or_none()` answers the tenant-name lookup,
+    `scalars().first()` answers the ORM company-profile lookup, and `scalar()`
+    answers the raw-SQL reads in `services/credits` that the job-creation credit
+    gate goes through. Returning the same value from all of them would hand a
+    bare string to code expecting a Company.
+
+    `scalar()` returns None, which reads as "no such tenant row" for the demo
+    flag and as an empty ledger for the balance. An empty ledger sums to zero,
+    which would BLOCK job creation -- so the fake session's balance is stubbed
+    explicitly rather than left to that default. See `_FakeSession`.
     """
 
     def __init__(self, *, scalar=None, entity=None) -> None:
@@ -56,8 +64,39 @@ class _Result:
     def first(self):
         return self._entity
 
+    def all(self):
+        return []
+
+    def scalar(self):
+        return self._scalar
+
+    def scalar_one(self):
+        return self._scalar
+
     def scalar_one_or_none(self):
         return self._scalar
+
+
+@pytest.fixture(autouse=True)
+def _funded_tenant(monkeypatch):
+    """Every job-creation test here runs against a funded credit pool.
+
+    Job creation is gated on a positive balance (spec 11), and this fake
+    session has no ledger: an absent ledger sums to zero, so without this every
+    test in the file would be testing the credit refusal rather than what it
+    says it tests.
+
+    Stubbed at the service boundary rather than by faking ledger rows, so these
+    tests keep saying nothing about billing. The gate itself is asserted by
+    `test_job_creation_is_blocked_when_the_credit_pool_is_exhausted` below,
+    which turns this stub off deliberately.
+    """
+    from app.services import credits
+
+    async def _funded(*a, **k):
+        return True
+
+    monkeypatch.setattr(credits, "has_positive_balance", _funded)
 
 
 class _FakeSession:
@@ -919,3 +958,34 @@ def test_placeholder_email_is_stable_for_the_same_file() -> None:
     # Different content, different candidate.
     assert first != jobs_api._placeholder_email(jid, "def456")
 
+
+
+# ── The credit gate on job creation (spec §11) ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_job_creation_is_blocked_when_the_credit_pool_is_exhausted(
+    monkeypatch,
+) -> None:
+    """Blocked at the MOMENT of creation, loudly, with the way out named.
+
+    Spec §11 is explicit that this is not a silent failure and not a degraded
+    mode: a recruiter who cannot create a job is told why and what to do. A 402
+    with an empty detail would technically block and would leave the screen with
+    nothing to say.
+    """
+    from app.services import credits
+
+    async def _exhausted(*a, **k):
+        return False
+
+    monkeypatch.setattr(credits, "has_positive_balance", _exhausted)
+
+    with pytest.raises(HTTPException) as caught:
+        await jobs_api.create_job(
+            _job_create_body(),
+            user=_user(),
+            session=_FakeSession(),
+        )
+    assert caught.value.status_code == 402
+    assert "credit" in caught.value.detail.lower()
+    assert "purchase" in caught.value.detail.lower()

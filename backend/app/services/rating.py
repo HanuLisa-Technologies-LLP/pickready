@@ -30,9 +30,11 @@ __all__ = [
     "GRADE_MATCHING",
     "GRADE_MODERATELY",
     "GRADE_NOT",
+    "MODERATELY_CEILING",
     "MODERATE_OR_BELOW",
     "PROBE_THRESHOLD",
     "band_index_for",
+    "cap_to_moderately",
     "grade_for_percent",
     "grade_for_ten",
 ]
@@ -58,6 +60,13 @@ MODERATE_OR_BELOW: frozenset[str] = frozenset({GRADE_MODERATELY, GRADE_NOT})
 #: Internal 0-100 score at or above which an item is NOT probe-worthy. Kept as
 #: a number because it is a scoring-side threshold; it never leaves the server.
 PROBE_THRESHOLD = 75
+
+#: The highest internal score that still grades Moderately Matching. Derived
+#: from the cut-points above rather than typed: the bands are inclusive upward,
+#: so the Moderately band ends one point below where Matching begins, and a
+#: hand-written 74 here would silently stop agreeing with `grade_for_percent`
+#: the first time a cut-point moved.
+MODERATELY_CEILING = PROBE_THRESHOLD - 1
 
 
 def grade_for_percent(score: int | float | None) -> str | None:
@@ -88,6 +97,23 @@ def grade_for_ten(score: int | float | None) -> str | None:
         return grade_for_percent(float(score) * 10.0)
     except (TypeError, ValueError):
         return None
+
+
+def cap_to_moderately(score: int | float | None) -> int | None:
+    """Hold a score down to Moderately Matching, never raising it.
+
+    The arithmetic half of the Must-have hard cap (spec §5.5): if any Must-have
+    item grades Not Matching, the Overall Grade cannot exceed Moderately
+    Matching regardless of how strong everything else is.
+
+    `min`, not an assignment, and that is the whole subtlety. A candidate whose
+    aggregate already grades Not Matching must STAY Not Matching -- a cap that
+    set the score would quietly promote the weakest candidates into the band it
+    was written to keep the strong ones out of.
+    """
+    if score is None:
+        return None
+    return min(int(score), MODERATELY_CEILING)
 
 
 def band_index_for(label: str | None) -> int:

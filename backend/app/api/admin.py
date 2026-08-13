@@ -75,14 +75,13 @@ from app.services.capabilities import DEFAULT_PERMISSION_MATRIX
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
 from app.workers.celery_app import celery_app
 from app.services import llm_router
+from app.services import role_hierarchy
 
 router = APIRouter()
 
 # Roles the Owner may invite into a tenant. Mirrors companies.STAFF_ROLES; the
 # schema Literal is the first gate and the owner invariant the last.
-STAFF_ROLES: frozenset[Role] = frozenset(
-    {Role.hr_manager, Role.recruiter, Role.hiring_manager}
-)
+STAFF_ROLES: frozenset[Role] = role_hierarchy.MANAGEABLE_ROLES
 
 # FR-2.2 — at most 5 ACTIVE Hiring Managers per tenant. Enforced identically on
 # the client-side path (api/companies.py) and by a DB trigger; repeated here so

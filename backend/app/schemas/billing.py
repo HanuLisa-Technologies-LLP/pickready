@@ -118,6 +118,27 @@ class CreditSummaryOut(BaseModel):
     #: Plain-language reason shown on the billing page when invitations are
     #: paused. None when there is nothing to explain.
     deficit_message: str | None = None
+    # ── Zero-balance and low-balance alerts (spec §11) ───────────────────────
+    # Three states, and they are deliberately three fields rather than one enum:
+    # a client renders a blocking dialog for one and a dismissible banner for
+    # another, and an enum would make every consumer re-derive which is which.
+    #
+    #: The pool reads zero or worse. Job creation and new assessments are
+    #: BLOCKED, and the client should say so before the user tries rather than
+    #: only after a 402.
+    exhausted: bool = False
+    #: Below the warning threshold but not yet exhausted. The customer is asked
+    #: to acknowledge and top up so service continues without interruption.
+    low_balance: bool = False
+    #: 0.0 to 1.0 of the granted pool, for the meter beside the warning.
+    balance_fraction: float = 0.0
+    #: The fraction at which `low_balance` turns on, so the copy can name the
+    #: threshold without hardcoding the product's number in the client.
+    low_balance_threshold: float = 0.30
+    #: Plain-language copy for whichever alert is showing. Resolved server-side
+    #: so the API, the on-screen dialog and the 402 refusal cannot describe the
+    #: same situation three different ways.
+    alert_message: str | None = None
     #: A permanent demonstration company. Every figure above is still real
     #: usage; only the BALANCE should be presented as unlimited, because a demo
     #: tenant that has run assessments sums to a negative ledger and the page is

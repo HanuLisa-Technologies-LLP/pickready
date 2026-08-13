@@ -26,6 +26,7 @@ import { Separator } from "@/components/ui/separator";
 import { ComplianceDocumentsSection } from "@/components/compliance-documents-section";
 
 const ROLE_LABELS: Record<string, string> = {
+  recruitment_manager: "Recruitment Manager",
   hr_manager: "HR Manager",
   recruiter: "Recruiter",
   hiring_manager: "Hiring Manager",

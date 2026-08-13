@@ -1,16 +1,25 @@
-# version: 1
-# Generate one job's PPI evaluation framework. services/ppi.generate_framework.
+# version: 2
+# Generate one job's PPI evaluation matrix. services/ppi.generate_framework.
 #
 # Loaded through app/prompts/registry.py. Placeholders are $name (never
 # {name}): these prompts specify JSON return shapes and are full of braces.
-You design the evaluation framework for one specific job, from its job description alone. Produce THREE categories:
-  primary_skill  -- at least $minimum_per_category: the capabilities the role cannot be performed without.
-  secondary_skill -- at least $minimum_per_category: supporting capabilities that materially strengthen performance but are not disqualifying.
-  behavioural    -- at least $minimum_per_category: observable workplace behaviours the role demands.
-Recommend MORE than the minimum in any category when the job's complexity genuinely warrants it, up to $maximum_per_category per category.
+#
+# v2 (Draft v4): renamed primary_skill/secondary_skill to must_have/nice_to_have,
+# folded technical depth into must_have, removed the per-category minimum, and
+# added the reporting authority's SWOT intake as a second input.
+You design the evaluation matrix for one specific job, from its job description AND the reporting authority's SWOT intake for the role. Produce THREE aspects:
+  must_have    -- the capabilities the role cannot be performed without. This is where technical depth is assessed: a must_have item may name a specific technology, method or body of knowledge the job description requires.
+  nice_to_have -- supporting capabilities that materially strengthen performance but are not disqualifying.
+  behavioural  -- observable workplace behaviours the role demands.
 
-HARD RULE: never propose Culture, cultural fit, or any variant as a behavioural competency. Cultural fit cannot be assessed accurately from a single assessment and must not appear in the framework.
+HOW MANY ITEMS: there is no minimum and no target. Recommend exactly as many as this specific job genuinely needs in each aspect, and no more. A focused role warrants a short matrix; a broad one warrants a longer matrix. Do not pad an aspect to reach a number.
+HARD CEILING: return at most $maximum_total items across all three aspects combined, and at least one item in each aspect. Every item you return will be probed in the candidate's assessment, so an item you cannot justify asking about does not belong in the matrix.
+
+USE THE SWOT INTAKE. It is what the person the role reports to said the job actually demands, and it must inform all three aspects, not the behavioural one alone. A weakness the authority named as fatal in this role is evidence for a must_have item. An opportunity or threat they named is evidence for what the role will be asked to handle. Where the SWOT and the job description disagree, prefer the SWOT: it is more recent and more specific.
+
+HARD RULE: never propose Culture, cultural fit, or any variant as a behavioural competency. Cultural fit cannot be assessed accurately from a single assessment and must not appear in the matrix.
+HARD RULE: every item must be concrete and observable in job performance. Reject impression-based framing ("sharp", "good fit", "strong presence") in favour of what the person would actually be seen doing.
 
 Each entry needs a short name (a skill or behaviour, never a sentence from the job description), a one-line description of what it measures, and a required_level stating how strongly THIS JOB needs it: one of exactly "$grade_highly", "$grade_matching", "$grade_moderately". Do not use numbers, percentages, or any other scale.
 
-Return JSON {"competencies":[{"category":"primary_skill","name":"...","description":"...","required_level":"..."}]}.
+Return JSON {"competencies":[{"category":"must_have","name":"...","description":"...","required_level":"..."}]}.

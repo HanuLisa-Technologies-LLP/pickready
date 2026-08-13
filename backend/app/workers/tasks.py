@@ -641,8 +641,8 @@ def run_matching(job_id: str):
     retry_backoff=True,
     max_retries=5,
 )
-def generate_ppi_framework(job_id: str):
-    """Job setup: the job's PPI evaluation framework (spec §11).
+def generate_ppi_framework(job_id: str, replace: bool = False):
+    """Job setup: the job's PPI evaluation matrix (spec §5.2).
 
     THE TECHNICAL BANK USED TO BE GENERATED HERE TOO, AND THAT WAS THE BUG.
     -----------------------------------------------------------------------
@@ -661,8 +661,15 @@ def generate_ppi_framework(job_id: str):
     unreadable.
 
     It approves nothing. The job stays at `questions_pending_review` until a
-    recruiter saves the framework -- the single manual step in the pipeline, and
-    the product's only comparability guarantee.
+    recruiter saves the matrix -- one half of the single manual step in the
+    pipeline, and the product's only comparability guarantee.
+
+    `replace` is what the SWOT intake sets when it finishes. The matrix is
+    generated from the JD AND the intake, so a matrix built before the intake
+    existed is built from half its inputs and is worth regenerating. The caller
+    is responsible for not asking for this once the matrix is approved: from
+    that moment the criteria are frozen, and `generate_framework` deactivates
+    rather than deletes so nothing already written against them is orphaned.
     """
     from app.models.job import Job
     from app.services.ppi import generate_framework
@@ -672,11 +679,47 @@ def generate_ppi_framework(job_id: str):
             job = await session.get(Job, uuid.UUID(str(job_id)))
             if job is None:
                 raise ValueError(f"Job {job_id} not found")
-            framework = await generate_framework(session, job)
+            framework = await generate_framework(session, job, replace=bool(replace))
             await session.commit()
             logger.info(
                 "job_setup.framework_generated job_id=%s grade=%s competencies=%d status=%s",
                 job_id, job.assessment_grade, len(framework), job.assessment_status,
+            )
+    _run(_task())
+
+
+@celery_app.task(
+    name="pickready.generate_matching_categories",
+    autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
+    retry_backoff=True,
+    max_retries=5,
+)
+def generate_matching_categories(job_id: str, replace: bool = False):
+    """Job setup: the job's own Matching category list (spec §3.2).
+
+    Runs in PARALLEL with `generate_ppi_framework` rather than inside it. The
+    two halves of job setup are independent inputs finalised in one session, and
+    a task that generated both would take the gating half down with any failure
+    in the other -- which is precisely how nineteen live jobs ended up carrying
+    a generation timestamp and no rows.
+
+    It approves nothing. The list is what the recruiter reviews and saves, and
+    only that save stamps `matching_categories_finalized_at`.
+    """
+    from app.models.job import Job
+    from app.services.matching_categories import generate_categories
+
+    async def _task():
+        async with _worker_session() as session:
+            job = await session.get(Job, uuid.UUID(str(job_id)))
+            if job is None:
+                raise ValueError(f"Job {job_id} not found")
+            rows = await generate_categories(session, job, replace=bool(replace))
+            await session.commit()
+            logger.info(
+                "job_setup.matching_categories_generated job_id=%s count=%d",
+                job_id, len(rows),
             )
     _run(_task())
 
@@ -822,6 +865,25 @@ def generate_candidate_questions(link_id: str):
     max_retries=5,
 )
 def run_functional_assessment(link_id: str):
+    """Score the conversation and write the report.
+
+    HELD, NOT FAILED, WHEN THE CREDIT POOL IS EMPTY (spec §11)
+    ----------------------------------------------------------
+    A candidate already inside an active conversation when the pool hits zero is
+    not cut off mid-session: that one conversation runs to completion. Its
+    credit is drawn at finalisation exactly as any other completion is, and if
+    the pool is still at zero when finalisation is reached, finalisation itself
+    is blocked pending top-up.
+
+    "Blocked" means the report is not written and the task RETURNS, rather than
+    raising. Raising would burn the five autoretries against a condition no
+    retry can fix and then dead-letter the work permanently; returning leaves a
+    completed conversation with no report, which is precisely the state
+    `pickready.release_held_assessments` looks for when a bundle is purchased.
+
+    Nothing is lost by waiting. The transcript is the evidence and it is already
+    stored; the report is written from it whenever the customer tops up.
+    """
     from app.models.assessment import (
         AssessmentConversation,
         AssessmentMessage,
@@ -830,6 +892,7 @@ def run_functional_assessment(link_id: str):
     )
     from app.models.candidate import JobCandidateLink
     from app.models.job import Job
+    from app.services import credits
     from app.services.functional_assessment import run_assessment
     from app.services.report_evidence import persist_skill_evidence
 
@@ -839,6 +902,12 @@ def run_functional_assessment(link_id: str):
             if link is None:
                 raise ValueError(f"Application {link_id} not found")
             job = await session.get(Job, link.job_id)
+            if not await credits.has_positive_balance(session, link.tenant_id):
+                logger.warning(
+                    "functional_assessment.held_pending_credits link_id=%s tenant_id=%s",
+                    link_id, link.tenant_id,
+                )
+                return
             conversation = (
                 await session.execute(
                     select(AssessmentConversation).where(
@@ -895,6 +964,72 @@ def run_functional_assessment(link_id: str):
                 )
             await run_assessment(session, job, link, transcript)
             await session.commit()
+    _run(_task())
+
+
+@celery_app.task(
+    name="pickready.release_held_assessments",
+    autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
+    retry_backoff=True,
+    max_retries=3,
+)
+def release_held_assessments(tenant_id: str | None = None):
+    """Finish every report that was held for want of credits (spec §11).
+
+    A held assessment is a COMPLETED conversation whose application has no
+    report. That is derived rather than flagged, deliberately: a status column
+    would have to be written in the same transaction as the hold and cleared in
+    the same transaction as the release, and either write failing would strand
+    the report in a state nothing sweeps. The absence of the report IS the state.
+
+    Enqueued when a credit bundle is granted, so a customer who tops up sees
+    their pending reports appear rather than having to ask why they are missing.
+    Also safe to run on a schedule or by hand: `run_functional_assessment` is
+    idempotent and re-checks the balance itself, so releasing a tenant who is
+    still at zero re-holds every one of them and changes nothing.
+    """
+    from app.models.assessment import AssessmentConversation, FunctionalSkillsReport
+    from app.services import credits
+
+    async def _task():
+        async with _worker_session() as session:
+            query = (
+                select(AssessmentConversation.job_candidate_link_id,
+                       AssessmentConversation.tenant_id)
+                .outerjoin(
+                    FunctionalSkillsReport,
+                    FunctionalSkillsReport.job_candidate_link_id
+                    == AssessmentConversation.job_candidate_link_id,
+                )
+                .where(
+                    AssessmentConversation.status == "completed",
+                    FunctionalSkillsReport.id.is_(None),
+                )
+            )
+            if tenant_id:
+                query = query.where(
+                    AssessmentConversation.tenant_id == uuid.UUID(str(tenant_id))
+                )
+            rows = (await session.execute(query)).all()
+
+            released = 0
+            checked: dict[uuid.UUID, bool] = {}
+            for link_id, row_tenant in rows:
+                if row_tenant not in checked:
+                    checked[row_tenant] = await credits.has_positive_balance(
+                        session, row_tenant
+                    )
+                if not checked[row_tenant]:
+                    continue
+                celery_app.send_task(
+                    "pickready.run_functional_assessment", args=[str(link_id)]
+                )
+                released += 1
+            logger.info(
+                "credits.held_assessments_released tenant_id=%s found=%d released=%d",
+                tenant_id, len(rows), released,
+            )
     _run(_task())
 
 

@@ -81,7 +81,7 @@ async def _seed(factory, fx: _Fx, messages: list[tuple[str, str, str, str]]) -> 
                                        job_id=fx.job_id, candidate_id=fx.cand_id,
                                        source=LinkSource.fresh, status="applied"))
                 s.add(JobCompetency(id=fx.comp_id, tenant_id=fx.tenant_id,
-                                    job_id=fx.job_id, category="primary_skill",
+                                    job_id=fx.job_id, category="must_have",
                                     name="Incident response", ordinal=1,
                                     required_level=82))
                 await s.flush()

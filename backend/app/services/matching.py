@@ -42,7 +42,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Job, JobCandidateLink, LinkSource, Profile
-from app.services import llm_router, rating
+from app.services import llm_router, matching_categories, rating
 from app.services.embeddings import EmbeddingError, embed
 # Track A owns tier assignment (signature: assign_tier(score: float) -> Tier).
 from app.services.tiers import assign_tier
@@ -223,10 +223,31 @@ def enforce_word_range(
     return _tidy(" ".join(tokens))
 
 
+def breakdown_keys(breakdown: dict | None) -> tuple[str, ...]:
+    """The category keys a stored breakdown was actually scored on.
+
+    Read OFF THE ROW rather than from a module constant, and that is what makes
+    every function below work on a job with its own category list without any of
+    them being told what that list is. A breakdown knows what it was scored on;
+    a constant only knows what the product scored on the day it was written, and
+    under Draft v4 no two jobs need agree.
+
+    `overall` is excluded because it is the computed aggregate rather than a
+    category, and `scoring_mode` because it is a string.
+    """
+    if not isinstance(breakdown, dict):
+        return ()
+    return tuple(
+        key
+        for key, value in breakdown.items()
+        if key != "overall" and isinstance(value, dict)
+    )
+
+
 def comment_fields_out_of_range(breakdown: dict) -> dict[str, int]:
     """{field: word_count} for every comment outside the 25-30 word contract."""
     bad: dict[str, int] = {}
-    for field in (*PARAMETERS, "overall"):
+    for field in (*breakdown_keys(breakdown), "overall"):
         block = breakdown.get(field)
         comment = block.get("comment") if isinstance(block, dict) else None
         n = word_count(comment)
@@ -236,12 +257,12 @@ def comment_fields_out_of_range(breakdown: dict) -> dict[str, int]:
 
 
 def enforce_breakdown_comments(breakdown: dict) -> dict:
-    """Coerce all five comments in a breakdown into the 25-30 word contract.
+    """Coerce every comment in a breakdown into the 25-30 word contract.
 
-    The last line of defence: called on every breakdown — LLM-scored or
-    deterministic-fallback — immediately before it is persisted.
+    The last line of defence: called on every breakdown -- LLM-scored or
+    deterministic-fallback -- immediately before it is persisted.
     """
-    for field in (*PARAMETERS, "overall"):
+    for field in (*breakdown_keys(breakdown), "overall"):
         block = breakdown.get(field)
         if not isinstance(block, dict):
             continue
@@ -259,15 +280,17 @@ def enforce_breakdown_comments(breakdown: dict) -> dict:
 # EVERY role in the product, which is an arithmetic the four AI comments do not
 # perform and cannot defend when a customer asks why.
 #
-# Each parameter is now judged, graded and commented entirely on its own terms.
+# Each category is judged, graded and commented entirely on its own terms.
 # The internal overall is their plain mean, and exists only to order a
 # candidate list and assign a tier -- it is never displayed, weighted or not.
-PARAMETERS: tuple[str, ...] = (
-    "skills_match",
-    "experience_relevance",
-    "role_alignment",
-    "education_fit",
-)
+#
+# THE LIST IS PER JOB (Draft v4, spec 3.2). `matching_categories` generates it
+# at job creation and the recruiter finalises it; the scoring path is handed the
+# job's own keys and the read path takes them off the stored breakdown. What
+# remains here is the FALLBACK: the four keys the product scored every job on
+# before the change, used for a job whose categories were never generated so
+# that nothing about an existing job's ranking moves underneath it.
+PARAMETERS: tuple[str, ...] = matching_categories.LEGACY_KEYS
 
 # Aspect-numbering contract (API_CONTRACT.md rev 2): aspect 23 = current/most
 # recent designation and core duties; aspects 8-13 = education & qualifications.
@@ -490,15 +513,18 @@ async def _keyword_stage(
     return [r.profile_id for r in rows]
 
 
-def compute_overall_score(scores: dict[str, int | float]) -> float:
-    """Unweighted mean of the four 1-10 parameter scores, rounded to 1 decimal.
+def compute_overall_score(
+    scores: dict[str, int | float], keys: tuple[str, ...] = PARAMETERS
+) -> float:
+    """Unweighted mean of the 1-10 category scores, rounded to 1 decimal.
 
     Pure Python math (banker's rounding over IEEE-754 doubles) -- the overall
     score is NEVER taken from the LLM. Internal only: it orders the candidate
     list and assigns a tier, and never crosses the API boundary.
     Unit-tested in tests/test_scoring.py.
     """
-    return round(sum(float(scores[p]) for p in PARAMETERS) / len(PARAMETERS), 1)
+    keys = tuple(keys) or PARAMETERS
+    return round(sum(float(scores[key]) for key in keys) / len(keys), 1)
 
 
 def _fallback_param_score(rank_index: int, total: int) -> int:
@@ -515,7 +541,30 @@ def _fallback_param_score(rank_index: int, total: int) -> int:
     return int(round(_FALLBACK_MAX - span * frac))
 
 
-def _fallback_breakdown(rank_index: int, total: int) -> dict:
+def _fallback_comment(key: str, name: str) -> str:
+    """A retrieval-only comment for one category.
+
+    The four legacy categories keep their hand-written comments, which say
+    plainly and in 25-30 words what a similarity-derived placement is and is
+    not. A category this release cannot have known about gets a generated
+    sentence in the same register: honest that the placement came from document
+    similarity, and specific enough to name the category the reader is looking
+    at.
+    """
+    if key in _FALLBACK_COMMENTS:
+        return _FALLBACK_COMMENTS[key]
+    return (
+        f"{name} here is estimated from overall similarity between this resume and "
+        "the job description rather than a detailed reading, so confirm it directly "
+        "against the candidate's own document before deciding."
+    )
+
+
+def _fallback_breakdown(
+    rank_index: int,
+    total: int,
+    categories: tuple[tuple[str, str, str], ...] | None = None,
+) -> dict:
     """A full breakdown in the contract shape from retrieval rank alone.
 
     Comments are real, readable 25-30 word notes that state plainly that the
@@ -524,12 +573,16 @@ def _fallback_breakdown(rank_index: int, total: int) -> dict:
     rule 9 — degrade, never crash).
     """
     score = _fallback_param_score(rank_index, total)
+    resolved = categories or tuple(
+        (key, key.replace("_", " ").capitalize(), "") for key in PARAMETERS
+    )
+    keys = tuple(key for key, _, _ in resolved)
     breakdown: dict[str, Any] = {
-        param: {"score": score, "comment": _FALLBACK_COMMENTS[param]}
-        for param in PARAMETERS
+        key: {"score": score, "comment": _fallback_comment(key, name)}
+        for key, name, _ in resolved
     }
     breakdown["overall"] = {
-        "score": compute_overall_score({p: score for p in PARAMETERS}),
+        "score": compute_overall_score({key: score for key in keys}, keys),
         "comment": _FALLBACK_COMMENTS["overall"],
     }
     breakdown["scoring_mode"] = "retrieval_fallback"
@@ -550,13 +603,14 @@ def _coerce_param_score(value: Any) -> int | None:
     return score if 1 <= score <= 10 else None
 
 
-def _validate_entry(entry: Any) -> dict | None:
+def _validate_entry(entry: Any, keys: tuple[str, ...] = PARAMETERS) -> dict | None:
     """Validate one LLM result entry into the contract's breakdown shape
     (overall computed in Python). Returns None when malformed."""
     if not isinstance(entry, dict):
         return None
+    keys = tuple(keys) or PARAMETERS
     breakdown: dict[str, Any] = {}
-    for param in PARAMETERS:
+    for param in keys:
         block = entry.get(param)
         if not isinstance(block, dict):
             return None
@@ -572,7 +626,9 @@ def _validate_entry(entry: Any) -> dict | None:
     if not isinstance(overall_comment, str) or not overall_comment.strip():
         return None
     breakdown["overall"] = {
-        "score": compute_overall_score({p: breakdown[p]["score"] for p in PARAMETERS}),
+        "score": compute_overall_score(
+            {key: breakdown[key]["score"] for key in keys}, keys
+        ),
         "comment": overall_comment.strip(),
     }
     breakdown["scoring_mode"] = "llm"
@@ -633,6 +689,18 @@ def matching_label(score: float | int | None) -> str | None:
     return rating.grade_for_ten(score)
 
 
+#: Display names for the keys this module has always known, so a breakdown
+#: stored before the per-job lists existed still renders a readable heading
+#: rather than a slug. A category generated for a job carries its own name.
+_LEGACY_DISPLAY_NAMES: dict[str, str] = {
+    key: name for key, name, _ in matching_categories.DEFAULT_CATEGORIES
+}
+
+
+def _display_name(key: str) -> str:
+    return _LEGACY_DISPLAY_NAMES.get(key) or key.replace("_", " ").capitalize()
+
+
 def ranking_payload(breakdown: dict | None) -> dict[str, Any]:
     """Flat, comments-only projection of a stored breakdown for API responses.
 
@@ -650,16 +718,45 @@ def ranking_payload(breakdown: dict | None) -> dict[str, Any]:
         "ranking_status": RANKING_STATUS_NOT_SCORED,
         **{key: None for key in RANKING_COMMENT_KEYS.values()},
         **{key: None for key in RANKING_LABEL_KEYS.values()},
+        "categories": [],
     }
     if not isinstance(breakdown, dict) or not breakdown:
         return out
-    for field, out_key in RANKING_COMMENT_KEYS.items():
+
+    # `categories` is the payload a client should render: one entry per category
+    # this candidate was ACTUALLY scored on, in the order the job's list holds
+    # them. It exists because the job's categories are no longer the product's
+    # (spec 3.2), so a fixed set of flat fields can no longer describe a
+    # breakdown -- a job with a Compensation fit category has a comment with
+    # nowhere to go, and a job scored before a category was added has a flat
+    # field with nothing behind it.
+    #
+    # The flat `*_comment` / `*_label` fields are still emitted for the four
+    # long-standing keys, and deliberately: every existing client reads them,
+    # and they are correct whenever the job kept those categories. They are
+    # DEPRECATED. A client should move to `categories`.
+    for field in breakdown_keys(breakdown):
         block = breakdown.get(field)
-        comment = block.get("comment") if isinstance(block, dict) else None
-        out[out_key] = enforce_word_range(comment)
-        out[RANKING_LABEL_KEYS[field]] = matching_label(
-            block.get("score") if isinstance(block, dict) else None
+        if not isinstance(block, dict):
+            continue
+        comment = enforce_word_range(block.get("comment"))
+        label = matching_label(block.get("score"))
+        out["categories"].append(
+            {
+                "key": field,
+                "name": block.get("name") or _display_name(field),
+                "comment": comment,
+                "label": label,
+            }
         )
+        if field in RANKING_COMMENT_KEYS:
+            out[RANKING_COMMENT_KEYS[field]] = comment
+            out[RANKING_LABEL_KEYS[field]] = label
+
+    overall = breakdown.get("overall")
+    if isinstance(overall, dict):
+        out[RANKING_COMMENT_KEYS["overall"]] = enforce_word_range(overall.get("comment"))
+        out[RANKING_LABEL_KEYS["overall"]] = matching_label(overall.get("score"))
     out["ranking_status"] = RANKING_STATUS_READY
     return out
 
@@ -737,7 +834,7 @@ def _parse_scoring_response(raw: str) -> list[dict]:
 
 
 _WORD_RULE = (
-    f"EVERY comment you write, all four parameter comments AND overall_comment "
+    f"EVERY comment you write, all category comments AND overall_comment "
     f", MUST be between {COMMENT_MIN_WORDS} and {COMMENT_MAX_WORDS} words. Not "
     f"fewer than {COMMENT_MIN_WORDS}, not more than {COMMENT_MAX_WORDS}. Count "
     "the words before you emit each comment. Write full, specific sentences "
@@ -745,16 +842,39 @@ _WORD_RULE = (
     "candidate's profile, do not pad with filler, and do not truncate."
 )
 
-#: Text in `app/prompts/matching_scoring_system.txt`, loaded through the registry so a
-#: wording change is a versioned diff in a prompt file rather than a string
-#: literal in a module of code. What is sent is unchanged.
-_SCORING_SYSTEM_PROMPT = registry.render(
-    "matching_scoring_system", word_rule=_WORD_RULE
-)
+def _scoring_system_prompt(categories: tuple[tuple[str, str, str], ...]) -> str:
+    """The scoring prompt for ONE job's category list.
+
+    Rendered per call rather than at import, because the categories are now a
+    property of the job. The prompt names each category by the KEY the response
+    must use and by the NAME a human gave it, and spells out the exact JSON
+    shape: a model asked for "the categories" in prose returns whatever keys it
+    likes, and `_validate_entry` would then reject the whole batch.
+    """
+    listing = "\n".join(
+        f"{index}. {key}, {name}. {description}".rstrip(". ") + "."
+        for index, (key, name, description) in enumerate(categories, 1)
+    )
+    shape = ", ".join(
+        f'"{key}": {{"score": <int 1-10>, "comment": "<25-30 words>"}}'
+        for key, _, _ in categories
+    )
+    return registry.render(
+        "matching_scoring_system",
+        word_rule=_WORD_RULE,
+        categories=listing,
+        return_shape=(
+            '{"profile_id": "<uuid>", '
+            + shape
+            + ', "overall_comment": "<holistic, 25-30 words>"}'
+        ),
+    )
 
 
 def _extract_valid(
-    raw: str, wanted_ids: set[uuid.UUID]
+    raw: str,
+    wanted_ids: set[uuid.UUID],
+    keys: tuple[str, ...] = PARAMETERS,
 ) -> tuple[dict[uuid.UUID, dict], set[uuid.UUID]]:
     """Pull validated breakdowns out of one LLM response. Returns
     (valid breakdowns by profile id, ids still missing/malformed)."""
@@ -772,7 +892,7 @@ def _extract_valid(
             continue
         if pid not in wanted_ids or pid in got:
             continue
-        breakdown = _validate_entry(entry)
+        breakdown = _validate_entry(entry, keys)
         if breakdown is not None:
             got[pid] = breakdown
     return got, wanted_ids - set(got)
@@ -799,6 +919,7 @@ async def _score_batch(
     rank_by_id: dict[uuid.UUID, int],
     total: int,
     customer_success_patterns: list[dict[str, Any]] | None = None,
+    categories: tuple[tuple[str, str, str], ...] | None = None,
 ) -> dict[uuid.UUID, dict]:
     """Score one batch, with ONE corrective regeneration pass.
 
@@ -818,9 +939,15 @@ async def _score_batch(
     }
     if customer_success_patterns:
         payload["customer_success_patterns"] = customer_success_patterns
+    resolved = categories or tuple(
+        (key, name, description)
+        for key, name, description in matching_categories.DEFAULT_CATEGORIES
+        if key in PARAMETERS
+    )
+    keys = tuple(key for key, _, _ in resolved)
     user = json.dumps(payload, default=str)
     messages = [
-        {"role": "system", "content": _SCORING_SYSTEM_PROMPT},
+        {"role": "system", "content": _scoring_system_prompt(resolved)},
         {"role": "user", "content": user},
     ]
     try:
@@ -832,10 +959,12 @@ async def _score_batch(
             "matching.llm_unavailable, deterministic fallback for %d profiles", len(batch)
         )
         return {
-            p.id: _fallback_breakdown(rank_by_id.get(p.id, total - 1), total)
+            p.id: _fallback_breakdown(
+                rank_by_id.get(p.id, total - 1), total, resolved
+            )
             for p in batch
         }
-    results, missing = _extract_valid(raw, {p.id for p in batch})
+    results, missing = _extract_valid(raw, {p.id for p in batch}, keys)
 
     # Which scored entries broke the word contract? {profile_id: {field: count}}
     bad_words = {
@@ -849,10 +978,10 @@ async def _score_batch(
         if missing:
             parts.append(
                 "These profile_ids were missing or malformed: "
-                f"{sorted(str(p) for p in missing)}. Every parameter score MUST "
-                "be an integer between 1 and 10, every parameter needs a "
-                "comment, and overall_comment must be a non-empty holistic "
-                "sentence."
+                f"{sorted(str(p) for p in missing)}. Every one of these keys "
+                f"must be present, {sorted(keys)}, each with an integer score "
+                "between 1 and 10 and a comment, and overall_comment must be a "
+                "non-empty holistic sentence."
             )
         if bad_words:
             detail = "; ".join(
@@ -886,7 +1015,7 @@ async def _score_batch(
             # Chain went down on the corrective retry — skip the still-missing
             # profiles (the ones that DID score keep their real scores).
             raw_retry = ""
-        retried, still_missing = _extract_valid(raw_retry, wanted_again)
+        retried, still_missing = _extract_valid(raw_retry, wanted_again, keys)
         for pid, bd in retried.items():
             # Only accept a regenerated entry if it is no worse on the word
             # contract than what we already had (a first-pass entry is never
@@ -920,13 +1049,14 @@ async def _llm_score(
     jd_text: str,
     profiles: list[Profile],
     customer_success_patterns: list[dict[str, Any]] | None = None,
+    categories: tuple[tuple[str, str, str], ...] | None = None,
 ) -> dict[uuid.UUID, dict]:
-    """4-parameter scoring for all shortlisted profiles.
+    """Score every shortlisted profile on this JOB'S matching categories.
 
     Returns {profile_id: breakdown} where breakdown matches the contract's
     "Matching results" JSON block (overall.score computed in Python). When the
     LLM chain is unavailable, breakdowns are the deterministic retrieval-rank
-    fallback (comments flagged "AI scoring unavailable")."""
+    fallback, flagged `scoring_mode = "retrieval_fallback"`."""
     total = len(profiles)
     # profiles arrive in retrieval-union order (semantic-first, then keyword) —
     # position is the fallback rank signal.
@@ -942,6 +1072,7 @@ async def _llm_score(
                 rank_by_id,
                 total,
                 customer_success_patterns,
+                categories,
             )
         )
     return results
@@ -1085,11 +1216,21 @@ async def run_matching(
     # keep union order
     profiles = [profiles_by_id[pid] for pid in profile_ids if pid in profiles_by_id]
 
-    # ── Stage 3: 4-parameter LLM scoring (raises LLMUnavailableError only if
-    #    the whole chain is exhausted — the Celery task's retry policy handles
-    #    that; individual malformed profiles are skipped with a warning) ──
+    # ── Stage 3: LLM scoring against THIS JOB'S matching categories (raises
+    #    LLMUnavailableError only if the whole chain is exhausted -- the Celery
+    #    task's retry policy handles that; individual malformed profiles are
+    #    skipped with a warning) ──
+    #
+    # The category list is read ONCE, here, and applied to every candidate in
+    # the run. That is spec 3.2's "applies automatically to every candidate
+    # sourced for that job, with no further human step per candidate": there is
+    # no per-candidate configuration to get wrong because there is no
+    # per-candidate decision at all.
+    categories = tuple(await matching_categories.resolved_categories(session, job_id))
     customer_patterns = await _customer_success_patterns(session, job)
-    breakdowns = await _llm_score(session, jd_text, profiles, customer_patterns)
+    breakdowns = await _llm_score(
+        session, jd_text, profiles, customer_patterns, categories
+    )
 
     # ── Ensure links exist for consenting Databank candidates (FR-4.2/4.4) ──
     existing_links = (

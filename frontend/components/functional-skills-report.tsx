@@ -42,6 +42,32 @@ export interface RadarAxis {
   candidate_index: number;
 }
 
+export interface GapProbeItem {
+  name: string;
+  grade: RatingGrade;
+  /** The SAME remark the item carries in its own section. Reused, never
+   *  rewritten: one report states one assessment of an item. */
+  remark?: string | null;
+  probes: string[];
+}
+
+export interface GapGroup {
+  category: string;
+  label: string;
+  items: GapProbeItem[];
+  /** Said in words when the group is empty, rather than left as blank space. */
+  no_gaps_statement?: string | null;
+  /** Present on the Must-have group when a Not Matching item has capped the
+   *  Overall Grade, so the reader is told rather than left to cross-reference. */
+  cap_statement?: string | null;
+}
+
+export interface GapAnalysis {
+  focus_summary: string;
+  must_have_cap_applied: boolean;
+  groups: GapGroup[];
+}
+
 export interface RadarChartSpec {
   key: string;
   title: string;
@@ -52,17 +78,23 @@ export interface FunctionalReport {
   id: string;
   job_candidate_link_id: string;
   grade: string;
-  /** The pre-assessment resume snapshot: four matching parameters (§10.1). */
+  /** The pre-assessment resume snapshot: the job's own matching categories. */
   ai_score: ReportDimension[];
   overall_grade: RatingGrade;
   overall_summary: string;
-  primary_skills: ReportDimension[];
-  secondary_skills: ReportDimension[];
+  must_have: ReportDimension[];
+  nice_to_have: ReportDimension[];
   behavioural: ReportDimension[];
-  /** Scored and used to anchor suggested questions; not a rendered section. */
-  technical: ReportDimension[];
+  /** LEGACY, and empty on every report written from Draft v4 onward: technical
+   *  depth is assessed inside Must-have. Non-empty only on a report written
+   *  against the standalone technical bank that no longer exists. */
+  technical?: ReportDimension[];
   validation: ValidationBlock;
-  suggested_interview_questions: string[];
+  /** Gap Analysis & Action Plan (spec 9.6). */
+  gap_analysis?: GapAnalysis;
+  /** RETIRED, replaced by `gap_analysis`. Non-empty only on a report written
+   *  before Draft v4, which still renders what it was actually written with. */
+  suggested_interview_questions?: string[];
   radar_charts?: RadarChartSpec[];
   radar_bands?: string[];
   radar_series?: string[];
@@ -303,15 +335,15 @@ export function FunctionalSkillsReportView({ report }: { report: FunctionalRepor
       </section>
 
       <DimensionSection
-        title="Primary Skills"
-        dimensions={report.primary_skills}
-        chart={chartFor(report, "primary_skill")}
+        title="Must-have"
+        dimensions={report.must_have}
+        chart={chartFor(report, "must_have")}
         series={series}
       />
       <DimensionSection
-        title="Secondary Skills"
-        dimensions={report.secondary_skills}
-        chart={chartFor(report, "secondary_skill")}
+        title="Nice-to-have"
+        dimensions={report.nice_to_have}
+        chart={chartFor(report, "nice_to_have")}
         series={series}
       />
       <DimensionSection
@@ -323,21 +355,84 @@ export function FunctionalSkillsReportView({ report }: { report: FunctionalRepor
 
       <ValidationSection validation={report.validation} />
 
-      <section aria-label="Suggested interview questions">
-        <h3 className="mb-3 text-lg font-semibold">Suggested interview questions</h3>
-        <ol className="space-y-2">
-          {report.suggested_interview_questions.map((question, index) => (
-            <li key={`${index}-${question}`} className="rounded-md border p-3 text-sm">
-              <span className="mr-2 font-medium">{index + 1}.</span>
-              {question}
-            </li>
-          ))}
-        </ol>
-        <p className="mt-3 text-xs">
-          Advisory input for the interviewer, anchored on whatever graded Moderately Matching or
-          Not Matching. They are not a recommendation to accept or reject.
-        </p>
-      </section>
+      <GapAnalysisSection report={report} />
     </div>
+  );
+}
+
+
+/**
+ * Gap Analysis & Action Plan (spec 9.6).
+ *
+ * Replaces the suggested-questions list entirely. Three groups in the same
+ * Must-have / Nice-to-have / Behavioural order the rest of the report uses,
+ * Not Matching before Moderately Matching inside each, and every empty group
+ * says so in words rather than rendering blank space.
+ *
+ * The retired suggested-questions payload is deliberately never rendered.
+ * Draft v4 replaced that client-facing section completely.
+ */
+function GapAnalysisSection({ report }: { report: FunctionalReport }) {
+  const gaps = report.gap_analysis;
+  if (!gaps || gaps.groups.length === 0) {
+    return null;
+  }
+
+  return (
+    <section aria-label="Gap Analysis and Action Plan">
+      <h3 className="mb-3 text-lg font-semibold">Gap Analysis &amp; Action Plan</h3>
+      {gaps.focus_summary ? (
+        <p className="mb-4 rounded-md border bg-muted/30 p-4 font-medium leading-7">
+          {gaps.focus_summary}
+        </p>
+      ) : null}
+
+      <div className="space-y-6">
+        {gaps.groups.map((group) => (
+          <div key={group.category}>
+            <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide">
+              {group.label}
+            </h4>
+            {group.cap_statement ? (
+              <p className="mb-3 rounded-md border border-dashed p-3 text-sm font-medium">
+                {group.cap_statement}
+              </p>
+            ) : null}
+            {group.items.length === 0 ? (
+              <p className="rounded-md border p-3 text-sm">{group.no_gaps_statement}</p>
+            ) : (
+              <ul className="space-y-3">
+                {group.items.map((item) => (
+                  <li key={item.name} className="rounded-md border p-4">
+                    <div className="mb-2 flex flex-wrap items-center gap-3">
+                      <span className="font-medium">{item.name}</span>
+                      <RatingLabel label={item.grade} />
+                    </div>
+                    {item.remark ? (
+                      <p className="mb-3 text-sm leading-7">{item.remark}</p>
+                    ) : null}
+                    <ul className="space-y-2">
+                      {item.probes.map((probe, index) => (
+                        <li
+                          key={`${item.name}-${index}`}
+                          className="rounded-md border border-dashed p-3 text-sm"
+                        >
+                          {probe}
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <p className="mt-4 text-xs">
+        Advisory input for the interviewer, grounded in what the candidate actually said. It
+        identifies what to probe, never whether to advance or reject.
+      </p>
+    </section>
   );
 }

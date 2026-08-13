@@ -31,12 +31,30 @@ export interface ValidationFieldSpec {
   type: "text" | "select" | "date" | "textarea" | string;
   options?: string[];
   hint?: string;
+  /** A worked example shown inside the empty box (spec 15). Served by the
+   *  backend rather than written here, because the report renders the same
+   *  fields this form collects and an example that lived only in the frontend
+   *  is one the report could not explain. */
+  placeholder?: string;
+  /** "INR" on the CTC fields. Rendered as a prefix so the unit is visible in a
+   *  filled box, not only in an empty one. */
+  currency?: string;
   /** Named documents the readiness answer refers to. Served by the backend so
    *  a candidate is never asked to attest to a set they cannot see. */
   documents?: string[];
 }
 
 export type ValidationValues = Record<string, string>;
+
+/**
+ * How a currency code is written in front of an amount.
+ *
+ * "Rs." rather than the rupee sign, deliberately. The glyph renders as a box in
+ * several of the fonts this form is read in, and a box in front of a salary is
+ * worse than three plain letters. There is one entry because the product
+ * collects one currency; the map exists so adding a second is data.
+ */
+const CURRENCY_PREFIX: Record<string, string> = { INR: "Rs." };
 
 /** Mirrors `application_validation.ROLE_INTEREST_MIN_CHARS` on the server. */
 export const ROLE_INTEREST_MIN_CHARS = 30;
@@ -122,12 +140,35 @@ export function ApplicationValidationForm({
                     ))}
                   </SelectContent>
                 </Select>
+              ) : field.currency ? (
+                // The unit sits BESIDE the box rather than inside the
+                // placeholder, so it is still visible once the candidate has
+                // typed. A placeholder disappears at the first keystroke, which
+                // is exactly when "is this per month or per year, in what
+                // currency" becomes the question.
+                <div className="flex items-stretch">
+                  <span className="inline-flex items-center rounded-l-md border border-r-0 px-3 text-sm">
+                    {CURRENCY_PREFIX[field.currency] ?? field.currency}
+                  </span>
+                  <Input
+                    id={`validation-${field.key}`}
+                    type="text"
+                    inputMode="numeric"
+                    className="rounded-l-none"
+                    required
+                    disabled={disabled}
+                    placeholder={field.placeholder}
+                    value={values[field.key] ?? ""}
+                    onChange={(event) => set(field.key, event.target.value)}
+                  />
+                </div>
               ) : (
                 <Input
                   id={`validation-${field.key}`}
                   type={field.type === "date" ? "date" : "text"}
                   required
                   disabled={disabled}
+                  placeholder={field.placeholder}
                   value={values[field.key] ?? ""}
                   onChange={(event) => set(field.key, event.target.value)}
                 />

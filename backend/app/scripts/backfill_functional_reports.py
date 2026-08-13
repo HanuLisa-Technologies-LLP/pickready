@@ -21,7 +21,7 @@ from app.models.assessment import (
 )
 from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
-from app.services import ppi, technical_interview
+from app.services import ppi
 from app.services.application_validation import VALIDATION_FIELDS
 from app.services.functional_assessment import (
     MATCHING_DIMENSIONS,
@@ -166,23 +166,13 @@ async def backfill(apply: bool) -> dict[str, int]:
                         "remark": _fallback_remark_45(competency.name),
                         "ordinal": ordinal_by_category[competency.category],
                     })
-                # ONE row per DISTINCT skill, from the job's deterministic
-                # coverage plan. `report_dimensions` is UNIQUE on
-                # (report_id, category, name) and the plan deliberately probes
-                # each skill several times, so iterating the plan directly would
-                # raise IntegrityError. `dict.fromkeys` dedupes while keeping
-                # plan order, which is the order the real scorer emits.
-                plan = list(dict.fromkeys(technical_interview.skill_plan(job)))
-                for ordinal, skill in enumerate(plan, 1):
-                    dimensions.append({
-                        "category": "technical",
-                        "name": skill,
-                        "description": None,
-                        "score": _stable_score(f"mock:{link.id}:{skill}"),
-                        "required_level": None,
-                        "remark": _fallback_remark_25(skill),
-                        "ordinal": ordinal,
-                    })
+                # NO SEPARATE TECHNICAL ROWS. There was a block here that
+                # emitted one dimension per distinct skill in the job's
+                # technical coverage plan. Draft v4 folded technical depth into
+                # the matrix's Must-have items, which the loop above already
+                # covers, and a backfill that invented a parallel set of
+                # `technical` rows would write a report shape nothing renders
+                # any more.
                 assessed = [row for row in dimensions if row["category"] != "matching"]
                 overall_score = (
                     round(sum(row["score"] for row in assessed) / len(assessed))

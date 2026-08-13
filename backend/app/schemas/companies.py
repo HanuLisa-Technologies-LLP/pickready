@@ -88,6 +88,13 @@ class StaffPermissionsOut(BaseModel):
     overrides: dict[str, bool]
     #: What actually applies: role defaults with the overlay on top.
     effective: list[str]
+    #: The role's display name in the hierarchy (spec §29), so the screen names
+    #: it the same way the org chart does.
+    role_label: str | None = None
+    #: What the CALLER may grant: exactly what the caller holds. A hierarchy
+    #: whose managers can grant what they do not hold is a ladder, not a
+    #: ceiling, so the screen must not offer a switch the server will refuse.
+    grantable: list[str] = []
 
 
 class StaffCreateIn(BaseModel):
@@ -214,3 +221,26 @@ class EmailTemplateOut(BaseModel):
     version: int
     is_active: bool
     created_at: datetime
+
+
+class CompanyProfileResearchOut(BaseModel):
+    """A researched DRAFT of the three profile sections (spec §30).
+
+    Deliberately not the same shape as `CompanyProfileIn`: this is a proposal,
+    not a submission. A client applies it by sending the sections it keeps to
+    PATCH /companies/me/profile, which is the explicit human step the client
+    asked for.
+    """
+
+    about_company: str = ""
+    work_life: str = ""
+    benefits: str = ""
+    #: The pages the sections were written from, so a recruiter can check them.
+    #: Never a social-media host: `company_research.is_allowed_source` refuses
+    #: Facebook, X, Reddit and Instagram on the URL rather than only in the
+    #: search query.
+    sources: list[str] = []
+    #: True when nothing usable could be retrieved or drafted. The screen shows
+    #: `message` instead of an empty form that looks like a finished draft.
+    degraded: bool = False
+    message: str | None = None

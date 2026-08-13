@@ -28,10 +28,10 @@ def test_a_seeded_framework_always_meets_the_minimum(skills):
 
     framework = m.seed_framework(skills, "Backend Engineer")
     counts = Counter(row["category"] for row in framework)
-    assert counts["primary_skill"] == 5
-    assert counts["secondary_skill"] == 5
+    assert counts["must_have"] == 5
+    assert counts["nice_to_have"] == 5
     assert counts["behavioural"] == 5
-    for category in ("primary_skill", "secondary_skill"):
+    for category in ("must_have", "nice_to_have"):
         names = [row["name"] for row in framework if row["category"] == category]
         assert len(set(names)) == 5, names
 

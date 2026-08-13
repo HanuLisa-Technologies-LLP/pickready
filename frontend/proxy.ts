@@ -42,7 +42,6 @@ const PUBLIC_PREFIXES = [
   // /login carrying itself as `next`. Gating it here would bounce them
   // to a login with no destination, which is the bug it exists to fix.
   "/assessments/invite",
-  "/Readypick-corporate-deck.pptx", // shareable BD collateral
 ];
 
 const PORTAL_BY_ROLE: Record<string, string> = {
@@ -54,6 +53,7 @@ const PORTAL_BY_ROLE: Record<string, string> = {
   bd: "/bd",
   candidate: "/portal",
   client: "/org",
+  recruitment_manager: "/org",
   hr_manager: "/org",
   recruiter: "/org",
   hiring_manager: "/org",

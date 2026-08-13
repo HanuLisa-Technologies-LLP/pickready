@@ -1,5 +1,56 @@
 # claude.md, PickReady Build Conventions
 
+## Current release authority — Product Development Specification v4 (2026-08-14)
+
+- **PickReady is a standalone AI-native product.** Product and marketing copy
+  uses only PickReady branding. Do not reuse another product's name, logo,
+  collateral, positioning language, client identity, or go-to-market story.
+- **Customer roles are hierarchical, not flat.** The chain is Super Admin
+  (`client`) -> Recruitment Manager -> Recruiter -> Hiring Manager. A person
+  may manage only roles strictly beneath their own and may grant only a
+  capability they hold. `users.permissions_json` remains the sparse per-user
+  overlay, and every operational endpoint in jobs, pipeline and candidates must
+  continue to enforce it through `require_capability(...)`; never add role-name
+  branches to business routers. Legacy `hr_manager` ranks beside Recruitment
+  Manager until existing accounts are migrated deliberately.
+- **Job setup has two fixed, job-specific outputs.** The Reporting Authority
+  SWOT intake informs a PPI matrix of Must-have, Nice-to-have and Behavioural
+  criteria; the Matching Agent separately proposes at least five coarse,
+  resume-only matching categories. Both are human-reviewed and finalized once
+  per job. The PPI matrix supports drag/drop between Must-have and Nice-to-have.
+- **One candidate conversation, one scoring agent.** Questions are generated
+  per candidate from the JD, saved SWOT-informed matrix and resume, while the
+  matrix stays identical for everyone on that job. Must-have and Nice-to-have
+  use question rubrics; Behavioural uses judgement-based scoring. There is no
+  standalone technical agent or split behavioural bot.
+- **Validation is factual application data.** Current CTC, expected CTC,
+  notice period, joining date, document readiness and the exact answer to
+  "Why does this role interest you?" are captured before assessment, never
+  scored, and shown as an explicit recruiter Q&A view. CTC is annual INR and
+  the UI gives `4,00,000` as the worked example.
+- **Client-visible grades are words only:** Highly Matching, Matching,
+  Moderately Matching, Not Matching. Never expose scores, percentages or
+  letter grades. Any Not Matching Must-have caps Overall at Moderately
+  Matching. Rated PPI and Overall remarks are 45-50 words; AI Score category
+  remarks and gap probes are 25-30 words.
+- **Reports contain AI Score, then PPI Assessment, then Validation, then Gap
+  Analysis & Action Plan.** Suggested interview questions are removed. Gap
+  groups reuse item remarks, order Not Matching before Moderately Matching,
+  state empty groups, and ground every probe in the candidate's actual answer.
+  Exactly four number-free radar charts are shown: Overall, Must-have,
+  Nice-to-have and Behavioural.
+- **Credit gates are immediate.** Warn at or below 30%; at zero block job
+  creation and new assessment starts. An active conversation may finish, but
+  report finalization waits for top-up. Never fail silently or degrade access.
+- **Company profile edits begin with professional web research.** Prefer the
+  official site, LinkedIn, Glassdoor and AmbitionBox; reject Facebook, X,
+  Reddit and Instagram. Show sources and require an explicit Edit action before
+  a person can change or save the generated draft.
+- **The customer AI Dashboard is deleted.** Do not restore its route, component
+  or navigation entry. Items explicitly deferred by spec v4 (LinkedIn sourcing,
+  go-to-market execution, sourcing-seat/ToS choices and Resume Alignment Agent)
+  remain unimplemented until decided.
+
 ## Current hard rules, per-candidate technical questions + loop engineering (2026-08-06)
 
 - **There is no preset technical question bank, and a company can never author
@@ -501,13 +552,10 @@
   `--muted-foreground: var(--ink)` in both themes, so the shadcn primitives'
   built-in `text-muted-foreground` resolves to pure ink. Do not chase call
   sites in `components/ui/**`; fix the token if it ever drifts.
-- **The brand is the Readypick.ai logo lockup** at
-  `frontend/public/brand/readypick-logo.png`, with the indigo-violet primary
-  `#5028E0` on ink `#080820` sampled from it. Tokens and rules live in
-  `docs/spec/DESIGN_BRIEF.md`, which UI work reads BEFORE inventing its own.
-  The logo already contains a wordmark, so it is never rendered beside a text
-  "PickReady". ASSUMPTION, still open with the client: the logo says
-  "Readypick.ai" while the product is named PickReady.
+- **The brand is PickReady.** The code-native mark and wordmark live in
+  `frontend/components/brand/logo.tsx`; product surfaces must not point at
+  inherited logo or collateral assets. Design tokens remain in
+  `docs/spec/DESIGN_BRIEF.md`.
 - **Page metadata must not repeat the site name.** `app/layout.tsx` sets a
   `%s | PickReady` template, so a page title is just "Sign in".
 - **The frontend dev container does not see file changes over the Windows bind
@@ -562,11 +610,10 @@
   user has no tenant. The audit trail is
   still written for every Provider request (`get_superadmin_db`); it simply has
   no UI. Settings stays because the theme toggle lives there (rule 10).
-- **`manage_compliance_documents` is the one capability the flat staff model
-  does NOT flatten.** Granted to `client` (Company Admin) alone by default: a
+- **`manage_compliance_documents` remains independently grantable.** A
   GSTIN certificate and a signed agreement are the company's legal instruments,
-  not recruitment data. Still a capability, never a role branch — an HR Head
-  can delegate it via `users.permissions_json`.
+  not recruitment data. Still a capability, never a role branch; an authorised
+  manager can delegate it via `users.permissions_json`.
 
 ## Current hard rules — Job posting lifecycle + hiring pipeline (2026-07-27)
 
@@ -808,7 +855,7 @@ These are architectural decisions already made in ESD.md — do not silently dev
 
 1. **Every tenant-scoped query goes through the RLS-aware session.** Never hand-write a `WHERE tenant_id = ...` filter as the *only* protection — the Postgres RLS policy is the real boundary; app-level filtering is defense in depth, not a substitute.
 2. **Authentication is Firebase (as of 2026-07-24).** All roles sign in via Firebase Auth — Google, email/password, and phone. The backend verifies the Firebase ID token (`services/firebase_auth.py`) and issues the app's own portal-scoped JWT cookies; database roles/permissions remain authoritative (Firebase is identity only, never authorization). **Exception to the original "no passwords" rule:** candidate email/password is explicitly allowed (user decision, 2026-07-24). Do NOT build a custom password store or "forgot password" flow — Firebase owns credentials and recovery. The legacy MSG91 OTP send-path is retained as a working SMS feature but is no longer the login mechanism.
-3. **Permissions are data, not code — but the staff model is now FLAT (as of 2026-07-24, PRD v1.0 §4).** HR Manager, Recruiter, and Hiring Manager are **equal**: all three create jobs, share one candidate pool, and hold the same operational capabilities. Keep using the `require_capability("...")` dependency backed by `role_permissions` (don't hardcode `if role == ...`), but the seeded matrix grants all three staff roles the full operational set. The RBAC engine and multi-level approval FSM remain in the codebase but are **bypassed** (jobs publish directly on creation) — do not surface approval levels or per-staff-role gating in the UI. Owner and Client Company Admin sit above the flat staff roles.
+3. **Permissions are data, not code, and staff are hierarchical (reversed 2026-08-14).** Super Admin -> Recruitment Manager -> Recruiter -> Hiring Manager. Managers control only roles below them and may grant only capabilities they hold. Keep using `require_capability("...")` backed by `role_permissions` and the per-user overlay; never hardcode operational access by role in jobs, pipeline or candidates.
 4. **All async/slow work is a Celery task**, never inline in a request handler: matching/re-ranking, email/SMS sending, resume parsing, verification-reply parsing, dashboard aggregation.
 5. **All outbound email goes through Gmail SMTP from the backend.** Configure `smtp.gmail.com:587` with STARTTLS, the Gmail address, and a Google App Password via `SMTP_*`. The authenticated Gmail mailbox is always the From address. Sending remains a Celery task with database audit records and permanent-vs-transient failure handling.
 6. **Candidate resumes ARE persisted on the candidate profile and reused across applications (as of 2026-07-24, PRD v1.0 FR-6.2).** Store the uploaded resume on the candidate's profile; on a new application, offer to reuse the last resume or upload a fresh one. (This reverses the earlier fresh-upload-only rule.)

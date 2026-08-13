@@ -325,6 +325,25 @@ async def create_job(
     recruiter edit, THEN publish. That draft is finished with
     PATCH /jobs/{id}/jd and made live with POST /jobs/{id}/publish.
     """
+    # ── The credit gate on job creation (spec §11) ──────────────────────────
+    # Checked at the MOMENT of creation and nowhere else. A job created while
+    # the pool had credit stays created if the pool later empties; what is
+    # blocked is starting something new with nothing to pay for it.
+    #
+    # Loud and immediate, with the way out named in the message. Spec §11 is
+    # explicit that there is no silent failure and no degraded mode here: a
+    # recruiter who cannot create a job must be told why and what to do, not
+    # handed a draft that quietly never becomes anything.
+    if not await credits.has_positive_balance(session, user.tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                "Your credit pool is exhausted, so new jobs cannot be created. "
+                "Purchase a credit bundle to continue creating jobs and "
+                "assessing candidates."
+            ),
+        )
+
     # Snapshot the company's narrative sections onto the job (spec §3.2). An
     # explicit value in the create body wins; otherwise the company profile
     # seeds it. Snapshotting — rather than always reading through — is what
@@ -401,6 +420,13 @@ async def create_job(
     # the technical-bank half that used to share this task -- the job was
     # silently unusable forever. Nineteen live jobs were in exactly that state.
     celery_app.send_task("pickready.generate_ppi_framework", args=[str(job.id)])
+    # The two halves of job setup are generated IN PARALLEL (spec §10): the PPI
+    # matrix from the JD and the SWOT intake, the Matching category list from
+    # the JD. Two tasks rather than one, and that split is not stylistic. A
+    # single task that generated both would take the gating half down with any
+    # failure in the other, which is the exact coupling that left nineteen live
+    # jobs with a stamped timestamp and no framework.
+    celery_app.send_task("pickready.generate_matching_categories", args=[str(job.id)])
     # Load the GENERATED posting-window columns before serialising. The mapper
     # asks for them via RETURNING (models/job.eager_defaults), but a direct
     # publish re-stamps `posting_start_date` after the INSERT, which expires

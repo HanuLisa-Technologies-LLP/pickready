@@ -441,22 +441,39 @@ def _measure_culture_is_refused() -> Result:
 
 
 def _measure_question_counts_by_grade() -> Result:
-    """Counts are fixed by the CANDIDATE's grade, and the direction is the
-    surprising part: MORE questions for a junior candidate, fewer for a CXO."""
+    """Volume is a RANGE per grade, resolved once per job (spec 5.4).
+
+    The direction is the surprising part and has not changed: MORE questions for
+    a junior candidate, fewer for a CXO. What changed in Draft v4 is that the
+    number inside the range follows the size of that job's own matrix, so two
+    jobs at one grade may legitimately differ while two candidates on one job
+    never can.
+    """
     result = Result("question_counts_by_grade")
-    expected_ppi = {"non_managerial": 25, "managerial": 20, "leadership": 15, "cxo": 10}
-    expected_tech = {"non_managerial": 20, "managerial": 17, "leadership": 15, "cxo": 12}
-    for grade, count in expected_ppi.items():
-        actual = ppi.ppi_question_count(grade)
-        result.record(actual == count, f"ppi {grade}: {actual}, expected {count}")
-    for grade, count in expected_tech.items():
-        actual = fa.technical_question_count(grade)
-        result.record(actual == count, f"technical {grade}: {actual}, expected {count}")
+    expected = {
+        "non_managerial": (20, 28),
+        "managerial": (16, 22),
+        "leadership": (11, 16),
+        "cxo": (7, 11),
+    }
+    for grade, bounds in expected.items():
+        actual = (ppi.min_questions(grade), ppi.max_questions(grade))
+        result.record(actual == bounds, f"{grade}: {actual}, expected {bounds}")
+    # A resolved target never leaves its grade's range, whatever the matrix
+    # holds. Both ends, because a silent clamp in either direction would change
+    # how long a real candidate sits in an interview.
+    for grade, (low, high) in expected.items():
+        for size in (0, 1, low, high, high + 40):
+            target = ppi.resolve_question_target(grade, size)
+            result.record(
+                low <= target <= high,
+                f"{grade} resolved {target} for a {size}-item matrix, "
+                f"outside {low}..{high}",
+            )
     # A grade nobody recognises must not silently produce zero questions.
-    result.record(ppi.ppi_question_count(None) > 0, "an unknown grade produced no PPI questions")
     result.record(
-        fa.technical_question_count(None) > 0,
-        "an unknown grade produced no technical questions",
+        ppi.resolve_question_target(None, 12) > 0,
+        "an unknown grade produced no questions",
     )
     return result
 

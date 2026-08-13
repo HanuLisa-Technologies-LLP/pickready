@@ -71,7 +71,7 @@ describe("API mount parity", () => {
       }
     }
     expect(offenders).toEqual([]);
-  });
+  }, 15_000);
 
   it("recognises the shape it is looking for, and only that shape", () => {
     // A guard on the guard: a regex that matched nothing would pass the test

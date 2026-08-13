@@ -24,12 +24,12 @@ describe("SetupStatus", () => {
   it("explains the invitation block and links directly to the required action", () => {
     render(<SetupStatus setup={pendingSetup()} />);
 
-    expect(screen.getByText("Framework pending review")).toBeTruthy();
+    expect(screen.getByText("Job setup pending review")).toBeTruthy();
     expect(
-      screen.getByText(/No candidate can be invited.*save the PPI framework/s)
+      screen.getByText(/No candidate can be invited.*save the evaluation matrix/s)
     ).toBeTruthy();
     expect(
-      screen.getByRole("link", { name: "Review and save framework" }).getAttribute("href")
+      screen.getByRole("link", { name: "Review and save" }).getAttribute("href")
     ).toBe("#ppi-framework");
   });
 
@@ -38,7 +38,7 @@ describe("SetupStatus", () => {
 
     expect(screen.getByText(/still writing the criteria/i)).toBeTruthy();
     expect(
-      screen.queryByRole("link", { name: "Review and save framework" })
+      screen.queryByRole("link", { name: "Review and save" })
     ).toBeNull();
   });
 });

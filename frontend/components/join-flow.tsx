@@ -44,6 +44,7 @@ type InviteInfo = {
 };
 
 const ROLE_LABELS: Record<StaffRole, string> = {
+  recruitment_manager: "Recruitment Manager",
   hr_manager: "HR Manager",
   recruiter: "Recruiter",
   hiring_manager: "Hiring Manager",

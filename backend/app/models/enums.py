@@ -4,7 +4,13 @@ import enum
 
 class Role(str, enum.Enum):
     super_admin = "super_admin"
+    # The customer's own Super Admin. Named `client` since the product's first
+    # release; the customer portal calls it Super Admin (spec 29).
     client = "client"
+    # Between Super Admin and Recruiter (spec 29). `hr_manager` predates it and
+    # ranks alongside it: a role a customer already assigned must not silently
+    # change what its holder can do. See services/role_hierarchy.
+    recruitment_manager = "recruitment_manager"
     hr_manager = "hr_manager"
     recruiter = "recruiter"
     hiring_manager = "hiring_manager"

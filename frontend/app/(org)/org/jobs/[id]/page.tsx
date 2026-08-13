@@ -60,6 +60,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 /** One labelled JD paragraph; hidden entirely when the field is empty. */
 function JdField({ label, value }: { label: string; value: unknown }) {
@@ -339,24 +346,39 @@ export default function OrgJobDetailPage() {
 
   const runMatching = async () => {
     setMatchingState("running");
-    setMatchingMessage("AI matching is running. Keep this page open or continue working.");
+    setMatchingMessage("AI matching is running. This status stays open until every score is finished.");
     try {
-      const res = await apiPost<{ candidate_count: number }>(
+      const res = await apiPost<{ candidate_count: number; task_id: string }>(
         `/jobs/${jobId}/run-matching`
       );
-      toast({
-        title: "AI matching started",
-        description: `Scoring ${res.candidate_count} candidate${
-          res.candidate_count === 1 ? "" : "s"
-        }. Results appear here as they finish.`,
-      });
+      let finished = false;
+      let finalState = "PENDING";
+      for (let attempt = 0; attempt < 240; attempt += 1) {
+        const status = await apiGet<{ state: string; done: boolean }>(
+          `/matching/tasks/${res.task_id}`
+        );
+        finalState = status.state;
+        if (status.done) {
+          finished = true;
+          break;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      }
+      if (!finished) {
+        throw new Error("AI matching is taking longer than six minutes. The job is still running; refresh this page to check its results.");
+      }
+      if (finalState !== "SUCCESS") {
+        throw new Error(`AI matching ended in ${finalState.toLowerCase()} state. No partial result is being presented as complete.`);
+      }
       setMatchingState("done");
       setMatchingMessage(
-        `${res.candidate_count} candidate${res.candidate_count === 1 ? "" : "s"} queued successfully. Results refresh as they finish.`
+        `${res.candidate_count} candidate${res.candidate_count === 1 ? "" : "s"} scored. Matching is complete.`
       );
-      // Matching runs as a background task; refresh shortly so early results
-      // land without the recruiter having to reload the page.
-      window.setTimeout(() => setReloadKey((k) => k + 1), 4000);
+      setReloadKey((key) => key + 1);
+      toast({
+        title: "AI matching complete",
+        description: `${res.candidate_count} candidate${res.candidate_count === 1 ? "" : "s"} scored and ready to review.`,
+      });
     } catch (e) {
       setMatchingState("error");
       setMatchingMessage(
@@ -375,6 +397,32 @@ export default function OrgJobDetailPage() {
 
   return (
     <div>
+      <Dialog open={matchingState === "running"} onOpenChange={() => undefined}>
+        <DialogContent
+          className="max-w-md"
+          onEscapeKeyDown={(event) => event.preventDefault()}
+          onPointerDownOutside={(event) => event.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-brand-600" aria-hidden="true" />
+              AI matching in progress
+            </DialogTitle>
+            <DialogDescription>
+              PickReady is evaluating the job&apos;s candidate pool against its finalized matching categories.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-xl border bg-secondary/40 p-5">
+            <div className="flex items-center gap-3" role="status" aria-live="polite">
+              <Loader2 className="h-6 w-6 animate-spin text-brand-600" aria-hidden="true" />
+              <div>
+                <p className="font-medium">Scoring and writing remarks</p>
+                <p className="mt-1 text-sm">This window closes automatically when the matching task finishes.</p>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       <PageHeader
         eyebrow="Customer Portal"
         title={job?.title ?? "Job"}

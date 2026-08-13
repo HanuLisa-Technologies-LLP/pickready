@@ -18,6 +18,7 @@ import pytest
 
 from app.services import agent_loop
 from app.services import functional_assessment as fa
+from app.services import gap_analysis
 from app.services import interviewer, ppi
 
 
@@ -155,50 +156,96 @@ async def test_report_remark_revises_a_banned_template_phrase(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_interview_probes_use_the_loop_and_named_gaps(monkeypatch) -> None:
+async def test_gap_probes_use_the_loop_and_are_re_asked_when_they_break_a_rule(
+    monkeypatch,
+) -> None:
+    """The probe generator moved to `services/gap_analysis` with Draft v4.
+
+    What did not move is why it is a LOOP: "your probe was 9 words and I need 25
+    to 30" is a defect a model fixes when told, and the one-shot code it
+    replaced threw the response away and shipped a deterministic probe instead.
+    """
     attempts: list[list[dict]] = []
-    dimensions = [
-        {
-            "category": "primary_skill",
-            "name": f"Capability {letter}",
-            "score": 30 + index,
-            "remark": f"Evidence gap for capability {letter}.",
-        }
-        for index, letter in enumerate("ABCDEFGH")
-    ]
-    valid = [
-        "For Capability A, which production constraint forced you to abandon your first design?",
-        "On Capability B, how did you verify the result rather than trusting the initial signal?",
-        "Probe Capability C by asking what they personally implemented and what the team supplied.",
-        "For Capability D, change the delivery deadline and ask how their technical trade-off would move.",
-        "Explore Capability E through a failed attempt and the evidence that prompted recovery.",
-        "On Capability F, ask which stakeholder objection materially changed the final approach.",
-        "For Capability G, request the concrete artifact that proves the reported outcome held.",
-        "Probe Capability H by removing a key dependency and asking for an alternative implementation.",
-    ]
+    item = {
+        "category": "must_have",
+        "name": "Capability A",
+        # Moderately Matching: one probe. A Not Matching Must-have earns two,
+        # and this test is about the WORD rule, not the count rule.
+        "score": 65,
+        "ordinal": 1,
+        "remark": "Evidence gap for capability A.",
+    }
+    valid = (
+        "You mentioned rebuilding the ingest path yourself, so walk me through "
+        "the constraint that forced you to abandon your first design and what "
+        "you measured afterwards."
+    )
 
     async def _chat(task_type, messages, **kwargs):
         attempts.append(messages)
         payload = (
-            {"probes": ["Describe one recent situation in detail."]}
+            {"probes": ["Too short."]}
             if len(attempts) == 1
-            else {"probes": valid}
+            else {"probes": [valid]}
         )
         return json.dumps(payload)
 
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    probes = await fa.generate_suggested_questions(
+    monkeypatch.setattr(gap_analysis.llm_router, "chat_completion", _chat)
+    section = await gap_analysis.build_gap_analysis(
         None,
-        job_title="Platform Engineer",
-        dimensions=dimensions,
+        [item],
+        {
+            "Capability A": [
+                {
+                    "question": "How did you approach the ingest rebuild?",
+                    "answer": "I rebuilt the ingest path myself over two sprints.",
+                }
+            ]
+        },
     )
 
-    assert probes == valid
+    probes = section["groups"][0]["items"][0]["probes"]
+    assert probes == [valid]
     assert len(attempts) == 2
-    assert "eight to ten" in attempts[1][-1]["content"]
-    assert all("Capability" in probe for probe in probes)
+    # The correction names the rule and the count it actually produced.
+    correction = attempts[1][-1]["content"]
+    assert "25 to 30 words" in correction
 
 
+@pytest.mark.asyncio
+async def test_a_probe_that_repeats_the_original_question_is_re_asked(
+    monkeypatch,
+) -> None:
+    """Spec §9.6: a probe must not repeat the wording of the question the
+    candidate was already asked. The interviewer is going somewhere NEW with an
+    answer that was already given."""
+    attempts: list[list[dict]] = []
+    asked = "Walk me through how you tuned Kafka consumer lag in production."
+    good = (
+        "You mentioned shrinking the consumer group, so tell me what you would "
+        "have done instead had the partition count been fixed for you by an "
+        "entirely different team."
+    )
+
+    async def _chat(task_type, messages, **kwargs):
+        attempts.append(messages)
+        payload = {"probes": [asked]} if len(attempts) == 1 else {"probes": [good]}
+        return json.dumps(payload)
+
+    monkeypatch.setattr(gap_analysis.llm_router, "chat_completion", _chat)
+    section = await gap_analysis.build_gap_analysis(
+        None,
+        [{"category": "must_have", "name": "Kafka", "score": 65, "ordinal": 1,
+          "remark": "Some evidence."}],
+        {"Kafka": [{"question": asked,
+                    "answer": "I shrank the consumer group and repartitioned."}]},
+    )
+    assert section["groups"][0]["items"][0]["probes"] == [good]
+    assert len(attempts) == 2
+    assert "already asked" in attempts[1][-1]["content"]
+
+
+# ── The PPI matrix: filler a human has to fix by hand ────────────────────────
 # ── The PPI framework: filler a human has to fix by hand ─────────────────────
 
 
@@ -222,20 +269,25 @@ def _competency(category, index):
     }
 
 
-def _full_framework():
+def _matrix():
     return [
         _competency(category, index)
         for category in ppi.CATEGORIES
-        for index in range(ppi.MINIMUM_PER_CATEGORY)
+        for index in range(3)
     ]
 
 
 class _StubSession:
+    """Answers both shapes `generate_framework` uses: `.all()` for the existing
+    matrix and `.first()` for the SWOT intake."""
+
     def __init__(self) -> None:
         self.added: list = []
 
     async def execute(self, *a, **k):
-        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
+        return SimpleNamespace(
+            scalars=lambda: SimpleNamespace(all=lambda: [], first=lambda: None)
+        )
 
     def add_all(self, rows) -> None:
         self.added.extend(rows)
@@ -245,35 +297,66 @@ class _StubSession:
 
 
 @pytest.mark.asyncio
-async def test_a_short_framework_is_re_asked_before_it_is_padded(monkeypatch) -> None:
-    """`_top_up` always guaranteed the minimum, so a short generation never
-    FAILED -- it was padded with mechanically derived names like
-    "Kafka (supporting)". That is a correct floor and a poor framework, and it
-    lands on the one screen a human is required to review.
+async def test_an_empty_aspect_is_re_asked_before_the_fallback_fills_it(
+    monkeypatch,
+) -> None:
+    """Draft v4 removed the per-aspect MINIMUM, so a short generation is no
+    longer a defect: three items may be the right answer for the job, and the
+    old floor of five is what produced mechanically derived names like
+    "Kafka (supporting)" on the one screen a human is required to review.
+
+    What remains checkable is COVERAGE. An aspect that came back empty is still
+    a defect, because every aspect is graded, remarked and charted on each
+    report, and the loop asks for it again before the deterministic fallback
+    fills the hole with a placeholder.
     """
     calls: list[list[dict]] = []
-    short = [_competency(ppi.CATEGORY_PRIMARY, i) for i in range(5)]
-    short += [_competency(ppi.CATEGORY_SECONDARY, i) for i in range(2)]
-    short += [_competency(ppi.CATEGORY_BEHAVIOURAL, i) for i in range(5)]
+    missing_nice_to_have = [
+        _competency(ppi.CATEGORY_MUST_HAVE, index) for index in range(3)
+    ] + [_competency(ppi.CATEGORY_BEHAVIOURAL, index) for index in range(3)]
 
     async def _chat(task_type, messages, **k):
         calls.append(messages)
-        payload = short if len(calls) == 1 else _full_framework()
+        payload = missing_nice_to_have if len(calls) == 1 else _matrix()
         return json.dumps({"competencies": payload})
 
     monkeypatch.setattr(ppi.llm_router, "chat_completion", _chat)
     rows = await ppi.generate_framework(_StubSession(), _job())
 
     assert len(calls) == 2
-    # The correction names the category and the count it actually returned.
+    # The correction names the aspect that came back empty.
     correction = calls[1][-1]["content"]
-    assert "Secondary Skills" in correction and "you returned 2" in correction
-    # And no mechanical filler survived into the saved framework.
-    assert not any("(supporting)" in row.name for row in rows)
+    assert "Nice-to-have" in correction
+    # And no placeholder survived into the saved matrix.
+    assert not any("Placeholder" in (row.description or "") for row in rows)
 
 
 @pytest.mark.asyncio
-async def test_the_deterministic_floor_still_holds_under_a_total_outage(monkeypatch) -> None:
+async def test_a_short_matrix_is_accepted_rather_than_padded(monkeypatch) -> None:
+    """The direct statement of what Draft v4 changed.
+
+    Three items, one per aspect, is a complete matrix. Under the old rule this
+    generation would have been rejected and then padded to fifteen.
+    """
+    calls: list[list[dict]] = []
+    minimal = [_competency(category, 0) for category in ppi.CATEGORIES]
+
+    async def _chat(task_type, messages, **k):
+        calls.append(messages)
+        return json.dumps({"competencies": minimal})
+
+    monkeypatch.setattr(ppi.llm_router, "chat_completion", _chat)
+    rows = await ppi.generate_framework(_StubSession(), _job())
+
+    assert len(calls) == 1
+    assert len(rows) == 3
+    assert not any("(" in row.name for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_the_deterministic_floor_still_holds_under_a_total_outage(
+    monkeypatch,
+) -> None:
     """The loop sits ON TOP of the JD-derived fallback, it does not replace it.
     This path is what repaired 19 stranded live jobs with every provider down."""
     async def _boom(*a, **k):
@@ -282,18 +365,15 @@ async def test_the_deterministic_floor_still_holds_under_a_total_outage(monkeypa
     monkeypatch.setattr(ppi.llm_router, "chat_completion", _boom)
     rows = await ppi.generate_framework(_StubSession(), _job())
 
-    counts = {category: 0 for category in ppi.CATEGORIES}
-    for row in rows:
-        counts[row.category] += 1
-    assert all(count >= ppi.MINIMUM_PER_CATEGORY for count in counts.values())
+    assert {row.category for row in rows} == set(ppi.CATEGORIES)
 
 
 @pytest.mark.asyncio
 async def test_culture_is_still_dropped_and_never_re_asked_for(monkeypatch) -> None:
-    """Dropping beats rejecting: refusing a whole generation because one of
-    eighteen entries was disallowed sends the recruiter back to an empty screen
-    for a problem the product can fix itself. The loop must not change that."""
-    payload = _full_framework() + [
+    """Dropping beats rejecting: refusing a whole generation because one entry
+    was disallowed sends the recruiter back to an empty screen for a problem the
+    product can fix itself. The loop must not change that."""
+    payload = _matrix() + [
         {
             "category": ppi.CATEGORY_BEHAVIOURAL,
             "name": "Culture fit",

@@ -161,6 +161,21 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
     framework_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     framework_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # ── Draft v4 job setup (migration 0048, 0049) ────────────────────────────
+    # The total number of questions this job's candidates are asked, resolved
+    # ONCE at setup from the grade's range and the size of the saved matrix
+    # (spec §5.4). Stored rather than recomputed per candidate: the count is
+    # part of what makes two reports on one job comparable, exactly as the
+    # matrix is, so it must not move when the matrix is edited later.
+    question_target: Mapped[int | None] = mapped_column(Integer)
+    #: Stamped when the reporting authority finishes the SWOT intake. The PPI
+    #: matrix is generated from the JD AND this, so it waits behind the stamp.
+    swot_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Stamped when the recruiter finalises the job's Matching category list.
+    matching_categories_finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
 
 class JobApproval(Base, UUIDPKMixin):
     """One row per FSM transition attempt (ESD §7). Inactive levels get an

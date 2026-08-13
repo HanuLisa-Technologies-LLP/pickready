@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
-import type { StaffMember, StaffRole } from "@/lib/types";
+import type { Role, StaffMember, StaffRole } from "@/lib/types";
+import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
 import {
@@ -54,14 +55,30 @@ import {
 } from "@/components/ui/table";
 
 const ROLE_LABELS: Record<StaffRole, string> = {
+  recruitment_manager: "Recruitment Manager",
   hr_manager: "HR Manager",
   recruiter: "Recruiter",
   hiring_manager: "Hiring Manager",
+};
+const ROLE_RANK: Partial<Record<Role, number>> = {
+  client: 0,
+  recruitment_manager: 1,
+  hr_manager: 1,
+  recruiter: 2,
+  hiring_manager: 3,
 };
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function StaffPage() {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const manageableRoles = React.useMemo(() => {
+    const actorRank = user ? ROLE_RANK[user.role] : undefined;
+    if (actorRank === undefined) return [] as StaffRole[];
+    return (Object.keys(ROLE_LABELS) as StaffRole[]).filter(
+      (role) => (ROLE_RANK[role] ?? -1) > actorRank
+    );
+  }, [user]);
   const [staff, setStaff] = React.useState<StaffMember[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -106,11 +123,26 @@ export default function StaffPage() {
     void load();
   }, [load]);
 
+  React.useEffect(() => {
+    const fallback = manageableRoles[0];
+    if (!fallback) return;
+    if (!manageableRoles.includes(form.role)) {
+      setForm((current) => ({ ...current, role: fallback }));
+    }
+    if (!manageableRoles.includes(editForm.role)) {
+      setEditForm((current) => ({ ...current, role: fallback }));
+    }
+  }, [manageableRoles, form.role, editForm.role]);
+
   const closeDialog = () => {
     setOpen(false);
     setInviteResult(null);
     setCopied(false);
-    setForm({ email: "", full_name: "", role: "recruiter" });
+    setForm({
+      email: "",
+      full_name: "",
+      role: manageableRoles[0] ?? "hiring_manager",
+    });
   };
 
   const create = async () => {
@@ -261,14 +293,14 @@ export default function StaffPage() {
         title="Team"
         description={`${active} active team member${
           active === 1 ? "" : "s"
-        }. Invite HR Managers, Recruiters, and Hiring Managers.`}
+        }. Manage permissions for the roles beneath you.`}
         actions={
           <Dialog
             open={open}
             onOpenChange={(next) => (next ? setOpen(true) : closeDialog())}
           >
             <DialogTrigger asChild>
-              <Button disabled={loading}>
+              <Button disabled={loading || manageableRoles.length === 0}>
                 <Plus className="h-4 w-4" aria-hidden="true" /> Add team member
               </Button>
             </DialogTrigger>
@@ -370,9 +402,9 @@ export default function StaffPage() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {Object.entries(ROLE_LABELS).map(([role, label]) => (
+                          {manageableRoles.map((role) => (
                             <SelectItem key={role} value={role}>
-                              {label}
+                              {ROLE_LABELS[role]}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -421,7 +453,7 @@ export default function StaffPage() {
         <EmptyState
           icon={Users}
           title="No team members yet"
-          description="Invite HR Managers, Recruiters and Hiring Managers. They all share one candidate pool."
+          description="Add a team member in a role beneath yours, then choose the permissions they need."
         />
       ) : (
         <>
@@ -645,8 +677,8 @@ export default function StaffPage() {
               >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {Object.entries(ROLE_LABELS).map(([role, label]) => (
-                    <SelectItem key={role} value={role}>{label}</SelectItem>
+                  {manageableRoles.map((role) => (
+                    <SelectItem key={role} value={role}>{ROLE_LABELS[role]}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

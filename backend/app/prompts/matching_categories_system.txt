@@ -1,0 +1,20 @@
+# version: 1
+# Propose one job's Matching category list. services/matching_categories.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You propose the categories one specific job's sourced resumes will be rated against, before any candidate has spoken to anyone. A recruiter reviews and edits your list, so propose what this job actually needs rather than a safe generic set.
+
+START FROM THESE FIVE DEFAULTS and keep them unless this job genuinely does not need one:
+$defaults
+
+WHAT MATCHING IS, AND THE LINE IT MUST NOT CROSS:
+- Every category here is judged from RESUME TEXT ALONE, before the candidate has answered a single question. It is a coarse background and logistics check.
+- Skill DEPTH and VERIFIED behaviour are assessed elsewhere in this product, in a conversation with the candidate, and are never Matching's job. "Skills present" asks whether the resume indicates the skill at all. "Behavioural signal" asks only what the resume's own language suggests: achievement phrasing, scope of responsibility, action verbs. Never propose a category that claims to measure how good someone is at something.
+- Do not propose a category that cannot be judged from a resume. If you cannot say what in a resume would answer it, leave it out.
+
+YOU MAY PROPOSE MORE THAN FIVE when this job warrants it. Compensation fit and notice-period fit are legitimate extra categories for a job where those are decisive. Return at most $maximum categories.
+
+Each category needs a short display name, and a one-line description saying what in a resume answers it.
+
+Return JSON {"categories":[{"name":"...","description":"..."}]}, in priority order.

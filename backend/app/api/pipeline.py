@@ -228,17 +228,34 @@ async def select_candidates_for_assessment(
             ),
         )
 
-    # ── The credit gate (spec §3.3) ─────────────────────────────────────────
+    # ── The credit gate (spec §11) ──────────────────────────────────────────
     # A completed assessment cannot be un-completed, so its charge is never
-    # refused and the balance is allowed to go negative. What IS refused is the
-    # next batch of invitations — the one act that is still a choice. The
-    # message names both ways out so the recruiter is not left guessing.
-    if not await credits.has_credit_headroom(session, user.tenant_id):
+    # refused and the balance is allowed to go negative. What IS refused is
+    # STARTING more work, which is the one act that is still a choice.
+    #
+    # TWO THRESHOLDS, AND THE DIFFERENCE IS LOAD-BEARING
+    # --------------------------------------------------
+    # Draft v4 moved this line from "negative" to "zero or below". At exactly
+    # zero the pool is exhausted: there is nothing left to spend, and letting
+    # one more candidate into the conversation would be a credit drawn from an
+    # empty account. `has_credit_headroom` keeps the negative threshold, because
+    # it answers a different question about work already performed.
+    #
+    # This applies platform-wide, across every job, existing or new, and
+    # regardless of how many un-assessed applicants are already sitting in the
+    # pipeline. That is what closes the free-ATS gap: a recruiter cannot use
+    # already-created jobs, or a backlog, to keep assessing for free once the
+    # quota is exhausted.
+    #
+    # The refusal is LOUD and immediate, at the point the recruiter attempts the
+    # action. No silent failure, no degraded mode, no partial batch.
+    if not await credits.has_positive_balance(session, user.tenant_id):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
-                "You are over your credit limit. New assessment invitations are "
-                "paused until your next billing date or you upgrade your plan."
+                "Your credit pool is exhausted, so no further candidates can be "
+                "moved into assessment. Purchase a credit bundle to continue. "
+                "Any conversation already in progress will finish."
             ),
         )
 

@@ -55,7 +55,7 @@ def _values_for(name: str) -> dict[str, object]:
     from app.services import outreach_content, ppi
     from app.services.rating import GRADE_HIGHLY, GRADE_MATCHING, GRADE_MODERATELY
 
-    if name in {"interview_write_question", "technical_write_question"}:
+    if name == "interview_write_question":
         return {
             "one_question": fragments.ONE_QUESTION,
             "no_evaluation": fragments.NO_EVALUATION,
@@ -72,8 +72,10 @@ def _values_for(name: str) -> dict[str, object]:
         }
     if name == "ppi_framework_system":
         return {
-            "minimum_per_category": ppi.MINIMUM_PER_CATEGORY,
-            "maximum_per_category": ppi.MAXIMUM_PER_CATEGORY,
+            # The ceiling is a property of the JOB's grade, so the module has no
+            # single constant to read. Rendered at the widest grade, which is
+            # what the snapshot was generated against.
+            "maximum_total": ppi.max_questions("non_managerial"),
             "grade_highly": GRADE_HIGHLY,
             "grade_matching": GRADE_MATCHING,
             "grade_moderately": GRADE_MODERATELY,
@@ -101,7 +103,7 @@ def test_every_externalised_prompt_is_unchanged(name: str) -> None:
 
 def test_the_snapshot_covers_every_agent_prompt() -> None:
     """A snapshot file that lost an entry would pass forever on the rest."""
-    assert len(SNAPSHOTS) == 10, f"the snapshot holds {len(SNAPSHOTS)} prompts"
+    assert len(SNAPSHOTS) == 9, f"the snapshot holds {len(SNAPSHOTS)} prompts"
     for name in SNAPSHOTS:
         assert name in registry.names(), f"{name} has no prompt file"
 

@@ -170,6 +170,23 @@ _DEFICIT_MESSAGE = (
     "until your next billing date or you upgrade your plan."
 )
 
+#: Shown when the pool reads zero. Names BOTH blocked actions, because a
+#: recruiter who reads "assessments are paused" and then cannot create a job
+#: has been told half the truth and will report it as a second bug.
+_EXHAUSTED_MESSAGE = (
+    "Your credit pool is exhausted. New jobs cannot be created and no further "
+    "candidates can be moved into assessment. Purchase a credit bundle to "
+    "continue. A conversation already in progress will finish, and its report "
+    "is written as soon as credits are available."
+)
+
+#: Shown below the threshold and above zero. Deliberately not alarming: the
+#: service is working, and the point is to be topped up BEFORE anything stops.
+_LOW_BALANCE_MESSAGE = (
+    "Your credit pool is running low. Purchase a credit bundle to keep creating "
+    "jobs and assessing candidates without interruption."
+)
+
 
 async def _summary_out(session: AsyncSession, tenant_id: uuid.UUID) -> CreditSummaryOut:
     summary = await credits.summarize(session, tenant_id)
@@ -196,6 +213,15 @@ async def _summary_out(session: AsyncSession, tenant_id: uuid.UUID) -> CreditSum
         usage_this_month_subunits=UsageBreakdownOut(**summary.month_by_event),
         in_deficit=summary.in_deficit,
         deficit_message=_DEFICIT_MESSAGE if summary.in_deficit else None,
+        exhausted=summary.exhausted,
+        low_balance=summary.low_balance,
+        balance_fraction=summary.balance_fraction,
+        low_balance_threshold=credits.LOW_BALANCE_FRACTION,
+        alert_message=(
+            _EXHAUSTED_MESSAGE
+            if summary.exhausted
+            else (_LOW_BALANCE_MESSAGE if summary.low_balance else None)
+        ),
         unlimited=summary.unlimited,
     )
 
@@ -415,6 +441,20 @@ async def _grant_for_payment(
         )
     )
     tenant.subscription_status = SUBSCRIPTION_ACTIVE
+    # A top-up releases whatever finalisation was held for want of credits
+    # (spec 11). Enqueued rather than run inline: this is a payment path, and
+    # writing a batch of reports on it would make a customer's card confirmation
+    # wait on the slowest LLM call in the queue.
+    #
+    # Fired from this ONE helper, which both the webhook and checkout-verify go
+    # through, so a customer is released exactly once however their payment
+    # arrives. The task re-checks the balance per tenant, so an extra call
+    # costs a query and changes nothing.
+    from app.workers.celery_app import celery_app
+
+    celery_app.send_task(
+        "pickready.release_held_assessments", args=[str(tenant.id)]
+    )
     return True
 
 
