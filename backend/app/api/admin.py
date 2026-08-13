@@ -11,12 +11,6 @@ remain the client organization's own flow — this module reuses the same
 Auth is Firebase (claude.md rule 2): no OTP is ever generated here. Email is
 SMTP via the `pickready.send_email` Celery task (rules 4 and 5).
 
-One endpoint pair here is deliberately ORG-scoped rather than Owner-scoped —
-`GET/PUT /admin/my-tenant`. It exposes the caller's own company profile
-(the Tenant row this module owns) to the org portal. It lives in this router
-because the Tenant profile is this module's model; the `/admin` path prefix is
-an artifact of router mounting, not an authorization statement — the
-dependency (`get_tenant_db` + `require_capability`) is.
 """
 import uuid
 
@@ -28,8 +22,6 @@ from app.api.deps import (
     CurrentUser,
     get_current_user,
     get_superadmin_db,
-    get_tenant_db,
-    require_capability,
 )
 from app.config import llm_providers
 from app.core.config import get_settings
@@ -63,12 +55,9 @@ from app.schemas.admin import (
     TenantCreateOut,
     TenantDeleteOut,
     TenantOut,
-    TenantProfileIn,
-    TenantProfileOut,
     TenantUpdateIn,
     derive_tenant_domain,
 )
-from app.services import capabilities as caps
 from app.services import rbac
 from app.services.audit import audit
 from app.services.capabilities import DEFAULT_PERMISSION_MATRIX
@@ -879,56 +868,6 @@ async def delete_bd_user(
 
 
 # ── Org-portal: the caller's own company profile ─────────────────────────────
-
-def _profile_out(tenant: Tenant, client: User | None, editable: bool) -> TenantProfileOut:
-    return TenantProfileOut(
-        id=tenant.id,
-        name=tenant.name,
-        industry=tenant.industry,
-        culture=tenant.culture,
-        details=tenant.details,
-        created_at=tenant.created_at,
-        client_email=client.email if client else None,
-        client_name=client.full_name if client else None,
-        client_phone=client.phone if client else None,
-        editable=editable,
-    )
-
-
-@router.get("/my-tenant", response_model=TenantProfileOut)
-async def get_my_tenant(
-    user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> TenantProfileOut:
-    """ORG-scoped. The signed-in user's own company profile — name, industry,
-    culture, details and the owner/POC — for the Company page."""
-    if user.tenant_id is None:
-        raise HTTPException(status_code=404, detail="No company for this account")
-    tenant = await _load_tenant(session, user.tenant_id)
-    clients = await _client_users(session, [tenant.id])
-    editable = await rbac.has_capability(
-        session, user.tenant_id, user.role, caps.CREATE_COMPANY_PAGE
-    )
-    return _profile_out(tenant, clients.get(tenant.id), editable)
-
-
-@router.put("/my-tenant", response_model=TenantProfileOut)
-async def update_my_tenant(
-    body: TenantProfileIn,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_COMPANY_PAGE)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> TenantProfileOut:
-    """ORG-scoped. Capability-gated (never `if role == ...`, claude.md rule 3)
-    so the permission matrix stays the authority on who may edit."""
-    if user.tenant_id is None:
-        raise HTTPException(status_code=404, detail="No company for this account")
-    tenant = await _load_tenant(session, user.tenant_id)
-    await _apply_tenant_update(
-        session, tenant, body.model_dump(exclude_unset=True), user.user_id
-    )
-    clients = await _client_users(session, [tenant.id])
-    return _profile_out(tenant, clients.get(tenant.id), True)
-
 
 # ── Permissions & audit log ──────────────────────────────────────────────────
 

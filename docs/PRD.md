@@ -63,7 +63,7 @@ Operational staff roles are:
 - Recruiter
 - Hiring Manager
 
-These roles use the same core operating areas: Jobs, Company Profile, Dashboard, and Settings. Access to Staff, Company Page, Compliance, Billing, and other protected actions is capability-controlled rather than inferred only from the role name.
+These roles use the same core operating areas: Jobs, Company Profile, Dashboard, and Settings. Access to Staff, Compliance, Billing, and other protected actions is capability-controlled rather than inferred only from the role name.
 
 Company administrators can invite staff with a seven-day invitation token, resend invitations, disable or reactivate users, and add user-specific capability grants or revocations. A company can have at most five active Hiring Managers; HR Manager and Recruiter seats are not capped by this rule.
 
@@ -109,11 +109,7 @@ The company maintains structured content for:
 
 These sections are snapshotted into a job so that a published job retains the company context used when it was created. A recruiter can override the snapshot for an individual job.
 
-### 6.2 Company Page
-
-A separate company-facing content area stores the candidate-oriented company brief, culture, policies, and benefits. It remains available to authorized company users.
-
-### 6.3 Compliance
+### 6.2 Compliance
 
 The company can upload, replace, download, and remove these seven records:
 
@@ -127,7 +123,7 @@ The company can upload, replace, download, and remove these seven records:
 
 Provider users have read-only visibility. The current implementation stores compliance files through Cloudinary.
 
-### 6.4 Dashboard
+### 6.3 Dashboard
 
 The company dashboard provides operational summaries derived from job, candidate, assessment, and pipeline data. Dashboard materialized data is refreshed by a recurring background task approximately every five minutes.
 

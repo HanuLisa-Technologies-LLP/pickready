@@ -14,7 +14,7 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
 
     The company *profile* (industry / culture / details) lives here rather than
     on `companies` because it is captured at Owner-console onboarding time,
-    before the client has ever signed in and authored their company page. The
+    before the client has ever signed in and authored their company profile. The
     `companies` row remains the client-authored, candidate-facing page.
 
     RLS uses ``id`` as the tenant discriminator. Provider/BD administration and

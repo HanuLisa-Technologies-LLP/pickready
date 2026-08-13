@@ -1,4 +1,4 @@
-"""Client company endpoints (FR-2.x / contract rev 2): company page, staff
+"""Client company endpoints (FR-2.x / contract rev 2): company profile, staff
 management (HR Manager / Recruiter / Hiring Manager accounts), invitations,
 approval-level configuration, and per-tenant email templates. The whole staff
 hierarchy belongs to the client organization — staff creation moved here from
@@ -60,8 +60,6 @@ from app.schemas.companies import (
     CompanyProfileResearchOut,
     ApprovalLevelsIn,
     ApprovalLevelsOut,
-    CompanyPageIn,
-    CompanyPageOut,
     CompanyProfileIn,
     CompanyProfileOut,
     EmailTemplateIn,
@@ -157,37 +155,6 @@ async def _get_company(session: AsyncSession, user: CurrentUser) -> Company | No
     ).scalars().first()
 
 
-@router.get("/me", response_model=CompanyPageOut)
-async def get_company_page(
-    user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> CompanyPageOut:
-    company = await _get_company(session, user)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Company page not created yet")
-    return CompanyPageOut.model_validate(company)
-
-
-@router.put("/me", response_model=CompanyPageOut)
-async def upsert_company_page(
-    body: CompanyPageIn,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_COMPANY_PAGE)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> CompanyPageOut:
-    company = await _get_company(session, user)
-    if company is None:
-        company = Company(tenant_id=user.tenant_id)
-        session.add(company)
-    company.brief = body.brief
-    company.culture = body.culture
-    company.policies = body.policies
-    company.benefits = body.benefits
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="company_page_upserted", target_type="company", target_id=company.id)
-    return CompanyPageOut.model_validate(company)
-
-
 # ── Company Profile (spec §3.2 — the page formerly called Settings) ──────────
 
 async def _company_profile_out(
@@ -200,9 +167,8 @@ async def _company_profile_out(
         industry=tenant.industry if tenant else None,
         about_company=company.about_company if company else None,
         work_life=company.work_life if company else None,
-        # `benefits_text` is the Profile field; the older `benefits` column
-        # belongs to the legacy company page and is left alone (migration 0016
-        # seeded this one from it, so nothing reads as empty after upgrade).
+        # `benefits_text` is the Company Profile field. The retired legacy
+        # column remains only as preserved historical data.
         benefits=company.benefits_text if company else None,
     )
 
@@ -1058,7 +1024,7 @@ async def configure_approval_levels(
 
     company = await _get_company(session, user)
     if company is None:
-        raise HTTPException(status_code=409, detail="Create the company page first (FR-2.1)")
+        raise HTTPException(status_code=409, detail="Complete the company profile first")
     company.approval_levels_config = {
         level: entry.model_dump(mode="json") for level, entry in body.config.items()
     }

@@ -286,12 +286,13 @@ def _portal_job_out(
         status=job.status,
         jd_json=job.jd_json or {},
         assessment_grade=job.assessment_grade,
-        # The client-authored company page wins; the onboarding-time tenant
-        # profile is the fallback so this is rarely blank.
-        company_about=(company.brief if company else None) or (tenant.details if tenant else None),
-        company_culture=(company.culture if company else None) or (tenant.culture if tenant else None),
+        # Company Profile is the sole company-information surface. Tenant
+        # onboarding data remains a fallback for accounts that have not saved
+        # their profile yet.
+        company_about=(company.about_company if company else None) or (tenant.details if tenant else None),
+        company_culture=(company.work_life if company else None) or (tenant.culture if tenant else None),
         company_industry=tenant.industry if tenant else None,
-        company_benefits=company.benefits if company else None,
+        company_benefits=company.benefits_text if company else None,
     )
 
 
@@ -365,7 +366,7 @@ async def _previous_resume(
 async def _employers_for(
     session: AsyncSession, jobs: list[Job]
 ) -> tuple[dict[uuid.UUID, Tenant], dict[uuid.UUID, Company]]:
-    """Tenant + company page for a batch of jobs, in two queries rather than
+    """Tenant + company profile for a batch of jobs, in two queries rather than
     two per job."""
     tenant_ids = {job.tenant_id for job in jobs}
     if not tenant_ids:

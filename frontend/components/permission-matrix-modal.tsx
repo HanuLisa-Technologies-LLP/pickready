@@ -41,7 +41,6 @@ const CAPABILITY_LABELS: Record<string, string> = {
   publish_job: "Publish jobs",
   edit_job_description: "Edit job descriptions",
   edit_company_profile: "Edit company profile",
-  create_company_page: "Edit company page",
   trigger_matching: "Run AI matching",
   view_review_screen: "View candidates & reports",
   view_databank: "View the candidate databank",

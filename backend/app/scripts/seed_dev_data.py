@@ -6,7 +6,7 @@ Seeds:
 - the platform Owner (manjuchro@gmail.com)  -  the SOLE super_admin (rev 2)
 - demo tenant "Acme Corp" with client, 2 hiring managers, 1 HR, 1 recruiter
   (all client-org members  -  staff emails live on the tenant's domain)
-- company page + approval_levels_config (recommended level inactive)
+- company profile + approval_levels_config (recommended level inactive)
 - llm_provider_keys rows encrypted from settings (empties skipped)
 - default email templates for the demo tenant
 - 3 demo candidates with profiles (2 consenting to the Databank) + embeddings
@@ -417,10 +417,9 @@ async def seed() -> None:
                 session.add(
                     Company(
                         tenant_id=tenant.id,
-                        brief="Acme Corp builds industrial automation platforms.",
-                        culture="Ownership-driven, low-meeting, documentation-first.",
-                        policies="Hybrid work; quarterly performance cycles.",
-                        benefits="Health cover, learning budget, ESOP pool.",
+                        about_company="Acme Corp builds industrial automation platforms.",
+                        work_life="Ownership-driven, low-meeting, documentation-first.",
+                        benefits_text="Health cover, learning budget, ESOP pool.",
                         # requested + approved + ratified active; recommended
                         # inactive (will be logged as explicitly skipped, ESD §7)
                         approval_levels_config={
@@ -431,7 +430,7 @@ async def seed() -> None:
                         },
                     )
                 )
-                print("  + company page + approval levels config")
+                print("  + company profile + approval levels config")
 
             await _seed_email_templates(session, tenant.id)
             await _seed_candidates(session, tenant.id)
@@ -484,7 +483,7 @@ async def seed() -> None:
             )
             await _ensure_hiring_manager(session, techstart.id, multi_hm_ts.id)
 
-            # A minimal company page for TechStart so its org portal renders.
+            # A minimal company profile for TechStart so its org portal renders.
             ts_company = (
                 await session.execute(
                     select(Company).where(Company.tenant_id == techstart.id)
@@ -494,10 +493,9 @@ async def seed() -> None:
                 session.add(
                     Company(
                         tenant_id=techstart.id,
-                        brief="TechStart Inc. is an early-stage SaaS company.",
-                        culture="Fast-moving, generalist, remote-first.",
-                        policies="Fully remote; flexible hours.",
-                        benefits="Equity, home-office stipend.",
+                        about_company="TechStart Inc. is an early-stage SaaS company.",
+                        work_life="Fast-moving, generalist, remote-first.",
+                        benefits_text="Equity, home-office stipend.",
                         approval_levels_config={
                             "requested": {"active": True, "approver_user_id": str(ts_client.id)},
                             "recommended": {"active": False, "approver_user_id": None},
@@ -506,7 +504,7 @@ async def seed() -> None:
                         },
                     )
                 )
-                print("  + TechStart company page + approval levels config")
+                print("  + TechStart company profile + approval levels config")
             await _seed_email_templates(session, techstart.id)
 
             # A candidate LOGIN account (role=candidate, tenant_id NULL) with

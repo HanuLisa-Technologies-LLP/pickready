@@ -8,7 +8,6 @@ import Link from "next/link";
 
 import {
   Briefcase,
-  Building,
   CreditCard,
   FileText,
   LayoutDashboard,
@@ -106,10 +105,6 @@ export default function OrgLayout({
   const { hasCapability } = useAuth();
 
   const nav = [
-    // Client-admin functions (company owner), not part of the flat staff nav.
-    hasCapability("create_company_page")
-      ? { href: "/org/company", label: "Company Page", icon: Building }
-      : null,
     hasCapability("manage_staff")
       ? { href: "/org/staff", label: "Staff", icon: Users }
       : null,

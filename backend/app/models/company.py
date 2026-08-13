@@ -8,7 +8,7 @@ from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
 
 
 class Company(Base, UUIDPKMixin, CreatedAtMixin):
-    """The client's company page (FR-2.1). One per tenant.
+    """Company Profile storage and company-level configuration. One per tenant.
 
     approval_levels_config maps each of the 4 levels to its assignment
     (ESD §7), e.g.:
@@ -35,10 +35,9 @@ class Company(Base, UUIDPKMixin, CreatedAtMixin):
     # here therefore affects future jobs only, never a job already published
     # (2026-07-27 spec §3.2).
     #
-    # `benefits_text` is deliberately distinct from the older `benefits` column
-    # above: that one is already populated by the legacy company-page form, so
-    # reusing it would have silently rewritten existing copy. 0016 seeds this
-    # from it, and this is the one the Profile page reads and writes.
+    # `benefits_text` is deliberately distinct from the retired `benefits`
+    # column above. Migration 0016 seeded it from historical data; Company
+    # Profile is now the only runtime reader and writer.
     about_company: Mapped[str | None] = mapped_column(Text)
     work_life: Mapped[str | None] = mapped_column(Text)
     benefits_text: Mapped[str | None] = mapped_column(Text)

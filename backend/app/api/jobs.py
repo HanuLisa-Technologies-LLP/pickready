@@ -236,7 +236,7 @@ async def _company_sections(
         "about_company": company.about_company,
         "work_life": company.work_life,
         # `benefits_text` is the Profile field; the legacy `benefits` column on
-        # companies belongs to the older company page (see models/company.py).
+        # companies belongs to the Company Profile record.
         "benefits": company.benefits_text,
     }
 

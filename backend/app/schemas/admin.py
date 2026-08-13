@@ -333,55 +333,6 @@ class BDUserUpdateIn(BaseModel):
 
 # ── Org-portal view of the caller's own tenant profile ───────────────────────
 
-class TenantProfileOut(BaseModel):
-    """GET /admin/my-tenant — the signed-in org user's own company profile."""
-
-    id: uuid.UUID
-    name: str
-    industry: str | None = None
-    culture: str | None = None
-    details: str | None = None
-    created_at: datetime
-    client_email: str | None = None
-    client_name: str | None = None
-    client_phone: str | None = None
-    # True when the caller may PUT this resource (Client Company Admin only).
-    editable: bool = False
-
-
-class TenantProfileIn(BaseModel):
-    """PUT /admin/my-tenant — Client Company Admin edits their own profile."""
-
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    industry: Industry | None = None
-    culture: str | None = Field(default=None, max_length=MAX_CULTURE)
-    details: str | None = Field(default=None, max_length=MAX_DETAILS)
-
-    @field_validator("name")
-    @classmethod
-    def _name_not_blank(cls, v: str | None) -> str | None:
-        cleaned = _clean(v)
-        if v is not None and cleaned is None:
-            raise ValueError("company name must not be blank")
-        return cleaned
-
-    @field_validator("culture")
-    @classmethod
-    def _culture_word_count(cls, v: str | None) -> str | None:
-        return _validate_culture(v, optional=True)
-
-    @field_validator("details")
-    @classmethod
-    def _trim(cls, v: str | None) -> str | None:
-        return None if v is None else v.strip()
-
-    @model_validator(mode="after")
-    def _at_least_one_field(self) -> "TenantProfileIn":
-        if not self.model_fields_set:
-            raise ValueError("provide at least one field to update")
-        return self
-
-
 class PermissionEntry(BaseModel):
     role: Role
     capability: str

@@ -7,7 +7,6 @@ use `require_capability(...)` (claude.md rule 3).
 from app.models.enums import Role
 
 # Capability constants — use these everywhere, never string literals inline.
-CREATE_COMPANY_PAGE = "create_company_page"
 # Client-org staff management (HR Manager / Recruiter / Hiring Manager
 # accounts). Owned by the Client role; grantable to HR Managers per tenant via
 # the dynamic permission engine. NOT an Owner/Super Admin function — the
@@ -31,8 +30,7 @@ VIEW_DASHBOARD = "view_dashboard"
 EDIT_ROLE_PERMISSIONS = "edit_role_permissions"        # Super Admin only
 MANAGE_EMAIL_TEMPLATES = "manage_email_templates"
 # Company Portal -> Profile: the About / Work Life / Benefits sections every
-# new job snapshots (spec §3.2/§7.1). Distinct from CREATE_COMPANY_PAGE, which
-# governs the legacy candidate-facing company page.
+# new job snapshots (spec §3.2/§7.1).
 EDIT_COMPANY_PROFILE = "edit_company_profile"
 # Publishing is bundled into CREATE_JOB on the flat model (jobs publish
 # directly on create), but the spec's permission matrix lists it separately so
@@ -64,7 +62,7 @@ VIEW_BD_CUSTOMERS = "view_bd_customers"    # Customers page + CSV export
 USE_AI_REACH = "use_ai_reach"              # AI Reach search
 
 ALL_CAPABILITIES = [
-    CREATE_COMPANY_PAGE, MANAGE_STAFF, CONFIGURE_APPROVAL_LEVELS,
+    MANAGE_STAFF, CONFIGURE_APPROVAL_LEVELS,
     EDIT_JOB_DESCRIPTION, CREATE_JOB, APPROVE_JOB, ADD_COMPENSATION,
     VIEW_DATABANK, UPLOAD_RESUMES, TRIGGER_MATCHING, SEND_OUTREACH,
     VIEW_REVIEW_SCREEN, DECIDE_PROFILE, SCHEDULE_INTERVIEWS,
@@ -118,7 +116,6 @@ _STAFF_OPERATIONAL: dict[str, bool] = {
 # capability list; it is who the account belongs to.
 _CUSTOMER_FULL_ACCESS: dict[str, bool] = {
     **_STAFF_OPERATIONAL,
-    CREATE_COMPANY_PAGE: True,
     MANAGE_STAFF: True,
     CONFIGURE_APPROVAL_LEVELS: True,   # dormant (FSM bypassed) but kept grantable
     APPROVE_JOB: True,                 # dormant for the same reason

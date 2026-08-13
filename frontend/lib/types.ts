@@ -208,13 +208,6 @@ export interface AuditLogEntry {
 
 // ---- Company ----
 
-export interface CompanyPage {
-  brief: string;
-  culture: string;
-  policies: string;
-  benefits: string;
-}
-
 /** Roles creatable through the staff page (contract rev 2). */
 export type StaffRole =
   | "recruitment_manager"

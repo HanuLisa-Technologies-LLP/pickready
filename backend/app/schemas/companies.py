@@ -7,25 +7,6 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 from app.models.enums import APPROVAL_CHAIN
 
 
-class CompanyPageIn(BaseModel):
-    brief: str | None = None
-    culture: str | None = None
-    policies: str | None = None
-    benefits: str | None = None
-
-
-class CompanyPageOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    tenant_id: uuid.UUID
-    brief: str | None
-    culture: str | None
-    policies: str | None
-    benefits: str | None
-    approval_levels_config: dict | None
-
-
 # ── Company Profile (spec §3.2 — the page formerly called Settings) ──────────
 # The three narrative sections every new job snapshots. Read-only company
 # identity travels alongside so the page can render without a second request.

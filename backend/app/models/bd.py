@@ -103,7 +103,7 @@ def progress_timestamp_column(flag: str) -> str:
 #:
 #: ASSUMPTION (2026-07-28): a lead that signs an agreement becomes a real
 #: `tenants` row immediately (a customer IS a tenant, CLAUDE.md hard rule), but
-#: it has not been onboarded yet: nobody has been invited, no company page
+#: it has not been onboarded yet: nobody has been invited, no company profile
 #: exists, no job has been posted. Landing it as `active` would put it in the
 #: Provider Portal's default customer list looking exactly like a live customer.
 #: `prospect` keeps it out of that list (which defaults to `status=active` and

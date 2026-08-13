@@ -19,7 +19,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 
-const SENSITIVE_PREFIXES = ["/org/billing", "/org/profile", "/org/company"];
+const SENSITIVE_PREFIXES = ["/org/billing", "/org/profile"];
 
 export function WorkspaceSwitcher() {
   const pathname = usePathname();

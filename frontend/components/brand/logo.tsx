@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Image from "next/image";
 
 import { cn } from "@/lib/utils";
 
@@ -17,15 +18,23 @@ export function Logo({
   variant = "full",
   height = 32,
   href,
+  priority = false,
   className,
 }: LogoProps) {
   const mark = (
     <span
       aria-hidden="true"
-      className="grid aspect-square place-items-center rounded-[28%] bg-gradient-to-br from-violet-600 via-indigo-600 to-sky-500 font-black text-white shadow-sm"
-      style={{ height }}
+      className="relative block aspect-square shrink-0 overflow-hidden rounded-[20%] bg-white shadow-sm ring-1 ring-black/5"
+      style={{ height, width: height }}
     >
-      P
+      <Image
+        src="/icon.png"
+        alt=""
+        fill
+        priority={priority}
+        sizes={`${height}px`}
+        className="scale-[1.45] object-cover"
+      />
     </span>
   );
   const content = (

@@ -178,6 +178,10 @@ def test_default_matrix_agrees_with_the_seed_migration() -> None:
             if allowed
         }
         expected = set(seed.GRANTED_CAPABILITIES)
+        # Migration 0052 retires the duplicate Company Page surface and its
+        # permission. Company Profile (`edit_company_profile`) is the only
+        # company-information capability that remains.
+        expected.discard("create_company_page")
         # Migration 0051 reverses this one flat-model grant: Hiring Manager is
         # the bottom hierarchy tier and has no subordinate staff to manage.
         if role_name == Role.hiring_manager.value:
