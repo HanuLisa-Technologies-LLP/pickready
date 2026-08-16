@@ -597,39 +597,62 @@ def run_matching(job_id: str):
         async with _worker_session() as session:
             scored = await matching.run_matching(session, job_id)
             logger.info("matching.complete job_id=%s scored=%d", job_id, scored)
-            from app.models.assessment import AssessmentConversation
+            # Report synthesis used to run INLINE here, in a plain loop with no
+            # try/except, for every completed conversation on the job -- on
+            # every trigger of this task (publish, resubmit, databank upload,
+            # or "Run AI matching"). One candidate's synthesis exception (a bad
+            # transcript, a dimension mismatch, an LLM outage) propagated out of
+            # THIS task and failed it, even though `scored` above had already
+            # committed successfully -- which is what the UI's "AI matching
+            # ended in failure state" banner was actually reporting (2026-08-16
+            # incident). It also bypassed the credit gate and re-synthesized a
+            # report for every completed conversation every time, not just
+            # newly-completed ones.
+            #
+            # `pickready.run_functional_assessment` already does this correctly
+            # -- credit-gated, one Celery task per candidate so one failure
+            # cannot sink another's -- and is the task actually dispatched when
+            # a conversation completes (api/assessments.py). Report synthesis
+            # from a matching run reuses that same task instead of a second,
+            # unsafe copy of the same logic living here.
+            from app.models.assessment import AssessmentConversation, FunctionalSkillsReport
             from app.models.candidate import JobCandidateLink
             from app.models.job import Job
-            from app.services.functional_assessment import run_assessment
 
             job = await session.get(Job, uuid.UUID(str(job_id)))
             if job is not None:
-                links = (
+                link_ids = (
                     await session.execute(
-                        select(JobCandidateLink)
+                        select(JobCandidateLink.id)
                         .join(
                             AssessmentConversation,
                             AssessmentConversation.job_candidate_link_id
+                            == JobCandidateLink.id,
+                        )
+                        .outerjoin(
+                            FunctionalSkillsReport,
+                            FunctionalSkillsReport.job_candidate_link_id
                             == JobCandidateLink.id,
                         )
                         .where(
                             JobCandidateLink.job_id == job.id,
                             JobCandidateLink.archived_at.is_(None),
                             AssessmentConversation.status == "completed",
+                            # A report is immutable once written (spec) -- this
+                            # dispatch is for candidates who completed since the
+                            # last matching run, not a resynthesis of everyone.
+                            FunctionalSkillsReport.id.is_(None),
                         )
                     )
                 ).scalars().all()
-                for link in links:
-                    # run_assessment loads the persisted conversation transcript
-                    # when no explicit transcript is supplied. Never synthesize a
-                    # "no transcript" report for candidates who have not completed
-                    # the assessment.
-                    await run_assessment(session, job, link)
-                await session.commit()
+                for link_id in link_ids:
+                    celery_app.send_task(
+                        "pickready.run_functional_assessment", args=[str(link_id)]
+                    )
                 logger.info(
-                    "functional_assessment.complete job_id=%s reports=%d",
+                    "functional_assessment.dispatched job_id=%s reports=%d",
                     job_id,
-                    len(links),
+                    len(link_ids),
                 )
     _run(_task())
 

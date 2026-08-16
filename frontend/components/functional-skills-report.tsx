@@ -106,6 +106,10 @@ interface ValidationField {
   key: string;
   label: string;
   value: string | null;
+  /** "Application" for the six mandatory fields (the default when absent, for
+   *  reports written before the profile questionnaire was added here), or the
+   *  candidate profile form's own section title for the 38 profile items. */
+  group?: string;
 }
 
 interface ValidationBlock {
@@ -254,12 +258,27 @@ function ValidationSection({ validation }: { validation: ValidationBlock }) {
   const facts = fields.filter((field) => field.key !== "role_interest");
   const interest = fields.find((field) => field.key === "role_interest")?.value;
 
+  // Grouped by "Application" (the six mandatory fields) then the candidate
+  // profile form's own sections (the 38 profile items), in first-appearance
+  // order, so the section reads as two questionnaires rather than one long
+  // grid once the profile answers are included.
+  const groups: Array<{ title: string; items: ValidationField[] }> = [];
+  for (const field of facts) {
+    const title = field.group ?? "Application";
+    let group = groups.find((g) => g.title === title);
+    if (!group) {
+      group = { title, items: [] };
+      groups.push(group);
+    }
+    group.items.push(field);
+  }
+
   return (
     <section aria-label="Validation">
       <h3 className="mb-1 text-lg font-semibold">Validation</h3>
       <p className="mb-3 text-xs">
-        Submitted by the candidate on their application and shown exactly as written. Nothing
-        here is rated or interpreted.
+        Submitted by the candidate on their application and profile, shown exactly as written.
+        Nothing here is rated or interpreted.
       </p>
       {validation.captured === false ? (
         <p className="rounded-md border p-3 text-sm">
@@ -268,17 +287,26 @@ function ValidationSection({ validation }: { validation: ValidationBlock }) {
         </p>
       ) : (
         <>
-          <div className="grid gap-3 sm:grid-cols-2">
-            {facts.map((field) => (
-              <div key={field.key} className="rounded-md border p-3">
-                <p className="text-xs font-medium uppercase tracking-wide">{field.label}</p>
-                <p className="mt-1 text-sm">{field.value || "Not stated"}</p>
+          <blockquote className="mb-4 border-l-4 pl-4 text-sm italic">
+            “{interest || "Not stated"}”
+          </blockquote>
+          <div className="space-y-5">
+            {groups.map((group) => (
+              <div key={group.title}>
+                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {group.title}
+                </h4>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {group.items.map((field) => (
+                    <div key={field.key} className="rounded-md border p-3">
+                      <p className="text-xs font-medium uppercase tracking-wide">{field.label}</p>
+                      <p className="mt-1 text-sm">{field.value || "Not stated"}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             ))}
           </div>
-          <blockquote className="mt-3 border-l-4 pl-4 text-sm italic">
-            “{interest || "Not stated"}”
-          </blockquote>
         </>
       )}
     </section>

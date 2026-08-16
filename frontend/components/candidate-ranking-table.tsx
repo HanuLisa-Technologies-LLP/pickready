@@ -85,26 +85,49 @@ function ValidationAnswersModal({
   onOpenChange: (open: boolean) => void;
 }) {
   const answers = row?.validation_answers ?? [];
+  // Grouped by the application's own six fields plus the profile form's own
+  // sections, so 44 answers read as two questionnaires rather than one flat
+  // wall of text. Order follows first appearance, which is already form order
+  // (the server assembles it that way).
+  const groups: Array<{ title: string; items: typeof answers }> = [];
+  for (const item of answers) {
+    const title = item.group ?? "Application";
+    let group = groups.find((g) => g.title === title);
+    if (!group) {
+      group = { title, items: [] };
+      groups.push(group);
+    }
+    group.items.push(item);
+  }
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Validation Q&amp;A</DialogTitle>
           <DialogDescription>
-            {row?.full_name ?? "Candidate"}&apos;s application answers, shown exactly as submitted and without AI scoring.
+            {row?.full_name ?? "Candidate"}&apos;s application and profile answers, shown exactly as submitted and without AI scoring.
           </DialogDescription>
         </DialogHeader>
         {answers.length ? (
-          <dl className="divide-y rounded-xl border">
-            {answers.map((item) => (
-              <div key={item.key} className="p-4">
-                <dt className="text-sm font-semibold">{item.question}</dt>
-                <dd className="mt-2 whitespace-pre-wrap text-sm leading-6">
-                  {item.answer?.trim() || "Not answered"}
-                </dd>
+          <div className="space-y-5">
+            {groups.map((group) => (
+              <div key={group.title}>
+                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {group.title}
+                </h4>
+                <dl className="divide-y rounded-xl border">
+                  {group.items.map((item) => (
+                    <div key={item.key} className="p-4">
+                      <dt className="text-sm font-semibold">{item.question}</dt>
+                      <dd className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                        {item.answer?.trim() || "Not answered"}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
               </div>
             ))}
-          </dl>
+          </div>
         ) : (
           <p className="rounded-xl border border-dashed p-5 text-sm">
             No validation answers were recorded for this application.

@@ -45,6 +45,9 @@ def _row(**overrides) -> dict:
         # Q&A column. None is what a link submitted before the fields existed
         # looks like, which is the case worth having in the default fixture.
         "validation": None,
+        # The candidate's own 38-item profile questionnaire, merged alongside
+        # `validation` in the same Q&A column (2026-08-16 report).
+        "profile_form": None,
         "full_name": "Asha Rao",
         "email": "asha@example.com",
         "resume_url": "gs://pickready-resumes-private/resumes/abc123",

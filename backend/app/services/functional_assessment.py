@@ -63,7 +63,7 @@ from app.models.assessment import (
     JobCompetency,
     ReportDimension,
 )
-from app.models.candidate import JobCandidateLink, Profile
+from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
 from app.services import (
     agent_loop,
@@ -1040,15 +1040,36 @@ async def ppi_scoring_node(state: AssessmentState) -> dict:
 
 
 async def validation_node(state: AssessmentState) -> dict:
-    """Carry the application's mandatory fields into the report, UNCHANGED.
+    """Carry the application's mandatory fields, and the candidate's full
+    profile questionnaire, into the report, UNCHANGED.
 
     Nothing here is scored, interpreted or judged (spec §7). The candidate's
     answer to "Why does this role interest you?" reaches the recruiter exactly
     as written -- the recruiter, not any agent, decides whether the stated
     interest is genuine.
+
+    The profile's 38 items were missing from this report section entirely
+    (2026-08-16 report) -- only the six application-level fields ever reached
+    it. Appended after the application fields under the same "fields" list the
+    frontend already renders, so no rendering change was needed, only the
+    fuller data reaching it.
     """
+    from app.services.candidate_profile_form import profile_form_answers
+
     submitted = state["link"].validation_json or {}
     captured = {key: submitted.get(key) for key in MANDATORY_KEYS}
+    candidate = await state["session"].get(Candidate, state["link"].candidate_id)
+    profile_fields = [
+        {
+            "key": item["key"],
+            "label": item["question"],
+            "value": item["answer"],
+            "group": item["group"],
+        }
+        for item in profile_form_answers(
+            candidate.profile_form_json if candidate else None
+        )
+    ]
     return {
         "validation": {
             # "captured" = this application carried the mandatory fields at all.
@@ -1061,9 +1082,11 @@ async def validation_node(state: AssessmentState) -> dict:
                     "key": field["key"],
                     "label": field["label"],
                     "value": submitted.get(field["key"]),
+                    "group": "Application",
                 }
                 for field in VALIDATION_FIELDS
-            ],
+            ]
+            + profile_fields,
         }
     }
 

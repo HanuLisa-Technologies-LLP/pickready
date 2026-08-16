@@ -584,6 +584,10 @@ class ValidationAnswerOut(BaseModel):
     #: when a row is simply missing and only one of them is the candidate's
     #: doing.
     answer: str | None = None
+    #: "Application" for the six mandatory fields, or the candidate profile
+    #: form's own section title for the 38 profile items. Client-side grouping
+    #: only.
+    group: str | None = None
 
 
 class RankedCandidatesOut(BaseModel):

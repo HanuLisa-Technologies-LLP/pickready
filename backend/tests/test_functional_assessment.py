@@ -389,6 +389,20 @@ async def test_every_matrix_item_is_scored_in_report_order(monkeypatch) -> None:
 
 # ── Validation: captured, never scored (spec §7) ─────────────────────────────
 
+class _CandidateSession:
+    """Serves `.get(Candidate, id)` with one fixed candidate row.
+
+    `validation_node` only ever calls `session.get`, so a fake this small is
+    enough and keeps the assertions about the DECISION rather than SQLAlchemy.
+    """
+
+    def __init__(self, candidate=None) -> None:
+        self._candidate = candidate
+
+    async def get(self, _model, _id):
+        return self._candidate
+
+
 @pytest.mark.asyncio
 async def test_validation_node_carries_the_application_fields_verbatim() -> None:
     submitted = {
@@ -399,7 +413,12 @@ async def test_validation_node_carries_the_application_fields_verbatim() -> None
         "role_interest": "I want to work on larger distributed systems.",
     }
     out = await fa.validation_node(
-        {"link": SimpleNamespace(id=uuid.uuid4(), validation_json=submitted)}
+        {
+            "link": SimpleNamespace(
+                id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json=submitted
+            ),
+            "session": _CandidateSession(),
+        }
     )
     value = out["validation"]
     assert value["captured"] is True
@@ -409,6 +428,60 @@ async def test_validation_node_carries_the_application_fields_verbatim() -> None
     assert "score" not in value and "rating" not in value and "grade" not in value
     labels = [field["label"] for field in value["fields"]]
     assert "Why does this role interest you?" in labels
+
+
+@pytest.mark.asyncio
+async def test_validation_node_also_carries_the_full_profile_questionnaire() -> None:
+    """The 38-item profile form must reach the report too (2026-08-16 report):
+    the Validation section was showing only the six application fields."""
+    from app.services.candidate_profile_form import ALL_FIELDS
+
+    candidate = SimpleNamespace(
+        profile_form_json={
+            "current_city": "Bengaluru",
+            "total_experience": "5 Years",
+            "bgv_consent": "Yes, I consent to a Background Verification check",
+        }
+    )
+    out = await fa.validation_node(
+        {
+            "link": SimpleNamespace(
+                id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json={}
+            ),
+            "session": _CandidateSession(candidate),
+        }
+    )
+    fields = out["validation"]["fields"]
+    # All 38 profile items appear, not just the 6 application ones.
+    assert len(fields) == 6 + len(ALL_FIELDS)
+    keys = [field["key"] for field in fields]
+    assert len(keys) == len(set(keys)), "no two fields may share a key"
+    by_key = {field["key"]: field for field in fields}
+    assert by_key["profile:current_city"]["value"] == "Bengaluru"
+    assert by_key["profile:current_city"]["group"] == "Personal Details"
+    assert by_key["profile:total_experience"]["value"] == "5 Years"
+    # A profile field the candidate never answered still appears, unanswered.
+    assert by_key["profile:last_company_name"]["value"] is None
+    # The application's own `current_ctc` is a DIFFERENT key from the
+    # profile's `current_ctc` -- both questionnaires ask it, and prefixing is
+    # what stops one from overwriting the other.
+    assert by_key["current_ctc"]["group"] == "Application"
+    assert by_key["profile:current_ctc"]["group"] == "Compensation & Availability"
+
+
+@pytest.mark.asyncio
+async def test_validation_node_survives_a_missing_candidate_row() -> None:
+    """A deleted or unlinked candidate must not crash report synthesis; the
+    profile section simply renders every item as unanswered."""
+    out = await fa.validation_node(
+        {
+            "link": SimpleNamespace(
+                id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json={}
+            ),
+            "session": _CandidateSession(None),
+        }
+    )
+    assert out["validation"]["fields"]
 
 
 def test_the_earliest_joining_date_is_mandatory_again() -> None:
@@ -504,7 +577,12 @@ def test_the_intro_states_the_reuse_behaviour_and_breaks_no_copy_rule() -> None:
 async def test_validation_node_is_explicit_when_nothing_was_collected() -> None:
     """Applications submitted before 2026-07-30 predate the mandatory fields."""
     out = await fa.validation_node(
-        {"link": SimpleNamespace(id=uuid.uuid4(), validation_json=None)}
+        {
+            "link": SimpleNamespace(
+                id=uuid.uuid4(), candidate_id=uuid.uuid4(), validation_json=None
+            ),
+            "session": _CandidateSession(),
+        }
     )
     assert out["validation"]["captured"] is False
     assert out["validation"]["current_ctc"] is None

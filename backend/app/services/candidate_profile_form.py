@@ -360,6 +360,68 @@ def searchable_text(answers: dict[str, Any] | None) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
+def _format_answer(field: FormField, value: Any) -> str | None:
+    """Render one stored value as the plain text a recruiter reads.
+
+    Mirrors `clean_answers`'s type handling in reverse: a checkbox becomes
+    Yes/No, a checkbox group joins its chosen options, an education row
+    becomes one readable line per qualification filled in.
+    """
+    if value in (None, "", [], {}):
+        return None
+    if field.type == "checkbox":
+        return "Yes" if value else "No"
+    if field.type == "checkbox_group":
+        return ", ".join(str(item) for item in value) if isinstance(value, list) else None
+    if field.type == "education_table":
+        if not isinstance(value, dict):
+            return None
+        row_labels = dict(EDUCATION_ROWS)
+        lines = []
+        for row_key, row in value.items():
+            if not isinstance(row, dict) or not row:
+                continue
+            cells = ", ".join(f"{key}: {cell}" for key, cell in row.items() if cell)
+            if cells:
+                lines.append(f"{row_labels.get(row_key, row_key)}: {cells}")
+        return "\n".join(lines) or None
+    return str(value)
+
+
+def profile_form_answers(answers: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """The full 38-item profile questionnaire as (question, answer) pairs.
+
+    Grouped by the form's own sections and ordered the same way the form is,
+    so it reads as the candidate's actual questionnaire rather than a bag of
+    fields. An unanswered field still appears, with a null answer, for the
+    same reason `application_validation.validation_answers` never hides a
+    missing value: "never asked" and "left blank" must look identical here,
+    because only one of them is the candidate's doing.
+
+    Keys are prefixed `profile:` because this list is always shown alongside
+    `application_validation.VALIDATION_FIELDS`, and three keys genuinely
+    collide between the two questionnaires (`current_ctc`, `expected_ctc`,
+    `notice_period` — the application asks them again at apply time even
+    though the candidate already answered them on their profile). An
+    unprefixed key would duplicate a React list key and silently overwrite a
+    dict entry keyed by field key; the prefix keeps the two questionnaires'
+    answers distinct without renaming the underlying form field.
+    """
+    values = answers if isinstance(answers, dict) else {}
+    out: list[dict[str, Any]] = []
+    for section in FORM_SECTIONS:
+        for field in section.fields:
+            out.append(
+                {
+                    "key": f"profile:{field.key}",
+                    "question": field.label,
+                    "answer": _format_answer(field, values.get(field.key)),
+                    "group": section.title,
+                }
+            )
+    return out
+
+
 # Import-time integrity checks — these are a product contract.
 assert len(ALL_FIELDS) == sum(len(section.fields) for section in FORM_SECTIONS), (
     "duplicate field key across profile-form sections"

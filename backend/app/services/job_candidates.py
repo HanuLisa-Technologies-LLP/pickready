@@ -278,6 +278,7 @@ async def ranked_candidates(
                     l.validation_json       AS validation,
                     c.full_name             AS full_name,
                     c.email                 AS email,
+                    c.profile_form_json     AS profile_form,
                     p.resume_url            AS resume_url,
                     p.resume_original_filename AS resume_filename,
                     p.resume_mime_type      AS resume_mime_type,
@@ -378,31 +379,45 @@ def _row_payload(row: Any, level: str) -> dict[str, Any]:
         # so the questions and the answers cannot drift, and shown exactly as
         # submitted: nothing scores, interprets or judges this data, and the
         # recruiter decides whether stated interest is genuine (spec §14).
-        "validation_answers": validation_answers(row["validation"]),
+        #
+        # Two sources, both server-assembled so they can never drift from their
+        # form definitions: the six mandatory APPLICATION fields, then the
+        # full 38-item candidate PROFILE questionnaire (2026-08-16 report — the
+        # column was showing only the application's six fields, when every one
+        # of the 38 profile answers a candidate fills in once and reuses across
+        # every job must be visible here too).
+        "validation_answers": validation_answers(row["validation"], row["profile_form"]),
         **ranking_payload(row["breakdown"]),
     }
 
 
-def validation_answers(submitted: Any) -> list[dict[str, Any]]:
-    """The mandatory application fields as (question, answer) pairs.
+def validation_answers(
+    submitted: Any, profile_form: Any = None
+) -> list[dict[str, Any]]:
+    """The mandatory application fields, THEN the full profile questionnaire,
+    as (question, answer) pairs.
 
-    Built from `application_validation.VALIDATION_FIELDS`, which is the same
-    list the apply form renders, so a field added there appears here without a
-    second edit. An application submitted before a field existed has no value
-    for it and renders as unanswered rather than being hidden: "they were never
-    asked" and "they did not answer" look identical when a row is simply
-    missing, and only one of those is the candidate's doing.
+    Built from `application_validation.VALIDATION_FIELDS` and
+    `candidate_profile_form.FORM_SECTIONS`, the same lists the apply form and
+    the profile form render, so a field added to either appears here without a
+    second edit. An application/profile submitted before a field existed has
+    no value for it and renders as unanswered rather than being hidden: "they
+    were never asked" and "they did not answer" look identical when a row is
+    simply missing, and only one of those is the candidate's doing.
     """
     from app.services.application_validation import VALIDATION_FIELDS
+    from app.services.candidate_profile_form import profile_form_answers
 
     values = submitted if isinstance(submitted, dict) else {}
-    return [
+    application_answers = [
         {
             "key": field["key"],
             "question": field["label"],
             "answer": (str(values.get(field["key"])).strip() or None)
             if values.get(field["key"]) is not None
             else None,
+            "group": "Application",
         }
         for field in VALIDATION_FIELDS
     ]
+    return application_answers + profile_form_answers(profile_form)

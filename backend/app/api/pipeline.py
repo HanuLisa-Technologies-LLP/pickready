@@ -17,7 +17,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_tenant_db, require_capability
-from app.services import capabilities as caps
+from app.core.config import get_settings
+from app.models.email_log import EMAIL_TYPE_ASSESSMENT_INVITATION
+from app.services import assessment_invite, capabilities as caps
 from app.services import credits
 from app.services import hiring_pipeline as pipeline
 from app.services.audit import audit
@@ -122,6 +124,26 @@ async def _link_or_404(session: AsyncSession, user: CurrentUser, link_id: uuid.U
     if row is None or str(row["tenant_id"]) != str(user.tenant_id):
         raise HTTPException(status_code=404, detail="Application not found")
     return row
+
+
+def _transition_email_extra_context(
+    email_type: str, row, link_id: uuid.UUID
+) -> dict | None:
+    """Extra draft context a transition email needs beyond name/job/company.
+
+    Isolated from `_queue_transition_email` so the one thing that actually
+    varies per email type -- and the thing that was missing for
+    `assessment_invitation`, per the 2026-08-16 report -- is unit-testable
+    without a database.
+    """
+    if email_type == EMAIL_TYPE_ASSESSMENT_INVITATION:
+        frontend = get_settings().frontend_url.rstrip("/")
+        return {
+            "assessment_link": assessment_invite.assessment_link_url(
+                frontend, link_id=link_id, email=row["email"]
+            )
+        }
+    return None
 
 
 async def _queue_transition_email(
@@ -322,7 +344,10 @@ async def select_candidates_for_assessment(
             now=now,
         )
         if result.email_type:
-            await _queue_transition_email(session, user, row, result.email_type)
+            extra_context = _transition_email_extra_context(
+                result.email_type, row, uuid.UUID(str(link_id))
+            )
+            await _queue_transition_email(session, user, row, result.email_type, extra_context)
         # This candidate's PPI questions are generated from their own resume
         # against the job's saved framework (spec §6.4). Enqueued at invitation
         # rather than at first open, so the questions are waiting when they

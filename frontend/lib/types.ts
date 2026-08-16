@@ -511,7 +511,8 @@ export interface ReviewProfileResponse {
   subunits_charged: number;
 }
 
-/** One mandatory application field and the candidate's exact answer. */
+/** One mandatory application field, or one candidate profile-form item, and
+ *  the candidate's exact answer. */
 export interface ValidationAnswer {
   key: string;
   question: string;
@@ -520,6 +521,10 @@ export interface ValidationAnswer {
    *  because "never asked" and "did not answer" look identical when a row is
    *  simply missing and only one of them is the candidate's doing. */
   answer: string | null;
+  /** "Application" for the six mandatory fields, or the profile form's own
+   *  section title (e.g. "Work Experience") for the 38 profile items. Used
+   *  only to group the modal into readable sections. */
+  group?: string;
 }
 
 /** One matching category this candidate was ACTUALLY scored on. */
@@ -588,11 +593,7 @@ export interface RankedCandidate {
   role_alignment_label?: MatchingLabel | null;
   education_label?: MatchingLabel | null;
   overall_label?: MatchingLabel | null;
-  validation_answers: Array<{
-    key: string;
-    question: string;
-    answer?: string | null;
-  }>;
+  validation_answers: ValidationAnswer[];
 }
 
 export interface RankedCandidatesResponse {
