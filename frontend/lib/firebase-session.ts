@@ -11,7 +11,7 @@ import type {
 import { isContextsResponse } from "@/lib/types";
 
 /**
- * Result of trading a Firebase ID token for a PickReady session.
+ * Result of trading a Firebase ID token for a ReadyPick session.
  * The backend returns EITHER a finalized single-user session (cookies set)
  * OR a multi-workspace identity that still needs `select-context`.
  */
@@ -22,7 +22,7 @@ export { isContextsResponse };
 
 /**
  * POST /auth/firebase/session, trade a freshly minted Firebase ID token for a
- * PickReady session. Single-user → {user, capabilities} (cookies set).
+ * ReadyPick session. Single-user → {user, capabilities} (cookies set).
  * Multi-workspace → {contexts, context_token} (no cookies yet).
  */
 export async function exchangeFirebaseSession(

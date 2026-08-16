@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from_email: str = "noreply@pickready.app"
-    smtp_from_name: str = "PickReady"
+    smtp_from_name: str = "ReadyPick"
     smtp_starttls: bool = True
     smtp_ssl: bool = False
 

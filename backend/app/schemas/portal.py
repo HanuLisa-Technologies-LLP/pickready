@@ -20,7 +20,7 @@ class MeOut(BaseModel):
 
     `email` is READ-ONLY here: Firebase owns credentials and account recovery
     (claude.md rule 2), so changing it is a Firebase operation, never a
-    PickReady database write.
+    ReadyPick database write.
     """
 
     id: uuid.UUID

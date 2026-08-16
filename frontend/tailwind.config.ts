@@ -1,7 +1,7 @@
 import type { Config } from "tailwindcss";
 
 /**
- * PickReady Tailwind theme.
+ * ReadyPick Tailwind theme.
  *
  * Every colour here reads a CSS variable defined in `app/globals.css`, so the
  * light/dark toggle stays a variable swap and no component branches on theme.

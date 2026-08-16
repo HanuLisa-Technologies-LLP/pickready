@@ -601,7 +601,7 @@ async def request_otp(
             celery_app.send_task(
                 "pickready.send_sms",
                 args=[target.destination,
-                      f"Your PickReady OTP is {code}. Valid for "
+                      f"Your ReadyPick OTP is {code}. Valid for "
                       f"{settings.otp_ttl_minutes} minutes."],
             )
         channels_sent.append(target.channel.value)

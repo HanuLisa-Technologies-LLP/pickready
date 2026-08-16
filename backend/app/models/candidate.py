@@ -90,7 +90,7 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
 # ── Type of procurement (2026-07-28) ─────────────────────────────────────────
 # Every candidate on a job arrived one of exactly three ways:
 #
-#   applied  : they found the role through PickReady and applied themselves.
+#   applied  : they found the role through ReadyPick and applied themselves.
 #   sourced  : they arrived through a third-party link (LinkedIn, Naukri, a
 #              forwarded post) and applied through the public /apply page.
 #   databank : the recruitment team bulk-uploaded their resume.

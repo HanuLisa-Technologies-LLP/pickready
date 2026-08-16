@@ -8,7 +8,7 @@ export type Role =
   | "recruiter"
   | "hiring_manager"
   | "candidate"
-  // Business Development: PickReady's own sales staff. Platform staff, so
+  // Business Development: ReadyPick's own sales staff. Platform staff, so
   // tenant_id is always null on this user.
   | "bd";
 
@@ -57,7 +57,7 @@ export function isContextsResponse(
     && (res as AuthContextsResponse).contexts.length > 0;
 }
 
-// ---- Provider Portal (the PickReady owner's view of its customers) ----
+// ---- Provider Portal (the ReadyPick owner's view of its customers) ----
 //
 // A "customer" is one onboarded client company. It is the same underlying row
 // the Owner console has always called a tenant, `Tenant` below stays for the
@@ -233,7 +233,7 @@ export interface StaffMember {
 }
 
 /**
- * Row from GET /admin/bd-users, PickReady's own Business Development team.
+ * Row from GET /admin/bd-users, ReadyPick's own Business Development team.
  *
  * There is no tenant on this record and there never will be: a BD user is
  * platform staff. `signed_in` is false until Firebase binds an identity on the
@@ -556,7 +556,7 @@ export interface RankedCandidate {
   /** Where this applicant came from (spec §1.1). */
   application_source?: "direct" | "sourced" | null;
   /** How this candidate was procured. Applied means they came through
-   *  PickReady themselves, sourced means a third-party link, databank means
+   *  ReadyPick themselves, sourced means a third-party link, databank means
    *  the recruitment team uploaded them in bulk. All three are parsed,
    *  matched and assessed identically; this is display and filtering only. */
   source_type: CandidateProcurement;

@@ -1,8 +1,8 @@
-"""Provider Portal schemas — the PickReady owner's view of its CUSTOMERS.
+"""Provider Portal schemas — the ReadyPick owner's view of its CUSTOMERS.
 
 Vocabulary (the spec is strict about this and the code follows it):
 
-    Provider Portal   the PickReady owner's console — these schemas
+    Provider Portal   the ReadyPick owner's console — these schemas
     Customer Portal   a client company's own HR/recruitment dashboard
     Candidate Portal  the public candidate surface
 

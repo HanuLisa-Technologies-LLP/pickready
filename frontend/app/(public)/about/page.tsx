@@ -6,7 +6,7 @@ import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
 export const metadata: Metadata = {
   title: "About",
   description:
-    "The experience, philosophy and people behind PickReady's evidence-led candidate profiles.",
+    "The experience, philosophy and people behind ReadyPick's evidence-led candidate profiles.",
 };
 
 const PRINCIPLES = [
@@ -33,12 +33,12 @@ export default function AboutPage() {
       <section className="relative overflow-hidden border-b border-border py-20 lg:py-28">
         <div aria-hidden="true" className="absolute -top-40 left-1/2 h-[32rem] w-[48rem] -translate-x-1/2 rounded-full bg-brand-600/15 blur-[120px]" />
         <FadeIn className="relative mx-auto max-w-4xl px-6 text-center lg:px-10">
-          <p className="text-sm font-semibold uppercase tracking-[.18em] text-brand-600">About PickReady</p>
+          <p className="text-sm font-semibold uppercase tracking-[.18em] text-brand-600">About ReadyPick</p>
           <h1 className="mt-5 text-balance text-4xl font-bold leading-tight sm:text-5xl">
             Built from inside HR, for the decisions HR has to defend
           </h1>
           <p className="mx-auto mt-6 max-w-3xl text-pretty text-lg leading-8">
-            PickReady is the next chapter of a long operating journey: learning what teams need when sourcing, screening, validation and decision support have to work as one.
+            ReadyPick is the next chapter of a long operating journey: learning what teams need when sourcing, screening, validation and decision support have to work as one.
           </p>
         </FadeIn>
       </section>
@@ -52,13 +52,13 @@ export default function AboutPage() {
           </FadeIn>
           <FadeIn delay={0.08} className="space-y-5 text-pretty text-base leading-8">
             <p>
-              Before PickReady, Recruitrix.ai brought profiles, assessments, verification and delivery into one platform when many teams were still assembling those pieces separately. Its remote-ready model supported more than 60 customers across India, delivered more than 10,000 jobs and led to an acquisition.
+              Before ReadyPick, Recruitrix.ai brought profiles, assessments, verification and delivery into one platform when many teams were still assembling those pieces separately. Its remote-ready model supported more than 60 customers across India, delivered more than 10,000 jobs and led to an acquisition.
             </p>
             <p>
-              The market moved. AI matured, candidate expectations changed and people teams needed more control over how evidence becomes a decision. PickReady takes the practical lessons from that journey and rebuilds the operating model from first principles.
+              The market moved. AI matured, candidate expectations changed and people teams needed more control over how evidence becomes a decision. ReadyPick takes the practical lessons from that journey and rebuilds the operating model from first principles.
             </p>
             <p>
-              PickReady turns role requirements, candidate evidence and structured conversation into one clear assessment trail, so teams can spend interview time on the questions that matter.
+              ReadyPick turns role requirements, candidate evidence and structured conversation into one clear assessment trail, so teams can spend interview time on the questions that matter.
             </p>
           </FadeIn>
         </div>
@@ -111,7 +111,7 @@ export default function AboutPage() {
                 He reviewed more than 600 HR technology platforms, advised over 50 companies on where their people processes break and mentored more than 100 HR professionals. Those conversations shaped a simple standard: technology should give time back, not add another system to manage.
               </p>
               <p>
-                PickReady is not a side project. It is the operating belief that teams deserve clear evidence, candidates deserve clarity and the final decision must stay human.
+                ReadyPick is not a side project. It is the operating belief that teams deserve clear evidence, candidates deserve clarity and the final decision must stay human.
               </p>
             </div>
           </FadeIn>

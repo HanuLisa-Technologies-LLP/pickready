@@ -2,12 +2,12 @@
 
 Vocabulary, kept strict the way the other three portals are:
 
-    Provider Portal   the PickReady owner's console over its customers
+    Provider Portal   the ReadyPick owner's console over its customers
     Customer Portal   a client company's own dashboard
     Candidate Portal  the public candidate surface
     BD Portal         the sales pipeline that turns a LEAD into a customer
 
-A LEAD is a company PickReady wants; a CUSTOMER is a company it has (a
+A LEAD is a company ReadyPick wants; a CUSTOMER is a company it has (a
 `tenants` row). The BD Customers page reads the leads that crossed that line,
 which is why `BDCustomerOut` carries both the lead id and the tenant id.
 
@@ -285,7 +285,7 @@ class BDProfileOut(BaseModel):
     """GET /bd/me. There is no password field anywhere in this schema: Firebase
     owns credentials and recovery (CLAUDE.md rule 2), and the existing
     `frontend/components/change-password.tsx` talks to the Firebase client SDK
-    directly rather than to any PickReady endpoint."""
+    directly rather than to any ReadyPick endpoint."""
 
     user_id: uuid.UUID
     name: str | None = None

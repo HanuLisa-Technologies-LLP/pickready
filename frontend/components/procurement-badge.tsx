@@ -1,7 +1,7 @@
 // Type of Procurement (new spec, 2026-07-28).
 //
 // Three ways a candidate reaches a job:
-//   Applied   they came to PickReady themselves
+//   Applied   they came to ReadyPick themselves
 //   Sourced   they arrived through a third-party link
 //   Databank  the recruitment team uploaded them in bulk
 //

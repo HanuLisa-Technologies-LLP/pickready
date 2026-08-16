@@ -26,7 +26,7 @@ export function DemoWindow({
         <span className="h-2.5 w-2.5 rounded-full bg-emerald-400/80" />
         <div className="ml-3 h-4 w-32 rounded-full bg-white/[0.06] sm:w-48" />
         <span className="ml-auto text-[9px] font-semibold tracking-[.2em] text-white/35">
-          PICKREADY
+          READYPICK
         </span>
       </div>
       <div className="flex h-[calc(100%-2.25rem)]">

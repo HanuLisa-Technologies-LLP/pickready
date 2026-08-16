@@ -99,7 +99,7 @@ export default function ProviderBillingPage() {
         actions={
           rows.length ? (
             <ExportXlsxButton
-              fileName="pickready-provider-billing"
+              fileName="readypick-provider-billing"
               rows={rows.map((row) => ({
                 customer: row.customer_name,
                 plan: row.plan_name ?? "No plan",

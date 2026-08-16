@@ -346,7 +346,7 @@ def test_pdf_contains_branding_all_sections_charts_and_confidential_footer() -> 
     assert payload.startswith(b"%PDF-")
     reader = PdfReader(io.BytesIO(payload))
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
-    assert "PickReady" in text
+    assert "ReadyPick" in text
     assert "Change Six Fixture Candidate" in text
     assert "Platform Engineer" in text
     assert "Must-have" in text

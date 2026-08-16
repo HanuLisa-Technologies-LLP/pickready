@@ -21,7 +21,7 @@ export default function InsightsPage() {
   return (
     <main id="main" className="mx-auto max-w-6xl px-6 py-20 lg:px-10 lg:py-28">
       <FadeIn className="max-w-3xl">
-        <p className="text-sm font-semibold uppercase tracking-[.18em] text-brand-600">PickReady Insights</p>
+        <p className="text-sm font-semibold uppercase tracking-[.18em] text-brand-600">ReadyPick Insights</p>
         <h1 className="mt-4 text-balance text-4xl font-bold sm:text-5xl">Better evidence. Better conversations.</h1>
         <p className="mt-6 text-pretty text-lg leading-8">
           Practical notes for people teams building faster, clearer and more accountable candidate decisions.
@@ -34,7 +34,7 @@ export default function InsightsPage() {
               <Badge variant="outline" className="self-start">{tag}</Badge>
               <h2 className="mt-6 text-xl font-semibold leading-8">{title}</h2>
               <p className="mt-4 text-sm leading-7">{body}</p>
-              <p className="mt-auto pt-8 text-xs font-semibold uppercase tracking-[.14em] text-brand-600">PickReady editorial</p>
+              <p className="mt-auto pt-8 text-xs font-semibold uppercase tracking-[.14em] text-brand-600">ReadyPick editorial</p>
             </article>
           </StaggerItem>
         ))}

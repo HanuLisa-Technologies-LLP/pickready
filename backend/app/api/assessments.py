@@ -792,7 +792,7 @@ async def download_report_pdf(
     tenant = await session.get(Tenant, link.tenant_id)
     candidate_name = (candidate.full_name if candidate else None) or "Candidate"
     job_title = (job.title if job else None) or "Role"
-    tenant_name = (tenant.name if tenant else None) or "PickReady customer"
+    tenant_name = (tenant.name if tenant else None) or "ReadyPick customer"
     # ReportLab is heavy and PDF downloads are infrequent; keep it off the API
     # startup path so ordinary requests do not pay its import cost.
     from app.services.report_pdf import render_report_pdf

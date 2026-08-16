@@ -3,8 +3,8 @@ import Image from "next/image";
 
 import { cn } from "@/lib/utils";
 
-/** PickReady's standalone product mark and wordmark, rendered from native UI. */
-const ALT = "PickReady";
+/** ReadyPick's standalone product mark and wordmark, rendered from native UI. */
+const ALT = "ReadyPick";
 
 export interface LogoProps {
   variant?: "full" | "mark";
@@ -48,7 +48,7 @@ export function Logo({
           className="font-black tracking-[-0.045em] text-foreground"
           style={{ fontSize: Math.max(18, Math.round(height * 0.72)) }}
         >
-          Pick<span className="text-violet-600 dark:text-violet-400">Ready</span>
+          Ready<span className="text-violet-600 dark:text-violet-400">Pick</span>
         </span>
       ) : null}
     </span>

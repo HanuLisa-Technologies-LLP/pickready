@@ -1,4 +1,4 @@
-"""LangGraph orchestration for the PickReady PPI Assessment Report.
+"""LangGraph orchestration for the ReadyPick PPI Assessment Report.
 
 ONE scoring agent, TWO methods (spec §8). The PPI Scoring Agent consumes the
 actual candidate answers, keyed by the `question_key` stamped on every message,

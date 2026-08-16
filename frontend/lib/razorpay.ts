@@ -85,7 +85,7 @@ export async function openCheckout(options: OpenCheckoutOptions): Promise<boolea
   const checkout = new window.Razorpay({
     key: options.keyId,
     subscription_id: options.subscriptionId,
-    name: "PickReady",
+    name: "ReadyPick",
     description: `${options.planName} plan, billed monthly`,
     prefill: options.prefill ?? {},
     theme: { color: "#5028E0" },

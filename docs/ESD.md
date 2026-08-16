@@ -1,17 +1,17 @@
-# PickReady Engineering and System Design
+# ReadyPick Engineering and System Design
 
 **Status:** Implementation-aligned technical specification
 **Authority:** Source code, migrations, automated tests, runtime configuration, and shipped interfaces in this repository
 
 ## 1. Purpose
 
-This document describes how PickReady is built today and the engineering path from the current credit-funded deployment to a production-grade service. It replaces older architecture prompts, API contracts, deployment notes, hand-offs, and feature specifications.
+This document describes how ReadyPick is built today and the engineering path from the current credit-funded deployment to a production-grade service. It replaces older architecture prompts, API contracts, deployment notes, hand-offs, and feature specifications.
 
 Historical documents are not authoritative. Where old intent and current behavior differ, this document records the implementation.
 
 ## 2. System context
 
-PickReady is a web application with four authenticated workspaces and several public token/link workflows.
+ReadyPick is a web application with four authenticated workspaces and several public token/link workflows.
 
 ```mermaid
 flowchart TB
@@ -599,7 +599,7 @@ The repository does not include an inbound Gmail webhook/ingestion deployment. P
 
 ## 15. Billing architecture
 
-Razorpay Subscriptions owns external recurring-payment state. PickReady stores its plan mapping and subscription mirror. Webhook signatures are verified, and provider event IDs are deduplicated.
+Razorpay Subscriptions owns external recurring-payment state. ReadyPick stores its plan mapping and subscription mirror. Webhook signatures are verified, and provider event IDs are deduplicated.
 
 The credit ledger stores integer sub-units:
 

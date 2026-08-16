@@ -63,7 +63,7 @@ export function SiteHeader() {
         <div className="hidden items-center gap-2 md:flex">
           <Button asChild variant="ghost" size="sm">
             <a
-              href="mailto:manjuchro@gmail.com?subject=PickReady%20enquiry"
+              href="mailto:manjuchro@gmail.com?subject=ReadyPick%20enquiry"
               target="_blank"
               rel="noreferrer"
             >
@@ -114,7 +114,7 @@ export function SiteHeader() {
           <div className="mt-3 flex flex-col gap-2">
             <Button asChild variant="ghost">
               <a
-                href="mailto:manjuchro@gmail.com?subject=PickReady%20enquiry"
+                href="mailto:manjuchro@gmail.com?subject=ReadyPick%20enquiry"
                 target="_blank"
                 rel="noreferrer"
               >

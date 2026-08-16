@@ -9,7 +9,7 @@ file (see migration 0020's docstring for why).
 Read/write asymmetry is the whole point of the table:
   * the customer's own HR Head UPLOADS and REPLACES (Customer Portal, RLS
     confines them to their own tenant);
-  * the PickReady owner only READS, across every tenant, through the audited
+  * the ReadyPick owner only READS, across every tenant, through the audited
     super-admin bypass scope.
 Nothing in the Provider path writes here — enforced by the router, not by
 convention (api/provider.py exposes no mutating document route at all).

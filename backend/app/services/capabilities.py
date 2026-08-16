@@ -129,7 +129,7 @@ _CUSTOMER_FULL_ACCESS: dict[str, bool] = {
 # EDIT_ROLE_PERMISSIONS is never here: it rewrites the matrix itself, so
 # granting it to a customer role removes the boundary rather than widening it.
 # The three MANAGE_BD_* / USE_AI_REACH grants stay with the `bd` role, which is
-# PickReady's own sales console and has no tenant. Same two exclusions, and the
+# ReadyPick's own sales console and has no tenant. Same two exclusions, and the
 # same reasoning, as migration 0031.
 DEFAULT_PERMISSION_MATRIX: dict[Role, dict[str, bool]] = {
     Role.recruitment_manager: dict(_CUSTOMER_FULL_ACCESS),

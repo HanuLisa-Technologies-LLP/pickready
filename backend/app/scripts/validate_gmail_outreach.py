@@ -24,7 +24,7 @@ from app.workers.celery_app import celery_app
 async def _compose() -> dict:
     return await generate_outreach_email(
         candidate={
-            "name": "PickReady Test Candidate",
+            "name": "ReadyPick Test Candidate",
             "skills_comment": (
                 "Strong evidence across Python, FastAPI, PostgreSQL, Redis, "
                 "Docker, and production API ownership."
@@ -44,7 +44,7 @@ async def _compose() -> dict:
         },
         job={"title": "Senior Backend Engineer"},
         company={
-            "name": "PickReady",
+            "name": "ReadyPick",
             "culture": (
                 "Clear ownership, thoughtful collaboration, candid feedback, "
                 "and reliable delivery without unnecessary process."

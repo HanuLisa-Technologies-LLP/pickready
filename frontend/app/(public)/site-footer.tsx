@@ -63,7 +63,7 @@ export function SiteFooter() {
 
         <div className="mt-12 flex flex-col gap-2 border-t border-border pt-6 text-sm sm:flex-row sm:items-center sm:justify-between">
           <p>
-            &copy; {new Date().getFullYear()} PickReady. All rights reserved.
+            &copy; {new Date().getFullYear()} ReadyPick. All rights reserved.
           </p>
           <p className="opacity-70">
             A Hanulisa Technologies LLP product.

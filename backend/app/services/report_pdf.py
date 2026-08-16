@@ -243,7 +243,7 @@ def render_report_pdf(
         topMargin=16 * mm,
         bottomMargin=19 * mm,
         title=f"PPI Assessment Report - {candidate_name}",
-        author="PickReady",
+        author="ReadyPick",
     )
     base = getSampleStyleSheet()
     styles = {
@@ -282,7 +282,7 @@ def render_report_pdf(
         ),
     }
     story: list[Any] = [
-        Paragraph("PickReady", styles["Subtitle"]),
+        Paragraph("ReadyPick", styles["Subtitle"]),
         Paragraph("PPI Assessment Report", styles["Title"]),
         Spacer(1, 3 * mm),
         Paragraph(

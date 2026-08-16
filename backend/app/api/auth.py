@@ -1,6 +1,6 @@
 """Firebase identity exchange and legacy context-selection endpoints.
 
-Firebase proves identity; PickReady remains authoritative for application
+Firebase proves identity; ReadyPick remains authoritative for application
 roles, tenant isolation, capabilities, and its portal-scoped sessions.
 """
 import uuid
@@ -302,7 +302,7 @@ async def _user_out(session: AsyncSession, user: User) -> UserOut:
     elif user.role == Role.candidate:
         workspace_name = "Candidate workspace"
     else:
-        workspace_name = "PickReady"
+        workspace_name = "ReadyPick"
     return UserOut(
         id=user.id,
         role=user.role,

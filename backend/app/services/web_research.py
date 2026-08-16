@@ -110,7 +110,7 @@ _redis_client: Any | None = None
 
 UNCONFIGURED_MESSAGE = (
     "Web search is not configured on this deployment, so the internet results "
-    "are unavailable. The matches from PickReady's own customer database are "
+    "are unavailable. The matches from ReadyPick's own customer database are "
     "shown above."
 )
 TIMEOUT_MESSAGE = (

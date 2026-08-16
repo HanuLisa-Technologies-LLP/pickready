@@ -1,6 +1,6 @@
 import { ReachPage } from "@/components/bd/reach-page";
 
-// `app/layout.tsx` appends "| PickReady" through a template, so the title here
+// `app/layout.tsx` appends "| ReadyPick" through a template, so the title here
 // is just the page name.
 export const metadata = { title: "BD Reach" };
 

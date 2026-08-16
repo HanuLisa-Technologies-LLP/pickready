@@ -2,14 +2,14 @@
 
 THE FOURTH PORTAL
 -----------------
-    Provider Portal   the PickReady owner's console            /admin  -> /provider
+    Provider Portal   the ReadyPick owner's console            /admin  -> /provider
     Customer Portal   a client company's own dashboard         /org    -> /companies
     Candidate Portal  the public candidate surface             /portal -> /portal
     BD Portal         the sales pipeline that FINDS customers  /bd     -> /bd
 
-The BD team works leads. A lead is a company PickReady wants as a customer but
+The BD team works leads. A lead is a company ReadyPick wants as a customer but
 does not have yet, so `bd_leads` is deliberately NOT a tenant-scoped table: a
-lead has no tenant until it converts, and PickReady's own sales pipeline is not
+lead has no tenant until it converts, and ReadyPick's own sales pipeline is not
 any customer's data. It is a global table in the same family as `tenants` and
 `llm_provider_keys`, reachable only through the RLS bypass scope the BD and
 Owner consoles run in (migration 0023 gives it a policy that requires

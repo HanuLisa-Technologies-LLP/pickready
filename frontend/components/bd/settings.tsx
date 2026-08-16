@@ -10,7 +10,7 @@
 //
 // There is no password field and no password endpoint. Firebase owns
 // credentials and recovery (CLAUDE.md rule 2), so `ChangePasswordCard` is
-// mounted unchanged: it talks to the Firebase client SDK and calls no PickReady
+// mounted unchanged: it talks to the Firebase client SDK and calls no ReadyPick
 // route. It renders only for accounts that actually have a password, so a
 // Google-only rep is not offered a dead end.
 //
@@ -220,7 +220,7 @@ export function BDSettingsPage() {
                   htmlFor="bd-email"
                   required
                   error={errors.email}
-                  hint="This updates your PickReady record. Your sign-in identity is managed separately."
+                  hint="This updates your ReadyPick record. Your sign-in identity is managed separately."
                 >
                   <Input
                     id="bd-email"

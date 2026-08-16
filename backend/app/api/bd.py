@@ -1,6 +1,6 @@
 """Business Development Portal, the fourth portal (`/bd` UI, `/bd` API).
 
-    Provider Portal   the PickReady owner's console over its customers
+    Provider Portal   the ReadyPick owner's console over its customers
     Customer Portal   a client company's own dashboard
     Candidate Portal  the public candidate surface
     BD Portal         this module: the team that FINDS the customers
@@ -14,13 +14,13 @@ is now what the screen sends.
 
 SESSION AND PERMISSIONS
 -----------------------
-A BD rep is PickReady staff, not a customer's staff: they have no `tenant_id`,
+A BD rep is ReadyPick staff, not a customer's staff: they have no `tenant_id`,
 and the leads they work belong to no tenant. So this router uses the OWNER
 token audience (the same portal family as the Provider console) and the RLS
 BYPASS scope, with an `audit_log` row written for every request exactly as
 `get_superadmin_db` does. `bd_leads` still has an RLS policy that requires
 `app.bypass_rls = 'on'` (migration 0023), so an org or candidate session cannot
-read PickReady's own sales pipeline. RLS is the boundary; the handler filters
+read ReadyPick's own sales pipeline. RLS is the boundary; the handler filters
 are defence in depth (CLAUDE.md rule 1).
 
 Gating is `require_bd_capability(...)`, resolved through the same data-driven
@@ -555,7 +555,7 @@ async def get_bd_profile(
     There is no password here and no password endpoint anywhere in this router.
     Firebase owns credentials and recovery (CLAUDE.md rule 2), and the existing
     `frontend/components/change-password.tsx` already implements the change via
-    the Firebase client SDK with no PickReady call at all, so the BD Settings
+    the Firebase client SDK with no ReadyPick call at all, so the BD Settings
     page mounts that component unchanged.
     """
     row = await session.get(User, user.user_id)
@@ -581,7 +581,7 @@ async def update_bd_profile(
 ) -> BDProfileOut:
     """Name, email and phone. Nothing else, and no password.
 
-    Changing the email here changes the PickReady record only. The Firebase
+    Changing the email here changes the ReadyPick record only. The Firebase
     identity is separate and is not rewritten from this endpoint, so a rep who
     changes their email keeps signing in with the identity Firebase knows until
     that is changed in Firebase too.
@@ -624,7 +624,7 @@ async def ai_reach_search(
 ) -> AIReachOut:
     """Two clearly separated segments, always both returned.
 
-    SIMILAR TO CUSTOMERS is computed against PickReady's OWN customer database
+    SIMILAR TO CUSTOMERS is computed against ReadyPick's OWN customer database
     and makes no external call, so it works on a deployment with no web search
     key and survives any outage of the second segment. It is computed FIRST for
     exactly that reason.
@@ -650,7 +650,7 @@ async def ai_reach_search(
         status="ok",
         message=(
             None if similar
-            else "No matching roles were found in PickReady's customer "
+            else "No matching roles were found in ReadyPick's customer "
                  "database for this search."
         ),
         jobs=similar,

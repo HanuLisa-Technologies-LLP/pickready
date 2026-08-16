@@ -2,10 +2,10 @@
 
 // Business Development Portal shell, the FOURTH portal (CLAUDE.md 2026-07-28).
 //
-//   Provider Portal   /admin   the PickReady owner's console
+//   Provider Portal   /admin   the ReadyPick owner's console
 //   Customer Portal   /org     a client company's dashboard
 //   Candidate Portal  /portal  the candidate surface
-//   BD Portal         /bd      this one: PickReady's own sales team
+//   BD Portal         /bd      this one: ReadyPick's own sales team
 //
 // A `bd` user is PLATFORM staff (tenant_id NULL, OWNER audience token), so this
 // shell looks like the Provider console rather than the org one.

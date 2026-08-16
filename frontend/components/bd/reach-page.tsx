@@ -428,7 +428,7 @@ export function ReachPage({
           actions={
             <div className="flex flex-wrap gap-2">
               <ExportXlsxButton
-                fileName="pickready-bd-reach"
+                fileName="readypick-bd-reach"
                 rows={leads.map((lead) => ({
                   company: lead.company_name,
                   // The export used to be one file per screen, so the source

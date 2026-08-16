@@ -2,7 +2,7 @@
 
 // Customer Portal → Compliance. The WRITE half of the Provider Portal's
 // compliance section: the HR Head files their company's own tax and commercial
-// records here, and PickReady reads them read-only.
+// records here, and ReadyPick reads them read-only.
 //
 // Reachable only by someone holding `manage_compliance_documents`, granted to
 // the Company Admin by default. A recruiter who navigates here directly gets
@@ -98,7 +98,7 @@ export default function CompliancePage() {
       <PageHeader
         eyebrow="Customer Portal"
         title="Compliance and legal documents"
-        description="Your company's tax and commercial records. PickReady can view these; only your company can upload or replace them."
+        description="Your company's tax and commercial records. ReadyPick can view these; only your company can upload or replace them."
       />
 
       {forbidden ? (

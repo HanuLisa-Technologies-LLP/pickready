@@ -338,7 +338,7 @@ async def _ensure_razorpay_plan(session: AsyncSession, plan: PricingPlan) -> str
     if plan.razorpay_plan_id:
         return plan.razorpay_plan_id
     plan_id = await razorpay.create_plan(
-        name=f"PickReady {plan.name}",
+        name=f"ReadyPick {plan.name}",
         price_inr=plan.price_inr,
         notes={"pickready_plan_slug": plan.slug},
     )

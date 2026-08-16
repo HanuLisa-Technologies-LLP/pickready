@@ -2,12 +2,12 @@
 
 // Provider Portal, the Business Development team.
 //
-// A BD user is PickReady's own salesperson, not a customer's employee: the row
+// A BD user is ReadyPick's own salesperson, not a customer's employee: the row
 // has no tenant, which is exactly why none of the existing invite screens could
 // create one. This page is the only way to add them.
 //
 // THE ONE THING TO UNDERSTAND BEFORE EDITING: adding someone here does NOT
-// create a credential. PickReady never holds one. The row reserves the email
+// create a credential. ReadyPick never holds one. The row reserves the email
 // address; the person becomes able to sign in when a Firebase identity exists
 // for that address and they use the normal login page. The "Signed in" column
 // is therefore load-bearing, it is the answer to "I added them, why can they
@@ -243,7 +243,7 @@ export default function BusinessDevelopmentPage() {
     <div>
       <PageHeader
         title="Business Development"
-        description="PickReady's own sales team. Adding someone here reserves the account; Firebase handles their sign-in credential."
+        description="ReadyPick's own sales team. Adding someone here reserves the account; Firebase handles their sign-in credential."
         actions={
           <Button className="gap-2" onClick={openCreate}>
             <Plus className="h-4 w-4" /> Add BD member

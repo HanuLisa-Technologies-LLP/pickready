@@ -410,7 +410,7 @@ def test_an_empty_field_is_blank_not_the_word_none() -> None:
 
 def test_the_download_filename_is_sensible() -> None:
     name = bd_leads.csv_filename(NOW)
-    assert name == "pickready-bd-customers-2026-07-28.csv"
+    assert name == "readypick-bd-customers-2026-07-28.csv"
     assert name.endswith(".csv")
 
 

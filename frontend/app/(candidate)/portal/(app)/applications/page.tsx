@@ -280,7 +280,7 @@ export default function PortalApplicationsPage() {
         actions={
           applications.length ? (
             <ExportXlsxButton
-              fileName="pickready-my-applications"
+              fileName="readypick-my-applications"
               rows={applications.map((application) => ({
                 role: application.job_title,
                 company: application.company_name ?? "",

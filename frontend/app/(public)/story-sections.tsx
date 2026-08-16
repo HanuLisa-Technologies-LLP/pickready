@@ -119,7 +119,7 @@ export function PfiDifferentiator() {
       <div className="overflow-hidden rounded-3xl border border-border bg-[linear-gradient(135deg,hsl(var(--surface)),hsl(var(--brand-100)))] p-7 shadow-pop sm:p-10">
         <div className="grid items-center gap-10 lg:grid-cols-[1.05fr_.95fr]">
           <Reveal>
-            <Badge variant="brand">PickReady intelligence</Badge>
+            <Badge variant="brand">ReadyPick intelligence</Badge>
             <h2
               id="ppi-edge-title"
               className="mt-5 text-balance text-3xl font-bold"
@@ -127,7 +127,7 @@ export function PfiDifferentiator() {
               AI can rank. PPI helps your team understand.
             </h2>
             <p className="mt-5 text-pretty text-lg leading-8">
-              PickReady Profile Intelligence connects role match, behavioural
+              ReadyPick Profile Intelligence connects role match, behavioural
               evidence, technical depth and validation into one readable
               decision profile. It is our own framework, generated from your job
               description, not a generic score pasted onto a resume.
@@ -235,7 +235,7 @@ export function AboutPreview() {
         </Reveal>
         <Reveal delay={0.08}>
           <p className="text-sm font-semibold uppercase tracking-[.16em] text-brand-600">
-            About PickReady
+            About ReadyPick
           </p>
           <h2
             id="about-preview-title"
@@ -244,7 +244,7 @@ export function AboutPreview() {
             Experience became a different operating model
           </h2>
           <p className="mt-5 text-pretty text-lg leading-8">
-            PickReady grew from years spent seeing where teams lose time:
+            ReadyPick grew from years spent seeing where teams lose time:
             disconnected sourcing, repetitive screening, opaque scoring and
             systems that move the administrative load instead of removing it.
           </p>

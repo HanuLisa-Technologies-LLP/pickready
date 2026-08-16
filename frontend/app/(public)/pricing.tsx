@@ -80,7 +80,7 @@ const INCLUDED = [
   "Unlimited team members, no per seat fee",
   "Four parameter AI matching",
   "Technical questions written per candidate",
-  "PickReady Profile Intelligence",
+  "ReadyPick Profile Intelligence",
   "One continuous candidate conversation",
   "Full PPI Assessment Report",
   "Four radar charts, no numbers on them",

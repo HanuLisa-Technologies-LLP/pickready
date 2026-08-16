@@ -19,7 +19,7 @@ import {
 
 export const metadata: Metadata = {
   // The client's tagline is the page's promise, so it is the title too.
-  // `app/layout.tsx` appends "| PickReady" via its template, which is why the
+  // `app/layout.tsx` appends "| ReadyPick" via its template, which is why the
   // product name does not appear here (claude.md: page metadata must not
   // repeat the site name).
   title: "Know Every Candidate Before You Meet Them",

@@ -117,7 +117,7 @@ FORBIDDEN_INSTRUMENTS = (
 
 
 def test_no_third_party_assessment_instrument_is_named() -> None:
-    """The PickReady Functional Index is proprietary work derived from first
+    """The ReadyPick Functional Index is proprietary work derived from first
     principles. Associating its name with a licensed instrument, even in a code
     comment, is the kind of thing that is read as a claim later."""
     offenders: list[str] = []

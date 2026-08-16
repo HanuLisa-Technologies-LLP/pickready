@@ -6,7 +6,7 @@ const STEPS = [
   {
     icon: FileText,
     title: "Post the role",
-    body: "Describe the job once. PickReady drafts the description, your team edits it, and publishing gives you one link to share on any job board.",
+    body: "Describe the job once. ReadyPick drafts the description, your team edits it, and publishing gives you one link to share on any job board.",
   },
   {
     icon: ScanSearch,

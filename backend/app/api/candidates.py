@@ -178,7 +178,7 @@ async def upload_resume(
         # elsewhere is `sourced`, not `databank`. Databank is specifically the
         # bulk upload (POST /jobs/{id}/candidates/databank, up to 25 files);
         # this single-file route predates it and describes a candidate the
-        # recruiter procured from outside PickReady.
+        # recruiter procured from outside ReadyPick.
         source_type=SOURCE_TYPE_SOURCED,
     )
     session.add(link)
@@ -288,7 +288,7 @@ async def preview_resume(
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> HTMLResponse:
-    """Render a DOCX resume inside PickReady as safe, monochrome HTML.
+    """Render a DOCX resume inside ReadyPick as safe, monochrome HTML.
 
     Browsers cannot natively display Word documents. The server downloads only
     the trusted private asset already stored on the profile, extracts

@@ -315,7 +315,7 @@ def _firebase_only_report(base: str) -> int:
 
 def main() -> int:
     settings = get_settings()
-    print("PickReady auth validation harness")
+    print("ReadyPick auth validation harness")
     print(f"  environment = {settings.environment}")
 
     base = _pick_base_url()

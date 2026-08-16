@@ -16,12 +16,12 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: {
-    default: "PickReady, know every candidate before you meet them",
-    template: "%s | PickReady",
+    default: "ReadyPick, know every candidate before you meet them",
+    template: "%s | ReadyPick",
   },
   description:
-    "PickReady ranks every applicant against the role, runs a structured AI assessment, and hands your team one readable PPI Assessment Report per candidate.",
-  applicationName: "PickReady",
+    "ReadyPick ranks every applicant against the role, runs a structured AI assessment, and hands your team one readable PPI Assessment Report per candidate.",
+  applicationName: "ReadyPick",
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "32x32" },
@@ -31,8 +31,8 @@ export const metadata: Metadata = {
   },
   openGraph: {
     type: "website",
-    siteName: "PickReady",
-    title: "PickReady, know every candidate before you meet them",
+    siteName: "ReadyPick",
+    title: "ReadyPick, know every candidate before you meet them",
     description:
       "Rank every applicant against the role, run a structured AI assessment, and read one clear report per candidate.",
   },

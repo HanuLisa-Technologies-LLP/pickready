@@ -409,7 +409,7 @@ export default function OrgJobDetailPage() {
               AI matching in progress
             </DialogTitle>
             <DialogDescription>
-              PickReady is evaluating the job&apos;s candidate pool against its finalized matching categories.
+              ReadyPick is evaluating the job&apos;s candidate pool against its finalized matching categories.
             </DialogDescription>
           </DialogHeader>
           <div className="rounded-xl border bg-secondary/40 p-5">

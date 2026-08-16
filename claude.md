@@ -1,9 +1,9 @@
-# claude.md, PickReady Build Conventions
+# claude.md, ReadyPick Build Conventions
 
 ## Current release authority — Product Development Specification v4 (2026-08-14)
 
-- **PickReady is a standalone AI-native product.** Product and marketing copy
-  uses only PickReady branding. Do not reuse another product's name, logo,
+- **ReadyPick is a standalone AI-native product.** Product and marketing copy
+  uses only ReadyPick branding. Do not reuse another product's name, logo,
   collateral, positioning language, client identity, or go-to-market story.
 - **Customer roles are hierarchical, not flat.** The chain is Super Admin
   (`client`) -> Recruitment Manager -> Recruiter -> Hiring Manager. A person
@@ -318,13 +318,13 @@
   Developing collapsing into Not Matching. Boundaries stay inclusive upward
   (rule 8).
 - **PPI replaced PFI, and the difference is per-job versus per-product.** The
-  PickReady Functional Index was ONE fixed dimension set per grade, reused
-  across every job. PickReady Profile Intelligence generates a FRESH framework
+  ReadyPick Functional Index was ONE fixed dimension set per grade, reused
+  across every job. ReadyPick Profile Intelligence generates a FRESH framework
   for every job from that job's own JD: at least 5 Primary Skills, 5 Secondary
   Skills and 5 Behavioural Competencies, more when complexity warrants it.
   `services/pfi_bank.py` and `services/validation_bank.py` are DELETED, and
   `tests/test_functional_assessment.py` asserts they cannot be imported. PPI is
-  proprietary PickReady work and is never associated with DISC, MBTI, Hogan,
+  proprietary ReadyPick work and is never associated with DISC, MBTI, Hogan,
   CliftonStrengths or any other licensed instrument.
 - **The framework is per JOB, the questions are per CANDIDATE, and confusing
   the two breaks the product's only comparability guarantee.** A saved
@@ -486,7 +486,7 @@
 ## Current hard rules, BD Portal, unified JD, procurement types (2026-07-28)
 
 - **There are now FOUR portals, and the fourth is the Business Development
-  Portal** (`/bd` in the UI and in the API). It is where PickReady's own sales
+  Portal** (`/bd` in the UI and in the API). It is where ReadyPick's own sales
   team works leads and closes customers. The other three are unchanged:
   Provider Portal (`/admin`, `/provider`), Customer Portal (`/org`,
   `/companies`), Candidate Portal (`/portal`). A `bd` user is PLATFORM staff:
@@ -501,7 +501,7 @@
   customer list still accepts only `active | archived | all`, so a prospect
   cannot appear there as though it were live.
 - **AI Reach returns two segments and the first one never touches the network.**
-  `similar_to_customers` is computed from PickReady's own tenants and jobs and
+  `similar_to_customers` is computed from ReadyPick's own tenants and jobs and
   is computed FIRST; `from_internet` is a LangGraph agent over Tavily. With no
   `TAVILY_API_KEY` the internet segment returns `status: "unconfigured"` with a
   plain message and the page still works. Retrieved web content is DATA, never
@@ -520,7 +520,7 @@
   on the form. `reportees` and the JD generator's `company_context` were
   DROPPED, not deprecated.
 - **Every candidate link carries `source_type`: `applied | sourced |
-  databank`.** Applied means they came through PickReady, sourced means a
+  databank`.** Applied means they came through ReadyPick, sourced means a
   third-party link, databank means the recruitment team bulk-uploaded them.
   This is provenance for DISPLAY and filtering ONLY. Nothing may branch on it:
   all three are parsed, embedded, matched and assessed identically. Bulk upload
@@ -537,7 +537,7 @@
   writes a `users` row with `role = 'bd'`, `tenant_id = NULL`, status
   `invited` and no `firebase_uid`; the first proven Firebase sign-in on that
   email binds the uid and flips it to `active`
-  (`api/auth._finalize_single`). PickReady stores no password and sends no
+  (`api/auth._finalize_single`). ReadyPick stores no password and sends no
   invite token for BD, so a Firebase identity must exist for the address
   before the first login. Disable is the reversible switch and there is no
   delete route: a BD rep owns leads (`bd_leads.owner_user_id`).
@@ -552,12 +552,12 @@
   `--muted-foreground: var(--ink)` in both themes, so the shadcn primitives'
   built-in `text-muted-foreground` resolves to pure ink. Do not chase call
   sites in `components/ui/**`; fix the token if it ever drifts.
-- **The brand is PickReady.** The code-native mark and wordmark live in
+- **The brand is ReadyPick.** The code-native mark and wordmark live in
   `frontend/components/brand/logo.tsx`; product surfaces must not point at
   inherited logo or collateral assets. Design tokens remain in
   `docs/spec/DESIGN_BRIEF.md`.
 - **Page metadata must not repeat the site name.** `app/layout.tsx` sets a
-  `%s | PickReady` template, so a page title is just "Sign in".
+  `%s | ReadyPick` template, so a page title is just "Sign in".
 - **The frontend dev container does not see file changes over the Windows bind
   mount.** Restart the `frontend` service after editing, or you will verify
   against stale output and believe a change did not work.
@@ -565,7 +565,7 @@
 ## Current hard rules — Provider Portal (2026-07-27)
 
 - **Three portals, three names, never interchanged.** *Provider Portal* is the
-  PickReady owner's console (`/admin` in the UI, `/provider` in the API).
+  ReadyPick owner's console (`/admin` in the UI, `/provider` in the API).
   *Customer Portal* is a client company's own dashboard (`/org`,
   `/companies`). *Candidate Portal* is `/portal`. A **customer** is one
   onboarded client company.
@@ -746,7 +746,7 @@
 
 - Evolve the system additively. Extend tables and routes; do not replace
   established contracts without a migration and versioned compatibility path.
-- The PickReady Functional Index is proprietary PickReady work derived from
+- The ReadyPick Functional Index is proprietary ReadyPick work derived from
   first-principles job analysis. Never associate its name, prompts, code,
   comments, UI, or documentation with a third-party licensed assessment
   instrument.
@@ -817,7 +817,7 @@ This file is the standing context for any Claude Code session working on this re
 
 ## 1. Project One-Liner
 
-PickReady is a multi-tenant recruitment/ATS platform for Hanulisa Technologies LLP. Next.js + FastAPI, Firebase auth for every role, Postgres+pgvector for data and matching, a grade-driven AI assessment producing the Functional Skills Report, Celery for all async work, fully Dockerized.
+ReadyPick is a multi-tenant recruitment/ATS platform for Hanulisa Technologies LLP. Next.js + FastAPI, Firebase auth for every role, Postgres+pgvector for data and matching, a grade-driven AI assessment producing the Functional Skills Report, Celery for all async work, fully Dockerized.
 
 ---
 

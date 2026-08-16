@@ -2,7 +2,7 @@
 management (HR Manager / Recruiter / Hiring Manager accounts), invitations,
 approval-level configuration, and per-tenant email templates. The whole staff
 hierarchy belongs to the client organization — staff creation moved here from
-the Owner console (Pickready.docx §2).
+the Owner console (Readypick.docx §2).
 
 FLAT STAFF MODEL (PRD v1.0 §4): the three staff roles are equal. Nothing here
 branches on which of the three a member holds; the capability grant set is
@@ -163,7 +163,7 @@ async def _company_profile_out(
     tenant = await session.get(Tenant, tenant_id)
     return CompanyProfileOut(
         tenant_id=tenant_id,
-        company_name=tenant.name if tenant else "PickReady",
+        company_name=tenant.name if tenant else "ReadyPick",
         industry=tenant.industry if tenant else None,
         about_company=company.about_company if company else None,
         work_life=company.work_life if company else None,
@@ -377,14 +377,14 @@ async def _ensure_invite_template(session: AsyncSession, tenant_id: uuid.UUID) -
         EmailTemplate(
             tenant_id=tenant_id,
             name="staff_invite",
-            subject="You've been invited to {{company_name}} on PickReady",
+            subject="You've been invited to {{company_name}} on ReadyPick",
             body=(
                 "Hi {{full_name}},\n\n"
                 "{{invited_by}} has invited you to join {{company_name}} on "
-                "PickReady as a {{role_label}}.\n\n"
+                "ReadyPick as a {{role_label}}.\n\n"
                 "Accept your invitation here:\n\n{{invite_link}}\n\n"
                 "You'll sign in with Google or with an email and password, "
-                "PickReady never asks you to set a separate password.\n\n"
+                "ReadyPick never asks you to set a separate password.\n\n"
                 "This link expires on {{expires_on}}.\n\n"
                 ", The {{company_name}} team"
             ),
@@ -457,9 +457,9 @@ async def _issue_invite(
 
 async def _tenant_name(session: AsyncSession, tenant_id: uuid.UUID | None) -> str:
     if tenant_id is None:
-        return "PickReady"
+        return "ReadyPick"
     tenant = await session.get(Tenant, tenant_id)
-    return tenant.name if tenant is not None else "PickReady"
+    return tenant.name if tenant is not None else "ReadyPick"
 
 
 async def _load_staff(
@@ -591,7 +591,7 @@ async def create_staff(
                 action="staff_created", target_type="user", target_id=staff_user.id,
                 metadata={"role": role.value, "email": str(body.email)})
 
-    # New staff activate on their first verified Firebase sign-in — PickReady
+    # New staff activate on their first verified Firebase sign-in — ReadyPick
     # never generates a password or an app OTP for them (rule 2).
     actor = await session.get(User, user.user_id)
     invite, link, dispatch = await _issue_invite(
@@ -1102,7 +1102,7 @@ async def update_email_template(
 #
 # The WRITE half of the Provider Portal's compliance section (spec Â§3.3): the
 # customer's HR Head files their own tax and commercial records here, and the
-# PickReady owner reads them through api/provider.py. The split is deliberate
+# ReadyPick owner reads them through api/provider.py. The split is deliberate
 # and complete â€” the Provider router has no upload route, this router has no
 # cross-tenant read, and RLS confines every statement below to the caller's own
 # tenant regardless.

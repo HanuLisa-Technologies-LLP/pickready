@@ -2,7 +2,7 @@
  * The Google "G" used on the "Continue with Google" buttons.
  *
  * Its four brand colours are fixed by Google's guidelines and are therefore the
- * one place in the app that does not read a PickReady token. It is decorative:
+ * one place in the app that does not read a ReadyPick token. It is decorative:
  * the button's own label carries the meaning.
  */
 export function GoogleMark({ className }: { className?: string }) {

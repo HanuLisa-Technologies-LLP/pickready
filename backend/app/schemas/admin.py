@@ -252,7 +252,7 @@ class OwnerStaffOut(BaseModel):
 
 # ── Business Development team (platform staff, no tenant) ────────────────────
 #
-# A BD user is PickReady's own salesperson, not a customer's employee: the row
+# A BD user is ReadyPick's own salesperson, not a customer's employee: the row
 # carries `role = 'bd'` and `tenant_id = NULL`, so none of the tenant-scoped
 # invite machinery applies (a `staff_invites` row needs a tenant). Identity is
 # the same as everywhere else: the Owner reserves the email here, Firebase owns

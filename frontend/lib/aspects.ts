@@ -100,7 +100,7 @@ export const ASPECTS: AspectDef[] = [
   // Both are MANDATORY: a consent that renders "(optional)" is not a consent
   // anyone can rely on, and these two are the ones a recruiter acts on.
   { id: 39, category: "Verification & Consent", question: "Do you consent to background and previous-employer verification as part of this process?", type: "boolean" },
-  { id: 40, category: "Verification & Consent", question: "Do you consent to your profile being retained in the PickReady Databank and matched against future roles?", type: "boolean" },
+  { id: 40, category: "Verification & Consent", question: "Do you consent to your profile being retained in the ReadyPick Databank and matched against future roles?", type: "boolean" },
 ];
 
 /**

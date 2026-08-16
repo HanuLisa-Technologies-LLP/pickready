@@ -1,4 +1,4 @@
-# PickReady
+# ReadyPick
 Multi-tenant recruitment and applicant tracking platform built for Hanulisa Technologies LLP. Next.js 14 frontend, FastAPI backend, Firebase Authentication (email/password + Google OAuth), PostgreSQL with pgvector for AI-powered candidate matching, and Celery for all asynchronous work. Fully containerized and deployed on Google Cloud Run.
 
 - **Functional requirements**: [docs/PRD.md](docs/PRD.md)
@@ -60,7 +60,7 @@ cd backend && python -m pytest tests -q
 
 ## Deployment
 
-PickReady deploys entirely to **Google Cloud Run**, with no other hosting provider involved. Five workloads run from two container images:
+ReadyPick deploys entirely to **Google Cloud Run**, with no other hosting provider involved. Five workloads run from two container images:
 
 | Workload | Type | Image | Purpose |
 |---|---|---|---|

@@ -87,7 +87,7 @@ export function DashboardSummaryView() {
         actions={
           summary ? (
             <ExportXlsxButton
-              fileName="pickready-customer-dashboard"
+              fileName="readypick-customer-dashboard"
               rows={summary.jobs.map((job) => ({
                 job: job.title,
                 databank_matches: job.databank_matched,

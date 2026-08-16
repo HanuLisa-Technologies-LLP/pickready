@@ -1,4 +1,4 @@
-# PickReady Product Requirements Document
+# ReadyPick Product Requirements Document
 
 **Status:** Implementation-aligned product specification
 **Authority:** The running source code, database migrations, tests, and user interfaces in this repository
@@ -11,16 +11,16 @@ When this document and the implementation differ, the implementation is authorit
 
 ## 2. Product overview
 
-PickReady is a multi-tenant hiring operations platform. It brings job creation, candidate intake, resume matching, structured assessment, functional reporting, hiring-pipeline communication, employer verification, subscription credits, and business-development operations into one system.
+ReadyPick is a multi-tenant hiring operations platform. It brings job creation, candidate intake, resume matching, structured assessment, functional reporting, hiring-pipeline communication, employer verification, subscription credits, and business-development operations into one system.
 
 The product serves four workspaces:
 
 | Workspace | Primary users | Purpose |
 |---|---|---|
-| Provider | PickReady owner and provider operators | Provision customers and BD accounts, inspect customer health, and view portfolio billing |
+| Provider | ReadyPick owner and provider operators | Provision customers and BD accounts, inspect customer health, and view portfolio billing |
 | Company | Company administrators, HR managers, recruiters, and hiring managers | Run jobs, candidate review, assessments, compliance, staff, billing, and hiring decisions |
 | Candidate | Job applicants and sourced candidates | Maintain a reusable profile and resume, apply for jobs, complete invited assessments, and track applications |
-| Business development | PickReady BD users | Manage personal and social leads, run AI-assisted reach, and convert signed prospects into customers |
+| Business development | ReadyPick BD users | Manage personal and social leads, run AI-assisted reach, and convert signed prospects into customers |
 
 The public website explains the platform and pricing and provides entry points for registration, login, public job applications, outreach responses, and employer verification.
 
@@ -413,9 +413,9 @@ Note the direction of the PPI column: more questions for a junior candidate,
 fewer for a CXO. A CXO's evidence is broader per answer and their time is the
 scarce resource.
 
-### 11.2.1 PickReady Profile Intelligence (PPI)
+### 11.2.1 ReadyPick Profile Intelligence (PPI)
 
-PPI replaced the PickReady Functional Index (PFI) on 2026-07-30. PFI was one
+PPI replaced the ReadyPick Functional Index (PFI) on 2026-07-30. PFI was one
 fixed dimension set per grade, reused across every job in the product. PPI
 generates a **fresh evaluation framework for every job, from that job's own JD**:
 

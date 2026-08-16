@@ -2,7 +2,7 @@
 
 // Provider Portal, the customer list (spec §2).
 //
-// This is the PickReady owner's home screen: every customer, what they are
+// This is the ReadyPick owner's home screen: every customer, what they are
 // doing on the platform, and the two management actions.
 //
 // TWO DELIBERATE CHOICES WORTH KNOWING BEFORE EDITING:
@@ -325,7 +325,7 @@ export default function CustomersPage() {
         actions={
           <div className="flex flex-wrap gap-2">
             <ExportXlsxButton
-              fileName="pickready-provider-customers"
+              fileName="readypick-provider-customers"
               rows={customers.map((customer) => ({
                 customer: customer.name,
                 industry: customer.industry ?? "",

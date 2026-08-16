@@ -51,7 +51,7 @@ export function OptionalProctoringConsent({
       <CardContent className="space-y-3 text-sm">
         <p>
           This is an assessment aid only, not an interview or background check.
-          If you agree, PickReady may use your webcam for an identity check and
+          If you agree, ReadyPick may use your webcam for an identity check and
           capture the assessment screen. Audio is never requested or recorded.
         </p>
         <p>

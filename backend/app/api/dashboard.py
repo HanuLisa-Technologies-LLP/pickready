@@ -101,7 +101,7 @@ async def dashboard_summary(
 #
 # `GET /dashboard/ai-insights` lived here and is DELETED, not deprecated
 # (spec 30, client instruction: "Remove the AI Dashboard feature completely from
-# Pickready platform in customer's portal"). The page, its component and its
+# Readypick platform in customer's portal"). The page, its component and its
 # response schema went in the same change.
 #
 # Deleted rather than left returning an empty payload: a route that answers is a

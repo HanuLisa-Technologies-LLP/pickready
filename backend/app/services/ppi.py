@@ -1,6 +1,6 @@
-"""PickReady Profile Intelligence (PPI) -- the per-job evaluation matrix.
+"""ReadyPick Profile Intelligence (PPI) -- the per-job evaluation matrix.
 
-PROPRIETARY: PPI is PickReady's own competency framework, derived from
+PROPRIETARY: PPI is ReadyPick's own competency framework, derived from
 first-principles job analysis. It is NOT modelled on, named after, or derived
 from any licensed psychometric instrument, and no such instrument may ever be
 referenced in this file, the product UI, or the documentation.

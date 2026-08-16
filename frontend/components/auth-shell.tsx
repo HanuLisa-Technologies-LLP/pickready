@@ -12,7 +12,7 @@ import { Card, CardContent } from "@/components/ui/card";
  *
  * It is deliberately quiet. One centred card on the canvas, the brand lockup
  * above it, and a very low-contrast dot field behind. The lockup already
- * contains its own wordmark, so no text "PickReady" is rendered beside it.
+ * contains its own wordmark, so no text "ReadyPick" is rendered beside it.
  *
  * A Server Component, so a page can render the frame without the sign-in form's
  * client boundary reaching the whole route.

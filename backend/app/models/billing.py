@@ -4,7 +4,7 @@ Two deliberate departures from the spec's literal DDL, both forced by rules
 this codebase already lives under:
 
 1. The spec writes ``ALTER TABLE companies ADD COLUMN razorpay_customer_id...``.
-   In PickReady a **customer IS a `tenants` row**, not a `companies` row
+   In ReadyPick a **customer IS a `tenants` row**, not a `companies` row
    (claude.md, Provider Portal rules): `companies` is the client-authored,
    candidate-facing page and does not exist until the client signs in, while
    `tenants` carries the customer identity from onboarding. A subscription

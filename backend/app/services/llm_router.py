@@ -1,6 +1,6 @@
 """LangGraph-routed LLM provider router (21 keys, ESD §8.4 + 2026-07-27 spec).
 
-Every LLM call in PickReady — JD generation, technical question banks,
+Every LLM call in ReadyPick — JD generation, technical question banks,
 behavioural assessment, report synthesis, email composition, re-ranking,
 extraction — goes through this module. A compiled LangGraph state machine
 decides which key to try next, and walks a fallback chain until one succeeds or

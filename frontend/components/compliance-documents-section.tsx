@@ -60,7 +60,7 @@ export function ComplianceDocumentsSection({
     <section className="space-y-8">
       <p className="text-sm leading-6">
         {editable
-          ? `Filed by your company and visible to PickReady. ${UPLOAD_HINT}`
+          ? `Filed by your company and visible to ReadyPick. ${UPLOAD_HINT}`
           : "Filed by the customer's HR Head. Read-only."}
       </p>
 

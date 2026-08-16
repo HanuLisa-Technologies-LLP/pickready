@@ -52,7 +52,7 @@ export function PublicShell({
             width === "wide" ? "max-w-5xl" : "max-w-3xl"
           )}
         >
-          <span>Powered by PickReady</span>
+          <span>Powered by ReadyPick</span>
           <span className="opacity-80">
             Your details are shared only with the hiring team for this role.
           </span>

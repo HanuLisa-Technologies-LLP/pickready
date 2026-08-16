@@ -1,4 +1,4 @@
-# Deploying PickReady to Google Cloud Run
+# Deploying ReadyPick to Google Cloud Run
 
 Target project: `pick-ready-503913` (project number `1034326377358`), region
 `asia-south1` by default.

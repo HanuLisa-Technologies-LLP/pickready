@@ -416,7 +416,7 @@ def _fallback_body(email_type: str, ctx: dict[str, Any]) -> str:
         f"The {job} job has been waiting for your review since it was created. "
         "Until it is reviewed, candidates cannot be assessed against this role.\n\n"
         + (f"{link}\n\n" if link else "")
-        + ", PickReady"
+        + ", ReadyPick"
     )
 
 

@@ -3,7 +3,7 @@
 // Password change for accounts that actually HAVE a password.
 //
 // Firebase owns credentials and recovery (claude.md rule 2), this component
-// therefore talks to the Firebase client SDK directly and never to a PickReady
+// therefore talks to the Firebase client SDK directly and never to a ReadyPick
 // endpoint. There is no password column in our database and this does not
 // create one.
 //

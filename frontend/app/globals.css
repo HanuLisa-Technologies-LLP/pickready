@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 /* ===========================================================================
-   PickReady design tokens (implementation baseline, 2026-07-28)
+   ReadyPick design tokens (implementation baseline, 2026-07-28)
    ---------------------------------------------------------------------------
    The light/dark toggle is a pure CSS variable swap (claude.md §4 Styling).
    No component ever branches on theme.

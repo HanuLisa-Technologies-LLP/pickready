@@ -1,4 +1,4 @@
-# PickReady, Cloud Run Production Deployment Runbook
+# ReadyPick, Cloud Run Production Deployment Runbook
 
 Manual, copy-paste deployment using **only the gcloud CLI and your existing
 `gcloud` login**. No service-account JSON key is downloaded or used anywhere.
@@ -210,7 +210,7 @@ after the deploy.
 > `if settings.is_production or ...` and raises **400 Invalid webhook
 > signature**. In production a blank secret does not mean "skip verification",
 > it means **every Razorpay webhook is rejected**. Subscriptions are charged by
-> Razorpay and never credited in PickReady.
+> Razorpay and never credited in ReadyPick.
 >
 > Fix: create the webhook in the Razorpay dashboard first (Phase 15 step 2),
 > copy the signing secret it gives you into `.env`, and push it in Phase 5.
@@ -930,7 +930,7 @@ Paste that exact value.
 
 ### 2. Razorpay webhook
 
-**Why:** Razorpay charges the customer's card and then tells PickReady by
+**Why:** Razorpay charges the customer's card and then tells ReadyPick by
 posting to this URL. Without it, subscriptions are charged and no credits are
 ever granted. This is also the only reason the backend is public.
 

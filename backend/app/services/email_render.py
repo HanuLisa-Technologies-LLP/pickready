@@ -1,6 +1,6 @@
 """Tenant email-template rendering + .ics building (ESD §11/§12, FR-8.5).
 
-PickReady ships no fixed email copy — each tenant maintains editable,
+ReadyPick ships no fixed email copy — each tenant maintains editable,
 versioned templates (EmailTemplate rows). Rendering picks the tenant's
 highest active version by name; if the tenant has no template yet, a
 deliberately minimal default keeps the pipeline functional (the product
@@ -30,8 +30,8 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # (Owner/super_admin) who have no tenant and therefore no tenant-authored
     # templates. The body carries the code; it is never logged (ESD §16).
     "otp": (
-        "Your PickReady verification code",
-        "Your PickReady one-time password is {{code}}. It is valid for "
+        "Your ReadyPick verification code",
+        "Your ReadyPick one-time password is {{code}}. It is valid for "
         "{{ttl_minutes}} minutes.\n\n"
         "If you did not request this code, you can ignore this email.",
     ),
@@ -63,14 +63,14 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # arriving, and the first the customer would otherwise hear of it is a
     # refused invitation. Deliberately carries no amount and no card detail.
     "payment_failed": (
-        "Your PickReady payment did not go through",
+        "Your ReadyPick payment did not go through",
         "Hello,\n\n"
         "We could not process this month's subscription payment for "
         "{{company_name}}. Your credit balance is unchanged, and any credits "
         "already in your pool remain available.\n\n"
         "Update your payment method to keep new assessment invitations "
         "flowing:\n\n{{billing_url}}\n\n"
-        "Regards,\nPickReady",
+        "Regards,\nReadyPick",
     ),
     "interview_invite": (
         "Interview invitation, {{job_title}} at {{company_name}}",
@@ -101,26 +101,26 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     ),
     # api/admin.py, when the platform owner creates a customer.
     "client_invite": (
-        "Your {{tenant_name}} workspace on PickReady is ready",
+        "Your {{tenant_name}} workspace on ReadyPick is ready",
         "Hello,\n\n"
-        "A PickReady workspace has been created for {{tenant_name}}. Accept "
+        "A ReadyPick workspace has been created for {{tenant_name}}. Accept "
         "your invitation and sign in here:\n\n{{invite_link}}\n\n"
         "You will sign in with Google or with an email and password, "
-        "PickReady never asks you to set a separate password.\n\n"
-        "Regards,\nPickReady",
+        "ReadyPick never asks you to set a separate password.\n\n"
+        "Regards,\nReadyPick",
     ),
     # api/companies.py seeds a tenant-EDITABLE row for this name on first use,
     # but a default belongs here too: the seeding and the send are separate
     # steps, and a missing row must degrade to generic copy rather than to a
     # silently lost invitation.
     "staff_invite": (
-        "You have been invited to {{company_name}} on PickReady",
+        "You have been invited to {{company_name}} on ReadyPick",
         "Hi {{full_name}},\n\n"
-        "{{invited_by}} has invited you to join {{company_name}} on PickReady "
+        "{{invited_by}} has invited you to join {{company_name}} on ReadyPick "
         "as a {{role_label}}.\n\n"
         "Accept your invitation here:\n\n{{invite_link}}\n\n"
         "You will sign in with Google or with an email and password, "
-        "PickReady never asks you to set a separate password.\n\n"
+        "ReadyPick never asks you to set a separate password.\n\n"
         "This link expires on {{expires_on}}.\n\n"
         "Regards,\nThe {{company_name}} team",
     ),
@@ -192,12 +192,12 @@ def text_to_html(body: str) -> str:
         'border-radius:14px;background:#ffffff">'
         '<div style="padding:20px 28px;border-bottom:1px solid #ede9fe;'
         'font-family:Arial,sans-serif;font-size:20px;font-weight:800;color:#111827">'
-        'PickReady<span style="color:#7c3aed">.</span></div>'
+        'ReadyPick<span style="color:#7c3aed">.</span></div>'
         '<div style="padding:28px;font-family:Arial,sans-serif;font-size:15px;'
         f'line-height:1.65;color:#374151">{content_html}</div>'
         '<div style="padding:16px 28px;background:#fafafa;font-family:Arial,sans-serif;'
         'font-size:12px;line-height:1.5;color:#6b7280">'
-        'This message was sent through a secure PickReady workflow.'
+        'This message was sent through a secure ReadyPick workflow.'
         '</div></div></div>'
     )
 
@@ -273,7 +273,7 @@ def build_ics(
     from icalendar import Calendar, Event, vCalAddress, vText
 
     cal = Calendar()
-    cal.add("prodid", "-//PickReady//Interview Scheduling//EN")
+    cal.add("prodid", "-//ReadyPick//Interview Scheduling//EN")
     cal.add("version", "2.0")
     cal.add("method", "REQUEST")
 

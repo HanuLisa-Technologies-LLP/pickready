@@ -43,7 +43,7 @@ export function Step1Login() {
             P
           </span>
           <h3 className="mt-3 text-base font-semibold">Welcome back</h3>
-          <p className="mt-1 text-[10px] text-white/45">Continue to your PickReady workspace</p>
+          <p className="mt-1 text-[10px] text-white/45">Continue to your ReadyPick workspace</p>
         </div>
         <AnimatedField label="Work email" text="hr@novacore.in" delay={0.35} />
         <AnimatedField label="Password" text="••••••••••" delay={0.95} secret />
@@ -400,7 +400,7 @@ export function Step8PfiReport() {
         className="grid h-full gap-3 p-4 sm:grid-cols-[1.15fr_.85fr] sm:p-5"
       >
         <div className="min-w-0">
-          <SceneHeader eyebrow="PickReady intelligence" title="PPI Assessment Report · Ananya Sharma" />
+          <SceneHeader eyebrow="ReadyPick intelligence" title="PPI Assessment Report · Ananya Sharma" />
           <motion.div
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}

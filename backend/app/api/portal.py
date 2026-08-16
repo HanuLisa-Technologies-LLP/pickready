@@ -124,7 +124,7 @@ ASPECT_DEFINITIONS: list[AspectOut] = (
     ]
     + [AspectOut(id=n, prompt=f"Aspect {n} (questionnaire item {n})") for n in range(5, 40)]
     + [AspectOut(id=40, prompt="Do you consent to being matched against future "
-                               "roles via the PickReady Databank?")]
+                               "roles via the ReadyPick Databank?")]
 )
 
 

@@ -1,4 +1,4 @@
-"""Provider Portal — the PickReady owner's console over its CUSTOMERS.
+"""Provider Portal — the ReadyPick owner's console over its CUSTOMERS.
 
     Provider Portal   this module: the platform owner's dashboard
     Customer Portal   a client company's own dashboard (api/companies.py)

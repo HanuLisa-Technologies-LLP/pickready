@@ -55,7 +55,7 @@ async def _fixture() -> tuple[str, str, str, str]:
                 ).scalars().first()
                 if candidate is None:
                     candidate = Candidate(
-                        full_name="PickReady Delivery Validation",
+                        full_name="ReadyPick Delivery Validation",
                         email=settings.smtp_user,
                         consent_databank=False,
                     )

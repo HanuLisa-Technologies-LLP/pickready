@@ -1,4 +1,4 @@
-# PickReady CI/CD, setup instructions
+# ReadyPick CI/CD, setup instructions
 
 A staged rollout on Cloud Run: every push to `main` builds, migrates and
 creates revisions that serve **nobody**, smoke tests those revisions on their
@@ -99,7 +99,7 @@ GitHub, **Settings → Secrets and variables → Actions → New repository secr
 |---|---|
 | `GCP_WIF_PROVIDER` | The provider path printed by the setup script, `projects/<number>/locations/global/workloadIdentityPools/github-pool/providers/github-provider` |
 | `GCP_DEPLOY_SA` | `github-deployer@pick-ready-503913.iam.gserviceaccount.com` |
-| `TEST_BEARER_TOKEN` | A valid PickReady access JWT for a test hiring-manager account (see step 4) |
+| `TEST_BEARER_TOKEN` | A valid ReadyPick access JWT for a test hiring-manager account (see step 4) |
 
 Optional, only if you would rather keep the Firebase web config in GitHub than
 in Secret Manager. `deploy.sh` looks in the process environment first, then

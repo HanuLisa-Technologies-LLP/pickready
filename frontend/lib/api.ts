@@ -1,4 +1,4 @@
-// Typed fetch wrapper for the PickReady backend.
+// Typed fetch wrapper for the ReadyPick backend.
 // Routes must match docs/API_CONTRACT.md verbatim.
 import { apiErrorMessage } from "./validation-errors";
 

@@ -152,7 +152,7 @@ export function CustomerEditModal({
           <FormField
             label="Internal notes"
             htmlFor="customer-notes"
-            hint="Visible to PickReady only, never to the customer."
+            hint="Visible to ReadyPick only, never to the customer."
           >
             <Textarea
               id="customer-notes"

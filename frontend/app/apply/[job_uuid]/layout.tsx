@@ -5,7 +5,7 @@ import type { Metadata } from "next";
  * form in React state), so it cannot export `metadata`. This layout supplies
  * the tab title instead.
  *
- * The title is the page name only: `app/layout.tsx` appends "| PickReady"
+ * The title is the page name only: `app/layout.tsx` appends "| ReadyPick"
  * through a template, so repeating the product name here would render it
  * twice. The role's own title is not used, because it is not known until the
  * public job fetch resolves on the client.

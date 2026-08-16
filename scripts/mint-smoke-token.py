@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mint a short-lived PickReady access token for the deploy smoke test.
+"""Mint a short-lived ReadyPick access token for the deploy smoke test.
 
 WHY THIS EXISTS
 ---------------

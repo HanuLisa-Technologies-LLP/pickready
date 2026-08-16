@@ -478,7 +478,7 @@ async def run() -> list[Result]:
 
 
 def report(results: list[Result]) -> str:
-    lines = ["", "PickReady interview agent, offline evaluation", ""]
+    lines = ["", "ReadyPick interview agent, offline evaluation", ""]
     for item in results:
         mark = "PASS" if item.rate == 1.0 else "FAIL"
         lines.append(f"  [{mark}] {item.name}: {item.passed}/{item.total}")

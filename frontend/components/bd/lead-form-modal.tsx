@@ -286,7 +286,7 @@ export function LeadFormModal({
           <FormField
             label="Notes"
             htmlFor="lead-notes"
-            hint="Visible to the PickReady team only."
+            hint="Visible to the ReadyPick team only."
           >
             <Textarea
               id="lead-notes"

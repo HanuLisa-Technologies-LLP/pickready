@@ -1,6 +1,6 @@
 "use client";
 
-// Provider Portal shell, the PickReady owner's console.
+// Provider Portal shell, the ReadyPick owner's console.
 //
 // The nav is deliberately minimal (Provider Portal spec §1.1). Team
 // Management, Permissions and the Audit Log were removed: the owner's job here
@@ -37,7 +37,7 @@ export default function AdminLayout({
       title="Provider Portal"
       nav={[
         { href: "/admin", label: "Customers", icon: Building2, exact: true },
-        // Business Development is PickReady's OWN team, not a customer's, and
+        // Business Development is ReadyPick's OWN team, not a customer's, and
         // no other screen can create one: every invite path in the product is
         // tenant-scoped and a bd user has no tenant.
         { href: "/admin/bd", label: "Business Development", icon: Briefcase },
