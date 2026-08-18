@@ -134,6 +134,20 @@ jobs:
         # Offline and deterministic for the same reason as the first.
         run: python -m app.scripts.eval_report
 
+      - name: Agent framework evaluation
+        working-directory: backend
+        # The third eval, added 2026-08-18 with the ten-system agent framework.
+        # The first two measure what an agent SAYS; this one measures the
+        # framework it says it inside: that the routing table agrees with the
+        # tool permission matrix, that no tool is registered without an agent
+        # holding it, that no tool can start an attempt it cannot finish inside
+        # its deadline, and that ten specific past defects are still fixed.
+        # Offline and deterministic for the same reason as the other two. It
+        # reports the evaluation dataset as UNAVAILABLE rather than as zero
+        # while no expert-labelled set exists, because zero reads as a failing
+        # score and unavailable is the truth.
+        run: python -m app.scripts.eval_agents
+
   frontend-test:
     name: Frontend tests, lint and build
     runs-on: ubuntu-latest

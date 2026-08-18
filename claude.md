@@ -1,5 +1,121 @@
 # claude.md, ReadyPick Build Conventions
 
+## Current hard rules, the ten-system agent framework (2026-08-18)
+
+- **Tools RAISE, loops DEGRADE, and that split is why both stay simple.**
+  `services/tools.execute` is the only path an agent reaches data through:
+  resolve, permit, validate input, cache, bounded attempt, validate output,
+  count. It raises on final failure. `agent_loop.run_loop` still never raises,
+  and it is still where a user-visible degradation is decided. A tool that
+  swallowed its failure would hand its caller an empty shape indistinguishable
+  from a legitimately empty result, and the caller would render it.
+- **An agent's reach is `tools/permissions.AGENT_TOOLS`, checked BEFORE the
+  handler runs.** Data, never a role branch inside a handler, exactly like
+  `require_capability`. The email agent holds no resume and no transcript tool:
+  an email states a decision that was already made, and reach it does not have
+  is reach a future prompt cannot start using. Enforcement is ordering, not
+  politeness -- a refusal that ran the handler first has already read the row it
+  was refusing to show.
+- **Compensation stripping and the four-grade scale are properties of the tool
+  SHAPE.** `JobFacts` has no compensation field and no free-form escape hatch;
+  `Competency.required_level` is a WORD converted from the stored integer. ESD
+  16 and the no-numbers rule were previously enforced at one call site each.
+  Every agent prompt is now downstream of these models, so both travel with the
+  layer instead of with somebody's memory.
+- **`extract_assessment` is NEVER cached and never idempotent.** A live
+  conversation grows between two reads by design. An agent scoring a transcript
+  two answers stale is scoring the wrong assessment.
+- **A verifier returns a `Verdict` that converts to `agent_loop.Critique`.**
+  There is no second retry framework: the loop's `reflect -> improve` step IS
+  the auto-regeneration, already bounded twice over. `Verdict.confidence` is
+  ARITHMETIC over severity counts, never a model's opinion of itself -- an LLM
+  judge makes the criteria unfalsifiable and fails exactly when the provider is
+  already failing. One high finding is disqualifying; two mediums are; one is
+  not.
+- **The specification this framework implements was written against an older
+  product, and two of its checks are deliberately absent.** The ranking
+  weight-sum check (there are no weights; `tests/test_scoring.py` asserts the
+  symbol's absence) became a ranked-list DIVERSITY check, which is what the
+  weighting was standing in for. The five-label scale became `services.rating`'s
+  four grades. Both absences are documented where the check would have gone, so
+  the next reader finds out why rather than re-adding it.
+- **Retrieval is CHUNK-level and is a different question from ranking.**
+  `context_chunks` (0054) holds many small pieces per document with their own
+  vectors; `profiles.embedding` and `jobs.embedding` are unchanged and still
+  rank candidates. Retrieval must never decide who gets scored -- a candidate
+  linked to a job is always scored, and retrieval is a ranking prior only.
+- **The lexical retriever ORs its terms, and this was found on the live index
+  rather than in a test.** `plainto_tsquery` ANDs every term, so the query
+  "kafka partition rebalance migration" matched NOTHING in a resume containing
+  Kafka, partition and migration. The failure was silent: fusion still returned
+  the semantic hits, so retrieval looked like it worked. Precision is fusion's
+  job, not the lexical retriever's.
+- **Fusion is Reciprocal Rank Fusion, never a weighted sum.** A cosine distance
+  and a `ts_rank` are not on the same scale as each other or across two
+  queries, so any fixed weighting is a number nobody can justify and everybody
+  eventually tunes by feel. RRF reads ORDER only.
+- **There is no cross-encoder reranker deployed, and the code says so.**
+  `retrieval.rerank` takes its scorer as a parameter and defaults to a
+  deterministic lexical-affinity pass with a section prior. Pretending a
+  `bge-reranker` service exists behind an interface that silently returns the
+  input order would be worse than not having one.
+- **Context is assembled by dropping WHOLE chunks and recording the drop.**
+  Cutting the assembled string hands a model half a sentence, and a model handed
+  half a sentence completes it from its own priors -- into text a grade is
+  written from. Compression is EXTRACTIVE and calls no model: an LLM
+  summarisation inside retrieval spends the interactive budget before generation
+  starts, and an outage in the summariser becomes an outage in the feature.
+- **The planner calls no model and is pure arithmetic.** Same inputs, same
+  plan, every time -- otherwise a latency regression cannot be told apart from a
+  provider sampling differently, and a provider outage costs you the ability to
+  plan around a provider outage. Its one real decision is fast path versus deep
+  path, and the threshold is deliberately low: a fast path on a task that needed
+  reflection produces a worse report permanently, while a deep path on a simple
+  task costs a second.
+- **Reflection is still mechanical.** `reasoning.runner` has a reflect stage and
+  it calls `agent_loop.reflection_text`, unchanged. The reflection is real; it
+  is not generative, for the reason above.
+- **A trace carries identifiers, counts and timings, and NEVER content.**
+  `agent_execution_traces` (0055) stores a defect's type and location and drops
+  its `detail`, because a detail can quote the output. `_SAFE_STAGE_KEYS` is an
+  allowlist, so the next person adding "the prompt we sent" for debugging finds
+  it dropped rather than finding it in the database a month later. Persisting a
+  trace never fails the run it describes.
+- **Experience memory is a HINT and never a gate.** `agent_learnings` rows are
+  prepended to a prompt as guidance and cannot relax a word range, skip a
+  verifier or lower a threshold. A mechanism that could would let one unlucky
+  run permanently lower the bar, and the code doing it would be a table row
+  rather than a reviewed line. Nothing is applied below `MIN_OBSERVATIONS`.
+- **Budgets refuse BEFORE the work.** Checking afterwards means the overspend
+  already happened and the ceiling is a report. Cost, iterations and replans are
+  separate ceilings because a loop can spin without spending. Every refusal is
+  recorded: a budget that stopped something silently is indistinguishable from a
+  task that simply finished.
+- **A stub is always flagged for human review.** Three levels -- full, degraded,
+  stub -- and the stub exists so a provider outage returns the product's
+  previous behaviour rather than a 500. What makes that honest rather than
+  misleading is `needs_human_review`, never a stub that reads like a result.
+- **A sensitive action requires a human at ANY confidence.** Reject, revoke an
+  offer, override a ranking. Low confidence only WIDENS the review set. Building
+  it the other way round means the agent's own opinion of itself authorises an
+  irreversible act, and a confidently wrong agent is the one that should be
+  stopped. Enforcement remains the absence of a write tool.
+- **Retrieved chunks pass `conversation_guardrails.inspect_answer` too.** A
+  resume is a file a candidate uploaded and a JD is text a client typed; an
+  injection in a PDF reaches the model by exactly the path an injection in a
+  chat message does. A flagged chunk is QUARANTINED, not fatal -- failing the
+  retrieval would let one poisoned paragraph disable assessment for that
+  candidate.
+- **`app/scripts/eval_agents.py` gates CI as the third eval.** It measures the
+  framework rather than what an agent says: routing against permissions, tool
+  reachability, deadline feasibility, and ten specific past defects. It reports
+  quality metrics as UNAVAILABLE while no expert-labelled dataset exists, and it
+  must keep doing so -- an unmeasurable quality figure reported as 0.0 is a
+  number that means nothing and looks like something. The 50-100 stratified
+  expert-rated cases are HUMAN work and must never be synthesised: ground truth
+  produced by the same class of model being evaluated measures agreement with
+  that model, not quality.
+
 ## Current release authority — Product Development Specification v4 (2026-08-14)
 
 - **ReadyPick is a standalone AI-native product.** Product and marketing copy

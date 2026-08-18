@@ -36,6 +36,14 @@ from app.models.billing import (
     PricingPlan,
     WebhookEvent,
 )
+from app.models.agent import (
+    STATUS_FAILED,
+    STATUS_PARTIAL,
+    STATUS_SUCCESS,
+    AgentExecutionTrace,
+    AgentLearning,
+)
+from app.models.context import ContextChunk
 from app.models.candidate import (
     Candidate,
     CandidateTeamReview,
@@ -149,6 +157,12 @@ __all__ = [
     "RolePermission",
     "SubmittedVia",
     "TAX_DOCUMENT_TYPES",
+    "AgentExecutionTrace",
+    "AgentLearning",
+    "ContextChunk",
+    "STATUS_FAILED",
+    "STATUS_PARTIAL",
+    "STATUS_SUCCESS",
     "Tenant",
     "TechnicalQuestion",
     "Tier",
