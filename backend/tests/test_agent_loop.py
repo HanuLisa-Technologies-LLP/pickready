@@ -304,6 +304,43 @@ def test_banned_phrase_gate_catches_punctuation_and_close_variants() -> None:
     assert close.defects[0].type == "banned_phrase"
 
 
+def test_a_short_banned_phrase_does_not_match_a_single_ordinary_word() -> None:
+    """The window may be narrower than the phrase, and that needs a floor.
+
+    Without one, a TWO-word banned phrase admits a ONE-word window, so "well
+    rounded" matched the word "we" and "team player" matched the word "team".
+    Almost every English sentence tripped the gate. Measured 2026-08-18 while
+    building `services/verification/generic_language`, on exactly the first
+    sentence below.
+    """
+    for text, phrase in (
+        ("We would like to move ahead and will write again with the next step.", "well rounded"),
+        ("The team shipped it.", "team player"),
+        ("We ran the migration on Tuesday.", "well rounded"),
+    ):
+        assert agent_loop.banned_phrase_gate(text, [phrase]).ok, (text, phrase)
+
+
+def test_a_short_banned_phrase_is_still_caught_when_actually_present() -> None:
+    """The floor must not be a way to switch the gate off."""
+    assert not agent_loop.banned_phrase_gate("they are a team player", ["team player"]).ok
+    # Punctuation and casing still cannot evade it.
+    assert not agent_loop.banned_phrase_gate("a Team  Player!", ["team player"]).ok
+
+
+def test_a_partial_match_of_a_long_phrase_still_counts() -> None:
+    """Three words dropped from a four-word phrase is a real near-miss.
+
+    This is the behaviour the floor is calibrated to preserve: a partial match
+    must be a PHRASE, not a word, and three words is where that line sits.
+    """
+    critique = agent_loop.banned_phrase_gate(
+        "this usable evidence for it", ["produced usable evidence for"]
+    )
+    assert not critique.ok
+    assert critique.defects[0].type == "banned_phrase"
+
+
 def test_similarity_gate_names_the_conflicting_pair() -> None:
     critique = agent_loop.similarity_gate(
         [

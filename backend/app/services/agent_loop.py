@@ -495,6 +495,13 @@ def require_length(text: str, *, maximum: int, what: str = "the text") -> Critiq
     return ok()
 
 
+#: Minimum words a window shorter than the banned phrase must carry before its
+#: containment inside that phrase counts as a match. Three, because two-word
+#: fragments of ordinary English ("the team", "we would") appear everywhere and
+#: one-word fragments appear in every sentence ever written.
+_MIN_PARTIAL_MATCH_WORDS = 3
+
+
 def _normalised_words(value: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", str(value or "").casefold())
 
@@ -511,6 +518,21 @@ def banned_phrase_gate(
     The comparison is word-normalised, so punctuation/casing changes do not
     evade it. A bounded sliding window catches cosmetic substitutions without
     asking an LLM to judge its own prose.
+
+    A PARTIAL MATCH MUST ITSELF BE A PHRASE, NOT A WORD
+    ---------------------------------------------------
+    The window may be one word NARROWER than the banned phrase, which is what
+    catches an output that dropped a word from it ("usable evidence for" against
+    the banned "produced usable evidence for"). That direction needs a floor,
+    and the absence of one was a live defect: for a TWO-word banned phrase the
+    narrowest window is a single word, so "well rounded" matched the word "we"
+    and "team player" matched the word "team", and almost every ordinary
+    sentence tripped the gate. Measured 2026-08-18 on "We would like to move
+    ahead and will write again with the next step."
+
+    So a shorter window must carry at least `_MIN_PARTIAL_MATCH_WORDS` words
+    before containment counts. One word is never evidence that a phrase is
+    present; it is evidence that English was used.
     """
     words = _normalised_words(text)
     defects: list[Defect] = []
@@ -522,11 +544,14 @@ def banned_phrase_gate(
         target = " ".join(banned_words)
         matched = False
         for candidate_width in range(max(1, width - 1), width + 2):
+            # A window shorter than the phrase is a partial match, and only
+            # counts when it is long enough to be a phrase in its own right.
+            partial_allowed = candidate_width >= _MIN_PARTIAL_MATCH_WORDS
             for start in range(0, max(0, len(words) - candidate_width + 1)):
                 window = " ".join(words[start : start + candidate_width])
                 if (
                     target in window
-                    or window in target
+                    or (partial_allowed and window in target)
                     or SequenceMatcher(None, target, window).ratio()
                     >= close_variant_threshold
                 ):

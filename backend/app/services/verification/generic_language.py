@@ -12,19 +12,24 @@ reviewer are for.
 WHY IT DOES NOT USE `agent_loop.banned_phrase_gate`
 ---------------------------------------------------
 The obvious move is to reuse the shared gate, and the first version of this
-module did. It is tuned for the four long, generator-specific strings
-`functional_assessment` passes it, and its close-variant window includes a
-`window in target` clause: a window SHORTER than the banned phrase matches when
-it is a substring of it. At four words that is a near miss worth catching. At
-two words the narrowest window is one word, so the single word "we" matches the
-banned phrase "well rounded", and every ordinary sentence in the product trips
-the detector. Measured, not theorised: it fired on "We would like to move
-ahead" and on a Kafka probe.
+module did. Its close-variant window allowed a window SHORTER than the banned
+phrase to match by containment, with no floor on how short: at two words the
+narrowest window was one word, so "we" matched "well rounded" and every
+ordinary sentence in the product tripped the detector. Measured, not theorised:
+it fired on "We would like to move ahead" and on a Kafka probe.
 
-So the matching here is exact contiguous word-sequence containment after
-normalisation. Casing, punctuation and spacing still cannot evade it, and
-"a strong communicator" still contains "strong communicator". What it will not
-do is guess, because the cost of guessing wrong is asymmetric.
+That defect is FIXED as of 2026-08-18 -- `_MIN_PARTIAL_MATCH_WORDS` now floors
+the partial direction at three words -- so the shared gate is no longer unsafe
+for a list like this one. This module still does not use it, for a different
+and smaller reason: the gate also matches on a character-similarity ratio, and
+against two-word targets that is a judgement call nobody has calibrated. Exact
+contiguous word-sequence containment is predictable, and predictability is what
+a detector needs when the cost of a false positive is that its callers learn to
+ignore it.
+
+So: word-normalised, exact contiguous containment. Casing, punctuation and
+spacing still cannot evade it, and "a strong communicator" still contains
+"strong communicator". What it will not do is guess.
 
 CALIBRATION MATTERS MORE THAN COVERAGE
 --------------------------------------
