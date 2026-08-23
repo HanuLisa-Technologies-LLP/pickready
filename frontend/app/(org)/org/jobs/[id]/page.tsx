@@ -24,6 +24,7 @@ import {
   type CompanyProfile,
   type Job,
   type JobGrade,
+  type MatchingTaskStatus,
   type RankedCandidate,
 } from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
@@ -39,6 +40,10 @@ import { PostingWindowBanner } from "@/components/posting-window";
 import { EmailCompositionModal } from "@/components/email-composition-modal";
 import { JobSetupReview } from "@/components/job-setup-review";
 import { PPIReportModal } from "@/components/ppi-report-modal";
+import {
+  MatchingReasoning,
+  type MatchingProgress,
+} from "@/components/matching-reasoning";
 import { AssessmentTranscriptModal } from "@/components/assessment-transcript";
 import { ResumeViewer } from "@/components/resume-viewer";
 import { Button } from "@/components/ui/button";
@@ -60,13 +65,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 
 /** One labelled JD paragraph; hidden entirely when the field is empty. */
 function JdField({ label, value }: { label: string; value: unknown }) {
@@ -198,6 +196,10 @@ export default function OrgJobDetailPage() {
   const [matchingMessage, setMatchingMessage] = React.useState(
     "Ready to score candidates."
   );
+  /** The live stage list, straight from the task's own Celery state. Null
+   *  until the first poll answers, so the panel is absent rather than empty. */
+  const [matchingProgress, setMatchingProgress] =
+    React.useState<MatchingProgress | null>(null);
   const [reloadKey, setReloadKey] = React.useState(0);
 
   const [reportRow, setReportRow] = React.useState<RankedCandidate | null>(null);
@@ -346,7 +348,8 @@ export default function OrgJobDetailPage() {
 
   const runMatching = async () => {
     setMatchingState("running");
-    setMatchingMessage("AI matching is running. This status stays open until every score is finished.");
+    setMatchingProgress(null);
+    setMatchingMessage("Starting the run.");
     try {
       const res = await apiPost<{ candidate_count: number; task_id: string }>(
         `/jobs/${jobId}/run-matching`
@@ -354,10 +357,25 @@ export default function OrgJobDetailPage() {
       let finished = false;
       let finalState = "PENDING";
       for (let attempt = 0; attempt < 240; attempt += 1) {
-        const status = await apiGet<{ state: string; done: boolean }>(
+        const status = await apiGet<MatchingTaskStatus>(
           `/matching/tasks/${res.task_id}`
         );
         finalState = status.state;
+        // The stage list is always returned, including for a task still sitting
+        // in the queue, so the panel draws the whole plan at once and fills it
+        // in rather than appearing to invent steps as it goes.
+        if (status.stages?.length) {
+          setMatchingProgress({
+            stages: status.stages,
+            candidate_count: status.candidate_count ?? 0,
+            scored_count: status.scored_count ?? 0,
+          });
+        }
+        setMatchingMessage(
+          status.state === "PENDING"
+            ? "Waiting for a worker to pick the run up."
+            : ""
+        );
         if (status.done) {
           finished = true;
           break;
@@ -397,32 +415,11 @@ export default function OrgJobDetailPage() {
 
   return (
     <div>
-      <Dialog open={matchingState === "running"} onOpenChange={() => undefined}>
-        <DialogContent
-          className="max-w-md"
-          onEscapeKeyDown={(event) => event.preventDefault()}
-          onPointerDownOutside={(event) => event.preventDefault()}
-        >
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-brand-600" aria-hidden="true" />
-              AI matching in progress
-            </DialogTitle>
-            <DialogDescription>
-              ReadyPick is evaluating the job&apos;s candidate pool against its finalized matching categories.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="rounded-xl border bg-secondary/40 p-5">
-            <div className="flex items-center gap-3" role="status" aria-live="polite">
-              <Loader2 className="h-6 w-6 animate-spin text-brand-600" aria-hidden="true" />
-              <div>
-                <p className="font-medium">Scoring and writing remarks</p>
-                <p className="mt-1 text-sm">This window closes automatically when the matching task finishes.</p>
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      {/* The AI matching run used to open a modal here that could not be
+          dismissed and showed one unchanging sentence for its whole duration.
+          It is now the <MatchingReasoning> panel below the button: the run
+          reports each stage as the pipeline reaches it, and the recruiter keeps
+          the page while it works. */}
       <PageHeader
         eyebrow="Customer Portal"
         title={job?.title ?? "Job"}
@@ -757,17 +754,14 @@ export default function OrgJobDetailPage() {
               )}
               {matchingState === "running" ? "AI matching running" : "Run AI matching"}
             </Button>
-            <p
-              role="status"
-              data-state={matchingState}
-              className={cn(
-                "text-xs leading-5",
-                matchingState === "error" && "text-destructive"
-              )}
-            >
-              {matchingMessage}
-            </p>
           </div>
+        ) : null}
+        {canRunMatching ? (
+          <MatchingReasoning
+            state={matchingState}
+            progress={matchingProgress}
+            message={matchingMessage}
+          />
         ) : null}
         {canEmail ? (
           <div className="flex flex-wrap items-center gap-3">

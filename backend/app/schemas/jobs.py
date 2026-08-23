@@ -498,6 +498,13 @@ class RankedCandidateOut(BaseModel):
     link_id: uuid.UUID
     candidate_id: uuid.UUID
     full_name: str
+    #: COMPANY-JOB-CANDIDATE, e.g. "K7QP-2M4X-9TB1". Rendered under the name.
+    #: One stable, readable handle for this application: names repeat, and a
+    #: UUID is not something a person carries between a screen, an email and a
+    #: phone call. Derived from the three ids under the app secret and one-way,
+    #: so it identifies a row without disclosing anything about it. It is a
+    #: LABEL, never a permission -- nothing authorises on this value.
+    reference_code: str = ""
     email: str | None = None
     #: The job's grade, as a display label ("Non-managerial", "CXO", ...).
     level: str

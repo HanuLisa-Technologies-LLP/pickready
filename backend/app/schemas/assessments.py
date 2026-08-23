@@ -245,6 +245,10 @@ class GapAnalysisOut(BaseModel):
 class FunctionalReportOut(BaseModel):
     id: uuid.UUID
     job_candidate_link_id: uuid.UUID
+    #: COMPANY-JOB-CANDIDATE, the same code the candidate table renders under
+    #: the name. Present so a printed report and a row on screen can be matched
+    #: by eye. Derived, one-way, and never an authorisation input.
+    reference_code: str = ""
     grade: str
     # ── AI Score: the pre-assessment resume snapshot (9.1) ──────────────
     ai_score: list[DimensionOut]

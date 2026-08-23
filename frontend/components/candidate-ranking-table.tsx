@@ -353,7 +353,15 @@ export function CandidateRankingTable({
               <TableHead className="w-[130px]">Type of Procurement</TableHead>
               <TableHead className="w-[150px]">Status</TableHead>
               <TableHead className="w-[110px]">Resume</TableHead>
-              <TableHead className="w-[180px]">AI Rating &amp; Report</TableHead>
+              <TableHead className="w-[180px]">
+                AI Rating &amp; Report
+                {/* The same line the modal carries, so the column cannot be
+                    read as an assessed verdict. This rating is written from the
+                    resume and the JD alone. */}
+                <span className="mt-0.5 block text-[11px] font-normal">
+                  Based on Candidate Resume and JD
+                </span>
+              </TableHead>
               <TableHead className="w-[110px]">PPI Report</TableHead>
               <TableHead className="w-[110px]">Q&amp;A</TableHead>
               {/* The validation questionnaire, as its own column (spec 29).
@@ -402,6 +410,19 @@ export function CandidateRankingTable({
                   ) : null}
                   <TableCell className="pt-4 font-medium">
                     {row.full_name}
+                    {/* COMPANY-JOB-CANDIDATE. Directly under the name, in a
+                        monospace face so the groups line up down the column and
+                        two codes can be compared by eye. Selectable, because
+                        the point of it is being quoted into an email or a
+                        ticket. It is a label, never a permission. */}
+                    {row.reference_code ? (
+                      <span
+                        className="mt-0.5 block select-all font-mono text-[11px] font-normal tracking-wider"
+                        title="Company, job and candidate reference"
+                      >
+                        {row.reference_code}
+                      </span>
+                    ) : null}
                     {row.archived_at ? (
                       <span className="mt-1 block text-xs">
                         Archived

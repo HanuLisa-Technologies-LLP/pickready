@@ -76,6 +76,7 @@ from app.config.llm_providers import (
     PROVIDER_MODELS,
     DEFAULT_TEMPERATURE,
     estimate_cost_usd,
+    extra_params_for,
     is_priced,
     max_tokens_for,
     temperature_for,
@@ -234,13 +235,53 @@ _stats: dict[str, _ProviderStats] = {}
 _rr_cursor: dict[str, itertools.count] = {}
 
 
+#: provider -> time.monotonic() deadline while the whole ACCOUNT is written off.
+#:
+#: WHY THIS IS SEPARATE FROM THE PER-KEY BREAKER. An account-level status (401
+#: bad credentials, 402 no prepaid balance, 403 disabled) condemns every key on
+#: that provider at once, and the per-key breaker cannot express that. Worse,
+#: the round-robin actively defeats it: with three OpenRouter keys the cursor
+#: hands out env:openrouter:2, then :3, then :1 on successive calls, so no
+#: single key ever accumulates the two CONSECUTIVE failures its breaker needs,
+#: and a provider with a zero balance is re-tried on every call forever.
+#:
+#: Measured 2026-08-23: the OpenRouter account had 0 credits and answered 402
+#: to every request, and it is first in the route order for `jd_generation` and
+#: `report_synthesis`. Each of those tasks therefore paid a guaranteed-failing
+#: round-trip before reaching a provider that works.
+_provider_breaker: dict[str, float] = {}
+
+
 def _state(fingerprint: str) -> _BreakerState:
     if fingerprint not in _breaker:
         _breaker[fingerprint] = _BreakerState()
     return _breaker[fingerprint]
 
 
+def trip_provider(provider: str) -> None:
+    """Write off a whole provider account for the cooldown."""
+    _provider_breaker[provider] = time.monotonic() + _COOLDOWN_SECONDS
+    logger.warning(
+        "llm_router.provider_written_off provider=%s cooldown_s=%d",
+        provider, _COOLDOWN_SECONDS,
+    )
+
+
+def provider_is_written_off(provider: str) -> bool:
+    return time.monotonic() < _provider_breaker.get(provider, 0.0)
+
+
+def clear_provider_breaker(provider: str | None = None) -> None:
+    """Rehabilitate a provider. Any success on it clears the write-off."""
+    if provider is None:
+        _provider_breaker.clear()
+    else:
+        _provider_breaker.pop(provider, None)
+
+
 def _is_skippable(key: _RouterKey) -> bool:
+    if provider_is_written_off(key.provider):
+        return True
     return time.monotonic() < _state(key.fingerprint).unhealthy_until
 
 
@@ -519,6 +560,10 @@ async def _record_success(key: _RouterKey, session: AsyncSession | None) -> None
     was_tripped = st.consecutive_failures >= _FAILURE_THRESHOLD or st.unhealthy_until > 0.0
     st.consecutive_failures = 0
     st.unhealthy_until = 0.0
+    # A key that answers proves the ACCOUNT is solvent, so a topped-up balance
+    # or a corrected credential is picked up on the first success rather than
+    # waiting out the remaining cooldown.
+    clear_provider_breaker(key.provider)
     needs_db_clear = was_tripped or not key.db_healthy
     if needs_db_clear and key.db_id is not None:
         # Own session, for the same reason as `_record_failure`. This one is if
@@ -754,7 +799,7 @@ def _openai_style_result(payload: dict) -> _ProviderResult:
 
 def _openai_style_payload(
     model: str, messages: list[dict], json_mode: bool, max_tokens: int,
-    temperature: float,
+    temperature: float, provider: str = "",
 ) -> dict:
     payload: dict[str, Any] = {
         "model": model,
@@ -771,6 +816,10 @@ def _openai_style_payload(
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    # Provider-specific additions last, so a provider that needs a parameter the
+    # OpenAI shape has no room for (Groq's `reasoning_effort`) gets it without
+    # every caller growing a branch.
+    payload.update(extra_params_for(provider))
     return payload
 
 
@@ -782,7 +831,7 @@ async def _call_groq(
         GROQ_URL,
         headers={"Authorization": f"Bearer {key.api_key}"},
         json=_openai_style_payload(
-            GROQ_MODEL, messages, json_mode, max_tokens, temperature
+            GROQ_MODEL, messages, json_mode, max_tokens, temperature, "groq"
         ),
     )
     resp.raise_for_status()
@@ -797,7 +846,8 @@ async def _call_openrouter(
         OPENROUTER_URL,
         headers={"Authorization": f"Bearer {key.api_key}"},
         json=_openai_style_payload(
-            OPENROUTER_MODEL, messages, json_mode, max_tokens, temperature
+            OPENROUTER_MODEL, messages, json_mode, max_tokens, temperature,
+            "openrouter",
         ),
     )
     resp.raise_for_status()
@@ -1063,10 +1113,17 @@ async def _attempt(state: RouterState) -> dict:
                 "error": type(exc).__name__,
             }
 
-        if is_account_level_failure(exc) and hasattr(ctx, "dead_providers"):
+        if is_account_level_failure(exc):
             # Don't spend the rest of the budget on sibling keys that bill the
             # same dead account — the next PROVIDER is the useful thing to try.
-            ctx.dead_providers.add(key.provider)
+            if hasattr(ctx, "dead_providers"):
+                ctx.dead_providers.add(key.provider)
+            # And don't rediscover it on the NEXT call either. Within one call
+            # `dead_providers` is enough; across calls the round-robin cursor
+            # hands out a different sibling key each time, so the per-key
+            # breaker never trips and a provider with no balance stays first in
+            # the route order indefinitely.
+            trip_provider(key.provider)
         return {
             "current_index": index + 1,
             "attempts": attempts + 1,

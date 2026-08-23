@@ -585,17 +585,28 @@ def send_sms(self, phone: str, message: str):
 
 @celery_app.task(
     name="pickready.run_matching",
+    bind=True,
     autoretry_for=(Exception,),
     dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=5,
 )
-def run_matching(job_id: str):
-    from app.services import matching
+def run_matching(self, job_id: str):
+    from app.services import matching, matching_progress
+
+    # The recruiter watches these stages on the job page instead of a blocking
+    # modal. They go through Celery's own task state rather than a side channel,
+    # so the progress and the terminal state come from ONE place: a task that has
+    # finished cannot still be showing a stage as running.
+    progress = matching_progress.Progress(
+        publish=lambda payload: self.update_state(
+            state=matching_progress.STATE_PROGRESS, meta=payload
+        )
+    )
 
     async def _task():
         async with _worker_session() as session:
-            scored = await matching.run_matching(session, job_id)
+            scored = await matching.run_matching(session, job_id, progress=progress)
             logger.info("matching.complete job_id=%s scored=%d", job_id, scored)
             # Report synthesis used to run INLINE here, in a plain loop with no
             # try/except, for every completed conversation on the job -- on
@@ -1393,3 +1404,61 @@ def refresh_dashboard_views():
         finally:
             await engine.dispose()
     _run(_task())
+
+
+# ── Provider model liveness (added 2026-08-23) ──────────────────────────────
+
+@celery_app.task(name="pickready.probe_llm_models")
+def probe_llm_models():
+    """Hourly: does every provider still recognise the model id we send it?
+
+    THE FAILURE THIS EXISTS FOR IS SILENT BY CONSTRUCTION. When a provider
+    retires a model id, the router behaves perfectly -- it records a failure
+    against the key and walks to the next tier -- so nothing raises and nothing
+    alerts. The tier is simply gone, and the only externally visible symptom is
+    that AI output gets slower and eventually degrades to the deterministic
+    fallback. It has now happened three times, and on 2026-08-23 it had taken
+    out two of the three tiers simultaneously: Groq answered HTTP 404 to all
+    seven keys because `llama-3.3-70b-versatile` no longer existed, OpenRouter
+    answered HTTP 402 because the prepaid balance was spent, and every task in
+    the product was landing on a Gemini instance returning 503s and 13-23 second
+    latencies. Every credential was valid. Every deploy was green.
+
+    IT ONLY LOGS, AND THAT IS DELIBERATE. A probe is itself a network call and
+    can fail for reasons that have nothing to do with the provider. One that
+    could mark a tier unhealthy would eventually take down a working provider
+    on its own bad minute, which is a strictly worse outage than the one it
+    watches for. The router's own breakers already handle real failures; this
+    exists so a human finds out.
+    """
+    async def _task():
+        from app.scripts.probe_llm_models import probe
+
+        report = await probe()
+        for provider, row in report.items():
+            if row["status"] == "no_key":
+                continue
+            if row["status"] != "ok":
+                logger.error(
+                    "llm_model_probe.failed provider=%s model=%s text_ok=%s "
+                    "json_ok=%s text_detail=%s json_detail=%s",
+                    provider, row["model"], row["text"]["ok"], row["json"]["ok"],
+                    row["text"]["detail"], row["json"]["detail"],
+                )
+            elif row["slow"]:
+                logger.warning(
+                    "llm_model_probe.slow provider=%s model=%s text_ms=%s json_ms=%s",
+                    provider, row["model"], row["text"]["latency_ms"],
+                    row["json"]["latency_ms"],
+                )
+            else:
+                logger.info(
+                    "llm_model_probe.ok provider=%s model=%s text_ms=%s json_ms=%s",
+                    provider, row["model"], row["text"]["latency_ms"],
+                    row["json"]["latency_ms"],
+                )
+        return {
+            provider: row["status"] for provider, row in report.items()
+        }
+
+    return _run(_task())

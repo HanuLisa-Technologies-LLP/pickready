@@ -49,15 +49,25 @@ def test_unknown_task_type_raises_rather_than_guessing() -> None:
         providers.provider_order("summarise_the_vibes")
 
 
-def test_task_routes_match_the_spec_preferences() -> None:
-    """Spec §8.1: the FIRST provider per task is a deliberate choice."""
-    assert providers.provider_order("jd_generation")[0] == "openrouter"
-    assert providers.provider_order("technical_questions")[0] == "gemini"
-    assert providers.provider_order("report_synthesis")[0] == "openrouter"
-    assert providers.provider_order("email_composition")[0] == "groq"
-    # Legacy hints keep their established behaviour exactly.
-    assert providers.provider_order("rerank")[0] == "groq"
-    assert providers.provider_order("extraction")[0] == "gemini"
+def test_task_routes_lead_with_the_measured_healthy_tier() -> None:
+    """Spec §8.1: the FIRST provider per task is a deliberate choice.
+
+    It used to be a per-task spread across all three providers. That was
+    reasonable when all three answered; it is not, and cannot be told apart from
+    an outage, once one of them is dead. Measured 2026-08-23, Groq answered in
+    ~580ms while OpenRouter was out of prepaid credit and Gemini was returning
+    HTTP 503 and 13-23 second latencies, so five task types were opening with a
+    tier that could not serve them.
+
+    The assertion is on the LEAD only. Which providers sit behind it stays free,
+    and `test_every_task_type_can_reach_every_provider` still pins that the
+    whole roster remains reachable, so this does not quietly become a
+    single-provider product.
+    """
+    for task in ("jd_generation", "technical_questions", "behavioral_assessment",
+                 "report_synthesis", "email_composition", "conversation_turn",
+                 "rerank", "extraction"):
+        assert providers.provider_order(task)[0] == "groq", task
 
 
 def test_rotate_within_provider_preserves_membership_and_cycles() -> None:
@@ -105,7 +115,7 @@ def test_probe_each_provider_first_reaches_every_tier_within_the_retry_budget() 
     ordered = llm_router.probe_each_provider_first(chain)
 
     # Preference order still decides who goes FIRST.
-    assert ordered[0].provider == "openrouter"
+    assert ordered[0].provider == providers.provider_order("jd_generation")[0]
     # Every provider is reached inside jd_generation's 4-attempt budget.
     assert {k.provider for k in ordered[:3]} == {"openrouter", "gemini", "groq"}
     # Nothing is dropped or duplicated.
@@ -115,10 +125,10 @@ def test_probe_each_provider_first_reaches_every_tier_within_the_retry_budget() 
 
 
 def test_probe_each_provider_first_handles_ragged_and_empty_tiers() -> None:
-    keys = [_key("openrouter", "o1"), _key("gemini", "m1"), _key("gemini", "m2")]
+    keys = [_key("groq", "g1"), _key("gemini", "m1"), _key("gemini", "m2")]
     chain = llm_router._build_chain(keys, "jd_generation", balance=False)
     ordered = llm_router.probe_each_provider_first(chain)
-    assert [k.fingerprint for k in ordered] == ["o1", "m1", "m2"]
+    assert [k.fingerprint for k in ordered] == ["g1", "m1", "m2"]
     assert llm_router.probe_each_provider_first([]) == []
 
 

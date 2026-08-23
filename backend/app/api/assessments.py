@@ -68,6 +68,7 @@ from app.services import (
     job_posting,
     ppi,
     ppi_interview,
+    reference_code,
     retake,
     swot_intake,
     tenant_cache,
@@ -749,6 +750,13 @@ async def get_report(
     return FunctionalReportOut(
         id=report.id,
         job_candidate_link_id=link.id,
+        # The same COMPANY-JOB-CANDIDATE code the candidate table shows under
+        # the name, so a report and a table row can be matched up by eye.
+        # Recomputed rather than joined: it is a pure function of three ids that
+        # never change, so there is no stored value to disagree with.
+        reference_code=reference_code.reference_code(
+            link.tenant_id, link.job_id, link.candidate_id
+        ),
         grade=report.grade,
         ai_score=grouped.get(CATEGORY_MATCHING, []),
         overall_grade=grade_for_percent(overall) or GRADES[-1],

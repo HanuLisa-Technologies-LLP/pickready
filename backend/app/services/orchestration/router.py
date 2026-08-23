@@ -29,6 +29,7 @@ TASK_EMAIL = "email"
 TASK_PROBE = "probe"
 TASK_INTERVIEWER = "interviewer"
 TASK_JOB_SETUP = "job_setup"
+TASK_SCORING = "scoring"
 
 #: task type -> the agent that handles it.
 ROUTES: dict[str, str] = {
@@ -38,6 +39,7 @@ ROUTES: dict[str, str] = {
     TASK_PROBE: permissions.AGENT_PROBE,
     TASK_INTERVIEWER: permissions.AGENT_INTERVIEWER,
     TASK_JOB_SETUP: permissions.AGENT_JOB_SETUP,
+    TASK_SCORING: permissions.AGENT_SCORING,
 }
 
 

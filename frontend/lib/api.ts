@@ -212,40 +212,91 @@ export const apiDelete = <T = void>(path: string) =>
 export const apiUpload = <T>(path: string, formData: FormData) =>
   api<T>(path, { method: "POST", formData });
 
-/** Multipart upload with byte-level progress. Cookies remain the auth source. */
+/**
+ * Fetch that returns the RAW Response, with the same refresh-once-retry-once
+ * behaviour as `api()`.
+ *
+ * WHY IT EXISTS. `api()` parses JSON, so anything binary or multipart could not
+ * use it and reached for a bare `fetch` instead — and every one of those call
+ * sites quietly lost the silent refresh. That is the whole of the reported "AI
+ * features return 401": the access cookie has a 15-minute Max-Age, a recruiter
+ * reading a JD or working through a candidate list is idle for longer than that
+ * routinely, and the next thing they click is a resume upload, a databank
+ * upload or a resume preview — all three of which were raw fetches. The session
+ * was perfectly refreshable; nothing asked it to refresh.
+ *
+ * A 403 is deliberately NOT retried, for the same reason it is not in `api()`:
+ * it is a permission answer about a valid session, and refreshing burns a
+ * rotation to arrive at the identical 403.
+ */
+export async function apiFetch(
+  path: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  const base = path.startsWith("/api/") ? API_ORIGIN : API_BASE;
+  const url = `${base}${path}`;
+  const request: RequestInit = { credentials: "include", cache: "no-store", ...init };
+  let res = await fetch(url, request);
+  if (res.status === 401 && (await tryRefresh())) {
+    res = await fetch(url, request);
+  }
+  return res;
+}
+
+/**
+ * Multipart upload with byte-level progress. Cookies remain the auth source.
+ *
+ * XHR rather than fetch only because fetch cannot report upload progress, and a
+ * resume upload is the one place a user genuinely wants a percentage. It gets
+ * the same refresh-once-retry-once as `api()` and `apiFetch()`: this is the
+ * path a candidate's resume and a recruiter's databank files travel, and both
+ * kick off AI parsing, so a 401 here reads to the user as "the AI is broken".
+ */
 export function apiUploadWithProgress<T>(
   path: string,
   formData: FormData,
   onProgress: (percent: number) => void,
   method: "POST" | "PUT" = "POST",
 ): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    request.open(method, `${API_BASE}${path}`);
-    request.withCredentials = true;
-    request.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
-      }
-    };
-    request.onerror = () => reject(new ApiError(0, null, "Network error. Check your connection and retry."));
-    request.onabort = () => reject(new ApiError(0, null, "Upload cancelled. Please retry."));
-    request.onload = () => {
-      let payload: unknown = null;
-      try {
-        payload = request.responseText ? JSON.parse(request.responseText) : undefined;
-      } catch {
-        payload = null;
-      }
-      if (request.status < 200 || request.status >= 300) {
-        const error = new ApiError(request.status, payload);
-        error.message = apiErrorMessage(error);
-        reject(error);
-        return;
-      }
-      onProgress(100);
-      resolve(payload as T);
-    };
-    request.send(formData);
+  const base = path.startsWith("/api/") ? API_ORIGIN : API_BASE;
+
+  const send = (): Promise<T> =>
+    new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open(method, `${base}${path}`);
+      request.withCredentials = true;
+      request.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+        }
+      };
+      request.onerror = () => reject(new ApiError(0, null, "Network error. Check your connection and retry."));
+      request.onabort = () => reject(new ApiError(0, null, "Upload cancelled. Please retry."));
+      request.onload = () => {
+        let payload: unknown = null;
+        try {
+          payload = request.responseText ? JSON.parse(request.responseText) : undefined;
+        } catch {
+          payload = null;
+        }
+        if (request.status < 200 || request.status >= 300) {
+          const error = new ApiError(request.status, payload);
+          error.message = apiErrorMessage(error);
+          reject(error);
+          return;
+        }
+        onProgress(100);
+        resolve(payload as T);
+      };
+      request.send(formData);
+    });
+
+  return send().catch(async (error) => {
+    if (!(error instanceof ApiError) || error.status !== 401) throw error;
+    if (!(await tryRefresh())) throw error;
+    // The bytes are re-sent, so the progress bar restarts from zero rather
+    // than resuming. Honest, and preferable to a silent stall at 99%.
+    onProgress(0);
+    return send();
   });
 }

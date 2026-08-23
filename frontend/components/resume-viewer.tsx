@@ -11,7 +11,7 @@
 import * as React from "react";
 import { AlertTriangle, Download, FileText } from "lucide-react";
 
-import { API_BASE } from "@/lib/api";
+import { API_BASE, apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -213,8 +213,7 @@ export function ResumeViewer({
     setFrameState("loading");
     const endpoint =
       descriptor.kind === "word" ? "resume-preview" : "resume-file";
-    void fetch(`${API_BASE}/candidates/profiles/${profileId}/${endpoint}`, {
-      credentials: "include",
+    void apiFetch(`/candidates/profiles/${profileId}/${endpoint}`, {
       signal: controller.signal,
     })
       .then(async (response) => {

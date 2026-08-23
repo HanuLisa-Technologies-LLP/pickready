@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -98,6 +99,18 @@ export function AiRatingReportModal({
             <span className="font-normal">{row.full_name}</span>
             <RatingLabel label={row.overall_label} />
           </DialogTitle>
+          {/* What this rating was actually derived from. It is the PRE-
+              assessment snapshot: resume against job description, produced
+              before the candidate has done anything beyond being sourced.
+              Saying so on the heading is what stops it being read as a verdict
+              on the person -- the assessed grades live in the PRISM Report,
+              which is a different document written from a different input. */}
+          <DialogDescription>Based on Candidate Resume and JD</DialogDescription>
+          {row.reference_code ? (
+            <p className="select-all font-mono text-[11px] tracking-wider">
+              {row.reference_code}
+            </p>
+          ) : null}
         </DialogHeader>
 
         {/* The document body. Fixed max height with its own scroll so the

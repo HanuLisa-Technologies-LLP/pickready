@@ -16,13 +16,14 @@ from app.schemas.matching import (
     MatchingCategoriesOut,
     MatchingCategoryIn,
     MatchingCategoryOut,
+    MatchingStageOut,
     MatchingTaskStatusOut,
     MatchResultOut,
     MatchResultsOut,
     RunMatchingOut,
 )
 from app.services import capabilities as caps
-from app.services import matching_categories
+from app.services import matching_categories, matching_progress
 from app.services.audit import audit
 from app.services.matching import client_breakdown, ranking_payload
 from app.workers.celery_app import celery_app
@@ -269,10 +270,27 @@ async def matching_task_status(
     _user: CurrentUser = Depends(require_capability(caps.TRIGGER_MATCHING)),
 ) -> MatchingTaskStatusOut:
     result = celery_app.AsyncResult(task_id)
+    # The stage list the job page renders inline while the run is under way.
+    #
+    # `result.info` is the meta the worker last published. It is only a stage
+    # payload while the task is in the PROGRESS state -- on SUCCESS it is the
+    # return value and on FAILURE it is the exception, and rendering either of
+    # those as stages would put a traceback on a recruiter's screen. A queued
+    # task returns the full list in `pending`, so the page draws the plan
+    # immediately rather than discovering it one row at a time.
+    info = result.info if result.state == matching_progress.STATE_PROGRESS else None
+    payload = (
+        info
+        if isinstance(info, dict) and isinstance(info.get("stages"), list)
+        else matching_progress.empty_payload()
+    )
     return MatchingTaskStatusOut(
         task_id=task_id,
         state=result.state,
         done=result.ready(),
+        stages=[MatchingStageOut(**stage) for stage in payload["stages"]],
+        candidate_count=int(payload.get("candidate_count") or 0),
+        scored_count=int(payload.get("scored_count") or 0),
     )
 
 

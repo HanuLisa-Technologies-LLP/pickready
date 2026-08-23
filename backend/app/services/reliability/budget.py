@@ -36,6 +36,10 @@ COST_BUDGET_USD: dict[str, float] = {
     "probe": 0.09,
     "interviewer": 0.05,
     "job_setup": 0.30,
+    # Per ANSWER, not per assessment. Miti runs once for every reply a candidate
+    # sends, so the ceiling that matters is the small one multiplied by up to
+    # ~28 turns rather than a single generous allowance.
+    "scoring": 0.04,
 }
 DEFAULT_COST_BUDGET_USD = 0.20
 

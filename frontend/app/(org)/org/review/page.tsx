@@ -21,7 +21,11 @@ import {
 } from "lucide-react";
 
 import { apiGet, apiPost, apiUploadWithProgress } from "@/lib/api";
-import type { CandidateLink, Job } from "@/lib/types";
+import {
+  MatchingReasoning,
+  type MatchingProgress,
+} from "@/components/matching-reasoning";
+import type { CandidateLink, Job, MatchingTaskStatus } from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
@@ -65,6 +69,8 @@ export default function OrgReviewScreen() {
   const [busy, setBusy] = React.useState(false);
   const [matchingTaskId, setMatchingTaskId] = React.useState<string | null>(null);
   const [matchingCount, setMatchingCount] = React.useState(0);
+  const [matchingProgress, setMatchingProgress] =
+    React.useState<MatchingProgress | null>(null);
 
   // Freshly sourced resume upload (moved from the job detail page).
   const [sourcingOpen, setSourcingOpen] = React.useState(false);
@@ -116,10 +122,18 @@ export default function OrgReviewScreen() {
   React.useEffect(() => {
     if (!matchingTaskId) return;
     const timer = window.setInterval(() => {
-      void apiGet<{ state: string; done: boolean }>(
-        `/matching/tasks/${matchingTaskId}`
-      )
+      void apiGet<MatchingTaskStatus>(`/matching/tasks/${matchingTaskId}`)
         .then((status) => {
+          // The stage list, same source as the job page. Shown inline under the
+          // header rather than behind a spinner on the button, so the recruiter
+          // can see which step the run is on and whether anything degraded.
+          if (status.stages?.length) {
+            setMatchingProgress({
+              stages: status.stages,
+              candidate_count: status.candidate_count ?? 0,
+              scored_count: status.scored_count ?? 0,
+            });
+          }
           if (!status.done) return;
           window.clearInterval(timer);
           setMatchingTaskId(null);
@@ -150,6 +164,7 @@ export default function OrgReviewScreen() {
         candidate_count: number;
       }>(`/matching/jobs/${jobId}/run`);
       setMatchingCount(result.candidate_count);
+      setMatchingProgress(null);
       setMatchingTaskId(result.task_id);
     } catch (error) {
       toast({
@@ -255,6 +270,17 @@ export default function OrgReviewScreen() {
           </div>
         }
       />
+
+      {/* Inline, so a run in progress does not take the page away from the
+          recruiter and the degraded paths announce themselves. */}
+      {matchingProgress ? (
+        <MatchingReasoning
+          className="mb-6"
+          state={matchingTaskId ? "running" : "done"}
+          progress={matchingProgress}
+          message=""
+        />
+      ) : null}
 
       {showSourcing && jobId ? (
         <Card className="mb-6">

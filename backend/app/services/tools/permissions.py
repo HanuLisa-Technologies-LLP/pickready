@@ -35,6 +35,13 @@ AGENT_EMAIL = "email"              # services/lifecycle_email
 AGENT_PROBE = "probe"              # services/gap_analysis
 AGENT_INTERVIEWER = "interviewer"  # services/interviewer + ppi_interview
 AGENT_JOB_SETUP = "job_setup"      # services/ppi.generate_framework, swot_intake
+# Miti, the Tatva Scoring Agent. Split out on 2026-08-23 and NOT merely renamed:
+# scoring previously ran inside the report agent's grant, which meant the scorer
+# held `extract_jd`. The specification's security boundary says Miti "cannot
+# alter the locked assessment framework" and reads answers, matrix and evidence
+# -- and a boundary is only real if it is the absence of a tool. Giving scoring
+# its own row is what made that enforceable instead of aspirational.
+AGENT_SCORING = "scoring"          # services/functional_assessment, per-answer
 
 AGENTS: tuple[str, ...] = (
     AGENT_RANKING,
@@ -43,6 +50,7 @@ AGENTS: tuple[str, ...] = (
     AGENT_PROBE,
     AGENT_INTERVIEWER,
     AGENT_JOB_SETUP,
+    AGENT_SCORING,
 )
 
 AGENT_TOOLS: dict[str, frozenset[str]] = {
@@ -81,6 +89,20 @@ AGENT_TOOLS: dict[str, frozenset[str]] = {
         }
     ),
     AGENT_JOB_SETUP: frozenset({"extract_jd", "retrieve_context", "validate_output"}),
+    # NO `extract_jd`. Miti scores an answer against the LOCKED matrix and its
+    # rubric; the JD is what Sutra used to BUILD that matrix, and a scorer that
+    # can re-read it can quietly grade against the source rather than against
+    # the criteria the candidate was actually assessed on -- which is the one
+    # property making two reports on a job comparable.
+    AGENT_SCORING: frozenset(
+        {
+            "extract_assessment",
+            "extract_framework",
+            "extract_resume",
+            "retrieve_context",
+            "validate_output",
+        }
+    ),
 }
 
 

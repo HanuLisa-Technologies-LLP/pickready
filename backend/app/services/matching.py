@@ -1160,10 +1160,26 @@ async def _customer_success_patterns(
 
 
 async def run_matching(
-    session: AsyncSession, job_id: uuid.UUID | str, top_n: int = DEFAULT_TOP_N
+    session: AsyncSession,
+    job_id: uuid.UUID | str,
+    top_n: int = DEFAULT_TOP_N,
+    progress: "matching_progress.Progress | None" = None,
 ) -> int:
-    """Run the full hybrid pipeline for one job. Returns the number of links scored."""
+    """Run the full hybrid pipeline for one job. Returns the number of links scored.
+
+    `progress` is the recruiter-facing stage display (services/matching_progress)
+    and is optional in the strong sense: every call on it is a no-op when it is
+    absent, and none of them can raise into this function. The reasoning shown
+    on the page is emitted BY the pipeline at the point the pipeline reaches
+    each stage, rather than narrated by a model, so it cannot describe work that
+    did not happen -- including the degraded paths, which mark their stage
+    `skipped` and say why instead of showing a completed one.
+    """
+    from app.services import matching_progress
+
     job_id = uuid.UUID(str(job_id))
+    reporter = progress or matching_progress.Progress()
+    reporter.start("understanding")
     job = await session.get(Job, job_id)
     if job is None:
         raise ValueError(f"Job {job_id} not found")
@@ -1173,7 +1189,9 @@ async def run_matching(
     #    stage is skipped and matching degrades to keyword-only ranking rather
     #    than crashing the whole run. ──
     jd_text = _jd_text(job)
+    reporter.start("planning")
     jd_vec: str | None = None
+    reporter.start("jd_embedding")
     try:
         jd_embedding = (await embed([jd_text]))[0]
         jd_vec = _vector_literal(jd_embedding)
@@ -1181,31 +1199,59 @@ async def run_matching(
             text("UPDATE jobs SET embedding = CAST(:v AS vector) WHERE id = :id"),
             {"v": jd_vec, "id": str(job_id)},
         )
+        reporter.finish("jd_embedding")
     except EmbeddingError:
         logger.warning(
             "matching.embeddings_unavailable job_id=%s, keyword-only ranking", job_id
+        )
+        reporter.skip(
+            "jd_embedding",
+            "The embedding service was unavailable, so this run ranks on keywords alone.",
         )
 
     # ── Repair the retrieval input before running the stages: a profile with a
     #    NULL embedding is invisible to stage 1, and an unparsed resume has an
     #    empty resume_tsv so it is invisible to stage 2 as well. ──
+    reporter.start("preparing_candidates")
     linked_ids = await _linked_stage(session, job_id)
     await _backfill_missing_embeddings(session, linked_ids)
+    reporter.finish("preparing_candidates")
 
     # ── Stages 1 + 2, deduplicated union, then EVERY explicitly-linked
     #    candidate (retrieval is a ranking prior, never an eligibility gate). ──
-    semantic_ids = (
-        await _semantic_stage(session, job_id, jd_vec, top_n) if jd_vec else []
-    )
+    if jd_vec:
+        reporter.start("semantic_retrieval")
+        semantic_ids = await _semantic_stage(session, job_id, jd_vec, top_n)
+        reporter.finish(
+            "semantic_retrieval",
+            f"{len(semantic_ids)} resume(s) matched on meaning.",
+        )
+    else:
+        semantic_ids = []
+        reporter.skip(
+            "semantic_retrieval",
+            "Skipped: the job description could not be embedded for this run.",
+        )
+    reporter.start("keyword_retrieval")
     keyword_ids = await _keyword_stage(session, job_id, _keyword_query_terms(job), top_n)
+    reporter.finish(
+        "keyword_retrieval", f"{len(keyword_ids)} resume(s) matched on named skills."
+    )
     # Union order is the deterministic-fallback rank signal: retrieval hits
     # first (best first), then linked candidates retrieval never surfaced.
+    reporter.start("fusion")
     profile_ids: list[uuid.UUID] = list(
         dict.fromkeys([*semantic_ids, *keyword_ids, *linked_ids])
     )
     if not profile_ids:
+        reporter.finish("fusion", "No candidates are linked to this job yet.")
         await session.commit()
         return 0
+    reporter.finish(
+        "fusion",
+        f"{len(profile_ids)} candidate(s) to score, including every candidate "
+        "linked to this job.",
+    )
 
     profiles = (
         (await session.execute(select(Profile).where(Profile.id.in_(profile_ids))))
@@ -1228,9 +1274,18 @@ async def run_matching(
     # per-candidate decision at all.
     categories = tuple(await matching_categories.resolved_categories(session, job_id))
     customer_patterns = await _customer_success_patterns(session, job)
+    reporter.start(
+        "scoring",
+        f"Assessing {len(profiles)} candidate(s) against "
+        f"{len(categories)} matching categor{'y' if len(categories) == 1 else 'ies'}.",
+    )
+    reporter.scored(0, len(profiles))
     breakdowns = await _llm_score(
         session, jd_text, profiles, customer_patterns, categories
     )
+    reporter.scored(len(breakdowns), len(profiles))
+    reporter.finish("scoring")
+    reporter.start("remarks")
 
     # ── Ensure links exist for consenting Databank candidates (FR-4.2/4.4) ──
     existing_links = (
@@ -1291,6 +1346,8 @@ async def run_matching(
     # match_breakdown_json is intentionally NOT on the SQLAlchemy model (same
     # pattern as jobs.embedding) — flush so new links get ids, then write the
     # breakdown via raw SQL.
+    reporter.finish("remarks")
+    reporter.start("saving")
     await session.flush()
     for link, breakdown in scored_links:
         await session.execute(
@@ -1303,4 +1360,5 @@ async def run_matching(
         )
 
     await session.commit()
+    reporter.finish("saving", f"{scored} candidate(s) rated.")
     return scored

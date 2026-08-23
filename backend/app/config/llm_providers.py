@@ -49,7 +49,21 @@ KEY_SLOTS_PER_PROVIDER = 7
 #: while every credential is perfectly valid. Re-probe these ids whenever AI
 #: output degrades before suspecting the keys.
 PROVIDER_MODELS: dict[str, str] = {
-    "groq": "llama-3.3-70b-versatile",
+    # THIRD RETIREMENT, measured 2026-08-23. `llama-3.3-70b-versatile` answered
+    # every Groq key with HTTP 404 -- not a rate limit, not a credential
+    # problem, the id simply no longer exists on the account's model list. With
+    # OpenRouter simultaneously out of prepaid credit (HTTP 402), TWO of the
+    # three tiers were dark and every task fell through to Gemini, whose
+    # free-tier flash latency was measured at 4.4s-11.4s for a ONE TOKEN reply.
+    # That is the whole of "the AI runs for a long time and then does not
+    # work": an interactive deadline of 26s cannot survive two dead tiers plus
+    # an 11-second provider, so the loop degraded and the product reported an
+    # AI failure while every credential was valid.
+    #
+    # `openai/gpt-oss-120b` is the replacement, verified on the live account:
+    # 6/6 successes in JSON mode at 449-597ms, roughly twenty times faster than
+    # the Gemini fallback it was standing behind.
+    "groq": "openai/gpt-oss-120b",
     # A ROLLING ALIAS, deliberately, and the exception to pinning below.
     # `gemini-2.0-flash` was pinned here and, on 2026-08-01, every Gemini key
     # answered it with HTTP 429 and the tell-tale body
@@ -69,6 +83,28 @@ PROVIDER_MODELS: dict[str, str] = {
     "openrouter": "meta-llama/llama-3.3-70b-instruct",
 }
 
+#: Extra request parameters a provider needs that the OpenAI shape does not
+#: carry. Data here rather than a literal in the caller, for the same reason
+#: temperature is: a value hardcoded inside one `_call_*` cannot be read by the
+#: liveness probe, so the probe would exercise a request the router never sends.
+#:
+#: `reasoning_effort` is REQUIRED for the gpt-oss family in JSON mode, and this
+#: is not a tuning preference. Left unset, the model spends its budget in the
+#: reasoning channel and Groq answers `json_validate_failed` on prompts as
+#: trivial as "return {"ok": true}" -- measured, and it is intermittent, which
+#: is the worst version of the bug: the tier looks healthy and drops a fraction
+#: of structured calls. At "low" the same prompts returned 6/6 valid JSON, and
+#: the request also got nine times faster (4983ms -> 544ms). Only "low",
+#: "medium" and "high" are accepted; "none" is rejected with HTTP 400.
+PROVIDER_EXTRA_PARAMS: dict[str, dict[str, object]] = {
+    "groq": {"reasoning_effort": "low"},
+}
+
+
+def extra_params_for(provider: str) -> dict[str, object]:
+    return dict(PROVIDER_EXTRA_PARAMS.get(provider, {}))
+
+
 TaskType = Literal[
     "conversation_turn",
     "jd_generation",
@@ -82,11 +118,33 @@ TaskType = Literal[
 
 #: Provider preference order per task type. The router walks these in order,
 #: round-robining across the healthy keys *within* each provider tier.
+#:
+#: THE ORDER IS MEASURED, NOT PREFERRED, and `app/scripts/probe_llm_models.py`
+#: is how it is re-measured. Re-run it before changing anything here; a chain
+#: whose first tier is dead or slow is invisible from the inside, because the
+#: router correctly walks past it and the only symptom is latency.
+#:
+#: Measurement of 2026-08-23, which is why five of these entries moved:
+#:   groq        573 ms text / 582 ms JSON      healthy
+#:   openrouter  915 ms text / 3967 ms JSON     nearly out of prepaid credit,
+#:                                              402s anything but a small
+#:                                              max_tokens
+#:   gemini      HTTP 503 "high demand", and    degraded
+#:               12.9-22.7 s when it did answer
+#:
+#: Gemini led `technical_questions`, `behavioral_assessment` and `extraction`,
+#: and OpenRouter led `jd_generation` and `report_synthesis`. Every one of those
+#: tasks therefore opened with a tier that was either failing or ten to forty
+#: times slower than the tier sitting behind it. Groq now leads everything a
+#: person waits on; the other two remain as fallbacks, which is the job they can
+#: still do.
 TASK_ROUTES: dict[str, list[str]] = {
-    "jd_generation": ["openrouter", "gemini", "groq"],
-    "technical_questions": ["gemini", "openrouter", "groq"],
-    "behavioral_assessment": ["gemini", "groq", "openrouter"],
-    "report_synthesis": ["openrouter", "gemini", "groq"],
+    "jd_generation": ["groq", "openrouter", "gemini"],
+    "technical_questions": ["groq", "gemini", "openrouter"],
+    "behavioral_assessment": ["groq", "gemini", "openrouter"],
+    # Background, and the one place a slower-but-larger tier is still worth
+    # having second: a report is synthesised in one long response.
+    "report_synthesis": ["groq", "gemini", "openrouter"],
     "email_composition": ["groq", "gemini", "openrouter"],
     # The unified candidate conversation: the follow-up decision, the next
     # question, and the challenge to a non-answer.
@@ -110,7 +168,7 @@ TASK_ROUTES: dict[str, list[str]] = {
     "conversation_turn": ["groq", "openrouter", "gemini"],
     # ── Legacy role hints (ESD §8.4) — behaviour deliberately unchanged ──
     "rerank": ["groq", "gemini", "openrouter"],
-    "extraction": ["gemini", "openrouter", "groq"],
+    "extraction": ["groq", "gemini", "openrouter"],
 }
 
 #: Per-ATTEMPT request timeout (seconds), and below it the TOTAL wall-clock

@@ -15,7 +15,7 @@
 import * as React from "react";
 import { Building2, Download, Search } from "lucide-react";
 
-import { API_BASE, apiGet, tryRefresh } from "@/lib/api";
+import { apiFetch, apiGet } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
 import {
   SOCIAL_SOURCE_LABELS,
@@ -118,12 +118,11 @@ export function BDCustomersPage() {
     const params = new URLSearchParams();
     if (search) params.set("search", search);
     const suffix = params.toString() ? `?${params.toString()}` : "";
-    const url = `${API_BASE}/bd/customers/export.csv${suffix}`;
+    // The refresh-and-retry this used to open-code by hand now lives in
+    // `apiFetch`, so every raw-response call site gets it rather than the one
+    // that remembered.
     try {
-      let res = await fetch(url, { credentials: "include" });
-      if (res.status === 401 && (await tryRefresh())) {
-        res = await fetch(url, { credentials: "include" });
-      }
+      const res = await apiFetch(`/bd/customers/export.csv${suffix}`);
       if (!res.ok) {
         throw new Error(
           res.status === 403

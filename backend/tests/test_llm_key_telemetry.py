@@ -41,9 +41,11 @@ SECRET = "sk-this-must-never-appear-anywhere"
 @pytest.fixture(autouse=True)
 def _clean():
     llm_router._breaker.clear()
+    llm_router.clear_provider_breaker()
     llm_router.reset_provider_stats()
     yield
     llm_router._breaker.clear()
+    llm_router.clear_provider_breaker()
     llm_router.reset_provider_stats()
 
 
@@ -366,3 +368,162 @@ def _noop_persist():
         return True
 
     return _persist
+
+
+# ── The PROVIDER-level write-off ────────────────────────────────────────────
+#
+# Distinct from the per-key breaker above, and the round-robin is exactly why it
+# has to be. An account-level status (401 wrong credentials, 402 no prepaid
+# balance, 403 disabled) condemns every key that bills that account, but the
+# cursor hands out a DIFFERENT sibling key on each call, so no single key ever
+# accumulates the two CONSECUTIVE failures its own breaker needs. Measured
+# 2026-08-23: the OpenRouter account had zero credits and answered 402 to
+# everything, and it still led the route order for two task types, so every one
+# of those calls paid a guaranteed-failing round-trip. Forever.
+
+
+def _http_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://example.invalid/v1/chat")
+    response = httpx.Response(status, request=request, text="no balance")
+    return httpx.HTTPStatusError("boom", request=request, response=response)
+
+
+@pytest.mark.asyncio
+async def test_an_account_level_status_writes_off_the_whole_provider(monkeypatch):
+    """One 402 is enough, and it survives into the NEXT call."""
+    # The dead account is the tier that LEADS the route, so it is genuinely
+    # reached; a dead tier sitting behind a healthy one is never tried at all
+    # and would make this test pass for the wrong reason.
+    dead = [_key(f"env:groq:{n}", "groq") for n in (1, 2, 3)]
+    good = _key("env:gemini:1", "gemini")
+    monkeypatch.setattr(llm_router, "_load_keys", _returns([*dead, good]))
+    monkeypatch.setattr(llm_router, "_persist_key_health", _noop_persist())
+
+    tried: list[str] = []
+
+    async def _broke(client, key, messages, json_mode, max_tokens, temperature=0.0):
+        tried.append(key.fingerprint)
+        raise _http_error(402)
+
+    async def _ok(client, key, messages, json_mode, max_tokens, temperature=0.0):
+        tried.append(key.fingerprint)
+        return llm_router._ProviderResult(content="ok")
+
+    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _broke)
+    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "gemini", _ok)
+
+    assert (
+        await llm_router.chat_completion(
+            "jd_generation", [{"role": "user", "content": "hi"}]
+        )
+        == "ok"
+    )
+    # Within the call: the siblings on the dead account were never tried.
+    assert sum(1 for fp in tried if fp.startswith("env:groq")) == 1
+    assert llm_router.provider_is_written_off("groq")
+
+    # Across calls: the whole tier stays quiet, which is the half the per-key
+    # breaker could not deliver.
+    tried.clear()
+    for _ in range(4):
+        await llm_router.chat_completion(
+            "jd_generation", [{"role": "user", "content": "hi"}]
+        )
+    assert not any(fp.startswith("env:groq") for fp in tried), tried
+
+
+@pytest.mark.asyncio
+async def test_a_success_rehabilitates_a_written_off_provider(monkeypatch):
+    """A topped-up balance must be picked up on the first success.
+
+    The dangerous direction is a write-off that outlives the problem: a
+    fifteen-minute cooldown a customer cannot clear by paying is a worse outage
+    than the one it was protecting against.
+    """
+    key = _key("env:groq:1", "groq")
+    monkeypatch.setattr(llm_router, "_load_keys", _returns([key]))
+    monkeypatch.setattr(llm_router, "_persist_key_health", _noop_persist())
+
+    llm_router.trip_provider("groq")
+    assert llm_router.provider_is_written_off("groq")
+
+    async def _ok(client, k, messages, json_mode, max_tokens, temperature=0.0):
+        return llm_router._ProviderResult(content="topped up")
+
+    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _ok)
+    # The write-off is cleared explicitly, as an operator top-up would; the
+    # point of the test is that the SUCCESS keeps it cleared rather than the
+    # next 402-free call re-arming it.
+    llm_router.clear_provider_breaker("groq")
+    assert (
+        await llm_router.chat_completion(
+            "jd_generation", [{"role": "user", "content": "hi"}]
+        )
+        == "topped up"
+    )
+    assert not llm_router.provider_is_written_off("groq")
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limit_does_not_write_off_the_provider(monkeypatch):
+    """429 is per key and per minute. Condemning the account on one would turn
+    an ordinary throttle into a fifteen-minute tier outage."""
+    keys = [_key(f"env:groq:{n}", "groq") for n in (1, 2)]
+    monkeypatch.setattr(llm_router, "_load_keys", _returns(keys))
+    monkeypatch.setattr(llm_router, "_persist_key_health", _noop_persist())
+
+    calls = {"n": 0}
+
+    async def _throttle_then_ok(client, key, messages, json_mode, max_tokens, temperature=0.0):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _http_error(429)
+        return llm_router._ProviderResult(content="ok")
+
+    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _throttle_then_ok)
+
+    assert (
+        await llm_router.chat_completion("rerank", [{"role": "user", "content": "hi"}])
+        == "ok"
+    )
+    assert not llm_router.provider_is_written_off("groq")
+
+
+# ── Provider-specific request parameters ────────────────────────────────────
+
+
+def test_groq_requests_carry_reasoning_effort():
+    """Not a tuning preference: without it the gpt-oss family INTERMITTENTLY
+    fails Groq's JSON mode with `json_validate_failed`, which looks like a
+    healthy tier that drops a fraction of every structured call."""
+    payload = llm_router._openai_style_payload(
+        "openai/gpt-oss-120b",
+        [{"role": "user", "content": "hi"}],
+        json_mode=True,
+        max_tokens=256,
+        temperature=0.0,
+        provider="groq",
+    )
+    assert payload["reasoning_effort"] == "low"
+    assert payload["response_format"] == {"type": "json_object"}
+
+
+def test_other_providers_get_no_extra_parameters():
+    """A parameter Groq needs is a 400 on a provider that has never heard of it."""
+    for provider in ("gemini", "openrouter", ""):
+        payload = llm_router._openai_style_payload(
+            "m", [{"role": "user", "content": "hi"}], False, 256, 0.0, provider
+        )
+        assert "reasoning_effort" not in payload, provider
+
+
+def test_no_provider_model_id_is_a_known_retired_one():
+    """Three tiers have gone dark this way. Cheap guard against a fourth."""
+    from app.config.llm_providers import PROVIDER_MODELS
+
+    retired = {
+        "llama-3.3-70b-versatile",
+        "gemini-2.0-flash",
+        "meta-llama/llama-3.3-70b-instruct:free",
+    }
+    assert not (set(PROVIDER_MODELS.values()) & retired), PROVIDER_MODELS

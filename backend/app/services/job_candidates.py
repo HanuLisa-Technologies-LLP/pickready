@@ -276,6 +276,11 @@ async def ranked_candidates(
                     l.archived_at           AS archived_at,
                     l.match_breakdown_json  AS breakdown,
                     l.validation_json       AS validation,
+                    -- The tenant, for the reference code. Selected rather than
+                    -- taken from the session so the code is derived from the
+                    -- row's own owner and cannot be built from a caller's
+                    -- assumption about which tenant it is looking at.
+                    j.tenant_id             AS tenant_id,
                     c.full_name             AS full_name,
                     c.email                 AS email,
                     c.profile_form_json     AS profile_form,
@@ -312,14 +317,14 @@ async def ranked_candidates(
 
     level = grade_label(grade)
     return RankedPage(
-        rows=[_row_payload(row, level) for row in rows],
+        rows=[_row_payload(row, level, job_id) for row in rows],
         total=int(total),
         page=resolved_page,
         page_size=resolved_size,
     )
 
 
-def _row_payload(row: Any, level: str) -> dict[str, Any]:
+def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
     """One table row. Carries the five comments and word labels — never a score.
 
     `ranking_payload` already re-enforces the 25-30 word contract on the way
@@ -328,7 +333,7 @@ def _row_payload(row: Any, level: str) -> dict[str, Any]:
     "not scored" instead of rendering a silent blank.
     """
     from app.models.candidate import SOURCE_TYPE_APPLIED, source_type_label
-    from app.services import hiring_pipeline
+    from app.services import hiring_pipeline, reference_code
 
     status = hiring_pipeline.normalize(row["status"])
     source_type = row["source_type"] or SOURCE_TYPE_APPLIED
@@ -348,6 +353,14 @@ def _row_payload(row: Any, level: str) -> dict[str, Any]:
         "allowed_transitions": sorted(hiring_pipeline.manual_transitions(status)),
         "allowed_transition_options": hiring_pipeline.transition_options(status),
         "candidate_id": row["candidate_id"],
+        # COMPANY-JOB-CANDIDATE, rendered under the name in every surface that
+        # shows this row. One stable handle for "this application", because a
+        # name is not unique and a UUID is not something a person can carry
+        # between a screen, an email and a phone call. Derived, never stored,
+        # and one-way: see services/reference_code.
+        "reference_code": reference_code.reference_code(
+            row["tenant_id"], job_id, row["candidate_id"]
+        ),
         # The profile is what the resume viewer and the download endpoint are
         # keyed on. It was SELECTed and then dropped here, which is the whole of
         # the "resumes cannot be viewed or downloaded" report: resumes moved to

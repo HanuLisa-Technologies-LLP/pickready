@@ -14,10 +14,35 @@ class RunMatchingOut(BaseModel):
     candidate_count: int
 
 
+class MatchingStageOut(BaseModel):
+    """One step of the matching run, as shown inline on the job page.
+
+    Deliberately a fixed vocabulary from `services/matching_progress`, not a
+    model's own narration. A narration would quote the prompt -- which holds a
+    real candidate's resume and a real client's JD -- and, being generated,
+    could describe work the pipeline never did.
+    """
+
+    key: str
+    label: str
+    detail: str
+    #: pending | active | done | skipped | failed. `skipped` is load-bearing: a
+    #: run whose embedding service was down ranked on keywords alone, and
+    #: showing that stage as complete would present a degraded run as a full one.
+    status: str
+
+
 class MatchingTaskStatusOut(BaseModel):
     task_id: str
     state: str
     done: bool
+    #: Always the full list, so the page draws every step immediately and fills
+    #: them in, rather than appearing to discover its own plan as it goes.
+    stages: list[MatchingStageOut] = []
+    #: How many candidates this run is scoring, and how many are finished.
+    #: Counts of rows, not ratings: no score, grade or rank is implied.
+    candidate_count: int = 0
+    scored_count: int = 0
 
 
 class MatchResultOut(BaseModel):

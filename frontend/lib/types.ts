@@ -539,6 +539,13 @@ export interface RankedCandidate {
   link_id: string;
   candidate_id: string;
   full_name: string;
+  /**
+   * COMPANY-JOB-CANDIDATE, e.g. "K7QP-2M4X-9TB1". Rendered under the name.
+   * One readable handle for this application, stable everywhere it appears.
+   * Derived server-side and one-way; it identifies a row without disclosing
+   * anything about it, and it is never an authorisation input.
+   */
+  reference_code?: string;
   email?: string | null;
   /** The job's grade as a display label ("Non-managerial", "CXO", ...). */
   level: string;
@@ -1079,4 +1086,28 @@ export interface ProviderBillingRow {
   balance_inr: string | null;
   in_deficit: boolean;
   current_end: string | null;
+}
+
+/**
+ * GET /matching/tasks/{task_id}.
+ *
+ * `stages` is the inline reasoning the job page renders while a run is under
+ * way. It is a fixed vocabulary the backend pipeline emits as it reaches each
+ * stage, never a model narrating itself: the prompts behind this run carry a
+ * real candidate's resume and a real client's JD, and a generated narration
+ * could describe work that never happened.
+ */
+export interface MatchingTaskStatus {
+  task_id: string;
+  state: string;
+  done: boolean;
+  stages: Array<{
+    key: string;
+    label: string;
+    detail: string;
+    status: "pending" | "active" | "done" | "skipped" | "failed";
+  }>;
+  /** Counts of candidate ROWS being processed. Never a score or a rank. */
+  candidate_count: number;
+  scored_count: number;
 }

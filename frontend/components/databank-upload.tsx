@@ -14,7 +14,7 @@
 import * as React from "react";
 import { Loader2, Upload } from "lucide-react";
 
-import { API_BASE } from "@/lib/api";
+import { apiFetch } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
@@ -68,12 +68,15 @@ export function DatabankUpload({
     setBusy(true);
     setFailures([]);
     try {
-      // A multipart upload cannot go through the JSON helper, so this is a
-      // direct fetch. Credentials are the session cookie, same as everywhere.
-      const res = await fetch(`${API_BASE}/jobs/${jobId}/candidates/databank`, {
+      // A multipart upload cannot go through the JSON helper, so this uses
+      // `apiFetch`, which is the same call with the silent refresh attached.
+      // A bare `fetch` here answered 401 to any recruiter whose access cookie
+      // had lapsed while they were reading the page, and a databank upload is
+      // what kicks off resume parsing and matching, so it read as "the AI is
+      // broken" rather than as an expired session.
+      const res = await apiFetch(`/jobs/${jobId}/candidates/databank`, {
         method: "POST",
         body,
-        credentials: "include",
       });
       if (!res.ok) {
         let detail = `Upload failed (${res.status})`;
