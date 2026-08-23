@@ -74,9 +74,50 @@ export interface RadarChartSpec {
   axes: RadarAxis[];
 }
 
+/**
+ * The PRISM Report's section order (spec doc 4, part 3), and the ONLY place it
+ * is written down on this side.
+ *
+ * The view below is driven by this array rather than by a hand-ordered block of
+ * JSX, so a section cannot be moved by editing one file and left where it was
+ * in the other. `backend/tests/test_prism_report.py` reads this literal out of
+ * this source file and asserts it equals `report_pdf.SECTION_ORDER`: a reorder
+ * that touches only one renderer fails there instead of shipping a PDF that
+ * disagrees with the screen a recruiter approved it from.
+ *
+ * Gap Analysis now precedes Validation. Validation is the candidate's own
+ * unrated submission and is the last thing on the document; the action plan
+ * belongs beside the grades it was derived from, not after a block of
+ * uninterpreted form answers.
+ */
+export const REPORT_SECTION_ORDER = [
+  "ai_score",
+  "overall",
+  "must_have",
+  "nice_to_have",
+  "behavioural",
+  "gap_analysis",
+  "validation",
+] as const;
+
+/**
+ * THREE radar charts, not four (spec doc 4, part 3).
+ *
+ * The spec lists a chart for Overall Assessment, Must-have and Nice-to-have and
+ * lists only a grade and a remark for Behavioural. Filtering here rather than
+ * at the generator is deliberate: a report is immutable, so every report
+ * already written still carries a behavioural chart in its stored payload, and
+ * a reader opening one today must see the same three charts as a reader opening
+ * one written tomorrow.
+ */
+export const RENDERED_CHART_KEYS = ["overall", "must_have", "nice_to_have"] as const;
+
 export interface FunctionalReport {
   id: string;
   job_candidate_link_id: string;
+  /** COMPANY-JOB-CANDIDATE, so a printed report and a row in the candidate
+   *  table can be matched by eye. A label, never a permission. */
+  reference_code?: string;
   grade: string;
   /** The pre-assessment resume snapshot: the job's own matching categories. */
   ai_score: ReportDimension[];
@@ -248,6 +289,10 @@ function GradeLegend() {
 }
 
 function chartFor(report: FunctionalReport, key: string): RadarChartSpec | undefined {
+  // The allowlist is checked here rather than at each call site: a section
+  // added later gets no chart unless somebody names it above, which is the
+  // direction that fails safely against the three-chart rule.
+  if (!(RENDERED_CHART_KEYS as readonly string[]).includes(key)) return undefined;
   return report.radar_charts?.find((chart) => chart.key === key);
 }
 
@@ -316,13 +361,58 @@ function ValidationSection({ validation }: { validation: ValidationBlock }) {
 export function FunctionalSkillsReportView({ report }: { report: FunctionalReport }) {
   const series = report.radar_series ?? ["Job Requirement", "Candidate Assessment"];
 
+  // Keyed by the section identifiers in REPORT_SECTION_ORDER and rendered by
+  // walking that array. A section can therefore be reordered in exactly one
+  // place, and a key with no entry here would render nothing loudly rather
+  // than quietly moving to the end.
+  const sections: Record<(typeof REPORT_SECTION_ORDER)[number], React.ReactNode> = {
+    ai_score: <AiScoreSection key="ai_score" report={report} />,
+    overall: <OverallSection key="overall" report={report} series={series} />,
+    must_have: (
+      <DimensionSection
+        key="must_have"
+        title="Must-have"
+        dimensions={report.must_have}
+        chart={chartFor(report, "must_have")}
+        series={series}
+      />
+    ),
+    nice_to_have: (
+      <DimensionSection
+        key="nice_to_have"
+        title="Nice-to-have"
+        dimensions={report.nice_to_have}
+        chart={chartFor(report, "nice_to_have")}
+        series={series}
+      />
+    ),
+    // No chart: the spec gives Behavioural a grade and a remark only.
+    behavioural: (
+      <DimensionSection
+        key="behavioural"
+        title="Behavioural Competencies"
+        dimensions={report.behavioural}
+        series={series}
+      />
+    ),
+    gap_analysis: <GapAnalysisSection key="gap_analysis" report={report} />,
+    validation: <ValidationSection key="validation" validation={report.validation} />,
+  };
+
   return (
     <div className="space-y-8">
-      {/* ── AI Score: the pre-assessment snapshot (§10.1, §10.3) ───────────── */}
+      {REPORT_SECTION_ORDER.map((key) => sections[key])}
+    </div>
+  );
+}
+
+/** The pre-assessment resume snapshot (spec doc 4, part 3). */
+function AiScoreSection({ report }: { report: FunctionalReport }) {
+  return (
       <section aria-label="AI Score">
         <h3 className="mb-1 text-lg font-semibold">AI Score</h3>
         <p className="mb-3 text-xs">
-          A resume-based snapshot generated before the assessment. A close match with the PPI
+          A resume-based snapshot generated before the assessment. A close match with the Tatva
           Assessment below confirms the resume was accurate; a gap between them is itself
           useful signal.
         </p>
@@ -345,10 +435,29 @@ export function FunctionalSkillsReportView({ report }: { report: FunctionalRepor
           ))}
         </div>
       </section>
+  );
+}
 
-      {/* ── PPI Assessment: Overall, then the three framework sections ─────── */}
+/**
+ * The Overall Assessment: the Overall Grade, its 45 to 50 word remark, and the
+ * first of the three radar charts.
+ *
+ * The heading is the spec's own section name. It is deliberately not named
+ * after the framework: the framework is the Tatva Assessment and this is the
+ * PRISM Report that states its result, and using either word for the other is
+ * how a reader ends up thinking they are one thing.
+ */
+function OverallSection({
+  report,
+  series,
+}: {
+  report: FunctionalReport;
+  series: string[];
+}) {
+  const chart = chartFor(report, "overall");
+  return (
       <section aria-label="Overall Assessment">
-        <h3 className="mb-1 text-lg font-semibold">PPI Assessment</h3>
+        <h3 className="mb-1 text-lg font-semibold">Overall Assessment</h3>
         <div className="rounded-lg border bg-muted/30 p-5">
           <div className="mb-2 flex items-center gap-3">
             <p className="text-xs font-semibold uppercase tracking-wide">Overall</p>
@@ -356,35 +465,13 @@ export function FunctionalSkillsReportView({ report }: { report: FunctionalRepor
           </div>
           <p className="leading-7">{report.overall_summary}</p>
         </div>
-        <div className="mt-4">
-          <DualRadar chart={chartFor(report, "overall") as RadarChartSpec} series={series} />
-        </div>
+        {chart ? (
+          <div className="mt-4">
+            <DualRadar chart={chart} series={series} />
+          </div>
+        ) : null}
         <GradeLegend />
       </section>
-
-      <DimensionSection
-        title="Must-have"
-        dimensions={report.must_have}
-        chart={chartFor(report, "must_have")}
-        series={series}
-      />
-      <DimensionSection
-        title="Nice-to-have"
-        dimensions={report.nice_to_have}
-        chart={chartFor(report, "nice_to_have")}
-        series={series}
-      />
-      <DimensionSection
-        title="Behavioural Competencies"
-        dimensions={report.behavioural}
-        chart={chartFor(report, "behavioural")}
-        series={series}
-      />
-
-      <ValidationSection validation={report.validation} />
-
-      <GapAnalysisSection report={report} />
-    </div>
   );
 }
 

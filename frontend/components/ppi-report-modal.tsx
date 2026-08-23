@@ -1,16 +1,24 @@
 "use client";
 
-// The PPI Assessment Report modal (spec §10): opened from the PPI Report button
-// in the job page's candidate table.
+// The PRISM Report modal (spec doc 4): opened from the PRISM Report button in
+// the job page's candidate table.
+//
+// PRISM Report is the DOCUMENT. Tatva Assessment is the PROCESS that produces
+// it. The two names are never used for each other.
+//
+// The file, the component and the route still say "ppi". That is deliberate and
+// is not a leftover: the route is quoted in already-issued links, the module
+// name appears in traces a rolling deploy is still writing, and reports written
+// before today were filed under it. Renaming the symbols would make an existing
+// report unreachable to buy nothing a reader ever sees.
 //
 // The report is IMMUTABLE: there is no edit control and no delete control
 // anywhere in this component, and the backend answers PATCH/PUT/DELETE on the
 // report route with 403. The UI is not the enforcement, it just never offers
 // something the server would refuse.
 //
-// Section order is fixed (spec §10.3): AI Score -> Overall Assessment ->
-// Must-have -> Nice-to-have -> Behavioural Competencies -> Validation -> Gap
-// Analysis & Action Plan.
+// Section order is fixed (spec doc 4, part 3) and lives in ONE place,
+// `REPORT_SECTION_ORDER` in components/functional-skills-report.
 
 import * as React from "react";
 import dynamic from "next/dynamic";
@@ -86,10 +94,23 @@ export function PPIReportModal({
       <DialogContent className="max-h-[90vh] max-w-5xl overflow-y-auto">
         <DialogHeader>
           <div className="flex flex-wrap items-start justify-between gap-3 pr-8">
-            <DialogTitle>
-              PPI Assessment Report, {candidateName}
-              {jobTitle ? ` (${jobTitle})` : ""}
-            </DialogTitle>
+            <div>
+              <DialogTitle>PRISM Report</DialogTitle>
+              <p className="text-sm">Predictive Role Intelligence &amp; Suitability Mapping</p>
+              <p className="mt-1 text-sm font-medium">
+                {candidateName}
+                {jobTitle ? ` (${jobTitle})` : ""}
+              </p>
+              {report?.reference_code ? (
+                // Monospace and select-all so the code on a printed report and
+                // the code in the candidate table can be compared character by
+                // character, and copied without catching the words around it.
+                // It identifies a row; it authorises nothing.
+                <p className="mt-1 select-all font-mono text-xs tracking-wider">
+                  {report.reference_code}
+                </p>
+              ) : null}
+            </div>
             {linkId && report ? (
               <Button asChild size="sm" variant="outline">
                 <a

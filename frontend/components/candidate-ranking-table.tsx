@@ -5,7 +5,7 @@
 //
 // Columns (new spec, 2026-07-28):
 //   Name | Type of Procurement | Status | Resume | AI Rating & Report |
-//   PPI Report | Decision
+//   PRISM Report | Decision
 //
 // Changes the client asked for on 2026-07-28:
 //   * Level column removed. The grade is a property of the JOB, so printing it
@@ -362,7 +362,11 @@ export function CandidateRankingTable({
                   Based on Candidate Resume and JD
                 </span>
               </TableHead>
-              <TableHead className="w-[110px]">PPI Report</TableHead>
+              {/* PRISM Report is the document a completed Tatva Assessment
+                  produces (spec doc 4). The column header is the document's
+                  name; the component and route behind it still say "ppi" on
+                  purpose, because already-issued report links quote it. */}
+              <TableHead className="w-[110px]">PRISM Report</TableHead>
               <TableHead className="w-[110px]">Q&amp;A</TableHead>
               {/* The validation questionnaire, as its own column (spec 29).
                   Separate from Q&A on purpose: that one is what the ASSESSMENT
@@ -470,7 +474,7 @@ export function CandidateRankingTable({
                       disabled={!row.has_report}
                       title={
                         row.has_report
-                          ? "Open the PPI Assessment Report"
+                          ? "Open the PRISM Report"
                           : "This candidate has not completed their assessment yet"
                       }
                       onClick={() => onOpenReport(row)}

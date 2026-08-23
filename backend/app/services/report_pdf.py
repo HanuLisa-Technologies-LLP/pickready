@@ -1,4 +1,13 @@
-"""Render an immutable PPI Assessment Report as a branded PDF.
+"""Render an immutable PRISM Report as a branded PDF.
+
+PRISM Report is the DOCUMENT. Tatva Assessment is the PROCESS that produces it.
+Neither name is ever used for the other.
+
+The module, its route and the stored columns still say "ppi". That is
+deliberate: a report link already in someone's inbox quotes the route, a
+rolling deploy is still writing traces under the old module name, and every
+report written before 2026-08-23 was filed under it. Renaming the symbols would
+break a reader's access to an existing report and buy nothing a reader sees.
 
 ReportLab avoids shipping a browser runtime. Radar charts are rasterized with
 Pillow and embedded as PNG images so the permanent record is portable.
@@ -28,7 +37,63 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-FOOTER = "Confidential " + chr(8212) + " Permanent Assessment Record."
+# A full stop, not a dash. The no-em-dash rule covers every string a client
+# reads, and a PDF footer is read by the client more often than most of the UI.
+# The repo-wide sweep never caught this one because the character was assembled
+# from chr(8212), which is exactly the construction the sweep cannot see.
+FOOTER = "Confidential. Permanent Assessment Record."
+
+#: The report's header, verbatim (spec doc 4, part 3). Split in two because the
+#: title and the expansion are set in different styles; a reader must be able to
+#: read the two lines together and get the string the spec wrote.
+REPORT_TITLE = "PRISM Report"
+REPORT_SUBTITLE = "Predictive Role Intelligence & Suitability Mapping"
+
+#: The section order (spec doc 4, part 3), and the ONLY place it is written down
+#: on this side. `render_report_pdf` walks this tuple rather than emitting
+#: sections in hand-written sequence, so the order cannot be changed here
+#: without changing what the PDF does.
+#:
+#: These keys are the same keys `REPORT_SECTION_ORDER` uses in
+#: frontend/components/functional-skills-report.tsx, and tests/test_prism_report
+#: reads that literal out of the .tsx and asserts the two are equal. A reorder
+#: applied to one renderer therefore fails a test instead of shipping a PDF that
+#: disagrees with the screen the recruiter approved it from.
+#:
+#: Gap Analysis now precedes Validation, reversing the earlier order. Validation
+#: is the candidate's own unrated submission; the action plan belongs beside the
+#: grades it was derived from rather than after a block of uninterpreted form
+#: answers.
+SECTION_ORDER: tuple[str, ...] = (
+    "ai_score",
+    "overall",
+    "must_have",
+    "nice_to_have",
+    "behavioural",
+    "gap_analysis",
+    "validation",
+)
+
+#: THREE radar charts, not four (spec doc 4, part 3), which lists a chart for
+#: Overall Assessment, Must-have and Nice-to-have and lists only a grade and a
+#: remark for Behavioural.
+#:
+#: Filtered at RENDER rather than at the generator on purpose: a report is
+#: immutable, so every report written before today still carries a behavioural
+#: chart in its stored payload, and a reader opening an old report must see the
+#: same three charts as a reader opening a new one.
+RENDERED_CHART_KEYS: tuple[str, ...] = ("overall", "must_have", "nice_to_have")
+
+#: Titles as `functional_assessment.RADAR_CHART_TITLES` writes them, duplicated
+#: here ONLY to identify a chart in a payload that predates the `key` field.
+#: Copied rather than imported: this is a frozen historical shape, and following
+#: a live label would make an old report's charts vanish the day somebody
+#: renames a category.
+_LEGACY_CHART_TITLES: dict[str, str] = {
+    "overall": "Overall",
+    "must_have": "Must-have",
+    "nice_to_have": "Nice-to-have",
+}
 PURPLE = colors.HexColor("#5028E0")
 INK = colors.HexColor("#172033")
 MUTED = colors.HexColor("#64748B")
@@ -36,11 +101,13 @@ PAPER = colors.HexColor("#F7F7FB")
 
 
 def _value(item: Any, key: str, default: Any = None) -> Any:
-    return getattr(
-        item,
-        key,
-        item.get(key, default) if isinstance(item, dict) else default,
-    )
+    # A dict is asked BEFORE getattr, not after. The other way round, a payload
+    # arriving as a dict returned `dict.items`, a bound method, for the gap
+    # group's "items" key, and the section rendered as a TypeError instead of a
+    # list of gaps. Every key that shadows a dict method had the same hole.
+    if isinstance(item, dict):
+        return item.get(key, default)
+    return getattr(item, key, default)
 
 
 def _text(value: Any) -> str:
@@ -172,6 +239,85 @@ def _gap_analysis(report, styles) -> list:
     return story
 
 
+def _chart(report: Any, key: str, styles: dict[str, ParagraphStyle]) -> list[Any]:
+    """The one chart belonging to `key`, or nothing.
+
+    Returning an empty list for an unlisted key is what makes the three-chart
+    rule hold for reports written when four were generated: the stored payload
+    still has the fourth, and nothing here goes looking for it.
+    """
+    if key not in RENDERED_CHART_KEYS:
+        return []
+    for chart in list(_value(report, "radar_charts", []) or []):
+        stored = _value(chart, "key")
+        # A chart with no key at all is a payload written before charts carried
+        # one. Matching its title is the only identification left, and the
+        # alternative is silently dropping every chart from a permanent record
+        # nobody can regenerate.
+        if stored != key and not (
+            stored is None and _value(chart, "title") == _LEGACY_CHART_TITLES[key]
+        ):
+            continue
+        return [
+            KeepTogether(
+                [
+                    Spacer(1, 3 * mm),
+                    Paragraph(
+                        _text(_value(chart, "title", "Assessment profile")),
+                        styles["Body"],
+                    ),
+                    Image(
+                        io.BytesIO(radar_png(chart)),
+                        width=118 * mm,
+                        height=118 * mm,
+                    ),
+                ]
+            )
+        ]
+    return []
+
+
+def _overall(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
+    """The Overall Grade, its remark, and the first of the three charts.
+
+    The heading is the spec's section name, not the framework's name: the
+    framework is the Tatva Assessment and this document is the PRISM Report,
+    and printing either word in place of the other is how a reader comes away
+    believing they are one thing.
+    """
+    return [
+        Paragraph("Overall Assessment", styles["Section"]),
+        Spacer(1, 2 * mm),
+        Paragraph(
+            f"<b>{_text(_value(report, 'overall_grade'))}</b><br/>"
+            f"{_text(_value(report, 'overall_summary'))}",
+            styles["Body"],
+        ),
+        *_chart(report, "overall", styles),
+    ]
+
+
+def _validation(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
+    """The candidate's own submission, reproduced and never rated.
+
+    Last on the document by spec doc 4: it is the only unrated section, so
+    ending on it keeps every rated statement and the plan drawn from them
+    together rather than split around a block of form answers.
+    """
+    story: list[Any] = [Paragraph("Validation", styles["Section"])]
+    validation = _value(report, "validation", {}) or {}
+    for field in validation.get("fields", []):
+        story.append(
+            Paragraph(
+                f"<b>{_text(field.get('label', ''))}</b><br/>"
+                f"{_text(field.get('value') or 'Not stated')}",
+                styles["Body"],
+            )
+        )
+        story.append(Spacer(1, 1.5 * mm))
+    return story
+
+
 def _dimension_cards(
     title: str,
     rows: Iterable[Any],
@@ -242,7 +388,7 @@ def render_report_pdf(
         rightMargin=18 * mm,
         topMargin=16 * mm,
         bottomMargin=19 * mm,
-        title=f"PPI Assessment Report - {candidate_name}",
+        title=f"{REPORT_TITLE} - {candidate_name}",
         author="ReadyPick",
     )
     base = getSampleStyleSheet()
@@ -281,62 +427,51 @@ def render_report_pdf(
             textColor=INK,
         ),
     }
+    # The reference code is printed under the identity block rather than in a
+    # corner: a printed report is compared against a row on a screen by eye, and
+    # a code the reader has to hunt for gets copied wrong. It identifies a row
+    # and authorises nothing.
+    reference = _text(_value(report, "reference_code", "") or "")
     story: list[Any] = [
         Paragraph("ReadyPick", styles["Subtitle"]),
-        Paragraph("PPI Assessment Report", styles["Title"]),
+        Paragraph(REPORT_TITLE, styles["Title"]),
+        Paragraph(_text(REPORT_SUBTITLE), styles["Subtitle"]),
         Spacer(1, 3 * mm),
         Paragraph(
             f"<b>{_text(candidate_name)}</b><br/>{_text(job_title)}<br/>"
             f"{_text(tenant_name)}<br/>"
-            f"{generated_at.strftime('%d %B %Y')}",
+            f"{generated_at.strftime('%d %B %Y')}"
+            + (f"<br/><font face='Courier'>{reference}</font>" if reference else ""),
             styles["Subtitle"],
         ),
         Spacer(1, 8 * mm),
-        Paragraph("Overall Assessment", styles["Section"]),
-        Spacer(1, 2 * mm),
-        Paragraph(
-            f"<b>{_text(_value(report, 'overall_grade'))}</b><br/>"
-            f"{_text(_value(report, 'overall_summary'))}",
-            styles["Body"],
-        ),
     ]
 
-    for chart in list(_value(report, "radar_charts", [])):
-        story.append(
-            KeepTogether(
-                [
-                Spacer(1, 3 * mm),
-                Paragraph(
-                    _text(_value(chart, "title", "Assessment profile")),
-                    styles["Body"],
-                ),
-                Image(io.BytesIO(radar_png(chart)), width=118 * mm, height=118 * mm),
-                ]
-            )
+    # Walked, never hand-sequenced: SECTION_ORDER is the order, and a key with
+    # no builder here would raise at render rather than silently vanish from a
+    # permanent record.
+    builders = {
+        "ai_score": lambda: _dimension_cards(
+            "AI Score", _value(report, "ai_score", []), styles
+        ),
+        "overall": lambda: _overall(report, styles),
+        "must_have": lambda: _dimension_cards(
+            "Must-have", _value(report, "must_have", []), styles
         )
-
-    story.extend(_dimension_cards("AI Score", _value(report, "ai_score", []), styles))
-    story.extend(_dimension_cards("Must-have", _value(report, "must_have", []), styles))
-    story.extend(_dimension_cards("Nice-to-have", _value(report, "nice_to_have", []), styles))
-    story.extend(_dimension_cards("Behavioural Competencies", _value(report, "behavioural", []), styles))
-
-    # Validation comes BEFORE Gap Analysis (spec 9.3). It is the candidate's own
-    # unrated submission and the Gap Analysis is the last word on the report, so
-    # this order is not cosmetic: it keeps every rated statement together and
-    # ends the document on what to do next.
-    story.append(Paragraph("Validation", styles["Section"]))
-    validation = _value(report, "validation", {}) or {}
-    for field in validation.get("fields", []):
-        story.append(
-            Paragraph(
-                f"<b>{_text(field.get('label', ''))}</b><br/>"
-                f"{_text(field.get('value') or 'Not stated')}",
-                styles["Body"],
-            )
+        + _chart(report, "must_have", styles),
+        "nice_to_have": lambda: _dimension_cards(
+            "Nice-to-have", _value(report, "nice_to_have", []), styles
         )
-        story.append(Spacer(1, 1.5 * mm))
-
-    story.extend(_gap_analysis(report, styles))
+        + _chart(report, "nice_to_have", styles),
+        # No chart: the spec gives Behavioural a grade and a remark only.
+        "behavioural": lambda: _dimension_cards(
+            "Behavioural Competencies", _value(report, "behavioural", []), styles
+        ),
+        "gap_analysis": lambda: _gap_analysis(report, styles),
+        "validation": lambda: _validation(report, styles),
+    }
+    for key in SECTION_ORDER:
+        story.extend(builders[key]())
 
     document.build(story, onFirstPage=_footer, onLaterPages=_footer)
     return output.getvalue()

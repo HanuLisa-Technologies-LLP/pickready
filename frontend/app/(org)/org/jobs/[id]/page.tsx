@@ -6,7 +6,7 @@
 //   [ JD, with About Company / Work Life / Benefits, Edit button top-right ]
 //   [ RUN AI MATCHING ]
 //   [ Assessment setup review: PPI framework + technical questions ]
-//   [ Inline candidate table: Name | Level | PPI Report | Resume | 4 comments ]
+//   [ Inline candidate table: Name | Level | PRISM Report | Resume | 4 comments ]
 //
 // Deliberately absent, per the spec: the "Added by HR after ratification"
 // metadata, the notes textbox, the approval-status display, and the separate

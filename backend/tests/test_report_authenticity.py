@@ -363,4 +363,10 @@ def test_pdf_contains_branding_all_sections_charts_and_confidential_footer() -> 
             resolved = value.get_object()
             if resolved.get("/Subtype") == "/Image":
                 image_objects += 1
-    assert image_objects >= 4
+    # THREE charts since 2026-08-23: spec doc 4 lists a radar under Overall,
+    # Must-have and Nice-to-have, and lists only a grade and a remark under
+    # Behavioural. Asserted EXACTLY rather than as a floor. A floor is what let
+    # this sit at ">= 4" while the real question was "which charts", and it
+    # would let the fourth come back unnoticed -- which is the whole failure the
+    # fixed chart set exists to prevent.
+    assert image_objects == 3

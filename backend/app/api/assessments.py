@@ -824,7 +824,13 @@ async def download_report_pdf(
         media_type="application/pdf",
         headers={
             "Content-Disposition": (
-                f'attachment; filename="ppi-assessment-report-{safe_name}.pdf"'
+                # USER-VISIBLE, so it follows the copy rename rather than the
+                # code names. Everything else in this file still says `ppi`
+                # deliberately (a route is quoted in links already sitting in
+                # inboxes), but a downloaded file lands on somebody's desktop
+                # under whatever we call it, and that name should match the
+                # header printed inside it.
+                f'attachment; filename="prism-report-{safe_name}.pdf"'
             ),
             "Cache-Control": "private, no-store",
             "X-Content-Type-Options": "nosniff",

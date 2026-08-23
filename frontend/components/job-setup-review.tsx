@@ -3,7 +3,7 @@
 // The one manual step in the pipeline (spec 10), and it has TWO halves that
 // are finalised in ONE setup session:
 //
-//   1. The PPI evaluation matrix: Must-have, Nice-to-have and Behavioural
+//   1. The Tatva Assessment matrix: Must-have, Nice-to-have and Behavioural
 //      Competencies, generated from the JD AND the reporting authority's SWOT
 //      intake (spec 5.2, 5.3). The Hiring Manager reviews it with drag and
 //      drop and saves it. It is the fixed criteria every candidate on this job
@@ -12,6 +12,13 @@
 //   2. The job's Matching category list, generated from the JD (spec 3.2). It
 //      decides how every sourced resume on this job is ranked, which is a
 //      comparability guarantee of the same kind, so it gates too.
+//
+// Named copy, 2026-08-23: what a recruiter saves here is the Tatva Assessment
+// matrix, and running it against a candidate produces a PRISM Report. Only the
+// user-visible words changed. The route, the `framework` fields and the `ppi`
+// module keep their old names on purpose: a route is quoted in links already
+// sent and in traces a rolling deploy is still writing, and every report
+// written before today was filed under those names.
 //
 // The SWOT intake sits above both and gates NEITHER on its own. It is an INPUT
 // to the matrix, so an intake nobody completed already shows up as a matrix
@@ -567,7 +574,7 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
         <CardHeader>
           <CardTitle>Assessment setup</CardTitle>
           <CardDescription>
-            The PPI evaluation matrix for this job is not available yet. It is
+            The Tatva Assessment matrix for this job is not available yet. It is
             generated from the job description shortly after a job is created,
             and has to be saved before any candidate can be invited.
           </CardDescription>
@@ -600,12 +607,12 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
       {/* The other half of the one setup session (spec 3.2). */}
       <MatchingCategoriesCard jobId={jobId} />
 
-      {/* ── The PPI evaluation matrix ─────────────────────────────────────── */}
+      {/* ── The Tatva Assessment matrix ─────────────────────────────────────── */}
       <Card>
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <CardTitle>PPI evaluation matrix</CardTitle>
+              <CardTitle>Tatva Assessment matrix</CardTitle>
               <CardDescription>
                 Generated from this job&apos;s description and the role intake above. Once
                 saved it becomes the fixed evaluation criteria for every candidate who
