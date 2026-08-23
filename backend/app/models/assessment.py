@@ -85,8 +85,18 @@ class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
     """One question generated for one candidate against the job's PPI matrix.
 
     Keyed to the competency it probes, which is how the PPI scorer knows which
-    matrix item an answer is evidence for. The conversation stamps
-    `question_key = str(CandidateQuestion.competency_id)` on the message.
+    matrix item an answer is evidence for.
+
+    THE MESSAGE KEY IS THIS ROW'S OWN ID, NOT ITS COMPETENCY ID. This docstring
+    said `question_key = str(CandidateQuestion.competency_id)` and had been
+    wrong since the unified conversation landed: `api/assessments._conversation_prompts`
+    stamps `str(question.id)`, and `functional_assessment._score_item` looks the
+    answer up with `answers.get(str(question.id))`. Those two agree, which is
+    why nothing was broken -- but a reader who trusts this sentence writes a
+    join against `competency_id`, gets zero rows, and cannot see why. Grouping
+    BY competency is a second step the scorer does separately
+    (`questions_by_item`), and that is where the competency actually enters.
+    `tests/test_conversation_key_contract.py` pins the pair.
 
     THIS IS NOW THE WHOLE CONVERSATION (Draft v4)
     ---------------------------------------------
