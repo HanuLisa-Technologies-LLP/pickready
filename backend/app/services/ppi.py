@@ -98,7 +98,9 @@ __all__ = [
     "matrix_is_complete",
     "max_questions",
     "min_questions",
+    "resolve_question_range",
     "resolve_question_target",
+    "conversation_may_close",
     "required_level_score",
     "typical_split",
 ]
@@ -233,23 +235,97 @@ def typical_split(grade: str | None) -> dict[str, tuple[int, int]]:
     return TYPICAL_SPLITS[_grade(grade)]
 
 
-def resolve_question_target(grade: str | None, item_count: int) -> int:
-    """How many questions this job asks, resolved once at setup (spec §5.4).
+def resolve_question_range(grade: str | None, item_count: int) -> tuple[int, int]:
+    """The RANGE this job's assessment may run to, decided once by Sutra.
 
-    The matrix size drives it, clamped into the grade's range:
+    A RANGE, not a number, and the difference is the whole of the 2026-08-23
+    change. Previously setup resolved a single total and the conversation asked
+    exactly that many questions, whatever the candidate said. The specification
+    splits the decision in two: Sutra "sets the total question-count range for
+    the role's candidate assessment, based on how many matrix items exist and
+    the role's grade", and Vaada decides "the actual count ... dynamically
+    during the conversation itself, based on answer depth and completeness".
 
-      * a matrix with more items than the grade's floor asks one question per
-        item, so every item the report grades was actually probed;
-      * a smaller matrix still asks the grade's minimum, and the surplus goes to
-        the aspects the typical split weights most heavily -- a four-item matrix
-        at non-managerial does not become a four-question interview.
+    Both halves matter, and they protect different things.
 
-    Above the grade's ceiling the answer is not to truncate: `matrix_is_complete`
-    refuses the save instead, because silently dropping items would grade a
-    candidate on criteria nobody asked them about.
+      * The RANGE is per JOB and agent-decided with no manual override, which is
+        what keeps two candidates on one job comparable. It is still driven by
+        the matrix size clamped into the grade's band, exactly as the single
+        target was: a matrix with more items than the grade's floor gets one
+        question per item so every item the report grades was actually probed,
+        and a smaller matrix still asks the grade's minimum rather than becoming
+        a four-question interview.
+      * The FLOOR is what stops the dynamic half from becoming a way to end an
+        assessment early. Vaada may stop when it has sufficient evidence across
+        every dimension, and never before this many base questions, so a
+        candidate who writes three confident paragraphs is not assessed on less
+        than a candidate who writes one.
+
+    Above the grade's ceiling the answer is still not to truncate:
+    `matrix_is_complete` refuses the save, because silently dropping items would
+    grade a candidate on criteria nobody asked them about.
     """
     low, high = GRADE_QUESTION_RANGES[_grade(grade)]
-    return max(low, min(high, int(item_count)))
+    resolved = max(low, min(high, int(item_count)))
+    return low, resolved
+
+
+def resolve_question_target(grade: str | None, item_count: int) -> int:
+    """The CEILING of the range, i.e. how many questions are written up front.
+
+    Retained under its original name and still stamped onto `job.question_target`
+    because a persisted column, an API field and a shipped client all read it.
+    What changed is what it MEANS: it used to be the number of questions the
+    conversation would ask, and it is now the most it may ask. Vaada stops at or
+    before it (`conversation_may_close`).
+
+    Questions are generated to the ceiling rather than to the floor on purpose.
+    Generation happens once, before the candidate starts; writing only the floor
+    would mean a conversation that legitimately needs more evidence has no
+    further prompts to reach for, and the fallback would be a question written
+    mid-turn with no rubric behind it.
+    """
+    return resolve_question_range(grade, item_count)[1]
+
+
+def conversation_may_close(
+    *,
+    grade: str | None,
+    asked: int,
+    total_written: int,
+    covered_dimensions: int,
+    total_dimensions: int,
+) -> bool:
+    """Vaada's stopping decision: has enough been gathered, and may it stop yet?
+
+    Three conditions, and each is refusing a different failure:
+
+      * `asked >= floor` -- never stop below the grade's minimum. Without it,
+        the dynamic half becomes a way for a fluent candidate to be assessed on
+        fewer criteria than a hesitant one, and two reports on the same job stop
+        being comparable, which is the one property the matrix exists to give.
+      * every dimension covered -- the spec's own stopping rule is "sufficient
+        evidence has been gathered across all matrix dimensions". A dimension
+        with no evidence is not a dimension that scored badly; it is one nobody
+        asked about, and the report must never present the two as the same
+        thing.
+      * `asked < total_written` -- there is somewhere left to go. Running out of
+        written prompts closes the conversation regardless, and that is handled
+        by the caller; this function answers the EARLY-stop question only.
+
+    Deterministic and calls no model, for the reason every guard in this
+    codebase does: the moment it matters most is the moment the provider is
+    down. A model asked "have you gathered enough?" mid-outage returns nothing,
+    and the safe direction on no answer must be "keep asking", not "stop".
+    """
+    floor = min_questions(grade)
+    if asked < floor:
+        return False
+    if total_dimensions <= 0:
+        return False
+    if covered_dimensions < total_dimensions:
+        return False
+    return asked < total_written
 
 
 # ── Required level ───────────────────────────────────────────────────────────

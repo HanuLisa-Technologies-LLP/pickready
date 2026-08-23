@@ -32,6 +32,10 @@ def _row(**overrides) -> dict:
     base = {
         "link_id": uuid.uuid4(),
         "candidate_id": uuid.uuid4(),
+        # Selected by the real query so the row can derive its own
+        # COMPANY-JOB-CANDIDATE reference code from the tenant that OWNS it,
+        # rather than from whichever tenant the caller thought it was reading.
+        "tenant_id": uuid.uuid4(),
         "profile_id": PROFILE_ID,
         "source": "fresh",
         "tier": None,

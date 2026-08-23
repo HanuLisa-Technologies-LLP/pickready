@@ -87,6 +87,12 @@ class FrameworkOut(BaseModel):
     #: grade's range and the matrix size. Shown so the Hiring Manager can see
     #: what adding an item actually costs the candidate.
     question_target: int = 0
+    #: The RANGE the assessment may run to, as [minimum, maximum]. Sutra fixes
+    #: it per job; Vaada decides where inside it a given conversation ends, from
+    #: that candidate's own answer depth. Shown as a range rather than a single
+    #: number because that is what actually happens now, and a UI promising an
+    #: exact count would be wrong for every candidate who answered thoroughly.
+    question_range: list[int] = []
     #: There is NO minimum item count in Draft v4: the agent recommends what the
     #: job needs. Reported as one per aspect purely because each aspect is
     #: graded and charted on every report, so none of the three may be empty.

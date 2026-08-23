@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -283,6 +283,9 @@ async def _framework_out(
         # Manager is mid-edit on this screen and needs to see what the matrix in
         # front of them would cost a candidate, not what the generated one did.
         question_target=ppi.resolve_question_target(job.assessment_grade, len(rows)),
+        question_range=list(
+            ppi.resolve_question_range(job.assessment_grade, len(rows))
+        ),
         minimum_per_category=ppi.MINIMUM_PER_CATEGORY,
         blocking_reason=None if ok else reason,
     )
@@ -1286,6 +1289,53 @@ async def _candidate_link(session: AsyncSession, user: CurrentUser, link_id: uui
 # draw. A bare question is always better than a false acknowledgment.
 
 
+async def _dimension_coverage(
+    session: AsyncSession, link: JobCandidateLink
+) -> tuple[int, int]:
+    """(matrix items with substantive evidence, matrix items probed at all).
+
+    This is what Vaada's stopping rule reads. Two properties are doing the work.
+
+    COUNTED PER COMPETENCY, NOT PER QUESTION. A matrix item can be probed by
+    more than one question, and a follow-up is filed under its parent question's
+    key. Counting questions would let three questions against one competency
+    look like three covered dimensions, and the conversation would close having
+    asked about a third of the matrix.
+
+    ONLY A SUBSTANTIVE ANSWER COUNTS. `answer_label` is the classifier's own
+    verdict (services/answer_classification), and empty, gibberish, off-topic and
+    evasive replies are all excluded. This is the direction that matters: if a
+    non-answer counted as coverage, a candidate could end their own assessment
+    early by not answering, which is precisely backwards. A NULL label is
+    treated as substantive, because every degradation path in the classifier
+    returns "substantive" by design and a provider outage must not silently
+    start withholding coverage.
+    """
+    row = (
+        await session.execute(
+            text(
+                """
+                SELECT
+                    COUNT(DISTINCT q.competency_id) FILTER (
+                        WHERE m.id IS NOT NULL
+                          AND COALESCE(m.answer_label, 'substantive') = 'substantive'
+                    ) AS covered,
+                    COUNT(DISTINCT q.competency_id) AS total
+                FROM candidate_questions q
+                LEFT JOIN assessment_messages m
+                       ON m.question_key = CAST(q.id AS text)
+                      AND m.speaker = 'candidate'
+                WHERE q.job_candidate_link_id = :link_id
+                """
+            ),
+            {"link_id": str(link.id)},
+        )
+    ).first()
+    if row is None:
+        return 0, 0
+    return int(row[0] or 0), int(row[1] or 0)
+
+
 async def _conversation_prompts(
     session: AsyncSession, job: Job, link: JobCandidateLink
 ) -> list[tuple[str, str, str]]:
@@ -1812,7 +1862,40 @@ async def respond(
             )
         )
 
-    if conversation.next_question_index >= len(prompts) and not conversation.pending_prompt:
+    # Vaada decides WHERE IN SUTRA'S RANGE this conversation ends.
+    #
+    # Two ways to finish, and they are not the same event. The first is running
+    # out of written questions, which is what this has always done. The second
+    # is new on 2026-08-23 and is the specification's own stopping rule: the
+    # conversation ends "when Vaada determines sufficient evidence has been
+    # gathered across all matrix dimensions". Sutra fixes the RANGE per job so
+    # two candidates stay comparable; the candidate's own answer depth decides
+    # where inside it they stop.
+    #
+    # The floor inside `conversation_may_close` is the load-bearing half. Without
+    # it a fluent candidate is assessed on fewer criteria than a hesitant one and
+    # the two reports stop being comparable, which is the one thing the matrix
+    # exists to guarantee. And a dimension is only "covered" by a SUBSTANTIVE
+    # answer: an evasive reply is not evidence, and treating it as coverage would
+    # let a candidate shorten their own assessment by not answering.
+    #
+    # A pending follow-up still holds completion open, exactly as before. The
+    # candidate is mid-sentence; charging the customer and dispatching scoring
+    # there would score an assessment that is still being written.
+    evidence_complete = False
+    if not conversation.pending_prompt:
+        covered, total_dimensions = await _dimension_coverage(session, link)
+        evidence_complete = ppi.conversation_may_close(
+            grade=job.assessment_grade,
+            asked=conversation.next_question_index,
+            total_written=len(prompts),
+            covered_dimensions=covered,
+            total_dimensions=total_dimensions,
+        )
+
+    if (
+        conversation.next_question_index >= len(prompts) or evidence_complete
+    ) and not conversation.pending_prompt:
         conversation.status = "completed"
         conversation.completed_at = datetime.now(timezone.utc)
         # One full credit, charged at the moment completed_at is set. Idempotent,
@@ -1835,7 +1918,11 @@ async def respond(
     # thing the candidate sees, and writing a question nobody will read would
     # spend a second sequential model call on a request a candidate is waiting
     # on. Also skipped once the questions run out, for the same reason.
-    if not conversation.pending_prompt and next_index < len(prompts):
+    if (
+        not conversation.pending_prompt
+        and next_index < len(prompts)
+        and conversation.completed_at is None
+    ):
         await _write_next_question(
             session, job, link, conversation, prompts, next_index
         )
