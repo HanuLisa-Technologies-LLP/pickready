@@ -44,6 +44,7 @@ from app.models.agent import (
     AgentLearning,
 )
 from app.models.context import ContextChunk
+from app.models.evidence import EvidenceClaim, EvidenceClaimLink, EvidenceItemRow
 from app.models.candidate import (
     Candidate,
     CandidateTeamReview,
@@ -160,6 +161,9 @@ __all__ = [
     "AgentExecutionTrace",
     "AgentLearning",
     "ContextChunk",
+    "EvidenceClaim",
+    "EvidenceClaimLink",
+    "EvidenceItemRow",
     "STATUS_FAILED",
     "STATUS_PARTIAL",
     "STATUS_SUCCESS",
