@@ -65,6 +65,22 @@ the live revision's DSN and secret version 1 did not match.
 Neither value is echoed, logged, or written to a temp file at any point. Only
 whether they matched is printed.
 
+### The permission that step 4 needs, and why the failure mode is a blocked deploy
+
+`github-deployer@` held `secretmanager.secretAccessor` and `secretmanager.viewer`
+only, both read. The drift branch would therefore have hit its `die` on the
+first deploy after a password rotation.
+
+That `die` is deliberate and stays. The alternative -- warn and continue -- would
+mount a DSN that no longer authenticates, and the first symptom would be
+production unable to reach its database. A blocked deploy is loud, safe, and
+fixable in a minute; a stale mount is an outage.
+
+`roles/secretmanager.secretVersionAdder` was granted on THIS SECRET ONLY, not at
+project level, so the refresh self-heals and the `die` remains the backstop for
+anything it cannot handle. The role can add a version and cannot read or destroy
+one, which is the narrowest grant that makes the design work.
+
 ## What is NOT done
 
 **The database credential has not been rotated.** The password that was exposed
