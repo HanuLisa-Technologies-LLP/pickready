@@ -325,13 +325,13 @@ def test_the_two_severity_scales_are_mapped_in_exactly_one_place() -> None:
     """Finding severity answers "regenerate or ship". Contradiction severity
     answers "how much more work is owed". A second mapping would leave a reader
     unable to tell which scale a value came from."""
-    assert set(cd._FROM_FINDING) == {
+    assert set(cd._from_finding()) == {
         base.SEVERITY_HIGH,
         base.SEVERITY_MEDIUM,
         base.SEVERITY_LOW,
     }
-    assert set(cd._FROM_FINDING.values()) == {cd.CRITICAL, cd.MATERIAL, cd.MINOR}
-    assert cd.NONE not in cd._FROM_FINDING.values()
+    assert set(cd._from_finding().values()) == {cd.CRITICAL, cd.MATERIAL, cd.MINOR}
+    assert cd.NONE not in cd._from_finding().values()
 
 
 def test_a_report_converts_to_a_verdict_the_existing_loop_already_understands() -> None:

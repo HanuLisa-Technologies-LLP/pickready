@@ -29,6 +29,7 @@ its established behaviour; the five task types above are additive.
 """
 from __future__ import annotations
 
+from enum import Enum
 from typing import Iterator, Literal
 
 from app.core.config import get_settings
@@ -489,3 +490,155 @@ def estimate_cost_usd(provider: str, prompt_tokens: int, completion_tokens: int)
 def is_priced(provider: str) -> bool:
     """True when a price is on file, so a 0.0 can be read correctly."""
     return provider in TOKEN_PRICES_USD_PER_MILLION
+
+
+# ── Capacity-aware routing policy (2026-08-24) ───────────────────────────────
+#
+# Everything below is DATA for `services/llm_capacity.py`, and it is here for
+# the same reason provider order, timeouts and temperature are: a scheduler with
+# its weights inline cannot be reviewed, cannot be diffed, and cannot be argued
+# with. `claude.md` rule: routing policy is data in config/llm_providers.py,
+# never inline in a service.
+
+
+class WorkloadClass(str, Enum):
+    """The shapes of work the product actually sends.
+
+    These exist because a liveness probe that passes on input unlike the input
+    the product sends is not a probe, it is a green tick. Groq answered "Say OK"
+    in 580ms while returning HTTP 413 to every real resume extraction, and only
+    a payload of realistic SIZE could tell the two apart.
+    """
+
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
+    LONG_CONTEXT = "long_context"
+    STRUCTURED_JSON = "structured_json"
+    RESUME_EXTRACTION = "resume_extraction"
+
+
+#: What each workload class costs to send, and what shape it is.
+#:
+#: `approx_input_tokens` is the number that matters: it is compared against a
+#: quota domain's PROVEN ceiling, and it is why RESUME_EXTRACTION sits at 12000.
+#: A resume plus a job description was measured at roughly that against the live
+#: API on 2026-08-23, and the Groq organisation's per-minute pool is 8000, so
+#: this class is the one that separates a tier that works from a tier that only
+#: looks like it works.
+WORKLOAD_PROFILES: dict[WorkloadClass, dict[str, object]] = {
+    WorkloadClass.SMALL: {"approx_input_tokens": 40, "json": False},
+    WorkloadClass.MEDIUM: {"approx_input_tokens": 1200, "json": False},
+    WorkloadClass.LARGE: {"approx_input_tokens": 6000, "json": False},
+    WorkloadClass.LONG_CONTEXT: {"approx_input_tokens": 20000, "json": False},
+    WorkloadClass.STRUCTURED_JSON: {"approx_input_tokens": 60, "json": True},
+    WorkloadClass.RESUME_EXTRACTION: {"approx_input_tokens": 12000, "json": True},
+}
+
+
+#: Which workload class each task type behaves like. This is the "task
+#: complexity and required context size" input to the router's score, expressed
+#: once as data rather than re-derived per call site.
+TASK_WORKLOAD: dict[str, WorkloadClass] = {
+    "conversation_turn": WorkloadClass.MEDIUM,
+    "jd_generation": WorkloadClass.MEDIUM,
+    "technical_questions": WorkloadClass.LARGE,
+    "behavioral_assessment": WorkloadClass.LARGE,
+    "report_synthesis": WorkloadClass.LONG_CONTEXT,
+    "email_composition": WorkloadClass.SMALL,
+    "rerank": WorkloadClass.MEDIUM,
+    # A resume plus a JD. The one that 413s.
+    "extraction": WorkloadClass.RESUME_EXTRACTION,
+}
+
+DEFAULT_WORKLOAD = WorkloadClass.MEDIUM
+
+
+def workload_for_task(task_type: str) -> WorkloadClass:
+    return TASK_WORKLOAD.get(task_type, DEFAULT_WORKLOAD)
+
+
+#: PUBLISHED context windows, in tokens. These are what the vendor SAYS, and the
+#: registry treats them as documentation only -- they are reported beside the
+#: measured numbers and never gate a routing decision.
+#:
+#: The distinction is load-bearing. Groq's published window for gpt-oss-120b is
+#: 131072 and the account could not accept 12268, because the binding constraint
+#: was the organisation's per-minute pool and not the model's context at all.
+#: Routing on the published figure is precisely how the 413 storm happened.
+DECLARED_CONTEXT_LIMITS: dict[str, int] = {
+    "groq": 131072,
+    "gemini": 1048576,
+    "openrouter": 131072,
+}
+
+
+def declared_context_limit(provider: str) -> int | None:
+    return DECLARED_CONTEXT_LIMITS.get(provider)
+
+
+#: Weights for the router's route score. Positive terms are things we want,
+#: negative terms are things we want less of; `llm_capacity.score_route` names
+#: which is which. Every term is normalised to 0..1 first, so these numbers are
+#: directly comparable to each other.
+#:
+#: The shape of the table is the policy, and it says three things:
+#:
+#:   * CAPABILITY AND PREFERENCE DOMINATE. A route proven to carry the workload,
+#:     on the provider the measured route order puts first, wins by default.
+#:   * COOLDOWN OUTWEIGHS PREFERENCE. A throttled domain must lose to a
+#:     less-preferred one that can answer now, or the preference order becomes a
+#:     way of insisting on a provider that is currently refusing us.
+#:   * COST IS NEARLY IRRELEVANT. It is here because the brief asks for it and
+#:     because it breaks ties, but a fraction of a cent must never outrank
+#:     availability, and a weight of 5 against a cooldown weight of 70 is that
+#:     statement in a form somebody can check.
+#:
+#: `load_share` is what makes traffic DISTRIBUTE rather than concentrate: a
+#: domain that has taken most of the recent traffic scores lower until the
+#: others catch up. It is deliberately smaller than `capability`, because
+#: spreading load onto a route that cannot do the job is not load balancing.
+ROUTE_SCORE_WEIGHTS: dict[str, float] = {
+    # Wanted.
+    "preference": 40.0,
+    "capability": 45.0,
+    "capacity_headroom": 30.0,
+    "success_rate": 25.0,
+    "latency": 20.0,
+    # Unwanted.
+    "cooldown": 70.0,
+    "quota_pressure": 25.0,
+    "load_share": 18.0,
+    "unverified_domain": 3.0,
+    "cost": 5.0,
+}
+
+#: Latency normaliser: a route at this mean latency scores 0.5 on the latency
+#: term. One second, because that is roughly the line between a provider that
+#: can lead an interactive route and one that cannot.
+LATENCY_REFERENCE_MS = 1000.0
+
+#: How many recent latency samples a route keeps. Long enough to smooth one
+#: unlucky call, short enough that a recovered provider is not held down by an
+#: outage it is already out of.
+RECENT_LATENCY_SAMPLES = 20
+
+#: How many recent ATTEMPTS the load-share window remembers. This is the whole
+#: mechanism behind "distribute across viable routes": share is measured over
+#: this window and penalised, so a domain cannot monopolise traffic while
+#: siblings sit idle.
+LOAD_SHARE_WINDOW = 50
+
+#: How long a quota domain is scored down after a 429.
+#:
+#: Deliberately short, and deliberately NOT the key breaker's fifteen minutes. A
+#: per-minute rate limit clears within a minute, and treating it like an
+#: account-level write-off would discard the traffic the domain can still serve.
+DOMAIN_COOLDOWN_SECONDS = 60.0
+
+#: How soon after a throttle a sibling's success still counts as evidence of
+#: INDEPENDENCE. Outside this window the two events are simply unrelated in
+#: time, and reading them as proof would manufacture independence that was never
+#: observed -- the exact error that makes a router think it has 3x the
+#: throughput it has.
+CAPACITY_INDEPENDENCE_WINDOW_S = 60.0

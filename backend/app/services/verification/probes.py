@@ -34,7 +34,28 @@ from typing import Any, Sequence
 from app.services import conversation_guardrails, gap_analysis, rating
 from app.services.verification import base, generic_language
 
-_PROBE_MIN, _PROBE_MAX = gap_analysis.PROBE_WORDS
+def _probe_bounds() -> tuple[int, int]:
+    """The 25-30 word band, read WHEN NEEDED rather than at import.
+
+    Same defect and same fix as `ppi_report._remark_bounds`. As a module-level
+    assignment this touched another module's attribute during its
+    initialisation, which is the one thing a Python import cycle cannot
+    survive: importing a partially initialised module is fine, reading an
+    attribute off it is an `AttributeError`.
+
+    It became reachable when `ppi` began importing the verification package:
+
+      functional_assessment -> gap_analysis -> ppi -> verification -> probes
+        -> gap_analysis (still initialising)
+
+    The failure is ORDER DEPENDENT, so a full pytest run was green while
+    `pytest tests/test_platform_audit.py` alone was red, and production controls
+    its import order no better than pytest does. Reading it in a function keeps
+    the band defined in exactly one place and removes the whole class of
+    failure.
+    """
+    return gap_analysis.PROBE_WORDS
+
 
 EM_DASH = chr(8212)
 
@@ -72,6 +93,7 @@ def verify_probe(
     asked_questions: Sequence[str] = (),
 ) -> base.Verdict:
     """Verify one probe against the answer it is supposed to be probing."""
+    _PROBE_MIN, _PROBE_MAX = _probe_bounds()
     text = str(probe or "").strip()
     if not text:
         return base.verdict(

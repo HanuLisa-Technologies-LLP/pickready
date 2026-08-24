@@ -46,6 +46,7 @@ outage would be the one unrecoverable failure here.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -71,10 +72,15 @@ __all__ = [
     "AREA_LABELS",
     "MAX_FOLLOW_UPS",
     "MAX_POINTS_PER_AREA",
+    "SWOT_ARTIFACT_VERSION",
     "capture_answer",
     "compose_question",
+    "context_covered",
     "get_or_create",
     "is_complete",
+    "jd_version",
+    "publish_swot_evidence",
+    "published_evidence",
     "submit_answer",
 ]
 
@@ -434,6 +440,11 @@ async def submit_answer(
             job.id,
             {area: len(values) for area, values in intake.captured().items()},
         )
+        # Bodha's hand-off to Sutra (spec §4). Published AFTER the flush, so a
+        # publish that goes wrong cannot cost the authority the answers they
+        # have already given -- the completion is durable before this runs, and
+        # `publish_swot_evidence` swallows its own failures on top of that.
+        publish_swot_evidence(job, intake)
         return None
 
     question = await compose_question(
@@ -467,6 +478,210 @@ async def open_question(
     _append(intake, "agent", question, area)
     await session.flush()
     return question
+
+
+# ── Bodha publishes, Sutra consumes (spec §4) ────────────────────────────────
+#
+# WHY THE ARTIFACT IS BUILT ON DEMAND RATHER THAN STORED
+# ------------------------------------------------------
+# There is no artifact table, and adding one would not buy the property this
+# hand-off needs. The intake rows ARE the durable record; an artifact row beside
+# them would be a second copy of the same four arrays that can disagree with the
+# first, and the disagreement would be invisible -- exactly the shape of a
+# `framework_generated_at` stamp with no competency rows behind it. So the
+# producer builds the typed envelope from its own rows every time it is asked,
+# which means an artifact can never be stale with respect to the data it
+# describes. What crosses to Sutra is still a verified, typed, scoped artifact
+# and never the ORM rows.
+
+#: One intake per job, enforced by `uq_job_swot_intake_job`, and it completes
+#: once. There is no reopen path, so there is no second version to number: a
+#: counter here would be a field that is always 1 and reads as though it could
+#: be something else.
+SWOT_ARTIFACT_VERSION = 1
+
+#: Which part of the role context each SWOT area is actual evidence for. A
+#: mapping rather than a blanket "all covered" because `gates.bodha_gate` reads
+#: this to decide whether the intake is fit to build a matrix from, and an
+#: intake that claimed coverage it did not produce would pass the gate while
+#: leaving Sutra to invent the missing half. `team_context` is deliberately
+#: absent: nothing in the four areas asks who the person works with, so claiming
+#: it would be the same lie in the other direction. The gate answers that with
+#: one medium finding, which is not disqualifying, so a genuinely complete
+#: intake still publishes as validated.
+_AREA_CONTEXT: dict[str, tuple[str, ...]] = {
+    "strengths": ("role_objectives", "success_criteria"),
+    "weaknesses": ("known_challenges",),
+    "opportunities": ("role_objectives",),
+    "threats": ("known_challenges",),
+}
+
+
+def context_covered(captured: dict[str, list]) -> list[str]:
+    """The role context this intake actually produced evidence for."""
+    covered: list[str] = []
+    for area, aspects in _AREA_CONTEXT.items():
+        if not captured.get(area):
+            continue
+        for aspect in aspects:
+            if aspect not in covered:
+                covered.append(aspect)
+    return covered
+
+
+def jd_version(job: Job) -> str:
+    """A fingerprint of the job description this intake was captured against.
+
+    Derived rather than read from a column because there is no `jd_version`
+    column and inventing one would need a migration nothing else wants yet. A
+    content hash answers the question a consumer is actually asking -- "is this
+    the JD I am building a matrix from, or an older one" -- and it answers it
+    correctly for every job already in the database, which a new column could
+    only do going forward.
+    """
+    material = json.dumps(
+        {"markdown": job.jd_markdown or "", "sections": job.jd_json or {}},
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def _swot_payload(job: Job, intake: JobSwotIntake) -> dict[str, Any]:
+    """The typed hand-off, built from validated fields only.
+
+    Nothing here is prose the intake agent wrote about its own reasoning: the
+    four arrays are the authority's captured points, and everything else is an
+    identifier or a timestamp. That is the guarantee `artifacts.publish` also
+    checks for, and the reason it can be checked at all is that this function
+    never reaches for the transcript.
+    """
+    from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
+    captured = intake.captured()
+    completed_at = intake.completed_at or datetime.now(timezone.utc)
+    return {
+        **captured,
+        # Provenance. Who said it and when, as identifiers only -- a consumer
+        # showing where a criterion came from must not need the answer text.
+        "sources": [
+            {
+                "kind": "swot_intake",
+                "intake_id": str(intake.id),
+                "conducted_by": str(intake.conducted_by) if intake.conducted_by else None,
+                "captured_at": completed_at.isoformat(),
+            }
+        ],
+        "provenance": {
+            "producer": identity.BODHA,
+            "captured_points": {area: len(points) for area, points in captured.items()},
+            "follow_ups_used": intake.follow_ups_used,
+        },
+        "job": {
+            "job_id": str(job.id),
+            "title": job.title,
+            "department": job.department,
+            "grade": job.assessment_grade,
+            "experience_min_years": job.experience_min_years,
+            "experience_max_years": job.experience_max_years,
+        },
+        "jd_version": jd_version(job),
+        # What the role is FOR and what doing it well looks like. Named
+        # separately from the quadrants because Sutra's matrix needs both, and a
+        # consumer that had to re-derive them from the quadrant names would be
+        # re-implementing this mapping in a second place.
+        "role_expectations": list(captured.get("opportunities") or []),
+        "success_characteristics": list(captured.get("strengths") or []),
+        "context_covered": context_covered(captured),
+        # No contradiction detection is implemented, and an empty list says so
+        # honestly. A missing key would read to the gate as "none found", which
+        # is a claim this intake is not in a position to make.
+        "contradictions": [],
+        "captured_at": completed_at.isoformat(),
+        "artifact_version": SWOT_ARTIFACT_VERSION,
+    }
+
+
+def publish_swot_evidence(
+    job: Job, intake: JobSwotIntake, *, correlation_id: str | None = None
+) -> artifacts.Artifact | None:
+    """Run Bodha's gate, then publish the `swot_evidence` artifact.
+
+    Returns None rather than raising on any failure, and that direction is the
+    whole point. This runs on the request that finishes a hiring manager's SWOT
+    intake -- a live path that worked before artifacts existed. A publish that
+    could raise would turn a contract bug in a new layer into an intake the
+    authority cannot complete, and the intake is the one thing here that cannot
+    be re-run cheaply: the manager has already answered the questions.
+
+    The gate's verdict travels as `validated`. It is NOT a publish veto: a
+    consumer is entitled to see that the producer's own gate did not pass and
+    decide for itself, and refusing to publish would leave Sutra unable to tell
+    a failed gate from an intake that never happened.
+    """
+    from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
+    if not is_complete(intake):
+        return None
+    try:
+        payload = _swot_payload(job, intake)
+        verdict = gates.run_gate(identity.BODHA, payload)
+        envelope = run_envelope.Envelope.for_run(
+            tenant_id=str(job.tenant_id),
+            agent_id=identity.BODHA,
+            task_type="extraction",
+            interactive=False,
+            job_id=str(job.id),
+            workflow_id=correlation_id,
+            context_version=payload["jd_version"],
+        )
+        payload["correlation_id"] = envelope.workflow_id
+        artifact = artifacts.publish(
+            producer=identity.BODHA,
+            artifact_type="swot_evidence",
+            payload=payload,
+            tenant_id=str(job.tenant_id),
+            job_id=str(job.id),
+            version=SWOT_ARTIFACT_VERSION,
+            source_refs=(f"job_swot_intakes:{intake.id}", f"jobs:{job.id}"),
+            validated=verdict.passed,
+        )
+        # Identifiers, counts and a boolean. No captured point, no answer text:
+        # this line is read from far more places than the intake screen is.
+        logger.info(
+            "swot_intake.artifact_published job_id=%s artifact_id=%s validated=%s "
+            "confidence=%s",
+            job.id,
+            artifact.artifact_id,
+            verdict.passed,
+            verdict.confidence,
+        )
+        return artifact
+    except Exception:
+        logger.warning(
+            "swot_intake.artifact_publish_failed job_id=%s", job.id, exc_info=True
+        )
+        return None
+
+
+async def published_evidence(
+    session: AsyncSession, job: Job, *, correlation_id: str | None = None
+) -> artifacts.Artifact | None:
+    """Bodha's published SWOT evidence for this job, or None if there is none.
+
+    The entry point Sutra uses. It loads the intake through the same RLS-aware
+    session every other tenant-scoped read goes through, and returns nothing at
+    all for an intake that is absent or unfinished -- an incomplete intake is
+    not a thin artifact, it is no artifact, and the two must not read the same
+    to a consumer.
+    """
+    from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
+    intake = (
+        await session.execute(
+            select(JobSwotIntake).where(JobSwotIntake.job_id == job.id)
+        )
+    ).scalars().first()
+    if intake is None:
+        return None
+    return publish_swot_evidence(job, intake, correlation_id=correlation_id)
 
 
 assert set(AREA_LABELS) == set(SWOT_AREAS)

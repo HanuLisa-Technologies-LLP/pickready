@@ -24,7 +24,7 @@ TWO SEVERITY SCALES, ON PURPOSE, AND THEY ARE DIFFERENT AXES
 against a floor, answering "regenerate or ship". Spec 14 grades a
 CONTRADICTION: NONE / MINOR / MATERIAL / CRITICAL, answering "how much more
 work is owed before anything may be concluded". They are mapped in one place
-(`_FROM_FINDING`) and nowhere else, so a reader tracing a severity never has to
+(`_from_finding`) and nowhere else, so a reader tracing a severity never has to
 wonder which scale a value came from.
 
 THE RULE WITH THE TEETH
@@ -67,11 +67,18 @@ SEVERITIES: tuple[str, ...] = (NONE, MINOR, MATERIAL, CRITICAL)
 #: The one mapping between the two scales. A `Finding` is about an output; a
 #: `Contradiction` is about two sources. High means the thing a client reads is
 #: wrong, which is the definition of CRITICAL here.
-_FROM_FINDING: dict[str, str] = {
-    base.SEVERITY_HIGH: CRITICAL,
-    base.SEVERITY_MEDIUM: MATERIAL,
-    base.SEVERITY_LOW: MINOR,
-}
+#: Built in a function, not at module scope. `verification.base` is not a leaf
+#: (it imports `agent_loop`), so reading its attributes while this module is
+#: being imported is an `AttributeError` the moment a cycle forms through it.
+#: That exact shape has already cost one order-dependent outage: a full pytest
+#: run was green while a single test file was red, because the suite happened to
+#: initialise the target first. `tests/test_import_graph.py` pins the rule.
+def _from_finding() -> dict[str, str]:
+    return {
+        base.SEVERITY_HIGH: CRITICAL,
+        base.SEVERITY_MEDIUM: MATERIAL,
+        base.SEVERITY_LOW: MINOR,
+    }
 
 # ── Actions a severity obliges ───────────────────────────────────────────────
 #: Recorded, and nothing else is owed. MINOR lives here, which is the whole
@@ -295,7 +302,7 @@ def _from_cross_source(verdict: base.Verdict, *, phase: str) -> list[Contradicti
     """
     lifted: list[Contradiction] = []
     for finding in verdict.findings:
-        severity = _FROM_FINDING.get(finding.severity, MATERIAL)
+        severity = _from_finding().get(finding.severity, MATERIAL)
         lifted.append(
             Contradiction(
                 axis=_ISSUE_AXIS.get(finding.issue, AXIS_RESUME_VS_ANSWERS),

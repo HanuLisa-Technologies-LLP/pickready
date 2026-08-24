@@ -36,7 +36,31 @@ from typing import Any, Sequence
 from app.services import conversation_guardrails, functional_assessment, ppi, rating
 from app.services.verification import base, generic_language
 
-_REMARK_MIN, _REMARK_MAX = functional_assessment.PPI_REMARK_WORDS
+def _remark_bounds() -> tuple[int, int]:
+    """The 45-50 word band, read WHEN NEEDED rather than at import.
+
+    This was `_remark_min, _remark_max = functional_assessment.PPI_REMARK_WORDS`
+    at module scope, and that one line made every import cycle through this
+    package fatal. Importing a partially initialised module is fine in Python;
+    touching one of its attributes while it is still executing is not, and it
+    fails as `AttributeError: partially initialized module`.
+
+    It surfaced when the service layer began importing the agent runtime:
+
+      functional_assessment -> gap_analysis -> ppi -> swot_intake
+        -> agents -> artifacts -> verification -> ppi_report
+        -> functional_assessment (still initialising)
+
+    The failure is ORDER DEPENDENT, which is what made it dangerous. A full
+    pytest run had already finished initialising `functional_assessment` via
+    another path, so the suite was green while `pytest tests/test_platform_audit.py`
+    alone was red. Production does not control its import order either.
+
+    Reading it in a function costs one dict lookup per verification and removes
+    the whole class of failure, so the band still has exactly one definition.
+    """
+    return functional_assessment.PPI_REMARK_WORDS
+
 
 
 def verify_report(
@@ -138,6 +162,7 @@ def _row_findings(row: dict[str, Any], location: str) -> list[base.Finding]:
 def _remark_findings(
     remark: Any, location: str, *, name: str
 ) -> list[base.Finding]:
+    _remark_min, _remark_max = _remark_bounds()
     text = str(remark or "").strip()
     if not text:
         return [
@@ -145,21 +170,21 @@ def _remark_findings(
                 "missing_remark",
                 location,
                 f"{name} has no remark",
-                f"write a {_REMARK_MIN}-{_REMARK_MAX} word remark for {name}",
+                f"write a {_remark_min}-{_remark_max} word remark for {name}",
             )
         ]
 
     findings: list[base.Finding] = []
     count = base.words_in(text)
-    if not _REMARK_MIN <= count <= _REMARK_MAX:
+    if not _remark_min <= count <= _remark_max:
         findings.append(
             base.medium(
                 "remark_word_count",
                 location,
                 f"the remark is {count} words",
                 (
-                    f"rewrite it as complete sentences of {_REMARK_MIN}-"
-                    f"{_REMARK_MAX} words; never truncate a sentence to fit"
+                    f"rewrite it as complete sentences of {_remark_min}-"
+                    f"{_remark_max} words; never truncate a sentence to fit"
                 ),
             )
         )

@@ -67,8 +67,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.assessment import CandidateQuestion, JobCompetency
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
-from app.models.job_setup import JobSwotIntake
-from app.services import agent_loop, llm_router
+from app.models.job_setup import SWOT_AREAS, JobSwotIntake
+from app.services import agent_loop, llm_router, swot_intake
+from app.services.verification import base as verification
 from app.prompts import registry
 from app.services.rating import (
     GRADE_HIGHLY,
@@ -96,6 +97,10 @@ __all__ = [
     "load_framework",
     "load_swot",
     "matrix_is_complete",
+    "matrix_version",
+    "published_matrix",
+    "publish_tatva_matrix",
+    "verify_matrix_for_consumer",
     "max_questions",
     "min_questions",
     "resolve_question_range",
@@ -394,7 +399,23 @@ def _jd_terms(job: Job, field: str) -> list[str]:
     return out
 
 
-def _swot_terms(swot: JobSwotIntake | None) -> list[str]:
+def _captured_points(swot: JobSwotIntake | dict[str, Any] | None) -> dict[str, list]:
+    """The four quadrants, whether they arrived as an artifact or as ORM rows.
+
+    Sutra normally reads Bodha's published artifact, and falls back to the rows
+    for a job whose SWOT predates the artifact layer. Both shapes are accepted
+    HERE, once, rather than at each of the three call sites: a per-call
+    `getattr` would silently return nothing for a Mapping, and "nothing" is
+    indistinguishable from "the authority listed no strengths".
+    """
+    if swot is None:
+        return {}
+    if isinstance(swot, dict):
+        return {area: list(swot.get(area) or []) for area in SWOT_AREAS}
+    return swot.captured()
+
+
+def _swot_terms(swot: JobSwotIntake | dict[str, Any] | None) -> list[str]:
     """Short labels mined from the SWOT intake, for the offline fallback.
 
     The fallback has no model, so it cannot reason about what the authority
@@ -402,12 +423,13 @@ def _swot_terms(swot: JobSwotIntake | None) -> list[str]:
     human is about to edit than the JD alone, which is the input the SWOT was
     collected to supplement.
     """
-    if swot is None:
+    captured = _captured_points(swot)
+    if not captured:
         return []
     out: list[str] = []
     seen: set[str] = set()
     for area in ("strengths", "weaknesses"):
-        for item in getattr(swot, area, None) or []:
+        for item in captured.get(area) or []:
             label = str(item).strip()
             if not label:
                 continue
@@ -418,7 +440,9 @@ def _swot_terms(swot: JobSwotIntake | None) -> list[str]:
     return out
 
 
-def _fallback_framework(job: Job, swot: JobSwotIntake | None = None) -> list[dict[str, Any]]:
+def _fallback_framework(
+    job: Job, swot: JobSwotIntake | dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     """A matrix built from the job's own words, with no network call.
 
     No padding loop, and that is the change Draft v4 allowed. The old fallback
@@ -555,7 +579,7 @@ def _normalise(rows: list[Any], *, maximum_total: int) -> list[dict[str, Any]]:
 
 
 def _ensure_every_aspect(
-    rows: list[dict[str, Any]], job: Job, swot: JobSwotIntake | None
+    rows: list[dict[str, Any]], job: Job, swot: JobSwotIntake | dict[str, Any] | None
 ) -> list[dict[str, Any]]:
     """Guarantee one item per aspect, drawing from the JD fallback.
 
@@ -603,6 +627,63 @@ async def load_swot(session: AsyncSession, job_id: Any) -> JobSwotIntake | None:
     ).scalars().first()
 
 
+#: What `_consume_swot_evidence` says it read. Recorded on the log line rather
+#: than inferred later, because "the matrix was built from the artifact" and
+#: "the matrix was built from the rows because the artifact was refused" produce
+#: identical matrices and must not be identical in the record.
+SWOT_FROM_ARTIFACT = "artifact"
+SWOT_FROM_INTAKE_ROWS = "intake_rows"
+SWOT_ABSENT = "absent"
+
+
+async def _consume_swot_evidence(
+    session: AsyncSession, job: Job
+) -> tuple[dict[str, Any] | None, str]:
+    """Sutra reads Bodha's SWOT evidence, verifying it before it reads it.
+
+    The artifact is the intended path (spec §4): it is typed, scoped and
+    verified, so Sutra can tell a real intake from one that degraded, which
+    reading the rows directly cannot.
+
+    THE ROW PATH IS A FALLBACK AND MUST STAY ONE. Every job that existed before
+    the artifact layer was wired has an intake and no artifact, and there are
+    live jobs in that state right now. Refusing to generate a matrix without an
+    artifact would strand each of them at `questions_pending_review` with no way
+    forward, which is exactly the failure nineteen jobs were already found in on
+    2026-08-06 -- a setup step that could not complete and no screen that said
+    so. So a missing or refused artifact costs the verification and nothing
+    else, and the reason is written on the log line.
+    """
+    from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
+    try:
+        artifact = await swot_intake.published_evidence(session, job)
+    except Exception:
+        logger.warning("ppi.swot_artifact_unavailable job_id=%s", job.id, exc_info=True)
+        artifact = None
+
+    if artifact is not None:
+        verdict = artifacts.verify_for_consumer(
+            artifact,
+            identity.SUTRA,
+            tenant_id=str(job.tenant_id),
+            job_id=str(job.id),
+        )
+        if verdict.passed:
+            return {area: list(artifact.payload.get(area) or []) for area in SWOT_AREAS}, (
+                SWOT_FROM_ARTIFACT
+            )
+        logger.warning(
+            "ppi.swot_artifact_refused job_id=%s issues=%s",
+            job.id,
+            [finding.issue for finding in verdict.findings],
+        )
+
+    swot = await load_swot(session, job.id)
+    if swot is None:
+        return None, SWOT_ABSENT
+    return swot.captured(), SWOT_FROM_INTAKE_ROWS
+
+
 async def generate_framework(
     session: AsyncSession, job: Job, *, replace: bool = False
 ) -> list[JobCompetency]:
@@ -631,7 +712,12 @@ async def generate_framework(
     if existing and not replace:
         return list(existing)
 
-    swot = await load_swot(session, job.id)
+    # Bodha's evidence, verified before it is read. `swot` is the four
+    # quadrants as a plain mapping from here down, whichever path produced them,
+    # so nothing below can tell an artifact from a row -- and nothing below
+    # should: the matrix is built from what the authority said, not from how it
+    # travelled.
+    swot, swot_origin = await _consume_swot_evidence(session, job)
     maximum_total = _maximum_total(job)
     payload = json.dumps(
         {
@@ -641,7 +727,7 @@ async def generate_framework(
             "experience_max_years": job.experience_max_years,
             "jd": job.jd_json,
             "jd_markdown": (job.jd_markdown or "")[:6000],
-            "swot_intake": (swot.captured() if swot is not None else None),
+            "swot_intake": swot,
         }
     )
     system_prompt = _framework_system_prompt(job)
@@ -746,12 +832,18 @@ async def generate_framework(
     await session.flush()
     logger.info(
         "ppi.framework.generated job_id=%s must_have=%d nice_to_have=%d "
-        "behavioural=%d target=%d swot=%s",
+        "behavioural=%d target=%d swot=%s swot_origin=%s",
         job.id,
         *(sum(1 for c in created if c.category == cat) for cat in CATEGORIES),
         job.question_target,
-        swot is not None and not swot.is_empty(),
+        bool(swot) and any(swot.values()),
+        swot_origin,
     )
+    # Sutra's hand-off to Yukti, Vaada, Miti and Siddhi (spec §5). Published
+    # LAST, after the rows and both stamps are flushed, so a contract bug in the
+    # artifact layer cannot cost a job the matrix it just generated -- the same
+    # ordering the SWOT publish uses, and for the same reason.
+    publish_tatva_matrix(job, created, version=_next_matrix_version(existing))
     return created
 
 
@@ -765,6 +857,300 @@ async def load_framework(session: AsyncSession, job_id: Any) -> list[JobCompeten
         )
     ).scalars().all()
     return sorted(rows, key=lambda row: (CATEGORIES.index(row.category), row.ordinal))
+
+
+# ── Sutra publishes the matrix (spec §5) ─────────────────────────────────────
+#
+# WHAT THE VERSION IS, AND WHY IT IS NOT A COLUMN
+# -----------------------------------------------
+# A regeneration DEACTIVATES the previous rows and inserts a new set in one
+# transaction, so `job_competencies` already records every generation this job
+# has had -- one batch of rows per generation, each batch sharing the
+# transaction's `created_at`. Counting batches is therefore reading the version
+# that already exists rather than maintaining a second one beside it. A counter
+# column would be a number somebody has to remember to increment, and the
+# failure when they forget is the one this whole hand-off exists to prevent: a
+# consumer using criteria it believes are current.
+#
+# It is frozen once the matrix is HM-locked because a locked matrix cannot be
+# regenerated -- `generate_framework` is idempotent, and reopening is refused
+# once anyone has been assessed. No new batch means no new version.
+
+
+def matrix_version(rows: list[JobCompetency]) -> int:
+    """This job's matrix version, counted from the generations behind it.
+
+    `rows` must be EVERY competency row for the job, active and inactive. Handed
+    only the active ones this returns 1 forever, because a regeneration
+    deactivates rather than deletes -- which is precisely the stale-version
+    reading a consumer must never make silently.
+    """
+    batches = {row.created_at for row in rows if row.created_at is not None}
+    return max(1, len(batches))
+
+
+def _next_matrix_version(existing: list[JobCompetency]) -> int:
+    """The version the batch about to be written will carry.
+
+    Computed from the PREVIOUS rows rather than from the new ones, because the
+    new ones get their `created_at` from a server default that this process has
+    not read back yet: counting them would silently fail to increment, and an
+    unchanged version on changed criteria is the one thing a consumer cannot
+    detect for itself.
+    """
+    return matrix_version(existing) + (1 if existing else 0)
+
+
+async def _all_competencies(session: AsyncSession, job_id: Any) -> list[JobCompetency]:
+    """Every generation's rows, which is what `matrix_version` has to count."""
+    return list(
+        (
+            await session.execute(
+                select(JobCompetency)
+                .where(JobCompetency.job_id == job_id)
+                .order_by(JobCompetency.ordinal)
+            )
+        ).scalars().all()
+    )
+
+
+def _requirement_word(required_level: Any) -> str:
+    """The required level as a WORD.
+
+    An integer here would be a number crossing an agent boundary on its way
+    towards a report, and the point at which it stops being convertible is the
+    point at which somebody renders it. The internal score exists so the radar
+    has a radius; nothing downstream of this artifact needs it.
+    """
+    for label, score in REQUIRED_LEVEL_SCORES.items():
+        if score == required_level:
+            return label
+    return GRADE_MATCHING
+
+
+def _matrix_item(row: JobCompetency) -> dict[str, Any]:
+    return {
+        "competency_id": str(row.id),
+        "name": row.name,
+        "description": row.description or "",
+        # The criterion an answer is measured against at MATRIX level. The
+        # per-question rubric bands are written with each question and belong to
+        # that question, not here: a rubric copied onto the matrix would be a
+        # second copy that drifts from the one the scorer actually reads.
+        "rubric": row.description or "",
+        "required_level": _requirement_word(row.required_level),
+        "evidence_expectation": (
+            "At least one answer in the candidate's own words describing what "
+            "they did, in what context, and what resulted."
+        ),
+        "ordinal": row.ordinal,
+    }
+
+
+def _matrix_payload(
+    job: Job, rows: list[JobCompetency], *, version: int, locked: bool
+) -> dict[str, Any]:
+    from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
+    by_category = {
+        category: [_matrix_item(row) for row in rows if row.category == category]
+        for category in CATEGORIES
+    }
+    minimum, maximum = resolve_question_range(job.assessment_grade, len(rows))
+    return {
+        **by_category,
+        "coverage": {
+            category: len(items) for category, items in by_category.items()
+        },
+        # The RANGE, not a number of questions to ask. Sutra decides the band and
+        # Vaada decides where inside it a conversation stops; publishing a single
+        # figure would hand a consumer the old pre-2026-08-23 contract under the
+        # new name.
+        "question_count_range": {"minimum": minimum, "maximum": maximum},
+        "grade": job.assessment_grade,
+        "version": version,
+        "locked": locked,
+        "jd_version": swot_intake.jd_version(job),
+        "provenance": {
+            "producer": identity.SUTRA,
+            "job_id": str(job.id),
+            "generated_at": (
+                job.framework_generated_at.isoformat()
+                if job.framework_generated_at
+                else None
+            ),
+            "approved_at": (
+                job.framework_approved_at.isoformat()
+                if job.framework_approved_at
+                else None
+            ),
+        },
+        # What `sutra_gate` compares. The JD's critical requirements are the
+        # Must-have names themselves: this product has no separate list of what
+        # the JD demanded, and inventing one from JD text here would be a second
+        # extraction nobody reviews. Stated plainly rather than left out, so the
+        # gate is measuring something real rather than an empty set.
+        "critical_requirements": [item["name"] for item in by_category[CATEGORY_MUST_HAVE]],
+        "covered_requirements": [
+            item["name"] for items in by_category.values() for item in items
+        ],
+    }
+
+
+def publish_tatva_matrix(
+    job: Job,
+    rows: list[JobCompetency],
+    *,
+    version: int,
+    correlation_id: str | None = None,
+) -> artifacts.Artifact | None:
+    """Run Sutra's gate, then publish the `tatva_matrix` artifact.
+
+    Returns None rather than raising, for the same reason Bodha's publish does:
+    this runs inside job setup, which is the step that gates a job reaching
+    candidates at all. A publish failure here must cost the hand-off and never
+    the matrix -- the rows and the stamps are already flushed by the time this
+    is called, and a raised exception would roll back a generation that
+    succeeded.
+
+    LOCKED IS DERIVED FROM THE JOB, NOT PASSED IN. `framework_approved_at` is
+    stamped by the review handler, and a caller that could assert "locked" for
+    itself could publish a mutable matrix as immutable, which is the one claim a
+    consumer has no way to check.
+    """
+    from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
+    if not rows:
+        return None
+    try:
+        locked = job.framework_approved_at is not None
+        payload = _matrix_payload(job, rows, version=version, locked=locked)
+        verdict = gates.run_gate(identity.SUTRA, payload)
+        envelope = run_envelope.Envelope.for_run(
+            tenant_id=str(job.tenant_id),
+            agent_id=identity.SUTRA,
+            task_type="jd_generation",
+            interactive=False,
+            job_id=str(job.id),
+            workflow_id=correlation_id,
+            context_version=str(version),
+        )
+        payload["correlation_id"] = envelope.workflow_id
+        artifact = artifacts.publish(
+            producer=identity.SUTRA,
+            artifact_type="tatva_matrix",
+            payload=payload,
+            tenant_id=str(job.tenant_id),
+            job_id=str(job.id),
+            version=version,
+            # A locked matrix is what makes two reports on one job comparable,
+            # so it is published under the frozen status rather than merely
+            # flagged: `verify_for_consumer` reads status, and a flag it does not
+            # read is a flag nobody enforces.
+            status=(
+                artifacts.STATUS_LOCKED if locked else artifacts.STATUS_PUBLISHED
+            ),
+            source_refs=tuple(f"job_competencies:{row.id}" for row in rows),
+            validated=verdict.passed,
+        )
+        logger.info(
+            "ppi.matrix_artifact_published job_id=%s artifact_id=%s version=%d "
+            "locked=%s validated=%s",
+            job.id,
+            artifact.artifact_id,
+            version,
+            locked,
+            verdict.passed,
+        )
+        return artifact
+    except Exception:
+        logger.warning(
+            "ppi.matrix_artifact_publish_failed job_id=%s", job.id, exc_info=True
+        )
+        return None
+
+
+async def published_matrix(
+    session: AsyncSession, job: Job, *, correlation_id: str | None = None
+) -> artifacts.Artifact | None:
+    """The job's current matrix as a verifiable artifact, or None if it has none.
+
+    The entry point Yukti, Vaada, Miti and Siddhi use. It reads the version from
+    EVERY generation's rows and publishes only the active ones, which is the
+    pairing that makes a stale read detectable: the payload is what a consumer
+    would grade against, and the version is how many times that payload has been
+    replaced.
+    """
+    from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
+    active = await load_framework(session, job.id)
+    if not active:
+        return None
+    version = matrix_version(await _all_competencies(session, job.id))
+    return publish_tatva_matrix(
+        job, active, version=version, correlation_id=correlation_id
+    )
+
+
+def verify_matrix_for_consumer(
+    artifact: artifacts.Artifact,
+    consumer_id: str,
+    *,
+    tenant_id: str,
+    job_id: str,
+    expected_version: int | None = None,
+) -> verification.Verdict:
+    """`verify_for_consumer` plus the check only Sutra can state.
+
+    THE FAILURE THIS PREVENTS. A candidate is assessed against matrix version 2
+    while the report is synthesised against version 1, and every grade in that
+    report is stated against criteria the candidate was never asked about. Both
+    versions verify perfectly on their own -- right tenant, right job, right
+    producer, published -- so nothing in the generic envelope check can see it.
+    It is HIGH because the report is immutable: by the time anyone notices, the
+    only remedy is re-running an assessment that cannot be re-run.
+
+    A frozen matrix that arrives unfrozen is the same defect one step earlier.
+    `expected_version` is compared arithmetically, never inferred, and a
+    consumer that does not know which version it wants passes None and gets the
+    envelope check alone rather than a check that quietly always passes.
+    """
+    from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
+    findings = list(
+        artifacts.verify_for_consumer(
+            artifact, consumer_id, tenant_id=tenant_id, job_id=job_id
+        ).findings
+    )
+    if expected_version is not None and int(artifact.version) != int(expected_version):
+        findings.append(
+            verification.high(
+                "matrix_version_mismatch",
+                "tatva_matrix.version",
+                f"the consumer expects version {int(expected_version)} and the "
+                f"artifact carries version {int(artifact.version)}",
+                "Reload the job's current matrix; never grade against a version "
+                "the candidate was not assessed on.",
+            )
+        )
+    payload_version = artifact.payload.get("version")
+    if payload_version is not None and int(payload_version) != int(artifact.version):
+        findings.append(
+            verification.high(
+                "matrix_version_disagreement",
+                "tatva_matrix.payload.version",
+                f"the envelope says version {int(artifact.version)} and the payload "
+                f"says {int(payload_version)}",
+                "Republish the matrix; an artifact that disagrees with itself "
+                "cannot establish which criteria were used.",
+            )
+        )
+    if artifact.payload.get("locked") and artifact.status != artifacts.STATUS_LOCKED:
+        findings.append(
+            verification.high(
+                "locked_matrix_published_mutable",
+                "tatva_matrix.status",
+                "the payload states the matrix is HM-locked and the envelope does not",
+                "Republish the locked matrix under the frozen status.",
+            )
+        )
+    return verification.verdict(f"a2a:{artifact.artifact_type}", findings)
 
 
 def matrix_is_complete(
