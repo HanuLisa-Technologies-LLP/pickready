@@ -1342,6 +1342,136 @@ async def _dimension_coverage(
     return int(row[0] or 0), int(row[1] or 0)
 
 
+async def _coverage_rows(
+    session: AsyncSession, link: JobCandidateLink
+) -> list[dict[str, Any]]:
+    """Per-matrix-item evidence counts, for Vaada's explicit conversation state.
+
+    A SECOND READ BESIDE `_dimension_coverage`, AND DELIBERATELY SO. That
+    function is the stopping rule's own input and its exact SQL is pinned by
+    `tests/test_conversation_key_contract.py` -- the join key, the DISTINCT
+    competency count and the substantive filter are each pinned because getting
+    any of them wrong grades every candidate on the job Not Matching with no
+    error anywhere. Folding it into this richer read would put the product's
+    only comparability guarantee behind a refactor whose breakage is silent.
+    Two small indexed aggregates on one turn is the cheaper mistake.
+
+    Grouped by competency, never by question: several questions can probe one
+    matrix item and a follow-up is filed under its parent's key, so counting
+    questions would let a third of the matrix look like full coverage.
+    """
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT c.name AS dimension,
+                       COUNT(m.id) AS answers,
+                       COUNT(m.id) FILTER (
+                           WHERE COALESCE(m.answer_label, 'substantive') = 'substantive'
+                       ) AS substantive,
+                       COUNT(m.id) FILTER (WHERE m.evidence_gap) AS gaps
+                  FROM candidate_questions q
+                  JOIN job_competencies c ON c.id = q.competency_id
+                  LEFT JOIN assessment_messages m
+                         ON m.question_key = CAST(q.id AS text)
+                        AND m.speaker = 'candidate'
+                 WHERE q.job_candidate_link_id = :link_id
+                 GROUP BY c.id, c.name, c.category, c.ordinal
+                 ORDER BY c.category, c.ordinal
+                """
+            ),
+            {"link_id": str(link.id)},
+        )
+    ).all()
+    return [
+        {
+            "dimension": str(row[0]),
+            "answers": int(row[1] or 0),
+            "substantive": int(row[2] or 0),
+            "gaps": int(row[3] or 0),
+        }
+        for row in rows
+    ]
+
+
+async def _ledger_dimension_flags(
+    session: AsyncSession, job: Job, link: JobCandidateLink
+) -> tuple[set[str], set[str]]:
+    """(dimensions the ledger contradicts, dimensions it only inferred).
+
+    THE MITI SIDE OF THE LOOP. Whether two readings of a dimension disagree is a
+    question about the evidence ledger, not about the transcript, so it is read
+    from the ledger rather than guessed at from what the candidate typed. That
+    is what makes this a loop rather than two agents talking past each other:
+    Miti records what it read, and Vaada asks about what does not add up while
+    there is still a candidate to ask.
+
+    NEVER LOAD-BEARING. A ledger that is unavailable, empty, or has not been
+    written for this application yet returns two empty sets, and the
+    conversation behaves exactly as it did before the ledger existed. The
+    opposite direction would be far worse: a ledger outage that made every
+    conversation refuse to close would strand every candidate in the product
+    mid-assessment.
+    """
+    from app.services.evidence import ledger
+
+    try:
+        claims = await ledger.load_claims(
+            session, tenant_id=job.tenant_id, job_id=job.id, link_id=link.id
+        )
+    except Exception:  # noqa: BLE001 -- see the docstring
+        logger.info("assessments.evidence_unavailable link_id=%s", link.id)
+        return set(), set()
+    conflicting = {
+        claim.dimension
+        for claim in claims
+        if claim.status == ledger.CLAIM_CONTRADICTED
+    }
+    # `inferred_only` is the product agreeing with itself: everything behind the
+    # dimension was concluded rather than stated or confirmed. That is exactly
+    # the shape a conversation can fix, by asking.
+    inferred = {
+        claim.dimension
+        for claim in claims
+        if claim.status == ledger.CLAIM_INFERRED_ONLY
+    }
+    return conflicting, inferred
+
+
+async def _conversation_state(
+    session: AsyncSession,
+    job: Job,
+    link: JobCandidateLink,
+    conversation: AssessmentConversation,
+    total_written: int,
+) -> "interviewer.ConversationState":
+    """Where this conversation has got to, as one explicit value.
+
+    INTERNAL ONLY. It is logged for an operator and read by the stop decision;
+    no field of it reaches a response schema, and the no-numbers rule covers its
+    counts exactly as it covers a score.
+    """
+    rows = await _coverage_rows(session, link)
+    conflicting, inferred = await _ledger_dimension_flags(session, job, link)
+    return interviewer.conversation_state(
+        dimensions=[
+            interviewer.DimensionEvidence(
+                dimension=row["dimension"],
+                answers=row["answers"],
+                substantive=row["substantive"],
+                gaps=row["gaps"],
+                conflicting=row["dimension"] in conflicting,
+                weak=row["dimension"] in inferred,
+            )
+            for row in rows
+        ],
+        asked=conversation.next_question_index,
+        total_written=total_written,
+        floor=ppi.min_questions(job.assessment_grade),
+        probe_outstanding=conversation.pending_prompt is not None,
+    )
+
+
 async def _conversation_prompts(
     session: AsyncSession, job: Job, link: JobCandidateLink
 ) -> list[tuple[str, str, str]]:
@@ -1624,6 +1754,19 @@ async def _write_next_question_inner(
             asked_before=asked_before,
         )
         written = result.value["question"]
+        # LAST CHECK BEFORE THE CANDIDATE READS IT, and deterministic. The
+        # writer is told what has already been asked and usually respects it;
+        # "usually" is not a guarantee, and the one turn it gets wrong is the
+        # turn the candidate notices. Falling back to the stored text costs
+        # nothing here: it is the question already written for this item from
+        # this candidate's own resume, and it is by construction not one of the
+        # lines above.
+        if interviewer.is_semantic_repeat(written, asked_before):
+            logger.info(
+                "assessments.question_rejected reason=repeat conversation_id=%s",
+                conversation.id,
+            )
+            written = stored
 
     # OUTBOUND GUARD, on the way IN to storage rather than on the way out, so
     # the transcript records exactly the text the candidate will read. A
@@ -1832,6 +1975,16 @@ async def respond(
                     # across 45 questions left 89% of the conversation unable
                     # to react to anything the candidate said.
                     budget=interviewer.follow_up_budget(len(prompts)),
+                    # Every interviewer line so far, so a probe that merely
+                    # re-asks something already asked is dropped rather than
+                    # spending a scarce budget to prove nobody was listening.
+                    # The check inside is deterministic: it matters most during
+                    # an outage, which is when a model cannot answer it.
+                    asked_before=[
+                        row["content"]
+                        for row in transcript
+                        if row.get("speaker") == "agent"
+                    ],
                 )
                 # Only a real probe draws down the budget. A re-ask does not:
                 # asking someone to actually answer is not a probe, and
@@ -1891,12 +2044,33 @@ async def respond(
     evidence_complete = False
     if not conversation.pending_prompt:
         covered, total_dimensions = await _dimension_coverage(session, link)
+        # The explicit state, beside the tuple the stopping rule reads. It is
+        # what turns "18 of 20 covered" into something an operator can act on:
+        # which dimensions are unprobed, which produced nothing usable, and
+        # which the evidence ledger already holds two readings of.
+        coverage = await _conversation_state(
+            session, job, link, conversation, len(prompts)
+        )
+        logger.info(
+            "assessments.conversation_state conversation_id=%s state=%s",
+            conversation.id, coverage.as_log(),
+        )
         evidence_complete = ppi.conversation_may_close(
             grade=job.assessment_grade,
             asked=conversation.next_question_index,
             total_written=len(prompts),
             covered_dimensions=covered,
             total_dimensions=total_dimensions,
+        ) and (
+            # AN ADDITIONAL CONDITION, NEVER A REPLACEMENT.
+            # `conversation_may_close` stays the only thing that decides whether
+            # an assessment may end early, floor included; this can only ever
+            # make it stricter. A MATERIAL contradiction obliges `ask_follow_up`
+            # while a conversation is still running, and stopping with one
+            # outstanding throws away the only chance anyone will get to ask.
+            # Completion by exhausting the written questions is untouched below,
+            # so this can never strand a candidate in an endless interview.
+            interviewer.STOP_NO_CONFLICT_OUTSTANDING in coverage.stop_conditions
         )
 
     if (

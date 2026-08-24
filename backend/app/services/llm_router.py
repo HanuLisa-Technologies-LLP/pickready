@@ -13,6 +13,17 @@ per task type, a per-task timeout, and a per-task retry budget. Within each
 provider tier the router ROUND-ROBINS across that provider's healthy keys, so
 concurrent assessments spread load instead of hammering key #1 into a 429.
 
+That order is then re-ranked against MEASURED capacity by
+`services/llm_capacity.py` (`capacity_ordered`), because preference alone
+routed every ~12k-token extraction into an 8000-token pool and got a 413 from
+all three credentials on every call. Capacity is keyed by QUOTA DOMAIN rather
+than by credential: three Groq keys billing one organisation are one pool, and
+believing they are three is believing in throughput that does not exist. Every
+attempt updates the registry, every failure is classified there, and every
+organisation id a provider names in an error body is what teaches it who shares
+a pool with whom. Nothing in that path calls a model, and the weights are data
+in `ROUTE_SCORE_WEIGHTS`, so the same state picks the same route every time.
+
 Key source: the `llm_provider_keys` table (encrypted at rest) when it has rows;
 otherwise the populated env slots (3-21 of them). Empty slots are skipped.
 
@@ -69,7 +80,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing_extensions import TypedDict
 
-from app.services import tracing
+from app.services import llm_capacity, tracing
 from app.config.llm_providers import (
     MIN_CEILING_FRACTION,
     MIN_USEFUL_MAX_TOKENS,
@@ -365,11 +376,27 @@ _ORG_WIDE_SIZE_STATUSES = frozenset({413})
 
 
 def is_org_wide_size_failure(exc: Exception) -> bool:
-    """True when the request was too large for the whole account's TPM pool."""
-    return (
-        isinstance(exc, httpx.HTTPStatusError)
-        and exc.response.status_code in _ORG_WIDE_SIZE_STATUSES
-    )
+    """True when the request was too large for the whole account's pool.
+
+    Two spellings of one fact, and the second was found on the live accounts on
+    2026-08-24. Groq says it with HTTP 413. OpenRouter says it with HTTP 402:
+
+        "Prompt tokens limit exceeded: 15330 > 2623 ...
+         limit_source: openrouter_credits"
+
+    A size refusal wearing a payment status code, and reading it as payment cost
+    a working tier. All three OpenRouter credentials answered that to a
+    realistic extraction and answered an ordinary prompt in 1.7 seconds, so one
+    large call wrote the account off for the fifteen-minute cooldown and every
+    small call that would have succeeded was refused with it. The classification
+    lives in `llm_capacity.classify_failure`, which is the one place the
+    taxonomy is written down.
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    if exc.response.status_code in _ORG_WIDE_SIZE_STATUSES:
+        return True
+    return llm_capacity.classify_failure(exc) is llm_capacity.FailureKind.CAPACITY
 
 
 def is_account_level_failure(exc: Exception) -> bool:
@@ -379,11 +406,17 @@ def is_account_level_failure(exc: Exception) -> bool:
     ceiling is deliberately excluded: the account is solvent, we simply asked
     for more than it covers, and `affordable_max_tokens` turns that into a
     retry rather than writing the provider off for the rest of the call.
+
+    A status that names a PROMPT ceiling is excluded for the same reason and a
+    different remedy: the account is answering, this one request was too big,
+    and the useful response is to stop sending requests of that size to that
+    domain rather than to stop sending requests at all.
     """
     return (
         isinstance(exc, httpx.HTTPStatusError)
         and exc.response.status_code in _ACCOUNT_LEVEL_STATUSES
         and not _is_retryable_ceiling(affordable_max_tokens(exc))
+        and not is_org_wide_size_failure(exc)
     )
 
 
@@ -438,6 +471,22 @@ def key_stats() -> dict[str, dict[str, Any]]:
         fingerprint: stat.as_dict()
         for fingerprint, stat in sorted(_key_stats.items())
     }
+
+
+def capacity_snapshot() -> dict[str, Any]:
+    """The measured capacity table, for an operator console.
+
+    A pass-through so a caller needs one import rather than two, and so the
+    router stays the single chokepoint every question about routing is asked
+    through. Carries fingerprints, counts and timings; no key material, no
+    prompt text, and none of it may reach a client.
+    """
+    return llm_capacity.snapshot()
+
+
+def routing_decisions() -> list[dict[str, Any]]:
+    """The recent routing decisions: what was chosen, why, and what was not."""
+    return llm_capacity.recent_decisions()
 
 
 def _record_key_attempt(
@@ -771,6 +820,68 @@ def probe_each_provider_first(chain: list[_RouterKey]) -> list[_RouterKey]:
     return ordered
 
 
+def capacity_ordered(
+    chain: list[_RouterKey],
+    task_type: str,
+    *,
+    input_tokens: int,
+    needs_json: bool,
+) -> list[_RouterKey]:
+    """Reorder and filter a chain by MEASURED capacity. Never raises.
+
+    THE DEFECT THIS CLOSES, measured on the live accounts 2026-08-24. The chain
+    was built from the task's preference order alone, so a ~12k-token extraction
+    went to Groq first on every single call -- and every single call got
+
+        413 "Request too large ... in organization `org_01ky...62bj` ...
+             on tokens per minute (TPM): Limit 8000, Requested 11900"
+
+    from all three credentials, because all three bill that one organisation and
+    that one 8000 pool. Three guaranteed-failing round trips out of a retry
+    budget the tier that could have served it needed. The registry has that
+    ceiling the moment the provider states it once, so the second oversized
+    request is routed around the wall the first one found.
+
+    WHAT IT DOES NOT DO, and each absence is deliberate:
+
+      * it never invents a ceiling. A domain with no observation is fully
+        eligible, because a cold start that routed nowhere would be a worse
+        failure than the one being fixed, and `eligible()` returns the whole
+        list rather than an empty one when nothing fits;
+      * it calls no model. Scoring is arithmetic over recorded observations with
+        weights that are DATA in `config/llm_providers.ROUTE_SCORE_WEIGHTS`, so
+        the same registry state and the same chain give the same order. A
+        sampling scheduler would make a latency regression indistinguishable
+        from the scheduler having a different opinion this morning;
+      * it never raises. A bookkeeping error in the scheduler must not be able
+        to take down routing, so any failure falls back to the chain it was
+        handed, which is the product's previous behaviour exactly.
+
+    `probe_each_provider_first` is applied AFTER this, so a dead tier still
+    costs one attempt rather than all of its keys.
+    """
+    if len(chain) < 2:
+        return chain
+    try:
+        scores = llm_capacity.plan(
+            [(key.provider, key.fingerprint) for key in chain],
+            task_type=task_type,
+            input_tokens=input_tokens,
+            needs_json=needs_json,
+            model_by_provider=PROVIDER_MODELS,
+        )
+        by_fingerprint = {key.fingerprint: key for key in chain}
+        ordered = [
+            by_fingerprint[score.fingerprint]
+            for score in scores
+            if score.fingerprint in by_fingerprint
+        ]
+        return ordered or chain
+    except Exception:  # noqa: BLE001 -- routing must survive its own telemetry
+        logger.debug("llm_router.capacity_ordering_failed", exc_info=True)
+        return chain
+
+
 # ── Provider calls (httpx, no SDKs) ─────────────────────────────────────────
 
 
@@ -982,6 +1093,12 @@ class _RouteContext:
     #: Hard wall-clock ceiling for ONE attempt. Not the same thing as the httpx
     #: timeout, and that difference is the point — see `_attempt`.
     attempt_timeout: float | None = None
+    #: Estimated INPUT size of this call, in tokens. Recorded against every
+    #: failure so a 413 or a prompt-cap 402 teaches the registry a real ceiling
+    #: rather than only that "something was too big". Defaulted to 0, which the
+    #: registry reads as "unknown" and never as "empty", so a context built by
+    #: hand in a test learns nothing instead of learning a wrong ceiling.
+    input_tokens: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -1052,6 +1169,12 @@ async def _attempt(state: RouterState) -> dict:
             key.provider, getattr(ctx, "max_tokens", 4096)
         ),
     )
+    # Recorded BEFORE the outcome is known, because the load-share term is about
+    # where traffic was SENT. Counting only successes would let a domain that
+    # fails everything look idle and keep attracting traffic.
+    llm_capacity.observe_attempt(
+        key.provider, key.fingerprint, PROVIDER_MODELS.get(key.provider, "")
+    )
     started = time.monotonic()
     try:
         # asyncio.wait_for, NOT just the httpx timeout. httpx's `read` timeout
@@ -1095,6 +1218,25 @@ async def _attempt(state: RouterState) -> dict:
         _record_key_attempt(
             key, ctx.task_type, latency_ms, success=False, throttled=throttled
         )
+        # The capacity registry classifies the failure and files it against the
+        # QUOTA DOMAIN, which is the unit a rate limit actually applies to. An
+        # organisation id in the body is picked up here too, so membership is
+        # learned from what the provider states rather than from our assumption
+        # that one credential is one pool. Wrapped because it is telemetry: a
+        # registry error must not turn a recoverable provider failure into a
+        # crash inside the retry loop.
+        try:
+            llm_capacity.observe_failure(
+                key.provider,
+                key.fingerprint,
+                exc,
+                latency_ms=latency_ms,
+                task_type=ctx.task_type,
+                requested_tokens=getattr(ctx, "input_tokens", 0),
+                model=PROVIDER_MODELS.get(key.provider, ""),
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("llm_router.capacity_failure_record_failed", exc_info=True)
         await _record_failure(key, ctx.session)
         # The HTTP status is the whole diagnosis (401 bad key, 402 out of
         # credit, 429 quota) and it was previously logged at INFO, which the
@@ -1135,6 +1277,12 @@ async def _attempt(state: RouterState) -> dict:
                 effective_max_tokens, ceiling, status_code,
             )
             ctx.provider_max_tokens[key.provider] = ceiling
+            # An OUTPUT ceiling, and kept strictly apart from the domain's INPUT
+            # ceiling. Confusing the two would have the registry refuse a small
+            # prompt because a long answer was once unaffordable.
+            llm_capacity.observe_output_ceiling(
+                key.provider, key.fingerprint, ceiling
+            )
             return {
                 "current_index": index,
                 "attempts": attempts + 1,
@@ -1171,6 +1319,22 @@ async def _attempt(state: RouterState) -> dict:
     _record_key_attempt(
         key, ctx.task_type, latency_ms, success=True, usage=result
     )
+    # The provider's OWN prompt count, not our estimate, when it reports one.
+    # That is what raises a domain's ceiling back up after an upgrade: a single
+    # 413 would otherwise pin the pool at the size it refused once, and no
+    # observation could ever lift it again.
+    try:
+        llm_capacity.observe_success(
+            key.provider,
+            key.fingerprint,
+            latency_ms=latency_ms,
+            task_type=ctx.task_type,
+            prompt_tokens=result.prompt_tokens or getattr(ctx, "input_tokens", 0),
+            completion_tokens=result.completion_tokens,
+            model=PROVIDER_MODELS.get(key.provider, ""),
+        )
+    except Exception:  # noqa: BLE001 -- telemetry never fails a served request
+        logger.debug("llm_router.capacity_success_record_failed", exc_info=True)
     await _record_success(key, ctx.session)
     cost = estimate_cost_usd(
         key.provider, result.prompt_tokens, result.completion_tokens
@@ -1280,8 +1444,21 @@ async def _invoke_llm_inner(
     """The routing chain itself. Split out so `invoke_llm` is only the tracing
     wrapper, and so a tracing failure can never be mistaken for a router bug."""
     keys = await _load_keys(session)
+    # How big this call actually is, estimated arithmetically from the messages
+    # rather than read off the task's workload class. The distinction matters in
+    # both directions: an `extraction` carrying a two-line prompt must not be
+    # barred from a small domain, and a `conversation_turn` that happens to
+    # carry a whole transcript must not be waved into one.
+    input_tokens = llm_capacity.estimate_tokens(messages)
     # raises ValueError on an unknown type
-    chain = probe_each_provider_first(_build_chain(keys, task_type))
+    chain = probe_each_provider_first(
+        capacity_ordered(
+            _build_chain(keys, task_type),
+            task_type,
+            input_tokens=input_tokens,
+            needs_json=response_format_json,
+        )
+    )
     if not chain:
         raise LLMUnavailableError(
             "No LLM provider keys configured (llm_provider_keys table empty and "
@@ -1317,6 +1494,7 @@ async def _invoke_llm_inner(
             max_tokens=max_tokens_for(task_type),
             temperature=temperature_for(task_type),
             attempt_timeout=request_timeout,
+            input_tokens=input_tokens,
         )
         final: RouterState = await _router_graph.ainvoke(
             {

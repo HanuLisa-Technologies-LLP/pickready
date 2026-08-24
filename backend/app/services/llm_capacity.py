@@ -82,8 +82,11 @@ from app.config.llm_providers import (
     DOMAIN_COOLDOWN_SECONDS,
     LATENCY_REFERENCE_MS,
     LOAD_SHARE_WINDOW,
+    MIN_ROUTE_OBSERVATIONS,
     RECENT_LATENCY_SAMPLES,
+    ROUTE_DISABLE_SECONDS,
     ROUTE_SCORE_WEIGHTS,
+    ROUTING_DECISION_HISTORY,
     WORKLOAD_PROFILES,
     WorkloadClass,
     declared_context_limit,
@@ -151,24 +154,61 @@ class FailureKind(str, Enum):
 
 #: Groq names the organisation in its 413 body, verbatim:
 #:   "Request too large for model `openai/gpt-oss-120b` in organization
-#:    `org_01k...62bj` service tier `on_demand` on tokens per minute (TPM):
-#:    Limit 8000, Requested 12268"
+#:    `org_01ky7js4vee6nb3d2fb48k62bj` service tier `on_demand` on tokens per
+#:    minute (TPM): Limit 8000, Requested 11900"
 #: That sentence is the provider TELLING us the pool is shared, which is a far
 #: better source of truth than anything we could infer, so it is parsed rather
-#: than guessed at.
+#: than guessed at. Re-measured 2026-08-24: all three Groq credentials returned
+#: that same organisation and that same 8000 ceiling.
 _ORG_ID_RE = re.compile(r"in organization[`'\" ]+([A-Za-z0-9_\-]+)", re.IGNORECASE)
 
-#: "…on tokens per minute (TPM): Limit 8000, Requested 12268" -- the domain's
+#: OpenRouter names the ACCOUNT rather than an organisation, in the envelope of
+#: its 402 body: `"user_id":"user_3Gu..."`. Measured 2026-08-24, and the
+#: measurement OVERTURNED the working assumption. The three OpenRouter
+#: credentials report three different `usage` figures from
+#: `GET /api/v1/key`, which looked like three independent pools -- but every one
+#: of them reports the SAME `creator_user_id`, and the 402 that refuses a large
+#: prompt names `"limit_source":"openrouter_credits"`, which is the account's
+#: balance. So the per-key counters are ACCOUNTING, not CAPACITY: they say who
+#: spent what out of one shared wallet.
+#:
+#: This is precisely why membership is learned from what the provider NAMES and
+#: never from a plausible-looking inference. Splitting these three on their
+#: differing usage counters would have manufactured 3x the throughput that
+#: exists, which is the expensive error this module was written to avoid.
+_ACCOUNT_ID_RE = re.compile(r"\"user_id\"\s*:\s*\"([A-Za-z0-9_\-]+)\"")
+
+#: "…on tokens per minute (TPM): Limit 8000, Requested 11900" -- the domain's
 #: real per-minute input ceiling, stated by the provider. This is the number
 #: that stops the next 12k request from being sent into an 8k pool.
 _TPM_LIMIT_RE = re.compile(r"Limit (\d+), Requested (\d+)", re.IGNORECASE)
 
+#: OpenRouter states the same fact in its own words, under HTTP 402:
+#:   "Prompt tokens limit exceeded: 15330 > 2623"
+#: The second number is the ceiling. It MOVES between calls (2623, 2517, 3398,
+#: 326 were all observed within a minute) because it is derived from a live
+#: shared balance rather than from a fixed per-minute allowance, which is why
+#: the domain keeps the smallest one seen and lets an observed success raise it
+#: back. A ceiling that only ever ratcheted down would pin the tier at its worst
+#: moment forever.
+_PROMPT_LIMIT_RE = re.compile(
+    r"Prompt tokens limit exceeded:\s*(\d+)\s*>\s*(\d+)", re.IGNORECASE
+)
+
 
 def extract_organisation_id(body: str) -> str | None:
-    """The organisation a provider named, or None. Pure; unit-tested."""
+    """The quota-owning account a provider named, or None. Pure; unit-tested.
+
+    Two spellings because two providers name the same thing differently. Groq
+    calls it an organisation and OpenRouter calls it a user id; both identify
+    the account whose limit was hit, which is the only thing a quota domain is.
+    """
     if not body:
         return None
     match = _ORG_ID_RE.search(body)
+    if match:
+        return match.group(1)
+    match = _ACCOUNT_ID_RE.search(body)
     return match.group(1) if match else None
 
 
@@ -177,7 +217,10 @@ def extract_request_ceiling(body: str) -> int | None:
     if not body:
         return None
     match = _TPM_LIMIT_RE.search(body)
-    return int(match.group(1)) if match else None
+    if match:
+        return int(match.group(1))
+    match = _PROMPT_LIMIT_RE.search(body)
+    return int(match.group(2)) if match else None
 
 
 def response_body(exc: Exception) -> str:
@@ -212,6 +255,21 @@ def classify_failure(exc: Exception) -> FailureKind:
         if status == 429:
             return FailureKind.THROTTLED
         if status == 402:
+            # A 402 that names a PROMPT ceiling is a size refusal wearing a
+            # payment status code, and the difference is fifteen minutes of a
+            # working tier. Measured 2026-08-24: OpenRouter answered
+            # "Prompt tokens limit exceeded: 15330 > 2623" to a realistic
+            # extraction on all three credentials, while the SAME credentials
+            # answered an ordinary prompt in 1.7 seconds. Read as PAYMENT the
+            # router writes the account off (`trip_provider`) and every small
+            # call that would have succeeded is refused for the cooldown, which
+            # is a self-inflicted outage on the only tier still answering.
+            #
+            # The remedy hint in that body says "lower max_tokens / prompt
+            # size" and only the second half is true here: the ceiling is on the
+            # PROMPT, so reducing the output ceiling changes nothing.
+            if extract_request_ceiling(response_body(exc)) is not None:
+                return FailureKind.CAPACITY
             return FailureKind.PAYMENT
         if status in (401, 403):
             return FailureKind.CREDENTIAL
@@ -313,9 +371,40 @@ class RouteHealth:
     #: Observed OUTPUT ceiling, from an adaptive max_tokens reduction.
     observed_output_ceiling: int | None = None
     disabled_reason: str | None = None
+    #: When the exclusion lapses. A route is condemned for a WINDOW, never
+    #: forever: see `ROUTE_DISABLE_SECONDS`. The status stays DISABLED after it
+    #: lapses so an operator can still see what happened; only the exclusion
+    #: expires, which is the half-open probe.
+    disabled_until: float = 0.0
+
+    def outcomes(self) -> int:
+        """Attempts that actually RESOLVED, one way or the other.
+
+        Deliberately not `attempts`. That counter is incremented when a route is
+        CHOSEN, which is what the load-share term needs, and it is not
+        incremented by callers that only report results -- the hourly probe
+        being one. Dividing a success count by a dispatch count that a probe
+        never touched reported every measured route as having no success rate at
+        all, which is the one column an operator reads first.
+        """
+        return self.successes + self.failures
 
     def success_rate(self) -> float | None:
-        return self.successes / self.attempts if self.attempts else None
+        outcomes = self.outcomes()
+        return self.successes / outcomes if outcomes else None
+
+    def is_excluded(self) -> bool:
+        """Is this route currently barred from a chain?
+
+        Only while the window is still running. A route that could never come
+        back would be dropped from every chain, so it could never earn the
+        success that clears it, which is the permanently-wedged key all over
+        again one layer up.
+        """
+        return (
+            self.status is RouteStatus.DISABLED
+            and time.monotonic() < self.disabled_until
+        )
 
     def mean_latency_ms(self) -> float | None:
         if not self.recent_latency_ms:
@@ -336,6 +425,18 @@ class _Registry:
     #: fingerprint -> monotonic time of its last observed success. The other
     #: half of the independence experiment.
     last_success_at: dict[str, float] = field(default_factory=dict)
+    #: The last routing decisions, newest last. Operator data.
+    decisions: deque["RoutingDecision"] = field(
+        default_factory=lambda: deque(maxlen=ROUTING_DECISION_HISTORY)
+    )
+    #: fingerprint -> the provider's own usage counter for that credential, as a
+    #: string. RECORDED AND DELIBERATELY NOT ROUTED ON. See `_ACCOUNT_ID_RE`:
+    #: OpenRouter's three keys carry three different counters and one shared
+    #: balance, so a differing counter is evidence about BILLING and no evidence
+    #: at all about capacity. It is kept because an operator comparing a bill
+    #: against a route needs it, and it is kept out of `score_route` because
+    #: routing on it would invent throughput that does not exist.
+    usage_readings: dict[str, str] = field(default_factory=dict)
 
 
 _registry = _Registry()
@@ -347,6 +448,8 @@ def reset() -> None:
     _registry.routes.clear()
     _registry.recent_domains.clear()
     _registry.last_success_at.clear()
+    _registry.decisions.clear()
+    _registry.usage_readings.clear()
 
 
 def _shared_domain_id(provider: str) -> str:
@@ -414,11 +517,27 @@ def observe_organisation(provider: str, fingerprint: str, org_id: str) -> None:
         )
     target.members.add(fingerprint)
     entry.domain_id = domain_id
+    _drop_if_empty(previous)
     logger.info(
         "llm_capacity.domain_verified_shared provider=%s fingerprint=%s domain=%s "
         "members=%d",
         provider, fingerprint, domain_id, len(target.members),
     )
+
+
+def _drop_if_empty(domain: QuotaDomain | None) -> None:
+    """Forget a placeholder pool once its last member has moved out.
+
+    Only the PLACEHOLDER, and only when it is empty. A `provider:shared` domain
+    that every credential has left is a pool we assumed and then disproved;
+    leaving it in the table reads as a fourth pool with nothing in it, and an
+    operator counting domains would over-count the capacity. Any evidence it
+    held was carried to the real domain before this runs.
+    """
+    if domain is None or domain.members:
+        return
+    if domain.domain_id == _shared_domain_id(domain.provider):
+        _registry.domains.pop(domain.domain_id, None)
 
 
 def _split_independent(provider: str, fingerprint: str, evidence: str) -> None:
@@ -434,6 +553,7 @@ def _split_independent(provider: str, fingerprint: str, evidence: str) -> None:
     own.state = DomainState.VERIFIED_INDEPENDENT
     own.members.add(fingerprint)
     entry.domain_id = domain_id
+    _drop_if_empty(previous)
     logger.info(
         "llm_capacity.domain_verified_independent provider=%s fingerprint=%s "
         "domain=%s evidence=%s",
@@ -467,6 +587,7 @@ def observe_success(
     entry.successes += 1
     entry.status = RouteStatus.UP
     entry.disabled_reason = None
+    entry.disabled_until = 0.0
     entry.recent_latency_ms.append(latency_ms)
     entry.task_capabilities.add(task_type)
     entry.last_health_check = time.monotonic()
@@ -563,9 +684,11 @@ def observe_failure(
         entry.status = RouteStatus.DISABLED
         entry.classification = Classification.RED
         entry.disabled_reason = f"model {entry.model or 'id'} returned 404"
+        entry.disabled_until = time.monotonic() + ROUTE_DISABLE_SECONDS
     elif kind in (FailureKind.CREDENTIAL, FailureKind.PAYMENT):
         entry.status = RouteStatus.DISABLED
         entry.disabled_reason = f"account level {kind.value}"
+        entry.disabled_until = time.monotonic() + ROUTE_DISABLE_SECONDS
 
     logger.warning(
         "llm_capacity.failure task_type=%s provider=%s fingerprint=%s domain=%s "
@@ -574,6 +697,24 @@ def observe_failure(
         requested_tokens, domain.request_ceiling(),
     )
     return kind
+
+
+def observe_usage_reading(provider: str, fingerprint: str, reading: str) -> None:
+    """Record a credential's own usage counter. NEVER changes a domain.
+
+    It is recorded and not acted on, and the restraint is the point. Three
+    OpenRouter credentials reporting three different `usage` figures is exactly
+    what three independent pools would look like, and it is what one shared
+    wallet with per-key accounting looks like too. Measured 2026-08-24, it is
+    the second: all three name the same `creator_user_id`, and the 402 that
+    refuses a large prompt names `openrouter_credits` as the limit source.
+
+    Independence is claimed from ONE signal only -- a credential serving while a
+    sibling's domain is throttled (`observe_success`) -- because that is the
+    only observation a shared pool cannot produce.
+    """
+    route(provider, fingerprint)
+    _registry.usage_readings[fingerprint] = str(reading)
 
 
 def observe_output_ceiling(provider: str, fingerprint: str, ceiling: int) -> None:
@@ -612,9 +753,19 @@ def observe_probe(
         entry.last_realistic_probe = time.monotonic()
 
     if not any(results.values()):
+        # RED, and deliberately NOT disabled. A probe measures CAPABILITY; only
+        # the provider gets to condemn a credential, and `observe_failure`
+        # already does that from what it actually said (404, 401, 402 payment).
+        #
+        # The distinction was found the moment this ran: every Gemini key failed
+        # all three classes with HTTP 429 free-tier quota, which clears. Letting
+        # a probe disable on that would bar the whole tier for fifteen minutes
+        # over a per-minute limit -- a write-off outliving its problem, which
+        # this product has already been bitten by once at the key breaker. RED
+        # costs the route the entire capability weight, which deprioritises it
+        # hard without removing it from a chain it may be able to serve again in
+        # a minute.
         entry.classification = Classification.RED
-        entry.status = RouteStatus.DISABLED
-        entry.disabled_reason = "failed every workload class"
     elif all(results.get(w, False) for w in realistic if w in results) and results.get(
         WorkloadClass.STRUCTURED_JSON, True
     ):
@@ -653,6 +804,18 @@ class RouteScore:
     reason: str
 
 
+#: The terms `score_route` ADDS, and the terms it SUBTRACTS. Named once, here,
+#: because two readers need them: the arithmetic that produces the score and the
+#: explanation that says which term decided it. Written twice they would drift,
+#: and a decision log that named the wrong reason is worse than none.
+POSITIVE_TERMS = (
+    "preference", "capability", "capacity_headroom", "success_rate", "latency",
+)
+NEGATIVE_TERMS = (
+    "quota_pressure", "cooldown", "load_share", "cost", "unverified_domain",
+)
+
+
 def _load_share(domain_id: str) -> float:
     window = _registry.recent_domains
     if not window:
@@ -674,6 +837,52 @@ def _fits(domain: QuotaDomain, input_tokens: int) -> bool:
     if ceiling is None or input_tokens <= 0:
         return True
     return input_tokens <= ceiling
+
+
+def _domain_siblings(entry: "RouteHealth") -> list["RouteHealth"]:
+    """Every route sharing this one's quota domain, itself included.
+
+    Falls back to the route alone when the domain is unknown, which is the
+    honest answer for a credential nothing has observed yet.
+    """
+    domain = _registry.domains.get(entry.domain_id)
+    if domain is None:
+        return [entry]
+    siblings = [
+        _registry.routes[fingerprint]
+        for fingerprint in domain.members
+        if fingerprint in _registry.routes
+    ]
+    return siblings or [entry]
+
+
+def _domain_outcomes(entry: "RouteHealth") -> int:
+    return sum(sibling.outcomes() for sibling in _domain_siblings(entry))
+
+
+def _domain_success_rate(entry: "RouteHealth") -> float | None:
+    """The pool's success rate. See the comment at its call site for why this is
+    not read per credential."""
+    siblings = _domain_siblings(entry)
+    total = sum(sibling.outcomes() for sibling in siblings)
+    if not total:
+        return None
+    successes = sum(sibling.successes for sibling in siblings)
+    return successes / total
+
+
+def _domain_latency_ms(entry: "RouteHealth") -> float | None:
+    """Mean latency across the pool. See its call site for why not per key."""
+    siblings = _domain_siblings(entry)
+    measured = [
+        (sibling.mean_latency_ms(), sibling.outcomes())
+        for sibling in siblings
+        if sibling.mean_latency_ms() is not None
+    ]
+    if not measured:
+        return None
+    total = sum(count for _mean, count in measured) or len(measured)
+    return sum(mean * max(count, 1) for mean, count in measured) / total
 
 
 def score_route(
@@ -731,10 +940,51 @@ def score_route(
     else:
         terms["capacity_headroom"] = 1.0 - (input_tokens / ceiling)
 
-    rate = entry.success_rate()
-    terms["success_rate"] = 0.5 if rate is None else rate
+    # Success rate, BLENDED toward the neutral prior until there is enough of
+    # it to be evidence. One failed call is not a 0% route, and treating it as
+    # one moves a less-preferred provider to the front on a single sample --
+    # which also robs the per-key breaker of the second CONSECUTIVE failure it
+    # needs, so a genuinely dead credential hides behind a rerouted chain.
+    # READ AT DOMAIN GRANULARITY, not per credential, and this is the fix for a
+    # measured regression rather than a refinement.
+    #
+    # Per credential, the first key to be used records a success, its rate rises
+    # above the neutral prior, and it therefore wins the next call too. Measured
+    # 2026-08-24: nine consecutive calls all went to `env:groq:1` while its two
+    # siblings sat idle. Rich-get-richer, and it silently deleted the
+    # round-robin the router has always had so that no one key is hammered into
+    # a 429. A shared TOKEN pool does not make per-key RATE limits shared.
+    #
+    # Siblings on one quota domain answer the same account with the same model,
+    # so there is nothing about one of them that the others do not share: their
+    # success history is genuinely the domain's, and reading it there makes them
+    # tie exactly. `rank` sorts stably, so the caller's round-robin then decides,
+    # and traffic spreads. Health still differentiates ACROSS domains, which is
+    # the comparison that carries real information.
+    rate = _domain_success_rate(entry)
+    if rate is None:
+        terms["success_rate"] = 0.5
+    else:
+        confidence = (
+            min(_domain_outcomes(entry), MIN_ROUTE_OBSERVATIONS)
+            / MIN_ROUTE_OBSERVATIONS
+        )
+        terms["success_rate"] = (0.5 * (1.0 - confidence)) + (rate * confidence)
 
-    mean = entry.mean_latency_ms()
+    # DOMAIN granularity again, and for the same measured reason as the success
+    # rate above. Latency is a property of the ACCOUNT and the MODEL -- the same
+    # endpoint, the same tier, the same weights -- so a difference between two
+    # credentials on one domain is noise. Read per credential it is worse than
+    # noise: the first key ever called is the only one with a measurement, its
+    # neighbours sit on the neutral prior, and a good measurement beats a
+    # neutral one. So the first key wins every subsequent call and its siblings
+    # are never measured, which is self-fulfilling.
+    #
+    # That is exactly what happened. With the success term already pooled, nine
+    # consecutive calls STILL went to `env:groq:1`, on a latency edge of 0.75
+    # against 0.5 worth about five points. Pooling both terms makes siblings tie
+    # outright, and the stable sort hands the tie to the round-robin.
+    mean = _domain_latency_ms(entry)
     terms["latency"] = (
         0.5 if mean is None else 1.0 / (1.0 + (mean / LATENCY_REFERENCE_MS))
     )
@@ -755,14 +1005,12 @@ def score_route(
         1.0 if domain.state is DomainState.UNVERIFIED else 0.0
     )
 
-    positive = ("preference", "capability", "capacity_headroom", "success_rate", "latency")
-    negative = ("quota_pressure", "cooldown", "load_share", "cost", "unverified_domain")
-    score = sum(weights[name] * terms[name] for name in positive)
-    score -= sum(weights[name] * terms[name] for name in negative)
+    score = sum(weights[name] * terms[name] for name in POSITIVE_TERMS)
+    score -= sum(weights[name] * terms[name] for name in NEGATIVE_TERMS)
 
     eligible = True
     reason = "ok"
-    if entry.status is RouteStatus.DISABLED:
+    if entry.is_excluded():
         eligible, reason = False, entry.disabled_reason or "disabled"
     elif not _fits(domain, input_tokens):
         eligible, reason = (
@@ -777,7 +1025,25 @@ def score_route(
         # Rounded so two genuinely equal routes compare equal and the sort stays
         # stable. Float noise reordering a chain would make the router look
         # non-deterministic for no reason anybody could find.
-        score=round(score, 6),
+        # ROUNDED TO A COARSE BUCKET, and the coarseness is the point.
+        #
+        # At six decimal places two credentials on the SAME quota domain never
+        # tie: the first one used records a success, its `success_rate` term
+        # rises above the neutral prior, and it therefore wins the next call as
+        # well. Measured 2026-08-24 -- nine consecutive calls all went to
+        # `env:groq:1` while its two siblings sat idle. That is rich-get-richer,
+        # and it silently deleted the round-robin the router has always had to
+        # keep one key from being hammered into a 429. A shared TOKEN pool does
+        # not make per-key RATE limits shared.
+        #
+        # Rounding to whole points makes routes that differ only by a little
+        # history tie, and `rank` sorts STABLY, so the caller's existing
+        # round-robin order decides the tie. Determinism is preserved exactly:
+        # the bucket is fixed data, not a sample, so the same registry state and
+        # the same input list still produce the same output list. A route that
+        # is genuinely better -- a different capability, a cooldown, a capacity
+        # wall -- moves by far more than one point and still wins outright.
+        score=round(score, 0),
         terms={name: round(value, 4) for name, value in terms.items()},
         eligible=eligible,
         reason=reason,
@@ -832,6 +1098,78 @@ def eligible(scores: Iterable[RouteScore]) -> list[RouteScore]:
     return keep or ranked
 
 
+@dataclass(frozen=True)
+class RoutingDecision:
+    """One selection, as STRUCTURED DATA rather than a sentence in a log.
+
+    Identifiers, counts and timings only, and the same rule as
+    `agent_execution_traces`: no prompt text, no completion text, no key
+    material. It is operator data and none of it may reach a client.
+
+    It carries the alternatives and the exclusions on purpose. The outcome alone
+    cannot answer the question anybody actually asks after an incident -- why
+    this route and not that one -- and without the counterfactual the available
+    answer is a guess about the scheduler, which is the doubt determinism was
+    bought to remove.
+    """
+
+    task_type: str
+    input_tokens: int
+    workload: str
+    chosen_fingerprint: str | None
+    chosen_provider: str | None
+    chosen_domain: str | None
+    chosen_score: float | None
+    #: The two terms that actually decided it, largest weighted contribution
+    #: first. Derived arithmetically from the same weights the score used.
+    why: tuple[str, ...]
+    #: Domain ids in ranked order, deduplicated. This is what "provider
+    #: diversity was preserved" looks like as a value rather than a claim.
+    alternatives: tuple[str, ...]
+    considered: int
+    #: (fingerprint, measured reason) for every route dropped from the chain.
+    excluded: tuple[tuple[str, str], ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "task_type": self.task_type,
+            "input_tokens": self.input_tokens,
+            "workload": self.workload,
+            "chosen_fingerprint": self.chosen_fingerprint,
+            "chosen_provider": self.chosen_provider,
+            "chosen_domain": self.chosen_domain,
+            "chosen_score": self.chosen_score,
+            "why": list(self.why),
+            "alternatives": list(self.alternatives),
+            "considered": self.considered,
+            "excluded": [
+                {"fingerprint": fingerprint, "reason": reason}
+                for fingerprint, reason in self.excluded
+            ],
+        }
+
+
+def deciding_terms(terms: dict[str, float], limit: int = 2) -> tuple[str, ...]:
+    """The terms that carried the most weight in one score. Pure; deterministic.
+
+    Weighted contribution, not raw term value: a term at 1.0 with a weight of 3
+    explains nothing and a term at 0.4 with a weight of 45 explains a lot.
+    Negative terms are named with a leading minus so an operator can tell "chosen
+    because it is capable" from "chosen because nothing else was cooling down".
+    """
+    contributions: list[tuple[float, str]] = []
+    for name in POSITIVE_TERMS:
+        contributions.append((ROUTE_SCORE_WEIGHTS[name] * terms.get(name, 0.0), name))
+    for name in NEGATIVE_TERMS:
+        contributions.append(
+            (ROUTE_SCORE_WEIGHTS[name] * terms.get(name, 0.0), f"-{name}")
+        )
+    # Sorted by magnitude, then by name, so equal contributions never reorder
+    # between two runs with identical inputs.
+    contributions.sort(key=lambda pair: (-pair[0], pair[1]))
+    return tuple(name for value, name in contributions[:limit] if value > 0.0)
+
+
 def plan(
     candidates: Sequence[tuple[str, str]],
     *,
@@ -840,7 +1178,19 @@ def plan(
     needs_json: bool = False,
     model_by_provider: dict[str, str] | None = None,
 ) -> list[RouteScore]:
-    """The full selection: score, filter on proven capacity, log the decision."""
+    """The full selection: score, filter on proven capacity, record the decision.
+
+    Three filters, in order, and each one keeps the whole list rather than
+    returning nothing:
+
+      1. `eligible` drops what the registry has PROVEN cannot serve this size.
+      2. `probe_allowance` drops the one credential that just caused its
+         domain's cooldown, while keeping its siblings so the independence
+         experiment can still run.
+
+    An empty chain would be an immediate unavailability with no attempt made,
+    which is a worse answer than one honest attempt against a stale observation.
+    """
     ranked = rank_routes(
         candidates,
         task_type=task_type,
@@ -848,26 +1198,62 @@ def plan(
         needs_json=needs_json,
         model_by_provider=model_by_provider,
     )
+    excluded: list[tuple[str, str]] = [
+        (entry.fingerprint, entry.reason) for entry in ranked if not entry.eligible
+    ]
     chosen = eligible(ranked)
-    if chosen:
-        head = chosen[0]
+
+    permitted = [entry for entry in chosen if probe_allowance(entry.fingerprint)]
+    if permitted and len(permitted) < len(chosen):
+        excluded.extend(
+            (entry.fingerprint, "caused the current domain cooldown")
+            for entry in chosen
+            if entry not in permitted
+        )
+        chosen = permitted
+
+    head = chosen[0] if chosen else None
+    decision = RoutingDecision(
+        task_type=task_type,
+        input_tokens=input_tokens,
+        workload=workload_for_task(task_type).value,
+        chosen_fingerprint=head.fingerprint if head else None,
+        chosen_provider=head.provider if head else None,
+        chosen_domain=head.domain_id if head else None,
+        chosen_score=head.score if head else None,
+        why=deciding_terms(head.terms) if head else (),
+        alternatives=tuple(dict.fromkeys(entry.domain_id for entry in chosen)),
+        considered=len(ranked),
+        excluded=tuple(excluded),
+    )
+    _registry.decisions.append(decision)
+
+    if head is not None:
         # The routing decision, as structured telemetry: identifiers, counts and
         # timings only. No prompt, no completion, no key.
         logger.info(
             "llm_capacity.route_selected task_type=%s provider=%s fingerprint=%s "
-            "domain=%s score=%.4f input_tokens=%d eligible=%d of=%d reason=%s "
-            "terms=%s",
+            "domain=%s score=%.4f input_tokens=%d workload=%s why=%s "
+            "alternatives=%s eligible=%d of=%d terms=%s",
             task_type, head.provider, head.fingerprint, head.domain_id, head.score,
-            input_tokens, len(chosen), len(ranked), head.reason, head.terms,
+            input_tokens, decision.workload, ",".join(decision.why),
+            ",".join(decision.alternatives), len(chosen), len(ranked), head.terms,
         )
-    excluded = [s for s in ranked if not s.eligible]
-    for entry in excluded:
+    for fingerprint, reason in excluded:
         logger.info(
-            "llm_capacity.route_excluded task_type=%s provider=%s fingerprint=%s "
-            "domain=%s reason=%s",
-            task_type, entry.provider, entry.fingerprint, entry.domain_id, entry.reason,
+            "llm_capacity.route_excluded task_type=%s fingerprint=%s reason=%s",
+            task_type, fingerprint, reason,
         )
     return chosen
+
+
+def recent_decisions() -> list[dict[str, Any]]:
+    """The routing decisions still in the ring, oldest first. Operator data."""
+    return [decision.as_dict() for decision in _registry.decisions]
+
+
+def last_decision() -> RoutingDecision | None:
+    return _registry.decisions[-1] if _registry.decisions else None
 
 
 def probe_allowance(fingerprint: str) -> bool:
@@ -942,7 +1328,13 @@ def snapshot() -> dict[str, Any]:
                 "estimated_cost_usd": round(entry.estimated_cost_usd, 6),
                 "task_capabilities": sorted(entry.task_capabilities),
                 "probe_results": dict(sorted(entry.probe_results.items())),
+                # Reported BESIDE the measured ceiling and never used to route.
+                # Groq publishes 131072 for gpt-oss-120b and refused 11900,
+                # because the binding constraint was the organisation's
+                # per-minute pool and not the model's context at all.
                 "declared_context_limit": declared_context_limit(entry.provider),
+                # Billing telemetry, not capacity. See `observe_usage_reading`.
+                "usage_reading": _registry.usage_readings.get(fingerprint),
                 "observed_output_ceiling": entry.observed_output_ceiling,
                 "last_health_check_age_s": (
                     round(now - entry.last_health_check, 1)
@@ -955,6 +1347,14 @@ def snapshot() -> dict[str, Any]:
                     else None
                 ),
                 "disabled_reason": entry.disabled_reason,
+                # Two fields, because they answer two questions: what happened
+                # to this route, and is it barred right now. A route that was
+                # condemned an hour ago is back in the chain and an operator
+                # must be able to see both halves of that.
+                "excluded_now": entry.is_excluded(),
+                "exclusion_remaining_s": round(
+                    max(0.0, entry.disabled_until - now), 1
+                ),
             }
             for fingerprint, entry in sorted(_registry.routes.items())
         },
@@ -962,6 +1362,7 @@ def snapshot() -> dict[str, Any]:
             domain_id: round(_load_share(domain_id), 3)
             for domain_id in sorted(set(_registry.recent_domains))
         },
+        "recent_decisions": recent_decisions(),
     }
 
 

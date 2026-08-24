@@ -746,8 +746,8 @@ def test_not_matching_is_ordered_before_moderately_matching() -> None:
 def test_must_have_is_the_first_group() -> None:
     """Spec §9.6: Must-have is reviewed first, because it is the aspect the hard
     cap actually governs."""
-    assert gap_analysis.GAP_ORDER[0] == ppi.CATEGORY_MUST_HAVE
-    assert list(gap_analysis.GAP_ORDER) == list(ppi.CATEGORIES)
+    assert gap_analysis.gap_order()[0] == ppi.CATEGORY_MUST_HAVE
+    assert list(gap_analysis.gap_order()) == list(ppi.CATEGORIES)
 
 
 def test_a_not_matching_must_have_earns_more_than_one_probe() -> None:
@@ -882,3 +882,34 @@ def test_graph_has_one_scorer_joining_validation_at_synthesis() -> None:
     sources = {source for source, _ in edges}
     assert "technical_scoring" not in sources
     assert "behavioral_scoring" not in sources
+
+# ── Self-checks retired from module scope (2026-08-24) ──────────────────────
+#
+# `gap_analysis` and `ppi_interview` each carried module-level `assert`
+# statements. Two problems, and the second is why they moved rather than being
+# deleted: `python -O` strips an assert, so they protected no production image
+# at all; and they READ another service module at import time, which is an
+# AttributeError the moment a cycle reaches them. That happened. Here they
+# actually run.
+
+
+def test_must_have_is_the_first_gap_group_reviewed() -> None:
+    """Spec 9.6. It is the aspect the hard cap governs, so it is read first."""
+    assert gap_analysis.gap_order()[0] == ppi.CATEGORY_MUST_HAVE
+
+
+def test_a_probe_is_shorter_than_an_items_remark() -> None:
+    """A probe is a prompt for an interviewer, not a written assessment."""
+    assert gap_analysis.PROBE_WORDS[0] <= gap_analysis.PROBE_WORDS[1]
+
+
+def test_at_least_one_aspect_is_rubric_scored() -> None:
+    from app.services import ppi_interview  # noqa: PLC0415
+
+    assert ppi.RUBRIC_SCORED_CATEGORIES
+
+
+def test_behavioural_is_never_rubric_scored() -> None:
+    """It is graded by judgement because there is no single correct answer to
+    weigh it against (spec 8)."""
+    assert ppi.CATEGORY_BEHAVIOURAL not in ppi.RUBRIC_SCORED_CATEGORIES

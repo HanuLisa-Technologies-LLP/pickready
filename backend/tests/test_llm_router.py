@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
-from app.services import llm_router
+from app.services import llm_capacity, llm_router
 from app.services.llm_router import (
     _COOLDOWN_SECONDS,
     _FAILURE_THRESHOLD,
@@ -37,9 +37,14 @@ from app.services.llm_router import (
 
 @pytest.fixture(autouse=True)
 def _clean_breaker():
+    # The capacity registry outlives a call on purpose (a worker learns a
+    # provider's ceiling once and keeps it), so it has to be cleared between
+    # tests or one test's condemned route quietly reorders the next one's chain.
     llm_router._breaker.clear()
+    llm_capacity.reset()
     yield
     llm_router._breaker.clear()
+    llm_capacity.reset()
 
 
 class _FakeSession:

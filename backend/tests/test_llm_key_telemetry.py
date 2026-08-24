@@ -32,7 +32,7 @@ import httpx
 import pytest
 
 from app.config import llm_providers
-from app.services import llm_router
+from app.services import llm_capacity, llm_router
 from app.services.llm_router import _RouterKey, LLMUnavailableError
 
 SECRET = "sk-this-must-never-appear-anywhere"
@@ -40,13 +40,19 @@ SECRET = "sk-this-must-never-appear-anywhere"
 
 @pytest.fixture(autouse=True)
 def _clean():
+    # The capacity registry is process-global and long-lived by design, which
+    # is right in a worker and wrong between two tests: a route this file's
+    # 402 test condemns is a route the next test's chain would drop, and the
+    # failure would read as a routing bug rather than as shared state.
     llm_router._breaker.clear()
     llm_router.clear_provider_breaker()
     llm_router.reset_provider_stats()
+    llm_capacity.reset()
     yield
     llm_router._breaker.clear()
     llm_router.clear_provider_breaker()
     llm_router.reset_provider_stats()
+    llm_capacity.reset()
 
 
 def _key(fp: str, provider: str = "groq") -> _RouterKey:

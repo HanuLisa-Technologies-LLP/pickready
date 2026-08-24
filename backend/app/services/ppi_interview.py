@@ -466,5 +466,7 @@ async def load_for_link(
     return list(rows)
 
 
-assert ppi.RUBRIC_SCORED_CATEGORIES, "at least one aspect must be rubric-scored"
-assert ppi.CATEGORY_BEHAVIOURAL not in ppi.RUBRIC_SCORED_CATEGORIES
+# These two self-checks moved to `tests/test_functional_assessment.py`. A
+# module-scope `assert` is stripped by `python -O` so it never protected the
+# production image, and reading `ppi` at import time is fatal the moment a cycle
+# reaches this module -- which is exactly what happened to `gap_analysis`.

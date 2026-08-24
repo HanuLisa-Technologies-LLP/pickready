@@ -78,7 +78,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Sequence
 
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
@@ -89,12 +90,29 @@ from app.services import agent_loop, answer_quality, llm_router
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CONFIDENCE_HIGH",
+    "CONFIDENCE_LOW",
+    "CONFIDENCE_MEDIUM",
+    "COVERAGE_CONFLICTING",
+    "COVERAGE_COVERED",
+    "COVERAGE_PARTIAL",
+    "COVERAGE_UNPROBED",
+    "COVERAGE_WEAK",
     "MAX_FOLLOW_UPS",
     "MAX_FOLLOW_UPS_PER_QUESTION",
-    "follow_up_budget",
-    "next_follow_up",
-    "compose_next_question",
+    "STOP_EVERY_DIMENSION_COVERED",
+    "STOP_FLOOR_REACHED",
+    "STOP_NO_CONFLICT_OUTSTANDING",
+    "STOP_NO_PROBE_OUTSTANDING",
+    "STOP_PROMPTS_EXHAUSTED",
+    "ConversationState",
+    "DimensionEvidence",
     "challenge_non_answer",
+    "compose_next_question",
+    "conversation_state",
+    "follow_up_budget",
+    "is_semantic_repeat",
+    "next_follow_up",
 ]
 
 #: Floor for a short interview.
@@ -291,6 +309,10 @@ class _DecideState(TypedDict, total=False):
     follow_ups_used: int
     already_followed_up: bool
     budget: int
+    #: Every interviewer line so far. A probe that re-asks something already
+    #: asked is worse than no probe: it spends a scarce budget to demonstrate
+    #: that nobody was listening.
+    asked_before: list[str]
     # working
     stop: bool
     raw: str | None
@@ -458,6 +480,15 @@ async def _decide_validate(state: _DecideState) -> _DecideState:
     # must not be shown to a candidate as an interview question.
     if text.lower() in {"null", "none", "n/a", "no", "-"}:
         return {"follow_up": None}
+    # DETERMINISTIC repetition check, applied to the probe as well as to a base
+    # question. A probe is where a repeat is most likely and most damaging: the
+    # model has just been shown one answer and asked what to press on, and the
+    # obvious thing to press on is often what the previous question already
+    # covered. Dropping it costs nothing -- the conversation simply moves to the
+    # next scripted question, which is this module's standard degradation.
+    if is_semantic_repeat(text, state.get("asked_before")):
+        logger.info("interviewer.follow_up_rejected reason=repeat")
+        return {"follow_up": None}
     return {"follow_up": text}
 
 
@@ -616,7 +647,7 @@ async def _deliver_compose(state: _DeliverState) -> _DeliverState:
                 return agent_loop.reject(
                     "ask one short question; the previous attempt was too long"
                 )
-            if _is_repeat(text, asked_before):
+            if is_semantic_repeat(text, asked_before):
                 return agent_loop.reject(
                     "the candidate has already been asked this; ask about a "
                     "different aspect of the competency"
@@ -656,21 +687,134 @@ async def _deliver_compose(state: _DeliverState) -> _DeliverState:
     return {"raw": json.dumps({"question": result.value}), "stop": False}
 
 
-def _is_repeat(text: str, asked_before: list[str] | None) -> bool:
-    """Whether this is a question the candidate has already been asked.
+# ── Repetition detection ─────────────────────────────────────────────────────
+#
+# DETERMINISTIC, AND IT HAS TO BE. Asking the same thing twice is the single
+# most obvious tell that an interviewer is not listening, and it is most likely
+# to happen exactly when the provider is degraded and the writer is falling back
+# to stored text or to a thinner prompt. A model asked "is this a repeat?" is
+# absent in precisely that moment, and its "no" would be indistinguishable from
+# a real "no". Same reasoning as `answer_classification` settling gibberish
+# without a model call, and as `ppi.conversation_may_close` calling none.
+#
+# TWO SIGNALS, both cheap and both explainable:
+#
+#   * the SPECIFIC terms (`_tokens`): a rewording that keeps 'Kafka', 'p99' and
+#     'CI/CD' and changes the verbs is the same question in new clothes;
+#   * word SHINGLES: overlapping runs of content words, which catch a repeat
+#     that carries no specific term at all ("tell me about a time you handled a
+#     disagreement" asked twice with different filler).
+#
+# Neither alone is enough. Terms miss a purely behavioural question; shingles
+# alone would fire on two different questions about the same narrow topic.
 
-    Compared on the specific terms rather than the exact string, because a model
-    asked not to repeat itself will happily reword the same question.
+#: Length of a shingle, in content words. Three is the smallest run that carries
+#: word order; at two, "handled the disagreement" and "the disagreement handled"
+#: look alike, and any two questions in the same domain start to collide.
+_SHINGLE_SIZE = 3
+
+#: Below this many shingles a comparison is noise -- a six-word question has
+#: four of them, and matching two of four is not evidence of anything.
+#: Shingles a question must produce before the shingle comparison is trusted.
+#:
+#: Lowered from 4 on 2026-08-24. A short behavioural question reduces to three
+#: or four content words, which yields ONE or TWO shingles, so the floor of four
+#: meant the shingle path could never fire for exactly the questions most likely
+#: to be reworded. With the openers now stripped, the identical-substance check
+#: catches the common case; this floor governs the near-miss, and two shingles
+#: of three consecutive content words each is already a strong signal.
+_MIN_SHINGLES = 2
+
+#: Share of shingles two questions must have in common. Set high on purpose: a
+#: false positive here silently throws away a well-written adaptive question and
+#: shows the candidate the stored one instead, which is the exact scripted feel
+#: this module exists to remove.
+REPEAT_SHINGLE_THRESHOLD = 0.5
+
+#: Share of specific terms two questions must have in common. Unchanged from the
+#: value this check has always used.
+REPEAT_TERM_THRESHOLD = 0.8
+
+#: Words that carry no topic. Stripped before shingling so that "could you tell
+#: me about a time when you" does not make every behavioural question look like
+#: every other one.
+#:
+#: THE OPENERS ARE THE POINT, and leaving one out is how a repeat slips through.
+#: "Tell me about a disagreement with a peer" and "Describe a disagreement with
+#: a peer" are the same question, and the second is exactly what a model returns
+#: when told not to repeat itself. `tell` was stripped and `describe` was not,
+#: so the two reduced to different content words and the identical-substance
+#: check could not fire. Every verb a question can open with belongs here, or
+#: the detector catches only the rewordings nobody would have written anyway.
+_FILLER: frozenset[str] = frozenset(
+    "a about an and any are as at be been but by can could describe did do does "
+    "explain for from give had has have how i in into is it its me more of on "
+    "one or our outline please recall share so tell than that the their them "
+    "then there these they this to us walk was we were what when where which "
+    "who why will with would you your".split()
+)
+
+
+def _content_words(text: str) -> list[str]:
+    """Lower-cased words with the filler removed, in order.
+
+    Order is kept because the shingles below depend on it; a bag of words would
+    call a question and its inverse the same question.
     """
-    tokens = _tokens(text)
-    if not tokens:
+    kept: list[str] = []
+    for raw in re.findall(r"[A-Za-z0-9][A-Za-z0-9./+#_-]*", str(text or "").lower()):
+        word = raw.strip(".,;:?!()-")
+        if word and word not in _FILLER:
+            kept.append(word)
+    return kept
+
+
+def _shingles(words: Sequence[str]) -> set[tuple[str, ...]]:
+    if len(words) < _SHINGLE_SIZE:
+        return set()
+    return {
+        tuple(words[index : index + _SHINGLE_SIZE])
+        for index in range(len(words) - _SHINGLE_SIZE + 1)
+    }
+
+
+def _overlap(left: set[Any], right: set[Any]) -> float:
+    """Jaccard. Symmetric, so a longer rewrite of a short question is not
+    treated differently from a shorter rewrite of a long one."""
+    union = left | right
+    return len(left & right) / len(union) if union else 0.0
+
+
+def is_semantic_repeat(text: str, asked_before: Sequence[str] | None) -> bool:
+    """Whether this question has, in substance, already been asked.
+
+    Compared on substance rather than on the exact string, because a model told
+    not to repeat itself will cheerfully reword the same question and return it.
+    """
+    words = _content_words(text)
+    if not words:
         return False
-    for previous in asked_before or []:
-        earlier = _tokens(previous)
-        if not earlier:
+    terms = _tokens(text)
+    shingles = _shingles(words)
+
+    for previous in asked_before or ():
+        earlier_words = _content_words(previous)
+        if not earlier_words:
             continue
-        overlap = len(tokens & earlier) / max(len(tokens | earlier), 1)
-        if overlap > 0.8:
+        if words == earlier_words:
+            # Identical once the filler is gone. No threshold can argue with
+            # this one and none should have to.
+            return True
+        if terms:
+            earlier_terms = _tokens(previous)
+            if earlier_terms and _overlap(terms, earlier_terms) > REPEAT_TERM_THRESHOLD:
+                return True
+        earlier_shingles = _shingles(earlier_words)
+        if (
+            len(shingles) >= _MIN_SHINGLES
+            and len(earlier_shingles) >= _MIN_SHINGLES
+            and _overlap(shingles, earlier_shingles) >= REPEAT_SHINGLE_THRESHOLD
+        ):
             return True
     return False
 
@@ -706,7 +850,7 @@ async def _deliver_validate(state: _DeliverState) -> _DeliverState:
     if len(text) > max(DELIVERY_MIN_CEILING, len(original) * 3):
         logger.info("interviewer.delivery_rejected reason=length")
         return {"delivered": original}
-    if _is_repeat(text, state.get("asked_before")):
+    if is_semantic_repeat(text, state.get("asked_before")):
         logger.info("interviewer.delivery_rejected reason=repeat")
         return {"delivered": original}
     return {"delivered": text}
@@ -736,6 +880,232 @@ _DECIDE_GRAPH = _build_decide_graph()
 _DELIVER_GRAPH = _build_deliver_graph()
 
 
+# ── Vaada's explicit conversation state ──────────────────────────────────────
+#
+# WHAT THIS REPLACED. The conversation's whole idea of itself was one tuple,
+# `(covered, total)`, computed for the stopping rule and then thrown away. That
+# is enough to answer "may I stop?" and nothing else: an item probed once and
+# answered evasively, an item nobody has reached yet, and an item the evidence
+# ledger already holds two contradicting readings of all looked identical, and
+# all three looked identical to an item that was answered well.
+#
+# INTERNAL ONLY. Nothing here crosses a client boundary. `confidence` is a WORD
+# and the counts below are engineering metadata in the same sense the ledger's
+# `relevance` is: they order work and they explain a decision to an operator,
+# and the standing no-numbers rule covers them exactly as it covers a score.
+#
+# THIS IS THE VAADA SIDE OF THE LOOP WITH MITI. `conflicting` and `weak` are not
+# computed from the transcript -- they cannot be, because whether two readings
+# disagree is a question about the evidence ledger, which is Miti's. The caller
+# reads them from the ledger and passes them in, which keeps the direction of
+# the dependency honest and keeps this function pure.
+
+#: A dimension with at least one substantive answer and nothing outstanding.
+COVERAGE_COVERED = "covered"
+#: Answered substantively, but a re-ask on it was exhausted without the evidence
+#: the question asked for. There IS something here; it is not yet enough.
+COVERAGE_PARTIAL = "partially_covered"
+#: Probed, and nothing usable came back. Distinct from `unprobed` for the same
+#: reason the ledger separates `inferred_only` from `unsupported`: the
+#: difference is real and it changes what to do next.
+COVERAGE_WEAK = "weak_evidence"
+#: The ledger holds live evidence on both sides. Never resolved here; which side
+#: is right is a question for the recruiter (services/evidence/contradictions).
+COVERAGE_CONFLICTING = "conflicting_evidence"
+#: Nobody has asked yet.
+COVERAGE_UNPROBED = "unprobed"
+
+CONFIDENCE_HIGH = "high"
+CONFIDENCE_MEDIUM = "medium"
+CONFIDENCE_LOW = "low"
+
+#: The grade's minimum has been reached. Without it a fluent candidate is
+#: assessed on fewer criteria than a hesitant one and two reports on the same
+#: job stop being comparable (ppi.conversation_may_close says the same).
+STOP_FLOOR_REACHED = "floor_reached"
+STOP_EVERY_DIMENSION_COVERED = "every_dimension_covered"
+STOP_NO_PROBE_OUTSTANDING = "no_probe_outstanding"
+#: A MATERIAL contradiction obliges `ask_follow_up` while a conversation is
+#: still running (services/evidence/contradictions.actions_for). Stopping with
+#: one outstanding throws away the only chance to ask.
+STOP_NO_CONFLICT_OUTSTANDING = "no_conflict_outstanding"
+STOP_PROMPTS_EXHAUSTED = "prompts_exhausted"
+
+
+@dataclass(frozen=True)
+class DimensionEvidence:
+    """What the conversation currently holds on one matrix item."""
+
+    dimension: str
+    answers: int = 0
+    substantive: int = 0
+    gaps: int = 0
+    #: From the ledger, never from the transcript.
+    conflicting: bool = False
+    weak: bool = False
+
+    @property
+    def state(self) -> str:
+        """One word, resolved in a fixed precedence.
+
+        Conflicting outranks everything, exactly as `ledger.support_state`
+        checks contradiction FIRST: a dimension with strong evidence on both
+        sides is the most interesting one in the conversation and the easiest to
+        lose behind a rule that lets support outweigh contradiction.
+        """
+        if self.conflicting:
+            return COVERAGE_CONFLICTING
+        if self.answers <= 0:
+            return COVERAGE_UNPROBED
+        if self.substantive <= 0:
+            return COVERAGE_WEAK
+        if self.weak:
+            return COVERAGE_WEAK
+        if self.gaps > 0:
+            return COVERAGE_PARTIAL
+        return COVERAGE_COVERED
+
+
+@dataclass(frozen=True)
+class ConversationState:
+    """Everything Vaada knows about where this conversation has got to."""
+
+    dimensions: tuple[DimensionEvidence, ...] = ()
+    asked: int = 0
+    total_written: int = 0
+    floor: int = 0
+    probe_outstanding: bool = False
+
+    def _named(self, state: str) -> tuple[str, ...]:
+        return tuple(
+            item.dimension for item in self.dimensions if item.state == state
+        )
+
+    @property
+    def covered(self) -> tuple[str, ...]:
+        return self._named(COVERAGE_COVERED)
+
+    @property
+    def partially_covered(self) -> tuple[str, ...]:
+        return self._named(COVERAGE_PARTIAL)
+
+    @property
+    def unprobed(self) -> tuple[str, ...]:
+        return self._named(COVERAGE_UNPROBED)
+
+    @property
+    def weak_evidence(self) -> tuple[str, ...]:
+        return self._named(COVERAGE_WEAK)
+
+    @property
+    def conflicting_evidence(self) -> tuple[str, ...]:
+        return self._named(COVERAGE_CONFLICTING)
+
+    @property
+    def remaining(self) -> tuple[str, ...]:
+        """Every dimension that is not yet covered, in matrix order.
+
+        Deliberately one list rather than four: what the conversation still owes
+        is a single question, and a caller that had to union four tuples would
+        eventually union three of them.
+        """
+        return tuple(
+            item.dimension
+            for item in self.dimensions
+            if item.state != COVERAGE_COVERED
+        )
+
+    @property
+    def confidence(self) -> str:
+        """A WORD, and ARITHMETIC over the dimension states.
+
+        Never a model's opinion of its own work, for the reason
+        `verification.Verdict.confidence` gives: a self-assessed confidence is
+        unfalsifiable and fails exactly when the provider is already failing.
+        This one can be recomputed by hand from the counts.
+        """
+        if not self.dimensions:
+            return CONFIDENCE_LOW
+        if self.conflicting_evidence or self.weak_evidence:
+            return CONFIDENCE_LOW
+        if not self.remaining:
+            return CONFIDENCE_HIGH
+        if not self.unprobed:
+            return CONFIDENCE_MEDIUM
+        return (
+            CONFIDENCE_MEDIUM
+            if len(self.covered) * 2 >= len(self.dimensions)
+            else CONFIDENCE_LOW
+        )
+
+    @property
+    def stop_conditions(self) -> tuple[str, ...]:
+        """Which stop conditions currently hold, in a stable order.
+
+        REPORTING, NOT DECIDING. `ppi.conversation_may_close` remains the only
+        function that decides whether a conversation may end early, including
+        its floor. Two functions that could both end an assessment is one more
+        than the number anybody would remember to keep in step, and the one that
+        got forgotten would be the one that let a candidate be graded on half a
+        matrix.
+        """
+        met: list[str] = []
+        if self.asked >= self.floor:
+            met.append(STOP_FLOOR_REACHED)
+        if self.dimensions and not self.remaining:
+            met.append(STOP_EVERY_DIMENSION_COVERED)
+        if not self.probe_outstanding:
+            met.append(STOP_NO_PROBE_OUTSTANDING)
+        if not self.conflicting_evidence:
+            met.append(STOP_NO_CONFLICT_OUTSTANDING)
+        if self.total_written and self.asked >= self.total_written:
+            met.append(STOP_PROMPTS_EXHAUSTED)
+        return tuple(met)
+
+    def as_log(self) -> dict[str, Any]:
+        """COUNTS and WORDS for one operator log line.
+
+        No dimension names and no answer text. A competency name is a label and
+        would be safe, but a log line carrying twenty of them is a log line
+        nobody reads, and `interview_telemetry` already established that this
+        channel is counts and keys only.
+        """
+        return {
+            "covered": len(self.covered),
+            "partially_covered": len(self.partially_covered),
+            "unprobed": len(self.unprobed),
+            "weak_evidence": len(self.weak_evidence),
+            "conflicting_evidence": len(self.conflicting_evidence),
+            "remaining": len(self.remaining),
+            "asked": self.asked,
+            "confidence": self.confidence,
+            "stop_conditions": list(self.stop_conditions),
+        }
+
+
+def conversation_state(
+    *,
+    dimensions: Sequence[DimensionEvidence],
+    asked: int,
+    total_written: int,
+    floor: int,
+    probe_outstanding: bool,
+) -> ConversationState:
+    """Assemble the state. Pure, deterministic, and calls no model.
+
+    A model asked to summarise its own conversation would be absent during an
+    outage and confidently wrong during a degraded one, and this is read on the
+    turn that decides whether a candidate's assessment ends.
+    """
+    return ConversationState(
+        dimensions=tuple(dimensions),
+        asked=int(asked),
+        total_written=int(total_written),
+        floor=int(floor),
+        probe_outstanding=bool(probe_outstanding),
+    )
+
+
 # ── Public entry points ──────────────────────────────────────────────────────
 
 
@@ -748,6 +1118,7 @@ async def next_follow_up(
     follow_ups_used: int,
     already_followed_up: bool,
     budget: int | None = None,
+    asked_before: Sequence[str] | None = None,
 ) -> str | None:
     """One adaptive follow-up, or None to ask the next scripted question.
 
@@ -755,6 +1126,10 @@ async def next_follow_up(
     (`follow_up_budget(len(prompts))`); it defaults to MAX_FOLLOW_UPS so a
     caller that does not pass one keeps the previous behaviour rather than
     losing its ceiling.
+
+    `asked_before` is every interviewer line so far, and it defaults to none for
+    the same reason: an older caller keeps the previous behaviour instead of
+    silently losing a guard it never knew about.
 
     Every other part of the signature is unchanged, deliberately: it is the seam
     the conversation-flow tests patch to pin the four invariants, and those
@@ -771,6 +1146,7 @@ async def next_follow_up(
                 "follow_ups_used": follow_ups_used,
                 "already_followed_up": already_followed_up,
                 "budget": budget if budget is not None else MAX_FOLLOW_UPS,
+                "asked_before": list(asked_before or ()),
             }
         )
     except Exception as exc:  # noqa: BLE001

@@ -49,8 +49,21 @@ import pytest
 SERVICES = pathlib.Path(__file__).resolve().parents[1] / "app" / "services"
 
 #: Packages that sit on an import cycle today. A module-level attribute read in
-#: any of these is fatal the moment a cycle forms, which has now happened once.
-CYCLE_PRONE = ("verification", "agents", "evidence")
+#: any of these is fatal the moment a cycle forms, which has now happened twice.
+#:
+#: `gap_analysis` and `ppi` joined the list the second time, and the reason is
+#: worth recording: the first guard scoped itself to the three NEW packages, so
+#: when the next cycle formed through two long-standing top-level services it
+#: caught nothing. The scope of a guard has to follow the shape of the failure,
+#: not the shape of the change that first revealed it.
+#:
+#: This is deliberately NOT every service module. `tools/implementations` reads
+#: `schemas.JobFacts` at module scope as a DECORATOR argument, which genuinely
+#: needs its value at import time and cannot be lazified without redesigning the
+#: registry. Those sites are safe because nothing imports `tools.implementations`
+#: from inside `tools.schemas`; listing them here would force a refactor to
+#: silence a warning about a cycle that does not exist.
+CYCLE_PRONE = ("verification", "agents", "evidence", "gap_analysis", "ppi")
 
 
 def _service_modules() -> list[str]:

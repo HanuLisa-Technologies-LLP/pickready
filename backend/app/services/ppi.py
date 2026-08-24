@@ -69,7 +69,6 @@ from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
 from app.models.job_setup import SWOT_AREAS, JobSwotIntake
 from app.services import agent_loop, llm_router, swot_intake
-from app.services.verification import base as verification
 from app.prompts import registry
 from app.services.rating import (
     GRADE_HIGHLY,
@@ -1112,6 +1111,14 @@ def verify_matrix_for_consumer(
     consumer that does not know which version it wants passes None and gets the
     envelope check alone rather than a check that quietly always passes.
     """
+    # Imported HERE, not at module scope. Importing the verification
+    # package runs its __init__, which eagerly pulls in every critic --
+    # and `ppi_report` imports `functional_assessment`, which imports
+    # `gap_analysis`, which imports this module. A module-level import
+    # therefore closes a cycle that fails as `partially initialized
+    # module` and only under some import orders, so the full suite stays
+    # green while one test file goes red.
+    from app.services.verification import base as verification  # noqa: PLC0415
     from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
     findings = list(
         artifacts.verify_for_consumer(

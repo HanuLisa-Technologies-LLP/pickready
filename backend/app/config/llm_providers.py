@@ -613,6 +613,25 @@ ROUTE_SCORE_WEIGHTS: dict[str, float] = {
     "cost": 5.0,
 }
 
+#: How many attempts a route needs before its OWN success rate fully replaces
+#: the neutral prior in the score.
+#:
+#: WITHOUT THIS, ONE UNLUCKY CALL REORDERS THE CHAIN. A route with a single
+#: failure reads as 0% successful, which costs it the entire `success_rate`
+#: weight and moves a less-preferred provider to the front on the strength of
+#: one sample. Two things then go wrong at once: the measured route order stops
+#: meaning anything, and the per-key circuit breaker -- which needs CONSECUTIVE
+#: failures on the SAME key -- never sees its second failure, because the
+#: scheduler has already routed around the key it was about to condemn. A
+#: transient blip would permanently hide a genuinely dead credential behind a
+#: healthy-looking chain.
+#:
+#: Five, matching `llm_router._STATS_ALARM_MIN_ATTEMPTS`, which exists for the
+#: same reason and says so: do not alarm on a single unlucky call. Below it the
+#: term is blended toward the neutral 0.5, so evidence still moves the score
+#: from the first attempt, just proportionally to how much of it there is.
+MIN_ROUTE_OBSERVATIONS = 5
+
 #: Latency normaliser: a route at this mean latency scores 0.5 on the latency
 #: term. One second, because that is roughly the line between a provider that
 #: can lead an interactive route and one that cannot.
@@ -629,12 +648,42 @@ RECENT_LATENCY_SAMPLES = 20
 #: siblings sit idle.
 LOAD_SHARE_WINDOW = 50
 
+#: How many routing DECISIONS the registry keeps for the operator surface.
+#:
+#: A decision is the only place the counterfactual lives: which routes were
+#: considered, which were excluded and for what measured reason. Without it an
+#: operator asking "why did that 12k extraction not go to Groq" can read the
+#: outcome and never the reasoning, and the answer everybody reaches for instead
+#: is "the scheduler must have picked differently this morning" -- which is
+#: exactly the doubt determinism was bought to remove.
+#:
+#: Bounded because it is an in-memory ring in a long-lived worker. Fifty is
+#: enough to cover a burst of an interview's calls, and it holds identifiers,
+#: counts and timings only.
+ROUTING_DECISION_HISTORY = 50
+
 #: How long a quota domain is scored down after a 429.
 #:
 #: Deliberately short, and deliberately NOT the key breaker's fifteen minutes. A
 #: per-minute rate limit clears within a minute, and treating it like an
 #: account-level write-off would discard the traffic the domain can still serve.
 DOMAIN_COOLDOWN_SECONDS = 60.0
+
+#: How long a route stays excluded after the provider condemned it outright:
+#: a 404 on the model id, a refused credential, an account that cannot pay.
+#:
+#: IT MUST EXPIRE, and this product has already paid for getting that wrong
+#: once. The key breaker's persisted `healthy = false` had no expiry and left
+#: every credential permanently skipped, so the router raised on every call and
+#: matching degraded to a placeholder comment forever; half-open recovery is
+#: what fixed it. A capacity registry that condemned a route with no way back
+#: would rebuild exactly that trap one layer higher -- the route is dropped from
+#: every chain, so it never gets the success that would clear it. After this it
+#: goes half-open and costs one attempt to find out.
+#:
+#: Fifteen minutes, matching the key breaker, because the conditions are the
+#: same ones: a topped-up balance, a corrected key, a re-added model id.
+ROUTE_DISABLE_SECONDS = 15 * 60.0
 
 #: How soon after a throttle a sibling's success still counts as evidence of
 #: INDEPENDENCE. Outside this window the two events are simply unrelated in

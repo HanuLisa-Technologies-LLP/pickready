@@ -62,7 +62,7 @@ from app.services.rating import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "GAP_ORDER",
+    "gap_order",
     "PROBE_WORDS",
     "build_gap_analysis",
     "gap_items",
@@ -77,7 +77,14 @@ GAP_GRADES = MODERATE_OR_BELOW
 
 #: The order the three groups are read in. Must-have first, because it is the
 #: aspect the hard cap governs.
-GAP_ORDER: tuple[str, ...] = ppi.CATEGORIES
+#:
+#: A FUNCTION, not a constant. `ppi` is not a leaf and this module sits on a
+#: cycle with it, so reading `ppi.CATEGORIES` while this module is being
+#: imported is an `AttributeError` the moment that cycle is entered from the
+#: other side. It already was: the order is still `ppi`'s and still defined in
+#: exactly one place, it is simply read when asked for.
+def gap_order() -> tuple[str, ...]:
+    return tuple(ppi.CATEGORIES)
 
 #: A probe is a prompt for the interviewer, not a written assessment, and is
 #: capped shorter than an item's 45-50 word remark for exactly that reason.
@@ -88,14 +95,14 @@ PROBE_WORDS = (25, 30)
 #: one probe is not enough interview time to resolve it. Everything else gets
 #: one, because a section that gives every gap three probes gives an interviewer
 #: a list too long to use and is therefore no prioritisation at all.
-PROBE_COUNTS: dict[tuple[str, str], int] = {
-    (ppi.CATEGORY_MUST_HAVE, GRADE_NOT): 2,
-}
+def probe_counts() -> dict[tuple[str, str], int]:
+    """Same reason as `gap_order`: keyed by a `ppi` constant, read on demand."""
+    return {(ppi.CATEGORY_MUST_HAVE, GRADE_NOT): 2}
 DEFAULT_PROBE_COUNT = 1
 
 
 def probe_count_for(category: str, grade: str | None) -> int:
-    return PROBE_COUNTS.get((category, str(grade)), DEFAULT_PROBE_COUNT)
+    return probe_counts().get((category, str(grade)), DEFAULT_PROBE_COUNT)
 
 
 def must_have_cap_applies(dimensions: list[dict[str, Any]]) -> bool:
@@ -396,7 +403,7 @@ async def build_gap_analysis(
     groups: list[dict[str, Any]] = []
     ordered_gaps: list[tuple[str, dict[str, Any]]] = []
 
-    for category in GAP_ORDER:
+    for category in gap_order():
         items = gap_items(dimensions, category)
         ordered_gaps.extend((category, item) for item in items)
         entries: list[dict[str, Any]] = []
@@ -441,5 +448,7 @@ async def build_gap_analysis(
     }
 
 
-assert GAP_ORDER[0] == ppi.CATEGORY_MUST_HAVE, "Must-have is reviewed first (spec §9.6)"
-assert PROBE_WORDS[0] <= PROBE_WORDS[1]
+# The two self-checks that used to run here are now
+# `tests/test_functional_assessment.py`. An `assert` at module scope is stripped
+# by `python -O`, so it protected nothing in a production image, and it read
+# `ppi` at import time, which is the cycle-fatal pattern this file just removed.

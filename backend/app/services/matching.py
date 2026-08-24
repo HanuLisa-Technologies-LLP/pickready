@@ -36,6 +36,7 @@ import json
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from sqlalchemy import select, text
@@ -53,6 +54,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOP_N = 50
 _RERANK_BATCH_SIZE = 10
 _RESUME_SNIPPET_CHARS = 1500
+
+#: The router task type every scoring call in this module is made under. Named
+#: once because the `ai_score` artifact reports the routing policy the
+#: explanation was written under, and a second literal would let the artifact
+#: describe a chain the call was not actually made on.
+_SCORING_TASK = "rerank"
 
 # Deterministic-fallback band (used when the LLM chain is fully unavailable):
 # retrieval rank is mapped into [_FALLBACK_MIN, _FALLBACK_MAX] so ordering is
@@ -952,7 +959,7 @@ async def _score_batch(
     ]
     try:
         raw = await llm_router.chat_completion(
-            "rerank", messages, response_format_json=True, session=session
+            _SCORING_TASK, messages, response_format_json=True, session=session
         )
     except llm_router.LLMUnavailableError:
         logger.warning(
@@ -1009,7 +1016,7 @@ async def _score_batch(
         ]
         try:
             raw_retry = await llm_router.chat_completion(
-                "rerank", retry_messages, response_format_json=True, session=session
+                _SCORING_TASK, retry_messages, response_format_json=True, session=session
             )
         except llm_router.LLMUnavailableError:
             # Chain went down on the corrective retry — skip the still-missing
@@ -1157,6 +1164,428 @@ async def _customer_success_patterns(
             type(exc).__name__,
         )
         return []
+
+
+# ── Yukti's A2A hand-off: the `ai_score` artifact (spec 16.5) ────────────────
+#
+# WHY THIS IS BUILT HERE AND NOT DERIVED FROM THE STORED ROW
+# -----------------------------------------------------------
+# `match_breakdown_json` is the product's own record and it is what the AI Score
+# section of a PRISM report is rendered from. It carries the internal 1-10
+# category score, which is precisely the value that may never reach a client;
+# `client_breakdown` and `ranking_payload` are the two projections that strip it
+# on the way out.
+#
+# The artifact is a THIRD thing, built from the breakdown rather than being it,
+# for two separate reasons:
+#
+#   * it has to carry engineering metadata the stored row has no business
+#     holding -- which retrieval stage surfaced this candidate and at what rank,
+#     which category list was in force, which routing policy the explanation was
+#     written under. Putting any of that on `match_breakdown_json` would leave it
+#     one projection bug away from a client, and note what `client_breakdown`
+#     actually does: it removes NUMBERS, not FIELDS. A `{"semantic_rank": 3}`
+#     block would walk straight through it into an API response.
+#   * it has to carry NO assessment number at all. A grade crosses this boundary
+#     as a WORD, for the same reason `ppi._requirement_word` converts one: the
+#     point at which an integer stops being convertible is the point at which
+#     somebody renders it, and Siddhi -- the declared consumer of `ai_score` --
+#     is the agent that writes the document a client keeps.
+#
+# So nothing below writes back, and nothing below is read by the pipeline. With
+# the whole block deleted a matching run produces byte-identical rows, which is
+# the only useful sense of "additive".
+
+#: The `ai_score` CONTRACT version, and deliberately not a re-score counter.
+#:
+#: Matching re-runs and overwrites `match_breakdown_json` in place, so the
+#: product keeps no history of how many times a candidate has been scored and
+#: there is no column a counter could be derived from. A counter invented here
+#: would read 1 forever while looking like it could read more, which is the same
+#: lie a `framework_generated_at` stamp with no competency rows behind it told.
+#: What actually tells two runs apart travels in the payload: `jd_version`
+#: fingerprints the job description the run scored against, and `scored_at` says
+#: when the run happened.
+AI_SCORE_ARTIFACT_VERSION = 1
+
+#: How a candidate reached the scorer. `exact_match` is the specification's name
+#: for what stage 2 is -- Postgres `ts_rank` over `resume_tsv`, which matches the
+#: JD's literal skill terms -- and it is named for the question a consumer asks
+#: ("was this a meaning match or a word match?") rather than after the
+#: implementation, because the implementation is the half that may be replaced.
+RETRIEVAL_SEMANTIC = "semantic"
+RETRIEVAL_EXACT_MATCH = "exact_match"
+RETRIEVAL_LINKED = "linked"
+
+
+def _retrieval_evidence(
+    profile_id: uuid.UUID,
+    *,
+    semantic_ids: Sequence[uuid.UUID],
+    keyword_ids: Sequence[uuid.UUID],
+    linked_ids: Sequence[uuid.UUID],
+    fusion_order: Sequence[uuid.UUID],
+    top_n: int,
+    semantic_ran: bool,
+) -> dict[str, Any]:
+    """How THIS candidate reached the scorer, and by which stage.
+
+    Recorded per candidate rather than once per run because an artifact has to
+    be readable on its own: a consumer holding one candidate's `ai_score` and a
+    run-level summary filed somewhere else cannot answer "was this person a
+    meaning match or a word match" without the other half, and the whole reason
+    the boundary is typed is that a consumer must not have to go looking.
+
+    A rank here is A POSITION IN A RETRIEVAL LIST, not an assessment of a
+    person. It says the pipeline read this resume third; it says nothing about
+    how good it is, because retrieval is a ranking prior and never decides who
+    gets scored. That distinction is why these integers may live in an artifact
+    while a category score may not.
+    """
+    semantic = list(semantic_ids)
+    keyword = list(keyword_ids)
+    fusion = list(fusion_order)
+    return {
+        RETRIEVAL_SEMANTIC: {
+            "hit": profile_id in semantic,
+            "rank": semantic.index(profile_id) if profile_id in semantic else None,
+            # Told apart from "did not match", because they mean opposite things.
+            # A run whose embedding service was down ranked on words alone, and a
+            # consumer reading a bare `hit: false` would record that as evidence
+            # this resume failed to match on meaning.
+            "stage_ran": bool(semantic_ran),
+        },
+        RETRIEVAL_EXACT_MATCH: {
+            "hit": profile_id in keyword,
+            "rank": keyword.index(profile_id) if profile_id in keyword else None,
+            "stage_ran": True,
+        },
+        # Not a retrieval hit at all, and it outranks both. A candidate linked to
+        # the job is scored whether either stage surfaced them or not, which is
+        # the rule retrieval must never be allowed to override.
+        RETRIEVAL_LINKED: profile_id in set(linked_ids),
+        "fusion_rank": fusion.index(profile_id) if profile_id in fusion else None,
+        "fusion_strategy": "union, semantic order first, then keyword, then linked",
+        "pool_size": len(fusion),
+        "top_n": int(top_n),
+    }
+
+
+def _resume_evidence_refs(profile: Profile) -> tuple[str, ...]:
+    """The resume this conclusion was drawn from, as IDENTIFIERS ONLY.
+
+    Ids, exactly as `swot_evidence` records its sources: provenance has to be
+    showable without re-disclosing the document, and a resume is a file a
+    candidate uploaded rather than text this product may hand onward. The digest
+    is included because it is the one ref that survives a re-upload under a new
+    object id and still answers "was it this exact document".
+    """
+    refs = [f"profiles:{profile.id}"]
+    if profile.resume_sha256:
+        refs.append(f"resume_sha256:{profile.resume_sha256}")
+    if profile.resume_public_id:
+        refs.append(f"resume_object:{profile.resume_public_id}")
+    return tuple(refs)
+
+
+def _resume_sections(profile: Profile) -> list[str]:
+    """Which parts of the resume the scorer was actually given.
+
+    `_profile_summary` builds the prompt from exactly these fields, so this is
+    the difference between a category graded off a parsed employment history and
+    one graded off raw resume text. It is also what `resume_parsed` is answered
+    from: an empty list means nothing survived parsing, and `yukti_gate` refuses
+    to let a grade written from an unparsed file pass as evidenced.
+    """
+    parsed = profile.parsed_fields_json if isinstance(profile.parsed_fields_json, dict) else {}
+    aspects = profile.aspects_json if isinstance(profile.aspects_json, dict) else {}
+    present: list[str] = []
+    for name, value in (
+        ("skills", parsed.get("skills")),
+        ("total_experience_years", parsed.get("total_experience_years")),
+        ("education", parsed.get("education")),
+        ("employment_history", parsed.get("employment_history")),
+        ("resume_text", profile.resume_text),
+        ("current_designation_and_duties", aspects.get(_ASPECT_ROLE_KEY)),
+    ):
+        if value:
+            present.append(name)
+    return present
+
+
+def _model_metadata(breakdown: dict) -> dict[str, Any]:
+    """Which model wrote the explanation, as far as this pass can honestly say.
+
+    `llm_router.chat_completion` returns a string, so the provider and the key
+    that actually answered are not available at this call site, and naming one
+    would be a claim nobody checked -- the same shape as a stamp asserting work
+    that did not happen. So `provider` is present and NULL rather than absent,
+    because an omitted key reads as "nobody thought about it", and what IS
+    knowable is recorded beside it: the routing policy the call was made under,
+    and `scoring_mode`, which is the ground truth about whether a model was
+    involved at all.
+    """
+    from app.config import llm_providers  # noqa: PLC0415
+
+    order = list(llm_providers.provider_order(_SCORING_TASK))
+    return {
+        "task_type": _SCORING_TASK,
+        # The one field a consumer MUST read. A `retrieval_fallback` breakdown
+        # was ordered by document similarity and never read by a model, and a
+        # report presenting it as a judgement would be presenting a degradation
+        # as a result.
+        "scoring_mode": str(breakdown.get("scoring_mode") or "unknown"),
+        "provider": None,
+        "provider_order": order,
+        "candidate_models": {p: llm_providers.PROVIDER_MODELS.get(p) for p in order},
+        "temperature": llm_providers.temperature_for(_SCORING_TASK),
+    }
+
+
+def _ai_score_payload(
+    job: Job,
+    profile: Profile,
+    link: JobCandidateLink,
+    breakdown: dict,
+    *,
+    categories: Sequence[tuple[str, str, str]],
+    retrieval: dict[str, Any],
+) -> dict[str, Any]:
+    """The typed hand-off for one candidate, built from validated fields only.
+
+    Every graded field crosses as a WORD, through the same `matching_label`
+    conversion `ranking_payload` performs on the way to a client. The
+    explanation crosses through the same `enforce_word_range` too, which buys a
+    property worth having: the justification a consumer reads is the identical
+    string the recruiter read on the review screen, so an agent downstream can
+    never be shown a different reason from the one a human was shown.
+
+    A category the breakdown has no block for is NOT emitted as an empty entry.
+    It is named under `provenance.categories_unscored` instead, because
+    `yukti_gate` counts `categories` to decide whether the pass covered the job,
+    and a padded list would let a run that scored three of five categories
+    report a complete one.
+    """
+    from app.services.agents import identity  # noqa: PLC0415
+    from app.services import swot_intake  # noqa: PLC0415
+
+    evidence_refs = list(_resume_evidence_refs(profile))
+    sections = _resume_sections(profile)
+    graded: list[dict[str, Any]] = []
+    unscored: list[str] = []
+    for key, name, description in categories:
+        block = breakdown.get(key)
+        if not isinstance(block, dict):
+            unscored.append(key)
+            continue
+        graded.append(
+            {
+                "key": key,
+                "name": name,
+                # What the category demands of a resume. The AI Score carries no
+                # required LEVEL -- a resume-only pass has no job-requirement
+                # shape to compare against, which is why `DimensionOut`'s
+                # `required_level` is null for every AI Score item -- so stating
+                # one here would invent the very number this boundary exists to
+                # keep out.
+                "requirement": description,
+                "grade": matching_label(block.get("score")),
+                "explanation": enforce_word_range(block.get("comment")),
+                # The gate refuses a graded category that cites nothing. These
+                # are document ids: which resume the conclusion was drawn from,
+                # never a quoted line out of it.
+                "evidence": list(evidence_refs),
+                "evidence_sections": list(sections),
+                "evidence_basis": {
+                    RETRIEVAL_SEMANTIC: bool(
+                        (retrieval.get(RETRIEVAL_SEMANTIC) or {}).get("hit")
+                    ),
+                    RETRIEVAL_EXACT_MATCH: bool(
+                        (retrieval.get(RETRIEVAL_EXACT_MATCH) or {}).get("hit")
+                    ),
+                    RETRIEVAL_LINKED: bool(retrieval.get(RETRIEVAL_LINKED)),
+                },
+            }
+        )
+
+    overall = breakdown.get("overall") if isinstance(breakdown.get("overall"), dict) else {}
+    return {
+        # ── what `gates.yukti_gate` reads ────────────────────────────────────
+        "categories": graded,
+        "resume_parsed": bool(sections),
+        # Nothing about the person is concluded beyond what the resume states.
+        # An empty list rather than an absent key: the gate walks this, and a
+        # missing key would make the same claim by accident instead of on
+        # purpose. Anything a future pass infers belongs here, where the gate
+        # will refuse it if it names a protected attribute.
+        "inferred_fields": [],
+        # ── scope, carried on the payload as well as on the envelope ─────────
+        "candidate_id": str(profile.candidate_id),
+        "job_id": str(job.id),
+        "profile_id": str(profile.id),
+        "job_candidate_link_id": str(link.id) if link.id is not None else None,
+        # ── the holistic 5th comment, which is `match_rationale` ─────────────
+        "overall": {
+            "grade": matching_label(overall.get("score")),
+            "explanation": enforce_word_range(overall.get("comment")),
+        },
+        "evidence_refs": evidence_refs,
+        "resume_sections": sections,
+        "retrieval": retrieval,
+        "model": _model_metadata(breakdown),
+        "provenance": {
+            "producer": identity.YUKTI,
+            # Said out loud because it is the line matching must not cross: this
+            # is judged from resume text alone, before the candidate has spoken
+            # to anything, and a consumer must never read it as verified depth.
+            "pass": "resume_only",
+            "scored_at": datetime.now(timezone.utc).isoformat(),
+            "categories_expected": [key for key, _, _ in categories],
+            "categories_unscored": unscored,
+            # Read off the row rather than inferred from the key names: null
+            # means the recruiter has not saved the list yet, so the candidate
+            # was ranked against a proposal rather than a finalised list.
+            "categories_finalised_at": (
+                job.matching_categories_finalized_at.isoformat()
+                if getattr(job, "matching_categories_finalized_at", None)
+                else None
+            ),
+            "source_type": getattr(link, "source_type", None),
+        },
+        "jd_version": swot_intake.jd_version(job),
+        "artifact_version": AI_SCORE_ARTIFACT_VERSION,
+    }
+
+
+def _publish_one_ai_score(
+    job: Job,
+    profile: Profile,
+    link: JobCandidateLink,
+    breakdown: dict,
+    *,
+    categories: Sequence[tuple[str, str, str]],
+    stages: dict[str, Any],
+    correlation_id: str | None = None,
+):
+    """Run Yukti's gate, then publish this candidate's `ai_score` artifact.
+
+    Returns None rather than raising on ANY failure, and that direction is the
+    whole reason the function has this shape. Matching is a live path that
+    worked before artifacts existed and that a recruiter watches run. By the
+    time this is called the rows are committed, so an exception escaping here
+    would report a finished run as a failure and hand the Celery retry policy a
+    job it would redo from the top -- re-embedding the JD and re-spending the
+    model calls -- to produce identical rows.
+
+    The local import is INSIDE the guard, unlike Bodha's and Sutra's, and that
+    is deliberate rather than a divergence: those two publish from a request
+    handler that has already flushed its own work, while this one runs at the
+    tail of a committed background run, so an ImportError has to cost the
+    hand-off and not the run.
+
+    Per CANDIDATE rather than per run, for the same reason a databank bulk
+    upload allows partial success: one unreadable profile must not discard the
+    other forty-nine candidates' hand-offs.
+
+    The gate's verdict travels as `validated` and is NOT a publish veto. A job
+    still on the four legacy categories fails `MIN_MATCHING_CATEGORIES` every
+    single time; refusing to publish would leave Siddhi unable to tell a
+    candidate scored on a short list from one who was never matched at all.
+    """
+    try:
+        from app.services.agents import (  # noqa: PLC0415
+            artifacts,
+            envelope as run_envelope,
+            gates,
+            identity,
+        )
+
+        retrieval = _retrieval_evidence(profile.id, **stages)
+        payload = _ai_score_payload(
+            job, profile, link, breakdown, categories=categories, retrieval=retrieval
+        )
+        verdict = gates.run_gate(identity.YUKTI, payload)
+        envelope = run_envelope.Envelope.for_run(
+            tenant_id=str(job.tenant_id),
+            agent_id=identity.YUKTI,
+            task_type=_SCORING_TASK,
+            interactive=False,
+            job_id=str(job.id),
+            candidate_id=str(profile.candidate_id),
+            workflow_id=correlation_id,
+            context_version=payload["jd_version"],
+        )
+        payload["correlation_id"] = envelope.workflow_id
+        artifact = artifacts.publish(
+            producer=identity.YUKTI,
+            artifact_type="ai_score",
+            payload=payload,
+            tenant_id=str(job.tenant_id),
+            job_id=str(job.id),
+            candidate_id=str(profile.candidate_id),
+            version=AI_SCORE_ARTIFACT_VERSION,
+            source_refs=(*_resume_evidence_refs(profile), f"jobs:{job.id}"),
+            validated=verdict.passed,
+        )
+        # Identifiers, counts and a boolean. No comment, no grade, no resume
+        # line: this line is read from far more places than the review screen is.
+        logger.info(
+            "matching.ai_score_artifact_published job_id=%s candidate_id=%s "
+            "artifact_id=%s validated=%s confidence=%s",
+            job.id,
+            profile.candidate_id,
+            artifact.artifact_id,
+            verdict.passed,
+            verdict.confidence,
+        )
+        return artifact
+    except Exception:
+        logger.warning(
+            "matching.ai_score_artifact_publish_failed job_id=%s profile_id=%s",
+            getattr(job, "id", None),
+            getattr(profile, "id", None),
+            exc_info=True,
+        )
+        return None
+
+
+def publish_ai_scores(
+    job: Job,
+    scored: Sequence[tuple[Profile, JobCandidateLink, dict]],
+    *,
+    categories: Sequence[tuple[str, str, str]],
+    stages: dict[str, Any],
+    correlation_id: str | None = None,
+) -> list[Any]:
+    """One `ai_score` artifact per scored candidate.
+
+    This function contains no statement that can raise: every per-candidate
+    publish is guarded, and what is left is a loop, a comparison and a list
+    append. That is the property, not an accident -- `run_matching` calls this
+    AFTER its commit, and a raise here would turn a run whose work is already
+    saved into a run that reports failure.
+    """
+    published: list[Any] = []
+    workflow_id = correlation_id
+    for profile, link, breakdown in scored:
+        artifact = _publish_one_ai_score(
+            job,
+            profile,
+            link,
+            breakdown,
+            categories=categories,
+            stages=stages,
+            correlation_id=workflow_id,
+        )
+        if artifact is None:
+            continue
+        # One workflow id across the whole run, so "what did this matching run
+        # publish" is one query rather than N unrelated ones. Minted by the
+        # first successful publish rather than here, because minting it here
+        # would need the agents package outside the guard that makes this safe.
+        workflow_id = workflow_id or artifact.payload.get("correlation_id")
+        published.append(artifact)
+    return published
 
 
 async def run_matching(
@@ -1311,7 +1740,7 @@ async def run_matching(
     }
 
     scored = 0
-    scored_links: list[tuple[JobCandidateLink, dict]] = []
+    scored_links: list[tuple[Profile, JobCandidateLink, dict]] = []
     for profile in profiles:
         link = links_by_candidate.get(profile.candidate_id)
         if link is None:
@@ -1340,7 +1769,7 @@ async def run_matching(
             # HR-visible, never candidate-visible — the holistic 5th comment.
             link.match_rationale = breakdown["overall"]["comment"]
             link.tier = assign_tier(link.match_score)
-            scored_links.append((link, breakdown))
+            scored_links.append((profile, link, breakdown))
             scored += 1
 
     # match_breakdown_json is intentionally NOT on the SQLAlchemy model (same
@@ -1349,7 +1778,7 @@ async def run_matching(
     reporter.finish("remarks")
     reporter.start("saving")
     await session.flush()
-    for link, breakdown in scored_links:
+    for _profile, link, breakdown in scored_links:
         await session.execute(
             text(
                 "UPDATE job_candidate_links "
@@ -1361,4 +1790,28 @@ async def run_matching(
 
     await session.commit()
     reporter.finish("saving", f"{scored} candidate(s) rated.")
+
+    # ── Yukti's hand-off to Siddhi (spec 16.5) ──────────────────────────────
+    # AFTER the commit, deliberately: an artifact describes rows that exist, and
+    # a run whose work is saved is a successful run whatever becomes of the
+    # hand-off. `publish_ai_scores` cannot raise, so this line cannot cost the
+    # return value; it reads nothing back and writes nothing, so deleting it
+    # changes no stored value, no grade, no tier and no ordering.
+    #
+    # The retrieval stages are handed over as the raw id lists this run already
+    # holds. Indexing them per candidate happens inside the guard, so a bug in
+    # the provenance arithmetic cannot reach a recruiter either.
+    publish_ai_scores(
+        job,
+        scored_links,
+        categories=categories,
+        stages={
+            "semantic_ids": semantic_ids,
+            "keyword_ids": keyword_ids,
+            "linked_ids": linked_ids,
+            "fusion_order": profile_ids,
+            "top_n": top_n,
+            "semantic_ran": bool(jd_vec),
+        },
+    )
     return scored
