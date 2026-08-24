@@ -148,6 +148,26 @@ jobs:
         # score and unavailable is the truth.
         run: python -m app.scripts.eval_agents
 
+      - name: Trajectory evaluation
+        working-directory: backend
+        # The fourth eval, added 2026-08-23. The first three ask whether an
+        # output is right. This one asks whether the way it was REACHED was
+        # sound: dependency order, the loop anti-patterns, termination inside
+        # bounds, budget refusals happening before the work, and tool calls
+        # staying inside the calling agent's grant. Spec 21.3's own framing is
+        # that a correct answer produced through unsafe or runaway behaviour is
+        # not a successful execution, and nothing before this could see that.
+        run: python -m app.scripts.eval_trajectory
+
+      - name: Adversarial evaluation
+        working-directory: backend
+        # The fifth, same day. One case per line of spec 41, each calling the
+        # real guard rather than asserting a model behaved well. It tests
+        # injection in BOTH directions on purpose: a false positive on an answer
+        # that merely discusses prompt injection silently penalises an honest
+        # candidate, and there is no other way that surfaces.
+        run: python -m app.scripts.eval_adversarial
+
   frontend-test:
     name: Frontend tests, lint and build
     runs-on: ubuntu-latest
