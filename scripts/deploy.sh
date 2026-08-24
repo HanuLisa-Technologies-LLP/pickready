@@ -64,13 +64,31 @@ STAGE_TAG="${STAGE_TAG:-staged-${SHORT_SHA}}"
 # GitHub Actions reads it back into step outputs; a local run just gets a file.
 DEPLOY_OUT="${DEPLOY_OUT:-${REPO_ROOT}/.deploy-state.env}"
 
-# Secret Manager entries that must NEVER become --set-secrets. DATABASE_URL and
-# REDIS_URL are plain env vars (see build_env below); a name cannot be both a
+# Secret Manager entries that must NEVER become --set-secrets.
+#
+# DATABASE_URL LEFT THIS LIST ON 2026-08-24 and is now a secret MOUNT. It used
+# to be composed here and passed as a plain env var, which meant the assembled
+# DSN -- password included -- sat readable on the revision to anyone holding
+# run.services.get. The password itself was always in Secret Manager and was
+# never logged, so this was narrower than "plaintext credentials in production",
+# but the composed DSN was still a credential materialised where it did not need
+# to be.
+#
+# The reason it was an env var is real and still true: a name cannot be both a
 # secret mount and an env var on the same revision, and Cloud Run rejects the
-# whole deploy with a type conflict if it is. POSTGRES_PASSWORD is consumed
-# here to compose DATABASE_URL and is not needed by the app. NEXT_PUBLIC_* are
-# frontend BUILD arguments, not backend runtime config.
-SECRET_EXCLUDE_RE='^(DATABASE_URL|REDIS_URL|POSTGRES_PASSWORD|CLOUDINARY_URL|NEXT_PUBLIC_.*)$'
+# whole deploy with a type conflict. So the switch is mutually exclusive, and
+# `build_env` below no longer emits DATABASE_URL.
+#
+# The secret's version 1 was a STALE host/credential DSN that does not
+# authenticate, which is exactly why this script refused to use it. Version 3
+# holds the Cloud SQL socket DSN this script composes, byte-identical to what
+# the running revision uses, so the switch is a behavioural no-op verified by
+# hash before it was made.
+#
+# REDIS_URL stays an env var: it carries no credential. POSTGRES_PASSWORD stays
+# excluded because the app never reads it. NEXT_PUBLIC_* are frontend BUILD
+# arguments, not backend runtime config.
+SECRET_EXCLUDE_RE='^(REDIS_URL|POSTGRES_PASSWORD|CLOUDINARY_URL|NEXT_PUBLIC_.*)$'
 
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
@@ -138,22 +156,36 @@ resolve_connection_strings() {
   [ -n "$SQL_CONNECTION_NAME" ] || die "cannot resolve the connection name for Cloud SQL instance ${SQL_INSTANCE}."
   info "cloudsql ${SQL_CONNECTION_NAME}"
 
-  if [ -z "${DATABASE_URL:-}" ]; then
-    local pw
-    # Do not use the Secret Manager entry named DATABASE_URL. Its existing
-    # version is a stale host/credential DSN confirmed not to authenticate in
-    # Phase 0. Compose the supported Cloud SQL socket DSN from
-    # POSTGRES_PASSWORD below; DATABASE_URL remains only an explicit operator
-    # override for controlled diagnostics.
-    # Never echoed, never written to the log, never passed through a temp file.
-    pw="$(gcloud secrets versions access latest --secret=POSTGRES_PASSWORD 2>/dev/null | tr -d '\r\n')"
-    [ -n "$pw" ] || die "secret POSTGRES_PASSWORD is empty or unreadable; the deployer needs roles/secretmanager.secretAccessor."
-    # The Cloud SQL UNIX SOCKET form. A host:port DSN cannot work here:
-    # --add-cloudsql-instances mounts a socket at /cloudsql/<CONNECTION_NAME>,
-    # and the app's engine is asyncpg, so the driver is named explicitly.
-    DATABASE_URL="postgresql+asyncpg://${SQL_USER}:${pw}@/${SQL_DB}?host=/cloudsql/${SQL_CONNECTION_NAME}"
+  # KEEP THE DATABASE_URL SECRET CURRENT, rather than trusting that it is.
+  #
+  # DATABASE_URL is a secret MOUNT now, so this no longer composes an env var.
+  # What it does instead is close a loop that was previously open: version 1 of
+  # that secret was a stale DSN that did not authenticate, it sat there for a
+  # month, and nothing noticed because nothing read it. A rotated
+  # POSTGRES_PASSWORD would leave the mounted DSN just as stale, and the first
+  # symptom would be production failing to reach its database.
+  #
+  # So: recompose the authoritative DSN from POSTGRES_PASSWORD, compare it to
+  # the latest version, and add a new version only when it has drifted. Neither
+  # value is ever echoed, written to a log, or passed through a temp file, and
+  # only whether they matched is printed.
+  local pw expected current
+  pw="$(gcloud secrets versions access latest --secret=POSTGRES_PASSWORD 2>/dev/null | tr -d '
+')"
+  [ -n "$pw" ] || die "secret POSTGRES_PASSWORD is empty or unreadable; the deployer needs roles/secretmanager.secretAccessor."
+  # The Cloud SQL UNIX SOCKET form. A host:port DSN cannot work here:
+  # --add-cloudsql-instances mounts a socket at /cloudsql/<CONNECTION_NAME>,
+  # and the app's engine is asyncpg, so the driver is named explicitly.
+  expected="postgresql+asyncpg://${SQL_USER}:${pw}@/${SQL_DB}?host=/cloudsql/${SQL_CONNECTION_NAME}"
+  current="$(gcloud secrets versions access latest --secret=DATABASE_URL 2>/dev/null || true)"
+  if [ "$current" != "$expected" ]; then
+    warn "the DATABASE_URL secret has drifted from POSTGRES_PASSWORD; adding a new version"
+    printf '%s' "$expected" | gcloud secrets versions add DATABASE_URL --data-file=- >/dev/null       || die "could not refresh the DATABASE_URL secret."
+    info "database url secret refreshed (value withheld)"
+  else
+    info "database url secret is current (value withheld)"
   fi
-  info "database url composed (value withheld)"
+  unset pw expected current
 
   if [ -z "${REDIS_URL:-}" ]; then
     local host port
@@ -202,7 +234,10 @@ build_secret_flag() {
 # values (URL userinfo/host/query, a Redis host:port, the literal "production").
 # ---------------------------------------------------------------------------
 build_env() {  # build_env [extra KEY=VALUE ...]
-  local out="ENVIRONMENT=production|DATABASE_URL=${DATABASE_URL}|REDIS_URL=${REDIS_URL}"
+  # DATABASE_URL is deliberately ABSENT: it arrives as a secret mount now (see
+  # SECRET_EXCLUDE_RE). Emitting it here as well would make the same name both
+  # an env var and a secret on one revision, which Cloud Run rejects outright.
+  local out="ENVIRONMENT=production|REDIS_URL=${REDIS_URL}"
   local kv
   for kv in "$@"; do
     [ -n "$kv" ] || continue
