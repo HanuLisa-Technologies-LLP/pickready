@@ -368,6 +368,25 @@ class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     #: smuggled inside validation_json, which made a scoring-health field look
     #: like candidate-submitted data; it is a property of the RUN.
     scoring_mode: Mapped[str | None] = mapped_column(String(30))
+    #: Siddhi's own quality gate failed on this report and it shipped anyway.
+    #:
+    #: Refusing to write the report would take the product's entire output away
+    #: over what may be a single ungrounded phrase, so it ships. What makes that
+    #: honest rather than misleading is that it ships MARKED, in the row a
+    #: recruiter's report is read from -- a log line is invisible to the one
+    #: person who acts on the document. Same posture as
+    #: `reliability/degradation`, where a stub is only acceptable because it is
+    #: never allowed to read like a result.
+    #:
+    #: False means NOT FLAGGED, never "verified clean": every report written
+    #: before 2026-08-23 predates the gate entirely.
+    needs_human_review: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: The gate's findings, as issue/location/severity records. NEVER the prose
+    #: they were found in: a finding's detail can quote the report, and this row
+    #: is far more widely readable than the report it describes.
+    review_findings_json: Mapped[list | None] = mapped_column(JSONB)
     validation_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     #: RETIRED. The Gap Analysis & Action Plan replaced this section entirely
     #: (spec §9.6). Nothing writes it any more and it was deliberately not

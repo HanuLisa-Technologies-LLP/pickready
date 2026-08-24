@@ -1156,6 +1156,98 @@ def _evidence_by_item(state: AssessmentState) -> dict[str, list[dict[str, str]]]
     return evidence
 
 
+def _gate_report(
+    state: "AssessmentState",
+    dimensions: list[dict[str, Any]],
+    overall: str,
+    gaps: dict[str, Any],
+    validation: dict[str, Any],
+) -> "verification_base.Verdict":
+    """Project the assembled report into the shape Siddhi's gate reads.
+
+    An ADAPTER, deliberately, rather than reshaping the report to suit the gate.
+    The gate is a contract about what a PRISM report must be true of; the report
+    shape is what the renderers and the database already agreed on. Bending
+    either to fit the other would couple two things that change for different
+    reasons.
+
+    NEVER RAISES. A gate is a guard on the output, and a guard that can fail the
+    run it was guarding turns a cosmetic defect into a lost report. On its own
+    error it returns a passing verdict carrying a low finding, so the failure is
+    recorded without being charged to the candidate -- the same direction every
+    degradation path in this codebase takes, because the alternative is a report
+    withheld for a reason nobody can see.
+    """
+    from app.services.agents import gates
+    from app.services import verification as verification_base
+
+    try:
+        graded = {row["name"]: row.get("grade") for row in dimensions if row.get("name")}
+        # CLIENT-VISIBLE FIELDS ONLY in the sections. The first version of this
+        # adapter passed the raw dimension rows, and the gate immediately
+        # rejected the report with `number_reaches_client` pointing at
+        # `evidence_refs[0]` -- an evidence locator like
+        # `assessment_messages:1`. The gate was right to scan and wrong only
+        # about what it was scanning: a locator is an internal audit handle that
+        # exists so a grade can be traced, and it is never rendered. Refs travel
+        # on `claims` below, which is where the gate expects to find them.
+        def _rendered(row: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "name": row.get("name"),
+                "description": row.get("description"),
+                "grade": row.get("grade"),
+                "remark": row.get("remark"),
+            }
+
+        payload = {
+            "ai_score": [
+                _rendered(r) for r in dimensions if r.get("category") == CATEGORY_MATCHING
+            ],
+            "ppi_assessment": [
+                _rendered(r) for r in dimensions if r.get("category") != CATEGORY_MATCHING
+            ],
+            "validation": validation,
+            # Compared field by field against what the candidate actually
+            # submitted. Nothing scores Validation, so a report that reworded a
+            # notice period has fabricated a fact in a document a client decides
+            # from.
+            "validation_source": dict(state.get("validation") or {}),
+            "gap_analysis": gaps,
+            "overall_summary": overall,
+            # Miti's grades and Siddhi's must be the same grades. They are read
+            # from one place here, so this check only has teeth once the two
+            # stages are genuinely separate; it is wired now so that the day
+            # they are, the check already exists rather than being remembered.
+            "grades": graded,
+            "miti_grades": graded,
+            "claims": [
+                {
+                    "id": row.get("name"),
+                    "text": row.get("remark") or "",
+                    "evidence_refs": row.get("evidence_refs") or [],
+                }
+                for row in dimensions
+            ],
+        }
+        return gates.run_gate("siddhi", payload)
+    except Exception:  # noqa: BLE001 -- see the docstring
+        logger.warning(
+            "functional_assessment.report_gate_failed link_id=%s",
+            state["link"].id, exc_info=True,
+        )
+        return verification_base.verdict(
+            "gate:siddhi",
+            [
+                verification_base.low(
+                    "gate_unavailable",
+                    "report",
+                    "the report quality gate could not run",
+                    "Investigate the gate error; the report itself was produced normally.",
+                )
+            ],
+        )
+
+
 async def synthesis_node(state: AssessmentState) -> dict:
     """Join scoring and validation, write the report (spec §9).
 
@@ -1221,6 +1313,25 @@ async def synthesis_node(state: AssessmentState) -> dict:
             state["link"].id, scoring_mode,
         )
 
+    # ── Siddhi's quality gate, BEFORE the report is written ─────────────────
+    #
+    # Before, not after, and the ordering is the whole value. A gate that runs
+    # after persistence has already let the report reach the candidate table,
+    # and a recruiter who opens it in the next thirty seconds sees an unmarked
+    # document. Running it first means the flag and the report are written in
+    # one transaction and cannot disagree.
+    #
+    # A FAILING GATE DOES NOT BLOCK THE REPORT. It cannot: refusing to write one
+    # would take the product's entire output away over what may be a single
+    # ungrounded phrase, and the recruiter would be left with nothing rather
+    # than with something imperfect they can judge. It ships marked instead,
+    # which is the same trade `reliability/degradation` makes for a stub.
+    #
+    # There is no retry here on purpose. `agent_loop.run_loop` already bounds
+    # regeneration twice over and feeds a rejection back verbatim; a second
+    # retry mechanism at this layer would multiply attempts nobody is counting.
+    gate_verdict = _gate_report(state, dimensions, overall, gaps, validation)
+
     current = (
         await session.execute(
             select(FunctionalSkillsReport).where(FunctionalSkillsReport.job_candidate_link_id == state["link"].id)
@@ -1239,6 +1350,19 @@ async def synthesis_node(state: AssessmentState) -> dict:
         # release needs no data restore. Reports written before today keep
         # theirs and still render it.
         "synthesized_at": datetime.now(timezone.utc),
+        "needs_human_review": not gate_verdict.passed,
+        # Issue, location and severity only. A finding's `detail` can quote the
+        # report prose, and this column is read from far more places than the
+        # report itself.
+        "review_findings_json": [
+            {
+                "severity": finding.severity,
+                "issue": finding.issue,
+                "location": finding.location,
+                "recommendation": finding.recommendation,
+            }
+            for finding in gate_verdict.findings
+        ] or None,
     }
     if current is None:
         current = FunctionalSkillsReport(
