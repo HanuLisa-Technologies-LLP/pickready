@@ -170,8 +170,7 @@ resolve_connection_strings() {
   # value is ever echoed, written to a log, or passed through a temp file, and
   # only whether they matched is printed.
   local pw expected current
-  pw="$(gcloud secrets versions access latest --secret=POSTGRES_PASSWORD 2>/dev/null | tr -d '
-')"
+  pw="$(gcloud secrets versions access latest --secret=POSTGRES_PASSWORD 2>/dev/null | tr -d '\r\n')"
   [ -n "$pw" ] || die "secret POSTGRES_PASSWORD is empty or unreadable; the deployer needs roles/secretmanager.secretAccessor."
   # The Cloud SQL UNIX SOCKET form. A host:port DSN cannot work here:
   # --add-cloudsql-instances mounts a socket at /cloudsql/<CONNECTION_NAME>,
