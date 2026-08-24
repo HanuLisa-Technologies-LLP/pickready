@@ -3,7 +3,7 @@
  *
  * THE BUG THIS PINS. `api()` refreshes the access cookie once on a 401 and
  * retries, so the ordinary JSON path survives an expired session invisibly.
- * Anything binary or multipart could not use `api()` — it parses JSON — so
+ * Anything binary or multipart could not use `api()`, it parses JSON, so
  * those call sites reached for a bare `fetch(..., { credentials: "include" })`
  * and each one silently opted out of the refresh.
  *
@@ -12,7 +12,7 @@
  * 15-minute Max-Age; a recruiter reading a job description or working down a
  * candidate list is idle for longer than that as a matter of course. The next
  * thing they clicked answered 401 against a session that was perfectly
- * refreshable — and because all three of those actions kick off resume parsing
+ * refreshable, and because all three of those actions kick off resume parsing
  * and matching, it was reported as "the AI features return 401", not as an
  * expired login.
  *

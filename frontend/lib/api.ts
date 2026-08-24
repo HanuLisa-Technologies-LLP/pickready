@@ -217,12 +217,12 @@ export const apiUpload = <T>(path: string, formData: FormData) =>
  * behaviour as `api()`.
  *
  * WHY IT EXISTS. `api()` parses JSON, so anything binary or multipart could not
- * use it and reached for a bare `fetch` instead — and every one of those call
+ * use it and reached for a bare `fetch` instead, and every one of those call
  * sites quietly lost the silent refresh. That is the whole of the reported "AI
  * features return 401": the access cookie has a 15-minute Max-Age, a recruiter
  * reading a JD or working through a candidate list is idle for longer than that
  * routinely, and the next thing they click is a resume upload, a databank
- * upload or a resume preview — all three of which were raw fetches. The session
+ * upload or a resume preview, all three of which were raw fetches. The session
  * was perfectly refreshable; nothing asked it to refresh.
  *
  * A 403 is deliberately NOT retried, for the same reason it is not in `api()`:
