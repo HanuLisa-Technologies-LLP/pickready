@@ -1,5 +1,60 @@
 # claude.md, ReadyPick Build Conventions
 
+## Current release authority, Tatva Assessment and the PRISM Report (2026-08-23)
+
+- **Tatva Assessment is the PROCESS; the PRISM Report is the DOCUMENT it
+  produces.** The Tatva Assessment is the evaluation framework, previously
+  called the PPI framework or PPI matrix, and its three dimensions are
+  Must-have, Nice-to-have and Behavioural. Completing one produces a PRISM
+  Report. The two names are never used for each other and never used as
+  synonyms in copy, in a heading, in an email or in a comment. The client
+  stated the distinction twice, which is what a name people will otherwise
+  collapse into one looks like.
+- **The report header is exactly, and only:** `PRISM Report` over
+  `Predictive Role Intelligence & Suitability Mapping`. The abbreviation alone
+  does not tell a reader that they are holding the document rather than the
+  framework, so the expansion travels with it everywhere the header is drawn,
+  on screen and in the PDF. Pinned in `tests/test_prism_report.py`.
+- **The section order is fixed:** AI Score, Overall Assessment, Must-have,
+  Nice-to-have, Behavioural, Gap Analysis & Action Plan, Validation. **Gap
+  Analysis now PRECEDES Validation**, reversing the earlier order. Validation
+  is the candidate's own unrated submission, so the action plan belongs beside
+  the grades it was drawn from rather than after a block of uninterpreted form
+  answers. The order is written down once per renderer,
+  `REPORT_SECTION_ORDER` in `components/functional-skills-report.tsx` and
+  `report_pdf.SECTION_ORDER`, and BOTH renderers walk their own constant.
+  `test_the_screen_and_the_pdf_agree_on_the_section_order` reads both out of
+  source and compares them, because the failure being prevented is a recruiter
+  approving a report on screen and mailing a PDF that reads differently.
+- **THREE radar charts, not four. This SUPERSEDES the 2026-07-30 rule "FOUR
+  radar charts, each plotting TWO shapes" and the spec-v4 line "Exactly four
+  number-free radar charts are shown".** The charts are Overall, Must-have and
+  Nice-to-have. The Behavioural dimension carries a grade and a 45-50 word
+  remark and NO chart, because spec doc 4 lists a chart under each of the other
+  three sections and lists only a grade and a remark under Behavioural. Do not
+  re-add the fourth: it was removed by the client, not lost.
+  The filter is at the RENDERER (`RENDERED_CHART_KEYS`, in both files), never
+  at `functional_assessment.build_radar_charts`. A report is immutable, so
+  every report written before today still carries a behavioural chart in its
+  stored payload; filtering at the generator would leave an old report showing
+  four charts and a new one three, which is the drift the fixed chart set
+  exists to prevent. Everything else about the charts is unchanged: two shapes
+  on shared axes, and NO number on an axis tick, a data label, a tooltip or a
+  legend.
+- **The report carries its reference code, and it is a label.** The
+  COMPANY-JOB-CANDIDATE code is rendered under the header, monospace and
+  select-all on screen, so a printed report and a row in the candidate table
+  can be matched by eye and quoted without transcription errors. It identifies
+  a row and authorises nothing; nothing may ever read it back as permission.
+- **The code still says PPI, deliberately, and must not be "fixed".** The
+  `ppi` module, `job_competencies`, `ppi-report-modal.tsx`, `report_pdf.py`,
+  the `/framework` routes and the persisted trace fields keep their names. A
+  route is quoted in report links already in people's inboxes and in traces a
+  rolling deploy is still writing, and every report written before today was
+  filed under those names, so a symbol rename would cost a reader access to an
+  existing report and buy nothing anybody sees. The rename is USER-VISIBLE COPY
+  ONLY.
+
 ## Current hard rules, the ten-system agent framework (2026-08-18)
 
 - **Tools RAISE, loops DEGRADE, and that split is why both stay simple.**
