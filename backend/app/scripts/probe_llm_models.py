@@ -17,13 +17,26 @@ next tier -- so the only symptom is that AI output gets slower and then quietly
 degrades to a deterministic template. The product reports "AI unavailable"
 while every credential is perfectly valid.
 
-WHAT IT CHECKS, AND WHY BOTH MODES
-----------------------------------
-Two calls per provider: plain text and JSON mode. They are genuinely different
-questions. Groq's gpt-oss family answers plain text happily and, without
-`reasoning_effort`, INTERMITTENTLY fails `response_format=json_object` with
-`json_validate_failed` -- so a probe that only asked for prose would report a
-healthy tier that drops a fraction of every structured call.
+WHAT IT CHECKS, AND WHY THREE MODES
+-----------------------------------
+Three calls per provider: plain text, JSON mode, and a REALISTIC payload. All
+three are genuinely different questions, and each caught a real outage that the
+other two missed.
+
+  text   Does the model id still resolve at all. Three tiers have gone dark
+         this way.
+  json   Groq's gpt-oss family answers plain text happily and, without
+         `reasoning_effort`, INTERMITTENTLY fails `response_format=json_object`
+         with `json_validate_failed`. A probe that only asked for prose would
+         report a healthy tier that drops a fraction of every structured call.
+  size   The one this script was missing, and the omission mattered. Its first
+         version asked every provider to "Say OK" and reported Groq healthy at
+         580ms. It WAS healthy, for two-token requests. In production the same
+         tier answered HTTP 413 to every real call, because a resume extraction
+         is ~12k tokens and the account's ceiling is 8000 per minute.
+
+A liveness probe that passes on input unlike the input the product sends is not
+a liveness probe. It is a green tick.
 
 It also reports LATENCY, because a tier that works but takes eleven seconds
 cannot serve an interactive deadline of twenty-six, and that is indistinguishable
@@ -34,8 +47,8 @@ USAGE
     python -m app.scripts.probe_llm_models            # every provider
     python -m app.scripts.probe_llm_models groq       # one provider
 
-Exit code is 1 if any configured provider fails either mode, so this can gate a
-deploy or run on a schedule.
+Exit code is 1 if any configured provider fails any of the three, so this can
+gate a deploy or run on a schedule.
 """
 from __future__ import annotations
 
@@ -68,12 +81,37 @@ _JSON_MESSAGES = [
 #: id, a slow tier needs reordering.
 SLOW_MS = 3000.0
 
+#: Roughly the size of a real extraction prompt: one resume plus a job
+#: description. Measured at ~12k tokens against the live API.
+#:
+#: THIS EXISTS BECAUSE THE TOY PROBE CERTIFIED A TIER THAT COULD NOT WORK.
+#: The first version of this script asked every provider to "Say OK" and
+#: reported Groq healthy at 580ms. It was healthy, for two-token requests. In
+#: production the same tier answered HTTP 413 to every real call: "Request too
+#: large ... on tokens per minute (TPM): Limit 8000, Requested 12268". Every
+#: model on that account carries the same ceiling, so no model choice fixes it
+#: and only a payload of realistic SIZE can reveal it.
+#:
+#: A liveness probe that passes on input unlike the input the product sends is
+#: not a liveness probe. It is a green tick.
+_REALISTIC_TOKENS = 12000
+_REALISTIC_PROMPT = (
+    "Senior Python engineer with Kafka, Postgres and Airflow experience. "
+    * 900
+)
+
 
 async def _probe_one(
-    key: llm_router._RouterKey, json_mode: bool
+    key: llm_router._RouterKey, json_mode: bool, realistic: bool = False
 ) -> tuple[bool, float, str]:
     caller = llm_router._PROVIDER_CALLERS[key.provider]
-    messages = _JSON_MESSAGES if json_mode else _TEXT_MESSAGES
+    if realistic:
+        messages = [
+            {"role": "system", "content": "You are a JSON API. Extract skills."},
+            {"role": "user", "content": _REALISTIC_PROMPT},
+        ]
+    else:
+        messages = _JSON_MESSAGES if json_mode else _TEXT_MESSAGES
     started = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=45.0) as client:
@@ -112,13 +150,23 @@ async def probe(providers: list[str] | None = None) -> dict[str, Any]:
         key = candidates[0]
         text_ok, text_ms, text_detail = await _probe_one(key, json_mode=False)
         json_ok, json_ms, json_detail = await _probe_one(key, json_mode=True)
+        size_ok, size_ms, size_detail = await _probe_one(key, json_mode=True, realistic=True)
         slowest = max(text_ms, json_ms)
         report[provider] = {
             "model": model,
             "extra_params": extra_params_for(provider),
-            "status": "ok" if (text_ok and json_ok) else "failed",
+            # A tier that cannot carry a real prompt is NOT ok, however fast it
+            # answers a toy one. `size` is weighted equally with the other two
+            # for exactly that reason.
+            "status": "ok" if (text_ok and json_ok and size_ok) else "failed",
             "text": {"ok": text_ok, "latency_ms": round(text_ms), "detail": text_detail},
             "json": {"ok": json_ok, "latency_ms": round(json_ms), "detail": json_detail},
+            "size": {
+                "ok": size_ok,
+                "latency_ms": round(size_ms),
+                "detail": size_detail,
+                "approx_tokens": _REALISTIC_TOKENS,
+            },
             "slow": slowest > SLOW_MS,
         }
     return report
@@ -134,7 +182,7 @@ def _render(report: dict[str, Any]) -> bool:
             ok = False
         flag = "OK     " if row["status"] == "ok" else "FAILED "
         print(f"  {provider:<12} {row['model']:<34} {flag}")
-        for mode in ("text", "json"):
+        for mode in ("text", "json", "size"):
             entry = row[mode]
             mark = "ok" if entry["ok"] else "FAIL"
             print(
@@ -149,17 +197,47 @@ def _render(report: dict[str, Any]) -> bool:
     return ok
 
 
+
 async def main() -> int:
     providers = sys.argv[1:] or None
     print("Probing configured LLM model ids...")
     report = await probe(providers)
     ok = _render(report)
     if not ok:
-        print(
-            "\nAt least one provider rejected the model id we send it. "
-            "Re-check config/llm_providers.PROVIDER_MODELS against the "
-            "provider's live model list before suspecting the keys."
-        )
+        # The remedy differs completely by WHICH probe failed, so the summary
+        # says which rather than offering one guess. Sending an operator to
+        # re-verify a model id when the real problem is an exhausted quota costs
+        # them the hour it takes to rule the id out, and the two failures look
+        # identical from the product's side: AI output degrades and nothing
+        # raises.
+        size_only = [
+            name
+            for name, row in report.items()
+            if row.get("status") == "failed"
+            and row.get("text", {}).get("ok")
+            and not row.get("size", {}).get("ok")
+        ]
+        dead_id = [
+            name
+            for name, row in report.items()
+            if row.get("status") == "failed" and not row.get("text", {}).get("ok")
+        ]
+        if size_only:
+            print(
+                "\nTIER TOO SMALL, and this is not a broken model id: "
+                + ", ".join(size_only)
+                + ". These answer a small prompt and reject a realistic one, so "
+                "every toy health check passes while real work fails. The "
+                "ceiling is on the ACCOUNT, so no model id fixes it: the "
+                "account needs credit or a higher tier."
+            )
+        if dead_id:
+            print(
+                "\nFAILING AT EVERY PROMPT SIZE: "
+                + ", ".join(dead_id)
+                + ". Re-check config/llm_providers.PROVIDER_MODELS against the "
+                "provider's live model list before suspecting the keys."
+            )
     return 0 if ok else 1
 
 

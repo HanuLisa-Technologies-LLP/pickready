@@ -344,6 +344,34 @@ def affordable_max_tokens(exc: Exception) -> int | None:
     return None
 
 
+#: A per-MINUTE token ceiling the whole ORGANISATION shares, not one key's.
+#:
+#: Groq answers HTTP 413 `rate_limit_exceeded` with, verbatim: "Request too
+#: large for model `openai/gpt-oss-120b` in organization `org_...` service tier
+#: `on_demand` on tokens per minute (TPM): Limit 8000, Requested 12268".
+#:
+#: Measured in production 2026-08-23: every Groq model on this account carries
+#: the same 8000 TPM ceiling, and a resume extraction is ~12k tokens. So a
+#: sibling key is guaranteed to fail -- the pool is the ORGANISATION's, and all
+#: seven slots bill it. Trying them burns three attempts out of a retry budget a
+#: genuinely healthy provider further down the chain needs.
+#:
+#: It is deliberately NOT an account-level write-off. The distinction matters:
+#: a 402 means the account cannot pay and nothing will change for hours, while
+#: this clears in under a minute and SMALL requests keep succeeding against the
+#: same key in the meantime. Writing the tier off for fifteen minutes would
+#: throw away the traffic it can still serve.
+_ORG_WIDE_SIZE_STATUSES = frozenset({413})
+
+
+def is_org_wide_size_failure(exc: Exception) -> bool:
+    """True when the request was too large for the whole account's TPM pool."""
+    return (
+        isinstance(exc, httpx.HTTPStatusError)
+        and exc.response.status_code in _ORG_WIDE_SIZE_STATUSES
+    )
+
+
 def is_account_level_failure(exc: Exception) -> bool:
     """True when `exc` says the provider ACCOUNT is unusable (pure; tested).
 
@@ -1112,6 +1140,14 @@ async def _attempt(state: RouterState) -> dict:
                 "attempts": attempts + 1,
                 "error": type(exc).__name__,
             }
+
+        if is_org_wide_size_failure(exc) and hasattr(ctx, "dead_providers"):
+            # Skip this provider's siblings for THIS call only. They share the
+            # organisation's token-per-minute pool, so they cannot serve a
+            # request this one just rejected for being too big. No write-off:
+            # the ceiling clears within a minute and smaller requests still go
+            # through, which is why `trip_provider` is deliberately not called.
+            ctx.dead_providers.add(key.provider)
 
         if is_account_level_failure(exc):
             # Don't spend the rest of the budget on sibling keys that bill the

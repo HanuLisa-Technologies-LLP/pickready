@@ -527,3 +527,35 @@ def test_no_provider_model_id_is_a_known_retired_one():
         "meta-llama/llama-3.3-70b-instruct:free",
     }
     assert not (set(PROVIDER_MODELS.values()) & retired), PROVIDER_MODELS
+
+
+# ── The organisation-wide token ceiling (HTTP 413) ──────────────────────────
+#
+# Groq answers 413 `rate_limit_exceeded` when a request exceeds the ACCOUNT's
+# tokens-per-minute pool: "Request too large for model `openai/gpt-oss-120b` in
+# organization `org_...` on tokens per minute (TPM): Limit 8000, Requested
+# 12268". Measured in production 2026-08-23, where a resume extraction is ~12k
+# tokens and every model on the account carries the same 8000 ceiling.
+
+
+def test_a_413_skips_the_provider_siblings_for_this_call():
+    """They bill the same organisation and share the same per-minute pool, so a
+    sibling cannot serve a request this key just rejected for being too large.
+    Trying them burns attempts a healthy provider further down the chain needs."""
+    assert llm_router.is_org_wide_size_failure(_http_error(413))
+
+
+def test_a_413_is_not_an_account_level_write_off():
+    """THE distinction, and getting it backwards is expensive in both
+    directions. A 402 means the account cannot pay and nothing changes for
+    hours. A 413 clears within a minute, and SMALL requests keep succeeding
+    against the same key throughout, so writing the tier off for fifteen minutes
+    would discard the traffic it can still serve."""
+    assert not llm_router.is_account_level_failure(_http_error(413))
+    assert not llm_router.provider_is_written_off("groq")
+
+
+def test_a_429_is_not_treated_as_an_organisation_wide_size_failure():
+    """429 is per key and per minute; the sibling key is exactly the right next
+    thing to try. Folding it in here would stop that."""
+    assert not llm_router.is_org_wide_size_failure(_http_error(429))
