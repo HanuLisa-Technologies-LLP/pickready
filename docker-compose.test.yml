@@ -1,0 +1,143 @@
+# The reproducible test stack (spec-doc6 §3.2). Infrastructure only: Postgres
+# with pgvector, Redis, and an S3-compatible object store. No application
+# container, because the suite runs on the host (or in CI) against these three
+# and nothing else.
+#
+#   docker compose -f docker-compose.test.yml up -d
+#   ./scripts/test.sh            # or: make test-all
+#   docker compose -f docker-compose.test.yml down -v
+#
+# Note `up -d` and not `up -d --wait`: compose counts the one-shot `minio-init`
+# container exiting 0 as a service failure and returns 1 on a healthy stack.
+# `scripts/test.sh` waits on the three long-running services by name and then
+# asserts the bucket directly.
+#
+# WHY A SECOND COMPOSE FILE AND NOT A PROFILE ON infra/docker-compose.yml
+# -----------------------------------------------------------------------
+# The dev stack owns durable volumes and a bind-mounted source tree; a test run
+# must be able to drop every byte it wrote without asking whether the developer
+# wanted their local data back. Separate project name, separate volumes,
+# separate ports.
+#
+# THE PORTS ARE DELIBERATELY NOT THE DEFAULTS, AND THAT IS THE WHOLE POINT
+# -------------------------------------------------------------------------
+# On the machine this was written against, a native Windows `postgresql-x64-13`
+# service was already listening on 0.0.0.0:5432. Docker's published port bound
+# alongside it and lost, so every host-side connection reached PostgreSQL 13
+# with a password nobody had -- and 71 integration tests answered
+# "no database reachable" and reported SKIPPED. Nothing was broken and nothing
+# was being tested. Binding the test stack to ports nothing else claims is what
+# makes the suite's result mean something.
+#
+#   5433x  Postgres   (dev stack holds 5432, and so does a native install)
+#   6381   Redis      (dev stack holds 6380)
+#   9101   MinIO S3 API
+#   9102   MinIO console
+name: readypick-test
+
+services:
+  postgres:
+    # pgvector, not stock postgres: migration 0001 runs `CREATE EXTENSION
+    # vector`, so a stock image fails at migrate rather than at assertion.
+    #
+    # pg16 tracks `infra/modules/rds/variables.tf` -> engine_version = "16" and
+    # parameter_group_family = "postgres16". RDS pins the MAJOR only and lets
+    # the minor move under auto_minor_version_upgrade, so the major is the only
+    # thing there is to match.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: readypick_test
+      POSTGRES_PASSWORD: readypick_test
+      POSTGRES_DB: readypick_test
+      # Test data is disposable by definition, and fsync is the single largest
+      # cost in a suite that creates and drops rows thousands of times.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command: >
+      postgres
+      -c fsync=off
+      -c synchronous_commit=off
+      -c full_page_writes=off
+      -c max_connections=200
+    ports:
+      - "55432:5432"
+    tmpfs:
+      # The data directory is RAM. A test stack that survives its own teardown
+      # is a test stack whose next run starts from state nobody declared.
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U readypick_test -d readypick_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  redis:
+    # `infra/modules/elasticache/variables.tf` declares engine_version = "7.1"
+    # with family `redis7`. There is no `redis:7.1` on Docker Hub: 7.1 is an
+    # ElastiCache-only designation and the open-source line carrying its feature
+    # set shipped as 7.2. 7.2 is the closest faithful match inside the same
+    # `redis7` parameter-group family. See CONTRIBUTING.md.
+    image: redis:7.2-alpine
+    # noeviction, NOT allkeys-lru, matching
+    # `infra/modules/elasticache/main.tf` and the standing rule in CLAUDE.md:
+    # this is the Celery broker, not a cache. Under memory pressure the LRU
+    # default silently evicts queued TASKS, and the symptom is work that was
+    # accepted and never happened with nothing recording the drop. The test
+    # environment carries production's semantics or it is testing something
+    # else.
+    command: ["redis-server", "--maxmemory-policy", "noeviction", "--save", ""]
+    ports:
+      - "6381:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    # MinIO rather than LocalStack. The only AWS surface this codebase touches
+    # is S3 object operations -- HeadObject, PutObject with `IfNoneMatch: *`,
+    # GetObject -- and MinIO is a real S3 server implementing them, not an
+    # emulation of one. LocalStack would bring an order of magnitude more image
+    # for services nothing here calls. `app/core/config.py` already declares
+    # `s3_endpoint_url` for exactly this.
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: readypick_test
+      MINIO_ROOT_PASSWORD: readypick_test
+      # `object_storage.put_if_absent` sends ServerSideEncryption=AES256 on
+      # every write, and MinIO answers NotImplemented for SSE-S3 unless a key
+      # source is configured. Without this the storage tests would have to drop
+      # the parameter, which would mean asserting a call the application does
+      # not make. The value is a fixed 32-byte test key, base64 of
+      # "readypick-test-kms-key-32bytes!!"; it protects nothing, encrypts only
+      # tmpfs that is discarded at teardown, and is committed on purpose so the
+      # stack is reproducible from a clean clone.
+      MINIO_KMS_SECRET_KEY: "readypick-test-key:cmVhZHlwaWNrLXRlc3Qta21zLWtleS0zMmJ5dGVzISE="
+    ports:
+      - "9101:9000"
+      - "9102:9001"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  minio-init:
+    # One shot: create the bucket the suite writes to, then exit 0. Without it
+    # the first test to touch the store fails with NoSuchBucket, which reads
+    # like a code defect and is an environment one.
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+      mc alias set test http://minio:9000 readypick_test readypick_test &&
+      mc mb --ignore-existing test/readypick-test-private &&
+      mc anonymous set none test/readypick-test-private
+      "
