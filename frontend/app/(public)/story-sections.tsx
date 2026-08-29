@@ -220,9 +220,9 @@ export function AboutPreview() {
         <Reveal className="relative min-h-72 overflow-hidden rounded-3xl bg-[#090b16] p-8 text-white shadow-pop">
           <div
             aria-hidden="true"
-            className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-violet-600/35 blur-3xl"
+            className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-teal-600/35 blur-3xl"
           />
-          <p className="relative text-xs font-semibold uppercase tracking-[.2em] text-violet-300">
+          <p className="relative text-xs font-semibold uppercase tracking-[.2em] text-teal-400">
             Built from the inside
           </p>
           <p className="relative mt-10 max-w-sm text-3xl font-bold leading-tight">

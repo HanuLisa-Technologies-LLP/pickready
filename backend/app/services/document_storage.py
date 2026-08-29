@@ -1,4 +1,4 @@
-"""Private GCS-backed storage for customer compliance documents.
+"""Private S3-backed storage for customer compliance documents.
 
 The sibling of `services/resume_storage`, and deliberately a separate module
 rather than a parameter on it: a resume is a candidate artefact with its own
@@ -10,7 +10,7 @@ Everything else mirrors resume_storage on purpose, because those behaviours
 were chosen for good reasons and diverging would be a silent regression:
 
   * bytes never touch the application filesystem;
-  * the GCS object name is CONTENT-ADDRESSED (sha256), so a retry after a
+  * the object key is CONTENT-ADDRESSED (sha256), so a retry after a
     lost response resolves to the asset already stored instead of creating a
     second one;
   * a lost response is re-checked against the deterministic id before the
@@ -28,11 +28,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
-from google.api_core.exceptions import PreconditionFailed
-from google.cloud import storage
 from starlette.concurrency import run_in_threadpool
 
-from app.core.config import get_settings
+from app.services import object_storage
 
 #: Scans and exports a finance team actually produces. DOCX is deliberately
 #: absent — a compliance record is a signed/issued artefact, not an editable
@@ -47,7 +45,7 @@ ALLOWED_DOCUMENT_CONTENT_TYPES = {
     "application/octet-stream",
 }
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
-GCS_PREFIX = "compliance"
+OBJECT_PREFIX = "compliance"
 
 _MIME_BY_EXTENSION = {
     ".pdf": "application/pdf",
@@ -59,21 +57,6 @@ _MIME_BY_EXTENSION = {
 #: Human-readable limits, used in the API description and the UI hint so the
 #: two cannot drift apart.
 UPLOAD_LIMITS_HINT = "PDF, JPG or PNG, up to 10 MB."
-
-
-def attachment_url(file_url: str) -> str:
-    """Turn a stored asset URL into a force-download one.
-
-    Without this a PDF opens in the browser tab for both View and Download, so
-    the two buttons the spec asks for would do the same thing. The flag is
-    inserted into the delivery path; a URL that does not have that shape is
-    returned UNCHANGED rather than mangled, so an asset stored by some other
-    means still resolves instead of 404ing.
-    """
-    marker = "/raw/upload/"
-    if marker in file_url and "fl_attachment" not in file_url:
-        return file_url.replace(marker, f"{marker}fl_attachment/", 1)
-    return file_url
 
 
 @dataclass(frozen=True)
@@ -157,36 +140,27 @@ async def read_validated_document(file: UploadFile) -> tuple[bytes, str, str]:
     return data, filename, _MIME_BY_EXTENSION[extension]
 
 
-def _bucket() -> storage.Bucket:
-    settings = get_settings()
-    if not settings.gcs_bucket:
+def _upload_or_get_existing(
+    data: bytes, sha256: str, filename: str, mime_type: str
+) -> dict[str, Any]:
+    public_id = f"{OBJECT_PREFIX}/{sha256}"
+    try:
+        stored = object_storage.put_if_absent(
+            key=public_id,
+            data=data,
+            content_type=mime_type,
+            metadata={
+                "original_filename": filename,
+                "mime_type": mime_type,
+                "sha256": sha256,
+            },
+        )
+    except object_storage.ObjectStorageNotConfigured as exc:
         raise _error(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "Document storage is not configured. Please try again shortly or contact support.",
             retryable=True,
-        )
-    return storage.Client().bucket(settings.gcs_bucket)
-
-
-def _upload_or_get_existing(
-    data: bytes, sha256: str, filename: str, mime_type: str
-) -> dict[str, Any]:
-    public_id = f"{GCS_PREFIX}/{sha256}"
-    blob = _bucket().blob(public_id)
-    try:
-        if not blob.exists():
-            blob.metadata = {
-                "original_filename": filename,
-                "mime_type": mime_type,
-                "sha256": sha256,
-            }
-            try:
-                blob.upload_from_string(
-                    data, content_type=mime_type, if_generation_match=0
-                )
-            except PreconditionFailed:
-                pass
-        blob.reload()
+        ) from exc
     except Exception as exc:
         raise _error(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -195,24 +169,21 @@ def _upload_or_get_existing(
             retryable=True,
         ) from exc
     return {
-        "public_id": public_id,
-        "secure_url": f"gs://{get_settings().gcs_bucket}/{public_id}",
-        "bytes": blob.size,
-        "created_at": blob.time_created,
+        "public_id": stored.key,
+        "secure_url": stored.uri,
+        "bytes": stored.size_bytes,
+        "created_at": stored.created_at,
     }
 
 
 def _download(public_id: str) -> bytes:
     try:
-        data = _bucket().blob(public_id).download_as_bytes()
-    except Exception as exc:
+        return object_storage.get_bytes(public_id)
+    except object_storage.ObjectStorageError as exc:
         raise _error(
             status.HTTP_502_BAD_GATEWAY,
             "The document could not be loaded.",
         ) from exc
-    if not data:
-        raise _error(status.HTTP_502_BAD_GATEWAY, "The document is empty.")
-    return data
 
 
 async def fetch_document_bytes(public_id: str) -> bytes:

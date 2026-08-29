@@ -53,6 +53,10 @@ export function PostingWindowBanner({
     <section
       aria-label="Job posting window"
       className={cn(
+        // SEMANTIC left rule, and a documented Impeccable `side-tab`
+        // exception (.impeccable-exceptions.md). Its colour carries the
+        // posting state -- live, in grace, closed -- so the rule IS the
+        // information rather than a decoration beside it.
         "flex flex-wrap items-start gap-x-6 gap-y-2 rounded-lg border-l-4 bg-muted/40 px-4 py-3 text-sm",
         STATUS_STYLES[status],
         className

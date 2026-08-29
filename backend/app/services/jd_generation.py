@@ -41,10 +41,10 @@ from app.prompts import registry
 
 logger = logging.getLogger(__name__)
 
-# Task-type routing (2026-07-27): JD generation prefers OpenRouter for its
-# long-form reasoning, then Gemini, then Groq. Previously this rode the generic
-# "extraction" chain; the dedicated route is a policy change in
-# config/llm_providers.TASK_ROUTES, not a change in call shape.
+# Task-type routing: JD generation is long-form structured writing, so it runs
+# on Sonnet 5 (config/llm_providers.MODEL_FOR_TASK). It used to ride the generic
+# "extraction" chain; the dedicated task type is a policy change in that table,
+# never a change in call shape here.
 _ROLE_HINT = "jd_generation"
 
 #: Marker prepended to template-built fields so HR knows the AI was unavailable.

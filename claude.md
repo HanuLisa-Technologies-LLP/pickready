@@ -1,5 +1,546 @@
 # claude.md, ReadyPick Build Conventions
 
+## Current hard rules, spec-doc6 (2026-08-29)
+
+Runbook reconciliation, Part A activation, legacy reset, dashboard and RBAC,
+codebase hardening, AWS close-out. This section supersedes spec-doc5's open
+items 9 to 20 and its seven-module Terraform list.
+
+### THE THREE MISSING DOCUMENTS ALL EXIST NOW. Read them, do not re-derive them.
+
+- **`Readypick Hiring Philosophy.md`** (RPN-PHIL-001, now **v1.1**) is at the
+  repository root. Note the filename uses SPACES; every document writes it with
+  underscores. It was absent for the whole of spec-doc5, which is why nine sites
+  carried guesses. It is authoritative for evaluation mechanics.
+- **`docs/spec/RBAC_SPECIFICATION.md`** is **precedence rank 1**, above the
+  Runbook and above spec-doc6 itself, for authorization, tenant isolation, role
+  ownership, job lifecycle and audit.
+- **`docs/spec/CANDIDATE_DASHBOARD_SPECIFICATION.md`** is rank 4 and governs the
+  candidate list surface only.
+- `docs/spec/ARCHITECTURE_DIRECTION_2026-08-28.md` is ADVISORY, below everything
+  in the precedence table. Useful for intent, never a requirement.
+
+### The precedence order, used to resolve every conflict
+
+1. RBAC Specification. 2. The Runbook. 3. spec-doc6. 4. Dashboard
+Specification. 5. specdoc4, then spec-doc5.
+
+**"Restrict more when unsure" applies ONLY where the higher authority is
+SILENT.** It never licenses overriding an affirmative grant in a higher-ranked
+document. This was got wrong once already: "the Hiring Manager cannot reject a
+JD" (RBAC §11, correct) was over-generalised into deleting the Reject JD
+capability entirely, which RBAC §24 affirmatively grants to Super Admin and HR
+Manager.
+
+**Do not trust a document's claim about another document.** Seven of
+twenty-five spec-doc6 citations do not say what spec-doc6 says they say. The
+worst grants HR Manager publish authority that RBAC §9.6 gives only to Super
+Admin, resting on a §24 footnote that disclaims itself.
+
+### EVERY ONE OF THE NINE RUNBOOK ASSUMPTIONS WAS WRONG
+
+0 confirmed, 8 corrected, 1 corrected-in-part. This is the single most useful
+fact about the previous phase's output. `department_models.py` modelled **5
+departments where the Runbook has 15**, so civil engineers, designers,
+architects, HR and skilled trades were all graded against a generic model.
+`triangulation.py` had **none** of §13.2's seven named benign explanations while
+CLAUDE.md called two-before-escalation a hard rule. `situations.py` had 4 of 6
+rows wrong, two inverted. Nothing reached a user only because none of those
+modules is reachable, which is not a mitigation to rely on twice.
+
+Zero `ASSUMPTION (RUNBOOK-GAP` markers remain. Twelve `RUNBOOK-AMBIGUITY (§N)`
+markers replace them, each with an entry in `RUNBOOK_OPEN_QUESTIONS.md`.
+
+### The Runbook's mechanical content is DATA, and a parity test keeps it honest
+
+`backend/app/services/hiring/runbook_data/` holds nine YAML files carrying
+**2,453 values under 103 citations naming 119 Runbook sections**, plus a typed
+loader (`runbook_data.load(name)` and nine named accessors). spec-doc6 §2.2
+writes the path as `app/hiring/runbook_data/`; this repo's layout puts it under
+`app/services/`.
+
+**Every weight, threshold, cap and boundary comes from there with a source
+citation, never from a literal in a module.** `backend/tests/test_runbook_parity.py`
+parses the Runbook itself and checks 300 numbers and 1,042 verbatim strings
+against the exact section each cites. It is mutation-tested in both directions,
+7 of 7 caught: it fails if someone edits a weight in code without editing the
+Runbook, and fails if someone edits the Runbook without updating the data.
+`PyYAML` is pinned EXPLICITLY in `requirements.txt` rather than relied on
+transitively through langchain-core, because the hiring layer fails at import
+without it.
+
+### Four things spec-doc6 assumes the Runbook says, which it does not
+
+- **"The Must-have hard cap" is not a phrase or a rule in the Runbook.** Three
+  separate band-capping mechanisms are (§12.1 competency threshold, §12.2
+  dimension floors, §14.1 unassessed Must-have). The product implements ONE.
+  Its behaviour is correct and only the name and citation are invented, but
+  **§14.1 catches a case a score-based cap structurally cannot**: §10.2's
+  competency score puts evidence strength in both numerator and denominator, so
+  for a single-claim competency the terms cancel and the score equals the rubric
+  level exactly, at every evidence tier from E0 to E5. A fabricated Must-have
+  resting on one weakest-tier resume bullet scores high, grades Matching, and
+  never trips a score-based cap. That is the AI-generated-resume case the
+  product exists to defeat, and it passes today. The Runbook's ceiling is also
+  71 against the product's 74.
+- **Per-seniority rubric anchors exist for one department of fifteen** (§21.11).
+  Anchors are universal, stated once per dimension in §9.1 to §9.5.
+- **Scale-up and Succession have no numeric weight consequence anywhere.**
+  §18.4 gives arrows with no magnitude; §11.3 bounds four of six types.
+  `situations.py` raises `RunbookDataUnavailable` naming the missing key rather
+  than inventing a multiplier. **This blocks Part A scoring and needs an owner
+  decision, not more searching.**
+- **"Weakly" is a third value inside an integer independence count**, with no
+  defined arithmetic, and it is the most common evidence pair in the product.
+
+### A repaired Runbook defect worth remembering
+
+Decision Contract C5 cited **§12.4, the PROHIBITED disqualifier list, where it
+meant §12.3, the legitimate one**. Read literally it authorised automatic
+filtering on age, caste, gender and employment gaps. One character of citation,
+that consequence. Now pinned by a test asserting C5 cites §12.3 and not §12.4.
+The general lesson: extend parity checking from VALUE parity to CITATION-TARGET
+parity, because a citation annotating a permitted list must fail loudly if it
+resolves to a section headed "prohibited".
+
+### Part A is NOT on a live path, and the gates therefore block nothing
+
+`grep -rn "hiring\.\|miti\.\|siddhi\." backend/app/api backend/app/workers`
+returns **nothing**. The only non-test importer of the whole Part A stack is
+`app/scripts/worked_example.py`. G1 to G4 exist and are real checks, but G1's
+only caller is `miti/pipeline.py:290`, which no route or worker imports.
+
+**spec-doc6 D2 is therefore wrong when it says "gate G1 already blocks
+evaluation... Use it."** Anything relying on that is relying on nothing. Do not
+build a second enforcement path either; make the dependency loud and refuse.
+
+`services/agents/identity.py` points every Part A agent NAME at the OLD modules,
+so logs and A2A artifacts show Bodha, Sutra, Miti and Siddhi succeeding while
+the three-layer framework runs nowhere. When you test an agent, be precise about
+which code you are actually exercising.
+
+### One scale, and it had silently become three
+
+`services/tiers.py` never got converted in the 2026-07-30 consolidation. It kept
+90/70/50 with **`matching` and `moderately_matching` SWAPPED** relative to
+`rating.py`'s 90/75/60, and it is live at `matching.py` and serialised to
+clients. Measured: **747 of 1075 scored rows, 69.5%, across 34 jobs carried a
+label the correct scale disagrees with**, 275 of them two bands out. A weaker
+candidate read as better than a stronger one.
+
+`tiers.assign_tier` is now a thin alias over `rating.grade_for_percent` with no
+arithmetic left in the module, pinned by a full-range sweep and by a test
+asserting a better score never earns a worse grade. **`tier` must stay NULLed in
+the same legacy-reset rule as `match_score`**; splitting that pairing makes the
+misclassification permanent and unrecoverable.
+
+Note the Dashboard adds a FIFTH vocabulary (85/72/60 five-band). Three grade
+vocabularies and four cut-point sets now exist across the documents.
+
+### RBAC facts that are easy to get catastrophically wrong
+
+- **RBAC "Super Admin" is `Role.client`, tenant-scoped** (§5 "Client Super
+  Admin", §7.1 "per client organization"), NEVER the platform `Role.super_admin`
+  whose `tenant_id` is NULL. Mapping it wrong is a privilege escalation that
+  looks correct in a diff.
+- **Uniqueness is PER-TENANT.** A global "one active Super Admin" constraint
+  passes every single-tenant test and then rejects the second customer ever
+  onboarded.
+- **§7.1 requires a Super Admin transfer mechanism and nothing implements one.**
+  A hard uniqueness constraint without it locks a client out of their own tenant
+  permanently.
+- **There is no job assignment table.** `jobs` has one user reference,
+  `created_by`, nullable and `ON DELETE SET NULL`. "Own assigned jobs" scoping
+  (§9.2, §23) and two of the four §39 cardinality invariants are not expressible
+  without one. `created_by` is not a substitute: it records who created the row,
+  not who is assigned, and it evaporates on user deletion.
+- **RBAC §5 says "four internal role categories" and lists five.** Five is
+  correct, confirmed three independent ways.
+- **Cross-tenant reads return 404, never 403.** The rule is right; its
+  provenance is not §33, which never mentions a status code.
+- **§17's job lifecycle has EIGHT states**, not the six spec-doc6's ellipsis
+  shows. `JobLifecycleState` and `CandidatePipelineStage` are different enums on
+  different entities and are never interchanged. `hold` is an action, not a
+  stage.
+
+### Anti-slop rules, CI-enforced
+
+No silent fallbacks (no `except Exception: pass`, no bare `except`, no default
+substituted for a failed retrieval, no template output when generation fails).
+No dual code paths for one product behaviour. No placeholder prose (`TODO`,
+`FIXME`, `XXX`, "in a real implementation", "for now", "this is a simplified",
+"stub" outside test doubles). No dead code, delete rather than deprecate. No
+magic numbers, every one comes from `runbook_data/` with a citation. No new
+model strings beyond Sonnet 5, Haiku 4.5 and voyage-context-4. No wildcard IAM.
+No em dashes in generated product copy. Docstrings state provenance. **A test
+whose only assertion is that a mock was called is not a test.** No commented-out
+code. **One implementation per concept**, which is the rule `tiers.py` broke.
+
+### Verification honesty
+
+**There is no Anthropic or Voyage key in this phase.** No wording in code,
+comments, docs, commit messages or reports may imply a live vendor call has
+succeeded. The phrases "verified against the API", "confirmed working" and
+"tested live" are CI-checked in this phase's documentation. The honest framing
+is "built and tested against recorded fixtures and a stub provider; not executed
+against a live provider". `VERIFICATION_PENDING.md` lists every unproven claim
+with the exact command that would settle it.
+
+Likewise: no `terraform apply`. Running it against a real account this phase is
+a failure of scope, not an accomplishment. An offline `terraform plan` proves
+the configuration is internally consistent and that the graph resolves. It does
+NOT prove the account can create the resources, that quotas suffice, or that IAM
+will behave.
+
+### Vendored design tools are gitignored and pinned, not committed
+
+302 third-party skill files were untracked AND unignored, so a single
+`git add -A` would have committed all of them. They are now ignored;
+`tools/design-tools.manifest.json` and `tools/install-design-tools.sh` reproduce
+the environment. **`impeccable` is 296 of those files, is unpinned by SHA or
+hash, and `frontend/scripts/impeccable-gate.mjs` gates CI on it.** Its installed
+tree declares v4.1.1 while npm publishes 3.6.0 under that name. Open for the
+owner.
+
+### Naming
+
+`picready.com`, missing the `k`, was the documented domain in five code sites
+and asserted by eight test lines. RBAC §15 settles it: `readypick.ai`.
+**`pickready` spelled correctly is DELIBERATE** in Celery task names, cache key
+prefixes and GCP/JWT identifiers; do not "fix" those. Still open, because
+whether the mailboxes exist is an operational fact: `config.py:93` defaults
+`smtp_from_email` to `noreply@pickready.app` (a runtime default, the higher
+risk) and a live `mailto:hello@pickready.app` sits in the billing page.
+
+`RBAC §15`'s `public_job_id` **does not exist in this codebase**; the public URL
+is `/apply/{jobs.id}`, the raw internal primary key. Adding the identifier is a
+column, a backfill and a lookup path, not a rename.
+
+---
+
+## Current hard rules, spec-doc5 (2026-08-28)
+
+Four parts: the three-layer hiring intelligence framework, single-vendor model
+consolidation, the navy/teal UI, and an AWS-ready codebase. Sequenced B, A, C, D
+because every agent needs a stable model layer under it before its internals are
+worth deepening.
+
+### The Runbook this was written against does not exist
+
+- **`Readypick_Hiring_Philosophy.md` (RPN-PHIL-001) IS NOT IN THIS REPOSITORY
+  OR ANYWHERE ON THE MACHINE.** spec-doc5 §0 names it as authoritative for
+  anything it specifies more precisely than specdoc4 and then cites it thirty
+  times by section number. It was searched for exhaustively; the two `.docx`
+  files that exist are copies of the specdoc4 baseline. Part A was therefore
+  built from spec-doc5's own inline restatements, which are mechanically
+  complete for the five dimensions, six situation types, seven pipeline stages,
+  four gates and five core objects.
+  Every place the Runbook would have supplied a detail spec-doc5 does not state
+  carries an `ASSUMPTION (RUNBOOK-GAP, §N)` comment naming the section it stands
+  in for. **Grep for that string before treating any of it as settled**, and
+  diff the real document against it rather than assuming agreement. `GAP_MATRIX.md`
+  §0 records the search.
+
+### PART B, one vendor, three endpoints
+
+- **Every model call resolves to Claude Sonnet 5 or Claude Haiku 4.5, and every
+  embedding to voyage-context-4.** `MODEL_FOR_TASK` in
+  `config/llm_providers.py` is a closed mapping onto exactly two ids and
+  `tests/test_llm_task_routing.py` greps the executable source for any other
+  model string. No Opus, no Fable, no fourth model on implementation judgment.
+- **The split is JUDGE-or-WRITE versus EXTRACT-or-CLASSIFY.** `claim_extraction`
+  is Haiku and MUST NOT EVALUATE: an opinion formed there enters the pipeline
+  before the dimension evaluators, without a rubric, without their isolation and
+  without a citation, and downstream it is indistinguishable from a finding.
+  Putting Sonnet on it would be a boundary violation, not an upgrade.
+- **Groq, Gemini and OpenRouter are GONE, not disabled.** `llm_capacity.py`
+  (1371 lines: the capacity registry, `route_score`, quota-domain discovery) and
+  `scripts/probe_llm_models.py` are deleted. So is the 21-key roster. What that
+  machinery existed for is worth remembering rather than mourning: it routed
+  around three FREE tiers' failure modes -- a retired model id that took a tier
+  dark twice, an exhausted prepaid balance, an 8000-token-per-minute
+  organisation pool that 413'd every realistic extraction, a model withdrawn
+  from the free tier outright. One paid vendor removes the class of problem.
+- **The reliability discipline survives and the vendor quirks do not.** Retries,
+  exponential backoff, per-attempt timeout, total wall-clock budget, circuit
+  breaker with half-open recovery: all kept. Failure classification is now
+  401/403 credential, 429 rate limit, 5xx provider, timeout. Every branch that
+  existed for one vendor's quirk is gone.
+- **A credential failure trips the breaker on the FIRST occurrence**, unlike a
+  429 or a 5xx. No amount of waiting fixes a revoked key, and the caller's
+  deterministic fallback should start one attempt sooner rather than three.
+- **The router deadline PREDICTS.** `elapsed + longest_attempt_so_far >=
+  deadline`, so an attempt that cannot finish inside the budget is never
+  started. Same rule `agent_loop` already follows, and for the same reason.
+- **THE INTERACTIVE CAP IS NOW TWO TIERS, and this amends the flat 15s rule.**
+  Short-output interactive tasks keep 15s/30s. `jd_generation` is 25s/50s,
+  because a multi-thousand-token JD cannot finish in 15 seconds on Sonnet and
+  holding the cap would not make the button faster -- it would make every
+  generation time out and fall back to the template, permanently. That is the
+  argument the brief already accepts for `report_synthesis`, one tier down.
+  `test_platform_audit.py` encodes both tiers and asserts the exception list
+  stays short, so it is a reviewed rule rather than a drifted number.
+- **JSON mode is a PREFILL, not an instruction.** The Messages API has no
+  `response_format`, so `llm_router` seeds the assistant turn with `{` and
+  prepends it back. The response physically cannot open with an apology or a
+  fence. Every JSON-mode caller in this codebase parses a top-level OBJECT and
+  `test_llm_router.py` pins that assumption.
+- **ONE EMBEDDING MODEL, INCLUDING AI REACH.** `reach_embeddings` was a second
+  stack -- `BAAI/bge-small-en-v1.5` on CPU at 384 dims -- and it now delegates
+  to the shared client. Migration 0058 widens `jobs.reach_embedding` to 1024 and
+  NULLs every vector, which is not data loss: a bge-small vector and a Voyage
+  vector share a column name and nothing else, and `bd_leads` re-embeds a NULL
+  on the next search. The COLUMN stays separate from `jobs.embedding`; only the
+  model is shared.
+- **A same-width swap is not a same-space swap.** `profiles.embedding` and
+  `jobs.embedding` are `vector(1024)` and Voyage is pinned to 1024, so nothing
+  needed migrating to remain STORABLE. They are not COMPARABLE with the BGE-M3
+  vectors already in them, and retrieval mixes two spaces until a re-embed runs.
+
+### PART A, the three-layer framework
+
+- **Layer 1 is a Python constant, and that is the whole reason it holds.**
+  `hiring/department_models.py`. A table has an UPDATE, an UPDATE eventually
+  gets an admin screen, and an admin screen makes Layer 1 client-editable -- at
+  which point the layering is decorative. Same argument `candidate_profile_form`
+  already makes.
+- **A lower layer may TUNE a higher layer within declared bounds and may never
+  SUSPEND one.** `hiring/layers.py`. `BOUNDS` is a table of multipliers around
+  1.0; `INVARIANTS` is the list that carries no bound at all and is refused
+  outright -- the Must-have cap, auto-rejection, authenticity, evidence
+  sufficiency, protected-attribute inference, exposing a number. **Every refusal
+  and every clamp is RECORDED**: a clamp that left no trace is indistinguishable
+  from an input that was already in range.
+- **The composed product is clamped too, not only each term.** Two layers each
+  applying the maximum must not compound past what one was allowed to ask for,
+  or "within declared bounds" is a claim about the steps and not the result.
+- **A weight is `baseline x company x situation x role`, and all four terms are
+  stored.** `hiring/transformation.py`. That is the acceptance criterion: a
+  Layer 2 or Layer 3 change must demonstrably MOVE a weight, not merely appear
+  in a summary. Verified: a Turnaround raises a Track Record competency from
+  1.10 to 1.4850 and a Greenfield lowers it to 0.9900.
+- **These weights exist ONLY inside the Tatva matrix derivation.**
+  `matching.WEIGHTS` stays deleted and `test_scoring.py` still asserts its
+  absence. The two faults of the old table are both absent here: it was a fixed
+  0.35/0.30/0.20/0.15 applied to every role in the product, and it was SHOWN to
+  the client as "35% role-fit weighting". These are per-job, derived from three
+  declared layers, and never cross an API boundary.
+- **Nothing enters the matrix without completing all seven stages.** Competency,
+  observable evidence, evidence sources, assessment method, weight, threshold,
+  and disqualifier if applicable. `Item.is_complete` refuses at `build`, not
+  later -- a partially-transformed item is one whose grade rests on a stage
+  nobody ran.
+- **`match_competency` returns None rather than a best guess.** Forcing a
+  role-specific phrase onto the nearest baseline would relabel it as something
+  the department model already knew about, which looks like traceability and is
+  not. A None anchor is an honest provenance.
+- **Situation misclassification is the most expensive error at intake**, because
+  it re-weights the WHOLE matrix coherently and invisibly -- nothing downstream
+  can detect it, since there is nothing inconsistent to detect. So Bodha reads
+  the classification back with its consequence and its most-confused-with
+  alternative, and a human confirms it before the session closes.
+- **Bodha has TWO mandates on one agent.** The per-job SWOT session, and the
+  one-time-per-client Company DNA intake: twelve sections, forced trade-off
+  scales in section 2 (a free-text "what do you value" is always "excellence and
+  integrity" and modifies no weight), and observable-evidence questions in
+  section 3 that REJECT an adjective and ask again. "ownership mindset" is
+  refused; "has taken a project from an unclear brief to a shipped outcome" is
+  accepted. One detector, `company_dna.is_observable`, used by both the DNA
+  instrument and the SWOT quality rules -- two copies would drift invisibly.
+- **A disqualifier is matched on WORD BOUNDARIES and includes numeric age
+  bars.** The first version matched substrings and refused "Must hold a valid CA
+  licence" because "hold" contains "old", while accepting "No candidates over
+  45" because it contains no listed word. A false positive is not harmless: it
+  tells a client their lawful professional requirement is discriminatory, which
+  destroys their trust in every refusal that follows.
+- **Compilation is deterministic and calls no model.** A Company DNA artifact
+  constrains every job that client will ever post, so it must be reproducible,
+  diffable between versions, and explainable without a provider.
+- **Sutra reads the COMPILED artifact, never the client's free-text.** An
+  unbounded client-authored string in a prompt that decides what every candidate
+  is graded on is both an injection surface and a way for "we like people who
+  are hungry" to become a criterion.
+- **Miti's five dimension evaluators are ISOLATED STRUCTURALLY.**
+  `EvaluatorInput` is a frozen dataclass whose field set has no candidate name,
+  no other dimension's score, no composite and no free-form context dict.
+  `test_miti_pipeline.py` asserts the exact FIELD SET rather than the absence of
+  specific names, because a future field called `notes` would pass a narrower
+  test and reopen the whole hole. The five run concurrently so no ordering
+  exists in which one could observe another.
+- **The aggregator is deterministic and imports no router.** Asserted by an AST
+  walk over its source, not by a docstring. Every earlier stage has a model in
+  it; this is the step that turns five bands into the grade a client reads, and
+  two runs over identical inputs producing different grades would make a rubric
+  problem indistinguishable from noise.
+- **The Must-have hard cap is applied LAST, on the SCORE, and it is a `min`.**
+  After the authenticity multiplier, because a cap a later multiplication can
+  undo is not a cap. A `min` rather than an assignment, because a candidate who
+  already grades Not Matching must stay there -- setting the score would
+  promote the weakest candidates into the band the cap exists to keep the strong
+  ones out of.
+- **A product CATEGORY comes from the item, not from the dimension.** Must-have
+  and Nice-to-have are properties of the criterion the hiring manager declared
+  essential. The first version keyed the composite on a dimension→category table
+  and a job whose essentials all sat on one dimension produced an EMPTY
+  Must-have grade with nothing for the hard cap to bind against.
+- **INSUFFICIENT EVIDENCE IS NOT NEGATIVE EVIDENCE.** A dimension flagged
+  insufficient is EXCLUDED from the composite and paid for in CONFIDENCE, never
+  scored low. The practical consequence is the point: a career-changer gets a
+  low-confidence report that goes to a human rather than a confidently poor
+  grade that does not.
+- **Confidence is arithmetic over counts, never a model's opinion of itself.**
+  Same rule `Verdict` already follows. An unresolved contradiction caps it
+  regardless of coverage.
+- **Two benign explanations before any escalation above Minor, always.** Not
+  one. The first explanation a system reaches for is the one that confirms the
+  suspicion; the second is where the honest answer usually is. `escalate`
+  REFUSES to raise severity without them -- it does not warn, the escalation
+  simply does not happen. Deterministic stock explanations exist per axis so the
+  rule holds during a provider outage, because an outage that silently disabled
+  integrity escalation would look like a clean run.
+- **Independence is counted by ORIGINATOR, never by document.** A resume line
+  and the candidate restating it in the interview could not have disagreed:
+  that is one person saying one thing twice. Platform memory is never
+  independent -- it is derived from things already counted. An unknown source
+  type is assumed DEPENDENT, because assuming independence manufactures
+  corroboration.
+- **NO FLAG EVER AUTO-REJECTS, and the enforcement is the absence of the
+  capability.** `TriangulationResult` has no reject field, no status and no
+  decision. G3 fails LOUDLY and blocks NOTHING, because a blocking integrity
+  gate would end a candidacy without a person ever seeing the finding.
+- **G2 is non-blocking for a fairness reason.** A blocking sufficiency gate
+  would refuse a report to exactly the candidates who most need a person to
+  look, which is a silent rejection with better manners.
+- **G4 asks whether a human DECIDED, not whether they approved.** All four
+  dispositions pass, including `rejected`. A gate requiring approval could be
+  satisfied by nagging; a gate requiring a recorded decision is satisfied only by
+  someone having looked. There is no `auto_cleared`, and a Postgres CHECK
+  refuses one.
+- **`review_dispositions.decided_by` is ON DELETE RESTRICT**, alone among user
+  references in this schema. A disposition whose person was erased asserts that
+  a human decided while being unable to say who, which is indistinguishable from
+  the pipeline having written it.
+- **Siddhi's citation enforcement is STRUCTURAL.** `Section.render` is the only
+  path to text and it raises on an uncited statement. There is no `force`, no
+  `strict=False`, no `allow_uncited` -- a bypass parameter is a bypass that will
+  be used, in a hotfix, at the end of a release. A FABRICATED citation raises a
+  different error class than a missing one, because it is worse: it reads as
+  provenance.
+- **A GAP statement needs a citation, and this is the entry worth defending.**
+  "There is no evidence of X" feels uncitable; the citation is the evidence that
+  was SEARCHED. Without it, a gap in the assessment is reported as a gap in the
+  candidate.
+- **`Evaluation` is the WORKING; `functional_skills_reports` is the DELIVERED
+  artifact.** One is internal and replaceable by a rescore, the other is
+  immutable and client-facing. One table would force a choice between making the
+  working immutable and making the report mutable.
+- **Three of Runbook §59's five objects already existed** as `jobs`,
+  `job_competencies` and `candidates`/`profiles`/`job_candidate_links`, and were
+  NOT duplicated. Same substitution the billing work made when its spec wrote
+  `companies` and this schema meant `tenants`.
+
+### PART C, navy and teal
+
+- **The brand is navy `#012654` and teal `#00888A`, SAMPLED not chosen.**
+  Weighted centroids over 102,974 and 48,891 pixels of `logo300.jpeg`, both
+  inside spec-doc5 §C.1's stated ±2. This replaced an indigo-violet ramp
+  (`#5028E0`) which is precisely the palette Impeccable's `ai-color-palette`
+  detector flags -- and it flagged four call sites here before the change.
+- **NAVY IS STRUCTURE, TEAL IS EVIDENCE.** Navy carries primary actions,
+  navigation and the frame; teal carries what is corroborated and what is cited.
+  Teal is the one colour in the system with a meaning, and spending it on a
+  button would waste it on the element that needs none.
+- **THE BRAND TEAL FAILS AA FOR BODY TEXT ON WHITE.** 4.30:1, below 4.5. That is
+  a measured property of the colour the client chose. teal-600 is a FILL, a RULE
+  and an ICON colour; **teal TEXT on white is `teal-700`** (5.99:1).
+  `scripts/check-contrast.mjs` asserts both, and also asserts the NEGATIVE case
+  -- that teal-600 is still below the bar -- because if that stopped being true
+  the DESIGN.md rule sending everybody to teal-700 would have become a lie.
+- **`brand-*` is an alias onto `navy-*`.** 193 call sites say `bg-brand-600`, and
+  rewriting them in the same change that recolours the palette would be one diff
+  doing two jobs with indistinguishable regressions. New work uses `navy-*` and
+  `teal-*`.
+- **No gradient between two hues.** A single-hue tint is fine. Navy-to-teal
+  would be the same tell in the brand's own colours.
+- **`DESIGN.md` and `PRODUCT.md` are the design authority**, in the
+  awesome-design-md nine-section format. `frontend/scripts/impeccable-gate.mjs`
+  gates CI: it exits non-zero on any finding not listed in
+  `.impeccable-exceptions.md` WITH A REASON, because a detector that only prints
+  warnings is one everybody scrolls past. Two exceptions today, both semantic
+  left rules.
+- **The Three.js R+P logomark is landing and login ONLY**, and
+  `logomark-placement.test.ts` counts the call sites. The failure mode is not
+  deliberate misuse; it is that a component gets reused, which is what
+  components are for. The mark is PROCEDURAL rather than traced so the shared
+  stroke is its own addressable mesh -- a traced outline is one blob of geometry
+  and the brand's one distinctive idea could not be animated.
+- **Text is never grey**, enforced at the token. Unchanged.
+
+### PART D, AWS-ready and NOT DEPLOYED
+
+- **NO LIVE AWS DEPLOYMENT HAS BEEN EXECUTED, and that is a requirement.**
+  spec-doc5 §D.1 and its acceptance list make running `terraform apply` against
+  production in this phase a FAILURE OF SCOPE. Two independent stops: every
+  deploy job is behind `vars.AWS_DEPLOY_ENABLED`, which is unset, and the
+  production apply additionally sits behind a required-reviewer environment.
+- ~~**`terraform validate` is verified; `terraform plan` is NOT and cannot be.**~~
+  SUPERSEDED 2026-08-29 by spec-doc6 §13.3, which asked for the planning profile
+  this paragraph said was impossible. `bash infra/plan-offline.sh --artifact`
+  runs `plan` for staging and production with `skip_credentials_validation`,
+  `skip_requesting_account_id`, `skip_region_validation` and
+  `skip_metadata_api_check`, a local backend and dummy static credentials, and
+  it succeeds: 137 resources to add for staging, 135 for production, uploaded by
+  CI as an artifact a human can read.
+  **Be exact about what that proves.** The configuration is internally
+  consistent, the graph resolves, every module reference exists and every
+  argument type-checks against the provider schema. It proves NOTHING about a
+  real account: not creatability, not quotas, not IAM behaviour, not that the
+  chosen instance types exist in the chosen region. It runs against account
+  `000000000000`, region `xx-plan-1` and an RFC 2606 `.invalid` domain, and has
+  never contacted AWS. Do not let "plan succeeds" read as "ready to run".
+  **The gap over `validate` is not theoretical**: the first offline run failed on
+  `var.secret_policy_arns["frontend"]`, an apply-time error that eleven modules
+  of `terraform validate` had reported clean for the whole previous phase.
+- **IAM is scoped PER SERVICE, enumerated, never a prefix.** `service_secrets`
+  maps a service to the exact secrets it may read: beat gets the broker and
+  nothing else, the worker gets no Firebase key, migrate gets one secret. The
+  GCP-phase finding was one runtime identity holding all of them -- nothing was
+  misconfigured, the grant was simply wider than the need, and a wildcard looks
+  identical whether it is over-broad or exactly right.
+- **Task role and execution role are SEPARATE.** The execution role pulls the
+  image and fetches secrets to inject, before the container starts; the task
+  role is what the application's own SDK calls use. One role means the
+  application can read every secret the platform injects.
+- **ECR tags are IMMUTABLE**, which is what makes a SHA tag a permanent name for
+  specific bytes and makes digest verification mean anything. Images are
+  retained by COUNT, never by age: an age rule deletes the image a long-running
+  service needs to restart from.
+- **Verify by DIGEST, not by exit code**, and read the RUNNING TASKS rather than
+  the service definition. The gap between them is a circuit-breaker rollback,
+  which is exactly the case the service definition reports as success.
+- **`aws ecs run-task` returning is not the migration finishing.**
+  `run-migration.sh` polls for STOPPED and reads the exit code. A job that was
+  accepted and then died is what a pipeline reports as success -- this platform
+  has had that exact failure.
+- **The approval gate is CHECKED, not assumed.** An environment with no required
+  reviewer runs the job silently while the workflow file still reads as gated.
+  `verify-approval-gate.sh` fails the run when it is missing.
+- **The data subnets have NO route to the internet in either direction.** Not
+  even outbound through NAT. An attacker does not need to reach the database from
+  the internet; they need the database's host to reach them.
+- **Redis is `noeviction`, not `allkeys-lru`.** It is the Celery broker, not a
+  cache. The LRU default would silently evict queued TASKS under memory
+  pressure, and the symptom is work that was accepted and never happened with
+  nothing recording the drop.
+- **Fargate does not scale to zero.** The one place it is not equivalent to
+  Cloud Run, and there is a floor cost the previous platform did not have.
+- **When the GCP deploy script was deleted, six secret-hygiene assertions began
+  reporting SKIPPED** -- one word from PASSED in a summary line -- and nothing
+  was enforcing secret hygiene any more. They were ported to read the Terraform
+  and the workflow, and are now stronger: not "the script does not print the
+  DSN" but "the worker's IAM policy does not contain the Firebase key".
+
+
 ## Current release authority, Tatva Assessment and the PRISM Report (2026-08-23)
 
 - **Tatva Assessment is the PROCESS; the PRISM Report is the DOCUMENT it

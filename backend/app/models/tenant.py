@@ -127,6 +127,41 @@ class AuditLog(Base, UUIDPKMixin):
         DateTime(timezone=True), server_default="now()", nullable=False
     )
 
+    # ── RBAC_SPECIFICATION.md 30 (migration 0061) ────────────────────────────
+    # Nine of these are things 30 names and the blob above was carrying by
+    # convention, which meant the Super Admin activity view (31) could not
+    # filter on any of them without parsing every row. All nullable, so a
+    # rolling deploy has an old writer and a new reader coexisting.
+    #
+    # `actor_role` is the role AT THE TIME OF THE ACTION, copied rather than
+    # joined: a person's role changes, and what authority a past action was
+    # taken under does not.
+    actor_role: Mapped[str | None] = mapped_column(String(30))
+    previous_state: Mapped[dict | None] = mapped_column(JSONB)
+    new_state: Mapped[dict | None] = mapped_column(JSONB)
+    # 30's "relevant job/application/candidate context". Columns rather than
+    # blob keys because every question 31 asks is scoped by one of them.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    application_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # 30's "source/request metadata".
+    request_method: Mapped[str | None] = mapped_column(String(10))
+    request_path: Mapped[str | None] = mapped_column(String(512))
+    request_ip: Mapped[str | None] = mapped_column(String(64))
+    # spec-doc6 4.1: one correlation id, issued at job creation, traceable
+    # through every stage and appearing in every audit row for that flow.
+    correlation_id: Mapped[str | None] = mapped_column(String(64))
+    # 34: an AI-initiated mutation is attributable to BOTH the human
+    # principal (actor_user_id, which stays the human, always) and the agent
+    # that executed it. Two columns because one cannot hold both, and
+    # overloading the actor would make "which human authorised this"
+    # unanswerable exactly where it matters most.
+    agent_name: Mapped[str | None] = mapped_column(String(50))
+    # A 24-asterisked cell was used: allowed, and recorded as a deviation
+    # from the canonical flow (7.5 requires the Super Admin override to be
+    # recorded; spec-doc6 C13 requires the same of an HR Manager publish).
+    exceptional: Mapped[bool | None] = mapped_column(Boolean)
+
 
 class LLMProviderKey(Base, UUIDPKMixin, CreatedAtMixin):
     """Nine keys (3× Groq/Gemini/OpenRouter), encrypted at rest, with a

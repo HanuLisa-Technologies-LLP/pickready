@@ -31,7 +31,7 @@ const CANDIDATES = [
 
 export function Step1Login() {
   return (
-    <div className="relative h-full bg-[radial-gradient(circle_at_50%_20%,rgba(124,58,237,.2),transparent_44%)] p-5 sm:p-8">
+    <div className="relative h-full bg-[radial-gradient(circle_at_50%_20%,hsl(var(--teal-600) / ,.2),transparent_44%)] p-5 sm:p-8">
       <motion.div
         initial={{ opacity: 0, y: -28, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -39,7 +39,7 @@ export function Step1Login() {
         className="mx-auto mt-3 max-w-xs rounded-2xl border border-white/10 bg-white/[0.055] p-5 shadow-2xl backdrop-blur"
       >
         <div className="mb-5">
-          <span className="grid h-9 w-9 place-items-center rounded-xl bg-violet-500/20 font-black text-violet-300">
+          <span className="grid h-9 w-9 place-items-center rounded-xl bg-teal-600/20 font-black text-teal-400">
             P
           </span>
           <h3 className="mt-3 text-base font-semibold">Welcome back</h3>
@@ -132,7 +132,7 @@ export function Step2Dashboard() {
                 transition={{ delay: 0.4 + index * 0.11 }}
                 className="flex-1 rounded-lg bg-white/[0.04] p-2 text-[9px]"
               >
-                <div className="mb-2 h-5 w-5 rounded-md bg-violet-400/15" />
+                <div className="mb-2 h-5 w-5 rounded-md bg-teal-400/15" />
                 {name}
               </motion.div>
             ))}
@@ -210,7 +210,7 @@ export function Step4Published() {
           initial={{ opacity: 0, scale: 0.84, y: 25 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           transition={SPRING}
-          className="mt-5 rounded-xl border border-violet-400/30 bg-violet-400/[0.08] p-4"
+          className="mt-5 rounded-xl border border-teal-400/30 bg-teal-400/[0.08] p-4"
         >
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -225,7 +225,7 @@ export function Step4Published() {
                 initial={{ width: 0 }}
                 animate={{ width: "100%" }}
                 transition={{ duration: 1.35, ease: EASE }}
-                className="h-full rounded-full bg-gradient-to-r from-violet-500 to-indigo-400"
+                className="h-full rounded-full bg-gradient-to-r from-teal-600 to-teal-400"
               />
             </div>
             <span className="text-[9px] text-white/55">30 days</span>
@@ -304,14 +304,14 @@ export function Step6AiMatching() {
                   initial={{ width: 0 }}
                   animate={{ width: `${candidate.score}%` }}
                   transition={{ delay: 0.35 + index * 0.13, duration: 1, ease: EASE }}
-                  className="h-full rounded-full bg-gradient-to-r from-violet-500 via-indigo-400 to-emerald-400"
+                  className="h-full rounded-full bg-gradient-to-r from-teal-600 via-teal-400 to-emerald-400"
                 />
               </div>
               <motion.span
                 initial={{ opacity: 0, scale: 0.6 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ delay: 0.8 + index * 0.12, ...SPRING }}
-                className="w-8 text-right text-[10px] font-bold text-violet-200"
+                className="w-8 text-right text-[10px] font-bold text-teal-100"
               >
                 {candidate.score}%
               </motion.span>
@@ -347,7 +347,7 @@ export function Step7Invitations() {
             return (
               <motion.div
                 key={candidate.name}
-                animate={{ backgroundColor: selected ? "rgba(124,58,237,.11)" : "rgba(255,255,255,.025)" }}
+                animate={{ backgroundColor: selected ? "hsl(var(--teal-600) / ,.11)" : "rgba(255,255,255,.025)" }}
                 transition={{ delay: 0.2 + index * 0.12 }}
                 className="flex items-center gap-3 rounded-lg border border-white/10 px-3 py-2"
               >
@@ -359,7 +359,7 @@ export function Step7Invitations() {
                 >
                   {selected ? (
                     <motion.span initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 0.3 + index * 0.13, ...SPRING }}>
-                      <Check className="h-3 w-3 text-violet-300" />
+                      <Check className="h-3 w-3 text-teal-400" />
                     </motion.span>
                   ) : null}
                 </motion.span>
@@ -407,7 +407,7 @@ export function Step8PfiReport() {
             transition={{ delay: 0.2 }}
             className="mt-3 rounded-lg border border-white/10 bg-white/[0.035] p-3"
           >
-            <p className="text-[8px] font-semibold text-violet-200">Overall summary</p>
+            <p className="text-[8px] font-semibold text-teal-100">Overall summary</p>
             <p className="mt-1.5 text-[8px] leading-4 text-white/55">
               Strong system design judgment, clear ownership and dependable collaboration. Interview for scale trade-offs and stakeholder influence.
             </p>
@@ -436,10 +436,10 @@ export function Step8PfiReport() {
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.42, duration: 0.55, ease: EASE }}
-          className="relative hidden place-items-center rounded-xl border border-violet-400/20 bg-violet-400/[0.055] sm:grid"
+          className="relative hidden place-items-center rounded-xl border border-teal-400/20 bg-teal-400/[0.055] sm:grid"
         >
           <div className="absolute left-3 top-3">
-            <p className="text-[8px] font-semibold text-violet-200">Performance fingerprint</p>
+            <p className="text-[8px] font-semibold text-teal-100">Performance fingerprint</p>
             <p className="mt-1 text-[7px] text-white/35">Five evidence dimensions</p>
           </div>
           <svg viewBox="0 0 160 145" className="mt-6 h-40 w-40 overflow-visible">
@@ -457,7 +457,7 @@ export function Step8PfiReport() {
             ))}
             <motion.polygon
               points="80,23 127,59 108,112 49,116 30,59"
-              fill="rgba(124,58,237,.28)"
+              fill="hsl(var(--teal-600) / ,.28)"
               stroke="#a78bfa"
               strokeWidth="2"
               initial={{ pathLength: 0, opacity: 0 }}
@@ -490,8 +490,8 @@ export function Step9Shortlist() {
           className="mx-auto mt-3 max-w-md overflow-hidden rounded-xl border border-white/10 bg-white/[0.045]"
         >
           <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
-            <span className="grid h-7 w-7 place-items-center rounded-lg bg-violet-500/20">
-              <Mail className="h-3.5 w-3.5 text-violet-200" />
+            <span className="grid h-7 w-7 place-items-center rounded-lg bg-teal-600/20">
+              <Mail className="h-3.5 w-3.5 text-teal-100" />
             </span>
             <div>
               <p className="text-[9px] font-semibold">Shortlist email</p>

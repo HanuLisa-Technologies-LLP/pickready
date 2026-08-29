@@ -48,7 +48,11 @@ export function Logo({
           className="font-black tracking-[-0.045em] text-foreground"
           style={{ fontSize: Math.max(18, Math.round(height * 0.72)) }}
         >
-          Ready<span className="text-violet-600 dark:text-violet-400">Pick</span>
+          {/* "Pick" carries the TEAL, and the split is the wordmark's own:
+              navy Ready, teal Pick, exactly as the mark is drawn. `teal-700`
+              rather than `teal-600` because this is TEXT on a light surface and
+              the brand teal measures 4.30:1 -- below AA. See DESIGN.md §2. */}
+          Ready<span className="text-teal-700 dark:text-teal-600">Pick</span>
         </span>
       ) : null}
     </span>

@@ -6,15 +6,29 @@ import type { Config } from "tailwindcss";
  * Every colour here reads a CSS variable defined in `app/globals.css`, so the
  * light/dark toggle stays a variable swap and no component branches on theme.
  * The `<alpha-value>` placeholder lets utilities compose opacity, e.g.
- * `bg-brand-600/10` or `border-border/60`.
+ * `bg-navy-600/10` or `border-border/60`.
+ *
+ * TWO NAMES FOR ONE RAMP, ON PURPOSE. `navy-*` is the real scale; `brand-*` is
+ * an ALIAS onto it, kept because 193 existing call sites say `bg-brand-600`
+ * and rewriting all of them in the same change that recolours the palette
+ * would mean one diff doing two jobs -- and a regression in either would be
+ * indistinguishable from a regression in the other. New work uses `navy-*` and
+ * `teal-*`, which say what they mean.
+ *
+ * NAVY IS STRUCTURE, TEAL IS EVIDENCE. See DESIGN.md §2. Teal is the one
+ * colour in this system with a meaning; spending it on a primary button would
+ * waste it on the element that needs none.
  *
  * Token map for other agents:
  *   bg-canvas / bg-surface       page background / card surface
  *   text-ink                     the only text colour (black light, white dark)
  *   border-border                borders and dividers
- *   bg-brand-600, text-brand-600, ring-brand-600   primary action, active nav, focus
- *   bg-brand-100                 subtle brand fill, selected row
- *   text-rating-1 / bg-rating-1-bg .. 5   the five word-label rating chips
+ *   bg-navy-600, ring-navy-400   primary action, active nav, focus
+ *   bg-navy-50                   subtle fill, selected row
+ *   bg-teal-50, border-teal-600  evidence: corroborated, cited
+ *   text-teal-700                teal TEXT on white -- NEVER text-teal-600,
+ *                                which measures 4.30:1 and fails AA
+ *   text-rating-1 / bg-rating-1-bg .. 5   the word-label rating chips
  */
 const config: Config = {
   darkMode: ["class"],
@@ -31,13 +45,53 @@ const config: Config = {
     },
     extend: {
       colors: {
-        // --- brand -------------------------------------------------------
+        // --- brand: NAVY (structure) --------------------------------------
+        navy: {
+          50: "hsl(var(--navy-50) / <alpha-value>)",
+          100: "hsl(var(--navy-100) / <alpha-value>)",
+          200: "hsl(var(--navy-200) / <alpha-value>)",
+          400: "hsl(var(--navy-400) / <alpha-value>)",
+          500: "hsl(var(--navy-500) / <alpha-value>)",
+          600: "hsl(var(--navy-600) / <alpha-value>)",
+          700: "hsl(var(--navy-700) / <alpha-value>)",
+          900: "hsl(var(--navy-900) / <alpha-value>)",
+          DEFAULT: "hsl(var(--navy-600) / <alpha-value>)",
+        },
+
+        // --- brand: TEAL (evidence) ---------------------------------------
+        // `text-teal-600` is a mistake waiting to be made: the brand teal
+        // measures 4.30:1 on white and fails AA for body text. Use
+        // `text-teal-700`. `scripts/check-contrast.mjs` fails the build on it.
+        teal: {
+          50: "hsl(var(--teal-50) / <alpha-value>)",
+          100: "hsl(var(--teal-100) / <alpha-value>)",
+          400: "hsl(var(--teal-400) / <alpha-value>)",
+          500: "hsl(var(--teal-500) / <alpha-value>)",
+          600: "hsl(var(--teal-600) / <alpha-value>)",
+          700: "hsl(var(--teal-700) / <alpha-value>)",
+          900: "hsl(var(--teal-900) / <alpha-value>)",
+          DEFAULT: "hsl(var(--teal-600) / <alpha-value>)",
+        },
+
+        // --- brand-* : ALIAS onto navy, for the 193 existing call sites ----
+        // Kept so the recolour is one diff rather than two. The 100/500/600/700
+        // steps map onto the navy steps that carry the same ROLE, not onto the
+        // same numbers: the old brand-100 was a subtle fill, which is navy-50
+        // here, and the old brand-500 was an accent, which is navy-400.
         brand: {
-          100: "hsl(var(--brand-100) / <alpha-value>)",
-          500: "hsl(var(--brand-500) / <alpha-value>)",
-          600: "hsl(var(--brand-600) / <alpha-value>)",
-          700: "hsl(var(--brand-700) / <alpha-value>)",
-          DEFAULT: "hsl(var(--brand-600) / <alpha-value>)",
+          100: "hsl(var(--navy-50) / <alpha-value>)",
+          500: "hsl(var(--navy-400) / <alpha-value>)",
+          600: "hsl(var(--navy-600) / <alpha-value>)",
+          700: "hsl(var(--navy-700) / <alpha-value>)",
+          DEFAULT: "hsl(var(--navy-600) / <alpha-value>)",
+        },
+
+        // --- held for review ----------------------------------------------
+        // Not `destructive`. A flag is not a rejection, and colouring it like
+        // one would make the platform look as though it had decided.
+        warning: {
+          DEFAULT: "hsl(var(--warning) / <alpha-value>)",
+          foreground: "hsl(var(--warning-foreground) / <alpha-value>)",
         },
 
         // --- semantic surfaces -------------------------------------------
@@ -130,7 +184,7 @@ const config: Config = {
         "card-hover":
           "0 4px 12px hsl(var(--ink) / 0.07), 0 2px 4px hsl(var(--ink) / 0.04)",
         pop: "0 12px 32px hsl(var(--ink) / 0.10), 0 2px 8px hsl(var(--ink) / 0.05)",
-        brand: "0 6px 20px hsl(var(--brand-600) / 0.28)",
+        brand: "0 6px 20px hsl(var(--navy-600) / 0.28)",
       },
       keyframes: {
         "accordion-down": {

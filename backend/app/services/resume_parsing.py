@@ -1,9 +1,10 @@
 """Resume parsing pipeline (ESD §9, FR-6.2).
 
-Raw PDF/DOCX -> text extraction (pypdf / python-docx) -> LLM extraction chain
-(`extraction` role hint: Gemini-first) into a fixed structured schema ->
-profiles.parsed_fields_json. Also sets profiles.resume_text and the BGE-M3
-embedding used by the semantic matching stage.
+Raw PDF/DOCX -> text extraction (pypdf / python-docx) -> LLM extraction
+(`extraction` task type, Haiku 4.5 -- narrow, mechanical, must not evaluate)
+into a fixed structured schema -> profiles.parsed_fields_json. Also sets
+profiles.resume_text and the voyage-context-4 embedding used by the semantic
+matching stage.
 """
 from __future__ import annotations
 
@@ -256,7 +257,7 @@ async def extract_structured_fields(
 
 async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> None:
     """Extract text (if needed), run LLM extraction, store parsed fields,
-    resume_text, and the BGE-M3 embedding on the profile."""
+    resume_text, and the voyage-context-4 embedding on the profile."""
     profile = await session.get(Profile, uuid.UUID(str(profile_id)))
     if profile is None:
         raise ValueError(f"Profile {profile_id} not found")

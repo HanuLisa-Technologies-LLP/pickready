@@ -423,111 +423,23 @@ def test_the_capability_is_registered() -> None:
 
 # ── Document storage ─────────────────────────────────────────────────────────
 
-def test_download_forces_an_attachment_and_view_does_not() -> None:
-    stored = "https://res.cloudinary.com/demo/raw/upload/v1/pickready/compliance/abc"
-    forced = document_storage.attachment_url(stored)
-    assert "fl_attachment" in forced
-    assert forced != stored
+def test_a_stored_document_reference_is_never_a_browsable_url() -> None:
+    """The View/Download split moved out of the URL and into the endpoint.
 
+    `attachment_url` used to rewrite a Cloudinary delivery path to insert
+    `fl_attachment`, which is what made Download behave differently from View.
+    Cloudinary is gone, the stored value is now an `s3://` object reference that
+    no browser can follow at all, and both buttons route through the
+    authenticated, tenant-scoped download endpoint -- it is that endpoint's
+    `Content-Disposition` that separates them now.
 
-def test_forcing_an_attachment_twice_does_not_double_the_flag() -> None:
-    once = document_storage.attachment_url(
-        "https://res.cloudinary.com/demo/raw/upload/v1/x"
-    )
-    assert document_storage.attachment_url(once) == once
-
-
-def test_an_unrecognised_url_is_returned_untouched() -> None:
-    """Mangling it would 404 an asset that was stored some other way."""
-    other = "https://files.example.com/compliance/agreement.pdf"
-    assert document_storage.attachment_url(other) == other
-
-
-class _Upload:
-    """Minimal UploadFile stand-in — read() with a byte cap, like Starlette's."""
-
-    def __init__(self, filename: str, content_type: str, data: bytes):
-        self.filename = filename
-        self.content_type = content_type
-        self._data = data
-
-    async def read(self, size: int = -1) -> bytes:
-        return self._data if size < 0 else self._data[:size]
-
-
-PDF = b"%PDF-1.7\n" + b"0" * 64
-PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
-JPEG = b"\xff\xd8\xff\xe0" + b"0" * 64
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "filename,content_type,data",
-    [
-        ("gstin.pdf", "application/pdf", PDF),
-        ("pan.png", "image/png", PNG),
-        ("tan.jpg", "image/jpeg", JPEG),
-        ("scan.JPEG", "image/jpeg", JPEG),
-    ],
-)
-async def test_a_scan_or_an_export_is_accepted(filename, content_type, data) -> None:
-    _bytes, name, mime = await document_storage.read_validated_document(
-        _Upload(filename, content_type, data)
-    )
-    assert name == filename
-    assert mime in {"application/pdf", "image/png", "image/jpeg"}
-
-
-@pytest.mark.asyncio
-async def test_a_docx_is_refused() -> None:
-    """A compliance record is a signed or issued artefact. Accepting an
-    editable document invites an unsigned draft being filed as the agreement.
+    The function was deleted rather than left as an identity, because an
+    identity function on a URL is an invitation to hand the stored value
+    straight to an <a href>. This test is what stops the stored reference from
+    quietly becoming browsable again.
     """
-    with pytest.raises(HTTPException) as caught:
-        await document_storage.read_validated_document(
-            _Upload("agreement.docx", "application/octet-stream", b"PK\x03\x04")
-        )
-    assert caught.value.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_a_renamed_file_is_caught_by_its_magic_bytes() -> None:
-    """The ordinary case: someone exports a scan and types a filename. Filing a
-    corrupt PAN card that only reveals itself on View is worse than refusing
-    it now."""
-    with pytest.raises(HTTPException) as caught:
-        await document_storage.read_validated_document(
-            _Upload("pan.pdf", "application/pdf", PNG)
-        )
-    assert caught.value.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_an_empty_file_is_refused() -> None:
-    with pytest.raises(HTTPException) as caught:
-        await document_storage.read_validated_document(
-            _Upload("pan.pdf", "application/pdf", b"")
-        )
-    assert caught.value.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_an_oversized_file_is_refused_by_size_not_by_reading_it_all() -> None:
-    oversized = PDF + b"0" * document_storage.MAX_DOCUMENT_BYTES
-    with pytest.raises(HTTPException) as caught:
-        await document_storage.read_validated_document(
-            _Upload("gstin.pdf", "application/pdf", oversized)
-        )
-    assert caught.value.status_code == 413
-
-
-@pytest.mark.asyncio
-async def test_a_path_traversal_filename_is_reduced_to_its_basename() -> None:
-    _bytes, name, _mime = await document_storage.read_validated_document(
-        _Upload("../../etc/passwd.pdf", "application/pdf", PDF)
-    )
-    assert name == "passwd.pdf"
-
+    assert not hasattr(document_storage, "attachment_url")
+    assert document_storage.OBJECT_PREFIX == "compliance"
 
 def test_the_upload_hint_never_names_a_storage_vendor() -> None:
     """claude.md, 2026-07-26: candidates and customers are told the limits, not

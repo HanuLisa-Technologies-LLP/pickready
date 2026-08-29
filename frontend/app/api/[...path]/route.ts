@@ -12,7 +12,7 @@
  *
  * WHY SAME-ORIGIN AT ALL:
  * the browser never learns the backend's address, so the auth cookies stay
- * same-site and COOKIE_SAMESITE can remain "strict". On Cloud Run the two
+ * same-site and COOKIE_SAMESITE can remain "strict". Behind separate hosts the two
  * services land on *.a.run.app, which is on the Public Suffix List, so a split
  * origin is CROSS-site and the browser silently drops every auth cookie.
  * CORS also stops being involved at all.

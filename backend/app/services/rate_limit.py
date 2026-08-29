@@ -25,7 +25,7 @@ the one place where "fail open" looks careless and is not.
 
 WHY REDIS AND NOT A PROCESS DICTIONARY
 --------------------------------------
-Cloud Run runs several instances. A per-process counter divides the real limit
+ECS runs several tasks. A per-process counter divides the real limit
 by the instance count and, worse, moves with autoscaling -- so the limit a
 caller actually experiences depends on how busy the service is. Redis is
 already a hard dependency (the Celery broker), so a shared counter costs
@@ -70,9 +70,9 @@ def client_identifier(request: Request) -> str:
     account abusing an endpoint should not be able to escape by changing
     networks.
 
-    Anonymous callers fall back to the client address. Behind Cloud Run the
-    real address is the first entry of `X-Forwarded-For`; the socket address is
-    the load balancer and would put every visitor in one bucket. Only the FIRST
+    Anonymous callers fall back to the client address. Behind the ALB the real
+    address is the first entry of `X-Forwarded-For`; the socket address is the
+    load balancer and would put every visitor in one bucket. Only the FIRST
     entry is trusted, because the rest of that header is caller-supplied and a
     limiter that reads it is a limiter anyone can evade.
     """

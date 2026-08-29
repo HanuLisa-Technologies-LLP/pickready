@@ -209,12 +209,12 @@ const LIMITATIONS = [
   {
     level: "Critical",
     title: "Secret hygiene",
-    body: "Plaintext local secret material exists. Rotate credentials, remove files and history exposure, and move runtime secrets to Google Secret Manager.",
+    body: "Plaintext local secret material exists. Rotate credentials, remove files and history exposure, and move runtime secrets to AWS Secrets Manager.",
   },
   {
     level: "High",
     title: "Reproducible infrastructure",
-    body: "The repository has containers but no GCP infrastructure as code or CI/CD definition. Add Terraform and immutable release pipelines.",
+    body: "The repository has containers but no infrastructure as code or CI/CD definition. Add Terraform and immutable release pipelines.",
   },
   {
     level: "High",
@@ -280,7 +280,7 @@ export default function DocsPage() {
         />
         <div
           aria-hidden="true"
-          className="absolute -right-40 bottom-0 h-96 w-96 rounded-full bg-violet-400/15 blur-[130px]"
+          className="absolute -right-40 bottom-0 h-96 w-96 rounded-full bg-teal-400/15 blur-[130px]"
         />
         <div className="relative mx-auto grid max-w-6xl gap-12 px-6 py-20 lg:grid-cols-[1.08fr_.92fr] lg:items-center lg:px-10 lg:py-28">
           <FadeIn>
@@ -321,7 +321,7 @@ export default function DocsPage() {
                 <span className="h-2.5 w-2.5 rounded-full bg-amber-300" />
                 <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
               </div>
-              <p className="font-mono text-xs uppercase tracking-[.2em] text-violet-300">
+              <p className="font-mono text-xs uppercase tracking-[.2em] text-teal-400">
                 readypick / system-map
               </p>
               <div className="mt-8 grid gap-3">
@@ -335,7 +335,7 @@ export default function DocsPage() {
                     key={number}
                     className="group grid grid-cols-[auto_1fr_auto] items-center gap-4 rounded-2xl border border-white/10 bg-white/[.055] px-4 py-4"
                   >
-                    <span className="font-mono text-xs text-violet-300">
+                    <span className="font-mono text-xs text-teal-400">
                       {number}
                     </span>
                     <div>
@@ -478,7 +478,7 @@ export default function DocsPage() {
             <div className="relative mt-10">
               <div
                 aria-hidden="true"
-                className="absolute bottom-8 left-[27px] top-8 w-px bg-gradient-to-b from-brand-600 via-violet-400 to-emerald-400 md:left-1/2"
+                className="absolute bottom-8 left-[27px] top-8 w-px bg-gradient-to-b from-brand-600 via-teal-400 to-emerald-400 md:left-1/2"
               />
               <div className="space-y-5">
                 {FLOW.map((item, index) => (
@@ -612,7 +612,7 @@ export default function DocsPage() {
 
           <section id="technical" className="scroll-mt-24 pt-28">
             <div className="rounded-3xl bg-[#090b16] p-7 text-white sm:p-10">
-              <p className="font-mono text-xs uppercase tracking-[.2em] text-violet-300">
+              <p className="font-mono text-xs uppercase tracking-[.2em] text-teal-400">
                 Technical documentation
               </p>
               <h2 className="mt-4 max-w-3xl text-balance text-3xl font-bold leading-tight sm:text-4xl">
@@ -635,7 +635,7 @@ export default function DocsPage() {
                     key={label}
                     className="rounded-xl border border-white/10 bg-white/[.055] p-4"
                   >
-                    <p className="font-mono text-xl font-bold text-violet-200">
+                    <p className="font-mono text-xl font-bold text-teal-100">
                       {value}
                     </p>
                     <p className="mt-1 text-xs text-white/60">{label}</p>
@@ -840,8 +840,8 @@ export default function DocsPage() {
           <section id="production" className="scroll-mt-24 pt-24">
             <SectionIntro
               eyebrow="Infrastructure and scale"
-              title="Move from credit-funded deployment to a reproducible Google Cloud platform"
-              body="The repository is container-ready, but the exact current Google Cloud topology is manual and external: there is no checked-in GCP infrastructure as code or CI/CD pipeline."
+              title="Move from credit-funded deployment to a reproducible cloud platform"
+              body="The repository is container-ready, but the exact current topology was manual and external: there was no checked-in infrastructure as code or CI/CD pipeline."
             />
 
             <div className="mt-10 rounded-3xl border border-border bg-[#090b16] p-6 text-white shadow-pop sm:p-8">
@@ -850,7 +850,7 @@ export default function DocsPage() {
                   {[
                     [Network, "Load balancer · CDN · WAF"],
                     [Globe2, "Next.js service"],
-                    [ServerCog, "Cloud Run API"],
+                    [ServerCog, "ECS Fargate API"],
                   ].map(([Icon, text]) => {
                     const TileIcon = Icon as LucideIcon;
                     return (
@@ -858,14 +858,14 @@ export default function DocsPage() {
                         key={text as string}
                         className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/[.055] p-4"
                       >
-                        <TileIcon className="h-5 w-5 text-violet-300" aria-hidden="true" />
+                        <TileIcon className="h-5 w-5 text-teal-400" aria-hidden="true" />
                         <span className="text-sm font-semibold">{text as string}</span>
                       </div>
                     );
                   })}
                 </div>
-                <div className="rounded-2xl border border-violet-300/25 bg-violet-400/10 p-5">
-                  <p className="font-mono text-xs uppercase tracking-[.16em] text-violet-200">
+                <div className="rounded-2xl border border-teal-400/25 bg-teal-400/10 p-5">
+                  <p className="font-mono text-xs uppercase tracking-[.16em] text-teal-100">
                     Managed core
                   </p>
                   <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -898,7 +898,7 @@ export default function DocsPage() {
                         key={text as string}
                         className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/[.055] p-4"
                       >
-                        <TileIcon className="h-5 w-5 text-violet-300" aria-hidden="true" />
+                        <TileIcon className="h-5 w-5 text-teal-400" aria-hidden="true" />
                         <span className="text-sm font-semibold">{text as string}</span>
                       </div>
                     );
@@ -981,7 +981,7 @@ export default function DocsPage() {
             <div className="overflow-hidden rounded-3xl bg-brand-600 p-8 text-white shadow-pop sm:p-10">
               <div className="grid gap-8 md:grid-cols-[1fr_auto] md:items-end">
                 <div>
-                  <p className="text-sm font-semibold uppercase tracking-[.18em] text-violet-100">
+                  <p className="text-sm font-semibold uppercase tracking-[.18em] text-teal-100">
                     Documentation contract
                   </p>
                   <h2 className="mt-4 max-w-2xl text-balance text-3xl font-bold">

@@ -90,14 +90,14 @@ export default function AboutPage() {
       <section className="mx-auto max-w-6xl px-6 py-20 lg:px-10 lg:py-28">
         <div className="grid items-center gap-10 lg:grid-cols-[.85fr_1.15fr]">
           <FadeIn className="relative aspect-[4/3] overflow-hidden rounded-3xl bg-[#090b16] text-white shadow-pop">
-            <div aria-hidden="true" className="absolute inset-0 bg-[radial-gradient(circle_at_70%_10%,rgba(124,58,237,.45),transparent_45%)]" />
+            <div aria-hidden="true" className="absolute inset-0 bg-[radial-gradient(circle_at_70%_10%,hsl(var(--teal-600)/.38),transparent_45%)]" />
             <div className="absolute inset-0 grid place-items-center">
-              <span className="grid h-36 w-36 place-items-center rounded-full border border-white/15 bg-white/[.06] text-7xl font-black text-violet-200">M</span>
+              <span className="grid h-36 w-36 place-items-center rounded-full border border-white/15 bg-white/[.06] text-7xl font-black text-teal-400">M</span>
             </div>
             <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent p-7">
               <p className="font-semibold">Manjunath</p>
               <p className="mt-1 text-sm text-white/60">Founder &amp; CEO · HR StraTech Leader</p>
-              <p className="mt-3 text-sm font-medium text-violet-200">Built by HR. For HR.</p>
+              <p className="mt-3 text-sm font-medium text-teal-100">Built by HR. For HR.</p>
             </div>
           </FadeIn>
           <FadeIn delay={0.08}>

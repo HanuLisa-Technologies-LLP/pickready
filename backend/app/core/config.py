@@ -52,35 +52,32 @@ class Settings(BaseSettings):
     otp_max_attempts: int = 5
     otp_cooldown_minutes: int = 15
 
-    # LLM provider keys  -  21 slots (7 per provider), router picks/falls back per
-    # task type (config/llm_providers.py). Keys 1-3 are the original ESD §8.4
-    # trio; 4-7 are the 2026-07-27 expansion. EVERY slot is optional: the router
-    # simply skips empty ones, so a dev machine with three keys still works.
-    groq_api_key_1: str = ""
-    groq_api_key_2: str = ""
-    groq_api_key_3: str = ""
-    groq_api_key_4: str = ""
-    groq_api_key_5: str = ""
-    groq_api_key_6: str = ""
-    groq_api_key_7: str = ""
-    gemini_api_key_1: str = ""
-    gemini_api_key_2: str = ""
-    gemini_api_key_3: str = ""
-    gemini_api_key_4: str = ""
-    gemini_api_key_5: str = ""
-    gemini_api_key_6: str = ""
-    gemini_api_key_7: str = ""
-    openrouter_api_key_1: str = ""
-    openrouter_api_key_2: str = ""
-    openrouter_api_key_3: str = ""
-    openrouter_api_key_4: str = ""
-    openrouter_api_key_5: str = ""
-    openrouter_api_key_6: str = ""
-    openrouter_api_key_7: str = ""
+    # ── LLM and embeddings (spec-doc5 Part B) ───────────────────────────────
+    #
+    # TWO CREDENTIALS PLATFORM-WIDE. This replaced a 21-slot roster (7 keys each
+    # for Groq, Gemini and OpenRouter) that existed to route around three free
+    # tiers' failure modes -- a retired model id, an exhausted prepaid balance,
+    # an 8000-token-per-minute organisation pool, a withdrawn free-tier model.
+    # One paid vendor removes that whole class of problem, so it removes the
+    # roster with it.
+    #
+    # Both are mounted from AWS Secrets Manager in a deployed environment and
+    # are never composed into a loggable env var, continuing the discipline
+    # established when DATABASE_URL was hardened.
+    anthropic_api_key: str = ""
+    voyage_api_key: str = ""
+
+    # Retained, unread by the router. `llm_provider_keys` still holds encrypted
+    # rows for the three retired vendors and this is what decrypts them; a
+    # rollback of the consolidation needs the rows readable rather than
+    # restored from a backup.
     llm_key_encryption_secret: str = ""
 
-    # Embeddings
-    bge_m3_endpoint: str = ""
+    # Embedding output width. Pinned to 1024 because `profiles.embedding`,
+    # `jobs.embedding` and `context_chunks.embedding` are vector(1024) columns
+    # already holding vectors. Changing this is a re-embed of every row, not a
+    # config change.
+    embedding_dimensions: int = 1024
 
     # Advanced web search for the BD Portal's AI Reach agent
     # (services/web_research.py). OPTIONAL: with no key the "from the internet"
@@ -101,10 +98,23 @@ class Settings(BaseSettings):
     msg91_api_key: str = ""
     msg91_sender_id: str = "PCKRDY"
 
-    # Private file storage. Durable values stored in the database are gs://
-    # object references; browser access always passes through an authenticated,
-    # tenant-scoped, short-lived application signature.
-    gcs_bucket: str = "pick-ready-503913-private-assets"
+    # ── Private file storage (S3) ───────────────────────────────────────────
+    #
+    # Durable values stored in the database are s3:// object references; a raw
+    # bucket URL is never returned to a browser. Access always passes through an
+    # authenticated, tenant-scoped, capability-checked endpoint rather than a
+    # presigned link, because a presigned URL is a bearer token that leaves no
+    # audit trail once it has been copied out of a page.
+    #
+    # No access key or secret lives here. In a deployed environment boto3
+    # resolves the ECS task role, which is scoped to exactly this bucket by the
+    # per-service IAM policy in `infra/modules/secrets`. A long-lived key in an
+    # env var is precisely what that scoping exists to avoid.
+    s3_bucket: str = ""
+    aws_region: str = "ap-south-1"
+    #: Localstack / MinIO only. None in every real environment, where boto3
+    #: resolves the real regional endpoint.
+    s3_endpoint_url: str = ""
     resume_signed_url_ttl_seconds: int = 300
 
     # Scaffolding only. Legal retention, data-request workflow and review remain

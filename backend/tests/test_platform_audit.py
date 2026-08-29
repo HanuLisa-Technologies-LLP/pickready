@@ -324,33 +324,81 @@ def test_the_assessment_and_the_ai_score_share_one_scale() -> None:
 
 # ── The LLM router bounds what a human waits for ───────────────────────────
 
-INTERACTIVE_TASKS = ("jd_generation", "email_composition", "rerank")
+#: A request handler is blocked on these AND the output is SHORT: a reply, a
+#: label, an ordering, one question. A slower model does not make a 60-token
+#: reply slow, so the latency brief's 15s / 30s contract is unchanged for them.
+IMMEDIATE_INTERACTIVE_TASKS = (
+    "conversation_turn",
+    "situation_classification",
+    "email_composition",
+    "rerank",
+    "swot_intake",
+    "company_dna_intake",
+)
+
+#: A request handler is blocked and the output is a DOCUMENT.
+#:
+#: THIS TIER IS AN EXCEPTION AND IT IS DELIBERATE. The brief's flat 15s cap was
+#: measured against a flash-class model; against Sonnet 5 a multi-thousand-token
+#: JD cannot finish inside it, so holding the cap would not make the Generate JD
+#: button faster -- it would make every generation time out and fall back to the
+#: deterministic template, permanently. That is the same argument the brief
+#: already accepts for report_synthesis, one tier down. It is a NAMED, BOUNDED
+#: list rather than a raised global cap, so a future task cannot join it by
+#: accident.
+GENERATIVE_INTERACTIVE_TASKS = ("jd_generation",)
+
+GENERATIVE_INTERACTIVE_ATTEMPT_CAP = 30.0
+GENERATIVE_INTERACTIVE_BUDGET_CAP = 60.0
 
 
-def test_interactive_llm_calls_are_capped_at_fifteen_seconds() -> None:
+def test_immediate_interactive_calls_are_capped_at_fifteen_seconds() -> None:
     """The latency brief's cap, applied where it belongs: to the calls a
-    request handler is blocked on."""
+    request handler is blocked on whose output is short."""
     from app.config.llm_providers import timeout_for
 
-    for task in INTERACTIVE_TASKS:
+    for task in IMMEDIATE_INTERACTIVE_TASKS:
         assert timeout_for(task) <= 15.0, task
+
+
+def test_the_generative_interactive_exception_stays_small_and_bounded() -> None:
+    """The exception must not become the rule.
+
+    Two things are asserted: the list is short, and the tasks on it are still
+    capped -- just at a higher number. An exception with no ceiling of its own
+    is not an exception, it is the absence of a rule.
+    """
+    from app.config.llm_providers import timeout_for, total_budget_for
+
+    assert len(GENERATIVE_INTERACTIVE_TASKS) <= 2, (
+        "Every task added here is a page a person waits longer on. Adding one "
+        "is a product decision, not a config change."
+    )
+    for task in GENERATIVE_INTERACTIVE_TASKS:
+        assert timeout_for(task) <= GENERATIVE_INTERACTIVE_ATTEMPT_CAP, task
+        assert total_budget_for(task) <= GENERATIVE_INTERACTIVE_BUDGET_CAP, task
+
+
+def test_the_two_interactive_tiers_do_not_overlap() -> None:
+    """A task in both lists would be capped by whichever test ran first."""
+    assert not set(IMMEDIATE_INTERACTIVE_TASKS) & set(GENERATIVE_INTERACTIVE_TASKS)
 
 
 def test_every_task_has_a_total_budget_above_its_per_attempt_timeout() -> None:
     """A per-attempt timeout alone does not bound a request: four attempts at
     15s is a 60s wait. The total budget is what the caller actually feels."""
-    from app.config.llm_providers import TASK_ROUTES, timeout_for, total_budget_for
+    from app.config.llm_providers import MODEL_FOR_TASK, timeout_for, total_budget_for
 
-    for task in TASK_ROUTES:
+    for task in MODEL_FOR_TASK:
         assert total_budget_for(task) >= timeout_for(task), task
         # And it must not be so generous that it fails to bound anything.
-        assert total_budget_for(task) <= 240.0, task
+        assert total_budget_for(task) <= 300.0, task
 
 
-def test_interactive_total_budget_keeps_a_page_under_half_a_minute() -> None:
+def test_immediate_interactive_budget_keeps_a_page_under_half_a_minute() -> None:
     from app.config.llm_providers import total_budget_for
 
-    for task in INTERACTIVE_TASKS:
+    for task in IMMEDIATE_INTERACTIVE_TASKS:
         assert total_budget_for(task) <= 30.0, task
 
 

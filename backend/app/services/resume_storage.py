@@ -1,8 +1,16 @@
-"""Private GCS-backed resume storage.
+"""Private S3-backed resume storage.
 
 Resume bytes never persist on the application filesystem. Durable database
-references use ``gs://`` object names; a raw bucket URL is never returned to a
-browser.
+references use ``s3://`` object names; a raw bucket URL is never returned to a
+browser -- reads go through `services/resume_access`, which is authenticated,
+tenant-scoped and capability-checked.
+
+TRANSPORT MOVED, VALIDATION DID NOT (spec-doc5 Part D). The bucket handle, the
+content-addressed upload and its race are now in `services/object_storage`,
+shared with compliance-document storage. Everything ABOVE that line stays here
+and is unchanged: the PDF/DOCX-only rule, the 10 MB ceiling, the magic-byte
+signature check, and the fact that a resume upload must never widen to accept
+the JPEG a compliance record legitimately is.
 """
 from __future__ import annotations
 
@@ -13,11 +21,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, UploadFile, status
-from google.cloud import storage
-from google.api_core.exceptions import PreconditionFailed
 from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
+from app.services import object_storage
 
 ALLOWED_RESUME_EXTENSIONS = {".pdf", ".docx"}
 ALLOWED_RESUME_CONTENT_TYPES = {
@@ -26,7 +33,13 @@ ALLOWED_RESUME_CONTENT_TYPES = {
     "application/octet-stream",
 }
 MAX_RESUME_BYTES = 10 * 1024 * 1024
-GCS_PREFIX = "resumes"
+OBJECT_PREFIX = "resumes"
+
+#: What `profiles.resume_storage_provider` records for a row written today.
+#: Rows written before the AWS migration say "gcs" and are recognised on read so
+#: an un-migrated object reports as un-migrated rather than as missing.
+STORAGE_PROVIDER = "s3"
+LEGACY_STORAGE_PROVIDER = "gcs"
 
 
 @dataclass(frozen=True)
@@ -105,19 +118,8 @@ async def read_validated_resume(file: UploadFile) -> tuple[bytes, str, str]:
     return data, filename, mime_type
 
 
-def _bucket() -> storage.Bucket:
-    settings = get_settings()
-    if not settings.gcs_bucket:
-        raise _error(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "Resume storage is not configured. Please try again shortly.",
-            retryable=True,
-        )
-    return storage.Client().bucket(settings.gcs_bucket)
-
-
-def _gcs_uri(object_name: str) -> str:
-    return f"gs://{get_settings().gcs_bucket}/{object_name}"
+def _object_uri(object_name: str) -> str:
+    return object_storage.uri_for(object_name)
 
 
 def _upload_or_get_existing(
@@ -127,36 +129,37 @@ def _upload_or_get_existing(
     mime_type: str,
 ) -> dict[str, Any]:
     """Create the content-addressed object exactly once."""
-    object_name = f"{GCS_PREFIX}/{sha256}"
-    blob = _bucket().blob(object_name)
+    object_name = f"{OBJECT_PREFIX}/{sha256}"
     try:
-        if not blob.exists():
-            blob.metadata = {
+        stored = object_storage.put_if_absent(
+            key=object_name,
+            data=data,
+            content_type=mime_type,
+            metadata={
                 "original_filename": filename,
                 "mime_type": mime_type,
                 "sha256": sha256,
-            }
-            try:
-                blob.upload_from_string(
-                    data,
-                    content_type=mime_type,
-                    if_generation_match=0,
-                )
-            except PreconditionFailed:
-                # A concurrent content-addressed upload won the race.
-                pass
-        blob.reload()
+            },
+        )
+    except object_storage.ObjectStorageNotConfigured as exc:
+        raise _error(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Resume storage is not configured. Please try again shortly.",
+            retryable=True,
+        ) from exc
     except Exception as exc:
+        # The message never names the vendor (claude.md, 2026-07-26) and never
+        # quotes the underlying error, which can echo the request.
         raise _error(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "We could not securely store your resume. Nothing was submitted; please retry.",
             retryable=True,
         ) from exc
     return {
-        "object_name": object_name,
-        "size": int(blob.size or len(data)),
-        "generation": str(blob.generation or ""),
-        "created_at": blob.time_created,
+        "object_name": stored.key,
+        "size": stored.size_bytes,
+        "etag": stored.etag,
+        "created_at": stored.created_at,
     }
 
 
@@ -171,7 +174,7 @@ def _as_utc(value: Any) -> datetime:
 
 
 async def store_resume(file: UploadFile) -> ResumeAsset:
-    """Validate and persist a resume in the private regional GCS bucket."""
+    """Validate and persist a resume in the private regional bucket."""
     data, filename, mime_type = await read_validated_resume(file)
     return await store_resume_bytes(data, filename, mime_type)
 
@@ -187,17 +190,21 @@ async def store_resume_bytes(
     object_name = str(result["object_name"])
     return ResumeAsset(
         public_id=object_name,
-        secure_url=_gcs_uri(object_name),
+        secure_url=_object_uri(object_name),
         original_filename=filename,
         mime_type=mime_type,
         size_bytes=int(result["size"]),
         uploaded_at=_as_utc(result.get("created_at")),
         sha256=sha256,
         metadata={
-            "provider": "gcs",
-            "bucket": get_settings().gcs_bucket,
+            "provider": STORAGE_PROVIDER,
+            "bucket": get_settings().s3_bucket,
             "object_name": object_name,
-            "generation": result.get("generation"),
+            # The ETag is what lets somebody confirm the stored artefact by
+            # digest rather than by trusting that the write returned 200 --
+            # the same verification discipline this project applies to a
+            # deployed image.
+            "etag": result.get("etag"),
         },
     )
 
@@ -205,7 +212,7 @@ async def store_resume_bytes(
 def apply_resume_asset(profile: Any, asset: ResumeAsset) -> None:
     profile.resume_url = asset.secure_url
     profile.resume_public_id = asset.public_id
-    profile.resume_storage_provider = "gcs"
+    profile.resume_storage_provider = STORAGE_PROVIDER
     profile.resume_original_filename = asset.original_filename
     profile.resume_mime_type = asset.mime_type
     profile.resume_size_bytes = asset.size_bytes
@@ -240,33 +247,36 @@ def profile_has_resume(profile: Any) -> bool:
     )
 
 
-def _fetch_gcs_bytes(object_name: str) -> bytes:
+def _fetch_object_bytes(object_name: str) -> bytes:
     try:
-        data = _bucket().blob(object_name).download_as_bytes()
-    except Exception as exc:
+        return object_storage.get_bytes(object_name)
+    except object_storage.ObjectStorageError as exc:
         raise ResumeStorageError(
-            "GCS could not be reached while retrieving the resume."
+            "Storage could not be reached while retrieving the resume."
         ) from exc
-    if not data:
-        raise ResumeStorageError("GCS returned an empty resume file.")
-    return data
 
 
 async def fetch_resume_bytes(profile: Any) -> bytes:
     if not profile_has_resume(profile):
         raise ResumeStorageError("The resume file is missing its storage metadata.")
     provider = getattr(profile, "resume_storage_provider", None)
-    if provider != "gcs" and not str(profile.resume_url).startswith("gs://"):
+    url = str(profile.resume_url or "")
+    if provider == LEGACY_STORAGE_PROVIDER or object_storage.is_legacy_uri(url):
+        # A NAMED failure, not a 404. This row is not corrupt, it is
+        # un-migrated, and those are different problems with different fixes.
+        # Saying "missing" would send somebody looking for a lost file.
+        raise ResumeStorageError(
+            "This resume was stored before the storage migration and has not "
+            "been copied across yet. Run scripts/migrate_resumes_to_s3.py."
+        )
+    if provider != STORAGE_PROVIDER and not url.startswith(object_storage.S3_SCHEME):
         raise ResumeStorageError("The resume has not been migrated to private storage.")
-    return await run_in_threadpool(_fetch_gcs_bytes, profile.resume_public_id)
+    return await run_in_threadpool(_fetch_object_bytes, profile.resume_public_id)
 
 
 async def delete_resume_asset(asset: ResumeAsset) -> None:
     """Best-effort compensation after a database write failure."""
-    try:
-        await run_in_threadpool(_bucket().blob(asset.public_id).delete)
-    except Exception:
-        return
+    await run_in_threadpool(object_storage.delete, asset.public_id)
 
 
 class ResumeStorageError(RuntimeError):

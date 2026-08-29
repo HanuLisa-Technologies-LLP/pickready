@@ -276,7 +276,11 @@ def test_no_engineering_VALUE_from_the_artifact_appears_on_a_client_surface() ->
         payload["correlation_id"],
         payload["model"]["task_type"],
         *payload["model"]["provider_order"],
-        *[m for m in payload["model"]["candidate_models"].values() if m],
+        # One vendor, so the trace now records the MODEL rather than a
+        # per-provider candidate table with one row in it. The rule under test
+        # is unchanged: no engineering value from the artifact may appear on a
+        # client-facing projection.
+        payload["model"]["model"],
         "fusion_rank",
         "exact_match",
         "resume_sha256",

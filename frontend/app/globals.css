@@ -10,9 +10,12 @@
 
    Two families live here:
 
-   1. The BRAND family (indigo-violet, sampled from the logo). It is used for
-      primary actions, active navigation, focus rings and accents. It is NOT a
-      wash over every surface; the app shell stays near-monochrome.
+   1. The BRAND family, NAVY and TEAL, sampled by weighted centroid from
+      `logo300.jpeg`. Navy is STRUCTURE (primary actions, active navigation,
+      focus rings, the frame); teal is EVIDENCE (what is corroborated, what is
+      cited). It is NOT a wash over every surface; the app shell stays quiet.
+      It replaced an indigo-violet ramp, which is the exact palette Impeccable
+      flags as a generated-interface tell. See DESIGN.md §2.
    2. The shadcn semantic family (background/foreground/card/...), kept so every
       existing primitive keeps working. `--primary` is now the brand colour.
 
@@ -23,22 +26,63 @@
    and muted BACKGROUNDS. `::placeholder` is the single documented exception.
 
    All colour values are stored as bare HSL triples so Tailwind can compose
-   them with an alpha channel (`bg-brand-600/10`).
+   them with an alpha channel (`bg-navy-600/10`).
    =========================================================================== */
 
 @layer base {
   :root {
-    /* --- brand ramp ------------------------------------------------------ */
-    --brand-100: 254 76% 95%; /* #EDE8FE  subtle brand fill, selected row */
-    --brand-500: 253 76% 61%; /* #6B4BEA  accents, chart series 1 */
-    --brand-600: 258 76% 52%; /* #5028E0  primary action, active nav, ring */
-    --brand-700: 258 72% 45%; /* #4520C4  hover on primary */
+    /* --- brand ramp: NAVY + TEAL ---------------------------------------
+       SAMPLED, NOT CHOSEN. Both hexes are the weighted centroid of their
+       colour cluster in `logo300.jpeg` (navy over 102,974 px, teal over
+       48,891 px), which lands inside the +/-2 per channel spec-doc5 §C.1
+       states. A single-pixel read would have been compression noise.
+
+       THIS REPLACED AN INDIGO-VIOLET RAMP (#5028E0), and the replacement is
+       the point of the recolour rather than a refresh. Purple-to-blue is the
+       single most recognisable tell of a generated interface -- Impeccable
+       ships a detector for it, and that detector flagged four call sites in
+       this repo before this change.
+
+       NAVY IS STRUCTURE, TEAL IS EVIDENCE. Navy carries primary actions,
+       navigation and the frame. Teal carries what is corroborated and what is
+       cited -- it is the one colour in the system with a meaning, and spending
+       it on a button would waste it on the element that needs none.
+
+       Stored as bare HSL triples so Tailwind can compose an alpha channel
+       (`bg-navy-600/10`). */
+    --navy-50: 213 58% 96%; /* #EFF4FB  selected row, subtle fill */
+    --navy-100: 213 58% 90%; /* #D7E4F4  hover on a navy surface */
+    --navy-200: 213 58% 78%; /* #A7C3E7  border on a navy fill */
+    --navy-400: 213 98% 42%; /* #0360D4  link on white, 5.79:1 */
+    --navy-500: 213 98% 28%; /* #02408D  hover on primary */
+    --navy-600: 213 98% 17%; /* #012654  THE BRAND NAVY. 14.93:1 on white */
+    --navy-700: 213 98% 13%; /* #011E42  pressed */
+    --navy-900: 213 98% 6%; /* #000E1E  dark canvas */
+
+    /* THE BRAND TEAL FAILS AA FOR BODY TEXT ON WHITE. #00888A measures
+       4.30:1, below the 4.5:1 WCAG AA requires for normal text. That is a
+       measured property of the brand colour, not a preference, and it is the
+       mistake a designer reaches for first -- teal labels on a white card.
+
+       So: teal-600 is a FILL, a RULE and an ICON colour. TEAL TEXT ON WHITE
+       IS teal-700 (5.99:1). `scripts/check-contrast.mjs` computes both from
+       these triples and fails the build rather than trusting memory. */
+    --teal-50: 181 60% 95%; /* #EBFAFA  evidence-supported fill */
+    --teal-100: 181 60% 88%; /* #CEF2F3  accent fill */
+    --teal-400: 181 100% 40%; /* #00C9CC  dark-theme accent, chart series 2 */
+    --teal-500: 181 100% 30%; /* #009799  large text only, >= 24px */
+    --teal-600: 181 100% 27%; /* #00888A  THE BRAND TEAL. Fills and rules */
+    --teal-700: 181 100% 22%; /* #006F70  teal TEXT on white, 5.99:1 */
+    --teal-900: 181 100% 11%; /* #003738  dark-theme teal text */
 
     /* --- surfaces and ink ------------------------------------------------ */
-    --ink: 240 60% 7%; /* #080820  all text */
+    /* Ink carries a trace of the navy hue rather than being pure neutral, so
+       black text on a navy-tinted canvas does not read as two unrelated
+       greys. It is still functionally black: 19.6:1 on the canvas. */
+    --ink: 216 55% 7%; /* #080F1C  all text */
     --surface: 0 0% 100%; /* #FFFFFF  cards */
-    --canvas: 240 25% 98%; /* #F7F7FB  page background */
-    --border-token: 240 15% 91%; /* #E4E4ED  borders, dividers */
+    --canvas: 213 43% 98%; /* #FBFCFE  page background */
+    --border-token: 214 33% 92%; /* #E2E8F2  borders, dividers */
 
     /* --- interactive field affordance (2026-08-11) ------------------------
        A dropdown, a text input and a toggle used to carry `--border-token`,
@@ -54,8 +98,8 @@
 
        Both are verified by `scripts/check-contrast.mjs`, which computes the
        ratio from these exact triples. Do not adjust either by eye. */
-    --field-border: 258 44% 65%; /* idle */
-    --field-border-hover: 258 70% 52%; /* hover and open, saturation steps up */
+    --field-border: 213 45% 55%; /* idle */
+    --field-border-hover: 213 98% 32%; /* hover and open, saturation steps up */
 
     /* --- shadcn semantic aliases ----------------------------------------- */
     --background: var(--canvas);
@@ -64,16 +108,17 @@
     --card-foreground: var(--ink);
     --popover: var(--surface);
     --popover-foreground: var(--ink);
-    --primary: var(--brand-600);
+    --primary: var(--navy-600);
     --primary-foreground: 0 0% 100%;
-    --secondary: 240 20% 96%;
+    --secondary: 214 40% 96%;
     --secondary-foreground: var(--ink);
     /* --muted stays a light SURFACE; --muted-foreground is text, so it is ink. */
-    --muted: 240 20% 96%;
+    --muted: 214 40% 96%;
     --muted-foreground: var(--ink);
-    --accent: var(--brand-100);
-    --accent-foreground: var(--brand-700);
-    --destructive: 0 72% 42%;
+    /* Teal, because accent means EVIDENCE in this system. */
+    --accent: var(--teal-50);
+    --accent-foreground: var(--teal-900);
+    --destructive: 357 68% 42%;
     --destructive-foreground: 0 0% 100%;
     --border: var(--border-token);
     /* `--input` is what every field primitive resolves `border-input` to, so
@@ -81,8 +126,11 @@
        at rest" change. `--border` stays the neutral hairline: a divider is not
        a control and tinting it would make the affordance meaningless. */
     --input: var(--field-border);
-    --ring: var(--brand-600);
+    --ring: var(--navy-400);
     --radius: 0.75rem;
+    /* Held for review. Not destructive: a flag is not a rejection. */
+    --warning: 40 100% 27%;
+    --warning-foreground: 0 0% 100%;
 
     /* --- rating ramp (five word labels, one shared ramp) ------------------ */
     --rating-1-fg: 142 72% 20%; /* #166534  Very High / Highly Matching */
@@ -98,21 +146,42 @@
   }
 
   .dark {
-    --brand-100: 250 39% 17%; /* #211A3D */
-    --brand-500: 253 100% 74%; /* #9179FF */
-    --brand-600: 253 100% 68%; /* #7C5CFF */
-    --brand-700: 258 76% 52%; /* #5028E0 */
+    /* DARK IS NAVY, NOT NEUTRAL GREY. The palette is navy-forward, so a
+       neutral near-black canvas would orphan the brand -- navy on grey reads
+       as a blue accent rather than as the product's colour. The canvas IS
+       navy-900 and the card is navy-700, which is why elevation in dark mode
+       is a LIGHTER SURFACE rather than a shadow (a shadow on near-black is
+       invisible, and making it visible produces a halo).
+
+       Both ramps invert: the dark theme uses the light end of each, because a
+       navy-600 button on a navy-900 canvas is a button nobody can find. */
+    --navy-50: 213 60% 12%;
+    --navy-100: 213 55% 18%;
+    --navy-200: 213 70% 72%; /* primary action in dark */
+    --navy-400: 213 90% 66%; /* link */
+    --navy-500: 213 80% 78%; /* hover on primary */
+    --navy-600: 213 70% 72%;
+    --navy-700: 213 98% 13%; /* #011E42  card surface */
+    --navy-900: 213 98% 6%; /* #000E1E  canvas */
+
+    --teal-50: 181 55% 13%;
+    --teal-100: 181 50% 18%;
+    --teal-400: 181 100% 40%; /* #00C9CC  the dark-theme accent */
+    --teal-500: 181 85% 55%;
+    --teal-600: 181 85% 62%; /* teal TEXT in dark, on navy-700 */
+    --teal-700: 181 85% 68%;
+    --teal-900: 181 60% 88%;
 
     --ink: 0 0% 100%; /* #FFFFFF */
-    --surface: 240 43% 6%; /* #0A0A18 */
-    --canvas: 240 43% 4%; /* #06060F */
-    --border-token: 240 15% 15%; /* #22222E */
+    --surface: 213 98% 13%; /* #011E42  navy-700 */
+    --canvas: 213 98% 6%; /* #000E1E  navy-900 */
+    --border-token: 213 60% 22%; /* #0A2E5C */
 
     /* Dark theme runs the affordance the other way: the field border is
-       LIGHTER than the near-black surface it sits on. Same 3:1 bar, same
-       script checks it. */
-    --field-border: 253 46% 55%; /* #6F55C4 */
-    --field-border-hover: 253 100% 74%; /* #9179FF */
+       LIGHTER than the navy surface it sits on. Same 3:1 bar, same script
+       checks it. */
+    --field-border: 213 45% 52%;
+    --field-border-hover: 213 70% 72%;
 
     --background: var(--canvas);
     --foreground: var(--ink);
@@ -120,19 +189,21 @@
     --card-foreground: var(--ink);
     --popover: var(--surface);
     --popover-foreground: var(--ink);
-    --primary: var(--brand-600);
-    --primary-foreground: 240 43% 6%;
-    --secondary: 240 20% 12%;
+    --primary: var(--navy-200);
+    --primary-foreground: 213 98% 8%;
+    --secondary: 213 50% 16%;
     --secondary-foreground: var(--ink);
-    --muted: 240 20% 12%;
+    --muted: 213 50% 16%;
     --muted-foreground: var(--ink);
-    --accent: var(--brand-100);
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 72% 55%;
-    --destructive-foreground: 0 0% 100%;
+    --accent: var(--teal-100);
+    --accent-foreground: var(--teal-900);
+    --destructive: 357 90% 77%;
+    --destructive-foreground: 213 98% 8%;
     --border: var(--border-token);
     --input: var(--field-border);
-    --ring: var(--brand-600);
+    --ring: var(--navy-400);
+    --warning: 40 82% 69%;
+    --warning-foreground: 213 98% 8%;
 
     /* The rating ramp keeps its hue in dark mode but swaps fg/bg roles so the
        chip stays legible on a near-black card. */
@@ -192,6 +263,24 @@
   }
 }
 
+@layer base {
+  /* The candidate assessment's typing indicator. A FADE, not a bounce.
+     Tailwind's bounce utility overshoots, and this appears while somebody is
+     waiting to be asked the next question about their career -- DESIGN.md §7
+     rules out spring overshoot on anything a person is waiting on. Defined
+     here rather than as a Tailwind utility because it belongs on exactly one
+     surface, and a global one is a thing somebody reaches for elsewhere. */
+  @keyframes typing-dot {
+    0%,
+    100% {
+      opacity: 0.25;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+}
+
 @layer utilities {
   /* Glassmorphism. Deliberately one utility so it can only be applied where
      the brief allows it (landing page and top nav), never on forms or tables
@@ -211,13 +300,17 @@
     text-wrap: pretty;
   }
 
-  /* Brand gradient, for the one accented phrase in a hero headline. */
+  /* Brand gradient, for the one accented phrase in a hero headline.
+     SINGLE HUE. DESIGN.md §2 rule 2 forbids a gradient between two hues --
+     navy-to-teal would be exactly the blue-to-something shape being removed,
+     just in the brand's own colours. This ramps navy through its own
+     lightness, which reads as depth rather than as decoration. */
   .text-gradient-brand {
     background-image: linear-gradient(
       100deg,
-      hsl(var(--brand-600)),
-      hsl(var(--brand-500)) 55%,
-      hsl(var(--brand-700))
+      hsl(var(--navy-600)),
+      hsl(var(--navy-400)) 55%,
+      hsl(var(--navy-700))
     );
     -webkit-background-clip: text;
     background-clip: text;

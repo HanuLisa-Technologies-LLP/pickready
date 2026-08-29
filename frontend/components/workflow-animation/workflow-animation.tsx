@@ -79,7 +79,7 @@ export function WorkflowAnimation() {
         <div className="px-2 pb-2 pt-4 sm:px-3">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-[10px] font-semibold uppercase tracking-[.18em] text-violet-300">
+              <p className="text-[10px] font-semibold uppercase tracking-[.18em] text-teal-400">
                 Step {step + 1} of {STEPS.length}
               </p>
               <p className="truncate text-sm font-medium text-white">{STEPS[step].title}</p>
@@ -112,12 +112,12 @@ export function WorkflowAnimation() {
                 key={item.short}
                 type="button"
                 onClick={() => choose(index)}
-                className="group min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+                className="group min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400"
                 aria-label={`Show step ${index + 1}: ${item.title}`}
                 aria-current={index === step ? "step" : undefined}
               >
                 <span className="relative block h-1.5 overflow-hidden rounded-full bg-white/10">
-                  {index < step ? <span className="absolute inset-0 bg-violet-400/65" /> : null}
+                  {index < step ? <span className="absolute inset-0 bg-teal-400/65" /> : null}
                   {index === step ? (
                     <motion.span
                       key={`${step}-${cycle}-progress`}
@@ -127,7 +127,9 @@ export function WorkflowAnimation() {
                         duration: playing && inView && !reduceMotion ? item.duration / 1000 : 0.25,
                         ease: "linear",
                       }}
-                      className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-violet-500 to-indigo-300"
+                      // Single hue. DESIGN.md §2 rule 2: no gradient between two hues -- the
+                      // two-hue ramp it replaced is the exact tell being removed.
+                      className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-teal-600 to-teal-400"
                     />
                   ) : null}
                 </span>
@@ -172,7 +174,7 @@ function Control({
       // effectively invisible until you happened to hover them. Measured by
       // scripts/visual-qa.mjs, which composites the alpha rather than
       // comparing the raw rgba strings.
-      className="grid h-8 w-8 place-items-center rounded-lg border border-violet-400/70 bg-white/[0.045] text-white/80 transition hover:border-violet-300 hover:bg-violet-400/15 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-400"
+      className="grid h-8 w-8 place-items-center rounded-lg border border-teal-400/70 bg-white/[0.045] text-white/80 transition hover:border-teal-400 hover:bg-teal-400/15 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400"
     >
       {React.cloneElement(children, { className: "h-3.5 w-3.5" })}
     </button>

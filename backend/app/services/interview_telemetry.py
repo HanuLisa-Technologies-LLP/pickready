@@ -18,7 +18,8 @@ turn is.
 
 WHY A LOG LINE AND NOT A METRICS CLIENT
 ---------------------------------------
-The backend runs on Cloud Run, which ships stdout straight to Cloud Logging. A
+The backend runs on ECS Fargate, whose awslogs driver ships stdout straight to
+CloudWatch Logs. A
 structured `key=value` line IS the metric: it is queryable, it is already
 retained, and it costs no new dependency, no client to initialise, no endpoint
 to be unreachable. A metrics client would be a second network dependency on the

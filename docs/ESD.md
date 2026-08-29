@@ -1,3 +1,19 @@
+> **DEPLOYMENT SECTIONS SUPERSEDED (2026-08-28).** §26 and every other
+> reference to Google Cloud, Cloud Run, Cloud SQL, Memorystore and Cloud Storage
+> describe a platform that has been replaced. ReadyPick runs on AWS ECS Fargate,
+> RDS PostgreSQL, ElastiCache and S3, defined as Terraform in `infra/`. See
+> [DEPLOY_AWS.md](DEPLOY_AWS.md).
+>
+> §8.4's multi-provider LLM routing is also superseded: spec-doc5 Part B
+> consolidates the platform onto Claude Sonnet 5, Claude Haiku 4.5 and
+> voyage-context-4. The 21-key roster, the capacity registry and the dynamic
+> scheduler were removed, not disabled.
+>
+> The rest of this document -- the data model, the RBAC engine, the approval
+> FSM, the matching pipeline -- is unchanged and still authoritative.
+
+---
+
 # ReadyPick Engineering and System Design
 
 **Status:** Implementation-aligned technical specification

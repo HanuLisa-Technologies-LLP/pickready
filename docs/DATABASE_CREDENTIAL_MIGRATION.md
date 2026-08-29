@@ -1,3 +1,20 @@
+> **HISTORICAL RECORD. The platform this describes no longer exists.**
+>
+> This documents the 2026-08-24 fix for a `DATABASE_URL` that was composed at
+> deploy time and passed as a plain Cloud Run environment variable. It is kept
+> because the FINDING outlived the platform: spec-doc5 §D.4 names it as "the
+> exact class of mistake to design out here from the start rather than harden
+> later", and the per-service IAM scoping in `infra/modules/secrets` is the
+> answer to it.
+>
+> Nothing in this file is a current procedure. `gcloud` commands here will not
+> run and are not meant to. For how credentials are delivered today, see
+> [DEPLOY_AWS.md](DEPLOY_AWS.md) and
+> `backend/tests/test_deploy_secret_hygiene.py`, which asserts the guarantee
+> this document's fix established.
+
+---
+
 # Moving DATABASE_URL out of the revision environment
 
 Status: **step 1 and 2 done and deployed through the gated pipeline. Step 3, the

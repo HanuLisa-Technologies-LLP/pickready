@@ -40,6 +40,7 @@ from app.models.job import Job
 from app.models.tenant import AuditLog, RolePermission, Tenant
 from app.models.user import User
 from app.schemas.admin import (
+    SuperAdminTransferIn,
     AdminUserOut,
     AuditLogOut,
     PermissionOut,
@@ -59,7 +60,7 @@ from app.schemas.admin import (
     derive_tenant_domain,
 )
 from app.services import rbac
-from app.services.audit import audit
+from app.services.audit import audit, record_action
 from app.services.capabilities import DEFAULT_PERMISSION_MATRIX
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
 from app.workers.celery_app import celery_app
@@ -959,36 +960,107 @@ async def list_audit_log(
 async def llm_stats(
     session: AsyncSession = Depends(get_superadmin_db),
 ) -> dict:
-    """Per-provider and per-KEY health, latency, tokens and estimated cost.
+    """Per-model and per-credential health, latency, tokens and estimated cost.
 
     `llm_router.provider_stats()` has existed for a long time and was exposed
-    NOWHERE, which makes it a monitoring surface nobody can read. Per-key
-    counters were added on 2026-08-11 for the two questions the aggregate
-    cannot answer: which of the seven keys on a provider is failing, and which
-    task_type is spending the budget. A provider with one dead key out of seven
-    reads as mildly degraded and is healthy on six.
+    NOWHERE, which makes it a monitoring surface nobody can read. It is exposed
+    here alongside two finer breakdowns.
+
+    WHAT CHANGED WITH THE SINGLE-VENDOR CONSOLIDATION (spec-doc5 Part B).
+    Per-KEY counters were added on 2026-08-11 to answer "which of the seven keys
+    on this provider is failing", and with one credential that question no
+    longer exists. `models` replaces it as the breakdown that still varies:
+    Sonnet 5 and Haiku 4.5 have different latency profiles and a threefold price
+    difference, so "which model is spending the budget" is now the operator
+    question the per-provider table used to answer. `keys` is retained because
+    it is where the fingerprint and the breaker state are visible.
 
     Owner-only, through `get_superadmin_db`, which also writes the audit row.
 
     No key material crosses this boundary. Counters are filed under a
-    FINGERPRINT (`db:<uuid>` / `env:<name>`), the same non-secret handle the
-    breaker and every log line already use, and that is asserted in
-    `tests/test_llm_key_telemetry.py` rather than left to review.
+    FINGERPRINT -- twelve hex characters of SHA-256 -- which is the same
+    non-secret handle the breaker and every log line already use, and that is
+    asserted in `tests/test_llm_key_telemetry.py` rather than left to review.
 
-    The cost figure is named `estimated_cost_usd` and carries `priced`. It is
-    list price from `config/llm_providers.TOKEN_PRICES_USD_PER_MILLION`, not an
-    invoice: two of the three providers run on free tiers. What it is good for
-    is the ordering -- which key, which task -- which stays right even when the
-    absolute number is not.
+    The cost figure is named `estimated_cost_usd` and is list price from
+    `config/llm_providers.TOKEN_PRICES_USD_PER_MILLION`, not an invoice: prompt
+    caching, batch discounts and the vendor's own rounding all move the real
+    number. What it is good for is the ordering -- which model, which task --
+    which stays right even when the absolute figure is not.
 
-    Counters are per PROCESS and reset on restart. That is a real limitation
-    and is stated in the payload rather than left for a reader to discover: a
-    zero here means "nothing since this worker started", never "nothing ever".
+    Counters are per PROCESS and reset on restart. That is a real limitation and
+    is stated in the payload rather than left for a reader to discover: a zero
+    here means "nothing since this worker started", never "nothing ever".
     """
     return {
         "providers": llm_router.provider_stats(),
+        "models": llm_router.model_stats(),
         "keys": llm_router.key_stats(),
         "configured_keys": llm_providers.configured_key_count(),
         "scope": "this process, since it started",
         "cost_basis": "list price estimate, not an invoice",
+    }
+
+
+# ── RBAC 7.1: transferring a customer's Super Admin seat ─────────────────────
+#
+# WHY THIS IS ON THE PROVIDER CONSOLE
+# -----------------------------------
+# The customer's Super Admin seat is minted here at onboarding, so moving it
+# belongs here too. It is also the only place it CAN live for the case that
+# matters: a client whose Super Admin has left the company has, by definition,
+# nobody inside the tenant with the authority to appoint a replacement.
+#
+# 7.1 requires "a controlled mechanism for changing/transferring the Super
+# Admin role when necessary", and migration 0061's partial unique index is what
+# makes the absence of one unrecoverable rather than merely awkward. The two
+# ship together.
+#
+# Controlled means three things here: exactly one seat moves, the outgoing
+# holder is demoted rather than deleted or disabled, and the whole thing is one
+# audited transaction.
+
+@router.post("/tenants/{tenant_id}/super-admin")
+async def transfer_super_admin(
+    tenant_id: uuid.UUID,
+    body: SuperAdminTransferIn,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_superadmin_db),
+) -> dict:
+    """Move the Client Super Admin seat to another member of the same tenant.
+
+    Refuses with a readable message rather than letting the unique index raise
+    an IntegrityError: "duplicate key value violates unique constraint
+    uq_users_one_active_super_admin_per_tenant" is not something an operator
+    can act on.
+    """
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    try:
+        result = await rbac.transfer_super_admin(
+            session, tenant_id=tenant_id, to_user_id=body.user_id
+        )
+    except rbac.SuperAdminTransferError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    await record_action(
+        session,
+        action="super_admin_transferred",
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=tenant_id,
+        resource_type="tenant",
+        resource_id=tenant_id,
+        previous_state=result["previous_state"],
+        new_state=result["new_state"],
+        # 7.5: an administrative override on somebody else's organization is
+        # exactly the kind of act that has to read as exceptional in the trail.
+        exceptional=True,
+    )
+    return {
+        "tenant_id": str(tenant_id),
+        "super_admin_user_id": result["new_state"]["super_admin_user_id"],
+        "previous_super_admin_user_id": result["previous_state"]["super_admin_user_id"],
+        "demoted_to": result["new_state"]["demoted_to"],
     }

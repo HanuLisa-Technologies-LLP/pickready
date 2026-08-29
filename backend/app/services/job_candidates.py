@@ -364,11 +364,13 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
         # The profile is what the resume viewer and the download endpoint are
         # keyed on. It was SELECTed and then dropped here, which is the whole of
         # the "resumes cannot be viewed or downloaded" report: resumes moved to
-        # PRIVATE GCS on 2026-08-0x, so `resume_url` is a gs:// object a browser
-        # cannot fetch and every read now goes through
+        # PRIVATE OBJECT STORAGE on 2026-08-0x, so `resume_url` is an `s3://`
+        # object reference a browser cannot fetch (it was `gs://` before the AWS
+        # migration) and every read now goes through
         # /candidates/profiles/{id}/resume-file. Without this id the viewer had
         # nothing to ask for and fell through to its "missing its secure profile
-        # reference" panel, with the Download button pointing at gs://.
+        # reference" panel, with the Download button pointing at an unfetchable
+        # object reference.
         "profile_id": row["profile_id"],
         "full_name": row["full_name"] or row["email"] or "Unnamed candidate",
         "email": row["email"],

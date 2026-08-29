@@ -372,3 +372,14 @@ class AuditLogOut(BaseModel):
     target_id: str | None
     metadata_json: dict | None
     at: datetime
+
+
+class SuperAdminTransferIn(BaseModel):
+    """Who receives the Client Super Admin seat (RBAC 7.1).
+
+    One field on purpose. The outgoing holder is not named: there is exactly
+    one, the service finds them, and letting a caller assert who it was would
+    let a stale client demote somebody who had already handed over.
+    """
+
+    user_id: uuid.UUID

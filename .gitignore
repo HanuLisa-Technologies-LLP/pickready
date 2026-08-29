@@ -38,3 +38,41 @@ celerybeat-schedule*
 
 # CI/CD bootstrap output: contains a live bearer JWT, never commit
 .github-secrets-setup.txt
+
+# Terraform working directories. Provider binaries are ~700MB and are
+# reproducible from the lock file, so they are downloaded rather than committed.
+# The LOCK FILE is committed, deliberately: it pins provider versions, and an
+# unpinned provider means two runs of the same config can plan differently.
+**/.terraform/
+*.tfplan
+*.tfstate
+*.tfstate.*
+
+# ---------------------------------------------------------------------------
+# Vendored third-party design skills (spec-doc6 RPN-SPEC-006 §D4).
+#
+# These are other people's code, with their own licences and their own update
+# cadence. Vendoring them here makes provenance and licensing ambiguous and
+# bloats the tree; 302 files sat untracked-and-unignored before this rule, so
+# a single `git add -A` would have committed all of them.
+#
+# The environment is reproduced from `tools/design-tools.manifest.json` by
+# `tools/install-design-tools.sh` instead. Pin there, not here.
+.claude/skills/impeccable/
+.claude/skills/design-taste-frontend/
+.claude/skills/high-end-visual-design/
+.claude/skills/redesign-existing-projects/
+.claude/skills/img2threejs/
+.github/skills/
+.agents/skills/
+
+# Impeccable's own generated agent definitions and hook config. Same D4
+# argument as the skill source above: third-party content with its own licence.
+# `tools/design-tools.manifest.json` records how to regenerate them, and
+# `.impeccable-exceptions.md` (ours, and committed) is where our decisions live.
+.github/agents/impeccable-*.agent.md
+.github/hooks/impeccable.json
+
+# A snapshot of which files were untracked at one moment. Stale the instant
+# anything is committed; the commit history is the durable record.
+UNTRACKED_INVENTORY.md

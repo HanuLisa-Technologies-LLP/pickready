@@ -26,7 +26,6 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.core.security import encrypt_secret
 from app.models import (
     Candidate,
     Company,
@@ -34,7 +33,6 @@ from app.models import (
     HiringManager,
     Job,
     JobStatus,
-    LLMProviderKey,
     Profile,
     Role,
     RolePermission,
@@ -193,48 +191,22 @@ async def _seed_permission_template(session: AsyncSession) -> None:
 
 
 async def _seed_llm_keys(session: AsyncSession) -> None:
-    settings = get_settings()
-    if not settings.llm_key_encryption_secret:
-        print("  ! LLM_KEY_ENCRYPTION_SECRET unset  -  skipping llm_provider_keys seed")
-        return
-    existing = (await session.execute(select(LLMProviderKey))).scalars().first()
-    if existing is not None:
-        return  # already seeded
-    # role_hint is informational (the router's chains are provider-ordered per
-    # ESD §8.4): Groq keys lead the rerank chain, Gemini leads extraction.
-    key_specs = [
-        ("groq", "rerank", settings.groq_api_key_1),
-        ("groq", "rerank", settings.groq_api_key_2),
-        ("groq", "rerank", settings.groq_api_key_3),
-        ("gemini", "extraction", settings.gemini_api_key_1),
-        ("gemini", "extraction", settings.gemini_api_key_2),
-        ("gemini", "extraction", settings.gemini_api_key_3),
-        ("openrouter", "extraction", settings.openrouter_api_key_1),
-        ("openrouter", "extraction", settings.openrouter_api_key_2),
-        ("openrouter", "extraction", settings.openrouter_api_key_3),
-    ]
-    added = 0
-    priority = 0
-    last_provider = None
-    for provider, role_hint, raw_key in key_specs:
-        if provider != last_provider:
-            priority = 0
-            last_provider = provider
-        if not raw_key:
-            continue  # skip empties
-        session.add(
-            LLMProviderKey(
-                provider=provider,
-                role_hint=role_hint,
-                key_encrypted=encrypt_secret(raw_key),
-                priority=priority,
-                healthy=True,
-            )
-        )
-        priority += 1
-        added += 1
-    if added:
-        print(f"  + {added} llm_provider_keys rows (encrypted)")
+    """No-op since the single-vendor consolidation (spec-doc5 Part B).
+
+    This used to seed nine `llm_provider_keys` rows from the Groq / Gemini /
+    OpenRouter env slots so a fresh dev database could route. The router no
+    longer reads that table -- `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY` come
+    straight from the environment -- so seeding it would write rows nothing
+    consults and give a reader the false impression that credentials live in
+    the database.
+
+    The FUNCTION is kept rather than deleted, and the call site with it, because
+    `seed_dev_data` is a long ordered script that people read as a checklist of
+    what a working environment contains. A silently missing step reads as an
+    oversight; a step that says why it does nothing reads as a decision.
+    """
+    print("  - llm_provider_keys  -  not seeded (single vendor, keys come from env)")
+
 
 
 async def _seed_email_templates(session: AsyncSession, tenant_id: uuid.UUID) -> None:
@@ -271,7 +243,7 @@ async def _seed_candidates(session: AsyncSession, tenant_id: uuid.UUID) -> None:
         )
         session.add(candidate)
         await session.flush()
-        # embed() uses the deterministic dev fallback when BGE_M3_ENDPOINT is
+        # embed() uses the deterministic dev fallback when VOYAGE_API_KEY is
         # unset  -  no GPU service needed to seed locally.
         embedding = (await embed([resume_text]))[0]
         session.add(

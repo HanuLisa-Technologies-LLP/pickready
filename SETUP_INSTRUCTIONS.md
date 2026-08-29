@@ -1,392 +1,179 @@
 # ReadyPick CI/CD, setup instructions
 
-A staged rollout on Cloud Run: every push to `main` builds, migrates and
-creates revisions that serve **nobody**, smoke tests those revisions on their
-private tag URL, and stops. Live traffic moves only after a human approves the
-`production` environment in GitHub.
+**The full runbook is [docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md).** This file is
+the short version, plus the things that are not obvious.
+
+> **NO LIVE AWS DEPLOYMENT HAS BEEN EXECUTED**, and in this phase that is a
+> requirement rather than an omission. spec-doc5 §D.1 asks for a codebase and
+> pipeline that are complete and correct but not run, and its acceptance list is
+> explicit: *"running `terraform apply` against production in this phase is a
+> failure of scope, not an accomplishment."*
+>
+> Everything below is written to be followed and has not been followed.
+
+**What this file replaced.** It previously documented a Cloud Run staged
+rollout: `infra/gcp/deploy.sh`, Workload Identity Federation, `--set-secrets`
+versus `--set-env-vars`, revision promotion and staged tag cleanup. That
+infrastructure was removed (spec-doc5 §D.2) and every one of those sections
+described something that no longer exists. Rather than leave a document that
+reads as current and is not, it was rewritten — and the two pieces of it that
+were still load-bearing were carried forward rather than deleted, at the bottom
+of this page.
+
+---
+
+## The pipeline
 
 ```
-push to main
-   |
-   +-- deploy-staged ------------------------------------------------+
-   |     build backend + frontend images, tagged with the git SHA    |
-   |     push to Artifact Registry                                   |
-   |     run pickready-migrate to completion (blocking)              |
-   |     deploy backend + frontend with --no-traffic --tag=staged-*  |
-   |     deploy worker + beat (no traffic concept, see caveat below) |
-   |     smoke test https://staged-<sha>---<service>.run.app         |
-   +-----------------------------------------------------------------+
-   |
-   |   [ MANUAL APPROVAL, GitHub Environment "production" ]
-   |
-   +-- promote-to-prod ----------------------------------------------+
-         shift 100% traffic to the exact revisions that were tested  |
-         remove the staged tag                                       |
-         smoke test the live URLs                                    |
-   +-----------------------------------------------------------------+
+PR                              main
+ |                               |
+ lint / typecheck                same
+ backend tests + 3 evals         same
+ frontend tests + design gate    same
+ security scan (trivy)           same
+ terraform validate              same
+ |                               |
+ terraform plan (staging)        build -> ECR, tagged by commit SHA
+ posted to the PR                terraform apply (staging), automatic
+                                 migrate (one-shot ECS task, WAITS)
+                                 smoke test
+                                 verify by DIGEST, not by exit code
+                                 |
+                                 terraform plan (production), read-only role
+                                 |
+                                 [HUMAN APPROVAL GATE]
+                                 |
+                                 terraform apply (production)  <- OUT OF SCOPE
 ```
+
+Everything from `build -> ECR` down is additionally disabled behind
+`vars.AWS_DEPLOY_ENABLED`, which is unset. The steps are written, wired and
+reviewable; a person has to set a repository variable before any of them touches
+an AWS account.
 
 ---
 
 ## Files
 
-| File | Run where | Purpose |
-|---|---|---|
-| `scripts/setup-wif-once.sh` | Local, once, as a project owner | Creates `github-deployer`, the WIF pool and provider |
-| `scripts/deploy.sh` | CI (and locally) | Build, push, migrate, deploy every workload |
-| `scripts/smoke-test.sh` | CI (and locally) | Probe a revision; non-200 fails the build |
-| `scripts/promote.sh` | CI (and locally) | Shift traffic; also does rollback |
-| `.github/workflows/deploy.yml` | GitHub Actions | Wires the three together with the approval gate |
-
-`infra/gcp/deploy.sh` is unchanged and still owns **provisioning** (creating
-Cloud SQL, Memorystore, the Artifact Registry repository, the runtime service
-account, and the initial Secret Manager entries). `scripts/deploy.sh` owns
-**deployment** and assumes that provisioning already ran.
-
----
-
-## Step 1, provision the infrastructure (once)
-
-Skip this if the project is already live, which it is for
-`pick-ready-503913`.
-
-```bash
-./infra/gcp/deploy.sh infra
-```
-
-This creates `pickready-runtime@pick-ready-503913.iam.gserviceaccount.com`,
-which `scripts/setup-wif-once.sh` requires and refuses to work without.
-
----
-
-## Step 2, one-time Workload Identity Federation setup
-
-Run locally, authenticated as a project owner. There is no key file anywhere in
-this flow: a downloaded JSON key never expires, never rotates, and is readable
-by any workflow that can read repository secrets. A WIF token lives for minutes
-and is bound to one repository.
-
-```bash
-gcloud auth login
-GITHUB_REPO=your-org/pickready ./scripts/setup-wif-once.sh
-```
-
-It prints the two values you need in step 3. It is idempotent, so rerun it
-freely.
-
-What it grants `github-deployer@pick-ready-503913.iam.gserviceaccount.com`:
-
-| Role | Scope | Why |
-|---|---|---|
-| `roles/run.admin` | project | Deploy services, worker pools and jobs; shift traffic |
-| `roles/artifactregistry.writer` | project | Push images |
-| `roles/cloudsql.client` | project | Attach the Cloud SQL instance to a revision |
-| `roles/secretmanager.secretAccessor` | project | List secret names, read `POSTGRES_PASSWORD` |
-| `roles/iam.serviceAccountUser` | **the runtime SA only** | Say `--service-account=pickready-runtime` at deploy time |
-
-`serviceAccountUser` is bound on the runtime service account rather than on the
-project on purpose. At project scope it would let the deployer impersonate
-every service account in the project, including any future one with broader
-rights.
-
----
-
-## Step 3, repository secrets
-
-GitHub, **Settings → Secrets and variables → Actions → New repository secret**:
-
-| Secret | Value |
+| Path | What it is |
 |---|---|
-| `GCP_WIF_PROVIDER` | The provider path printed by the setup script, `projects/<number>/locations/global/workloadIdentityPools/github-pool/providers/github-provider` |
-| `GCP_DEPLOY_SA` | `github-deployer@pick-ready-503913.iam.gserviceaccount.com` |
-| `TEST_BEARER_TOKEN` | A valid ReadyPick access JWT for a test hiring-manager account (see step 4) |
-
-Optional, only if you would rather keep the Firebase web config in GitHub than
-in Secret Manager. `deploy.sh` looks in the process environment first, then
-`frontend/.env.local`, then Secret Manager, so setting them in **either** place
-works:
-
-`NEXT_PUBLIC_FIREBASE_API_KEY`, `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN`,
-`NEXT_PUBLIC_FIREBASE_PROJECT_ID`, `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`,
-`NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID`, `NEXT_PUBLIC_FIREBASE_APP_ID`.
-
-To keep them in Secret Manager instead (recommended, one source of truth):
-
-```bash
-while IFS='=' read -r k v; do
-  case "$k" in NEXT_PUBLIC_FIREBASE_*)
-    printf '%s' "$v" | gcloud secrets create "$k" --data-file=- --replication-policy=automatic 2>/dev/null \
-      || printf '%s' "$v" | gcloud secrets versions add "$k" --data-file=- ;;
-  esac
-done < frontend/.env.local
-```
-
-These are **not** secrets in the security sense: Firebase web config is
-delivered to every browser that loads the app by design. They live in Secret
-Manager for distribution, not for confidentiality.
+| `infra/modules/` | Seven independently-plannable Terraform modules |
+| `infra/environments/staging`, `production` | The two roots. Two directories rather than one root with a workspace: a `terraform.workspace` conditional means one plan describes two environments, and the blast radius of running the wrong one is production. |
+| `infra/environments/derive-production.py` | Derives the production root from staging, so the two cannot drift in **shape** — only in the values that are supposed to differ. |
+| `infra/validate.sh` | Offline validation of every module and both roots |
+| `.github/workflows/deploy.yml` | The whole pipeline |
+| `scripts/run-migration.sh` | One-shot ECS task, and it waits for the exit code |
+| `scripts/smoke-test.sh` | Does it answer HTTP |
+| `scripts/verify-deployment.sh` | Are the running bytes the tested bytes |
+| `scripts/verify-approval-gate.sh` | Does the gate actually exist |
 
 ---
 
-## Step 4, mint the `TEST_BEARER_TOKEN`
+## One-time setup
 
-The smoke test needs a real access JWT so it can prove that authentication,
-tenancy and permission resolution all still work on the new revision, not just
-that the process started.
+Four steps, none of which can be Terraform. Full commands in
+[docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md).
 
-Access tokens live 15 minutes by default (`JWT_ACCESS_TTL_MINUTES`), so a raw
-sign-in token is useless as a repository secret. Mint a long-lived one for a
-dedicated test hiring-manager account instead:
-
-```bash
-gcloud run jobs execute pickready-migrate --region asia-south1 --wait \
-  --args=python --args=-c --args='
-import asyncio
-from app.core.security import create_access_token
-from app.core.db import get_sessionmaker
-from sqlalchemy import text
-
-async def main():
-    sm = get_sessionmaker()
-    async with sm() as s:
-        row = (await s.execute(text(
-            "SELECT id, tenant_id, role FROM users WHERE email = :e"
-        ), {"e": "smoke-test@yourcompany.com"})).first()
-        print(create_access_token(str(row[0]), str(row[1]), row[2], ttl_minutes=60*24*90))
-
-asyncio.run(main())
-'
-```
-
-Confirm the argument names against `backend/app/core/security.py` before
-running this: the helper's signature is the contract, and it has changed once
-already in this codebase.
-
-Then:
-
-1. Create a real hiring-manager user for `smoke-test@yourcompany.com` in a
-   dedicated test tenant. Do not point the smoke test at a live customer's
-   tenant: `/api/v1/dashboard/summary` and `/api/v1/jobs` read that tenant's
-   data on every deploy.
-2. Store the printed token as `TEST_BEARER_TOKEN`.
-3. Put a calendar reminder to rotate it before it expires. A 401 in the smoke
-   test halts every deploy, and the script says so explicitly when it sees one.
+1. **The state bucket**, versioned. Terraform cannot create the bucket that
+   holds its own state.
+2. **The GitHub OIDC provider and four roles.** No AWS access key is stored in
+   this repository.
+3. **The `production` environment's required reviewer.**
+4. **Secret values**, by hand. Terraform creates the containers and never
+   writes a value.
 
 ---
 
-## Step 5, the approval gate
+## Things that are not obvious
 
-**This is the step that is easy to skip and silently defeats the whole
-design.** The `promote-to-prod` job declares `environment: production`, but an
-environment with no required reviewer approves itself instantly.
+### A skipped check reads almost like a passing one
 
-GitHub, **Settings → Environments → New environment**:
+When `scripts/deploy.sh` was deleted, six assertions in
+`tests/test_deploy_secret_hygiene.py` began reporting `SKIPPED` with "deploy
+script is not present in this checkout". In a summary line that is one word
+away from `PASSED`, and it meant nothing was enforcing secret hygiene any more.
 
-1. Name it exactly `production`.
-2. Tick **Required reviewers** and add at least one person.
-3. Optionally restrict deployment branches to `main`.
+They were rewritten against the Terraform and the workflow, and the guarantee is
+now stronger than it was: the check is no longer *"the deploy script does not
+print the DSN"* but *"the worker's IAM policy does not include the Firebase key
+at all"* — a property of the infrastructure rather than of one script's care.
 
-Verify by pushing a trivial commit: the run should reach `promote-to-prod` and
-sit in **Waiting** until someone clicks Review deployments.
+### `DATABASE_URL` and `REDIS_URL` are MOUNTS now, and this reverses the old note
 
----
+The previous version of this file explained at length why they had to be plain
+environment variables: Cloud Run rejects a deploy where one name appears in both
+`--set-env-vars` and `--set-secrets`, so a name could be one or the other and
+not both.
 
-## Step 6, first run
+**ECS has no such conflict.** A container definition's `environment` and
+`secrets` are separate lists and a name in `secrets` is simply injected. So both
+are mounts, and `tests/test_deploy_secret_hygiene.py` asserts that no credential
+appears in `common_environment`.
 
-```bash
-git push origin main
-```
+`REDIS_URL` moved from "not a secret" to "a secret" in the same change, and for
+a real reason rather than for consistency: on ElastiCache with transit
+encryption it carries an AUTH token, where on the old platform it was a host and
+a port.
 
-Watch the Actions tab. On success the job summary carries both staged URLs; you
-can open the staged frontend in a browser and click through it before
-approving, because it is a real running revision that simply has no traffic
-pointed at it.
+### The migration script waits, and that is the whole script
 
-To run the same thing locally:
+`aws ecs run-task` returns as soon as the task is **accepted**. Treating that as
+success is exactly the failure this project has already had: a management job
+that found 30 files, died at a 900-second ceiling having written nothing, and
+was reported as a green step. `run-migration.sh` polls for `STOPPED`, reads the
+container's exit code, and fails on anything but zero.
 
-```bash
-IMAGE_TAG=$(git rev-parse HEAD) TRAFFIC_MODE=no-traffic ./scripts/deploy.sh
-TEST_BEARER_TOKEN=eyJ... ./scripts/smoke-test.sh
-./scripts/promote.sh
-```
+### Verify by digest, not by exit code
 
-`deploy.sh` writes `.deploy-state.env`; `smoke-test.sh` and `promote.sh` read
-it, so the three chain with no arguments. Add `.deploy-state.env` to
-`.gitignore` — it carries service URLs and revision names, not secrets, but it
-is build output.
+A green apply proves Terraform finished. `verify-deployment.sh` reads the
+**running tasks'** image digests and compares them to what was built — because
+the gap between "the service definition points at the new image" and "the tasks
+are running it" is exactly what a circuit-breaker rollback looks like from the
+outside, and asking the service would report success for it.
+
+### The approval gate is checked, not assumed
+
+A job declaring `environment: production` against an environment with no
+required reviewer runs **without a gate**, silently. The workflow file still
+reads as gated. `verify-approval-gate.sh` fails the run when the reviewer is
+missing, which is the only way "we have an approval gate" is a fact rather than
+a belief.
+
+### `beat` is exactly one task, and zero during a deploy
+
+Its service sets `deployment_minimum_healthy_percent = 0`, so the old scheduler
+stops before the new one starts. Two schedulers running at once would double
+every scheduled task — which here means two reconciliation sweeps and two sets
+of reminder emails. The `ecs` module's `services` variable has a validation
+block that refuses a beat service with more than one task, so this cannot be
+undone by editing a number.
+
+### Fargate does not scale to zero
+
+The one place it is not equivalent to Cloud Run. There is a floor cost the
+previous platform did not have (~$150/month staging, ~$700 production). Stated
+here rather than discovered on a bill.
+
+### The frontend reaches the backend through a same-origin proxy
+
+Unchanged, and it is why `NEXT_PUBLIC_API_URL` stays unset. Every browser call
+goes to `/api/v1/...` on the frontend's own origin and
+`frontend/app/api/[...path]/route.ts` forwards it server-side, so the auth
+cookie stays same-site and `COOKIE_SAMESITE` can remain `strict`.
 
 ---
 
 ## Rollback
 
 ```bash
-gcloud run revisions list --service=pickready-backend --region=asia-south1
-./scripts/promote.sh rollback pickready-backend-00041-abc pickready-backend
-./scripts/promote.sh rollback pickready-frontend-00018-xyz pickready-frontend
+terraform apply -var="image_tag=sha-<previous commit>"
 ```
 
-Traffic shifts in seconds. **Migrations do not roll back**, which is why the
-project's standing rule is that schema changes are additive (extend tables and
-routes; do not replace established contracts). A rollback is safe exactly to
-the extent that rule was followed in the commit being rolled back.
+ECR tags are **immutable**, so a SHA tag is a permanent name for a specific set
+of bytes. The lifecycle policy retains tagged images by **count**, never by age:
+an age rule deletes the image a long-running service needs to restart from, and
+the failure surfaces at 3am on the image that had been working for months.
 
----
-
-## Things that are not obvious
-
-### `DATABASE_URL` and `REDIS_URL` are plain env vars, never `--set-secrets`
-
-Cloud Run refuses a deploy where one name appears in both `--set-env-vars` and
-`--set-secrets`, and the error names a "type conflict" rather than the
-variable, which is expensive to read. `deploy.sh` builds the `--set-secrets`
-flag by **listing** Secret Manager and filtering:
-
-```
-SECRET_EXCLUDE_RE='^(DATABASE_URL|REDIS_URL|POSTGRES_PASSWORD|NEXT_PUBLIC_.*)$'
-```
-
-`POSTGRES_PASSWORD` is excluded because it is consumed by the deploy script to
-compose `DATABASE_URL` and the application never reads it directly.
-`NEXT_PUBLIC_*` are frontend build arguments, not backend runtime config.
-
-Everything else in Secret Manager is mounted automatically, so adding a new
-secret reaches the next deploy with no code change.
-
-### The database URL uses a UNIX socket, not host:port
-
-`--add-cloudsql-instances` mounts a socket at
-`/cloudsql/<CONNECTION_NAME>`; a `host:port` DSN cannot reach it. The driver is
-named explicitly because the app's engine is asyncpg:
-
-```
-postgresql+asyncpg://pickready:PASSWORD@/pickready?host=/cloudsql/pick-ready-503913:asia-south1:pickready-postgres
-```
-
-`deploy.sh` resolves the connection name and the password at run time rather
-than hardcoding either, so a recreated instance or a rotated password does not
-silently deploy a revision pointed at an address that no longer works.
-
-### Migrations block the deploy
-
-`gcloud run jobs execute --wait` exits non-zero on failure, and the script runs
-under `set -euo pipefail`, so a failed migration aborts before a single service
-revision is created. Migrations never run on API startup: several instances
-boot at once during a rollout, Alembic takes a lock, and the losers crash-loop.
-
-### The first deploy of a service cannot be staged
-
-Cloud Run rejects `--no-traffic` when a service is being created, because there
-is no prior revision to keep serving. `deploy.sh` detects this, warns, and
-deploys with traffic. Every subsequent deploy stages normally. For
-`pick-ready-503913` both services already exist, so this never fires.
-
-### Worker and beat are not staged
-
-Neither serves HTTP, so neither has a traffic split. Whatever `deploy.sh`
-deploys starts consuming the Celery queue immediately, before the approval
-gate. This is a real limitation, and it is why additive migrations matter: a
-worker on the new image must be able to process a task enqueued by the old one.
-
-The workload **kind** is detected, not assumed. `infra/gcp/deploy.sh`
-provisions `pickready-worker` and `pickready-beat` as Cloud Run **worker
-pools**; an environment that provisioned them as Cloud Run **jobs** is equally
-valid. `deploy.sh` checks for a worker pool first and falls back to a job, so
-it updates whatever is actually there instead of creating a duplicate beside
-it.
-
-### The frontend reaches the backend through a same-origin proxy
-
-`NEXT_PUBLIC_API_URL` is deliberately **not** set on the frontend service.
-`frontend/lib/api.ts` defaults `API_BASE` to the relative `/api/v1`, and
-`next.config.js` rewrites that to `BACKEND_INTERNAL_URL` server-side. Keeping
-API calls same-origin is what keeps the `SameSite=Strict` auth cookies attached
-— an absolute cross-origin `NEXT_PUBLIC_API_URL` would drop them and break
-every signed-in request.
-
-`deploy.sh` therefore sets `BACKEND_INTERNAL_URL` to the backend service URL.
-`SET_PUBLIC_API_URL=true` is an escape hatch for a deliberate split-origin
-deployment; it also needs a **rebuild**, because `NEXT_PUBLIC_*` values are
-inlined into the bundle by the compiler and cannot be injected at deploy time.
-
-Firebase web config has the same build-time constraint, which is why those six
-values are `--build-arg`s and not env vars.
-
-### `FRONTEND_URL` on the backend
-
-The backend needs the public frontend origin for links in outbound email and
-for the CORS allowlist. A Cloud Run service URL is fixed for the life of the
-service, so `deploy.sh` resolves it **before** deploying the backend and each
-workload needs exactly one revision. The post-frontend reconciliation pass only
-fires when the URL actually changed (in practice, the very first deploy), and
-when it does it stages with `--no-traffic --tag` exactly like the first pass,
-so it cannot leak traffic to an unproven revision.
-
-### Smoke test endpoint paths
-
-Two of the paths in the original brief do not exist in this codebase, and the
-script uses the real ones:
-
-| Asked for | Actual | Why |
-|---|---|---|
-| `/api/v1/health` | `/health` | The health route is mounted on the app root in `backend/app/main.py`, outside the `/api/v1` prefix. `/api/v1/health` is a 404 and would fail every deploy. |
-| `/api/v1/me/capabilities` | `/api/v1/auth/me` | No such route exists. `GET /api/v1/auth/me` returns `{user, capabilities[]}`, which is the same information. |
-
-`/api/v1/dashboard/summary` and `/api/v1/jobs` are correct as given. Override
-the list without editing the script:
-
-```bash
-SMOKE_AUTHED_PATHS="/api/v1/jobs /api/v1/auth/me" ./scripts/smoke-test.sh
-```
-
-The script also asserts that `/api/v1/auth/me` actually carries a
-`capabilities` array. A 200 with an empty body means the token authenticated
-but permission resolution returned nothing, which renders an empty portal
-rather than an error page and would otherwise promote cleanly.
-
-Health is retried (12 attempts, 5 seconds apart) because a scale-to-zero
-revision's cold start routinely exceeds a default curl budget and a
-first-request timeout is not a broken build. The authenticated probes are not
-retried; by then the instance is warm.
-
-### Promotion names revisions, not "latest"
-
-`--to-latest` resolves at execution time. If a second deploy lands between the
-smoke test and the approval, `--to-latest` would put an unproven revision live
-under a green check mark. `promote.sh` promotes by revision name, passed
-through as a job output, so the approval means exactly what the reviewer read.
-It falls back to `--to-latest` only when no revision name was supplied.
-
-The `concurrency` group in the workflow makes that race unlikely; naming the
-revision makes it impossible.
-
-### Staged tags are removed after promotion
-
-Tagged revisions are pinned and accumulate against the per-service revision
-limit, and a stale `staged-<sha>` URL left reachable is an unauthenticated door
-into an old build. `promote.sh` removes the tag once its revision is live.
-
----
-
-## Post-deploy manual steps
-
-Both are one-time and neither is automatable from CI:
-
-1. Add the frontend hostname to **Firebase Console → Authentication → Settings
-   → Authorised domains**, or Google sign-in fails on the deployed origin.
-2. Point the Razorpay webhook at
-   `https://<backend-url>/api/v1/billing/webhook`.
-
----
-
-## Troubleshooting
-
-| Symptom | Cause |
-|---|---|
-| `unable to get ACTIONS_ID_TOKEN_REQUEST_URL` | The job is missing `permissions: id-token: write` |
-| `Permission denied on secret` | `github-deployer` is missing `roles/secretmanager.secretAccessor`; rerun `setup-wif-once.sh` |
-| `iam.serviceaccounts.actAs` denied | The `actAs` binding on `pickready-runtime` has not propagated; wait a minute and rerun |
-| Deploy fails with a **type conflict** on an env var | A name is in both `--set-env-vars` and `--set-secrets`; add it to `SECRET_EXCLUDE_RE` in `deploy.sh` |
-| Smoke test 401 on every authenticated path | `TEST_BEARER_TOKEN` expired; mint a new one (step 4) |
-| Smoke test never gets a healthy `/health` | The revision is crash-looping. `gcloud run revisions logs read <revision> --region=asia-south1` |
-| Container exits immediately with `/bin/sh\r: not found` | CRLF line endings reached the image. `.gitattributes` pins LF; the backend Dockerfile also strips them defensively |
-| `--no-traffic is not supported` | The service does not exist yet. Expected on a first deploy; the script warns and continues |
-| Migration job times out | Its `--task-timeout` is 900s. A longer migration needs that raised in `run_migrations` |
+A schema migration does not roll back with the image. Every migration here is
+written to be additive under a rolling deploy; `0058` is the documented
+exception and says so in its own docstring.

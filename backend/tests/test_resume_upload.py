@@ -17,7 +17,7 @@ import pytest
 from starlette.datastructures import Headers, UploadFile
 
 from app.api import candidates as cand_mod
-from app.services import resume_storage
+from app.services import object_storage, resume_storage
 from app.services.resume_storage import ResumeAsset
 from tests.application_fixtures import VALIDATION_PAYLOAD as _VALIDATION
 
@@ -35,14 +35,16 @@ def _upload(
 
 
 class _FakeSettings:
-    def __init__(self, gcs_bucket: str) -> None:
-        self.gcs_bucket = gcs_bucket
+    def __init__(self, s3_bucket: str) -> None:
+        self.s3_bucket = s3_bucket
+        self.aws_region = "ap-south-1"
+        self.s3_endpoint_url = ""
 
 
 def _asset() -> ResumeAsset:
     return ResumeAsset(
         public_id="resumes/test",
-        secure_url="gs://test-private/resumes/test",
+        secure_url="s3://test-private/resumes/test",
         original_filename="cv.pdf",
         mime_type="application/pdf",
         size_bytes=24,
@@ -57,24 +59,28 @@ def _asset() -> ResumeAsset:
 async def test_store_resume_returns_metadata_on_success(monkeypatch) -> None:
     monkeypatch.setattr(resume_storage, "get_settings",
                         lambda: _FakeSettings("test-private"))
+    monkeypatch.setattr(object_storage, "get_settings",
+                        lambda: _FakeSettings("test-private"))
     monkeypatch.setattr(
         resume_storage,
         "_upload_or_get_existing",
         lambda data, sha, filename, mime: {
             "object_name": f"resumes/{sha}",
             "size": len(data),
-            "generation": "1",
+            "etag": "d41d8cd98f00b204e9800998ecf8427e",
             "created_at": datetime.now(timezone.utc),
         },
     )
 
     asset = await cand_mod.store_resume(_upload())
-    assert asset.secure_url.startswith("gs://test-private/resumes/")
+    assert asset.secure_url.startswith("s3://test-private/resumes/")
     assert asset.original_filename == "cv.pdf"
 
 
 async def test_store_resume_rejects_unconfigured_storage(monkeypatch) -> None:
     monkeypatch.setattr(resume_storage, "get_settings", lambda: _FakeSettings(""))
+    monkeypatch.setattr(object_storage, "get_settings", lambda: _FakeSettings(""))
+    object_storage.reset_client()
     with pytest.raises(cand_mod.HTTPException) as exc:
         await cand_mod.store_resume(_upload())
     assert exc.value.status_code == 503

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Contrast verification for the purple field-affordance tokens (Task A).
+ * Contrast verification for the navy/teal brand tokens and the field
+ * affordance.
  *
  * The acceptance criterion is that an interactive field is distinguishable AT
  * REST, not only on focus, and the brief says to verify the computed contrast
@@ -106,10 +107,49 @@ for (const theme of ["  :root", "  .dark"]) {
   assertRatio(`${name} field border (idle) vs surface`, t["field-border"], surface, NON_TEXT);
   assertRatio(`${name} field border (idle) vs canvas`, t["field-border"], canvas, NON_TEXT);
   assertRatio(`${name} field border (hover) vs surface`, t["field-border-hover"], surface, NON_TEXT);
-  assertRatio(`${name} focus ring vs surface`, t["brand-600"], surface, NON_TEXT);
-  // Brand ink: the one place we print text in the brand colour.
-  assertRatio(`${name} brand-600 as text vs surface`, t["brand-600"], surface, TEXT);
+  assertRatio(`${name} focus ring vs surface`, t["navy-400"], surface, NON_TEXT);
+
+  // Ink is every word on the screen. If this fails nothing else matters.
   assertRatio(`${name} ink vs surface`, t["ink"], surface, TEXT);
+  assertRatio(`${name} ink vs canvas`, t["ink"], canvas, TEXT);
+
+  // Primary action: white on navy in light, near-black on light navy in dark.
+  assertRatio(`${name} primary fg vs primary`, t["ink-inverse"] ?? [0, 0, theme === "  :root" ? 100 : 8], t["navy-600"], TEXT);
+
+  // THE ONE THIS FILE EXISTS FOR NOW.
+  //
+  // The brand teal measures 4.30:1 on white -- below the 4.5:1 WCAG AA asks of
+  // normal text. That is a measured property of the colour the client chose,
+  // not something to design around by feel, and "teal label on a white card" is
+  // the first mistake anybody reaches for.
+  //
+  // So teal-600 is asserted only at the NON-TEXT bar (it is a fill, a rule and
+  // an icon colour), and teal-700 is asserted at the TEXT bar, because that is
+  // the token DESIGN.md §2 requires for teal words. If teal-700 ever stops
+  // passing, the rule in DESIGN.md is wrong and this build should stop.
+  assertRatio(`${name} teal-600 as a FILL/RULE vs surface`, t["teal-600"], surface, NON_TEXT);
+  assertRatio(`${name} teal-700 as TEXT vs surface`, t["teal-700"], surface, TEXT);
+
+  // And the negative assertion, stated rather than implied: teal-600 must NOT
+  // reach the text bar. If it ever did -- because somebody "fixed" the brand
+  // colour -- the DESIGN.md rule sending people to teal-700 would have become
+  // a lie, and a rule nobody needs is a rule people stop trusting.
+  if (name === ":root") {
+    const tealText = ratio(t["teal-600"], surface);
+    rows.push({
+      label: `${name} teal-600 is BELOW the text bar (by design)`,
+      ratio: tealText.toFixed(2),
+      min: `<${TEXT.toFixed(1)}`,
+      ok: tealText < TEXT,
+    });
+    if (tealText >= TEXT) {
+      failures.push(
+        `teal-600 now measures ${tealText.toFixed(2)}:1 and passes AA for text. ` +
+          `The brand colour has changed. Update DESIGN.md §2, which currently ` +
+          `tells everyone to use teal-700 for teal text.`
+      );
+    }
+  }
 }
 
 const width = Math.max(...rows.map((row) => row.label.length));

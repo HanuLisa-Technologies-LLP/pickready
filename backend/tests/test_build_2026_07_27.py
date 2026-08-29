@@ -23,12 +23,28 @@ import pytest
 
 
 # ── LLM router: task-type routing ────────────────────────────────────────────
+#
+# THIS SECTION SHRANK ON 2026-08-28, and what it lost is worth naming so a
+# reader does not go looking for a deleted guarantee.
+#
+# It used to assert that every task named a chain of three providers, that
+# `rotate_within_provider` cycled the keys inside a tier, that `_build_chain`
+# ordered tiers before balancing within them, and that
+# `probe_each_provider_first` could reach every tier inside the retry budget.
+# Every one of those described machinery for routing around three unreliable
+# free tiers, and spec-doc5 Part B removed the machinery along with the tiers.
+#
+# What survives here is the half that was never about routing: a task type must
+# resolve, and a typo must fail loudly rather than silently picking something.
+# The graph's retry edge moved to `tests/test_llm_router.py`, where the rest of
+# the single-vendor loop is exercised, and the model assignment lives in
+# `tests/test_llm_task_routing.py`.
 
 from app.config import llm_providers as providers
 from app.services import llm_router
 
 
-def test_every_spec_task_type_has_a_provider_chain() -> None:
+def test_every_spec_task_type_resolves_to_a_model() -> None:
     """The five spec task types plus the two legacy hints must all route."""
     for task in (
         "jd_generation",
@@ -39,9 +55,8 @@ def test_every_spec_task_type_has_a_provider_chain() -> None:
         "rerank",
         "extraction",
     ):
-        chain = providers.provider_order(task)
-        assert set(chain) == set(providers.PROVIDERS), task
-        assert len(chain) == len(set(chain)), f"{task} repeats a provider"
+        assert providers.model_for(task) in providers.ALLOWED_MODELS, task
+        assert providers.provider_order(task) == [providers.PROVIDER], task
 
 
 def test_unknown_task_type_raises_rather_than_guessing() -> None:
@@ -49,144 +64,26 @@ def test_unknown_task_type_raises_rather_than_guessing() -> None:
         providers.provider_order("summarise_the_vibes")
 
 
-def test_task_routes_lead_with_the_measured_healthy_tier() -> None:
-    """Spec §8.1: the FIRST provider per task is a deliberate choice.
-
-    It used to be a per-task spread across all three providers. That was
-    reasonable when all three answered; it is not, and cannot be told apart from
-    an outage, once one of them is dead. Measured 2026-08-23, Groq answered in
-    ~580ms while OpenRouter was out of prepaid credit and Gemini was returning
-    HTTP 503 and 13-23 second latencies, so five task types were opening with a
-    tier that could not serve them.
-
-    The assertion is on the LEAD only. Which providers sit behind it stays free,
-    and `test_every_task_type_can_reach_every_provider` still pins that the
-    whole roster remains reachable, so this does not quietly become a
-    single-provider product.
-    """
-    for task in ("jd_generation", "technical_questions", "behavioral_assessment",
-                 "report_synthesis", "email_composition", "conversation_turn",
-                 "rerank", "extraction"):
-        assert providers.provider_order(task)[0] == "groq", task
-
-
-def test_rotate_within_provider_preserves_membership_and_cycles() -> None:
-    keys = ["a", "b", "c"]
-    assert llm_router.rotate_within_provider(keys, 0) == ["a", "b", "c"]
-    assert llm_router.rotate_within_provider(keys, 1) == ["b", "c", "a"]
-    # Wraps rather than running off the end — a growing cursor never breaks.
-    assert llm_router.rotate_within_provider(keys, 7) == ["b", "c", "a"]
-    assert llm_router.rotate_within_provider([], 3) == []
-    assert sorted(llm_router.rotate_within_provider(keys, 2)) == sorted(keys)
-
-
-def _key(provider: str, name: str) -> llm_router._RouterKey:
-    return llm_router._RouterKey(provider=provider, api_key="x", fingerprint=name)
-
-
-def test_build_chain_orders_tiers_before_balancing_within_them() -> None:
-    """Load balancing must never let a lower-preference provider jump the queue."""
-    keys = [
-        _key("groq", "g1"), _key("groq", "g2"),
-        _key("gemini", "m1"),
-        _key("openrouter", "o1"),
-    ]
-    chain = llm_router._build_chain(keys, "email_composition", balance=False)
-    assert [k.provider for k in chain] == ["groq", "groq", "gemini", "openrouter"]
-
-    # With balancing on, tier ORDER is still groq -> gemini -> openrouter.
-    balanced = llm_router._build_chain(keys, "email_composition")
-    assert [k.provider for k in balanced] == ["groq", "groq", "gemini", "openrouter"]
-
-
-def test_probe_each_provider_first_reaches_every_tier_within_the_retry_budget() -> None:
-    """A dead tier must cost ONE attempt, not all of its keys.
-
-    Regression: jd_generation has 3 keys per provider and a retry budget of 4,
-    so the tier-grouped chain spent the whole budget on the first two providers
-    and never called the third — which in production was the only healthy one.
-    """
-    keys = [
-        _key("groq", "g1"), _key("groq", "g2"), _key("groq", "g3"),
-        _key("gemini", "m1"), _key("gemini", "m2"), _key("gemini", "m3"),
-        _key("openrouter", "o1"), _key("openrouter", "o2"), _key("openrouter", "o3"),
-    ]
-    chain = llm_router._build_chain(keys, "jd_generation", balance=False)
-    ordered = llm_router.probe_each_provider_first(chain)
-
-    # Preference order still decides who goes FIRST.
-    assert ordered[0].provider == providers.provider_order("jd_generation")[0]
-    # Every provider is reached inside jd_generation's 4-attempt budget.
-    assert {k.provider for k in ordered[:3]} == {"openrouter", "gemini", "groq"}
-    # Nothing is dropped or duplicated.
-    assert sorted(k.fingerprint for k in ordered) == sorted(
-        k.fingerprint for k in chain
-    )
-
-
-def test_probe_each_provider_first_handles_ragged_and_empty_tiers() -> None:
-    keys = [_key("groq", "g1"), _key("gemini", "m1"), _key("gemini", "m2")]
-    chain = llm_router._build_chain(keys, "jd_generation", balance=False)
-    ordered = llm_router.probe_each_provider_first(chain)
-    assert [k.fingerprint for k in ordered] == ["g1", "m1", "m2"]
-    assert llm_router.probe_each_provider_first([]) == []
-
-
 def test_account_level_failures_are_distinguished_from_rate_limits() -> None:
-    """401/402/403 condemn the account; 429 condemns only that key this minute."""
+    """A revoked credential and a burst are different problems.
+
+    One is fixed by an operator and never by waiting; the other is fixed by
+    waiting and never by an operator. Treating them alike means either burning
+    the retry budget on a dead key or condemning a healthy one over a burst.
+    """
     import httpx
 
     def _err(status: int) -> httpx.HTTPStatusError:
-        request = httpx.Request("POST", "https://example.invalid/v1/chat")
+        request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
         return httpx.HTTPStatusError(
-            "boom", request=request, response=httpx.Response(status, request=request)
+            "x", request=request, response=httpx.Response(status, request=request)
         )
 
-    for status in (401, 402, 403):
+    for status in (401, 403):
         assert llm_router.is_account_level_failure(_err(status)) is True
-    # A rate limit must NOT take the provider's sibling keys out of the chain.
     assert llm_router.is_account_level_failure(_err(429)) is False
     assert llm_router.is_account_level_failure(_err(500)) is False
     assert llm_router.is_account_level_failure(ValueError("not http")) is False
-
-
-def test_build_chain_skips_providers_with_no_keys() -> None:
-    chain = llm_router._build_chain([_key("gemini", "m1")], "email_composition")
-    assert [k.provider for k in chain] == ["gemini"]
-
-
-def _state(**kw):
-    ctx = SimpleNamespace(
-        chain=kw.pop("chain", [1, 2, 3]),
-        retry_budget=kw.pop("retry_budget", 3),
-    )
-    return {"ctx": ctx, **kw}
-
-
-def test_should_continue_returns_success_as_soon_as_there_is_a_result() -> None:
-    assert llm_router.should_continue(
-        _state(result="ok", current_index=0, attempts=1)
-    ) == "success"
-
-
-def test_should_continue_retries_while_budget_and_chain_remain() -> None:
-    assert llm_router.should_continue(
-        _state(result=None, current_index=1, attempts=1)
-    ) == "retry"
-
-
-def test_should_continue_stops_at_the_retry_budget() -> None:
-    """The budget must bound the loop even with keys left untried — otherwise
-    one request could walk all 21 keys before giving up."""
-    assert llm_router.should_continue(
-        _state(result=None, current_index=3, attempts=3, chain=[1] * 21, retry_budget=3)
-    ) == "fail"
-
-
-def test_should_continue_stops_when_the_chain_is_exhausted() -> None:
-    assert llm_router.should_continue(
-        _state(result=None, current_index=3, attempts=2, chain=[1, 2, 3])
-    ) == "fail"
 
 
 # ── Grade-driven candidate sort (spec §2.3) ──────────────────────────────────

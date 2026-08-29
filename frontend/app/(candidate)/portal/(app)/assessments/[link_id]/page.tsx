@@ -418,11 +418,27 @@ export default function UnifiedAssessmentPage() {
   );
 }
 
-/** One animated dot of the typing indicator. */
+/** One animated dot of the typing indicator.
+ *
+ * A FADE, NOT A BOUNCE. Tailwind's bounce utility overshoots, and this dot
+ * appears while a candidate is waiting to be asked the next question in an
+ * assessment of their career. A bouncing indicator on that screen is the
+ * product being cheerful at somebody who is nervous. DESIGN.md §7 forbids
+ * spring overshoot on anything a person is waiting on, and Impeccable flags it
+ * as `bounce-easing`.
+ *
+ * The comment deliberately does NOT name the utility: Impeccable's detector is
+ * a source scan, so an explanation that quotes the banned class makes the
+ * detector fire on its own documentation.
+ *
+ * The animation is defined inline rather than as a Tailwind utility because it
+ * exists in exactly one place, and a global `animate-pulse-dot` would be a
+ * utility somebody reaches for on a surface where it does not belong.
+ */
 function Dot({ delay }: { delay: string }) {
   return (
     <span
-      className="h-2 w-2 animate-bounce rounded-full bg-brand-600/70"
+      className="h-2 w-2 rounded-full bg-navy-600/70 motion-safe:animate-[typing-dot_1.2s_ease-in-out_infinite]"
       style={{ animationDelay: delay }}
     />
   );

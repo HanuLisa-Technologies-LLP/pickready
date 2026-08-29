@@ -408,12 +408,39 @@ def _env_check():
     settings = get_settings()
     hard = {
         "FIREBASE_SERVICE_ACCOUNT_JSON": settings.firebase_service_account_json,
-        "GCS_BUCKET": settings.gcs_bucket,
+        "S3_BUCKET": settings.s3_bucket,
+        # The one model credential. Without it every generative and every
+        # scoring path degrades to its deterministic fallback -- which is
+        # correct behaviour and an unacceptable steady state, so it is HARD
+        # here rather than a warning.
+        "ANTHROPIC_API_KEY": settings.anthropic_api_key,
     }
     missing_hard = [k for k, v in hard.items() if not v]
     if missing_hard:
         return FAIL, f"missing required env: {', '.join(missing_hard)}"
-    return PASS, "FIREBASE_SERVICE_ACCOUNT_JSON + GCS_BUCKET present"
+    return PASS, ", ".join(hard) + " present"
+
+
+def _embedding_check():
+    """Report the embedding model HONESTLY, including when it is the fallback.
+
+    Without `VOYAGE_API_KEY` the platform still runs: `services/embeddings`
+    returns deterministic pseudo-random vectors so local dev and CI work end to
+    end. Those vectors carry no semantic meaning, so every ranking built on them
+    is arbitrary-but-stable. A stack validator that reported "embeddings: ok"
+    in that state would be the exact failure this project has already been
+    burned by -- a green tick standing in for a thing that does not work.
+    """
+    from app.services import embeddings
+
+    if embeddings.is_semantic():
+        return PASS, f"{embeddings.EMBEDDING_MODEL} at {embeddings.EMBEDDING_DIM} dims"
+    return (
+        WARN,
+        "VOYAGE_API_KEY unset: embeddings are the DETERMINISTIC DEV FALLBACK. "
+        "Matching, AI Reach and every RAG surface will return a stable but "
+        "MEANINGLESS ordering. Never ship this.",
+    )
 
 
 def _smtp_env_check():
@@ -470,6 +497,7 @@ def main() -> int:
     report.check("required_env_present", _env_check)
     report.check("firebase_service_account_valid", _firebase_admin_initializes)
     report.check("smtp_credentials_present", _smtp_env_check)
+    report.check("embedding_model_configured", _embedding_check)
 
     # DB + seed sanity.
     try:

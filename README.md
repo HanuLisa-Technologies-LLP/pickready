@@ -1,10 +1,11 @@
 # ReadyPick
-Multi-tenant recruitment and applicant tracking platform built for Hanulisa Technologies LLP. Next.js 14 frontend, FastAPI backend, Firebase Authentication (email/password + Google OAuth), PostgreSQL with pgvector for AI-powered candidate matching, and Celery for all asynchronous work. Fully containerized and deployed on Google Cloud Run.
+Multi-tenant recruitment and applicant tracking platform built for Hanulisa Technologies LLP. Next.js 14 frontend, FastAPI backend, Firebase Authentication (email/password + Google OAuth), PostgreSQL with pgvector for AI-powered candidate matching, and Celery for all asynchronous work. Fully containerized and deployed on AWS ECS Fargate.
 
 - **Functional requirements**: [docs/PRD.md](docs/PRD.md)
 - **Architecture**: [docs/ESD.md](docs/ESD.md)
 - **Build conventions**: [claude.md](claude.md)
-- **Deployment runbook**: [docs/DEPLOY_GCP_RUNBOOK.md](docs/DEPLOY_GCP_RUNBOOK.md)
+- **Deployment runbook**: [docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md)
+- **Design system**: [DESIGN.md](DESIGN.md) and [PRODUCT.md](PRODUCT.md)
 
 ---
 
@@ -21,7 +22,7 @@ Multi-tenant recruitment and applicant tracking platform built for Hanulisa Tech
 | Payments | Razorpay Subscriptions API |
 | Email | Gmail SMTP |
 | Storage | Cloudinary |
-| Deployment | Google Cloud Run (services + worker pools), Cloud SQL, Memorystore |
+| Deployment | AWS ECS Fargate, RDS PostgreSQL, ElastiCache Redis, S3, ECR |
 
 The system runs as one backend image with four roles, selected at container start: `api`, `worker`, `beat`, and `migrate`. The frontend proxies all `/api/*` calls to the backend through a same-origin route handler, keeping authentication cookies same-site in both local and cloud environments.
 
@@ -60,15 +61,15 @@ cd backend && python -m pytest tests -q
 
 ## Deployment
 
-ReadyPick deploys entirely to **Google Cloud Run**, with no other hosting provider involved. Five workloads run from two container images:
+ReadyPick deploys entirely to **AWS ECS Fargate**, with no other hosting provider involved. Five workloads run from two container images:
 
 | Workload | Type | Image | Purpose |
 |---|---|---|---|
-| `pickready-backend` | Cloud Run service | backend | Public API, serves Razorpay webhooks |
-| `pickready-frontend` | Cloud Run service | frontend | Public web app |
-| `pickready-worker` | Cloud Run worker pool | backend | Celery task processing |
-| `pickready-beat` | Cloud Run worker pool (1 instance) | backend | Scheduled task dispatch |
-| `pickready-migrate` | Cloud Run job | backend | Alembic schema migrations |
+| `readypick-<env>-api` | ECS service | backend | Public API, serves Razorpay webhooks |
+| `readypick-<env>-frontend` | ECS service | frontend | Public web app |
+| `readypick-<env>-worker` | ECS service | backend | Celery task processing |
+| `readypick-<env>-beat` | ECS service (exactly 1 task) | backend | Scheduled task dispatch |
+| `readypick-<env>-migrate` | ECS one-shot task | backend | Alembic schema migrations |
 
 Managed infrastructure:
 
@@ -77,7 +78,9 @@ Managed infrastructure:
 - **Secret Manager** — all credentials and API keys; nothing sensitive is ever stored as a plain environment variable or committed to the repository
 - **Artifact Registry** — private Docker image storage
 
-Deployment is scripted end-to-end in [infra/gcp/deploy.sh](infra/gcp/deploy.sh) and documented step-by-step in [docs/DEPLOY_GCP_RUNBOOK.md](docs/DEPLOY_GCP_RUNBOOK.md), which covers Cloud SQL and Memorystore provisioning, secret rotation, image builds, database migrations, and post-deploy configuration for Firebase authorized domains and the Razorpay webhook.
+Infrastructure is Terraform in [infra/](infra/) -- seven independently-plannable modules and two environment roots -- and the runbook is [docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md).
+
+> **No live AWS deployment has been executed.** The codebase and pipeline are complete and validated offline (`./infra/validate.sh`); the pipeline stops at a required-reviewer gate before any production apply, and every step past it is additionally disabled behind an unset repository variable. See docs/DEPLOY_AWS.md for exactly what is and is not verified.
 
 ---
 

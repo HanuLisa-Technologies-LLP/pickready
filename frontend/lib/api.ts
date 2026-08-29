@@ -10,7 +10,7 @@ import { apiErrorMessage } from "./validation-errors";
  * the runtime BACKEND_INTERNAL_URL). That matters for more than tidiness:
  *
  *   1. Auth cookies stay same-site, so COOKIE_SAMESITE can remain "strict".
- *      On Cloud Run the two services land on *.a.run.app, which is on the
+ *      On separate load-balancer hosts the two services can land on domains on the
  *      Public Suffix List, so a split origin is CROSS-site and every auth
  *      cookie is silently dropped by the browser.
  *   2. Nothing about the backend's address is baked into the bundle, so one

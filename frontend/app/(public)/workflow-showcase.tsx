@@ -14,11 +14,11 @@ export function WorkflowShowcase() {
       aria-labelledby="workflow-title"
     >
       <div aria-hidden="true" className="pointer-events-none absolute inset-0">
-        <div className="absolute left-1/2 top-0 h-96 w-[52rem] -translate-x-1/2 rounded-full bg-violet-700/20 blur-[120px]" />
+        <div className="absolute left-1/2 top-0 h-96 w-[52rem] -translate-x-1/2 rounded-full bg-teal-700/20 blur-[120px]" />
       </div>
       <div className="relative mx-auto max-w-6xl px-6 lg:px-10">
         <Reveal className="mx-auto max-w-3xl text-center">
-          <Badge className="border-violet-300/20 bg-violet-300/10 text-violet-100">
+          <Badge className="border-teal-400/20 bg-teal-400/10 text-teal-100">
             <PlayCircle className="mr-1.5 h-3.5 w-3.5" />
             25-second product tour
           </Badge>

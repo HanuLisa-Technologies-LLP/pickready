@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowRight, ShieldCheck, Sparkles } from "lucide-react";
 
+import { LogomarkHero } from "@/components/brand/logomark-hero";
 import { BorderBeam, DotPattern, Marquee } from "@/components/magicui";
 import { FadeIn, Pressable, Stagger, StaggerItem } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
@@ -39,6 +40,13 @@ export function Hero() {
       <div className="relative mx-auto max-w-6xl px-6 pb-20 pt-16 sm:pt-24 lg:px-10 lg:pb-28">
         <div className="grid items-center gap-14 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
           <FadeIn className="max-w-2xl">
+            {/* The one place the mark is rendered live on the landing page.
+                See `components/brand/logomark-hero.tsx` for why it is
+                restricted, and `tests/logomark-placement.test.ts` for the
+                check that keeps it restricted. */}
+            <div className="mb-6 hidden sm:block">
+              <LogomarkHero size={104} />
+            </div>
             <Badge
               variant="brand"
               className="gap-1.5 px-3 py-1 text-xs font-semibold"

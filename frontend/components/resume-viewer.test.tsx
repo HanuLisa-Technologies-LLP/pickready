@@ -25,7 +25,9 @@ afterEach(cleanup);
 
 const DOCX =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-const PRIVATE_OBJECT = "gs://pickready-resumes-private/resumes/abc123";
+// An `s3://` object reference. A browser cannot fetch one, which is the point:
+// every read goes through the authenticated, tenant-scoped download endpoint.
+const PRIVATE_OBJECT = "s3://readypick-staging-private/resumes/abc123";
 const PROFILE_ID = "9f1c2e40-0000-4000-8000-00000000abcd";
 
 describe("preview routing", () => {
@@ -129,6 +131,9 @@ describe("resume viewer", () => {
     const href = link.getAttribute("href") ?? "";
     expect(href).toContain(`/candidates/profiles/${PROFILE_ID}/resume-file`);
     expect(href).toContain("download=true");
+    // Neither scheme may ever reach an href. `gs://` is checked too because rows
+// written before the AWS migration still carry it.
+    expect(href.startsWith("s3://")).toBe(false);
     expect(href.startsWith("gs://")).toBe(false);
   });
 

@@ -332,7 +332,12 @@ function ValidationSection({ validation }: { validation: ValidationBlock }) {
         </p>
       ) : (
         <>
-          <blockquote className="mb-4 border-l-4 pl-4 text-sm italic">
+          {/* SEMANTIC left rule, and a documented Impeccable `side-tab`
+              exception (.impeccable-exceptions.md). It marks the candidate's
+              OWN unrated words, reproduced exactly as submitted, and that
+              boundary is the point: a reader has to be able to tell what the
+              candidate said from what the platform concluded. */}
+          <blockquote className="mb-4 border-l-4 border-teal-600 pl-4 text-sm italic">
             “{interest || "Not stated"}”
           </blockquote>
           <div className="space-y-5">

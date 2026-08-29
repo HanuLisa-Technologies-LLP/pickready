@@ -1,468 +1,527 @@
-"""LLM router circuit-breaker and key-health RECOVERY tests.
+"""The single-vendor router: retries, budgets, the breaker, and JSON mode.
 
-The bug these lock down: all nine `llm_provider_keys` rows sat at
-`healthy = false` indefinitely, so `chat_completion` skipped every key, raised
-LLMUnavailableError on every call, and matching silently degraded to the
-placeholder "AI scoring unavailable" comment forever.
+WHAT THIS FILE REPLACED, AND WHAT IT KEPT
+------------------------------------------
+The previous version locked down a real production outage: all nine
+`llm_provider_keys` rows sat at `healthy = false` indefinitely, so
+`chat_completion` skipped every key, raised on every call, and matching silently
+degraded to the placeholder "AI scoring unavailable" comment forever. The fix
+was half-open recovery.
 
-Invariants under test:
-  * a success clears the in-memory breaker AND writes healthy = true /
-    last_error_at = NULL back to the DB row, even when this process never saw
-    the failure that tripped it (the post-restart case);
-  * a persisted healthy = false only suppresses a key while its cooldown is
-    running — afterwards the key goes half-open and is retried;
-  * healthy = false with no last_error_at is never treated as wedged;
-  * if every key is still cooling down the router fails fast, while elapsed
-    cooldowns recover through the half-open path.
+That table is no longer read -- the credential comes from the environment -- so
+the DB-persistence half of those tests describes a mechanism that no longer
+exists. THE INVARIANT DOES NOT GO WITH IT, and it is the first thing asserted
+below: a breaker with no way back is a permanent outage wearing a reliability
+feature's name, and this codebase has already shipped that bug once.
+
+The new coverage on top of it is the things a single-vendor layer can get wrong:
+the OpenAI-shape-to-Messages-API translation (a dropped system message changes
+what was asked without changing what the caller wrote), JSON mode's prefill, the
+predictive deadline, and the rule that a non-429 4xx is not retried.
 """
 from __future__ import annotations
 
 import asyncio
 import time
-import uuid
-from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
 
-from app.services import llm_capacity, llm_router
+from app.config import llm_providers
+from app.services import llm_router
 from app.services.llm_router import (
     _COOLDOWN_SECONDS,
     _FAILURE_THRESHOLD,
-    _BreakerState,
-    _RouterKey,
     LLMUnavailableError,
+    _RouterKey,
 )
 
 
 @pytest.fixture(autouse=True)
-def _clean_breaker():
-    # The capacity registry outlives a call on purpose (a worker learns a
-    # provider's ceiling once and keeps it), so it has to be cleared between
-    # tests or one test's condemned route quietly reorders the next one's chain.
-    llm_router._breaker.clear()
-    llm_capacity.reset()
-    yield
-    llm_router._breaker.clear()
-    llm_capacity.reset()
-
-
-class _FakeSession:
-    """The CALLER's session. Records anything the router does to it.
-
-    Since 2026-08-06 the correct recording is NOTHING. Key-health bookkeeping
-    runs on its own session (`_persist_key_health`), because it used to call
-    `commit()` on this one -- which, on a request handler, ends the handler's
-    transaction mid-request and makes every later statement raise
-    "Can't operate on closed transaction inside context manager". Traced live in
-    `assessments.respond`: a candidate got a 500 mid-assessment every time a
-    provider key was condemned during their turn.
-    """
-
-    def __init__(self):
-        self.statements: list[tuple[str, dict]] = []
-        self.commits = 0
-        self.rollbacks = 0
-
-    async def execute(self, stmt, params=None):
-        self.statements.append((str(stmt), params or {}))
-        return None
-
-    async def commit(self):
-        self.commits += 1
-
-    async def rollback(self):  # pragma: no cover — only on a DB error path
-        self.rollbacks += 1
-
-
-@pytest.fixture
-def health_writes(monkeypatch):
-    """Capture what the breaker persists, without needing a database.
-
-    Patches the router's OWN-session writer, which is the seam that replaced
-    writing through the caller's session.
-    """
-    captured: list[tuple[str, dict]] = []
-
-    async def _capture(statement: str, params: dict) -> bool:
-        captured.append((statement, params))
-        return True
-
-    monkeypatch.setattr(llm_router, "_persist_key_health", _capture)
-    return captured
-
-
-def _key(db_healthy: bool = True, fp: str = "db:k1") -> _RouterKey:
-    return _RouterKey(
-        provider="groq", api_key="secret", fingerprint=fp,
-        db_id=uuid.uuid4(), db_healthy=db_healthy,
-    )
-
-
-# ── _record_success rehabilitates the key ───────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_record_success_clears_in_memory_breaker():
-    key = _key()
-    llm_router._breaker[key.fingerprint] = _BreakerState(
-        consecutive_failures=_FAILURE_THRESHOLD,
-        unhealthy_until=time.monotonic() + _COOLDOWN_SECONDS,
-    )
-    await llm_router._record_success(key, _FakeSession())
-    st = llm_router._breaker[key.fingerprint]
-    assert st.consecutive_failures == 0
-    assert st.unhealthy_until == 0.0
-    assert not llm_router._is_skippable(key)
-
-
-@pytest.mark.asyncio
-async def test_record_success_restores_db_flag_after_a_restart(health_writes):
-    """The regression: fresh process (empty breaker), row loaded as unhealthy.
-    The old code only wrote healthy = true when THIS process tripped the
-    breaker, so the row stayed false forever."""
-    key = _key(db_healthy=False)
-    session = _FakeSession()
-    await llm_router._record_success(key, session)
-    assert len(health_writes) == 1
-    sql = health_writes[0][0].lower()
-    assert "healthy = true" in sql
-    assert "last_error_at = null" in sql
-    assert key.db_healthy is True
-    # THE PROPERTY THAT MATTERS MOST: the caller's transaction is untouched.
-    assert session.statements == []
-    assert session.commits == 0
-
-
-@pytest.mark.asyncio
-async def test_record_success_on_a_healthy_key_does_not_write(health_writes):
-    session = _FakeSession()
-    await llm_router._record_success(_key(db_healthy=True), session)
-    assert health_writes == []
-    assert session.statements == []
-
-
-@pytest.mark.asyncio
-async def test_record_failure_trips_only_at_the_threshold(health_writes):
-    key = _key()
-    session = _FakeSession()
-    await llm_router._record_failure(key, session)
-    assert not llm_router._is_skippable(key)          # 1 failure: still usable
-    await llm_router._record_failure(key, session)
-    assert llm_router._is_skippable(key)              # 2 failures: circuit open
-    sql = health_writes[-1][0].lower()
-    assert "healthy = false" in sql
-    assert session.statements == []
-    assert session.commits == 0
-
-
-@pytest.mark.asyncio
-async def test_the_breaker_never_commits_the_callers_transaction(health_writes):
-    """The bug this file's `_FakeSession` docstring describes, stated directly.
-
-    A key is condemned exactly when providers are failing -- which is precisely
-    when the degradation paths exist to carry a candidate through their
-    assessment. Committing the caller's transaction there meant the bookkeeping
-    written to protect availability was the thing destroying it, and only under
-    the conditions it was written for.
-    """
-    session = _FakeSession()
-    key = _key(db_healthy=False, fp="db:never-commit")
-    for _ in range(_FAILURE_THRESHOLD + 1):
-        await llm_router._record_failure(key, session)
-    await llm_router._record_success(key, session)
-
-    assert health_writes, "the breaker must still persist key health somewhere"
-    assert session.commits == 0
-    assert session.rollbacks == 0
-    assert session.statements == []
-
-
-@pytest.mark.asyncio
-async def test_an_unreachable_database_does_not_break_the_health_write(monkeypatch):
-    """The REAL writer swallows its own errors and reports False.
-
-    Bookkeeping must not crash a task: a lost health update costs one extra
-    failed attempt later, which is strictly better than a failed request.
-    """
-    def _no_engine():
-        raise RuntimeError("no engine")
-
-    monkeypatch.setattr("app.core.db.get_session_factory", _no_engine)
-    assert await llm_router._persist_key_health("UPDATE x SET y = 1", {}) is False
-
-
-@pytest.mark.asyncio
-async def test_a_raising_health_write_never_reaches_the_caller(monkeypatch):
-    """And if the writer itself ever regressed into raising, neither breaker
-    entry point may propagate it -- they run inside a candidate's live turn."""
-    async def _boom(statement, params):
-        raise RuntimeError("database unreachable")
-
-    monkeypatch.setattr(llm_router, "_persist_key_health", _boom)
-    key = _key(db_healthy=False, fp="db:write-fails")
-
-    await llm_router._record_success(key, _FakeSession())
-    assert key.db_healthy is False  # not claimed as recovered on a failed write
-
-
-# ── Half-open recovery from the persisted flag ──────────────────────────────
-
-class _Row:
-    def __init__(self, healthy: bool, last_error_at, provider="groq", priority=0):
-        self.id = uuid.uuid4()
-        self.provider = provider
-        self.priority = priority
-        self.healthy = healthy
-        self.last_error_at = last_error_at
-        self.key_encrypted = "enc"
-
-
-class _LoadSession:
-    def __init__(self, rows):
-        self._rows = rows
-
-    async def execute(self, *a, **k):
-        rows = self._rows
-
-        class _Res:
-            def scalars(self_inner):
-                class _S:
-                    def all(self_s):
-                        return rows
-                return _S()
-
-        return _Res()
-
-
-@pytest.fixture
-def _plain_decrypt(monkeypatch):
-    monkeypatch.setattr(llm_router, "decrypt_secret", lambda v: "secret")
-
-
-@pytest.mark.asyncio
-async def test_unhealthy_row_inside_cooldown_is_skipped(_plain_decrypt):
-    row = _Row(healthy=False, last_error_at=datetime.now(timezone.utc))
-    keys = await llm_router._load_keys(_LoadSession([row]))
-    assert len(keys) == 1
-    assert llm_router._is_skippable(keys[0]), "a fresh failure must still cool down"
-
-
-@pytest.mark.asyncio
-async def test_unhealthy_row_past_cooldown_goes_half_open(_plain_decrypt):
-    stale = datetime.now(timezone.utc) - timedelta(seconds=_COOLDOWN_SECONDS + 60)
-    row = _Row(healthy=False, last_error_at=stale)
-    # A stale in-memory "open" deadline must not keep it wedged either.
-    llm_router._breaker[f"db:{row.id}"] = _BreakerState(
-        consecutive_failures=9, unhealthy_until=time.monotonic() + 9999
-    )
-    keys = await llm_router._load_keys(_LoadSession([row]))
-    assert not llm_router._is_skippable(keys[0])
-    assert keys[0].db_healthy is False  # flag still false, but the key IS retryable
-
-
-@pytest.mark.asyncio
-async def test_unhealthy_row_without_last_error_at_is_retryable(_plain_decrypt):
-    row = _Row(healthy=False, last_error_at=None)
-    keys = await llm_router._load_keys(_LoadSession([row]))
-    assert not llm_router._is_skippable(keys[0])
-
-
-@pytest.mark.asyncio
-async def test_naive_last_error_at_does_not_crash_loading(_plain_decrypt):
-    naive = datetime.utcnow() - timedelta(seconds=_COOLDOWN_SECONDS + 60)
-    row = _Row(healthy=False, last_error_at=naive)
-    keys = await llm_router._load_keys(_LoadSession([row]))
-    assert not llm_router._is_skippable(keys[0])
-
-
-# ── chat_completion: never permanently wedged ───────────────────────────────
-
-@pytest.mark.asyncio
-async def test_all_keys_in_cooldown_fail_fast(monkeypatch, caplog):
-    keys = [_key(fp=f"db:k{i}") for i in range(3)]
-    for k in keys:
-        llm_router._breaker[k.fingerprint] = _BreakerState(
-            consecutive_failures=_FAILURE_THRESHOLD,
-            unhealthy_until=time.monotonic() + _COOLDOWN_SECONDS,
-        )
-    assert all(llm_router._is_skippable(k) for k in keys)
-
-    monkeypatch.setattr(llm_router, "_load_keys", _returns(keys))
-    attempts: list[str] = []
-
-    async def _ok(client, key, messages, json_mode, max_tokens, temperature=0.0):
-        attempts.append(key.fingerprint)
-        return "recovered"
-
-    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _ok)
-
-    with caplog.at_level("WARNING"), pytest.raises(LLMUnavailableError):
-        await llm_router.chat_completion("rerank", [{"role": "user", "content": "hi"}])
-    assert attempts == []
-    assert any("all_keys_cooling_down" in r.message for r in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_open_key_is_skipped_while_a_healthy_one_remains(monkeypatch):
-    bad, good = _key(fp="db:bad"), _key(fp="db:good")
-    llm_router._breaker[bad.fingerprint] = _BreakerState(
-        consecutive_failures=_FAILURE_THRESHOLD,
-        unhealthy_until=time.monotonic() + _COOLDOWN_SECONDS,
-    )
-    monkeypatch.setattr(llm_router, "_load_keys", _returns([bad, good]))
-    attempts: list[str] = []
-
-    async def _ok(client, key, messages, json_mode, max_tokens, temperature=0.0):
-        attempts.append(key.fingerprint)
-        return "ok"
-
-    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _ok)
-    assert await llm_router.chat_completion("rerank", [{"role": "user", "content": "hi"}]) == "ok"
-    assert attempts == ["db:good"]
-
-
-@pytest.mark.asyncio
-async def test_chain_exhaustion_still_raises_without_leaking_key_material(monkeypatch):
-    keys = [_key(fp="db:k0"), _key(fp="db:k1")]
-    monkeypatch.setattr(llm_router, "_load_keys", _returns(keys))
-
-    async def _boom(client, key, messages, json_mode, max_tokens, temperature=0.0):
-        raise httpx.ConnectError("down")
-
-    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _boom)
-    with pytest.raises(LLMUnavailableError) as exc:
-        await llm_router.chat_completion("rerank", [{"role": "user", "content": "hi"}])
-    assert "secret" not in str(exc.value)
-
-
-@pytest.mark.asyncio
-async def test_success_after_recovery_clears_the_breaker_end_to_end(
-    monkeypatch, health_writes
-):
-    key = _key(db_healthy=False, fp="db:recovered")
-    session = _FakeSession()
-    monkeypatch.setattr(llm_router, "_load_keys", _returns([key]))
-
-    async def _ok(client, k, messages, json_mode, max_tokens, temperature=0.0):
-        return "fine"
-
-    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _ok)
-    await llm_router.chat_completion(
-        "rerank", [{"role": "user", "content": "hi"}], session=session
-    )
-    assert key.db_healthy is True
-    assert not llm_router._is_skippable(key)
-    assert len(health_writes) == 1
-    # End to end through the real entry point, the caller's transaction is still
-    # its own. This is the assertion that would have caught the 500.
-    assert session.commits == 0
-
-
-def _returns(keys):
-    async def _loader(session):
-        return keys
-    return _loader
-
-
-@pytest.mark.asyncio
-async def test_a_stalled_provider_is_abandoned_at_the_attempt_timeout(monkeypatch):
-    """One slow provider must not hold a call open past its budget.
-
-    Regression: httpx's `read` timeout only fires when NO byte arrives for that
-    long, and OpenRouter pads a pending completion with whitespace to keep the
-    connection alive. A jd_generation attempt with a 15s read timeout was
-    observed running 47 seconds in production, and the background assessment
-    tasks stopped returning at all. The attempt is now bounded by wall clock.
-    """
-    from app.services import llm_router
-
-    llm_router._breaker.clear()
-
-    async def _stalls(client, key, messages, json_mode, max_tokens, temperature=0.0):
-        await asyncio.sleep(5)
-        return "never reached"
-
-    async def _fast(client, key, messages, json_mode, max_tokens, temperature=0.0):
-        return "ok"
-
-    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "openrouter", _stalls)
-    monkeypatch.setitem(llm_router._PROVIDER_CALLERS, "groq", _fast)
+def _clean(monkeypatch):
+    llm_router.reset_provider_stats()
+    # A credential, so the router gets past the "nothing configured" guard.
+    # Tests that want the unconfigured path clear it explicitly.
     monkeypatch.setattr(
-        llm_router,
-        "_load_keys",
-        lambda session: _resolved([
-            llm_router._RouterKey(provider="openrouter", api_key="x", fingerprint="o1"),
-            llm_router._RouterKey(provider="groq", api_key="x", fingerprint="g1"),
-        ]),
+        llm_router, "_load_key", lambda: _RouterKey(api_key="k-test", fingerprint="fp1")
     )
-
-    started = time.monotonic()
-    result = await llm_router.invoke_llm(
-        "jd_generation", [{"role": "user", "content": "hi"}], timeout=0.2
-    )
-    elapsed = time.monotonic() - started
-
-    # The stalled first-choice provider was abandoned and the healthy one served.
-    assert result == "ok"
-    assert elapsed < 4, f"attempt was not bounded: took {elapsed:.1f}s"
+    yield
+    llm_router.reset_provider_stats()
 
 
-async def _resolved(value):
-    return value
+def _http_error(status: int, headers: dict | None = None) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", llm_providers.ANTHROPIC_MESSAGES_URL)
+    response = httpx.Response(status, request=request, headers=headers or {})
+    return httpx.HTTPStatusError("boom", request=request, response=response)
 
 
-# ── Sampling policy (item 7: determinism where the task JUDGES) ──────────────
+def _stub_calls(monkeypatch, results):
+    """Replace the HTTP layer with a scripted sequence.
 
-def test_every_judging_task_is_deterministic() -> None:
-    """A scoring call must return the same grade for the same answer.
-
-    Anything above zero means a candidate's grade depends partly on when they
-    happened to be scored. That is indefensible in a hiring decision and, worse,
-    unfalsifiable: a rescore that disagrees looks like a broken rubric rather
-    than sampling noise.
-
-    report_synthesis is included deliberately even though its output is prose.
-    It STATES the grades a client reads, so it judges.
+    `results` entries are either a string (a successful response body) or an
+    exception instance (raised). Every call is recorded so a test can assert how
+    many attempts were actually spent, which is the thing budgets are about.
     """
-    from app.config.llm_providers import temperature_for
+    calls: list[dict] = []
 
-    for task in ("behavioral_assessment", "report_synthesis", "rerank", "extraction"):
-        assert temperature_for(task) == 0.0, (
-            f"{task} samples at {temperature_for(task)}; scoring must be reproducible"
+    async def _fake(client, key, model, messages, json_mode, max_tokens, temperature):
+        calls.append(
+            {
+                "model": model,
+                "messages": messages,
+                "json_mode": json_mode,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "key": key.fingerprint,
+            }
         )
+        outcome = results[min(len(calls) - 1, len(results) - 1)]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(llm_router, "_call_anthropic", _fake)
+    return calls
 
 
-def test_an_unknown_task_defaults_to_deterministic() -> None:
-    """The safe direction. A new task that should have been creative reads a
-    little flat; a new SCORING task silently sampling at 0.5 would make grades
-    non-reproducible and nothing would announce it."""
-    from app.config.llm_providers import temperature_for
-
-    assert temperature_for("some_task_added_next_year") == 0.0
+# ── The breaker, and the recovery that must never be lost ────────────────────
 
 
-def test_the_conversation_turn_is_allowed_to_vary() -> None:
-    """The one place sounding different to different people is the point.
+def test_a_success_clears_the_breaker() -> None:
+    key = _RouterKey(api_key="k", fingerprint="fp1")
+    for _ in range(_FAILURE_THRESHOLD):
+        llm_router._record_failure(key, terminal=False)
+    assert llm_router._is_cooling_down(key)
 
-    At 0.0 the interviewer repeats near-identical phrasing to every candidate,
-    which is the "static script" complaint. WHAT is asked stays fixed by the
-    framework; only the phrasing varies.
+    llm_router._record_success(key)
+    assert not llm_router._is_cooling_down(key)
+
+
+def test_the_breaker_goes_half_open_once_the_cooldown_elapses(monkeypatch) -> None:
+    """The invariant the 2026 outage was about.
+
+    A breaker that could open and never close left every credential skipped
+    forever, so the router raised on every call and the product degraded
+    permanently. The cooldown must EXPIRE, and expiry must not require a
+    success -- which would be unobtainable, since the key is being skipped.
     """
-    from app.config.llm_providers import temperature_for
+    key = _RouterKey(api_key="k", fingerprint="fp1")
+    for _ in range(_FAILURE_THRESHOLD):
+        llm_router._record_failure(key, terminal=False)
+    assert llm_router._is_cooling_down(key)
 
-    assert temperature_for("conversation_turn") > 0.5
+    state = llm_router._state("fp1")
+    state.opened_at = time.monotonic() - _COOLDOWN_SECONDS - 1
+    assert not llm_router._is_cooling_down(key)
 
 
-def test_temperature_is_not_hardcoded_in_the_router() -> None:
-    """It was previously a 0.1 literal in TWO places -- the OpenAI-style payload
-    and Gemini's generationConfig -- so they could drift apart silently and no
-    task could be made deterministic. Policy is data, in config/llm_providers."""
-    import pathlib
+def test_a_single_transient_failure_does_not_trip_the_breaker() -> None:
+    """A 429 or a 5xx clears on its own. Condemning a credential over one of
+    them would take the platform off models for fifteen minutes because of a
+    burst."""
+    key = _RouterKey(api_key="k", fingerprint="fp1")
+    llm_router._record_failure(key, terminal=False)
+    assert not llm_router._is_cooling_down(key)
 
-    source = pathlib.Path(
-        __file__
-    ).resolve().parents[1].joinpath("app/services/llm_router.py").read_text(
-        encoding="utf-8"
+
+def test_a_credential_failure_trips_on_the_first_occurrence() -> None:
+    """A revoked key is not going to become valid on the second attempt.
+
+    Tripping immediately is what gets the caller's deterministic fallback
+    running one attempt sooner rather than three.
+    """
+    key = _RouterKey(api_key="k", fingerprint="fp1")
+    llm_router._record_failure(key, terminal=True)
+    assert llm_router._is_cooling_down(key)
+
+
+@pytest.mark.asyncio
+async def test_a_cooling_credential_fails_fast_rather_than_calling(monkeypatch) -> None:
+    calls = _stub_calls(monkeypatch, ["never reached"])
+    key = _RouterKey(api_key="k-test", fingerprint="fp1")
+    for _ in range(_FAILURE_THRESHOLD):
+        llm_router._record_failure(key, terminal=False)
+
+    with pytest.raises(LLMUnavailableError):
+        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_no_credential_configured_raises_the_typed_error(monkeypatch) -> None:
+    monkeypatch.setattr(llm_router, "_load_key", lambda: None)
+    with pytest.raises(LLMUnavailableError):
+        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.asyncio
+async def test_an_operator_write_off_is_reversible(monkeypatch) -> None:
+    _stub_calls(monkeypatch, ["ok"])
+    llm_router.trip_provider()
+    with pytest.raises(LLMUnavailableError):
+        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+    llm_router.clear_provider_breaker()
+    assert await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}]) == "ok"
+
+
+# ── Retries ──────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_transient_is_retried_and_can_succeed(monkeypatch) -> None:
+    calls = _stub_calls(monkeypatch, [_http_error(503), "recovered"])
+    result = await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+    assert result == "recovered"
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_non_429_client_error_is_not_retried(monkeypatch) -> None:
+    """Our bug, not theirs. It fails identically on retry, so spending the
+    budget only delays the caller's fallback."""
+    calls = _stub_calls(monkeypatch, [_http_error(400)])
+    with pytest.raises(LLMUnavailableError):
+        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_credential_failure_is_not_retried(monkeypatch) -> None:
+    calls = _stub_calls(monkeypatch, [_http_error(401)])
+    with pytest.raises(LLMUnavailableError):
+        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_retry_budget_bounds_the_attempts(monkeypatch) -> None:
+    calls = _stub_calls(monkeypatch, [_http_error(503)])
+    with pytest.raises(LLMUnavailableError):
+        await llm_router.invoke_llm(
+            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+        )
+    assert len(calls) == llm_providers.retry_budget_for("rerank")
+
+
+@pytest.mark.asyncio
+async def test_the_error_message_never_quotes_a_response_body(monkeypatch) -> None:
+    """An Anthropic error body can echo the request, and the request carries a
+    real candidate's answers."""
+    _stub_calls(monkeypatch, [_http_error(503)])
+    with pytest.raises(LLMUnavailableError) as excinfo:
+        await llm_router.invoke_llm(
+            "rerank", [{"role": "user", "content": "SECRET-ANSWER-TEXT"}]
+        )
+    assert "SECRET-ANSWER-TEXT" not in str(excinfo.value)
+    assert "k-test" not in str(excinfo.value)
+
+
+# ── The predictive deadline ──────────────────────────────────────────────────
+
+
+def test_the_deadline_predicts_the_next_attempt() -> None:
+    """`elapsed >= deadline` sounds right and is not.
+
+    With a 20s attempt cap and a 40s budget, a first attempt that takes 20s
+    leaves `20 >= 40` False, a second attempt starts, and the real worst case is
+    40 seconds of waiting plus a second attempt. Checking whether the LONGEST
+    observed attempt still fits is what stops an attempt that cannot finish.
+    """
+    ctx = llm_router._RouteContext(
+        task_type="conversation_turn",
+        model=llm_providers.MODEL_SONNET,
+        key=_RouterKey(api_key="k", fingerprint="fp1"),
+        messages=[],
+        json_mode=False,
+        client=None,  # type: ignore[arg-type]
+        retry_budget=4,
+        max_tokens=100,
+        temperature=0.0,
+        attempt_timeout=20.0,
+        deadline=time.monotonic() + 15.0,
     )
-    assert '"temperature": 0.1' not in source
-    assert "temperature_for" in source
+    # Nothing observed yet: 15s of room is room.
+    assert not llm_router._budget_exhausted(ctx)
+    # An attempt has now been seen to take 20s. Another one cannot finish.
+    ctx.longest_attempt = 20.0
+    assert llm_router._budget_exhausted(ctx)
+
+
+def test_a_failed_attempts_duration_counts_toward_the_prediction(monkeypatch) -> None:
+    """A timeout is the slowest and most informative thing that can happen, so
+    excluding failures from the estimate would exclude the worst case."""
+    ctx = llm_router._RouteContext(
+        task_type="rerank",
+        model=llm_providers.MODEL_HAIKU,
+        key=_RouterKey(api_key="k", fingerprint="fp1"),
+        messages=[],
+        json_mode=False,
+        client=None,  # type: ignore[arg-type]
+        retry_budget=4,
+        max_tokens=100,
+        temperature=0.0,
+        attempt_timeout=20.0,
+        deadline=time.monotonic() + 5.0,
+    )
+    ctx.longest_attempt = 30.0
+    assert llm_router._budget_exhausted(ctx)
+    assert (
+        llm_router.should_continue({"attempts": 1, "result": None, "ctx": ctx})
+        == "exhausted"
+    )
+
+
+def test_no_deadline_means_no_budget_check() -> None:
+    ctx = llm_router._RouteContext(
+        task_type="rerank",
+        model=llm_providers.MODEL_HAIKU,
+        key=_RouterKey(api_key="k", fingerprint="fp1"),
+        messages=[],
+        json_mode=False,
+        client=None,  # type: ignore[arg-type]
+        retry_budget=4,
+        max_tokens=100,
+        temperature=0.0,
+        attempt_timeout=20.0,
+        deadline=None,
+    )
+    ctx.longest_attempt = 9999.0
+    assert not llm_router._budget_exhausted(ctx)
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_larger_than_the_budget_stops_the_chain(monkeypatch) -> None:
+    """Honouring `retry-after` must not park an interactive request past its
+    deadline. Sleeping through a budget the caller can no longer use is strictly
+    worse than failing now and letting the fallback run."""
+    calls = _stub_calls(monkeypatch, [_http_error(429, {"retry-after": "600"})])
+    with pytest.raises(LLMUnavailableError):
+        await llm_router.invoke_llm(
+            "conversation_turn", [{"role": "user", "content": "hi"}]
+        )
+    assert len(calls) == 1
+
+
+def test_retry_after_is_parsed_and_a_missing_one_is_none() -> None:
+    assert llm_router.retry_after_seconds(_http_error(429, {"retry-after": "12"})) == 12.0
+    assert llm_router.retry_after_seconds(_http_error(429)) is None
+    assert llm_router.retry_after_seconds(_http_error(429, {"retry-after": "soon"})) is None
+
+
+# ── The OpenAI-shape translation ─────────────────────────────────────────────
+
+
+def test_system_messages_are_lifted_out_and_joined() -> None:
+    """Several callers build a system prompt in layers -- a base instruction,
+    retrieved context, an experience-memory hint. Dropping any layer would
+    change what was asked without changing what the caller wrote."""
+    system, turns = llm_router.split_system(
+        [
+            {"role": "system", "content": "base"},
+            {"role": "system", "content": "context"},
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "a"},
+        ]
+    )
+    assert system == "base\n\ncontext"
+    assert turns == [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+
+def test_an_unknown_role_is_treated_as_user_rather_than_dropped() -> None:
+    """Dropping it would silently remove content from the prompt. Coercing it
+    keeps the content and, at worst, mislabels who said it."""
+    _system, turns = llm_router.split_system(
+        [{"role": "tool", "content": "observation"}]
+    )
+    assert turns == [{"role": "user", "content": "observation"}]
+
+
+def test_a_payload_carries_the_task_temperature_and_ceiling() -> None:
+    payload = llm_router.build_payload(
+        model=llm_providers.MODEL_SONNET,
+        messages=[{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+        json_mode=False,
+        max_tokens=512,
+        temperature=0.3,
+    )
+    assert payload["model"] == llm_providers.MODEL_SONNET
+    assert payload["system"] == "s"
+    assert payload["max_tokens"] == 512
+    assert payload["temperature"] == 0.3
+    assert payload["messages"] == [{"role": "user", "content": "u"}]
+
+
+def test_a_payload_with_no_system_message_omits_the_key() -> None:
+    """An empty `system` is not the same as no system prompt, and sending one
+    spends tokens on nothing."""
+    payload = llm_router.build_payload(
+        model=llm_providers.MODEL_HAIKU,
+        messages=[{"role": "user", "content": "u"}],
+        json_mode=False,
+        max_tokens=64,
+        temperature=0.0,
+    )
+    assert "system" not in payload
+
+
+# ── JSON mode ────────────────────────────────────────────────────────────────
+
+
+def test_json_mode_prefills_the_assistant_turn() -> None:
+    """The prefill is what makes JSON mode structural rather than advisory: the
+    response physically cannot open with an apology or a markdown fence, because
+    the first character was not the model's to choose."""
+    payload = llm_router.build_payload(
+        model=llm_providers.MODEL_HAIKU,
+        messages=[{"role": "user", "content": "u"}],
+        json_mode=True,
+        max_tokens=64,
+        temperature=0.0,
+    )
+    assert payload["messages"][-1] == {"role": "assistant", "content": "{"}
+    assert "raw JSON object" in payload["system"]
+
+
+def test_json_mode_prepends_the_prefill_back_onto_the_response() -> None:
+    """The caller must receive exactly the shape a native JSON mode would give
+    it. The mechanism is the router's business, not the caller's."""
+    result = llm_router.parse_response(
+        {"content": [{"type": "text", "text": '"grade": "Matching"}'}]},
+        json_mode=True,
+    )
+    assert result.content == '{"grade": "Matching"}'
+
+    plain = llm_router.parse_response(
+        {"content": [{"type": "text", "text": "hello"}]}, json_mode=False
+    )
+    assert plain.content == "hello"
+
+
+def test_no_json_mode_caller_expects_a_top_level_array() -> None:
+    """Pins the assumption the prefill rests on.
+
+    Prefilling `{` is correct only because every JSON-mode caller in this
+    codebase parses a top-level OBJECT. A future caller that wanted an array
+    should fail loudly HERE rather than mysteriously at its own parse.
+    """
+    import pathlib
+    import re
+
+    services = pathlib.Path(__file__).resolve().parents[1] / "app" / "services"
+    array_scanners = re.compile(r"""\.find\(\s*['"]\[['"]|startswith\(\s*['"]\[['"]""")
+    offenders = [
+        path.name
+        for path in services.rglob("*.py")
+        if array_scanners.search(path.read_text(encoding="utf-8"))
+    ]
+    assert not offenders, (
+        "These modules scan for a leading '[', which the JSON-mode prefill "
+        f"makes impossible: {offenders}"
+    )
+
+
+def test_only_text_blocks_are_concatenated() -> None:
+    """A response can carry non-text blocks. Stringifying them would put a dict
+    repr into a JSON parse."""
+    result = llm_router.parse_response(
+        {
+            "content": [
+                {"type": "thinking", "thinking": "internal"},
+                {"type": "text", "text": "visible"},
+            ]
+        },
+        json_mode=False,
+    )
+    assert result.content == "visible"
+
+
+# ── Accounting ───────────────────────────────────────────────────────────────
+
+
+def test_usage_is_recorded_and_a_missing_one_stays_distinguishable() -> None:
+    with_usage = llm_router.parse_response(
+        {
+            "content": [{"type": "text", "text": "x"}],
+            "usage": {"input_tokens": 10, "output_tokens": 4},
+        },
+        json_mode=False,
+    )
+    assert (with_usage.prompt_tokens, with_usage.completion_tokens) == (10, 4)
+    assert with_usage.had_usage
+
+    without = llm_router.parse_response(
+        {"content": [{"type": "text", "text": "x"}]}, json_mode=False
+    )
+    assert (without.prompt_tokens, without.completion_tokens) == (0, 0)
+    assert not without.had_usage
+
+
+def test_a_bare_string_from_the_call_layer_is_accepted() -> None:
+    """Tests substitute string-returning stubs. Accounting is monitoring; it
+    must never be the thing that fails a request."""
+    assert llm_router.as_result("plain").content == "plain"
+    assert llm_router.as_result(llm_router._Result(content="typed")).content == "typed"
+
+
+@pytest.mark.asyncio
+async def test_stats_separate_the_model_from_the_credential(monkeypatch) -> None:
+    _stub_calls(monkeypatch, ["ok"])
+    await llm_router.invoke_llm("rerank", [{"role": "user", "content": "a"}])
+    await llm_router.invoke_llm("report_synthesis", [{"role": "user", "content": "b"}])
+
+    models = llm_router.model_stats()
+    assert models[llm_providers.MODEL_HAIKU]["successes"] == 1
+    assert models[llm_providers.MODEL_SONNET]["successes"] == 1
+    assert llm_router.provider_stats()["anthropic"]["attempts"] == 2
+    assert llm_router.key_stats()["fp1"]["attempts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_no_key_material_reaches_the_stats_surface(monkeypatch) -> None:
+    _stub_calls(monkeypatch, ["ok"])
+    await llm_router.invoke_llm("rerank", [{"role": "user", "content": "a"}])
+    rendered = repr(llm_router.key_stats())
+    assert "k-test" not in rendered
+    assert "fp1" in rendered
+
+
+def test_a_fingerprint_is_not_reversible_and_is_stable() -> None:
+    a = llm_router._fingerprint("sk-ant-secret")
+    assert a == llm_router._fingerprint("sk-ant-secret")
+    assert a != llm_router._fingerprint("sk-ant-other")
+    assert "secret" not in a
+    assert len(a) == 12
+
+
+# ── The task type still validates ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_task_type_raises_before_any_call(monkeypatch) -> None:
+    calls = _stub_calls(monkeypatch, ["ok"])
+    with pytest.raises(ValueError):
+        await llm_router.invoke_llm("nonsense", [{"role": "user", "content": "hi"}])
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_chat_completion_is_a_pure_alias(monkeypatch) -> None:
+    calls = _stub_calls(monkeypatch, ["ok"])
+    assert (
+        await llm_router.chat_completion("rerank", [{"role": "user", "content": "hi"}])
+        == "ok"
+    )
+    assert calls[0]["model"] == llm_providers.MODEL_HAIKU
+
+
+@pytest.mark.asyncio
+async def test_the_task_types_temperature_and_ceiling_reach_the_call(monkeypatch) -> None:
+    calls = _stub_calls(monkeypatch, ["ok"])
+    await llm_router.invoke_llm(
+        "dimension_evaluation", [{"role": "user", "content": "hi"}]
+    )
+    assert calls[0]["temperature"] == 0.0, "a grade must not vary with when it ran"
+    assert calls[0]["max_tokens"] == llm_providers.max_tokens_for("dimension_evaluation")

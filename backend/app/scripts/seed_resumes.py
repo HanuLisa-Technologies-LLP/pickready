@@ -23,7 +23,7 @@ prevents a demo candidate with a broken or missing resume reference.
 
 The resume files DO ship in the backend image, at `/app/demo_resumes`. They used
 to live at `<repo-root>/resumes`, outside the Docker build context, so they never
-reached the image: `resumes_dir()` returned None on Cloud Run, this step logged
+reached the image: `resumes_dir()` returned None on the deployed container, this step logged
 that it found no files, and the seed carried on succeeding. That is why
 production ran with two candidates instead of thirty while every deploy was
 green. `SEED_RESUMES_DIR` and `/resumes` are still honoured and still take
@@ -70,7 +70,7 @@ def resumes_dir() -> Path | None:
     The shipped copy is why the demo candidates can exist in production at all.
     The corpus used to live at `<repo-root>/resumes`, which is OUTSIDE the
     backend Docker build context, so it never reached the image and this
-    function returned None on Cloud Run. The seed then logged that it found no
+    function returned None on the deployed container. The seed then logged that it found no
     files and moved on, which is why production had two candidates against the
     thirty the demo assumes. Moving the .docx files under `backend/` puts them
     inside the context, so the existing `COPY . .` carries them to

@@ -1,0 +1,92 @@
+{
+  "$comment": [
+    "Pinned manifest for the vendored third-party design skills, per spec-doc6",
+    "(RPN-SPEC-006) D4. The skill source itself is gitignored: it is other",
+    "people's code with its own licence and update cadence, and vendoring it",
+    "here would make provenance and licensing ambiguous and bloat the tree.",
+    "This file plus tools/install-design-tools.sh reproduce the environment.",
+    "",
+    "HONESTY NOTE, read before trusting a field. Every value below was read",
+    "back off the installed tree or the lockfile on 2026-08-29. Where a commit",
+    "SHA is not recoverable from what the installer wrote, the field is null",
+    "and 'sha_status' says why. A fabricated SHA would be worse than an absent",
+    "one, because it would look like a pin."
+  ],
+  "manifest_version": 1,
+  "recorded_at": "2026-08-29",
+  "recorded_from": "the installed tree at .claude/skills, .agents/skills and .github/skills, plus skills-lock.json",
+  "tools": [
+    {
+      "skill_name": "impeccable",
+      "version": "4.1.1",
+      "version_source": ".claude/skills/impeccable/SKILL.md frontmatter",
+      "license": "Apache 2.0",
+      "license_source": ".claude/skills/impeccable/SKILL.md frontmatter",
+      "repository_url": null,
+      "commit_sha": null,
+      "sha_status": "NOT RECORDED BY THE INSTALLER. skills-lock.json pins the three taste-skill entries by content hash and does not mention impeccable at all, although impeccable is 296 of the 302 vendored files and frontend/scripts/impeccable-gate.mjs gates CI on it. This is the largest reproducibility gap in the design-tool environment and needs the owner to confirm the install channel.",
+      "install_command": "npx impeccable init",
+      "install_command_status": "INFERRED from the skill's own Setup section and its allowed-tools entry Bash(npx impeccable *). Not confirmed against an install transcript.",
+      "npm_registry_discrepancy": "npm view impeccable version returns 3.6.0, but the installed SKILL.md declares 4.1.1. The installed skill is therefore NOT the public npm 'impeccable' package at its current version, or it came from a different channel. Resolve before relying on the install command.",
+      "installed_paths": [
+        ".claude/skills/impeccable/",
+        ".github/skills/impeccable/"
+      ],
+      "duplication_note": "The two paths are byte-duplicates, 148 files each. Only one is needed; the duplicate doubles the untracked footprint for no benefit.",
+      "used_by": "frontend/scripts/impeccable-gate.mjs, which exits non-zero on any finding not listed in .impeccable-exceptions.md with a reason. CI depends on this tool being present."
+    },
+    {
+      "skill_name": "design-taste-frontend",
+      "repository_url": "https://github.com/Leonxlnx/taste-skill",
+      "source_type": "github",
+      "skill_path": "skills/taste-skill/SKILL.md",
+      "commit_sha": null,
+      "sha_status": "skills-lock.json records a content hash, not a commit SHA. The hash pins the file's bytes, which is a weaker but real guarantee: it detects drift, but cannot reconstruct the source revision.",
+      "content_hash": "899b84384f74f540ea5284d9b2e9234e050998b42eacc805410b518d4226c0b3",
+      "install_command": "npx skills add Leonxlnx/taste-skill",
+      "installed_paths": [
+        ".claude/skills/design-taste-frontend/",
+        ".agents/skills/design-taste-frontend/"
+      ]
+    },
+    {
+      "skill_name": "high-end-visual-design",
+      "repository_url": "https://github.com/Leonxlnx/taste-skill",
+      "source_type": "github",
+      "skill_path": "skills/soft-skill/SKILL.md",
+      "commit_sha": null,
+      "sha_status": "content hash only, see design-taste-frontend",
+      "content_hash": "f730e4132775f13eea19e3dc39afc6bb453cfc0498872b127ad8f0d47cfd802d",
+      "install_command": "npx skills add Leonxlnx/taste-skill",
+      "installed_paths": [
+        ".claude/skills/high-end-visual-design/",
+        ".agents/skills/high-end-visual-design/"
+      ]
+    },
+    {
+      "skill_name": "redesign-existing-projects",
+      "repository_url": "https://github.com/Leonxlnx/taste-skill",
+      "source_type": "github",
+      "skill_path": "skills/redesign-skill/SKILL.md",
+      "commit_sha": null,
+      "sha_status": "content hash only, see design-taste-frontend",
+      "content_hash": "47eced3e960a2c961d3cbee11fa1216264f589344b586a5cbd03967cd6b9c54b",
+      "install_command": "npx skills add Leonxlnx/taste-skill",
+      "installed_paths": [
+        ".claude/skills/redesign-existing-projects/",
+        ".agents/skills/redesign-existing-projects/"
+      ]
+    }
+  ],
+  "not_installed": [
+    {
+      "skill_name": "img2threejs",
+      "note": "spec-doc6 D4 names this among the vendored clones to gitignore. No clone is present in this tree. The gitignore rule is written anyway so that a future install is covered before it is committed rather than after."
+    }
+  ],
+  "open_items_for_the_owner": [
+    "Confirm impeccable's install channel and pin it. 296 of 302 vendored files are unpinned while CI depends on them.",
+    "Decide whether both .claude/skills/impeccable and .github/skills/impeccable are needed. They are byte-identical.",
+    "Resolve the npm version discrepancy: registry 3.6.0 against installed 4.1.1."
+  ]
+}

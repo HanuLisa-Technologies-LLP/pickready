@@ -68,8 +68,14 @@ async def _factory_or_skip():
 async def _seeded_job(session) -> tuple[uuid.UUID, Job]:
     """Any existing job, given a vector written the way matching writes one."""
     row = (await session.execute(text("SELECT id FROM jobs LIMIT 1"))).first()
-    if row is None:
-        pytest.skip("no jobs in this database")
+    # Deliberately an assertion and not a skip. A migrated database always has
+    # jobs, so the skip this replaces could not fire and enforced nothing -- and
+    # if that ever stops being true, the honest answer is that these tests did
+    # not run, not that they passed.
+    assert row is not None, (
+        "No job rows exist, so nothing here was exercised. Run "
+        "`alembic upgrade head` against the test database first."
+    )
     job_id = row[0]
     vector = "[" + ",".join("0.1" for _ in range(1024)) + "]"
     await session.execute(

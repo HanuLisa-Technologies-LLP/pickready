@@ -4,7 +4,7 @@ import uuid
 
 import pytest
 
-from app.services import bd_leads, reach_embeddings, web_research
+from app.services import bd_leads, embeddings, reach_embeddings, web_research
 
 
 TITLES = (
@@ -82,6 +82,25 @@ def test_irrelevant_results_are_not_used_as_padding() -> None:
 
 @pytest.mark.asyncio
 async def test_real_embedding_model_ranks_known_catalogue() -> None:
+    """Ranking quality against the REAL model, not a stub.
+
+    SKIPPED WITHOUT A CREDENTIAL, and the skip is the point rather than a
+    concession. This is the only test in the suite that asserts semantic
+    QUALITY -- that "Java Backend Developer" actually beats "Data Analyst" for
+    a Java query -- and quality cannot be asserted against
+    `embeddings._dev_fallback_vector`, whose vectors are deterministic hashes
+    with no meaning at all.
+
+    Before spec-doc5 Part B this ran on a CPU-local `fastembed` model baked into
+    the image, so it could run offline; it now needs `VOYAGE_API_KEY`, because
+    the platform has one embedding model and it is a hosted one. A skip that
+    says so is honest. Letting it run against the fallback and pass would be
+    worse than not having the test: it would report that role search works when
+    what it measured was a hash function.
+    """
+    if not embeddings.is_semantic():
+        pytest.skip("VOYAGE_API_KEY unset: semantic quality cannot be measured "
+                    "against the deterministic dev fallback")
     skills_by_title = {
         "Java Backend Developer": ("Java", "Spring Boot", "REST", "MySQL", "Docker"),
         "Python Backend Developer": ("Python", "FastAPI", "PostgreSQL", "Redis"),

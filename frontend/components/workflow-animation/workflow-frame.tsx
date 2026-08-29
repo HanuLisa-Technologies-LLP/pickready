@@ -32,8 +32,8 @@ export function DemoWindow({
       <div className="flex h-[calc(100%-2.25rem)]">
         {!compact ? (
           <aside className="hidden w-32 shrink-0 border-r border-white/10 bg-white/[0.025] p-3 sm:block lg:w-40">
-            <div className="mb-5 flex items-center gap-2 px-2 text-[10px] font-bold tracking-[.15em] text-violet-300">
-              <span className="grid h-6 w-6 place-items-center rounded-md bg-violet-500/20">
+            <div className="mb-5 flex items-center gap-2 px-2 text-[10px] font-bold tracking-[.15em] text-teal-400">
+              <span className="grid h-6 w-6 place-items-center rounded-md bg-teal-600/20">
                 P
               </span>
               READY WORKSPACE
@@ -55,7 +55,7 @@ export function DemoWindow({
             />
           </aside>
         ) : null}
-        <div className="min-w-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_88%_0%,rgba(124,58,237,.12),transparent_42%)]">
+        <div className="min-w-0 flex-1 overflow-hidden bg-[radial-gradient(circle_at_88%_0%,hsl(var(--teal-600) / ,.12),transparent_42%)]">
           {children}
         </div>
       </div>
@@ -76,7 +76,7 @@ function DemoNav({
     <div
       className={cn(
         "mb-1 flex items-center gap-2 rounded-lg px-2 py-2 text-[10px] text-white/45",
-        active && "bg-violet-500/15 font-semibold text-violet-200"
+        active && "bg-teal-600/15 font-semibold text-teal-100"
       )}
     >
       <Icon className="h-3.5 w-3.5" />
@@ -97,7 +97,7 @@ export function SceneHeader({
   return (
     <div className="flex items-start justify-between gap-4">
       <div>
-        <p className="text-[9px] font-semibold uppercase tracking-[.18em] text-violet-300/80">
+        <p className="text-[9px] font-semibold uppercase tracking-[.18em] text-teal-400/80">
           {eyebrow}
         </p>
         <h3 className="mt-1 text-sm font-semibold sm:text-base">{title}</h3>
@@ -131,7 +131,8 @@ export function GlowButton({
         "inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-[10px] font-semibold text-white",
         success
           ? "bg-emerald-500"
-          : "bg-gradient-to-r from-violet-600 to-indigo-500"
+          // Single hue, navy. See DESIGN.md §2 rule 2.
+          : "bg-gradient-to-r from-navy-600 to-navy-400"
       )}
     >
       {children}
@@ -141,16 +142,18 @@ export function GlowButton({
 
 export function TinyBadge({
   children,
-  tone = "violet",
+  tone = "brand",
 }: {
   children: ReactNode;
-  tone?: "violet" | "green" | "amber";
+  // Named for the ROLE, not the hue. A prop called "violet" that renders
+  // teal is worse than the colour was: the name lies about what it draws.
+  tone?: "brand" | "green" | "amber";
 }) {
   return (
     <span
       className={cn(
         "inline-flex rounded-full border px-2 py-0.5 text-[8px] font-semibold",
-        tone === "violet" && "border-violet-400/25 bg-violet-400/10 text-violet-200",
+        tone === "brand" && "border-teal-400/25 bg-teal-400/10 text-teal-100",
         tone === "green" && "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
         tone === "amber" && "border-amber-300/25 bg-amber-300/10 text-amber-100"
       )}

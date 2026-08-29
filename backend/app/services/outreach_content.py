@@ -27,9 +27,9 @@ from app.prompts import registry
 
 logger = logging.getLogger(__name__)
 
-# Task-type routing (2026-07-27): email copy is short and latency matters when
-# a recruiter is waiting on a draft, so this prefers Groq, then Gemini, then
-# OpenRouter (config/llm_providers.TASK_ROUTES).
+# Task-type routing: outreach copy is short, but it is prose a candidate reads
+# over the client's name, so it runs on Sonnet 5 rather than the cheaper tier
+# (config/llm_providers.MODEL_FOR_TASK, where that choice is argued).
 _ROLE_HINT = "email_composition"
 
 # Word-count discipline (sprint requirement): every outreach body lands in
