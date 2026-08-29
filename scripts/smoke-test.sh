@@ -14,12 +14,18 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Read the deploy state file when the caller did not pass URLs explicitly. This
-# is what makes `deploy.sh && smoke-test.sh` work with no glue.
-DEPLOY_OUT="${DEPLOY_OUT:-${REPO_ROOT}/.deploy-state.env}"
-if [ -f "$DEPLOY_OUT" ]; then
-  # shellcheck disable=SC1090
-  set -a; . "$DEPLOY_OUT"; set +a
+# Resolve URLs from the Terraform outputs when the caller did not pass them.
+# `deploy.sh` is gone with Cloud Run; the equivalent source of truth is now the
+# environment root's state.
+ENVIRONMENT="${1:-}"
+if [ -n "$ENVIRONMENT" ] && [ -d "${REPO_ROOT}/infra/environments/${ENVIRONMENT}" ]    && command -v terraform >/dev/null 2>&1; then
+  pushd "${REPO_ROOT}/infra/environments/${ENVIRONMENT}" >/dev/null
+  BACKEND_STAGED_URL="${BACKEND_STAGED_URL:-$(terraform output -raw backend_url 2>/dev/null || true)}"
+  FRONTEND_STAGED_URL="${FRONTEND_STAGED_URL:-$(terraform output -raw frontend_url 2>/dev/null || true)}"
+  popd >/dev/null
+  # The environment name was consumed as an argument, so it must not also be
+  # read below as a URL.
+  set -- ""
 fi
 
 # The URL under test. Positional argument wins, then the staged URL, then the
@@ -27,9 +33,12 @@ fi
 TARGET="${1:-${BACKEND_STAGED_URL:-${BACKEND_URL:-}}}"
 TARGET="${TARGET%/}"
 
-# Cold start on a scale-to-zero revision routinely exceeds a default curl
-# connect budget, and a first-request timeout is not a broken build. Health is
-# retried; everything after it is not, because by then the instance is warm.
+# A task that has just passed its ECS health check may still be warming its
+# Python imports, and a first-request timeout is not a broken build. Health is
+# retried; everything after it is not, because by then the task is warm.
+#
+# Note that Fargate does NOT scale to zero, so the cold start here is a
+# deployment artefact rather than the every-request risk it was on Cloud Run.
 HEALTH_RETRIES="${HEALTH_RETRIES:-12}"
 HEALTH_RETRY_DELAY="${HEALTH_RETRY_DELAY:-5}"
 CURL_TIMEOUT="${CURL_TIMEOUT:-45}"
@@ -57,7 +66,7 @@ die()  { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || die "curl is required."
 
 [ -n "$TARGET" ] || die "no target URL. Pass one as \$1, or set BACKEND_STAGED_URL, or run scripts/deploy.sh first."
-[ -n "${TEST_BEARER_TOKEN:-}" ] || die "TEST_BEARER_TOKEN is required. CI mints one per run via scripts/mint-smoke-token.py; to run this by hand: TEST_BEARER_TOKEN=\$(JWT_SECRET=\$(gcloud secrets versions access latest --secret=JWT_SECRET) python3 scripts/mint-smoke-token.py)"
+[ -n "${TEST_BEARER_TOKEN:-}" ] || die "TEST_BEARER_TOKEN is required. CI mints one per run via scripts/mint-smoke-token.py; to run this by hand: TEST_BEARER_TOKEN=\$(JWT_SECRET=\$(aws secretsmanager get-secret-value --secret-id readypick-staging/JWT_SECRET --query SecretString --output text) python3 scripts/mint-smoke-token.py)"
 
 log "Smoke testing ${TARGET}"
 

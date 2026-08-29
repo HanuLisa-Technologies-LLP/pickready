@@ -1,66 +1,104 @@
-# PickReady, Cloud Run deployment.
+# ReadyPick: test, build, plan, and stop at a human.
 #
-# Two jobs, and the split is the whole point:
+# THE PIPELINE ENDS BEFORE PRODUCTION, ON PURPOSE.
 #
-#   deploy-staged   builds, migrates, and creates revisions that serve NOBODY.
-#                   Smoke tests run against the staged revision's tag URL. A
-#                   failure here costs a build, not an outage.
-#   promote-to-prod shifts live traffic. Gated on the "production" GitHub
-#                   Environment, so it does not start until a human approves.
+# spec-doc5 §D.1: "Produce a complete, correct, deployable codebase and pipeline
+# definition. Do not execute a live deployment... If your CI pipeline includes a
+# deploy stage, it must stop at a human-approval gate and go no further in this
+# phase." And the §D acceptance list makes it pass/fail in the opposite
+# direction from usual: "No live AWS deployment has actually been executed.
+# ...running `terraform apply` against production in this phase is a failure of
+# scope, not an accomplishment."
 #
-# Authentication is Workload Identity Federation: no service-account key is
-# stored in this repository. See scripts/setup-wif-once.sh.
-name: Deploy to Cloud Run
+# So every job below is either offline or read-only, EXCEPT the two behind
+# `vars.AWS_DEPLOY_ENABLED`, which is unset. That flag is the mechanism: the
+# steps are written, wired and reviewable, and they do not run.
+#
+# WHAT SURVIVES FROM THE CLOUD RUN PIPELINE, AND WHY
+# ----------------------------------------------------
+#   THE TEST GATE. Added 2026-08-06 after a release where "every deploy was
+#   green and three features did not work". Before it, this pipeline built,
+#   migrated, staged and smoke-tested and never once ran the unit suite. It
+#   runs BEFORE the build, so a red suite costs a two-minute job rather than a
+#   build and a migration.
+#
+#   VERIFICATION BY DIGEST, NOT BY EXIT CODE. §D.2 says the Cloud Run
+#   revision-verification tooling needs "AWS-equivalent replacements, not
+#   deletion-without-replacement, since that verification discipline is worth
+#   keeping". `scripts/verify-deployment.sh` is that replacement: it asks ECS
+#   which image digest is actually running and compares it to the digest this
+#   run pushed.
+#
+#   THE APPROVAL GATE IS A PROPERTY OF THE ENVIRONMENT, NOT OF THIS FILE.
+#   §D.5: "The earlier GCP-phase finding -- that an environment with no required
+#   reviewer auto-promotes to production -- is exactly what the human-approval
+#   gate above exists to prevent. Configure the production environment's
+#   required reviewer explicitly; do not assume a default."
+#   `verify-approval-gate` is a job that FAILS if that reviewer is not
+#   configured, so the gate cannot be silently absent.
+#
+# AUTHENTICATION IS OIDC. No AWS access key is stored in this repository, the
+# same posture Workload Identity Federation gave on the previous platform.
+name: CI and AWS deploy
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-  # Manual reruns for a rollback or a re-promote, without an empty commit.
   workflow_dispatch:
 
-# Never let two deploys interleave. Without this, two pushes in quick
-# succession race through migrations and can promote the older revision second.
+# Never let two deploys interleave. Without this, two pushes in quick succession
+# race through migrations and can promote the older image second.
 concurrency:
-  group: deploy-cloud-run
+  group: readypick-deploy
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 env:
-  GCP_PROJECT_ID: pick-ready-503913
-  GCP_REGION: asia-south1
-  GCP_ARTIFACT_REPO: pickready
-  SVC_BACKEND: pickready-backend
-  SVC_FRONTEND: pickready-frontend
-  WL_WORKER: pickready-worker
-  WL_BEAT: pickready-beat
-  JOB_MIGRATE: pickready-migrate
-  SQL_INSTANCE: pickready-postgres
-  REDIS_INSTANCE: pickready-redis
-  RUNTIME_SA: pickready-runtime@pick-ready-503913.iam.gserviceaccount.com
+  # THE REGION IS A REPOSITORY VARIABLE, NOT A LITERAL.
+  #
+  # spec-doc6 §D5: "Region assumption `ap-south-1` is removed as an assumption
+  # and becomes a required variable. Do not hardcode it anywhere." It was
+  # hardcoded here. `docs/DEPLOY_AWS.md` records why ap-south-1 is the likely
+  # answer for an India-billed tenant with Indian data-residency expectations,
+  # and that the decision is the owner's.
+  #
+  # Every job that would touch AWS is already behind `vars.AWS_DEPLOY_ENABLED`,
+  # which is unset, so an empty value here cannot silently deploy anywhere. The
+  # offline gates below need no region at all.
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  TF_VERSION: "1.9.8"
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+  # THE OFFLINE PLAN'S DUMMY CREDENTIALS ARE NOT SET HERE, DELIBERATELY.
+  #
+  # spec-doc6 §13.3 asks for "dummy static credentials supplied from environment
+  # variables in CI", and `infra/plan-offline.sh` exports them itself, defaulting
+  # only when the environment does not already carry a value.
+  #
+  # Naming an AWS credential variable in this file, even with an obviously fake
+  # value, is the wrong habit and this repository already has a test that says
+  # so: `test_the_workflow_stores_no_aws_access_key` refuses the NAME, not just a
+  # real value. A checker that has to distinguish a real key from a fake one is a
+  # checker that will eventually get it wrong. Keeping the name out entirely
+  # means it cannot.
 
 jobs:
   # ---------------------------------------------------------------------------
-  # THE TEST GATE. Added 2026-08-06, and it was missing until then.
-  #
-  # This pipeline built, migrated, staged and smoke-tested, and never once ran
-  # the unit suite or the agent evaluation. claude.md asserted that "CI gates on
-  # `app/scripts/eval_interview.py`"; it did not. Nothing stopped a commit whose
-  # tests failed from reaching a production revision -- the smoke test only asks
-  # whether the service answers HTTP, which is exactly the gap that produced the
-  # 2026-08-04 "every deploy green, three features broken" release.
-  #
-  # It runs BEFORE the build, and `deploy-staged` needs it, so a red suite costs
-  # a two-minute job rather than a build, a migration and a staged revision.
-  test:
+  backend-tests:
     name: Backend tests and agent evaluation
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     services:
-      # pgvector, not plain postgres: the schema declares vector columns and
-      # `alembic upgrade` fails on `CREATE EXTENSION vector` without it.
       postgres:
+        # pgvector, not plain postgres: `0001_initial` runs
+        # `CREATE EXTENSION vector` and the enum-parity tests read live catalog
+        # tables, so a stock image fails at collection rather than at assertion.
         image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: pickready
@@ -69,350 +107,521 @@ jobs:
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U pickready"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
 
     env:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@localhost:5432/pickready
-      # A throwaway signing key. The suite mints and verifies its own tokens and
-      # never talks to a real identity provider.
-      JWT_SECRET: ci-test-secret-not-used-anywhere-else
-      ENVIRONMENT: development
-      # Deliberately EMPTY. With no provider keys the router raises on every
-      # call and each agent takes its documented degraded path, so the suite
-      # exercises the fallbacks rather than quietly depending on a live model --
-      # and a CI run cannot be reddened by somebody else's rate limit.
-      GROQ_API_KEY_1: ""
-      GEMINI_API_KEY_1: ""
-      OPENROUTER_API_KEY_1: ""
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET: ci-only-not-a-real-secret-value
+      # DELIBERATELY UNSET: ANTHROPIC_API_KEY and VOYAGE_API_KEY.
+      #
+      # The suite must pass with no model credential at all, and that is a
+      # property worth protecting rather than an inconvenience. Every generative
+      # path has a deterministic fallback, `embeddings` degrades to its dev
+      # vectors, and `app/scripts/eval_interview.py` is fully stubbed and
+      # offline BY DESIGN -- so a rate that moves means the CODE changed, not
+      # that a provider sampled differently. A key here would make CI able to
+      # fail because a vendor was down.
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: backend/requirements.txt
 
-      - name: Install dependencies
+      - name: Install
         working-directory: backend
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio
 
-      - name: Apply migrations
+      - name: Migrate
         working-directory: backend
-        # The suite's database-backed tests skip when Postgres is unreachable,
-        # which would let a schema error pass as a green run. Migrating first
-        # means a broken migration fails HERE, loudly, instead of failing in the
-        # Cloud Run migrate job after the images are already built.
         run: alembic upgrade head
 
-      - name: Unit and integration tests
+      - name: Unit and integration suite
         working-directory: backend
-        run: python -m pytest tests -q
+        run: pytest -q --no-header
 
-      - name: Agent evaluation
+      - name: Agent evaluation gates
         working-directory: backend
-        # Fully stubbed and offline on purpose: a rate that moves means the CODE
-        # changed, not that a provider sampled differently. It measures
-        # judgement across a labelled set and exits non-zero when any rate falls
-        # below its threshold.
-        run: python -m app.scripts.eval_interview
+        # Three evals, all offline. `eval_agents.py` measures the FRAMEWORK --
+        # routing against permissions, tool reachability, deadline feasibility --
+        # rather than what an agent says, and reports quality metrics as
+        # UNAVAILABLE while no expert-labelled dataset exists.
+        run: |
+          python -m app.scripts.eval_interview
+          python -m app.scripts.eval_agents
 
-      - name: Report and matching evaluation
+      - name: The worked example still runs end to end
         working-directory: backend
-        # The second eval, added 2026-08-11. `eval_interview` measures the
-        # agent that TALKS to a candidate; this one measures what gets
-        # PERSISTED: grade boundaries, remark word bands in every branch
-        # including the outage fallbacks, no number reaching a client, no
-        # third-party instrument named, culture refused, counts by grade.
-        # Offline and deterministic for the same reason as the first.
-        run: python -m app.scripts.eval_report
+        # spec-doc5's final-report requirement, executed. It needs no database
+        # and no provider, so a break here is a break in the pipeline's own
+        # logic rather than in its environment.
+        run: python -m app.scripts.worked_example
 
-      - name: Agent framework evaluation
-        working-directory: backend
-        # The third eval, added 2026-08-18 with the ten-system agent framework.
-        # The first two measure what an agent SAYS; this one measures the
-        # framework it says it inside: that the routing table agrees with the
-        # tool permission matrix, that no tool is registered without an agent
-        # holding it, that no tool can start an attempt it cannot finish inside
-        # its deadline, and that ten specific past defects are still fixed.
-        # Offline and deterministic for the same reason as the other two. It
-        # reports the evaluation dataset as UNAVAILABLE rather than as zero
-        # while no expert-labelled set exists, because zero reads as a failing
-        # score and unavailable is the truth.
-        run: python -m app.scripts.eval_agents
-
-      - name: Trajectory evaluation
-        working-directory: backend
-        # The fourth eval, added 2026-08-23. The first three ask whether an
-        # output is right. This one asks whether the way it was REACHED was
-        # sound: dependency order, the loop anti-patterns, termination inside
-        # bounds, budget refusals happening before the work, and tool calls
-        # staying inside the calling agent's grant. Spec 21.3's own framing is
-        # that a correct answer produced through unsafe or runaway behaviour is
-        # not a successful execution, and nothing before this could see that.
-        run: python -m app.scripts.eval_trajectory
-
-      - name: Adversarial evaluation
-        working-directory: backend
-        # The fifth, same day. One case per line of spec 41, each calling the
-        # real guard rather than asserting a model behaved well. It tests
-        # injection in BOTH directions on purpose: a false positive on an answer
-        # that merely discusses prompt injection silently penalises an honest
-        # candidate, and there is no other way that surfaces.
-        run: python -m app.scripts.eval_adversarial
-
-  frontend-test:
-    name: Frontend tests, lint and build
+  # ---------------------------------------------------------------------------
+  frontend-checks:
+    name: Frontend tests, design gate and build
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      NEXT_PUBLIC_FIREBASE_API_KEY: ci-placeholder
-      NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ci.pickready.test
-      NEXT_PUBLIC_FIREBASE_PROJECT_ID: ci-pickready
-      NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ci-pickready
-      NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "000000000000"
-      NEXT_PUBLIC_FIREBASE_APP_ID: ci-placeholder
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
+      - name: Install
         working-directory: frontend
         run: npm ci
 
-      - name: Component and utility tests
+      - name: Unit tests
         working-directory: frontend
-        run: npm test
+        run: npx vitest run
 
-      - name: Lint
+      - name: Contrast tokens
         working-directory: frontend
-        run: npm run lint
+        # Computes every ratio from the HSL triples in globals.css. It also
+        # asserts the NEGATIVE case -- that the brand teal is still BELOW the
+        # text bar -- because DESIGN.md sends everybody to teal-700 for teal
+        # text, and if that stopped being necessary the rule would have become a
+        # lie nobody noticed.
+        run: node scripts/check-contrast.mjs
 
-      - name: Design token contrast
+      - name: Design drift (impeccable)
         working-directory: frontend
-        # The purple field affordance is only worth having if it is actually
-        # visible. This computes the WCAG ratios from the HSL triples in
-        # globals.css and fails below 3:1 for a control boundary. The first
-        # value written by hand was 2.66:1, so this is not theoretical.
-        run: npm run contrast
+        # spec-doc5 §C acceptance: detect "runs clean (or documented,
+        # deliberate, reasoned exceptions only) in CI". The gate exits non-zero
+        # on any finding not listed in `.impeccable-exceptions.md` WITH A REASON,
+        # because a detector that only prints warnings is a detector everybody
+        # scrolls past.
+        run: node scripts/impeccable-gate.mjs
 
-      - name: Production build
+      - name: Build
         working-directory: frontend
         run: npm run build
 
-      - name: Visual QA (production build)
-        working-directory: frontend
-        # Playwright, against the BUILT app rather than the dev server: no
-        # horizontal overflow at three viewports, no console errors, computed
-        # field contrast on the rendered page, and scroll-triggered motion in
-        # both the default and reduced-motion modes.
-        run: |
-          npx playwright install --with-deps chromium
-          npx next start -p 3100 &
-          npx wait-on -t 60000 http://127.0.0.1:3100/
-          npm run qa:visual -- http://127.0.0.1:3100
-
   # ---------------------------------------------------------------------------
-  deploy-staged:
-    name: Build, migrate and stage
-    needs: [test, frontend-test]
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-
-    permissions:
-      # id-token: write is what mints the OIDC assertion WIF exchanges for a
-      # Google access token. Without it the auth step fails with a bare
-      # "unable to get ACTIONS_ID_TOKEN_REQUEST_URL", which reads as a
-      # misconfigured provider rather than a missing permission.
-      id-token: write
-      contents: read
-
-    outputs:
-      image_tag: ${{ steps.deploy.outputs.IMAGE_TAG }}
-      stage_tag: ${{ steps.deploy.outputs.STAGE_TAG }}
-      backend_url: ${{ steps.deploy.outputs.BACKEND_URL }}
-      frontend_url: ${{ steps.deploy.outputs.FRONTEND_URL }}
-      backend_staged_url: ${{ steps.deploy.outputs.BACKEND_STAGED_URL }}
-      frontend_staged_url: ${{ steps.deploy.outputs.FRONTEND_STAGED_URL }}
-      backend_revision: ${{ steps.deploy.outputs.BACKEND_REVISION }}
-      frontend_revision: ${{ steps.deploy.outputs.FRONTEND_REVISION }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Authenticate to Google Cloud (Workload Identity Federation)
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEPLOY_SA }}
-
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ env.GCP_PROJECT_ID }}
-
-      - name: Make scripts executable
-        # The repo is developed on Windows, where the executable bit is not
-        # tracked. Setting it here means a fresh clone deploys without a
-        # "Permission denied" that looks like a missing file.
-        run: chmod +x scripts/*.sh
-
-      - name: Deploy (staged, no traffic)
-        id: deploy
-        env:
-          IMAGE_TAG: ${{ github.sha }}
-          TRAFFIC_MODE: no-traffic
-          # Firebase web config is inlined into the frontend bundle at BUILD
-          # time, so it cannot be a deploy-time env var. deploy.sh falls back to
-          # Secret Manager when these are absent; set them as repository secrets
-          # only if you would rather not keep them in Secret Manager.
-          NEXT_PUBLIC_FIREBASE_API_KEY: ${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
-          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
-          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
-          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
-          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
-          NEXT_PUBLIC_FIREBASE_APP_ID: ${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
-        run: ./scripts/deploy.sh
-
-      # Minted here rather than read from a stored secret. A PickReady access
-      # token lives 15 minutes and this job spends about 10 of them building
-      # images, so a hand-pasted TEST_BEARER_TOKEN is usually dead before the
-      # smoke step runs -- observed as "Signature has expired" (run #9) and,
-      # after a manual refresh, "Invalid crypto padding" (run #10).
-      - name: Mint a smoke-test token
-        id: smoke_token
-        run: |
-          JWT_SECRET="$(gcloud secrets versions access latest \
-            --secret=JWT_SECRET --project="$GCP_PROJECT_ID")"
-          TOKEN="$(JWT_SECRET="$JWT_SECRET" python3 scripts/mint-smoke-token.py)"
-          # Mask before emitting: ::add-mask:: redacts the value from every
-          # subsequent log line, and a token that reached the log unmasked
-          # would stay readable in the run's artifacts for its whole lifetime.
-          echo "::add-mask::$TOKEN"
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
-
-      - name: Smoke test the staged revision
-        env:
-          BACKEND_STAGED_URL: ${{ steps.deploy.outputs.BACKEND_STAGED_URL }}
-          FRONTEND_STAGED_URL: ${{ steps.deploy.outputs.FRONTEND_STAGED_URL }}
-          TEST_BEARER_TOKEN: ${{ steps.smoke_token.outputs.token }}
-        run: ./scripts/smoke-test.sh
-
-      - name: Summary
-        if: always()
-        run: |
-          {
-            echo "### PickReady staged deploy"
-            echo
-            echo "| | |"
-            echo "|---|---|"
-            echo "| commit | \`${{ github.sha }}\` |"
-            echo "| backend revision | \`${{ steps.deploy.outputs.BACKEND_REVISION }}\` |"
-            echo "| frontend revision | \`${{ steps.deploy.outputs.FRONTEND_REVISION }}\` |"
-            echo "| backend staged | ${{ steps.deploy.outputs.BACKEND_STAGED_URL }} |"
-            echo "| frontend staged | ${{ steps.deploy.outputs.FRONTEND_STAGED_URL }} |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # ---------------------------------------------------------------------------
-  promote-to-prod:
-    name: Promote to production
-    needs: deploy-staged
-    # needs already implies success, but saying so keeps the gate obvious to
-    # anyone editing this file later.
-    if: github.event_name != 'pull_request' && success()
+  security-scan:
+    name: Security scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
-    # THE APPROVAL GATE. This job does not start until a required reviewer on
-    # the "production" environment approves it. The gate is a property of the
-    # environment, configured in the repository settings, NOT of this file: a
-    # "production" environment with no required reviewer promotes instantly and
-    # silently. See SETUP_INSTRUCTIONS.md step 5.
-    environment:
-      name: production
-      url: ${{ needs.deploy-staged.outputs.frontend_url }}
-
     permissions:
-      id-token: write
       contents: read
+      security-events: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Authenticate to Google Cloud (Workload Identity Federation)
-        uses: google-github-actions/auth@v2
+      - name: Filesystem and dependency scan
+        uses: aquasecurity/trivy-action@0.28.0
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+          # Vulnerabilities and secrets. `secret` is the one that matters most
+          # here: `api-keys.txt` and `deployment-keys.txt` are gitignored, and
+          # this is what catches the day somebody removes a line from
+          # `.gitignore` and does not notice.
+          scanners: vuln,secret,misconfig
 
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Upload
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
         with:
-          project_id: ${{ env.GCP_PROJECT_ID }}
+          sarif_file: trivy.sarif
 
-      - name: Make scripts executable
-        run: chmod +x scripts/*.sh
+  # ---------------------------------------------------------------------------
+  # THE FIVE TERRAFORM GATES (spec-doc6 §11.3), all blocking, all offline.
+  #
+  # They ask five different questions and running all five is not redundancy:
+  #
+  #   fmt        Is it formatted the way the repository formats Terraform?
+  #   validate   Is the configuration internally consistent?
+  #   tflint     Is it valid Terraform that AWS will nonetheless refuse?
+  #              An invalid instance type or an over-length resource name passes
+  #              validate AND plan and fails at APPLY, halfway through creating
+  #              an environment.
+  #   checkov    Does it configure something insecurely? Blocking, with an
+  #              exception list in `infra/.checkov.yml` where every skip carries
+  #              its reason.
+  #   plan       Does the graph resolve and do the arguments type-check?
+  #
+  # THE PLAN IS THE ONE THAT CHANGED IN THIS PHASE. The previous pipeline said a
+  # plan "cannot complete without credentials". True by default, avoidable in
+  # fact: the four provider pre-flight calls have `skip_*` arguments, and
+  # `var.planning_profile` wires all four. It is not a formality either. The
+  # first offline plan run on this repository failed with `Invalid index` on
+  # `var.secret_policy_arns["frontend"]`, an apply-time failure that every
+  # module's `terraform validate` had reported as clean.
+  #
+  # READ `infra/plan-offline.sh` FOR WHAT A GREEN PLAN PROVES AND WHAT IT DOES
+  # NOT. It has never spoken to AWS. "Plan succeeds" is not "ready to run".
+  terraform:
+    name: Terraform gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
 
-      - name: Shift 100% traffic to the approved revisions
-        env:
-          # Named revisions, not "latest": the reviewer approved the revisions
-          # that were smoke-tested, and a deploy landing in between must not be
-          # able to ride in on that approval.
-          BACKEND_REVISION: ${{ needs.deploy-staged.outputs.backend_revision }}
-          FRONTEND_REVISION: ${{ needs.deploy-staged.outputs.frontend_revision }}
-          STAGE_TAG: ${{ needs.deploy-staged.outputs.stage_tag }}
-        run: ./scripts/promote.sh
+    steps:
+      - uses: actions/checkout@v4
 
-      # A SECOND mint, deliberately not reused from deploy-staged. This job sits
-      # behind the production environment's approval gate, which can hold for
-      # hours; any token handed across from the earlier job would be long
-      # expired by the time a reviewer clicks approve.
-      - name: Mint a smoke-test token
-        id: smoke_token
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: fmt and validate, every module and both environments
+        # `init -backend=false` plus `validate` resolves every module, variable
+        # type, output reference and expression without touching AWS.
+        run: ./infra/validate.sh
+
+      - name: No wildcard IAM
+        # spec-doc6 §10.1 rule 7. A parser rather than a grep: a wildcard looks
+        # identical whether it is over-broad or exactly right, and a check whose
+        # output is entirely false positives is one everybody scrolls past.
+        run: python infra/check-no-wildcard-iam.py
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.53.0
+
+      - name: tflint
+        working-directory: infra
         run: |
-          JWT_SECRET="$(gcloud secrets versions access latest \
-            --secret=JWT_SECRET --project="$GCP_PROJECT_ID")"
-          TOKEN="$(JWT_SECRET="$JWT_SECRET" python3 scripts/mint-smoke-token.py)"
-          echo "::add-mask::$TOKEN"
-          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          tflint --init --config="$PWD/.tflint.hcl"
+          tflint --recursive --config="$PWD/.tflint.hcl" --minimum-failure-severity=error
+
+      - name: checkov
+        # Blocking, and `soft-fail: false` is set in the config file too so a
+        # local run behaves the same way. Every skip in `infra/.checkov.yml`
+        # carries the reason it is skipped, which is the rule
+        # `.impeccable-exceptions.md` already follows on the frontend.
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra
+          config_file: infra/.checkov.yml
+          framework: terraform
+          quiet: true
+          soft_fail: false
+
+      - name: Offline plan, staging and production
+        # No credentials, no account, no network. See the script's header.
+        run: ./infra/plan-offline.sh --artifact
+
+      - name: Publish the plans
+        # spec-doc6 §13.3: "uploads the plan output as an artifact, so a human
+        # can read what would be created". A plan nobody can read is a plan that
+        # did not happen.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ github.sha }}
+          path: infra/plan-output/
+          retention-days: 30
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # THE GATE THAT CHECKS THE GATE.
+  #
+  # A "production" environment with no required reviewer promotes instantly and
+  # silently, which is the GCP-phase finding §D.5 names. So the gate's existence
+  # is verified rather than assumed, and this job FAILS when it is absent --
+  # which is the only way "we have an approval gate" can be a fact rather than a
+  # belief.
+  verify-approval-gate:
+    name: The production approval gate exists
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The production environment must have a required reviewer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/verify-approval-gate.sh
+
+  # ---------------------------------------------------------------------------
+  # EVERYTHING BELOW THIS LINE IS WIRED AND DOES NOT RUN.
+  #
+  # `vars.AWS_DEPLOY_ENABLED` is unset, so every job is skipped. That is
+  # spec-doc5 §D.1's requirement expressed as a mechanism rather than as a
+  # promise: the steps are complete, correct and reviewable, and a person has to
+  # set a repository variable before any of them touches an AWS account.
+  # ---------------------------------------------------------------------------
+
+  build-and-push:
+    name: Build and push to ECR
+    needs: [backend-tests, frontend-checks, security-scan, terraform]
+    if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write # OIDC. No AWS access key is stored in this repository.
+
+    outputs:
+      backend_digest: ${{ steps.backend.outputs.digest }}
+      frontend_digest: ${{ steps.frontend.outputs.digest }}
+      image_tag: ${{ steps.tag.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag
+        id: tag
+        # SHA, NEVER `latest`. §D.5. Combined with IMMUTABLE tags on the ECR
+        # repositories, this makes a tag a permanent name for a specific set of
+        # bytes -- which is what makes digest verification mean anything.
+        run: echo "tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Backend image
+        id: backend
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          # ARM64 matches the ECS task definition's `cpu_architecture`, which is
+          # ARM64 because Fargate Graviton is roughly 20% cheaper per vCPU-hour.
+          platforms: linux/arm64
+          tags: ${{ steps.ecr.outputs.registry }}/readypick-staging/backend:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+
+      - name: Frontend image
+        id: frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: true
+          platforms: linux/arm64
+          tags: ${{ steps.ecr.outputs.registry }}/readypick-staging/frontend:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+
+  plan-staging:
+    name: terraform plan (staging)
+    needs: build-and-push
+    if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write # to post the plan
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Plan
+        id: plan
+        working-directory: infra/environments/staging
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -no-color \
+            -var="image_tag=${{ needs.build-and-push.outputs.image_tag }}" \
+            -out=tfplan | tee plan.txt
+
+      - name: Post the plan to the PR
+        # §D.5: "terraform plan (staging) -- output posted to the PR for review".
+        # A plan nobody reads is a plan that did not happen.
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('infra/environments/staging/plan.txt', 'utf8');
+            const body = '### terraform plan (staging)\n\n<details><summary>Plan</summary>\n\n```\n'
+              + plan.slice(0, 55000) + '\n```\n\n</details>';
+            await github.rest.issues.createComment({
+              ...context.repo, issue_number: context.issue.number, body,
+            });
+
+  apply-staging:
+    name: terraform apply (staging)
+    needs: plan-staging
+    if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    # Staging has its own environment but NO required reviewer. §D.5 has this
+    # step as "automatic, staging only", and that is the whole point of having a
+    # staging environment: it is where a change is tried without asking anybody.
+    environment:
+      name: staging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Apply
+        working-directory: infra/environments/staging
+        run: |
+          terraform init -input=false
+          terraform apply -input=false -auto-approve \
+            -var="image_tag=${{ needs.build-and-push.outputs.image_tag }}"
+
+      - name: Migrate
+        # A one-shot ECS task, not a step in the service. The migration job has
+        # its own task role holding ONE secret -- the DSN -- and nothing else.
+        run: ./scripts/run-migration.sh staging
+
+      - name: Smoke test
+        run: ./scripts/smoke-test.sh staging
+
+      - name: Verify by DIGEST, not by this job's exit code
+        # §D.6, carried forward from the Cloud Run phase: "don't say 'deployed'
+        # without confirming the live revision by digest". This asks ECS which
+        # image the running tasks actually have and compares it to what was
+        # pushed. A green apply proves Terraform returned zero; this proves the
+        # bytes serving traffic are the bytes that were tested.
+        env:
+          EXPECTED_BACKEND_DIGEST: ${{ needs.build-and-push.outputs.backend_digest }}
+          EXPECTED_FRONTEND_DIGEST: ${{ needs.build-and-push.outputs.frontend_digest }}
+        run: ./scripts/verify-deployment.sh staging
+
+  plan-production:
+    name: terraform plan (production)
+    needs: apply-staging
+    if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # A PLAN-ONLY ROLE. Read-only against production, so the plan step
+          # cannot change anything even if somebody edits it into an apply. The
+          # apply job below assumes a different role, which is what makes the
+          # approval gate the only path to a write.
+          role-to-assume: ${{ secrets.AWS_PROD_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Plan, and do not apply
+        working-directory: infra/environments/production
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -no-color \
+            -var="image_tag=${{ needs.build-and-push.outputs.image_tag }}"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # OUT OF SCOPE FOR THIS PHASE.
+  #
+  # spec-doc5 §D.5 marks the production apply as out of scope and the §D
+  # acceptance list makes running it a FAILURE rather than a completion. It is
+  # written out in full because §D.1 asks for a pipeline that is "correct and
+  # ready to run this step" -- and because a step nobody wrote is a step nobody
+  # reviewed.
+  #
+  # TWO independent things stop it:
+  #   1. `vars.AWS_DEPLOY_ENABLED` is unset, so the job is skipped entirely.
+  #   2. The `production` environment's required reviewer, whose existence
+  #      `verify-approval-gate` asserts on every run.
+  # ═══════════════════════════════════════════════════════════════════════════
+  apply-production:
+    name: terraform apply (production) -- HUMAN APPROVAL REQUIRED
+    needs: [plan-production, verify-approval-gate]
+    if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+
+    # THE GATE. This job does not start until a required reviewer on the
+    # "production" environment approves it. The gate is a property of the
+    # ENVIRONMENT, configured in repository settings, not of this file -- which
+    # is exactly why `verify-approval-gate` exists to check it.
+    environment:
+      name: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PROD_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Apply
+        working-directory: infra/environments/production
+        run: |
+          terraform init -input=false
+          terraform apply -input=false -auto-approve \
+            -var="image_tag=${{ needs.build-and-push.outputs.image_tag }}"
+
+      - name: Migrate
+        run: ./scripts/run-migration.sh production
+
+      - name: Verify by digest
+        env:
+          EXPECTED_BACKEND_DIGEST: ${{ needs.build-and-push.outputs.backend_digest }}
+          EXPECTED_FRONTEND_DIGEST: ${{ needs.build-and-push.outputs.frontend_digest }}
+        run: ./scripts/verify-deployment.sh production
 
       - name: Smoke test production
-        # The same probes, now against the live URLs. A pass here is the proof
-        # that the promotion itself worked, not just the staged revision.
-        env:
-          BACKEND_STAGED_URL: ${{ needs.deploy-staged.outputs.backend_url }}
-          FRONTEND_STAGED_URL: ${{ needs.deploy-staged.outputs.frontend_url }}
-          TEST_BEARER_TOKEN: ${{ steps.smoke_token.outputs.token }}
-        run: ./scripts/smoke-test.sh
-
-      - name: Summary
-        if: always()
-        run: |
-          {
-            echo "### PickReady promoted to production"
-            echo
-            echo "| | |"
-            echo "|---|---|"
-            echo "| commit | \`${{ github.sha }}\` |"
-            echo "| backend | ${{ needs.deploy-staged.outputs.backend_url }} |"
-            echo "| frontend | ${{ needs.deploy-staged.outputs.frontend_url }} |"
-            echo
-            echo "Rollback: \`./scripts/promote.sh rollback <previous-revision> pickready-backend\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: ./scripts/smoke-test.sh production

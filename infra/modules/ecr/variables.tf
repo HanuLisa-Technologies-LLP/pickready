@@ -1,0 +1,33 @@
+variable "project" {
+  type    = string
+  default = "readypick"
+}
+
+variable "environment" {
+  type = string
+  validation {
+    condition     = contains(["staging", "production"], var.environment)
+    error_message = "environment must be staging or production."
+  }
+}
+
+variable "repositories" {
+  description = "One per image. The worker and beat run the backend image with a different command, so they are not separate repositories."
+  type        = list(string)
+  default     = ["backend", "frontend"]
+}
+
+variable "keep_images" {
+  description = "Tagged images retained per repository. Enough to roll back several deploys, not enough to pay to store a year of them."
+  type        = number
+  default     = 30
+}
+
+variable "kms_key_arn" {
+  type = string
+}
+
+variable "tags" {
+  type    = map(string)
+  default = {}
+}

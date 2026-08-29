@@ -55,8 +55,39 @@ const nextConfig = {
   // stopped working, restart everything". Documents are always revalidated;
   // /_next/static assets are content-addressed and stay cacheable.
   async headers() {
-    if (process.env.NODE_ENV !== "development") return [];
+    // HSTS. spec-doc6 §13.2 requires it "at the application layer" precisely
+    // because an ALB cannot inject a response header, so the load balancer's
+    // TLS 1.2 floor and HTTP-to-HTTPS redirect are the whole story without
+    // this line. A redirect protects the second request; HSTS protects the
+    // first, which is the one an attacker on the network gets to see.
+    //
+    // Deliberately NOT set in development: it is a browser-persistent
+    // commitment keyed on host, and a localhost pin would force HTTPS on every
+    // other project that ever serves on the same port.
+    //
+    // `preload` is omitted on purpose. Submitting to the preload list is a
+    // one-way door measured in months to undo, and it commits every current and
+    // future subdomain, which is not a decision a config file should make
+    // silently. `includeSubDomains` is kept because the ALB terminates TLS for
+    // all of them anyway.
+    const security =
+      process.env.NODE_ENV === "development"
+        ? []
+        : [
+            {
+              source: "/:path*",
+              headers: [
+                {
+                  key: "Strict-Transport-Security",
+                  value: "max-age=63072000; includeSubDomains",
+                },
+              ],
+            },
+          ];
+
+    if (process.env.NODE_ENV !== "development") return security;
     return [
+      ...security,
       {
         source: "/((?!_next/static).*)",
         headers: [

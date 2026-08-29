@@ -1,0 +1,197 @@
+# Checkov configuration for the ReadyPick Terraform (spec-doc6 §11.3).
+#
+# THE RULE FOR THIS FILE IS THE ONE `.impeccable-exceptions.md` ALREADY FOLLOWS
+# IN THE FRONTEND: an exception exists only WITH A REASON, written here, and a
+# detector that only prints warnings is one everybody scrolls past. So the CI
+# step is blocking, and the only way past it is an entry below that somebody had
+# to write and somebody had to review.
+#
+# The skips fall into four kinds, and it is worth being able to tell them apart:
+#
+#   FALSE POSITIVE      Checkov is reading the configuration wrongly, usually
+#                       because the fact that resolves it lives in another
+#                       module or in a key policy's semantics.
+#
+#   IMPOSSIBLE          The check asks for something AWS does not permit in this
+#                       combination. Complying would break the feature.
+#
+#   STAGING DIFFERS     Checkov scans both environment roots together, so a
+#                       production-only setting fails on the staging value.
+#                       These are cost decisions already stated in
+#                       `environments/staging/main.tf`.
+#
+#   DELIBERATE          A decision this project made, argued where it was made.
+#
+# Anything not listed here fails the build.
+
+directory:
+  - .
+
+framework:
+  - terraform
+
+# Never soft-fail. A scanner whose findings do not stop anything is a report.
+soft-fail: false
+
+skip-check:
+  # ── FALSE POSITIVE ─────────────────────────────────────────────────────────
+
+  # CKV2_AWS_5 "Security Groups are attached to another resource"
+  # They are. The security groups are declared in `modules/network` and consumed
+  # in `modules/rds`, `modules/elasticache`, `modules/ecs` and `modules/alb`,
+  # which is the whole point of the module split. Checkov resolves attachment
+  # within a module and cannot follow an id across one.
+  - CKV2_AWS_5
+
+  # CKV_AWS_109, CKV_AWS_111, CKV_AWS_356 "IAM policy allows ... without
+  # constraints" / "'*' as a statement's resource"
+  # All three fire on `aws_iam_policy_document.kms`, which is a KEY POLICY, not
+  # an identity policy. A key policy is attached TO one key and its Resource
+  # element can only mean that key; KMS rejects a key policy naming any other
+  # ARN. The `kms:*` grant to the account root is likewise not optional: KMS
+  # does not let an IAM policy grant access to a key whose own policy does not
+  # delegate to the account, so omitting it produces a key nobody can ever use,
+  # manage or delete.
+  # `infra/check-no-wildcard-iam.py` encodes this distinction explicitly rather
+  # than skipping it, and is the check that actually enforces §10.1 rule 7.
+  - CKV_AWS_109
+  - CKV_AWS_111
+  - CKV_AWS_356
+
+  # CKV_AWS_382 "no security groups allow egress from 0.0.0.0:0 to port -1"
+  # Three resources, and the check is wrong about two of them: `rds` and `redis`
+  # declare `egress { cidr_blocks = [] }`, an EMPTY egress block that exists to
+  # REVOKE the permissive AWS default rather than to grant anything. Checkov
+  # reads `protocol = -1` and reports it open.
+  # The third, `ecs`, is real and is deliberate: the tasks must reach the model
+  # provider, the vendor APIs and SMTP. The control that matters is one tier
+  # down and is asserted separately: the DATA subnets have no route to the
+  # internet in either direction, not even outbound through NAT.
+  - CKV_AWS_382
+
+  # ── IMPOSSIBLE ─────────────────────────────────────────────────────────────
+
+  # CKV_AWS_145 "S3 buckets are encrypted with KMS by default"
+  # Fires only on `module.alb.aws_s3_bucket.logs`. The Elastic Load Balancing
+  # log delivery service writes with the bucket's default encryption and
+  # supports SSE-S3 and SSE-KMS with an AWS-managed key only. A customer-managed
+  # key makes every PutObject fail, and it fails SILENTLY: logging stops and the
+  # load balancer stays healthy, so nobody finds out until an investigation
+  # needs the logs.
+  # The application bucket, which holds resumes, IS CMK-encrypted. These are two
+  # buckets precisely because they have different requirements.
+  - CKV_AWS_145
+
+  # CKV_AWS_21 "all data stored in the S3 bucket have versioning enabled"
+  # Same bucket. An access log object is written once and never rewritten, so a
+  # version history would hold nothing but delete markers, and the lifecycle
+  # rule would then have two things to expire instead of one.
+  - CKV_AWS_21
+
+  # CKV_AWS_378 "Load Balancer doesn't use HTTP protocol"
+  # Two things, both intended. The port 80 LISTENER exists only to return a 301
+  # to HTTPS: there is no path through it that reaches a target group, so
+  # nothing is served in the clear. The TARGET GROUPS speak HTTP because the hop
+  # they carry is load balancer to task, inside a private subnet, and
+  # terminating TLS a second time there would mean issuing and rotating internal
+  # certificates for a hop that never leaves the VPC.
+  - CKV_AWS_378
+
+  # CKV_AWS_260 "no security groups allow ingress from 0.0.0.0:0 to port 80"
+  # The same port 80, on the ALB security group, for the same redirect.
+  # spec-doc6 §13.2 permits exactly this and nothing else: "no `0.0.0.0/0`
+  # ingress anywhere except the ALB's 80/443".
+  - CKV_AWS_260
+
+  # CKV2_AWS_57 "Secrets Manager secrets should have automatic rotation"
+  # Twelve secrets, and rotation means something different for each. A vendor
+  # API key (Anthropic, Voyage, Tavily, MSG91, Razorpay) cannot be rotated by a
+  # Lambda: the vendor mints it in their own console and no API exists to
+  # replace it in place. A Firebase service account is the same. Enabling
+  # rotation with a rotation function that cannot actually rotate produces a
+  # secret marked "rotating" that never changes, which is worse than an honest
+  # "not rotated" because it reads as compliant.
+  # DATABASE_URL is the one where rotation IS mechanisable, and the rotation
+  # loop for it is recorded in CLAUDE.md.
+  - CKV2_AWS_57
+
+  # CKV2_AWS_62 "S3 buckets should have event notifications enabled"
+  # Nothing in this product consumes an S3 event. Resume processing is dispatched
+  # by the API handler that accepted the upload, because the handler is the only
+  # place that knows which candidate and which application the object belongs to.
+  # An event notification with no consumer is a queue nobody drains.
+  - CKV2_AWS_62
+
+  # ── STAGING DIFFERS FROM PRODUCTION ────────────────────────────────────────
+  # Checkov scans both roots together, so a production-only setting fails on the
+  # staging value. Each of these is production-correct and is a stated cost
+  # decision in `environments/staging/main.tf`.
+
+  # CKV_AWS_150 ALB deletion protection: false in staging, true in production.
+  # Staging is meant to be destroyable, which is most of what it is for.
+  - CKV_AWS_150
+
+  # CKV_AWS_157 RDS Multi-AZ: false in staging, true in production.
+  - CKV_AWS_157
+
+  # CKV2_AWS_50 ElastiCache Multi-AZ failover: needs a replica to fail over TO,
+  # and staging runs zero replicas. Production runs one, and the module derives
+  # `automatic_failover_enabled` from the replica count rather than accepting
+  # both separately, so "resilient with nothing to fail over to" cannot be
+  # configured.
+  - CKV2_AWS_50
+
+  # CKV_AWS_65 ECS Container Insights: off in staging, on in production.
+  # It is billed per metric, and "is the worker saturated" is a production
+  # question.
+  - CKV_AWS_65
+
+  # ── DELIBERATE ─────────────────────────────────────────────────────────────
+
+  # CKV2_AWS_28 "public facing ALB are protected by WAF"
+  # `modules/waf` exists, is complete, and is disabled by variable, which is what
+  # spec-doc6 §13.2 asks for in those words: "Build it; leave it disabled by
+  # variable so enabling is a one-line decision."
+  # The reason it is off is in the module docstring: the managed rule sets
+  # inspect request bodies, and this product's request bodies are resumes,
+  # client-written job descriptions and interview answers. A candidate
+  # describing an XSS finding in a security interview trips a rule written for a
+  # form field. Enabling it is a week of count-mode metrics, not a checkbox, and
+  # `docs/DEPLOY_AWS.md` carries the procedure.
+  - CKV2_AWS_28
+
+  # CKV_AWS_338 "CloudWatch log groups retains logs for at least 1 year"
+  # Retention here is 14 days in staging and 90 in production, plus 90 for flow
+  # logs. Application logs at this platform's volume are a real cost line and a
+  # year of them answers no question a quarter does not. It is also not a
+  # neutral choice in the other direction: these logs describe requests made by
+  # named candidates, and keeping them for a year is keeping that for a year.
+  - CKV_AWS_338
+
+  # CKV_AWS_144 "S3 bucket has cross-region replication enabled"
+  # Deliberately absent, and this is the one where complying could be the
+  # WORSE answer. The region is the owner's decision precisely because of data
+  # residency expectations (`docs/DEPLOY_AWS.md`), and replicating candidate
+  # resumes into a second region would move personal data out of the
+  # jurisdiction the region was chosen for. Durability is covered by S3's own
+  # eleven nines within the region and by versioning.
+  - CKV_AWS_144
+
+  # CKV_AWS_18 "S3 bucket has access logging enabled"
+  # Not enabled on either bucket. S3 server access logging is best-effort and
+  # delivered on a delay measured in hours, which makes it the wrong instrument
+  # for the question actually being asked here, "who read which resume". That
+  # question needs CloudTrail S3 data events, which are attributable to an IAM
+  # principal and delivered promptly. Data events are an account-level
+  # configuration rather than a bucket one and are listed as an owner step in
+  # `docs/DEPLOY_AWS.md`; they are not configured by this Terraform, and this
+  # skip is the honest record of that rather than a claim that logging exists.
+  - CKV_AWS_18
+
+  # CKV_AWS_118 "enhanced monitoring is enabled for Amazon RDS instances"
+  # Enhanced Monitoring is billed per instance per metric and needs its own
+  # monitoring IAM role. The metrics it adds over the standard CloudWatch set
+  # are OS-level (per-process CPU, filesystem), and the questions this platform
+  # actually asks of its database are query-level, which Performance Insights
+  # and `enabled_cloudwatch_logs_exports = ["postgresql"]` already answer.
+  - CKV_AWS_118

@@ -90,7 +90,7 @@ def mint(secret: str, user_id: str, tenant_id: str, role: str) -> str:
         "aud": AUDIENCE_ORG,
         "iat": now,
         # 30s of backdating absorbs clock skew between the GitHub runner and
-        # Cloud Run. A token that is not yet valid fails identically to an
+        # the deployed task. A token that is not yet valid fails identically to an
         # expired one, and the message would send the next reader hunting the
         # wrong end of the lifetime.
         "nbf": now - 30,
@@ -115,7 +115,8 @@ def main() -> int:
     if not secret:
         print(
             "JWT_SECRET is empty. The smoke step reads it with "
-            "`gcloud secrets versions access latest --secret=JWT_SECRET`; "
+            "`aws secretsmanager get-secret-value --secret-id readypick-<env>/JWT_SECRET "
+            "--query SecretString --output text`; "
             "check that the deploy service account still holds "
             "roles/secretmanager.secretAccessor.",
             file=sys.stderr,

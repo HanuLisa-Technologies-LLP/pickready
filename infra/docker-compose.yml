@@ -122,7 +122,7 @@ services:
       # bundle, so the built image is not pinned to one backend address.
       #
       # `backend` is the compose service name; in the cloud this is the backend
-      # Cloud Run URL. NEXT_PUBLIC_API_URL is intentionally unset so dev and
+      # deployed URL. NEXT_PUBLIC_API_URL is intentionally unset so dev and
       # production exercise the same code path.
       BACKEND_INTERNAL_URL: http://backend:8000
       NEXT_TELEMETRY_DISABLED: "1"
