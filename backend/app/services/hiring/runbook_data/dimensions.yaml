@@ -1,0 +1,299 @@
+# Extracted from the Ready Pick Now Hiring Philosophy & Intelligence
+# Runbook, document RPN-PHIL-001, version 1.1.
+#
+# THIS FILE IS NOT AN INDEPENDENT SOURCE OF TRUTH. Every entry carries a
+# `source` naming the Runbook section it was taken from, and
+# backend/tests/test_runbook_parity.py fails if this file and the Runbook
+# disagree in either direction. Change the Runbook and this file in the
+# same commit, or the build stops.
+#
+# Generated once from the Runbook tables and maintained by hand thereafter.
+
+meta:
+  document: RPN-PHIL-001
+  runbook_version: "1.1"
+  description: "The five evaluation dimensions D1-D5, their rubric anchors, and the arithmetic that turns them into a composite."
+
+dimensions:
+  D1:
+    source: "RPN-PHIL-001 §9.1"
+    name: "Verified Competence"
+    question: "Can this person actually do the work this role requires?"
+    what_it_measures: "demonstrated, corroborated ability against the must-have competencies on the approved scorecard - not claimed ability, not adjacent ability, not potential ability."
+    sub_signals:
+      - "Depth on the core competency set (as defined by the department model)"
+      - "Applied performance under observation"
+      - "Reasoning quality: can they explain why, handle ambiguity, and identify what they don't know"
+      - "Tool and method fluency at the level the role requires"
+      - "Relevant credential or licence where the role genuinely gates on it"
+    evidence_types_that_count: "live assessment, work simulation, structured technical probe, verified artefact with sustained authorship, credential verification, reference corroboration on specific technical claims."
+    evidence_types_that_do_not_count_alone: "skill lists, self-rated proficiency, keyword presence, certification claims that have not been verified, portfolio artefacts without process explanation."
+    rubric_anchors:
+      - band: "90–100"
+        low: 90
+        high: 100
+        meaning: "Demonstrated mastery across all must-haves under observation; can teach it; reasoning is fluent under pressure and ambiguity"
+      - band: "75–89"
+        low: 75
+        high: 89
+        meaning: "Solid demonstrated capability on all must-haves; minor gaps in one non-critical area; reasoning sound"
+      - band: "60–74"
+        low: 60
+        high: 74
+        meaning: "Demonstrated on most must-haves; one must-have is only partially evidenced; would need support"
+      - band: "45–59"
+        low: 45
+        high: 59
+        meaning: "Mixed: claimed broadly, demonstrated narrowly; material gaps in must-haves"
+      - band: "25–44"
+        low: 25
+        high: 44
+        meaning: "Little demonstrated capability beyond self-report; assessment performance weak or shallow"
+      - band: "0–24"
+        low: 0
+        high: 24
+        meaning: "Contradicted or absent capability on core requirements"
+  D2:
+    source: "RPN-PHIL-001 §9.2"
+    name: "Track Record & Impact"
+    question: "What has changed in the world because this person did their job?"
+    what_it_measures: "the outcomes attributable to the candidate, at a scope and in a context relevant to this role."
+    sub_signals:
+      - "Attributable outcomes (passes the four-question impact test, §8.1)"
+      - "Ownership depth (owned vs. contributed vs. participated)"
+      - "Scope: people, budget, systems, decision rights"
+      - "Difficulty and constraint of the environment in which the outcome was achieved"
+      - "Durability of the outcome"
+      - "Consistency of impact across roles, not a single career highlight"
+    rubric_anchors:
+      - band: "90–100"
+        low: 90
+        high: 100
+        meaning: "Repeated, corroborated, attributable outcomes at or above role scope, in comparable difficulty; durable"
+      - band: "75–89"
+        low: 75
+        high: 89
+        meaning: "Clear corroborated ownership of significant outcomes; scope broadly matches role"
+      - band: "60–74"
+        low: 60
+        high: 74
+        meaning: "Real contributions with partial attribution clarity; scope somewhat below role"
+      - band: "45–59"
+        low: 45
+        high: 59
+        meaning: "Activity is documented; outcomes are asserted but not corroborated"
+      - band: "25–44"
+        low: 25
+        high: 44
+        meaning: "Participation only; no evidence of ownership or outcome"
+      - band: "0–24"
+        low: 0
+        high: 24
+        meaning: "Claims contradicted, or a track record inconsistent with claimed seniority"
+  D3:
+    source: "RPN-PHIL-001 §9.3"
+    name: "Role & Context Fit"
+    question: "Is this person right for THIS hiring problem, at THIS company, right now?"
+    sub_signals:
+      - "Alignment to the SWOT-derived priority competencies (the gap this hire must close)"
+      - "Situation match: turnaround vs. scale-up vs. steady-state vs. greenfield vs. maintenance"
+      - "Operating-environment match: structure, ambiguity tolerance, resourcing level, process maturity"
+      - "Stakeholder and collaboration model match"
+      - "Practical constraints: location, notice period, compensation band, work model, travel, shift"
+      - "Company-DNA behaviours (Layer 2), expressed as observable evidence"
+    rubric_anchors:
+      - band: "90–100"
+        low: 90
+        high: 100
+        meaning: "Directly addresses the top SWOT-derived priority with corroborated evidence; environment and constraints align cleanly"
+      - band: "75–89"
+        low: 75
+        high: 89
+        meaning: "Addresses top priority well; one secondary mismatch that is manageable"
+      - band: "60–74"
+        low: 60
+        high: 74
+        meaning: "Generally suitable; the specific gap this hire must close is only partially covered"
+      - band: "45–59"
+        low: 45
+        high: 59
+        meaning: "Capable person, but not aimed at this hiring problem; or a material practical constraint"
+      - band: "25–44"
+        low: 25
+        high: 44
+        meaning: "Substantial mismatch on situation or environment"
+      - band: "0–24"
+        low: 0
+        high: 24
+        meaning: "Fundamental mismatch; or a declared constraint is unmet"
+  D4:
+    source: "RPN-PHIL-001 §9.4"
+    name: "Authenticity & Consistency"
+    question: "Does the candidate's story hold together across independent sources?"
+    sub_signals:
+      - "Cross-source consistency on material claims"
+      - "Specificity under unprepared probing"
+      - "Artefact authenticity (authorship, sustained contribution, provenance)"
+      - "Reference corroboration alignment"
+      - "Assessment-process integrity signals (routed to human review, never auto-scored to rejection)"
+      - "Self-representation accuracy: does claimed seniority match demonstrated depth"
+      - "Disclosure behaviour: candidates who accurately describe their own limits score higher, not lower"
+    rubric_anchors:
+      - band: "90–100"
+        low: 90
+        high: 100
+        meaning: "Every material claim corroborated across independent groups; specificity high under live probing; artefacts authentic; references align precisely"
+      - band: "75–89"
+        low: 75
+        high: 89
+        meaning: "Strong overall consistency; one minor unexplained variance"
+      - band: "60–74"
+        low: 60
+        high: 74
+        meaning: "Mostly consistent; some claims uncorroborated; specificity thin in places"
+      - band: "45–59"
+        low: 45
+        high: 59
+        meaning: "Material claims rest on self-report; probing produced generic answers; or one moderate unresolved contradiction"
+      - band: "25–44"
+        low: 25
+        high: 44
+        meaning: "Multiple contradictions; artefacts of doubtful authorship; references do not match claims"
+      - band: "0–24"
+        low: 0
+        high: 24
+        meaning: "Severe contradiction or verified misrepresentation → integrity flag, mandatory human review, candidate not delivered without HR Manager decision"
+  D5:
+    source: "RPN-PHIL-001 §9.5"
+    name: "Trajectory & Potential"
+    question: "What does this person's growth pattern suggest they will be able to do?"
+    sub_signals:
+      - "Rate and direction of scope expansion over time"
+      - "Demonstrated successful transitions into adjacent domains"
+      - "Learning behaviour: how they acquired the last major skill, and how fast"
+      - "Self-direction and initiative evidence"
+      - "Ceiling indicators: complexity of problems they now handle unaided"
+      - "Curiosity and depth-seeking under probing"
+    rubric_anchors:
+      - band: "90–100"
+        low: 90
+        high: 100
+        meaning: "Consistent scope expansion; multiple successful domain transitions; evidence of self-directed mastery; handles problems above current title"
+      - band: "75–89"
+        low: 75
+        high: 89
+        meaning: "Clear upward trajectory; one demonstrated successful transition"
+      - band: "60–74"
+        low: 60
+        high: 74
+        meaning: "Steady growth within a lane; adequate learning evidence"
+      - band: "45–59"
+        low: 45
+        high: 59
+        meaning: "Flat trajectory; capability acquired early and not extended"
+      - band: "25–44"
+        low: 25
+        high: 44
+        meaning: "Declining scope, or repeated lateral moves without depth accumulation"
+      - band: "0–24"
+        low: 0
+        high: 24
+        meaning: "No growth evidence; or pattern inconsistent with claimed seniority"
+
+why_exactly_five:
+  source: "RPN-PHIL-001 §9.6"
+  rule: "any proposal to add a sixth must demonstrate incremental predictive validity in calibration."
+
+aggregation:
+  competency_score:
+    source: "RPN-PHIL-001 §10.2"
+    formula_transcribed: "Comp(k) = sum over claims c mapped to k of [rubric_level(c) x S_final(c)] / sum over claims c of S_final(c)"
+    rubric_level_range: [0, 100]
+    in_words: "the rubric says how good it looks; the evidence strength says how much we should believe it."
+    no_claim_maps: "Comp(k) = UNKNOWN (see §6.6), and k is dropped from the dimension average with renormalisation."
+  dimension_score:
+    source: "RPN-PHIL-001 §10.3"
+    formula_transcribed: "D_i = sum over competencies k in dimension i of [w_k x Comp(k)] / sum over k with Comp(k) != UNKNOWN of w_k"
+    intra_dimension_weight_from: "the scorecard force-ranking"
+  composite:
+    source: "RPN-PHIL-001 §10.4"
+    formula_transcribed: "RPS_raw = sum over i=1..5 of (W_i x D_i)"
+    weight_sum: 1.0
+
+weight_normalisation:
+  source: "RPN-PHIL-001 §11.4"
+  ordered_steps:
+    - "Apply L2 modifiers to the L1 baseline."
+    - "Apply L3 modifiers."
+    - "Clamp each W_i to its floor and ceiling: no dimension may fall below 0.05 or rise above 0.40."
+    - "D4 floor is 0.12 and cannot be lowered by any client."
+    - "Renormalise so Σ W_i = 1.0."
+    - "Record the final vector, its derivation, and who requested each modifier, in the frozen configuration."
+  dimension_floor: 0.05
+  dimension_ceiling: 0.40
+  d4_floor: 0.12
+  no_dimension_is_ever_zero: "a dimension weighted zero is a dimension nobody is accountable for"
+  runbook_ambiguity: "Three Layer 1 baselines in §11.1 already sit outside these clamps before any modifier is applied: Mechanical Fresher D1=0.42 and Skilled trades Entry D1=0.44 exceed the 0.40 ceiling, and Data & Analytics Fresher D2=0.04 is below the 0.05 floor. See RUNBOOK_OPEN_QUESTIONS.md Q2."
+
+fresher_variant:
+  source: "RPN-PHIL-001 §21.10"
+  instruction: "Suspend D2. Redistribute to D1 (+0.10) and D5 (+0.05)."
+  d1_increase: 0.10
+  d5_increase: 0.05
+  runbook_ambiguity: "Suspend reads as zero, and §11.4 forbids a zero weight explicitly. §9.2 says D2 is suspended OR heavily reduced without settling which. Applied to the IT fresher baseline the instruction also drives D1 to 0.50, above the 0.40 ceiling. See RUNBOOK_OPEN_QUESTIONS.md Q10."
+
+transparency:
+  source: "RPN-PHIL-001 §11.5"
+  rule: "The active weight vector is shown to the client in every dossier."
+
+layer_2_modifiers:
+  source: "RPN-PHIL-001 §11.2"
+  rules:
+    - declaration: "\"We value proven delivery over potential\""
+      effect: "D2 ↑, D5 ↓"
+      bound: "±0.06"
+    - declaration: "\"We hire for potential and train\""
+      effect: "D5 ↑, D2 ↓"
+      bound: "±0.08"
+    - declaration: "\"We are highly practical; credentials matter little\""
+      effect: "Shifts within D1 sub-signals"
+      bound: "n/a to W"
+    - declaration: "\"We have limited onboarding capacity\""
+      effect: "D1 ↑, D5 ↓"
+      bound: "±0.05"
+    - declaration: "\"Our environment is highly ambiguous / early-stage\""
+      effect: "D3 ↑, D5 ↑"
+      bound: "±0.05 each"
+    - declaration: "\"We are regulated and audit-sensitive\""
+      effect: "D4 ↑"
+      bound: "+0.06 max"
+
+layer_3_modifiers:
+  source: "RPN-PHIL-001 §11.3"
+  rules:
+    - condition: "Hire must close a specific named capability gap"
+      effect: "D3 ↑, D1 ↑"
+      bound: "+0.08 combined"
+    - condition: "Hire is a turnaround / crisis mandate"
+      effect: "D2 ↑, D3 ↑"
+      bound: "+0.08 combined"
+    - condition: "Hire is greenfield / zero-to-one"
+      effect: "D5 ↑, D3 ↑"
+      bound: "+0.07 combined"
+    - condition: "Role will change substantially within a year"
+      effect: "D5 ↑"
+      bound: "+0.06"
+    - condition: "Role is a defined, stable execution seat"
+      effect: "D1 ↑, D5 ↓"
+      bound: "±0.06"
+    - condition: "High-trust / high-blast-radius role"
+      effect: "D4 ↑"
+      bound: "+0.06"
+
+pedigree_cap:
+  source: "RPN-PHIL-001 §8.9"
+  maximum_share_of_total_score: 0.05
+  rule: "institutional pedigree may contribute to at most 5% of the total Ready Pick Score, may only contribute to the Trajectory dimension, and may never appear in a threshold or disqualifier."
+  client_may_raise: "only by explicit written Layer 2 configuration, which is recorded and surfaced in the fairness audit"
+  client_may_lower_to_zero: true
+  corollary: "where a client's Layer 2 declares a target-school or target-company list, that list is applied as a sourcing preference (where we look), never as an evaluation criterion (how we score)."

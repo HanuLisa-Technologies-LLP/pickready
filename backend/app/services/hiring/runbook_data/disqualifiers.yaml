@@ -1,0 +1,76 @@
+# Extracted from the Ready Pick Now Hiring Philosophy & Intelligence
+# Runbook, document RPN-PHIL-001, version 1.1.
+#
+# THIS FILE IS NOT AN INDEPENDENT SOURCE OF TRUTH. Every entry carries a
+# `source` naming the Runbook section it was taken from, and
+# backend/tests/test_runbook_parity.py fails if this file and the Runbook
+# disagree in either direction. Change the Runbook and this file in the
+# same commit, or the build stops.
+#
+# Generated once from the Runbook tables and maintained by hand thereafter.
+
+meta:
+  document: RPN-PHIL-001
+  runbook_version: "1.1"
+  description: "Permitted and prohibited hard disqualifiers, and the soft-constraint alternative."
+
+permitted:
+  source: "RPN-PHIL-001 §12.3"
+  legitimacy_tests:
+    - "objective and binary"
+    - "genuinely non-negotiable for the role"
+    - "not a proxy for a protected characteristic"
+    - "declared before sourcing"
+  legitimacy_tests_verbatim: "(a) objective and binary, (b) genuinely non-negotiable for the role, (c) not a proxy for a protected characteristic, and (d) declared before sourcing."
+  acceptable_examples:
+    - "Absence of a licence legally required to perform the work (e.g. a licence required to sign off statutory drawings, a valid commercial driving licence for a driving role, a required trade certification)"
+    - "Absence of legal work authorisation for the location"
+    - "Verified misrepresentation of a credential or employment record"
+    - "Failure to meet a statutory minimum qualification for a regulated role"
+    - "Unwillingness to accept a declared, published, non-negotiable condition of the role (shift pattern, travel requirement, on-site requirement) after being informed of it"
+
+prohibited:
+  source: "RPN-PHIL-001 §12.4"
+  rule: "The following are refused regardless of client request, under §3.5:"
+  patterns:
+    - "Employment gaps of any length"
+    - "Age, or proxies for it (graduation year filters, \"digital native,\" \"high-energy,\" maximum experience caps)"
+    - "Marital or parental status; caregiving history"
+    - "Gender, and proxies (gendered role language, \"culture fit\" with a homogeneous team)"
+    - "Caste, religion, region, mother tongue, or any proxy for them (including native-language requirements not genuinely required for the work, or locality filters that map to community concentration)"
+    - "Disability, or proxies (blanket physical requirements not tied to essential job functions)"
+    - "Institutional pedigree as a filter (§8.9)"
+    - "Current or previous salary as a filter or as a ranking input"
+    - "Health status, other than where a statutory occupational health requirement applies and is applied uniformly"
+    - "Any characteristic protected under applicable law in the hiring jurisdiction"
+  handling: "Requests for prohibited disqualifiers are logged, refused, escalated to the client's HR Manager, and reported in the quarterly fairness audit. Repeated requests are a commercial escalation."
+
+soft_constraints:
+  source: "RPN-PHIL-001 §12.5"
+  rule: "Most things clients want as disqualifiers are better modelled as weighted constraints."
+  worked_example: "\"Must be in Hyderabad\" becomes a D3 constraint that a willing-to-relocate candidate can partially satisfy, with the relocation risk stated."
+
+approval:
+  source: "RPN-PHIL-001 §12.1"
+  who_may_approve: "HR Manager approves only"
+  automatic: "Yes, logged and reviewable"
+  behaviour: "Candidate excluded from consideration"
+
+protected_characteristic_proxy:
+  source: "RPN-PHIL-001 §3.5"
+  conflict: "L3 disqualifier is a protected-characteristic proxy"
+  resolution: "Refuse; escalate to HR Manager; log under fairness audit."
+
+no_auto_rejection_on_authenticity:
+  source: "RPN-PHIL-001 §3.5"
+  conflict: "Client requests auto-rejection on an authenticity flag"
+  resolution: "Refused under C5. Offer instead: auto-routing to a priority human review queue."
+
+observable_evidence_requirement:
+  source: "RPN-PHIL-001 §16.3"
+  rule: "Each must be written as observable evidence, not as a trait."
+
+banned_criterion_culture_fit:
+  source: "RPN-PHIL-001 §9.3"
+  rule: "\"culture fit\" is banned as a criterion. It is unobservable, unfalsifiable, and a well-documented vector for homophily bias."
+  replacement: "observable working-context evidence"

@@ -1,0 +1,350 @@
+# Extracted from the Ready Pick Now Hiring Philosophy & Intelligence
+# Runbook, document RPN-PHIL-001, version 1.1.
+#
+# THIS FILE IS NOT AN INDEPENDENT SOURCE OF TRUTH. Every entry carries a
+# `source` naming the Runbook section it was taken from, and
+# backend/tests/test_runbook_parity.py fails if this file and the Runbook
+# disagree in either direction. Change the Runbook and this file in the
+# same commit, or the build stops.
+#
+# Generated once from the Runbook tables and maintained by hand thereafter.
+
+meta:
+  document: RPN-PHIL-001
+  runbook_version: "1.1"
+  description: "The six-tier evidence strength hierarchy, its quality modifiers, the decay clocks, the independence rules and the sufficiency floor."
+
+tiers:
+  E0:
+    source: "RPN-PHIL-001 §6.1"
+    name: "Asserted"
+    definition: "Unverifiable self-claim"
+    cost_to_fabricate: "Zero"
+    default_strength: 0.10
+  E1:
+    source: "RPN-PHIL-001 §6.1"
+    name: "Self-described with specificity"
+    definition: "Self-report containing checkable specifics (numbers, systems, names, mechanisms)"
+    cost_to_fabricate: "Low"
+    default_strength: 0.25
+  E2:
+    source: "RPN-PHIL-001 §6.1"
+    name: "Artefact provided by candidate"
+    definition: "Portfolio, sample, document, repository link supplied by the candidate"
+    cost_to_fabricate: "Low–moderate"
+    default_strength: 0.40
+  E3:
+    source: "RPN-PHIL-001 §6.1"
+    name: "Structured response under controlled conditions"
+    definition: "Validation questionnaire, take-home, unproctored assessment"
+    cost_to_fabricate: "Moderate"
+    default_strength: 0.55
+  E4:
+    source: "RPN-PHIL-001 §6.1"
+    name: "Demonstrated under observation"
+    definition: "Live/proctored assessment, live technical probe, work simulation, structured interview reasoning"
+    cost_to_fabricate: "High"
+    default_strength: 0.80
+  E5:
+    source: "RPN-PHIL-001 §6.1"
+    name: "Third-party verified"
+    definition: "Credential confirmed with issuing body; reference corroboration on a specific claim; verified commit history with sustained authorship; documented client/employer confirmation"
+    cost_to_fabricate: "Very high"
+    default_strength: 0.95
+
+tier_strength_adjustment:
+  source: "RPN-PHIL-001 §6.1"
+  rule: "These are default strengths. Department models may adjust within +/-0.10 with justification, recorded in the department model, not applied ad hoc."
+  maximum_departmental_adjustment: 0.10
+  runbook_ambiguity: "E5 is 0.95 and the allowance is +/-0.10, so an adjusted tier strength reaches 1.05. §6.5 caps the combined strength at 1.0 but places no cap on the tier strength itself. See RUNBOOK_OPEN_QUESTIONS.md Q12."
+
+fabrication_cost_principle:
+  source: "RPN-PHIL-001 §6.2"
+  rule: "Strength is assigned by how expensive the evidence is to fake, not how impressive it looks."
+  posture: "We do not try to detect fabrication. We systematically shift decision weight onto evidence classes where fabrication is costly."
+
+decay:
+  source: "RPN-PHIL-001 §6.3"
+  clocks:
+    collection_recency: "when we gathered it (rarely decays; a reference given last month is still a reference)"
+    event_recency: "when the underlying work happened (decays, at rates that differ by domain)"
+  applies_to: "the claim's contribution"
+  fast_moving_domains: "software, data, digital marketing, AI"
+  stable_domains: "civil, mechanical, finance, HR, trades"
+  multipliers:
+    - age_of_underlying_event: "0–2 years"
+      fast_moving: 1.00
+      stable: 1.00
+    - age_of_underlying_event: "2–4 years"
+      fast_moving: 0.90
+      stable: 0.97
+    - age_of_underlying_event: "4–7 years"
+      fast_moving: 0.75
+      stable: 0.92
+    - age_of_underlying_event: "7–10 years"
+      fast_moving: 0.60
+      stable: 0.85
+    - age_of_underlying_event: "10+ years"
+      fast_moving: 0.45
+      stable: 0.75
+  exceptions_that_do_not_decay:
+    - "demonstrated reasoning ability"
+    - "licensure currently active"
+    - "leadership scope (for executive roles, historical scope is still informative)"
+    - "domain fundamentals in stable fields"
+  anti_pattern: "decay must not become an age proxy. Decay applies to specific technical claims, never to the candidate's overall profile, and never to the Trajectory dimension."
+
+quality_modifiers:
+  source: "RPN-PHIL-001 §6.4"
+  specificity:
+    label: "Specificity"
+    range: "×0.7 – ×1.2"
+    minimum: 0.7
+    maximum: 1.2
+    applies_when: "Generic language reduces; checkable mechanism/number/system names increase"
+  attribution_clarity:
+    label: "Attribution clarity"
+    range: "×0.6 – ×1.1"
+    minimum: 0.6
+    maximum: 1.1
+    applies_when: "\"We built\" vs \"I owned\"; ambiguous ownership reduces"
+  scale_relevance:
+    label: "Scale relevance"
+    range: "×0.8 – ×1.15"
+    minimum: 0.8
+    maximum: 1.15
+    applies_when: "Evidence at scale similar to the role's context increases"
+  corroboration:
+    label: "Corroboration"
+    range: "×1.0 – ×1.4"
+    minimum: 1.0
+    maximum: 1.4
+    applies_when: "Number of independent groups supporting the claim"
+  attribution_emphasis: "The distinction between participated in and owned is one of the highest-value discriminations in resume evaluation and is almost never made by similarity-based systems."
+
+effective_strength:
+  source: "RPN-PHIL-001 §6.5"
+  per_evidence_factors:
+    - tier_strength
+    - specificity
+    - attribution
+    - scale_relevance
+    - decay
+  group_aggregation_transcribed: "S(c) = 1 - product over independent groups g of (1 - max s(e) in g)"
+  group_aggregation_rationale: "within a group, adding more of the same kind of evidence adds little"
+  corroboration_multiplier:
+    source: "RPN-PHIL-001 §6.5"
+    by_independence_count:
+      1: 1.00
+      2: 1.15
+      3: 1.28
+      4: 1.40
+    capped_at_independence_count: 4
+    result_capped_at: 1.0
+  contradiction_penalty:
+    source: "RPN-PHIL-001 §6.5"
+    minor: 0.10
+    moderate: 0.30
+    severe: 0.60
+    disqualifying: "claim voided, integrity flag raised"
+
+missing_evidence_states:
+  source: "RPN-PHIL-001 §6.6"
+  principle: "A missing signal gets scored as zero, which is mathematically identical to negative evidence, which is wrong and unfair."
+  UNKNOWN:
+    trigger: "evidence for competency X was NEVER REQUESTED"
+    handling:
+      - "competency is EXCLUDED from the weighted average"
+      - "weights renormalise across remaining competencies"
+      - "confidence is reduced"
+      - "gap recorded as \"not_assessed\""
+  NOT_PROVIDED:
+    trigger: "evidence for competency X WAS REQUESTED and candidate DID NOT PROVIDE"
+    handling:
+      - "confidence reduced more sharply"
+      - "flag: \"requested and not supplied\""
+      - "recruiter reviews reason (may be legitimate: NDA, confidentiality, no access)"
+      - "only after review may it be scored as a deficiency"
+  WEAK_OR_CONTRADICTED:
+    trigger: "evidence WAS PROVIDED and DOES NOT SUPPORT the claim"
+    handling:
+      - "this is genuine negative evidence and IS scored"
+  confidentiality_carve_out: "NOT_PROVIDED for confidentiality reasons must trigger an alternative evidence route (structured verbal walkthrough under NDA-safe abstraction; reference corroboration; redacted samples) before it counts against anyone. Failure to offer an alternative route is a delivery defect."
+
+sufficiency_floor:
+  source: "RPN-PHIL-001 §6.7"
+  runbook_ambiguity: "§6.7 and §10.7 each define Insufficient independently, with the same consequence and no stated relationship, and they can disagree in both directions. See RUNBOOK_OPEN_QUESTIONS.md Q15."
+  levels:
+    high: "All must-have competencies at ≥2 independent groups, ≥1 at E4+, zero unresolved contradictions of moderate+ severity"
+    moderate: "All must-have competencies at ≥1 independent group beyond self-report, ≥1 competency at E4+, contradictions resolved or minor"
+    low: "Some must-haves rest on E0–E2 only, or unresolved moderate contradictions exist"
+    insufficient: "Fewer than half of must-haves have any evidence above E1 → candidate is NOT delivered; either collect more or exclude with reason"
+
+independence:
+  source: "RPN-PHIL-001 §5.4"
+  definition: "Two evidence nodes are independent if they could not have been produced from the same act of preparation by the candidate."
+  counting_rule: "The independence count for a claim is the number of distinct groups supporting it, not the number of evidence items."
+  weakly_independent:
+    source: "RPN-PHIL-001 §5.4"
+    value: "Weakly"
+    occurs_on: "Resume + validation questionnaire (async, written)"
+    runbook_ambiguity: "Every other row of the §5.4 table reads Yes or No, and the counting rule is an integer count of distinct groups. What a weakly independent pair contributes to that integer is not stated, and this is the most common evidence pair in the product. See RUNBOOK_OPEN_QUESTIONS.md Q14."
+  pairs:
+    - pair: "Resume + cover letter"
+      independent: "No"
+      reason: "Same authorship, same preparation session"
+    - pair: "Resume + LinkedIn profile"
+      independent: "No"
+      reason: "Same self-report; trivially synchronised"
+    - pair: "Resume + validation questionnaire (async, written)"
+      independent: "Weakly"
+      reason: "Same authorship, but probes are unseen and specific"
+    - pair: "Validation questionnaire + live probe on the same claim"
+      independent: "Yes"
+      reason: "Live probing removes preparation time"
+    - pair: "Assessment + interview reasoning"
+      independent: "Yes"
+      reason: "Different modality, different pressure"
+    - pair: "Portfolio artefact + reference response"
+      independent: "Yes"
+      reason: "Different authorship"
+    - pair: "GitHub commit history + assessment debugging process"
+      independent: "Yes"
+      reason: "Different production context"
+    - pair: "Two references from the same manager"
+      independent: "No"
+      reason: "Single source"
+    - pair: "Reference + credential verification with issuing body"
+      independent: "Yes"
+      reason: "One is human, one is institutional"
+  groups:
+    source: "RPN-PHIL-001 §38.1"
+    sources:
+      - number: 1
+        source_name: "Resume / profile"
+        establishes: "Claims to be tested"
+        group: "self_written"
+      - number: 2
+        source_name: "Validation questionnaire"
+        establishes: "Specificity of claims"
+        group: "self_structured"
+      - number: 3
+        source_name: "Assessment"
+        establishes: "Demonstrated capability"
+        group: "assessment"
+      - number: 4
+        source_name: "Work artefacts"
+        establishes: "Production evidence"
+        group: "artefact"
+      - number: 5
+        source_name: "Live interaction"
+        establishes: "Unprepared reasoning"
+        group: "live"
+      - number: 6
+        source_name: "References"
+        establishes: "External corroboration"
+        group: "third_party"
+  unknown_source_type: "The Runbook enumerates six independence groups and does not state how to classify a source outside that list. See RUNBOOK_OPEN_QUESTIONS.md Q6."
+  runbook_ambiguity: "§38.1"
+
+chain_of_custody:
+  source: "RPN-PHIL-001 §5.5"
+  recorded_per_node:
+    - "who collected it"
+    - "when"
+    - "under what conditions"
+    - "whether the candidate consented"
+  inadmissible: "Evidence collected outside the declared process (a recruiter's informal impression from an unlogged phone call; a social-media inference) is inadmissible"
+
+materiality:
+  source: "RPN-PHIL-001 §5.3"
+  high: "maps to a must-have competency, or to a disqualifier condition"
+  medium: "maps to a nice-to-have competency, or supports the Impact dimension"
+  low: "contextual colour; no verification obligation"
+  rule: "every High-materiality claim must reach at least partially corroborated status before the candidate can be delivered at Moderate or High confidence."
+
+minimum_source_standards_by_seniority:
+  source: "RPN-PHIL-001 §7.4"
+  levels:
+    - seniority: "Fresher / entry"
+      minimum_independent_groups: 2
+      mandatory_e4_plus: "1 (assessment or structured live probe)"
+    - seniority: "2–5 years"
+      minimum_independent_groups: 2
+      mandatory_e4_plus: "1"
+    - seniority: "5–10 years"
+      minimum_independent_groups: 3
+      mandatory_e4_plus: "1, plus 1 reference or verified artefact"
+    - seniority: "10+ / leadership"
+      minimum_independent_groups: 3
+      mandatory_e4_plus: "1 live structured probe + 2 references"
+    - seniority: "Executive / CXO"
+      minimum_independent_groups: 4
+      mandatory_e4_plus: "Structured executive interview + ≥2 referenced corroborations + verifiable scope evidence"
+
+verification_methods:
+  source: "RPN-PHIL-001 §7.5"
+  methods:
+    - method: "Issuing-body credential check"
+      produces_tier: "E5"
+      applicable_to: "Licences, certifications, degrees"
+    - method: "Employment verification (dates, title, scope)"
+      produces_tier: "E5"
+      applicable_to: "Employment claims"
+    - method: "Structured reference on a specific claim"
+      produces_tier: "E5"
+      applicable_to: "Ownership, impact, behaviour"
+    - method: "Signed-commit / sustained-authorship analysis"
+      produces_tier: "E5"
+      applicable_to: "Code contribution"
+    - method: "Unsigned repository analysis"
+      produces_tier: "E2–E3"
+      applicable_to: "Code contribution (author fields are trivially spoofable - treat as unverified)"
+    - method: "Live proctored assessment"
+      produces_tier: "E4"
+      applicable_to: "Applied skill"
+    - method: "Live unprepared probe on a claimed artefact"
+      produces_tier: "E4"
+      applicable_to: "Depth of ownership"
+    - method: "Work simulation / job sample"
+      produces_tier: "E4"
+      applicable_to: "Applied skill under realistic conditions"
+    - method: "Take-home / async assessment"
+      produces_tier: "E3"
+      applicable_to: "Applied skill (assume AI assistance; score process not output)"
+    - method: "Validation questionnaire"
+      produces_tier: "E3"
+      applicable_to: "Claim specificity"
+    - method: "Candidate-supplied artefact"
+      produces_tier: "E2"
+      applicable_to: "Output quality"
+    - method: "Public profile scrape"
+      produces_tier: "E1"
+      applicable_to: "Context only"
+
+claim_statuses:
+  source: "RPN-PHIL-001 §7.3"
+  values: [Corroborated, Partially corroborated, Uncorroborated, Contradicted]
+
+specificity_gradient:
+  source: "RPN-PHIL-001 §38.3"
+  levels:
+    - level: 1
+      question: "What did you do?"
+      answerable_by: "anyone can answer"
+    - level: 2
+      question: "How did you do it?"
+      answerable_by: "a well-read person can answer"
+    - level: 3
+      question_transcribed: "Why that way and not the obvious alternative?"
+      answerable_by_transcribed: "someone who considered alternatives can answer"
+    - level: 4
+      question_transcribed: "What went wrong, and what did it cost?"
+      answerable_by_transcribed: "only someone who lived it can answer"
+    - level: 5
+      question_transcribed: "What would you do differently and what did you learn that you didn't expect?"
+      answerable_by_transcribed: "only someone who reflected on having lived it"
+  levels_note: "Levels 3, 4 and 5 are set across two columns of a code block in the Runbook, so their text is reassembled here and marked transcribed rather than quoted."
+  discriminators: [4, 5]
+  design_rule: "at least 40% of probe items must sit at Level 4 or 5."
+  minimum_level_4_or_5_fraction: 0.40

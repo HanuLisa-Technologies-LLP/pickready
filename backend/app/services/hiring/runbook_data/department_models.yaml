@@ -1,0 +1,893 @@
+# Extracted from the Ready Pick Now Hiring Philosophy & Intelligence
+# Runbook, document RPN-PHIL-001, version 1.1.
+#
+# THIS FILE IS NOT AN INDEPENDENT SOURCE OF TRUTH. Every entry carries a
+# `source` naming the Runbook section it was taken from, and
+# backend/tests/test_runbook_parity.py fails if this file and the Runbook
+# disagree in either direction. Change the Runbook and this file in the
+# same commit, or the build stops.
+#
+# Generated once from the Runbook tables and maintained by hand thereafter.
+
+meta:
+  document: RPN-PHIL-001
+  runbook_version: "1.1"
+  description: "Department competency models (Part VI) and the Layer 1 baseline weight matrix they select a family from."
+
+reading_rule:
+  source: "RPN-PHIL-001 Part VI"
+  menu_rule: "the competency list in each model is the menu. The scorecard for a given role selects at most six from it, weighted by SWOT force-ranking. No role uses the whole menu."
+  claimed_structure: "Every model follows the same eleven-section structure so that they are comparable and so that adding a new department is a filling-in exercise rather than an invention."
+  runbook_ambiguity: "The claimed eleven-section structure is not what the document delivers: subsection counts run from four (§33, §35) to twelve (§21), and §67.8 separately concedes that department coverage is uneven. See RUNBOOK_OPEN_QUESTIONS.md Q4."
+
+baseline_weight_families:
+  it_software:
+    source: "RPN-PHIL-001 §11.1"
+    label: "IT & Software"
+    weights:
+      "Fresher": {D1: 0.40, D2: 0.05, D3: 0.15, D4: 0.20, D5: 0.20}
+      "2–5 yrs": {D1: 0.36, D2: 0.16, D3: 0.16, D4: 0.22, D5: 0.10}
+      "5–10 yrs": {D1: 0.32, D2: 0.22, D3: 0.18, D4: 0.20, D5: 0.08}
+      "10+ / Principal": {D1: 0.26, D2: 0.26, D3: 0.22, D4: 0.18, D5: 0.08}
+      "Eng leadership": {D1: 0.18, D2: 0.30, D3: 0.26, D4: 0.16, D5: 0.10}
+  engineering_physical:
+    source: "RPN-PHIL-001 §11.1"
+    label: "Mechanical / Electrical / Civil / Manufacturing"
+    weights:
+      "Fresher": {D1: 0.42, D2: 0.05, D3: 0.16, D4: 0.17, D5: 0.20}
+      "2–5 yrs": {D1: 0.38, D2: 0.17, D3: 0.18, D4: 0.17, D5: 0.10}
+      "5–10 yrs": {D1: 0.34, D2: 0.23, D3: 0.20, D4: 0.15, D5: 0.08}
+      "10+": {D1: 0.28, D2: 0.28, D3: 0.22, D4: 0.14, D5: 0.08}
+      "Engineering leadership": {D1: 0.20, D2: 0.30, D3: 0.26, D4: 0.14, D5: 0.10}
+  data_and_rnd:
+    source: "RPN-PHIL-001 §11.1"
+    label: "Data & Analytics / R&D"
+    weights:
+      "Fresher": {D1: 0.40, D2: 0.04, D3: 0.14, D4: 0.20, D5: 0.22}
+      "2–5 yrs": {D1: 0.36, D2: 0.15, D3: 0.16, D4: 0.22, D5: 0.11}
+      "5–10 yrs": {D1: 0.32, D2: 0.22, D3: 0.18, D4: 0.20, D5: 0.08}
+      "10+": {D1: 0.26, D2: 0.26, D3: 0.22, D4: 0.18, D5: 0.08}
+  design_and_architecture:
+    source: "RPN-PHIL-001 §11.1"
+    label: "Design / UX / Architecture"
+    weights:
+      "Fresher": {D1: 0.38, D2: 0.06, D3: 0.16, D4: 0.20, D5: 0.20}
+      "2–5 yrs": {D1: 0.34, D2: 0.16, D3: 0.18, D4: 0.22, D5: 0.10}
+      "5–10 yrs": {D1: 0.30, D2: 0.22, D3: 0.20, D4: 0.20, D5: 0.08}
+      "10+ / Principal": {D1: 0.26, D2: 0.24, D3: 0.24, D4: 0.18, D5: 0.08}
+  finance_accounting:
+    source: "RPN-PHIL-001 §11.1"
+    label: "Finance & Accounting"
+    weights:
+      "Fresher": {D1: 0.40, D2: 0.05, D3: 0.15, D4: 0.20, D5: 0.20}
+      "2–5 yrs": {D1: 0.36, D2: 0.16, D3: 0.16, D4: 0.22, D5: 0.10}
+      "5–10 yrs": {D1: 0.30, D2: 0.24, D3: 0.18, D4: 0.20, D5: 0.08}
+      "10+ / Controller": {D1: 0.24, D2: 0.28, D3: 0.22, D4: 0.18, D5: 0.08}
+      "CFO": {D1: 0.16, D2: 0.32, D3: 0.26, D4: 0.16, D5: 0.10}
+  leadership_executive:
+    source: "RPN-PHIL-001 §11.1"
+    label: "Leadership / Executive / General Management"
+    weights:
+      "First-line manager": {D1: 0.26, D2: 0.24, D3: 0.22, D4: 0.18, D5: 0.10}
+      "Senior manager": {D1: 0.22, D2: 0.28, D3: 0.22, D4: 0.16, D5: 0.12}
+      "Director / VP": {D1: 0.16, D2: 0.30, D3: 0.26, D4: 0.14, D5: 0.14}
+      "CXO": {D1: 0.12, D2: 0.32, D3: 0.28, D4: 0.12, D5: 0.16}
+  human_resources:
+    source: "RPN-PHIL-001 §11.1"
+    label: "HR"
+    weights:
+      "Executive / Generalist": {D1: 0.36, D2: 0.14, D3: 0.20, D4: 0.20, D5: 0.10}
+      "Manager / BP": {D1: 0.28, D2: 0.24, D3: 0.22, D4: 0.16, D5: 0.10}
+      "Head of HR / CHRO": {D1: 0.16, D2: 0.30, D3: 0.28, D4: 0.14, D5: 0.12}
+  sales_marketing_bd:
+    source: "RPN-PHIL-001 §11.1"
+    label: "Sales / Marketing / BD"
+    weights:
+      "Entry": {D1: 0.32, D2: 0.08, D3: 0.20, D4: 0.22, D5: 0.18}
+      "Mid": {D1: 0.24, D2: 0.30, D3: 0.20, D4: 0.18, D5: 0.08}
+      "Leadership": {D1: 0.18, D2: 0.34, D3: 0.24, D4: 0.14, D5: 0.10}
+  operations_supply_chain:
+    source: "RPN-PHIL-001 §11.1"
+    label: "Operations / Supply Chain"
+    weights:
+      "Entry–Mid": {D1: 0.36, D2: 0.18, D3: 0.18, D4: 0.18, D5: 0.10}
+      "Senior": {D1: 0.28, D2: 0.26, D3: 0.22, D4: 0.16, D5: 0.08}
+      "Leadership": {D1: 0.20, D2: 0.30, D3: 0.26, D4: 0.14, D5: 0.10}
+  trades_and_support:
+    source: "RPN-PHIL-001 §11.1"
+    label: "Skilled trades / Blue-collar / Non-technical support"
+    weights:
+      "Entry": {D1: 0.44, D2: 0.06, D3: 0.20, D4: 0.22, D5: 0.08}
+      "Experienced": {D1: 0.40, D2: 0.14, D3: 0.22, D4: 0.18, D5: 0.06}
+      "Supervisory": {D1: 0.32, D2: 0.22, D3: 0.24, D4: 0.16, D5: 0.06}
+
+baseline_provenance:
+  source: "RPN-PHIL-001 §11.1"
+  statement: "Baselines are Ready Pick Now's professional judgement, expressed as calibration hypotheses (Axiom 13). They are revised only on calibration evidence."
+
+departments:
+  it_software_engineering:
+    source: "RPN-PHIL-001 §21"
+    number: 21
+    title: "IT & SOFTWARE ENGINEERING"
+    baseline_weight_family: it_software
+    role_families:
+      - "Backend"
+      - "Frontend"
+      - "Full-stack"
+      - "Mobile"
+      - "Platform/Infrastructure/SRE/DevOps"
+      - "Data engineering"
+      - "QA/SDET"
+      - "Security"
+      - "Embedded"
+      - "Engineering management"
+    competency_menu_source: "RPN-PHIL-001 §21.3"
+    competency_menu:
+      - id: "SW-01"
+        competency: "Core language & runtime depth"
+        observable_evidence: "Can reason about memory, concurrency, error semantics of their primary stack; explains behaviour, not just syntax"
+      - id: "SW-02"
+        competency: "System design & architecture"
+        observable_evidence: "Designs to constraints; states trade-offs; identifies failure modes and their blast radius"
+      - id: "SW-03"
+        competency: "Debugging & problem diagnosis"
+        observable_evidence: "Reconstructs a real diagnosis path; forms and tests hypotheses rather than guessing"
+      - id: "SW-04"
+        competency: "Production ownership"
+        observable_evidence: "Has been accountable for a live service: on-call, incidents, rollbacks, postmortems"
+      - id: "SW-05"
+        competency: "Data modelling & storage"
+        observable_evidence: "Chooses stores to fit access patterns; explains consistency and migration implications"
+      - id: "SW-06"
+        competency: "Code quality & maintainability"
+        observable_evidence: "Reviews meaningfully; refactors deliberately; writes tests as a matter of course"
+      - id: "SW-07"
+        competency: "Delivery under constraint"
+        observable_evidence: "Ships within real deadlines with explicit, defended scope trade-offs"
+      - id: "SW-08"
+        competency: "Collaboration & technical influence"
+        observable_evidence: "Drives decisions across teams; changes minds with reasoning; documents"
+      - id: "SW-09"
+        competency: "AI-tool fluency"
+        observable_evidence: "Uses AI tooling to increase leverage while retaining verification, review and understanding - and can say where they don't trust it"
+      - id: "SW-10"
+        competency: "Security & correctness awareness"
+        observable_evidence: "Anticipates misuse, injection, authz failure, data exposure"
+      - id: "SW-11"
+        competency: "Domain/product judgement"
+        observable_evidence: "Understands who uses the system and makes engineering choices accordingly"
+      - id: "SW-12"
+        competency: "Engineering leadership (EM roles)"
+        observable_evidence: "Grows engineers; sets technical direction; owns delivery of a group"
+    seniority_notes_source: "RPN-PHIL-001 §21.11"
+    seniority_notes:
+      - level: "Fresher"
+        emphasis_shift: "Reasoning, learning velocity, depth on one thing"
+      - level: "2–5"
+        emphasis_shift: "Independent delivery; debugging; code quality"
+      - level: "5–10"
+        emphasis_shift: "System design; production ownership; influence"
+      - level: "10+"
+        emphasis_shift: "Architecture at organisational scale; trade-off judgement; mentoring"
+      - level: "EM"
+        emphasis_shift: "Delivery of a group; growing engineers; technical direction; D1 shifts from personal coding to technical judgement"
+    subsections_present: 12
+  data_analytics_data_science_ai_ml:
+    source: "RPN-PHIL-001 §22"
+    number: 22
+    title: "DATA, ANALYTICS, DATA SCIENCE & AI/ML"
+    baseline_weight_family: data_and_rnd
+    role_families:
+      - "Data analyst"
+      - "BI"
+      - "Analytics engineer"
+      - "Data engineer"
+      - "Data scientist"
+      - "ML engineer"
+      - "Applied research"
+    competency_menu_source: "RPN-PHIL-001 §22.3"
+    competency_menu:
+      - id: "DA-01"
+        competency: "Problem framing"
+        observable_evidence: "Converts a vague business question into a measurable one with a defined decision it will inform"
+      - id: "DA-02"
+        competency: "Data quality interrogation"
+        observable_evidence: "Checks provenance, completeness, bias, collection mechanism before analysing"
+      - id: "DA-03"
+        competency: "Statistical judgement"
+        observable_evidence: "Knows when a method is invalid; recognises leakage, confounding, multiple comparisons, survivorship"
+      - id: "DA-04"
+        competency: "SQL & data manipulation"
+        observable_evidence: "Writes correct, efficient queries against messy real schemas"
+      - id: "DA-05"
+        competency: "Modelling craft"
+        observable_evidence: "Chooses methods appropriate to data and decision; validates honestly; avoids over-engineering"
+      - id: "DA-06"
+        competency: "Pipeline & production engineering"
+        observable_evidence: "Builds reliable, monitored, reproducible pipelines"
+      - id: "DA-07"
+        competency: "Communication & influence"
+        observable_evidence: "Explains findings to non-technical decision-makers; states uncertainty without hedging into uselessness"
+      - id: "DA-08"
+        competency: "Business impact"
+        observable_evidence: "Analysis changed a decision, and the decision changed an outcome"
+      - id: "DA-09"
+        competency: "Experimentation"
+        observable_evidence: "Designs valid experiments; understands power, novelty effects, interference"
+      - id: "DA-10"
+        competency: "ML systems operation"
+        observable_evidence: "Monitors drift, retrains, handles feedback loops and degradation"
+    seniority_notes: null
+    subsections_present: 10
+  mechanical_engineering_manufacturing:
+    source: "RPN-PHIL-001 §23"
+    number: 23
+    title: "MECHANICAL ENGINEERING & MANUFACTURING"
+    baseline_weight_family: engineering_physical
+    role_families:
+      - "Design engineer"
+      - "Manufacturing/production engineer"
+      - "Quality engineer"
+      - "Maintenance"
+      - "Tooling"
+      - "NPD"
+      - "HVAC"
+      - "Automotive"
+      - "Plant engineering"
+    competency_menu_source: "RPN-PHIL-001 §23.3"
+    competency_menu:
+      - id: "ME-01"
+        competency: "Engineering fundamentals applied"
+        observable_evidence: "Uses mechanics/thermo/materials to justify a real design decision, not to recite theory"
+      - id: "ME-02"
+        competency: "CAD/CAE tool depth"
+        observable_evidence: "Production-level modelling; assembly management; drawing standards"
+      - id: "ME-03"
+        competency: "Design for manufacturability"
+        observable_evidence: "Designs to real process capability and cost; has changed a design because of manufacturing feedback"
+      - id: "ME-04"
+        competency: "GD&T and tolerancing"
+        observable_evidence: "Applies and defends tolerance decisions; understands stack-up"
+      - id: "ME-05"
+        competency: "Simulation & analysis"
+        observable_evidence: "FEA/CFD with validated assumptions; knows when results are untrustworthy"
+      - id: "ME-06"
+        competency: "Process & quality methods"
+        observable_evidence: "FMEA, root-cause, SPC, lean, Six Sigma applied to a real problem"
+      - id: "ME-07"
+        competency: "Hands-on/shop-floor exposure"
+        observable_evidence: "Has worked with machines, operators and physical prototypes"
+      - id: "ME-08"
+        competency: "Testing & validation"
+        observable_evidence: "Designs and runs tests; interprets failure"
+      - id: "ME-09"
+        competency: "Standards & compliance"
+        observable_evidence: "Applies relevant codes and standards to the work"
+      - id: "ME-10"
+        competency: "Project execution"
+        observable_evidence: "Delivered a component/product/line change on schedule with defined trade-offs"
+      - id: "ME-11"
+        competency: "Vendor & supply-chain interface"
+        observable_evidence: "Has specified, sourced and qualified parts"
+    seniority_notes: null
+    subsections_present: 10
+  electrical_electronics_engineering:
+    source: "RPN-PHIL-001 §24"
+    number: 24
+    title: "ELECTRICAL & ELECTRONICS ENGINEERING"
+    baseline_weight_family: engineering_physical
+    role_families:
+      - "Power systems"
+      - "Electrical design"
+      - "Controls & automation"
+      - "PLC/SCADA"
+      - "Embedded hardware"
+      - "PCB design"
+      - "Testing & commissioning"
+      - "Instrumentation"
+      - "Maintenance"
+    competency_menu_source: "RPN-PHIL-001 §24.3"
+    competency_menu:
+      - id: "EE-01"
+        competency: "Circuit analysis & design"
+        observable_evidence: "Designs and defends a circuit; reasons about tolerances and margins"
+        side: "Electronics"
+      - id: "EE-02"
+        competency: "PCB design & signal integrity"
+        observable_evidence: "Layout decisions defended; understands EMI, grounding, routing constraints"
+        side: "Electronics"
+      - id: "EE-03"
+        competency: "Embedded firmware/hardware interface"
+        observable_evidence: "Has debugged across the boundary; understands timing and peripherals"
+        side: "Electronics"
+      - id: "EE-04"
+        competency: "Instrumentation & measurement"
+        observable_evidence: "Uses scope/analyser/meter to diagnose; interprets what the instrument is telling them"
+        side: "Both"
+      - id: "EE-05"
+        competency: "Power system design & calculation"
+        observable_evidence: "Load calcs, cable sizing, protection coordination, short-circuit study"
+        side: "Power"
+      - id: "EE-06"
+        competency: "Standards & safety compliance"
+        observable_evidence: "Applies applicable electrical codes; LOTO and arc-flash discipline"
+        side: "Power"
+      - id: "EE-07"
+        competency: "Controls, PLC & automation"
+        observable_evidence: "Has programmed, commissioned and debugged live control systems"
+        side: "Both"
+      - id: "EE-08"
+        competency: "Commissioning & field experience"
+        observable_evidence: "Has energised and tested real installations"
+        side: "Power"
+      - id: "EE-09"
+        competency: "Failure diagnosis"
+        observable_evidence: "Systematic fault-finding on real equipment"
+        side: "Both"
+      - id: "EE-10"
+        competency: "Documentation & schematics"
+        observable_evidence: "Produces and reads accurate schematics, SLDs, panel drawings"
+        side: "Both"
+    seniority_notes: null
+    subsections_present: 7
+  civil_structural_construction:
+    source: "RPN-PHIL-001 §25"
+    number: 25
+    title: "CIVIL, STRUCTURAL & CONSTRUCTION"
+    baseline_weight_family: engineering_physical
+    role_families:
+      - "Structural design"
+      - "Site/execution engineer"
+      - "Project management"
+      - "Quantity surveying/estimation"
+      - "Geotechnical"
+      - "Transportation"
+      - "Water/environmental"
+      - "MEP coordination"
+      - "QA/QC"
+    competency_menu_source: "RPN-PHIL-001 §25.3"
+    competency_menu:
+      - id: "CE-01"
+        competency: "Structural analysis & design"
+        observable_evidence: "Defends a load path, member sizing, and code compliance"
+        track: "Design"
+      - id: "CE-02"
+        competency: "Codes & standards fluency"
+        observable_evidence: "Applies applicable national/local codes to a specific decision"
+        track: "Both"
+      - id: "CE-03"
+        competency: "Design software depth"
+        observable_evidence: "STAAD/ETABS/SAFE/Revit at production level; validates outputs rather than trusting them"
+        track: "Design"
+      - id: "CE-04"
+        competency: "Site execution & sequencing"
+        observable_evidence: "Has run a real sequence, managed interfaces, resolved on-site conflicts"
+        track: "Execution"
+      - id: "CE-05"
+        competency: "Quantity, cost & estimation"
+        observable_evidence: "Produces and defends BOQ/estimates; understands wastage and rate analysis"
+        track: "Both"
+      - id: "CE-06"
+        competency: "Quality control & materials"
+        observable_evidence: "Test regimes, mix design, acceptance criteria, non-conformance handling"
+        track: "Execution"
+      - id: "CE-07"
+        competency: "Safety management"
+        observable_evidence: "Demonstrable safety discipline and incident handling"
+        track: "Execution"
+      - id: "CE-08"
+        competency: "Contract & documentation"
+        observable_evidence: "Understands contract types, variations, claims, RA bills"
+        track: "Both"
+      - id: "CE-09"
+        competency: "Geotechnical judgement"
+        observable_evidence: "Reads soil data and its design consequences"
+        track: "Both"
+      - id: "CE-10"
+        competency: "Stakeholder & authority interface"
+        observable_evidence: "Has dealt with approving authorities, clients, consultants"
+        track: "Both"
+      - id: "CE-11"
+        competency: "Project controls"
+        observable_evidence: "Schedule, resource, cost tracking on a real project"
+        track: "PM"
+    seniority_notes: null
+    subsections_present: 7
+  rnd_product_development:
+    source: "RPN-PHIL-001 §26"
+    number: 26
+    title: "R&D AND PRODUCT DEVELOPMENT"
+    baseline_weight_family: data_and_rnd
+    role_families:
+      - "Applied research"
+      - "Product R&D"
+      - "Materials"
+      - "Process development"
+      - "Formulation (pharma/FMCG/chemicals)"
+      - "Advanced engineering"
+      - "Innovation"
+    competency_menu_source: "RPN-PHIL-001 §26.3"
+    competency_menu:
+      - id: "RD-01"
+        competency: "Experimental design"
+        observable_evidence: "Designs experiments with controls, adequate power, and a defined kill criterion"
+      - id: "RD-02"
+        competency: "Domain scientific depth"
+        observable_evidence: "Reasons from first principles in the domain, not from procedure"
+      - id: "RD-03"
+        competency: "Negative-result discipline"
+        observable_evidence: "Has killed their own project and can explain the decision"
+      - id: "RD-04"
+        competency: "Literature & prior-art fluency"
+        observable_evidence: "Knows what has been tried; does not rediscover"
+      - id: "RD-05"
+        competency: "Lab / instrumentation technique"
+        observable_evidence: "Hands-on method competence and awareness of measurement limits"
+      - id: "RD-06"
+        competency: "Research-to-product translation"
+        observable_evidence: "Has moved something from lab to pilot/production and knows what broke in transfer"
+      - id: "RD-07"
+        competency: "Regulatory & documentation rigour"
+        observable_evidence: "GLP/GMP/design-history-file discipline where applicable"
+      - id: "RD-08"
+        competency: "IP awareness"
+        observable_evidence: "Understands patentability and freedom-to-operate"
+      - id: "RD-09"
+        competency: "Collaboration across functions"
+        observable_evidence: "Has worked with manufacturing, quality, commercial"
+    seniority_notes: null
+    subsections_present: 7
+  design_ux_creative:
+    source: "RPN-PHIL-001 §27"
+    number: 27
+    title: "DESIGN, UX & CREATIVE"
+    baseline_weight_family: design_and_architecture
+    role_families:
+      - "Product/UX design"
+      - "UI/visual"
+      - "UX research"
+      - "Graphic/brand"
+      - "Industrial design"
+      - "Motion/content design"
+    competency_menu_source: "RPN-PHIL-001 §27.3"
+    competency_menu:
+      - id: "DS-01"
+        competency: "Problem framing"
+        observable_evidence: "Reframes a brief; identifies the real user problem behind the request"
+      - id: "DS-02"
+        competency: "Research & evidence use"
+        observable_evidence: "Has run or used research; changed a design because of what they learned"
+      - id: "DS-03"
+        competency: "Process reasoning"
+        observable_evidence: "Can reconstruct the decision path: what was tried, rejected, and why"
+      - id: "DS-04"
+        competency: "Craft & visual quality"
+        observable_evidence: "Execution quality appropriate to the role's level"
+      - id: "DS-05"
+        competency: "Interaction & systems thinking"
+        observable_evidence: "Designs for states, edge cases, and system consistency"
+      - id: "DS-06"
+        competency: "Constraint navigation"
+        observable_evidence: "Has designed within real technical, business and timeline constraints"
+      - id: "DS-07"
+        competency: "Collaboration with engineering/product"
+        observable_evidence: "Has shipped; understands feasibility conversations"
+      - id: "DS-08"
+        competency: "Outcome awareness"
+        observable_evidence: "Knows what happened after launch and what it means"
+      - id: "DS-09"
+        competency: "Critique & iteration"
+        observable_evidence: "Takes and gives critique substantively"
+      - id: "DS-10"
+        competency: "Tooling & design systems"
+        observable_evidence: "Works within/builds design systems; tool fluency"
+    seniority_notes: null
+    subsections_present: 9
+  architecture_built_environment:
+    source: "RPN-PHIL-001 §28"
+    number: 28
+    title: "ARCHITECTURE (BUILT ENVIRONMENT)"
+    baseline_weight_family: design_and_architecture
+    role_families:
+      - "Architectural design"
+      - "Project architect"
+      - "Interior architecture"
+      - "Urban design"
+      - "BIM/documentation"
+      - "Landscape"
+    competency_menu_source: "RPN-PHIL-001 §28.3"
+    competency_menu:
+      - id: "AR-01"
+        competency: "Design conceptualisation & reasoning"
+        observable_evidence: "Can explain the generative logic of a scheme and what it responded to"
+      - id: "AR-02"
+        competency: "Technical documentation"
+        observable_evidence: "Produces coordinated, buildable drawing sets"
+      - id: "AR-03"
+        competency: "Building codes & regulatory compliance"
+        observable_evidence: "Applies applicable building bylaws, fire, accessibility, zoning"
+      - id: "AR-04"
+        competency: "BIM / software depth"
+        observable_evidence: "Revit/Rhino/AutoCAD/ArchiCAD at production level; model discipline"
+      - id: "AR-05"
+        competency: "Materials & construction knowledge"
+        observable_evidence: "Details buildable junctions; understands cost and constructability"
+      - id: "AR-06"
+        competency: "Site & construction administration"
+        observable_evidence: "Has been on site during construction; handled RFIs and changes"
+      - id: "AR-07"
+        competency: "Consultant coordination"
+        observable_evidence: "Has coordinated structure/MEP; resolved clashes"
+      - id: "AR-08"
+        competency: "Client & authority interface"
+        observable_evidence: "Has presented to clients and navigated approvals"
+      - id: "AR-09"
+        competency: "Sustainability & performance"
+        observable_evidence: "Applies environmental performance thinking substantively"
+    seniority_notes: null
+    subsections_present: 6
+  finance_accounting:
+    source: "RPN-PHIL-001 §29"
+    number: 29
+    title: "FINANCE & ACCOUNTING"
+    baseline_weight_family: finance_accounting
+    role_families:
+      - "FP&A"
+      - "Controllership & accounting"
+      - "Audit"
+      - "Treasury"
+      - "Tax"
+      - "Investment/equity research"
+      - "Corporate finance/M&A"
+      - "Finance leadership (Finance Manager → CFO)"
+    competency_menu_source: "RPN-PHIL-001 §29.3"
+    competency_menu:
+      - id: "FI-01"
+        competency: "Financial modelling"
+        observable_evidence: "Builds a model from scratch; assumptions explicit and defended; handles sensitivity"
+        sub_function: "FP&A, CF"
+      - id: "FI-02"
+        competency: "Accounting technical depth"
+        observable_evidence: "Applies the applicable standard to a non-obvious transaction"
+        sub_function: "Control, Audit"
+      - id: "FI-03"
+        competency: "Variance & performance analysis"
+        observable_evidence: "Explains why the number moved and what the business should do"
+        sub_function: "FP&A"
+      - id: "FI-04"
+        competency: "Business partnering"
+        observable_evidence: "Has changed an operating decision through financial insight"
+        sub_function: "FP&A, Leadership"
+      - id: "FI-05"
+        competency: "Controls & compliance"
+        observable_evidence: "Has designed or tested controls; handled an audit finding"
+        sub_function: "Control, Audit"
+      - id: "FI-06"
+        competency: "Cash & working capital"
+        observable_evidence: "Has managed liquidity, collections, or funding"
+        sub_function: "Treasury, Leadership"
+      - id: "FI-07"
+        competency: "Systems & data fluency"
+        observable_evidence: "Advanced Excel; ERP; BI/EPM tools; can trace a number to source"
+        sub_function: "All"
+      - id: "FI-08"
+        competency: "Reporting & close discipline"
+        observable_evidence: "Has owned a close cycle and improved it"
+        sub_function: "Control"
+      - id: "FI-09"
+        competency: "Valuation & transaction work"
+        observable_evidence: "DCF/comps; has worked a live transaction"
+        sub_function: "CF, IR"
+      - id: "FI-10"
+        competency: "P&L ownership & scope"
+        observable_evidence: "Has owned a P&L of stated size and made trade-off decisions"
+        sub_function: "Leadership"
+      - id: "FI-11"
+        competency: "Stakeholder communication"
+        observable_evidence: "Has presented to a board, investors or an audit committee"
+        sub_function: "Leadership"
+    seniority_notes: null
+    subsections_present: 8
+  leadership_general_management_executive:
+    source: "RPN-PHIL-001 §30"
+    number: 30
+    title: "LEADERSHIP, GENERAL MANAGEMENT & EXECUTIVE"
+    baseline_weight_family: leadership_executive
+    role_families:
+      - "First-line manager"
+      - "Senior manager"
+      - "Director/VP"
+      - "Business head/GM"
+      - "Functional head"
+      - "CXO"
+    competency_menu_source: "RPN-PHIL-001 §30.3"
+    competency_menu:
+      - id: "LD-01"
+        competency: "Business outcome ownership"
+        observable_evidence: "Owned P&L/function/business unit; outcomes attributable and corroborated"
+      - id: "LD-02"
+        competency: "Situation-appropriate leadership"
+        observable_evidence: "Has led in the specific situation type this role requires"
+      - id: "LD-03"
+        competency: "Team building & talent development"
+        observable_evidence: "Has hired, grown and lost people; can name people they developed and what happened to them"
+      - id: "LD-04"
+        competency: "Strategic judgement"
+        observable_evidence: "Has made a consequential strategic choice and can defend the reasoning, including the rejected option"
+      - id: "LD-05"
+        competency: "Organisational execution"
+        observable_evidence: "Has moved a large organisation to do something different"
+      - id: "LD-06"
+        competency: "Stakeholder & board management"
+        observable_evidence: "Has managed upward, sideways and externally under pressure"
+      - id: "LD-07"
+        competency: "Decision quality under uncertainty"
+        observable_evidence: "Can describe a decision made on incomplete information and its consequences"
+      - id: "LD-08"
+        competency: "Change and resistance handling"
+        observable_evidence: "Has driven change against genuine internal resistance"
+      - id: "LD-09"
+        competency: "Financial and commercial literacy"
+        observable_evidence: "Understands the economics of the business they run"
+      - id: "LD-10"
+        competency: "Self-awareness & failure ownership"
+        observable_evidence: "Can describe a failure they caused, without deflection"
+      - id: "LD-11"
+        competency: "Values and integrity under pressure"
+        observable_evidence: "Has made a costly decision on principle"
+    seniority_notes: null
+    subsections_present: 8
+  human_resources:
+    source: "RPN-PHIL-001 §31"
+    number: 31
+    title: "HUMAN RESOURCES"
+    baseline_weight_family: human_resources
+    role_families:
+      - "HR generalist/HRBP"
+      - "Talent acquisition"
+      - "Compensation & benefits"
+      - "L&D"
+      - "HR operations/HRIS"
+      - "Employee relations"
+      - "HR leadership/CHRO"
+    competency_menu_source: "RPN-PHIL-001 §31.3"
+    competency_menu:
+      - id: "HR-01"
+        competency: "Organisational diagnosis"
+        observable_evidence: "Identified a root cause behind a people symptom and can show the evidence they used"
+      - id: "HR-02"
+        competency: "Business partnering"
+        observable_evidence: "Changed a business decision through people insight; is trusted by line leaders"
+      - id: "HR-03"
+        competency: "Talent acquisition capability"
+        observable_evidence: "Has built or run hiring that measurably improved quality, not just speed"
+      - id: "HR-04"
+        competency: "Compensation & benefits design"
+        observable_evidence: "Has designed or restructured pay structures with defensible logic"
+      - id: "HR-05"
+        competency: "Employee relations & risk"
+        observable_evidence: "Has handled serious ER cases, including ones with legal exposure"
+      - id: "HR-06"
+        competency: "Employment law & compliance"
+        observable_evidence: "Applies applicable labour law to real situations"
+      - id: "HR-07"
+        competency: "HR systems & data"
+        observable_evidence: "Has implemented or run HR technology; uses data to argue"
+      - id: "HR-08"
+        competency: "Learning & capability building"
+        observable_evidence: "Has built capability that changed performance, with evidence"
+      - id: "HR-09"
+        competency: "Change & culture work"
+        observable_evidence: "Has driven organisational change with measurable behavioural outcomes"
+      - id: "HR-10"
+        competency: "Performance & talent management"
+        observable_evidence: "Has run calibration, succession, or performance systems that were actually used"
+      - id: "HR-11"
+        competency: "HR leadership"
+        observable_evidence: "Has owned the function; sat at the leadership table; influenced strategy"
+    seniority_notes: null
+    subsections_present: 6
+  sales_marketing_business_development:
+    source: "RPN-PHIL-001 §32"
+    number: 32
+    title: "SALES, MARKETING & BUSINESS DEVELOPMENT"
+    baseline_weight_family: sales_marketing_bd
+    role_families:
+      - "Inside sales/SDR"
+      - "Field sales/AE"
+      - "Key account management"
+      - "Channel/partnerships"
+      - "Solution/pre-sales"
+      - "Marketing (performance, product, brand, content)"
+      - "Growth"
+      - "Sales leadership"
+    competency_menu_source: "RPN-PHIL-001 §32.3"
+    competency_menu:
+      - id: "SL-01"
+        competency: "Attainment track record"
+        observable_evidence: "Quota, attainment %, ranking, consistency across periods and companies"
+      - id: "SL-02"
+        competency: "Deal ownership & complexity"
+        observable_evidence: "Deal size, cycle length, stakeholder count, competitive context"
+      - id: "SL-03"
+        competency: "Prospecting & pipeline generation"
+        observable_evidence: "Has self-generated pipeline, not just worked inbound"
+      - id: "SL-04"
+        competency: "Discovery & qualification"
+        observable_evidence: "Can demonstrate a real discovery conversation; qualifies out"
+      - id: "SL-05"
+        competency: "Domain & product fluency"
+        observable_evidence: "Understands what they sell deeply enough to be credible"
+      - id: "SL-06"
+        competency: "Negotiation & commercial judgement"
+        observable_evidence: "Has held price; has walked away; understands margin"
+      - id: "SL-07"
+        competency: "Account growth"
+        observable_evidence: "Has expanded existing accounts with evidence"
+      - id: "SL-08"
+        competency: "Sales-process discipline"
+        observable_evidence: "CRM hygiene, forecast accuracy - forecast accuracy is a strong and underused signal"
+      - id: "SL-09"
+        competency: "Marketing: measurable outcome ownership"
+        observable_evidence: "Owned a channel/campaign with attributable results"
+      - id: "SL-10"
+        competency: "Marketing: analytical rigour"
+        observable_evidence: "Understands attribution limits; does not overclaim"
+      - id: "SL-11"
+        competency: "Sales leadership"
+        observable_evidence: "Built and coached a team; improved team-level performance, not just their own"
+    seniority_notes: null
+    subsections_present: 6
+  operations_supply_chain_logistics:
+    source: "RPN-PHIL-001 §33"
+    number: 33
+    title: "OPERATIONS, SUPPLY CHAIN & LOGISTICS"
+    baseline_weight_family: operations_supply_chain
+    role_families:
+      - "Operations management"
+      - "Supply chain planning"
+      - "Procurement"
+      - "Warehousing"
+      - "Logistics"
+      - "Production planning"
+      - "Service delivery"
+      - "Process excellence"
+    competency_menu_source: "RPN-PHIL-001 §33.2"
+    competency_menu:
+      - id: "OP-01"
+        competency: "Process design & improvement"
+        observable_evidence: "Has redesigned a process with measured before/after"
+      - id: "OP-02"
+        competency: "Planning & forecasting"
+        observable_evidence: "Has owned a planning cycle; knows their forecast error"
+      - id: "OP-03"
+        competency: "Vendor & procurement management"
+        observable_evidence: "Has negotiated, qualified and managed suppliers; handled a failure"
+      - id: "OP-04"
+        competency: "Inventory & working-capital discipline"
+        observable_evidence: "Understands the cost of inventory decisions"
+      - id: "OP-05"
+        competency: "Operational problem-solving"
+        observable_evidence: "Has handled a real disruption under time pressure"
+      - id: "OP-06"
+        competency: "Systems & data"
+        observable_evidence: "ERP/WMS/TMS fluency; uses operational data"
+      - id: "OP-07"
+        competency: "People & shift management"
+        observable_evidence: "Has run frontline teams; understands attrition and absenteeism reality"
+      - id: "OP-08"
+        competency: "Compliance & safety"
+        observable_evidence: "Applies applicable regulatory and safety requirements"
+      - id: "OP-09"
+        competency: "Cost management"
+        observable_evidence: "Has reduced cost without breaking service"
+      - id: "OP-10"
+        competency: "Scale and complexity handled"
+        observable_evidence: "Volume, SKUs, sites, headcount, geography"
+    seniority_notes: null
+    subsections_present: 4
+  skilled_trades_blue_collar_frontline:
+    source: "RPN-PHIL-001 §34"
+    number: 34
+    title: "SKILLED TRADES, BLUE-COLLAR & FRONTLINE WORKFORCE"
+    baseline_weight_family: trades_and_support
+    role_families:
+      - "Technicians (electrical, mechanical, HVAC, automotive)"
+      - "Machine operators"
+      - "Welders/fabricators"
+      - "Drivers"
+      - "Warehouse and material handling"
+      - "Housekeeping and facilities"
+      - "Security"
+      - "Field service"
+      - "Construction labour and supervision"
+    competency_menu_source: "RPN-PHIL-001 §34.3"
+    competency_menu:
+      - id: "TR-01"
+        competency: "Practical task competence"
+        observable_evidence: "Performs the actual task to standard, under observation, within time"
+      - id: "TR-02"
+        competency: "Tool and equipment handling"
+        observable_evidence: "Uses the right tool correctly and safely without prompting"
+      - id: "TR-03"
+        competency: "Safety judgement"
+        observable_evidence: "Recognises hazards; follows and can explain safe procedure; stops work when unsafe"
+      - id: "TR-04"
+        competency: "Quality and standard adherence"
+        observable_evidence: "Work meets specification; self-checks; reports defects"
+      - id: "TR-05"
+        competency: "Fault-finding"
+        observable_evidence: "Diagnoses a simple failure systematically"
+      - id: "TR-06"
+        competency: "Reliability and attendance"
+        observable_evidence: "Verified attendance record from prior supervisor"
+      - id: "TR-07"
+        competency: "Instruction-following and communication"
+        observable_evidence: "Understands and confirms instruction; escalates appropriately"
+      - id: "TR-08"
+        competency: "Situational judgement"
+        observable_evidence: "Makes sound decisions in ambiguous frontline situations"
+      - id: "TR-09"
+        competency: "Physical/role-specific requirements"
+        observable_evidence: "Meets genuine, essential, uniformly-applied job requirements"
+      - id: "TR-10"
+        competency: "Trade certification / licence"
+        observable_evidence: "Holds required trade credential where legally or contractually mandated"
+      - id: "TR-11"
+        competency: "Team and supervisor working"
+        observable_evidence: "Works within a crew; takes direction; supports others"
+    seniority_notes: null
+    subsections_present: 10
+  non_technical_support_administrative:
+    source: "RPN-PHIL-001 §35"
+    number: 35
+    title: "NON-TECHNICAL SUPPORT & ADMINISTRATIVE"
+    baseline_weight_family: trades_and_support
+    role_families:
+      - "Administration"
+      - "Executive assistance"
+      - "Customer support"
+      - "Back office/data processing"
+      - "Reception/front office"
+      - "Coordination roles"
+    competency_menu_source: "RPN-PHIL-001 §35.2"
+    competency_menu:
+      - id: "NT-01"
+        competency: "Task execution accuracy"
+        observable_evidence: "Completes a realistic work sample to standard"
+      - id: "NT-02"
+        competency: "Written and verbal communication"
+        observable_evidence: "Produces clear, appropriate written output; handles a call scenario"
+      - id: "NT-03"
+        competency: "Prioritisation under competing demands"
+        observable_evidence: "Orders a realistic conflicting workload and defends the order"
+      - id: "NT-04"
+        competency: "Tool fluency"
+        observable_evidence: "Demonstrated competence in the actual tools used"
+      - id: "NT-05"
+        competency: "Discretion and confidentiality"
+        observable_evidence: "Handles a scenario involving sensitive information appropriately"
+      - id: "NT-06"
+        competency: "Service judgement"
+        observable_evidence: "Handles a difficult customer/stakeholder scenario"
+      - id: "NT-07"
+        competency: "Reliability"
+        observable_evidence: "Attendance and follow-through corroborated"
+      - id: "NT-08"
+        competency: "Process adherence and improvement"
+        observable_evidence: "Follows process; has suggested or made an improvement"
+    seniority_notes: null
+    subsections_present: 4
+
+new_department_procedure:
+  source: "RPN-PHIL-001 §36"
+  competency_menu_size: "8–12 items"
+  provisional_until_outcomes: 20
+  note: "The model is PROVISIONAL until it has 20+ outcome data points. Provisional models are labelled as such in client dossiers, and recruiter override rates on them are monitored closely."
+
+coverage_notes:
+  source: "RPN-PHIL-001 §67.8"
+  statement: "Department coverage is uneven"
+  seniority_anchors_present_for: [it_software_engineering]
+  detail: "Per-seniority emphasis notes exist for §21 only. Rubric anchors are universal, stated once per dimension in §9.1-§9.5, and are not restated per department or per seniority anywhere in the Runbook."

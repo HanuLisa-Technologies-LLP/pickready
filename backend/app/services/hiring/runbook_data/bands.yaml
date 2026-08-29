@@ -1,0 +1,230 @@
+# Extracted from the Ready Pick Now Hiring Philosophy & Intelligence
+# Runbook, document RPN-PHIL-001, version 1.1.
+#
+# THIS FILE IS NOT AN INDEPENDENT SOURCE OF TRUTH. Every entry carries a
+# `source` naming the Runbook section it was taken from, and
+# backend/tests/test_runbook_parity.py fails if this file and the Runbook
+# disagree in either direction. Change the Runbook and this file in the
+# same commit, or the build stops.
+#
+# Generated once from the Runbook tables and maintained by hand thereafter.
+
+meta:
+  document: RPN-PHIL-001
+  runbook_version: "1.1"
+  description: "Score bands, the authenticity multiplier, confidence computation, the uncertainty band, dimension floors and the abstention conditions."
+
+score_bands:
+  source: "RPN-PHIL-001 §10.8"
+  bands:
+    - range: "85–100"
+      band: "Ready to Pick - Strong"
+      meaning_to_the_client: "Strong corroborated evidence against this specific hiring problem"
+      low: 85
+      high: 100
+    - range: "72–84"
+      band: "Ready to Pick"
+      meaning_to_the_client: "Solid evidence; specific known gaps stated"
+      low: 72
+      high: 84
+    - range: "60–71"
+      band: "Consider with reservations"
+      meaning_to_the_client: "Genuine candidate; material gap or unresolved question stated"
+      low: 60
+      high: 71
+    - range: "45–59"
+      band: "Not recommended for this role"
+      meaning_to_the_client: "May be strong for a different problem; explain which"
+      low: 45
+      high: 59
+    - range: "< 45"
+      band: "Not recommended"
+      meaning_to_the_client: null
+      low: 0
+      high_exclusive: 45
+    - range: "HOLD"
+      band: "Integrity review"
+      meaning_to_the_client: "Not ranked pending human disposition"
+      low: null
+      high: null
+  boundaries_inclusive_upward: true
+
+authenticity_multiplier:
+  source: "RPN-PHIL-001 §10.5"
+  rationale: "D4 therefore acts twice: once as a weighted dimension, and once as a multiplier on the composite."
+  applied_to: "RPS_raw"
+  formula_transcribed: "RPS = RPS_raw x authenticity_multiplier"
+  piecewise:
+    - condition: "D4 >= 75"
+      d4_low: 75
+      value: 1.00
+    - condition: "60 <= D4 < 75"
+      d4_low: 60
+      d4_high_exclusive: 75
+      intercept: 0.90
+      slope: 0.0067
+      stated_range: "0.90 -> 1.00"
+    - condition: "45 <= D4 < 60"
+      d4_low: 45
+      d4_high_exclusive: 60
+      intercept: 0.70
+      slope: 0.0133
+      stated_range: "0.70 -> 0.90"
+    - condition: "25 <= D4 < 45"
+      d4_low: 25
+      d4_high_exclusive: 45
+      intercept: 0.50
+      slope: 0.0100
+      stated_range: "0.50 -> 0.70"
+    - condition: "D4 < 25"
+      d4_high_exclusive: 25
+      value: null
+      disposition: "HOLD - not scored, mandatory human review"
+  caps_at: 1.00
+  asymmetry: "high authenticity does not inflate a score above what the evidence supports (multiplier caps at 1.00). Low authenticity suppresses it."
+  runbook_ambiguity: "The 60-75 branch uses a rounded slope of 0.0067, which evaluates to 1.0005 at D4=75 and therefore breaches the stated 1.00 cap. See RUNBOOK_OPEN_QUESTIONS.md Q3."
+
+uncertainty_band:
+  source: "RPN-PHIL-001 §10.6"
+  formula_transcribed: "band_width = 20 x (1 - confidence_score)"
+  coefficient: 20
+  reported_as: "RPS 78  [range 71–85, Moderate confidence]"
+  overlap_rule: "Two candidates whose bands overlap are reported as not meaningfully separated, and the dossier says so explicitly."
+  runbook_ambiguity: "band_width is not stated to be a half-width or a full width. The §10.11 worked examples only reconcile if it is a half-width. See RUNBOOK_OPEN_QUESTIONS.md Q5."
+
+confidence:
+  source: "RPN-PHIL-001 §10.7"
+  terms:
+    evidence_coverage:
+      coefficient: 0.35
+      definition: "(must-have competencies with any evidence > E1) / (total must-haves)"
+    evidence_depth:
+      coefficient: 0.30
+      definition: "mean over must-haves of ( best tier strength achieved )"
+    independence:
+      coefficient: 0.20
+      definition: "min(1, mean independence group count on must-haves / 3)"
+    consistency:
+      coefficient: 0.15
+      definition: "1 - (weighted unresolved contradiction severity)"
+  coefficient_sum: 1.00
+  labels:
+    - confidence_score: "≥ 0.80"
+      label: "High"
+      delivery_implication: "Deliverable; recommend for interview"
+    - confidence_score: "0.60–0.79"
+      label: "Moderate"
+      delivery_implication: "Deliverable; dossier states what would raise confidence"
+    - confidence_score: "0.40–0.59"
+      label: "Low"
+      delivery_implication: "Deliverable only with explicit label + recruiter note; not counted toward guaranteed shortlist size"
+    - confidence_score: "< 0.40"
+      label: "Insufficient"
+      delivery_implication: "Not delivered. Collect more evidence or exclude with reason."
+  high_threshold: 0.80
+  moderate_threshold: 0.60
+  low_threshold: 0.40
+  communication:
+    source: "RPN-PHIL-001 §14.3"
+    never_a_model_self_estimate: "Never as a probability of success - we have not earned that claim. Always as strength of the evidence base"
+
+dimension_floors:
+  source: "RPN-PHIL-001 §12.2"
+  floors:
+    - dimension: "D1"
+      floor: 45
+      effect_if_breached: "Cannot exceed \"Consider with reservations\""
+    - dimension: "D4"
+      floor: 45
+      effect_if_breached: "Cannot exceed \"Consider with reservations\""
+    - dimension: "D4"
+      floor: 25
+      effect_if_breached: "HOLD - mandatory human review before any delivery"
+    - dimension: "D3"
+      floor: 40
+      effect_if_breached: "Cannot be delivered as Ready to Pick for this role; may be flagged for a different role"
+
+control_types:
+  source: "RPN-PHIL-001 §12.1"
+  controls:
+    - control: "Hard disqualifier"
+      behaviour: "Candidate excluded from consideration"
+      who_sets_it: "HR Manager approves only"
+      automatic: "Yes, logged and reviewable"
+    - control: "Competency threshold"
+      behaviour: "Minimum score on a named competency; failure caps the band"
+      who_sets_it: "Hiring Manager proposes, HR Manager approves"
+      automatic: "Yes"
+    - control: "Dimension floor"
+      behaviour: "Minimum score on a dimension; failure caps the band"
+      who_sets_it: "Layer 1 defaults + Layer 3"
+      automatic: "Yes"
+    - control: "Review trigger"
+      behaviour: "Routes to a human queue"
+      who_sets_it: "Layer 1 and Layer 3"
+      automatic: "Routes only, never rejects"
+
+abstention:
+  source: "RPN-PHIL-001 §14.1"
+  rule: "Ready Pick Now declines to rank - and says so - under any of:"
+  conditions:
+    - condition: "Confidence < 0.40"
+      action: "Not delivered; evidence collection continues or candidate excluded with stated reason"
+    - condition: "A must-have competency has no evidence above E1"
+      action: "Competency reported as Unassessed; candidate cannot be Ready to Pick"
+    - condition: "D4 < 25"
+      action: "HOLD; mandatory human disposition"
+    - condition: "Score bands of adjacent candidates overlap"
+      action: "Report as tied cluster; refuse to order them"
+    - condition: "Fewer than the minimum independent groups for the seniority tier"
+      action: "Downgrade confidence; report the shortfall"
+    - condition: "The scorecard was not approved"
+      action: "Scoring blocked entirely (Gate G1)"
+    - condition: "Configuration changed mid-search without re-scoring"
+      action: "Scoring blocked pending re-run"
+    - condition: "A competency in the scorecard has no defined assessment route"
+      action: "Configuration rejected back to the recruiter"
+
+must_have_hard_cap:
+  source: "RPN-PHIL-001 §14.1"
+  condition: "A must-have competency has no evidence above E1"
+  action: "Competency reported as Unassessed; candidate cannot be Ready to Pick"
+  band_ceiling:
+    source: "RPN-PHIL-001 §12.2"
+    effect_if_breached: "Cannot exceed \"Consider with reservations\""
+  threshold_control:
+    source: "RPN-PHIL-001 §12.1"
+    behaviour: "Minimum score on a named competency; failure caps the band"
+  application_note: "Applied as a ceiling on the band, after the authenticity multiplier has produced RPS."
+  runbook_ambiguity: "The Runbook never uses the phrase 'Must-have hard cap' and never states a numeric cap. It states three separate mechanisms that cap a band: a competency threshold (§12.1), a dimension floor (§12.2), and the unassessed-must-have abstention rule (§14.1). Which of them spec-doc6 means by 'the Must-have hard-cap rule' is not settled by the Runbook. See RUNBOOK_OPEN_QUESTIONS.md Q7."
+
+top_10_rule:
+  source: "RPN-PHIL-001 §10.9"
+  ordered_steps:
+    - "Exclude HOLD and Insufficient-confidence candidates."
+    - "Take all candidates in \"Ready to Pick - Strong\"."
+    - "Fill from \"Ready to Pick\", ordered by RPS."
+    - "STOP at the point where band overlap makes ordering arbitrary, and report the remainder as a tied cluster rather than a false ranking."
+    - "If fewer than 10 candidates qualify, DELIVER FEWER AND SAY WHY."
+    - "Deliberately include, where they exist, up to 2 \"high-variance\" candidates: strong D1/D5, non-standard background, lower surface fit - labelled as such."
+
+exploration_slots:
+  source: "RPN-PHIL-001 §10.10"
+  count: 2
+  disclosure: "The client is told explicitly that these are exploration candidates and why they were included."
+
+gates:
+  source: "RPN-PHIL-001 §4.3"
+  gates:
+    - gate: "G1 - Configuration gate"
+      condition: "Approved scorecard exists, ≤6 competencies, force-ranked, disqualifiers declared"
+      blocked_if_not_met: "Scoring cannot start"
+    - gate: "G2 - Evidence gate"
+      condition: "Candidate meets minimum-source standard for department/seniority"
+      blocked_if_not_met: "Cannot enter delivered shortlist at High/Moderate confidence"
+    - gate: "G3 - Integrity gate"
+      condition: "All open authenticity flags reviewed by a human and dispositioned"
+      blocked_if_not_met: "Cannot be delivered"
+    - gate: "G4 - Delivery gate"
+      condition: "Dossier complete: evidence links, confidence, risks, comparison logic"
+      blocked_if_not_met: "Cannot be exported to client"

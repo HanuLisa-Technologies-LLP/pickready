@@ -8,9 +8,6 @@ SQLAlchemy[asyncio]>=2.0.30
 asyncpg>=0.29
 alembic>=1.13
 pgvector>=0.3
-# CPU-local semantic embeddings for AI Reach. The model is baked into the
-# container image, so production never falls back to pseudo-random dev vectors.
-fastembed>=0.8,<0.9
 redis>=5.0
 # >=5.6.3, not >=5.4: workers/tasks.py passes `dont_autoretry_for` to keep a
 # SoftTimeLimitExceeded from being handed straight back to autoretry_for (which
@@ -26,10 +23,15 @@ cryptography>=43.0
 httpx>=0.27
 aiosmtplib>=3.0
 langchain>=0.3
+# The router's retry loop is still a compiled LangGraph StateGraph. Vendor
+# consolidation removed the fallback CHAIN, not the state machine.
 langgraph>=0.2
-langchain-groq>=0.2
-langchain-google-genai>=2.0
-langchain-openai>=0.2
+# The three per-vendor LangChain adapters went with the three vendors
+# (spec-doc5 Part B). The Anthropic Messages API and the Voyage embeddings API
+# are both called directly over httpx: this module already owns retries,
+# timeouts and backoff against a per-task budget, and an SDK running its own
+# retry policy inside ours produces a worst case that is the PRODUCT of the two
+# budgets rather than the sum.
 # Advanced web search for the BD Portal's AI Reach agent
 # (services/web_research.py). Optional at runtime: the service degrades to an
 # empty "from the internet" segment when the client or TAVILY_API_KEY is absent.
@@ -39,10 +41,25 @@ reportlab>=4.2
 Pillow>=10.4
 python-docx>=1.1
 python-multipart>=0.0.9
-google-cloud-storage>=2.18
+# S3 object storage (spec-doc5 Part D). Credentials are never configured in
+# code: boto3 resolves the ECS task role, scoped to exactly one bucket.
+boto3>=1.35
 email-validator>=2.2
 icalendar>=5.0
 structlog>=24.0
 pytest>=8.3
 pytest-asyncio>=0.24
 aiosqlite>=0.20
+# S3 stubbing for the storage tests. A test that needs a real bucket is a test
+# that does not run in CI.
+moto[s3]>=5.0
+
+# Runbook data package (RPN-PHIL-001 extraction, app/services/hiring/runbook_data/).
+# Pinned EXPLICITLY rather than relied on transitively through langchain-core: the
+# hiring intelligence layer fails at import without it, and a transitive dependency
+# that a vendor drops in a minor release is an outage nobody predicted.
+PyYAML>=6.0
+# Typing for the strict-mode gate (spec-doc6 §10.3). PyYAML ships no py.typed, so
+# --strict reports missing stubs without this.
+types-PyYAML>=6.0
+mypy>=1.11

@@ -1,0 +1,110 @@
+# Extracted from the Ready Pick Now Hiring Philosophy & Intelligence
+# Runbook, document RPN-PHIL-001, version 1.1.
+#
+# THIS FILE IS NOT AN INDEPENDENT SOURCE OF TRUTH. Every entry carries a
+# `source` naming the Runbook section it was taken from, and
+# backend/tests/test_runbook_parity.py fails if this file and the Runbook
+# disagree in either direction. Change the Runbook and this file in the
+# same commit, or the build stops.
+#
+# Generated once from the Runbook tables and maintained by hand thereafter.
+
+meta:
+  document: RPN-PHIL-001
+  runbook_version: "1.1"
+  description: "The six hiring situation types extracted at SWOT intake, with the dimension weight consequence each one carries."
+
+situation_types:
+  gap_fill:
+    source: "RPN-PHIL-001 §18.4"
+    name: "Gap-fill"
+    description: "A specific missing capability"
+    weight_consequence: "D3 ↑↑, D1 ↑"
+    evidence_emphasis: "Direct prior experience of that exact problem"
+    dimension_effects:
+      D3: strong_increase
+      D1: increase
+    layer_3_modifier:
+      source: "RPN-PHIL-001 §11.3"
+      condition: "Hire must close a specific named capability gap"
+      effect: "D3 ↑, D1 ↑"
+      bound: "+0.08 combined"
+  turnaround:
+    source: "RPN-PHIL-001 §18.4"
+    name: "Turnaround"
+    description: "Something is broken and must be fixed"
+    weight_consequence: "D2 ↑↑, D3 ↑"
+    evidence_emphasis: "Evidence of fixing, not just running"
+    dimension_effects:
+      D2: strong_increase
+      D3: increase
+    layer_3_modifier:
+      source: "RPN-PHIL-001 §11.3"
+      condition: "Hire is a turnaround / crisis mandate"
+      effect: "D2 ↑, D3 ↑"
+      bound: "+0.08 combined"
+  scale_up:
+    source: "RPN-PHIL-001 §18.4"
+    name: "Scale-up"
+    description: "Working, must grow"
+    weight_consequence: "D2 ↑, D5 ↑"
+    evidence_emphasis: "Evidence of operating at the next scale"
+    dimension_effects:
+      D2: increase
+      D5: increase
+    layer_3_modifier: null
+    runbook_ambiguity: "§11.3 lists bounded numeric modifiers for four SWOT-derived conditions and none that corresponds to this situation type. §18.4 states the consequence as arrows only, so the magnitude for this type is not stated anywhere in the Runbook. See RUNBOOK_OPEN_QUESTIONS.md Q1."
+  greenfield:
+    source: "RPN-PHIL-001 §18.4"
+    name: "Greenfield"
+    description: "Building from zero"
+    weight_consequence: "D5 ↑↑, D3 ↑"
+    evidence_emphasis: "Evidence of building without inherited structure"
+    dimension_effects:
+      D5: strong_increase
+      D3: increase
+    layer_3_modifier:
+      source: "RPN-PHIL-001 §11.3"
+      condition: "Hire is greenfield / zero-to-one"
+      effect: "D5 ↑, D3 ↑"
+      bound: "+0.07 combined"
+  steady_state:
+    source: "RPN-PHIL-001 §18.4"
+    name: "Steady-state"
+    description: "Maintain and execute"
+    weight_consequence: "D1 ↑↑, D5 ↓"
+    evidence_emphasis: "Reliability, depth, consistency"
+    dimension_effects:
+      D1: strong_increase
+      D5: decrease
+    layer_3_modifier:
+      source: "RPN-PHIL-001 §11.3"
+      condition: "Role is a defined, stable execution seat"
+      effect: "D1 ↑, D5 ↓"
+      bound: "±0.06"
+  succession:
+    source: "RPN-PHIL-001 §18.4"
+    name: "Succession"
+    description: "Prepare to take over a larger role"
+    weight_consequence: "D5 ↑↑, D2 ↑"
+    evidence_emphasis: "Trajectory, readiness indicators"
+    dimension_effects:
+      D5: strong_increase
+      D2: increase
+    layer_3_modifier: null
+    runbook_ambiguity: "§11.3 lists bounded numeric modifiers for four SWOT-derived conditions and none that corresponds to this situation type. §18.4 states the consequence as arrows only, so the magnitude for this type is not stated anywhere in the Runbook. See RUNBOOK_OPEN_QUESTIONS.md Q1."
+
+classification_discipline:
+  source: "RPN-PHIL-001 §18.4"
+  cost_of_error: "Misclassifying the situation is the most expensive error available at intake, because it corrupts the entire weight vector."
+  confirmation_required: true
+  confirmation_rule: "The recruiter states the classification back to the hiring manager for explicit confirmation before the session closes."
+
+undeterminable_situation:
+  source: "RPN-PHIL-001 §18.5"
+  rule: "The situation type cannot be determined"
+  consequence: "An intake is rejected back to the hiring manager if any of:"
+
+arrow_transcription:
+  source: "RPN-PHIL-001 §18.4"
+  note: "dimension_effects transcribes the arrow glyphs in the weight_consequence column: a doubled up-arrow is strong_increase, a single up-arrow is increase, a single down-arrow is decrease. The Runbook attaches no magnitude to the arrows; magnitudes exist only where §11.3 supplies a bound."

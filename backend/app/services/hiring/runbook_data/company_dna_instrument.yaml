@@ -1,0 +1,417 @@
+# Extracted from the Ready Pick Now Hiring Philosophy & Intelligence
+# Runbook, document RPN-PHIL-001, version 1.1.
+#
+# THIS FILE IS NOT AN INDEPENDENT SOURCE OF TRUTH. Every entry carries a
+# `source` naming the Runbook section it was taken from, and
+# backend/tests/test_runbook_parity.py fails if this file and the Runbook
+# disagree in either direction. Change the Runbook and this file in the
+# same commit, or the build stops.
+#
+# Generated once from the Runbook tables and maintained by hand thereafter.
+
+meta:
+  document: RPN-PHIL-001
+  runbook_version: "1.1"
+  description: "The twelve-section Company DNA intake instrument (Layer 2), its forced scales, its observable-evidence quality bar and the Appendix A field form."
+
+purpose:
+  source: "RPN-PHIL-001 §15"
+  compilation_rule: "If a client statement cannot be expressed as (a) a weight modifier, (b) an evidence requirement, (c) a threshold, (d) a disqualifier, (e) a sourcing instruction, or (f) a dossier presentation preference - it is context for the recruiter, not configuration for the engine, and it is labelled as such."
+
+administration:
+  source: "RPN-PHIL-001 §16"
+  respondent: "the HR Manager / CHRO"
+  session_minutes: 90
+  structure: "Twelve sections."
+  section_count: 12
+
+sections:
+  - number: 1
+    source: "RPN-PHIL-001 §16.1"
+    title: "Organisational context"
+    response_type: structured
+    fields:
+      - field: "Headcount, growth rate, funding/ownership stage"
+        why_it_matters: "Sets the \"environment match\" reference for D3"
+      - field: "Industry and regulatory exposure"
+        why_it_matters: "Drives D4 floor, background-check requirements, credential logic"
+      - field: "Locations and work model per location"
+        why_it_matters: "D3 practical constraints"
+      - field: "Attrition rate and where it concentrates"
+        why_it_matters: "Informs risk register and calibration expectations"
+      - field: "Time-to-hire reality (not aspiration)"
+        why_it_matters: "Sets evidence-collection depth achievable"
+      - field: "Interview capacity per role per week"
+        why_it_matters: "Determines shortlist size that is actually usable"
+  - number: 2
+    source: "RPN-PHIL-001 §16.2"
+    title: "Evaluation philosophy"
+    response_type: forced_scale
+    rule: "Each answered on a forced scale, not free text."
+    anchor_wording_source: "RPN-PHIL-001 Appendix A"
+    anchor_wording_note: "§16.2 states the endpoint wording for the first question only; Appendix A items 7-12 carry it for all six. Where a null appears below, read field_form."
+    questions:
+      - question: "Proven delivery vs. potential"
+        scale_minimum: 1
+        scale_maximum: 5
+        anchor_low: "all proven"
+        anchor_high: "heavy potential"
+        maps_to: "D2/D5 modifier"
+      - question: "Specialist depth vs. generalist range"
+        scale_minimum: 1
+        scale_maximum: 5
+        anchor_low: null
+        anchor_high: null
+        maps_to: "Competency weighting within D1"
+      - question: "Credentials vs. demonstrated practice"
+        scale_minimum: 1
+        scale_maximum: 5
+        anchor_low: null
+        anchor_high: null
+        maps_to: "Evidence tier preferences within D1"
+      - question: "Stability vs. velocity of prior moves"
+        scale_minimum: 1
+        scale_maximum: 5
+        anchor_low: null
+        anchor_high: null
+        maps_to: "Tenure reading rules (§8.4)"
+      - question: "Internal training capacity"
+        scale_minimum: 1
+        scale_maximum: 5
+        anchor_low: null
+        anchor_high: null
+        maps_to: "D1/D5 modifier"
+      - question: "Tolerance for non-traditional backgrounds"
+        scale_minimum: 1
+        scale_maximum: 5
+        anchor_low: null
+        anchor_high: null
+        maps_to: "Exploration slot count; pedigree cap"
+  - number: 3
+    source: "RPN-PHIL-001 §16.3"
+    title: "What \"good\" looks like here, as observable evidence"
+    response_type: structured_observable_evidence
+    item_count_minimum: 5
+    item_count_maximum: 8
+    instruction: "The client names five to eight behaviours their strongest performers demonstrably show. Each must be written as observable evidence, not as a trait."
+    quality_bar: "The recruiter is responsible for enforcing this conversion. It is the single highest-leverage part of the whole intake, because unobservable criteria are exactly where bias enters."
+    field_form_blanks: 5
+    runbook_ambiguity: "Appendix A3 provides five numbered blanks (items 13 to 17) for a range its own heading states as five to eight, and item 18 belongs to A4. A client answering eight has nowhere to write the last three. See RUNBOOK_OPEN_QUESTIONS.md Q11."
+    example_pairs:
+      - rejected: "Ownership mindset."
+        accepted: "Has taken a project from unclear brief to shipped outcome without a defined process being handed to them, and can describe the decisions they made when nobody told them what to do."
+      - rejected: "Team player."
+        accepted: "Has worked in a matrixed structure where they had responsibility without authority, and can describe how they secured commitment from people who did not report to them."
+  - number: 4
+    source: "RPN-PHIL-001 §16.4"
+    title: "What fails here"
+    response_type: free_text
+    question: "describe two or three people who looked strong on paper and did not work out. What was the actual failure mode?"
+    converts_into:
+      - "risk probes in the validation instrument"
+      - "risk-register items in the dossier"
+  - number: 5
+    source: "RPN-PHIL-001 §16.5"
+    title: "Non-negotiables and constraints"
+    response_type: structured
+    fields:
+      - "Statutory and policy requirements (background verification, drug screening where lawful and applied uniformly, licensure)"
+      - "Notice-period tolerance"
+      - "Compensation bands by level, and flexibility"
+      - "Location / relocation / work-model rules"
+      - "Any genuinely binary requirement, each tested against §12.3"
+  - number: 6
+    source: "RPN-PHIL-001 §16.6"
+    title: "Process shape"
+    response_type: structured
+    fields:
+      - "Number and type of interview stages the client will actually run"
+      - "Who makes the final decision"
+      - "Whether the client will run their own assessments (avoid duplication)"
+      - "Turnaround commitments - because a slow client process changes which candidates remain available, and the dossier should say so"
+  - number: 7
+    source: "RPN-PHIL-001 §16.7"
+    title: "Diversity and inclusion commitments"
+    response_type: structured
+    fields:
+      - "Slate composition goals at the sourcing stage"
+      - "Structured-evaluation commitments"
+      - "Any adverse-impact reporting the client wants"
+      - "Explicit confirmation of the prohibited-disqualifier list (§12.4)"
+  - number: 8
+    source: "RPN-PHIL-001 §16.8"
+    title: "Data, consent and privacy"
+    response_type: structured
+    fields:
+      - "What candidate data the client may receive and retain"
+      - "Consent language the client requires"
+      - "Retention period and deletion obligations"
+      - "Cross-border transfer constraints"
+      - "Whether references may be contacted before or only after an offer stage"
+  - number: 9
+    source: "RPN-PHIL-001 §16.9"
+    title: "Compensation and offer reality"
+    response_type: structured
+    not_used_in_scoring: true
+    used_in: "the risk register"
+    rule: "Salary history is never collected or used as a ranking input"
+  - number: 10
+    source: "RPN-PHIL-001 §16.10"
+    title: "Sourcing preferences"
+    response_type: structured
+    not_used_in_scoring: true
+    rule: "Target companies, target industries, and talent-pool preferences live here and are applied at sourcing only."
+  - number: 11
+    source: "RPN-PHIL-001 §16.11"
+    title: "Dossier presentation preferences"
+    response_type: structured
+    fields: []
+  - number: 12
+    source: "RPN-PHIL-001 §16.12"
+    title: "Historical calibration data"
+    response_type: structured
+    note: "This is the highest-value input in the entire intake and is worth pursuing hard."
+
+compilation:
+  source: "RPN-PHIL-001 §17.1"
+  artefact_keys:
+    - company_id
+    - dna_version
+    - effective_from
+    - weight_modifiers
+    - evidence_requirements
+    - behavioural_competencies
+    - risk_probes
+    - hard_constraints
+    - prohibited_filters_confirmed
+    - pedigree_cap
+    - exploration_slots
+    - sourcing_preferences
+    - presentation
+  default_pedigree_cap: 0.05
+  default_exploration_slots: 2
+
+review_cadence:
+  source: "RPN-PHIL-001 §17.2"
+  months: 6
+  immediate_triggers:
+    - "leadership change"
+    - "funding or ownership change"
+    - "entry into a new regulatory regime"
+    - "a significant attrition event"
+    - "two consecutive calibration cycles showing systematic mismatch"
+
+drift_check:
+  source: "RPN-PHIL-001 §17.3"
+  cadence: quarterly
+  rule: "compare declared DNA against revealed preference: what the client actually shortlisted, interviewed, rejected and hired. Where the two diverge materially, the DNA is wrong and the client is told."
+
+field_form:
+  source: "RPN-PHIL-001 Appendix A"
+  items:
+    - number: 1
+      group: A1
+      response_type: structured
+      prompt: "Headcount, growth rate, ownership/funding stage"
+    - number: 2
+      group: A1
+      response_type: structured
+      prompt: "Industry and regulatory exposure"
+    - number: 3
+      group: A1
+      response_type: structured
+      prompt: "Locations; work model per location"
+    - number: 4
+      group: A1
+      response_type: structured
+      prompt: "Annual attrition, and where it concentrates"
+    - number: 5
+      group: A1
+      response_type: structured
+      prompt: "Actual (not target) time-to-hire, by level"
+    - number: 6
+      group: A1
+      response_type: structured
+      prompt: "Interview capacity per role per week"
+    - number: 7
+      group: A2
+      response_type: forced_scale
+      scale_minimum: 1
+      scale_maximum: 5
+      prompt: ""
+      anchor_low: "Proven delivery"
+      anchor_high: "Potential"
+    - number: 8
+      group: A2
+      response_type: forced_scale
+      scale_minimum: 1
+      scale_maximum: 5
+      prompt: ""
+      anchor_low: "Specialist depth"
+      anchor_high: "Generalist range"
+    - number: 9
+      group: A2
+      response_type: forced_scale
+      scale_minimum: 1
+      scale_maximum: 5
+      prompt: ""
+      anchor_low: "Credentials"
+      anchor_high: "Demonstrated practice"
+    - number: 10
+      group: A2
+      response_type: forced_scale
+      scale_minimum: 1
+      scale_maximum: 5
+      prompt: ""
+      anchor_low: "Stability of prior moves"
+      anchor_high: "Velocity/change"
+    - number: 11
+      group: A2
+      response_type: forced_scale
+      scale_minimum: 1
+      scale_maximum: 5
+      prompt: "Internal training capacity"
+      anchor_low: "none"
+      anchor_high: "substantial"
+    - number: 12
+      group: A2
+      response_type: forced_scale
+      scale_minimum: 1
+      scale_maximum: 5
+      prompt: "Tolerance for non-traditional backgrounds"
+      anchor_low: "low"
+      anchor_high: "high"
+    - number: 13
+      group: A3
+      response_type: structured_observable_evidence
+      format: "Has [done X] and can [describe/demonstrate Y]"
+      prompt: ""
+    - number: 14
+      group: A3
+      response_type: structured_observable_evidence
+      format: "Has [done X] and can [describe/demonstrate Y]"
+      prompt: ""
+    - number: 15
+      group: A3
+      response_type: structured_observable_evidence
+      format: "Has [done X] and can [describe/demonstrate Y]"
+      prompt: ""
+    - number: 16
+      group: A3
+      response_type: structured_observable_evidence
+      format: "Has [done X] and can [describe/demonstrate Y]"
+      prompt: ""
+    - number: 17
+      group: A3
+      response_type: structured_observable_evidence
+      format: "Has [done X] and can [describe/demonstrate Y]"
+      prompt: ""
+    - number: 18
+      group: A4
+      response_type: free_text
+      prompt: "Describe two or three hires who looked strong and did not work out. What was the actual failure? (This produces risk probes - press for specifics.)"
+    - number: 19
+      group: A5
+      response_type: structured
+      prompt: "Statutory/policy requirements"
+    - number: 20
+      group: A5
+      response_type: structured
+      prompt: "Notice-period tolerance"
+    - number: 21
+      group: A5
+      response_type: structured
+      prompt: "Compensation bands by level, and flexibility"
+    - number: 22
+      group: A5
+      response_type: structured
+      prompt: "Location/relocation/work-model rules"
+    - number: 23
+      group: A5
+      response_type: structured
+      prompt: "Any genuinely binary requirement (each tested against §12.3)"
+    - number: 24
+      group: A6
+      response_type: structured
+      prompt: "Interview stages actually run"
+    - number: 25
+      group: A6
+      response_type: structured
+      prompt: "Final decision-maker"
+    - number: 26
+      group: A6
+      response_type: structured
+      prompt: "Client-run assessments (to avoid duplication)"
+    - number: 27
+      group: A6
+      response_type: structured
+      prompt: "Turnaround commitments"
+    - number: 28
+      group: A7
+      response_type: structured
+      prompt: "Slate composition goals at sourcing"
+    - number: 29
+      group: A7
+      response_type: structured
+      prompt: "Adverse-impact reporting wanted?"
+    - number: 30
+      group: A7
+      response_type: structured
+      prompt: "Prohibited-filter list confirmed and signed? ☐"
+    - number: 31
+      group: A8
+      response_type: structured
+      prompt: "Data the client may receive/retain"
+    - number: 32
+      group: A8
+      response_type: structured
+      prompt: "Required consent language"
+    - number: 33
+      group: A8
+      response_type: structured
+      prompt: "Retention period"
+    - number: 34
+      group: A8
+      response_type: structured
+      prompt: "Cross-border constraints"
+    - number: 35
+      group: A8
+      response_type: structured
+      prompt: "Reference timing: pre-offer permitted? ☐ Yes ☐ No"
+    - number: 36
+      group: A9
+      response_type: structured
+      prompt: "Band vs. market position by level"
+    - number: 37
+      group: A9
+      response_type: structured
+      prompt: "Known counter-offer patterns"
+    - number: 38
+      group: A10
+      response_type: structured
+      prompt: "Target industries/companies"
+    - number: 39
+      group: A10
+      response_type: structured
+      prompt: "Talent pools to prioritise"
+    - number: 40
+      group: A11
+      response_type: structured
+      prompt: "Dossier depth; anonymised first pass? ☐; language"
+    - number: 41
+      group: A12
+      response_type: structured
+      prompt: "Past hires with outcomes - available? ☐ (Pursue hard.)"
+  section_titles:
+    A1: "Context"
+    A2: "Evaluation philosophy (forced scales, 1–5)"
+    A3: "What \"good\" looks like - observable evidence only (5–8 items)"
+    A4: "Failure modes"
+    A5: "Non-negotiables"
+    A6: "Process"
+    A7: "Diversity commitments (process, not quotas)"
+    A8: "Data and consent"
+    A9: "Offer reality"
+    A10: "Sourcing preferences (sourcing only - never scoring)"
+    A11: "Presentation"
+    A12: "Historical calibration data"

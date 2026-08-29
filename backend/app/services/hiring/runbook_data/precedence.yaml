@@ -1,0 +1,113 @@
+# Extracted from the Ready Pick Now Hiring Philosophy & Intelligence
+# Runbook, document RPN-PHIL-001, version 1.1.
+#
+# THIS FILE IS NOT AN INDEPENDENT SOURCE OF TRUTH. Every entry carries a
+# `source` naming the Runbook section it was taken from, and
+# backend/tests/test_runbook_parity.py fails if this file and the Runbook
+# disagree in either direction. Change the Runbook and this file in the
+# same commit, or the build stops.
+#
+# Generated once from the Runbook tables and maintained by hand thereafter.
+
+meta:
+  document: RPN-PHIL-001
+  runbook_version: "1.1"
+  description: "Layer precedence and conflict resolution, expressed as ordered predicates a test can execute."
+
+layer_rule:
+  source: "RPN-PHIL-001 HOW TO USE THIS RUNBOOK"
+  may_tune: true
+  may_suspend: false
+  rule: "A lower layer may tune a higher layer within declared bounds. A lower layer may never suspend a higher layer's integrity rules."
+  combination:
+    source: "RPN-PHIL-001 §3.4"
+    freeze: "The configuration is frozen at the moment scoring begins and versioned."
+    mid_stream_change: "a new configuration version is created and the affected candidates are rescored under it, with both versions retained."
+    silent_change: "Silent mid-stream criteria changes are the single most common source of unfair and unexplainable shortlists, and the system makes them structurally impossible."
+
+conflict_resolution:
+  source: "RPN-PHIL-001 §3.5"
+  ordered: true
+  rules:
+    - order: 1
+      conflict: "L3 asks for something L2 prohibits"
+      resolution: "L2 wins. Escalate to HR Manager."
+    - order: 2
+      conflict: "L2 asks for something L1 prohibits"
+      resolution: "L1 wins. Ready Pick Now declines the configuration and explains why."
+    - order: 3
+      conflict: "L3 weight request exceeds declared bounds"
+      resolution: "Clamp to bound; notify hiring manager; record the request."
+    - order: 4
+      conflict: "L3 disqualifier is a protected-characteristic proxy"
+      resolution: "Refuse; escalate to HR Manager; log under fairness audit."
+    - order: 5
+      conflict: "Two L3 competencies both demanded as top priority"
+      resolution: "Force-ranking session; \"everything is a must-have\" configurations are rejected (§20.3)."
+    - order: 6
+      conflict: "Client requests auto-rejection on an authenticity flag"
+      resolution: "Refused under C5. Offer instead: auto-routing to a priority human review queue."
+    - order: 7
+      conflict: "Client requests removal of the confidence label"
+      resolution: "Refused under C4."
+
+layer_prohibitions:
+  source: "RPN-PHIL-001 §3.6"
+  rules:
+    - layer: "L1"
+      must_never: "encode client-specific preference, geography-specific credential logic as universal, or any rule it cannot calibrate."
+    - layer: "L2"
+      must_never: "introduce criteria that are not observable evidence, or constraints that are protected-characteristic proxies."
+    - layer: "L3"
+      must_never: "introduce a criterion that contradicts the posted JD in a way that would be unfair to applicants who applied in good faith. If the real requirement differs materially from the JD, the JD is amended and reposted - the SWOT does not become a hidden filter."
+
+evidence_precedence:
+  source: "RPN-PHIL-001 §13.4"
+  applies_when: "two sources genuinely conflict and both survive Step 3"
+  ordered: true
+  rules:
+    - order: 1
+      rule: "Higher tier wins (E5 > E4 > E3 > E2 > E1 > E0)"
+    - order: 2
+      rule: "At equal tier, more recent underlying event wins"
+    - order: 3
+      rule: "At equal tier and recency, the source with no incentive to misrepresent wins"
+    - order: 4
+      rule: "At equal everything, both are reported and confidence is reduced - we do not manufacture a resolution"
+
+never_average:
+  source: "RPN-PHIL-001 §13.3"
+  rule: "If the assessment says 40 and the resume says 90, the answer is not 65."
+  reason: "Averaging is prohibited by Axiom 6 and is a scoring defect."
+
+contradiction_protocol:
+  source: "RPN-PHIL-001 §13.2"
+  mandatory_before_severity_above: "Minor"
+  benign_explanations_required: 2
+  ordered_steps:
+    - "RESTATE"
+    - "CHECK OUR OWN DATA"
+    - "BENIGN-EXPLANATION SEARCH"
+    - "TARGETED PROBE"
+    - "DISPOSITION"
+    - "RECORD"
+  process_defect: "DENYING THE CANDIDATE THE CHANCE TO EXPLAIN IS A PROCESS DEFECT."
+  dispositions:
+    - "Resolved-benign"
+    - "Resolved-adverse"
+    - "Unresolved"
+    - "Candidate unreachable"
+
+escalation_ladder:
+  source: "RPN-PHIL-001 §14.2"
+  ordered: true
+  steps:
+    - "Automated evaluation"
+    - "Delivery pod recruiter review"
+    - "Client HR Manager"
+    - "Ready Pick Now Standards Board"
+
+false_positive_obligation:
+  source: "RPN-PHIL-001 §13.5"
+  minimum_flag_precision: 0.60
+  rule: "If confirmed-issue precision on any flag type falls below 60%, that flag type's threshold is raised or the flag is retired."

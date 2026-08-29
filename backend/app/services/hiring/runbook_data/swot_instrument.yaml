@@ -1,0 +1,275 @@
+# Extracted from the Ready Pick Now Hiring Philosophy & Intelligence
+# Runbook, document RPN-PHIL-001, version 1.1.
+#
+# THIS FILE IS NOT AN INDEPENDENT SOURCE OF TRUTH. Every entry carries a
+# `source` naming the Runbook section it was taken from, and
+# backend/tests/test_runbook_parity.py fails if this file and the Runbook
+# disagree in either direction. Change the Runbook and this file in the
+# same commit, or the build stops.
+#
+# Generated once from the Runbook tables and maintained by hand thereafter.
+
+meta:
+  document: RPN-PHIL-001
+  runbook_version: "1.1"
+  description: "The Role SWOT intake instrument (Layer 3): quadrants, session protocol, the seven high-value probes, the rejection rules, the seven-stage transformation pipeline and the scorecard rules."
+
+why_swot:
+  source: "RPN-PHIL-001 §18"
+  rationale: "A job description is a public advertisement. It is written to attract, to satisfy internal approval, and to comply. It is almost never an accurate specification of the hiring problem."
+
+quadrants:
+  source: "RPN-PHIL-001 §18.1"
+  quadrants:
+    - quadrant: "Strengths"
+      question_asked: "What does this team already do well, that a new hire will inherit rather than provide?"
+      produces: "Competencies to deprioritise; the bar the hire must meet to be credible; differentiators to weight up"
+    - quadrant: "Weaknesses"
+      question_asked: "What is missing, and what breaks because it is missing?"
+      produces: "The gap competencies - the highest-weighted items on the scorecard"
+    - quadrant: "Opportunities"
+      question_asked: "What becomes possible if this hire is excellent? What will the role grow into?"
+      produces: "Trajectory and adjacency signals to reward"
+    - quadrant: "Threats"
+      question_asked: "What would make this hire fail? What has failed before?"
+      produces: "Risk probes, thresholds, disqualifiers, retention risks"
+
+session_protocol:
+  source: "RPN-PHIL-001 §18.2"
+  duration_minutes_minimum: 60
+  duration_minutes_maximum: 90
+  live_where_possible: true
+  async_permitted_for: "junior volume roles"
+  blocks:
+    - minutes: "0–10"
+      topic: "Context"
+      notes:
+        - "What is the business situation this role sits inside?"
+        - "Why now? What happens if the seat stays empty for six months?"
+    - minutes: "10–25"
+      topic: "Strengths"
+      notes:
+        - "Not the company's strengths - THE TEAM'S."
+        - "Probe: \"If I joined tomorrow, what would I not have to do because"
+        - "someone else already does it well?\""
+    - minutes: "25–45"
+      topic: "Weaknesses"
+      notes:
+        - "The core of the session."
+        - "Probe: \"What goes wrong today because of a missing capability?\""
+        - "Probe: \"What does the team keep having to outsource or defer?\""
+        - "Probe: \"What did the last person in this seat struggle with?\""
+    - minutes: "45–60"
+      topic: "Opportunities"
+      notes:
+        - "Where does this role go in 18 months?"
+        - "Probe: \"If this person is excellent, what do you hand them next?\""
+    - minutes: "60–75"
+      topic: "Threats"
+      notes:
+        - "Two directions."
+        - "Failure modes: \"Describe the version of this hire that goes badly.\""
+        - "External: notice periods, counter-offers, market scarcity, comp reality."
+    - minutes: "75–90"
+      topic: "Force-ranking and disqualifier confirmation"
+      notes:
+
+high_value_probes:
+  source: "RPN-PHIL-001 §18.3"
+  probes:
+    - number: 1
+      name: "The empty-seat probe"
+      probe: "What is not getting done right now?"
+      purpose: "Converts abstract requirements into concrete work."
+    - number: 2
+      name: "The first-90-days probe"
+      probe: "What would this person deliver in their first quarter?"
+      purpose: "Converts to must-have competencies immediately."
+    - number: 3
+      name: "The last-person probe"
+      probe: "Why did the previous person leave or fail?"
+      purpose: "Produces the most honest threat data available."
+    - number: 4
+      name: "The rejection probe"
+      probe: "Describe a candidate who looked perfect on paper that you'd still say no to. Why?"
+      purpose: "Surfaces unstated criteria before they become invisible filters."
+    - number: 5
+      name: "The trade-off probe"
+      probe: "If you could only have deep X or deep Y, which?"
+      purpose: "This is the force-ranking, extracted conversationally."
+    - number: 6
+      name: "The scale-reality probe"
+      probe: "What size and messiness of system/team/budget will they actually face?"
+      purpose: "Prevents scope mismatches."
+    - number: 7
+      name: "The autonomy probe"
+      probe: "How much direction will they get?"
+      purpose: "Determines how heavily to weight self-direction evidence."
+
+rejection_rules:
+  source: "RPN-PHIL-001 §18.5"
+  rule: "An intake is rejected back to the hiring manager if any of:"
+  conditions:
+    - "Weaknesses are absent or purely external (\"the market is competitive\")"
+    - "Every competency is marked must-have"
+    - "Requirements are traits, not observable evidence"
+    - "A prohibited disqualifier appears"
+    - "The stated requirements would exclude the hiring manager's own current best performer (a devastating and highly effective test - run it)"
+    - "The situation type cannot be determined"
+
+situation_extraction:
+  source: "RPN-PHIL-001 §18.4"
+  see: situation_types.yaml
+  count: 6
+
+transformation_pipeline:
+  source: "RPN-PHIL-001 §19"
+  rule: "Each SWOT input traverses seven stages. Nothing enters the engine without completing all seven."
+  stages:
+    - number: 1
+      stage: "Competency"
+      stage_label: "COMPETENCY"
+      description: "name the capability, from the department model"
+    - number: 2
+      stage: "Observable Evidence"
+      stage_label: "OBSERVABLE EVIDENCE"
+      description: "what would we SEE if this were true?"
+    - number: 3
+      stage: "Evidence Sources"
+      stage_label: "EVIDENCE SOURCES"
+      description: "where can this be observed?"
+    - number: 4
+      stage: "Assessment Method"
+      stage_label: "ASSESSMENT METHOD"
+      description: "what specific instrument tests it?"
+    - number: 5
+      stage: "Weight"
+      stage_label: "WEIGHT"
+      description: "from the force-ranking"
+    - number: 6
+      stage: "Threshold"
+      stage_label: "THRESHOLD"
+      description: "minimum acceptable level, if any"
+    - number: 7
+      stage: "Disqualifier"
+      stage_label: "DISQUALIFIER"
+      description: "binary exclusion, if genuinely warranted"
+
+completeness_check:
+  source: "RPN-PHIL-001 §19.5"
+  checks:
+    - "Every SWOT element has either produced a configuration item or been explicitly marked \"context only, no engine effect\""
+    - "Every competency has a named assessment method (Axiom: a competency we cannot test is a competency we cannot score - §14.1)"
+    - "Every threshold has a rationale"
+    - "Every disqualifier passes the §12.3 test"
+    - "Weights are force-ranked and sum correctly"
+    - "The evidence sources named are actually collectable within the engagement timeline"
+
+scorecard:
+  competency_ceiling:
+    source: "RPN-PHIL-001 §20.2"
+    maximum: 6
+    rule: "Maximum six. No exceptions."
+    rationale: "Beyond six, force-ranking becomes meaningless, weights become noise, evaluation time per competency drops below the level at which evidence is real, and every candidate looks average because the weighted mean regresses."
+  force_ranking:
+    source: "RPN-PHIL-001 §20.3"
+    rule: "Competencies are ranked 1..n and weights derive from the ranking, not from free assignment."
+    default_weights:
+      4: [0.36, 0.28, 0.22, 0.14]
+      5: [0.32, 0.25, 0.20, 0.14, 0.09]
+      6: [0.30, 0.23, 0.18, 0.13, 0.10, 0.06]
+    manual_adjustment_bound: 0.05
+    manual_adjustment_rule: "The hiring manager may adjust within +/-0.05 with a stated reason. The ordering may not be flattened."
+    runbook_ambiguity: "Default weights are stated for competency counts of 4, 5 and 6 only. §20.2 caps the count at six but states no minimum, so counts of 1, 2 and 3 have no derived weights anywhere in the Runbook. See RUNBOOK_OPEN_QUESTIONS.md Q8."
+  calibration_commitment:
+    source: "RPN-PHIL-001 §20.4"
+    rule: "Approval of a scorecard includes the hiring manager's commitment to a calibration review: a scheduled session, after the first shortlist, in which they react to real candidates and we adjust."
+  freeze:
+    source: "RPN-PHIL-001 §20.5"
+    initial_version: v1
+    rule: "On HR Manager approval the scorecard is frozen as v1. Any change creates v2, triggers re-scoring of all evaluated candidates, and both versions are retained with the rationale for the change."
+
+field_form:
+  source: "RPN-PHIL-001 Appendix B"
+  items:
+    - number: 1
+      group: B1
+      prompt: "Why this role, why now?"
+    - number: 2
+      group: B1
+      prompt: "What happens if the seat stays empty for six months?"
+    - number: 3
+      group: B1
+      prompt: "Who does this person work with most closely?"
+    - number: 4
+      group: B1
+      prompt: "How much direction will they receive? (autonomy probe)"
+    - number: 5
+      group: B2
+      prompt: "If I joined tomorrow, what would I not have to do because someone else already does it well?"
+    - number: 6
+      group: B2
+      prompt: "What is this team genuinely good at?"
+    - number: 7
+      group: B2
+      prompt: "Which of those must the new hire at least not undermine?"
+      note: "→ floors, not differentiators"
+    - number: 8
+      group: B3
+      prompt: "What goes wrong today because a capability is missing?"
+    - number: 9
+      group: B3
+      prompt: "What does the team keep outsourcing or deferring?"
+    - number: 10
+      group: B3
+      prompt: "What did the last person in this seat struggle with?"
+    - number: 11
+      group: B3
+      prompt: "What must this person deliver in their first 90 days?"
+    - number: 12
+      group: B4
+      prompt: "If this person is excellent, what do you hand them next?"
+    - number: 13
+      group: B4
+      prompt: "Where does this role go in 18 months?"
+    - number: 14
+      group: B4
+      prompt: "What could this hire unlock that isn't in the JD?"
+    - number: 15
+      group: B5
+      prompt: "Describe the version of this hire that goes badly."
+    - number: 16
+      group: B5
+      prompt: "Why did the last two people at this level leave?"
+    - number: 17
+      group: B5
+      prompt: "What will make offers hard to close here? (honest comp/market reality)"
+    - number: 18
+      group: B5
+      prompt: "Describe a candidate who would look perfect on paper that you'd still reject. Why?"
+    - number: 19
+      group: B6
+      prompt: "Rank the required competencies 1..n (max 6). No ties."
+    - number: 20
+      group: B6
+      prompt: "If you could only have deep ___ or deep ___, which? (repeat until ranking is stable)"
+    - number: 21
+      group: B7
+      prompt: "Situation type confirmed: Gap-fill / Turnaround / Scale-up / Greenfield / Steady-state / Succession"
+    - number: 22
+      group: B7
+      prompt: "Would these requirements exclude your current best performer? ☐ No ☐ Yes (if yes, revise)"
+    - number: 23
+      group: B7
+      prompt: "Disqualifiers declared and justified"
+    - number: 24
+      group: B7
+      prompt: "Calibration review booked for: ______"
+  section_titles:
+    B1: "Context"
+    B2: "Strengths - what the team already has"
+    B3: "Weaknesses - the gap this hire must close"
+    B4: "Opportunities - the upside"
+    B5: "Threats - how this fails"
+    B6: "Force-ranking"
+    B7: "Confirmation"
