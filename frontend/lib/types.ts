@@ -618,12 +618,16 @@ export interface RankedCandidatesResponse {
   range_end: number;
 }
 
-export type TeamRating =
-  | "very_high"
-  | "high"
-  | "medium"
-  | "low"
-  | "developing";
+/**
+ * A Team Review verdict, per the Candidate Dashboard Specification Column 7.
+ *
+ * A DECISION vocabulary, deliberately not the four machine grades a candidate
+ * is assessed on. Keep them distinct: a colleague's note rendered in the
+ * machine's words reads as a machine grade, which is the opposite of what the
+ * Team Review panel is for. `backend/app/services/team_review.py` carries the
+ * argument and the override-rate mapping between the two.
+ */
+export type TeamRating = "pass" | "hold" | "reject";
 
 export interface CandidateTeamReview {
   id: string;

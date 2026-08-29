@@ -174,7 +174,16 @@ class RankingCommentsOut(BaseModel):
     overall_comment: str | None = None
 
 
-TeamRating = Literal["very_high", "high", "medium", "low", "developing"]
+#: A Team Review verdict, per the Candidate Dashboard Specification Column 7.
+#: This is a DECISION vocabulary and is deliberately not `rating.GRADES`, which
+#: is what an agent outputs about a candidate. See `services/team_review.py` for
+#: the argument and for the override-rate mapping between the two.
+#:
+#: The literal is spelled out rather than built from `team_review.VERDICTS`
+#: because `Literal` needs static members for mypy and for the OpenAPI schema.
+#: `test_team_review_vocabulary.py` asserts the two agree, so spelling it twice
+#: cannot drift.
+TeamRating = Literal["pass", "hold", "reject"]
 
 
 class TeamReviewIn(BaseModel):

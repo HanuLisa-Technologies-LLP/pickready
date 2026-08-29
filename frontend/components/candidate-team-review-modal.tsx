@@ -31,20 +31,30 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 
 /**
- * A HUMAN reviewer's own opinion, deliberately NOT the four PPI grades.
+ * A HUMAN reviewer's DECISION, deliberately NOT the four machine grades.
  *
  * The four grades (Highly Matching / Matching / Moderately Matching / Not
  * Matching) are what the product's agents output about a candidate against a
- * job. This scale is a team member recording what THEY think. Rendering both on
- * the same words would make a colleague's note read as a machine grade, which
- * is the opposite of what this panel is for.
+ * job. This is a team member recording what THEY decided. Rendering both on the
+ * same words would make a colleague's note read as a machine grade, which is
+ * the opposite of what this panel is for.
+ *
+ * That reasoning is why this panel kept its own vocabulary through the
+ * 2026-07-30 scale consolidation, and it still holds. What changed on
+ * 2026-08-29 is the vocabulary it protects: Very High / High / Medium / Low /
+ * Developing was an ASSESSMENT scale, ordinal, answering "how good", which is
+ * the machine's question. Pass / Hold / Reject is a DECISION vocabulary,
+ * categorical, answering "what now". `Hold` is not a relabelled `Medium`; it
+ * means the reviewer is not deciding yet.
+ *
+ * Source: the Candidate Dashboard Specification, Column 7. The override-rate
+ * mapping onto the machine grades lives in `backend/app/services/team_review.py`
+ * and is never rendered here.
  */
 const RATING_LABELS: Record<TeamRating, string> = {
-  very_high: "Very High",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-  developing: "Developing",
+  pass: "Pass",
+  hold: "Hold",
+  reject: "Reject",
 };
 
 export function CandidateTeamReviewModal({
@@ -63,7 +73,10 @@ export function CandidateTeamReviewModal({
   const [loading, setLoading] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [rewriting, setRewriting] = React.useState(false);
-  const [rating, setRating] = React.useState<TeamRating>("high");
+  // Defaults to the abstention, never to an endorsement. A panel that opens
+  // pre-set to "Pass" records a decision the reviewer has not made yet, and
+  // the whole value of Team Review is that it is an INDEPENDENT judgment.
+  const [rating, setRating] = React.useState<TeamRating>("hold");
   const [remarks, setRemarks] = React.useState("");
   const [rewritten, setRewritten] = React.useState("");
 
@@ -81,7 +94,7 @@ export function CandidateTeamReviewModal({
         setRemarks(mine.remarks);
         setRewritten(mine.ai_rewritten_remarks ?? "");
       } else {
-        setRating("high");
+        setRating("hold");
         setRemarks("");
         setRewritten("");
       }
@@ -155,7 +168,7 @@ export function CandidateTeamReviewModal({
         <DialogHeader>
           <DialogTitle>Hiring team review · {candidateName}</DialogTitle>
           <DialogDescription>
-            Every team member keeps their own rating and remarks. The consensus appears first.
+            Every team member keeps their own verdict and remarks. The consensus appears first.
           </DialogDescription>
         </DialogHeader>
 
@@ -183,7 +196,7 @@ export function CandidateTeamReviewModal({
             <section className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-[12rem_1fr]">
                 <div className="space-y-1.5">
-                  <Label>Your rating grade</Label>
+                  <Label>Your verdict</Label>
                   <Select value={rating} onValueChange={(value) => setRating(value as TeamRating)}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>

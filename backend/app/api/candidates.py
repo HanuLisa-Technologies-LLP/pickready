@@ -62,6 +62,7 @@ from app.schemas.candidates import (
 )
 from app.services import capabilities as caps
 from app.services import rbac
+from app.services import team_review
 from app.services.audit import audit
 from app.services.matching import client_breakdown, ranking_payload
 from app.services import llm_router
@@ -556,7 +557,10 @@ async def decide_profile(
                      at=entry.at or datetime.now(timezone.utc))
 
 
-_TEAM_RATING_ORDER = ["very_high", "high", "medium", "low", "developing"]
+#: Display and tie-break order only; nothing scores these. Read from the one
+#: place the vocabulary is defined so a fourth verdict cannot be added here and
+#: nowhere else.
+_TEAM_RATING_ORDER = list(team_review.VERDICTS)
 
 
 def _clean_review_text(value: str) -> str:
