@@ -78,7 +78,7 @@ celery_app.conf.update(
     # wraps the enqueue in try/except gets no chance to run its handler, because
     # nothing is ever raised.
     #
-    # Observed while seeding the demo candidates from a Cloud Run job that had
+    # Observed while seeding the demo candidates from a one-shot job that had
     # REDIS_URL but no VPC egress: the very first enqueue never returned and the
     # task was killed at the 900s ceiling with nothing written. The routing is
     # fixed separately (scripts/deploy.sh gives the job VPC access); this makes
@@ -156,28 +156,6 @@ celery_app.conf.update(
         # whenever the daily run happens to land.
         "reconcile-assessment-credits": {
             "task": "pickready.reconcile_assessment_credits",
-            "schedule": 3600.0,
-        },
-        # Ask every provider whether the model id we send it still exists
-        # (added 2026-08-23, after the third tier went dark this way).
-        #
-        # A retired model id is undetectable from the inside. The router does
-        # the correct thing -- records a failure, walks to the next tier -- so
-        # nothing raises, nothing alerts, and the only symptom is that AI output
-        # gets slower and then quietly falls back to a deterministic template.
-        # Measured that day: Groq's model id had been removed and answered 404
-        # to all seven keys while OpenRouter was out of prepaid credit, so two
-        # of three tiers were dead and every task was landing on a Gemini
-        # instance returning HTTP 503 and 13-23 second latencies. Every
-        # credential was valid, every deploy was green, and the product had been
-        # reporting "AI unavailable" to users.
-        #
-        # Hourly, because the remedy is a config change a human has to make and
-        # there is no point discovering it faster than somebody can act. It only
-        # LOGS: a probe that failed its own network call must never be able to
-        # write off a working provider.
-        "probe-llm-models": {
-            "task": "pickready.probe_llm_models",
             "schedule": 3600.0,
         },
     },

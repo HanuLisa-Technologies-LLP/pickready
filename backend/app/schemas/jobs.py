@@ -142,7 +142,7 @@ class JobOut(BaseModel):
         """Canonical job grade, mirrored from assessment_grade. Never null —
         legacy rows without a stored grade read as non_managerial."""
         return self.assessment_grade or "non_managerial"
-    # Public application link (FR-3.4) — picready.com/{job_uuid}. Populated by
+    # Public application link (FR-3.4) — readypick.ai/apply/{job_uuid}. Populated by
     # the endpoint (not a DB column); None when the job isn't published.
     public_url: str | None = None
     #: The same absolute link under the name the 2026-07-28 spec asks for. Both

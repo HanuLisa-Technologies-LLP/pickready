@@ -108,16 +108,24 @@ def test_overall_nine_is_highly_matching_boundary():
     assert overall == 9.0
     match_score = round(overall * 10, 1)
     assert match_score == 90.0
-    # Exactly 90 is Highly Matching — inclusive upward (claude.md rule 8).
+    # Exactly 90 is Highly Matching, inclusive upward (claude.md rule 8).
     assert assign_tier(match_score) == Tier.highly_matching
 
 
 def test_tier_mapping_below_boundaries():
-    assert assign_tier(round(8.9 * 10, 1)) == Tier.moderately_matching   # 89
-    assert assign_tier(round(7.0 * 10, 1)) == Tier.moderately_matching   # 70 boundary
-    assert assign_tier(round(6.9 * 10, 1)) == Tier.matching              # 69
-    assert assign_tier(round(5.0 * 10, 1)) == Tier.matching              # 50 boundary
-    assert assign_tier(round(4.9 * 10, 1)) == Tier.not_matching          # 49
+    """The 90 / 75 / 60 cut-points of `services/rating.py`, reached through the
+    x10 conversion the AI Score applies to a 1-10 parameter mean.
+
+    This block asserted 90 / 70 / 50 with `matching` and `moderately_matching`
+    transposed, which is how `services/tiers.py` kept a third, inverted scale
+    through a full green suite. `tests/test_grade_scale_consistency.py` now
+    sweeps the whole range; these named points stay for readability.
+    """
+    assert assign_tier(round(8.9 * 10, 1)) == Tier.matching               # 89
+    assert assign_tier(round(7.5 * 10, 1)) == Tier.matching               # 75 boundary
+    assert assign_tier(round(7.4 * 10, 1)) == Tier.moderately_matching    # 74
+    assert assign_tier(round(6.0 * 10, 1)) == Tier.moderately_matching    # 60 boundary
+    assert assign_tier(round(5.9 * 10, 1)) == Tier.not_matching           # 59
     assert assign_tier(round(compute_overall_score(scores(10, 10, 10, 10)) * 10, 1)) == Tier.highly_matching
 
 

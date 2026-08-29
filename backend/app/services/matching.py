@@ -1,10 +1,10 @@
 """Hybrid ranking pipeline (ESD §8.2, scoring per API contract REVISION 2):
 
-1. Semantic stage    — pgvector cosine (`<=>`, HNSW) JD-vs-profile, top-N.
-2. Keyword stage     — Postgres ts_rank over profiles.resume_tsv using the
+1. Semantic stage    -- pgvector cosine (`<=>`, HNSW) JD-vs-profile, top-N.
+2. Keyword stage     -- Postgres ts_rank over profiles.resume_tsv using the
                        JD's skills/keywords, over the same eligible pool.
-3. 4-parameter LLM scoring — union of (1)+(2): the LLM (rerank chain,
-                       Groq-first) rates each profile on skills_match,
+3. 4-parameter LLM scoring -- union of (1)+(2): the LLM (rerank chain,
+                       Haiku 4.5) rates each profile on skills_match,
                        experience_relevance, role_alignment and education_fit,
                        each an integer 1-10 + comment, plus a genuinely
                        holistic 5th overall comment. There is NO weighting
@@ -12,21 +12,21 @@
                        is their plain mean, computed in Python and never
                        trusted from the LLM. Retrieval stages (1)+(2) are prior
                        signal only; embeddings never become the score.
-4. Tier assignment   — app.services.tiers.assign_tier over overall×10
+4. Tier assignment   -- app.services.tiers.assign_tier over overall×10
                        (inclusive-upward boundaries, claude.md rule 8).
 
 The full breakdown JSON is stored in job_candidate_links.match_breakdown_json
-(column added in migration 0002; written via raw SQL like jobs.embedding —
+(column added in migration 0002; written via raw SQL like jobs.embedding --
 intentionally not on the SQLAlchemy model). match_score stays populated as
 overall×10 so sorting/dashboard are unchanged; match_rationale = the overall
 comment.
 
 Eligible pool: profiles of candidates already linked to the job, plus Databank
 candidates with consent_databank = true (Aspect 40 / FR-4.2). Consenting
-Databank candidates not yet linked get a link created (source=databank) —
+Databank candidates not yet linked get a link created (source=databank) --
 their Profile is reused as-is, never re-verified (claude.md rule 7).
 
-ESD §16: the re-rank chain never receives compensation data — the job's
+ESD §16: the re-rank chain never receives compensation data -- the job's
 compensation_json is never sent, and compensation-ish keys are stripped from
 parsed resume fields before prompting.
 """
@@ -45,7 +45,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Job, JobCandidateLink, LinkSource, Profile
 from app.services import llm_router, matching_categories, rating
 from app.services.embeddings import EmbeddingError, embed
-# Track A owns tier assignment (signature: assign_tier(score: float) -> Tier).
+# `assign_tier` is the persisted spelling of `services.rating`'s four grades,
+# not a second scale: same 90 / 75 / 60 cut-points, same inclusive-upward rule.
 from app.services.tiers import assign_tier
 from app.prompts import registry
 
@@ -63,8 +64,8 @@ _SCORING_TASK = "rerank"
 
 # Deterministic-fallback band (used when the LLM chain is fully unavailable):
 # retrieval rank is mapped into [_FALLBACK_MIN, _FALLBACK_MAX] so ordering is
-# preserved but the ceiling stays below the "Highly Matching" boundary — a
-# fallback score never fabricates a top-tier match (8×10 = 80 = Moderately).
+# preserved but the ceiling stays below the "Highly Matching" boundary -- a
+# fallback score never fabricates a top-tier match (8×10 = 80 = Matching).
 _FALLBACK_MIN = 4
 _FALLBACK_MAX = 8
 
@@ -78,7 +79,7 @@ COMMENT_MIN_WORDS = 25
 COMMENT_MAX_WORDS = 30
 
 # A "word" is any whitespace-delimited token containing at least one
-# alphanumeric character — bare dashes, bullets and stray punctuation don't
+# alphanumeric character -- bare dashes, bullets and stray punctuation don't
 # count, which matches how a human counts the words in a sentence.
 _WORD_TOKEN_RE = re.compile(r"[0-9A-Za-z]")
 
@@ -99,7 +100,7 @@ _PAD_CLAUSES: tuple[str, ...] = (
 
 # Deterministic retrieval-only comments, used when the whole LLM chain is
 # unavailable. They are honest about being similarity-derived, are each 25-30
-# words, and deliberately avoid any "unavailable" placeholder wording — the
+# words, and deliberately avoid any "unavailable" placeholder wording -- the
 # machine-readable signal is breakdown["scoring_mode"] == "retrieval_fallback".
 _FALLBACK_COMMENTS: dict[str, str] = {
     "skills_match": (
@@ -135,7 +136,7 @@ _AI_UNAVAILABLE_COMMENT = "AI scoring unavailable, deterministic retrieval-based
 
 
 def word_count(text: str | None) -> int:
-    """Count words in `text` — whitespace-delimited tokens with a letter/digit.
+    """Count words in `text` -- whitespace-delimited tokens with a letter/digit.
 
     Pure and side-effect free; unit-tested in tests/test_matching.py.
     """
@@ -160,7 +161,7 @@ def _trim_to(tokens: list[str], min_words: int, max_words: int) -> list[str]:
     """Cut `tokens` down to at most `max_words`, preferring a clause boundary.
 
     Walks forward until the next word would exceed `max_words`, then looks back
-    for the last token that ends a clause (`. , ; : — –`) at or after
+    for the last token that ends a clause (`. , ; : –`) at or after
     `min_words` and cuts there instead, so the repaired comment ends cleanly.
     """
     kept: list[str] = []
@@ -217,13 +218,13 @@ def enforce_word_range(
     if _tokens_word_count(tokens) > max_words:
         tokens = _trim_to(tokens, min_words, max_words)
     if _tokens_word_count(tokens) < min_words:
-        # Filler exhausted (caller passed a short custom filler) — recycle the
+        # Filler exhausted (caller passed a short custom filler) -- recycle the
         # built-in clauses so the guarantee still holds.
         j = 0
         while _tokens_word_count(tokens) < min_words:
             tokens = tokens + _PAD_CLAUSES[j % len(_PAD_CLAUSES)].split()
             j += 1
-            if j > 2 * len(_PAD_CLAUSES):  # pragma: no cover — defensive
+            if j > 2 * len(_PAD_CLAUSES):  # pragma: no cover -- defensive
                 break
         if _tokens_word_count(tokens) > max_words:
             tokens = _trim_to(tokens, min_words, max_words)
@@ -392,11 +393,11 @@ async def _semantic_stage(
 async def _linked_stage(session: AsyncSession, job_id: uuid.UUID) -> list[uuid.UUID]:
     """Profile ids of EVERY candidate explicitly linked to this job.
 
-    Stages 1 and 2 are *retrieval* — they are capped at top_n and they silently
+    Stages 1 and 2 are *retrieval* -- they are capped at top_n and they silently
     drop any profile whose `embedding` is NULL or whose `resume_tsv` does not
     match the JD terms (an unparsed resume matches neither). A candidate who
-    was explicitly linked to the job — they applied, or a recruiter uploaded
-    them — must never be left unscored because retrieval could not see them,
+    was explicitly linked to the job -- they applied, or a recruiter uploaded
+    them -- must never be left unscored because retrieval could not see them,
     so their profile is always added to the scoring pool. No top_n cap here:
     the pool is bounded by the job's own applicant count.
     """
@@ -422,9 +423,9 @@ async def _backfill_missing_embeddings(
 
     Two distinct causes of a NULL `profiles.embedding`:
       * resume text IS present (parsing ran) but the embedding was never
-        written — embed it here; `embed()` is cheap and already degrades to a
-        deterministic dev vector when BGE_M3_ENDPOINT is unset.
-      * no resume text at all — re-queue the EXISTING `pickready.parse_resume`
+        written -- embed it here; `embed()` is cheap and already degrades to a
+        deterministic dev vector when VOYAGE_API_KEY is unset.
+      * no resume text at all -- re-queue the EXISTING `pickready.parse_resume`
         task (never a new one) for profiles whose Cloudinary metadata is
         complete enough for it to succeed. A profile with an incomplete asset
         is logged, not re-queued, so the task does not crash-loop.
@@ -457,7 +458,7 @@ async def _backfill_missing_embeddings(
                 profile.embedding = vector
             await session.flush()
             logger.info("matching.embeddings_backfilled count=%d", len(embeddable))
-        except Exception as exc:  # noqa: BLE001 — never abort a run
+        except Exception as exc:  # noqa: BLE001 -- never abort a run
             logger.warning(
                 "matching.embedding_backfill_failed error=%s", type(exc).__name__
             )
@@ -478,7 +479,7 @@ async def _backfill_missing_embeddings(
         try:
             celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
             logger.info("matching.parse_resume_requeued profile_id=%s", profile.id)
-        except Exception as exc:  # noqa: BLE001 — broker down must not abort a run
+        except Exception as exc:  # noqa: BLE001 -- broker down must not abort a run
             logger.warning(
                 "matching.parse_resume_enqueue_failed profile_id=%s error=%s",
                 profile.id, type(exc).__name__,
@@ -489,7 +490,7 @@ async def _keyword_stage(
     session: AsyncSession, job_id: uuid.UUID, query_terms: str, top_n: int
 ) -> list[uuid.UUID]:
     """Top-N profile ids by full-text rank over resume_tsv (catches exact
-    terms — tool names, certifications — that embeddings can miss)."""
+    terms -- tool names, certifications -- that embeddings can miss)."""
     if not query_terms.strip():
         return []
     rows = await session.execute(
@@ -577,7 +578,7 @@ def _fallback_breakdown(
     Comments are real, readable 25-30 word notes that state plainly that the
     ranking is similarity-derived; `scoring_mode` carries the machine-readable
     flag so the UI/audit can tell an LLM score from a degraded one (claude.md
-    rule 9 — degrade, never crash).
+    rule 9 -- degrade, never crash).
     """
     score = _fallback_param_score(rank_index, total)
     resolved = categories or tuple(
@@ -628,7 +629,7 @@ def _validate_entry(entry: Any, keys: tuple[str, ...] = PARAMETERS) -> dict | No
             "score": score,
             "comment": str(block.get("comment") or "").strip(),
         }
-    # The 5th, holistic comment is required — it becomes match_rationale.
+    # The 5th, holistic comment is required -- it becomes match_rationale.
     overall_comment = entry.get("overall_comment")
     if not isinstance(overall_comment, str) or not overall_comment.strip():
         return None
@@ -712,7 +713,7 @@ def ranking_payload(breakdown: dict | None) -> dict[str, Any]:
     """Flat, comments-only projection of a stored breakdown for API responses.
 
     Always returns every key. When the link has not been scored yet the five
-    comments and labels are null and `ranking_status` is "not_scored" — an
+    comments and labels are null and `ranking_status` is "not_scored" -- an
     explicit state the UI can distinguish from "scored but empty", instead of a
     silent null. Comments are re-checked against the 25-30 word contract on the
     way out, so even a legacy row can never render out of range.
@@ -774,7 +775,7 @@ def client_breakdown(breakdown: dict | None) -> dict | None:
     claude.md hard rule: stored numeric scores are internal ranking data and
     must never be returned by a client-facing API. The review screen needs the
     five comments (and `scoring_mode`, so the UI/audit can tell an LLM score
-    from a degraded retrieval one) — it never needs 1-10 parameter scores or
+    from a degraded retrieval one) -- it never needs 1-10 parameter scores or
     the internal overall. The `breakdown` key is kept in the response shape for
     backwards compatibility; only the numbers are stripped out of it.
     """
@@ -795,7 +796,7 @@ def _profile_summary(profile: Profile) -> dict:
     """Compact, compensation-stripped candidate summary for the scoring prompt.
 
     Aspect 23 (current designation + core duties) and aspects 8-13 (education)
-    are surfaced as dedicated fields when present — resume text is fallback
+    are surfaced as dedicated fields when present -- resume text is fallback
     only (API contract rev 2 aspect-numbering block).
     """
     parsed = _strip_compensation(profile.parsed_fields_json or {})
@@ -907,7 +908,7 @@ def _extract_valid(
 
 def _safe_profile_summary(profile: Profile) -> dict:
     """_profile_summary, but a single malformed profile never aborts the batch
-    — it falls back to a minimal id-only summary and is scored on what's there.
+    -- it falls back to a minimal id-only summary and is scored on what's there.
     """
     try:
         return _profile_summary(profile)
@@ -934,7 +935,7 @@ async def _score_batch(
     missing/malformed, and entries whose comments broke the
     25-30 word contract (the model is told exactly which fields were wrong and
     the word count it produced). Anything still out of range afterwards is
-    repaired deterministically by `enforce_breakdown_comments` — a comment
+    repaired deterministically by `enforce_breakdown_comments` -- a comment
     outside 25-30 words is never returned from here. Profiles still malformed
     after the retry are skipped with a logged warning; if the whole LLM
     provider chain is unavailable, every profile gets a deterministic
@@ -1019,7 +1020,7 @@ async def _score_batch(
                 _SCORING_TASK, retry_messages, response_format_json=True, session=session
             )
         except llm_router.LLMUnavailableError:
-            # Chain went down on the corrective retry — skip the still-missing
+            # Chain went down on the corrective retry -- skip the still-missing
             # profiles (the ones that DID score keep their real scores).
             raw_retry = ""
         retried, still_missing = _extract_valid(raw_retry, wanted_again, keys)
@@ -1065,7 +1066,7 @@ async def _llm_score(
     LLM chain is unavailable, breakdowns are the deterministic retrieval-rank
     fallback, flagged `scoring_mode = "retrieval_fallback"`."""
     total = len(profiles)
-    # profiles arrive in retrieval-union order (semantic-first, then keyword) —
+    # profiles arrive in retrieval-union order (semantic-first, then keyword) --
     # position is the fallback rank signal.
     rank_by_id = {p.id: i for i, p in enumerate(profiles)}
     results: dict[uuid.UUID, dict] = {}
@@ -1327,6 +1328,10 @@ def _model_metadata(breakdown: dict) -> dict[str, Any]:
     """
     from app.config import llm_providers  # noqa: PLC0415
 
+    # `provider_order` still validates the task type and still names the vendor;
+    # with one vendor the interesting axis moved to the MODEL, so the trace
+    # records that instead of a per-provider candidate table that would now
+    # always have one row.
     order = list(llm_providers.provider_order(_SCORING_TASK))
     return {
         "task_type": _SCORING_TASK,
@@ -1337,7 +1342,7 @@ def _model_metadata(breakdown: dict) -> dict[str, Any]:
         "scoring_mode": str(breakdown.get("scoring_mode") or "unknown"),
         "provider": None,
         "provider_order": order,
-        "candidate_models": {p: llm_providers.PROVIDER_MODELS.get(p) for p in order},
+        "model": llm_providers.model_for(_SCORING_TASK),
         "temperature": llm_providers.temperature_for(_SCORING_TASK),
     }
 
@@ -1745,7 +1750,7 @@ async def run_matching(
         link = links_by_candidate.get(profile.candidate_id)
         if link is None:
             if profile.candidate_id not in consenting:
-                # Not linked and not a consenting Databank candidate — skip.
+                # Not linked and not a consenting Databank candidate -- skip.
                 continue
             link = JobCandidateLink(
                 tenant_id=job.tenant_id,
@@ -1766,14 +1771,14 @@ async def run_matching(
             # match_score stays 0-100 (overall × 10) so sorting/dashboard and
             # the tier boundary rule are unchanged.
             link.match_score = round(overall * 10, 1)
-            # HR-visible, never candidate-visible — the holistic 5th comment.
+            # HR-visible, never candidate-visible -- the holistic 5th comment.
             link.match_rationale = breakdown["overall"]["comment"]
             link.tier = assign_tier(link.match_score)
             scored_links.append((profile, link, breakdown))
             scored += 1
 
     # match_breakdown_json is intentionally NOT on the SQLAlchemy model (same
-    # pattern as jobs.embedding) — flush so new links get ids, then write the
+    # pattern as jobs.embedding) -- flush so new links get ids, then write the
     # breakdown via raw SQL.
     reporter.finish("remarks")
     reporter.start("saving")

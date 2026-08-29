@@ -464,7 +464,7 @@ async def portal_job(
     session: AsyncSession = Depends(get_candidate_db),
 ) -> PortalJobOut:
     """View a single published job by id — the public job link target
-    (`picready.com/{job_uuid}`). Any authenticated candidate may view it
+    (`readypick.ai/apply/{job_uuid}`). Any authenticated candidate may view it
     regardless of prior contact (FR-3.5, open application), PROVIDED the
     posting window still admits them (spec §2.2): direct-URL access is exactly
     the path Rule 3 has to close, not just the job board."""

@@ -95,10 +95,10 @@ MAX_DATABANK_FILES = 25
 
 
 def public_job_url(job_id: uuid.UUID) -> str:
-    """The public application link (FR-3.4): picready.com/{job_uuid}.
+    """The public application link (FR-3.4): readypick.ai/apply/{job_uuid}.
 
     The base comes from settings.frontend_url (env-driven — set it to
-    https://picready.com in production; it defaults to http://localhost:3000 in
+    https://readypick.ai in production; it defaults to http://localhost:3000 in
     dev). The frontend serves the public application page at /apply/{job_uuid}
     (a bare root catch-all was deliberately avoided), so the link points there."""
     base = get_settings().frontend_url.rstrip("/")
@@ -1356,7 +1356,7 @@ async def get_public_job(
     session: AsyncSession = Depends(get_public_db),
 ) -> PublicJobOut:
     """Canonical PUBLIC read of a published job — powers the open application
-    page reached via picready.com/{job_uuid}. Unauthenticated, but ONLY returns
+    page reached via readypick.ai/apply/{job_uuid}. Unauthenticated, but ONLY returns
     PUBLISHED jobs (`ratified_at` set) and ONLY public fields (title, JD,
     company name) — no internal ATS data leaks. 404 for any unpublished or
     unknown id (never reveal existence).

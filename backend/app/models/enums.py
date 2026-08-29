@@ -14,6 +14,19 @@ class Role(str, enum.Enum):
     hr_manager = "hr_manager"
     recruiter = "recruiter"
     hiring_manager = "hiring_manager"
+    # RBAC_SPECIFICATION.md 5 and 13. Interview Managers are evaluation
+    # participants: they read the candidate material for a job they are
+    # assigned to and contribute Team Review remarks. They own no JD, no
+    # hiring criteria and no pipeline control, and a job MAY have many of
+    # them (13.1) which is why the assignment lives in `job_assignments`
+    # rather than being implied by the role alone.
+    #
+    # Added 2026-08-29 with the narrowest permission set the specification
+    # grants. The alternative considered was widening an existing role to
+    # cover interviewers, which would have granted people MORE than the
+    # specification allows; adding a role that holds less is the restrictive
+    # direction.
+    interview_manager = "interview_manager"
     candidate = "candidate"
     # Business Development. ReadyPick's own staff, not a customer's: a bd user
     # has tenant_id NULL and works the sales pipeline in `bd_leads`. Sits in
@@ -64,10 +77,19 @@ class LinkSource(str, enum.Enum):
 
 
 class Tier(str, enum.Enum):
-    highly_matching = "highly_matching"        # ≥90
-    moderately_matching = "moderately_matching"  # ≥70
-    matching = "matching"                      # ≥50
-    not_matching = "not_matching"              # <50
+    """The four grades of `services/rating.py`, in their persisted spelling.
+
+    Declared BEST FIRST, and the order is the point: the comments used to read
+    90 / 70 / 50 with `moderately_matching` ABOVE `matching`, which inverted the
+    middle two bands relative to the one scale the product grades on. Cut-points
+    live in `rating.grade_for_percent` and nowhere else; `services/tiers.py`
+    names them, and `tests/test_grade_scale_consistency.py` pins the agreement.
+    """
+
+    highly_matching = "highly_matching"          # >= 90
+    matching = "matching"                        # >= 75
+    moderately_matching = "moderately_matching"  # >= 60
+    not_matching = "not_matching"                # < 60
 
 
 class PipelineStatus(str, enum.Enum):

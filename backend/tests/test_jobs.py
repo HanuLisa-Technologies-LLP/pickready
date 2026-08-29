@@ -157,10 +157,10 @@ class _FakeSession:
 def test_public_job_url_uses_frontend_base(monkeypatch) -> None:
     monkeypatch.setattr(
         jobs_api, "get_settings",
-        lambda: SimpleNamespace(frontend_url="https://picready.com"),
+        lambda: SimpleNamespace(frontend_url="https://readypick.ai"),
     )
     jid = uuid.uuid4()
-    assert jobs_api.public_job_url(jid) == f"https://picready.com/apply/{jid}"
+    assert jobs_api.public_job_url(jid) == f"https://readypick.ai/apply/{jid}"
 
 
 def test_public_job_url_strips_trailing_slash(monkeypatch) -> None:
@@ -175,7 +175,7 @@ def test_public_job_url_strips_trailing_slash(monkeypatch) -> None:
 def test_with_public_url_only_when_published(monkeypatch) -> None:
     monkeypatch.setattr(
         jobs_api, "get_settings",
-        lambda: SimpleNamespace(frontend_url="https://picready.com"),
+        lambda: SimpleNamespace(frontend_url="https://readypick.ai"),
     )
     draft = Job(id=uuid.uuid4(), tenant_id=uuid.uuid4(), title="X",
                 jd_json={}, status=JobStatus.draft, ratified_at=None,
@@ -208,7 +208,7 @@ def _stub_create_deps(monkeypatch) -> dict:
     )
     monkeypatch.setattr(
         jobs_api, "get_settings",
-        lambda: SimpleNamespace(frontend_url="https://picready.com"),
+        lambda: SimpleNamespace(frontend_url="https://readypick.ai"),
     )
     return calls
 
@@ -332,7 +332,7 @@ async def test_create_job_publishes_immediately(monkeypatch) -> None:
 
     assert out.status == JobStatus.ratified
     assert out.ratified_at is not None
-    assert out.public_url == f"https://picready.com/apply/{out.id}"
+    assert out.public_url == f"https://readypick.ai/apply/{out.id}"
     # Matching is enqueued on publish (FR-4.2), and the publish was audited.
     assert "matching" in calls
     assert calls["audit"]["metadata"]["published"] is True
@@ -686,7 +686,7 @@ def _stub_publish_deps(monkeypatch) -> dict:
     )
     monkeypatch.setattr(
         jobs_api, "get_settings",
-        lambda: SimpleNamespace(frontend_url="https://picready.com"),
+        lambda: SimpleNamespace(frontend_url="https://readypick.ai"),
     )
     return calls
 
@@ -710,7 +710,7 @@ async def test_publish_returns_the_public_application_link(monkeypatch) -> None:
     out = await jobs_api.publish_job(job.id, user=user, session=_PublishSession(job))
 
     assert out.ratified_at is not None
-    expected = f"https://picready.com/apply/{job.id}"
+    expected = f"https://readypick.ai/apply/{job.id}"
     # Both names carry the same absolute link, for the copy-link popup.
     assert out.public_application_url == expected
     assert out.public_url == expected
@@ -850,7 +850,7 @@ def _stub_databank_deps(monkeypatch, failing: set | None = None) -> dict:
     )
     monkeypatch.setattr(
         jobs_api, "get_settings",
-        lambda: SimpleNamespace(frontend_url="https://picready.com"),
+        lambda: SimpleNamespace(frontend_url="https://readypick.ai"),
     )
 
     async def _can_see(session, user):
