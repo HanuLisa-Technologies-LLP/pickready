@@ -58,12 +58,23 @@ def test_staff_roles_are_exactly_the_manageable_ones() -> None:
     It is minted at onboarding by the Provider. A portal that could mint another
     one would let a Recruitment Manager promote themselves past every rule in
     `services/role_hierarchy`.
+
+    Interview Manager joined the set on 2026-08-29. RBAC_SPECIFICATION.md 7.3
+    lists what the Super Admin may add, remove, activate and assign, and the
+    list is verbatim: "HR Manager / Recruiter / Hiring Manager / Interview
+    Manager". Recruitment Manager is this product's own tier and predates that
+    document; it stays because real customers hold those accounts.
+
+    `client` remains excluded and that is the sentence 7.1 is protecting: one
+    active Super Admin per company, which a portal that could mint a second one
+    would make unenforceable.
     """
     assert STAFF_ROLES == {
         Role.recruitment_manager,
         Role.hr_manager,
         Role.recruiter,
         Role.hiring_manager,
+        Role.interview_manager,
     }
     assert Role.client not in STAFF_ROLES
 
@@ -145,12 +156,38 @@ def test_a_manager_can_only_grant_what_they_hold() -> None:
 
 
 def test_subordinate_roles_are_offered_in_hierarchy_order() -> None:
+    """The order is RBAC 6's authority hierarchy, not the enum's declaration
+    order, and the assertion says so deliberately.
+
+    RBAC 6 draws it as:
+
+        Client Super Admin
+                |
+                +-- HR Manager
+                |
+                +-- Recruiter
+                |
+                +-- Hiring Manager
+                |
+                +-- Interview Manager
+
+    Interview Manager is last because it is the least authoritative: 13.2 says
+    they own neither the JD nor the hiring criteria and are not the designated
+    publishers, and 13.5 lists eleven things they must not do. Nothing sits
+    below them, so nothing is offered to them.
+    """
     offered = role_hierarchy.subordinate_roles(Role.client)
     assert offered[0] in (Role.recruitment_manager, Role.hr_manager)
-    assert offered[-1] == Role.hiring_manager
+    assert offered[-1] == Role.interview_manager
+    assert offered.index(Role.recruiter) < offered.index(Role.hiring_manager)
+    assert offered.index(Role.hiring_manager) < offered.index(Role.interview_manager)
     assert Role.client not in offered
-    # A Hiring Manager is the bottom of the ladder and creates nobody.
-    assert role_hierarchy.subordinate_roles(Role.hiring_manager) == []
+    # An Interview Manager is the bottom of the ladder and creates nobody.
+    assert role_hierarchy.subordinate_roles(Role.interview_manager) == []
+    # A Hiring Manager may create only the tier beneath them.
+    assert role_hierarchy.subordinate_roles(Role.hiring_manager) == [
+        Role.interview_manager
+    ]
 
 
 def test_no_route_deletes_a_candidate_from_the_customer_portal() -> None:
@@ -226,8 +263,15 @@ def test_link_points_at_the_join_page() -> None:
 
 
 def test_link_tolerates_a_trailing_slash_on_the_base_url() -> None:
-    assert build_invite_link("https://picready.com/", "t") == (
-        "https://picready.com/join?invite=t"
+    # The host was `picready.com` here until 2026-08-29, missing the `k`. Only
+    # a fixture, so it never shipped, but a misspelling in a test is where a
+    # misspelling in a config default gets copied from.
+    # RBAC_SPECIFICATION.md 15 gives the canonical public host as
+    # `readypick.ai`. Correctly-spelled `pickready` identifiers elsewhere (the
+    # Celery namespace, the cache-key prefix, the GCP and JWT names) are
+    # deliberate per CLAUDE.md and are NOT the same thing.
+    assert build_invite_link("https://readypick.ai/", "t") == (
+        "https://readypick.ai/join?invite=t"
     )
 
 

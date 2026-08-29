@@ -117,3 +117,110 @@ def is_granted(agent: str, tool: str) -> bool:
 
 def agents_holding(tool: str) -> frozenset[str]:
     return frozenset(agent for agent, held in AGENT_TOOLS.items() if tool in held)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# RBAC 34: an agent acts under a human principal, and holds no authority of
+# its own
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Everything above answers "which TOOLS may this agent call". That is a real
+# boundary and it stays. It is not the boundary RBAC 34 asks for, which is a
+# different question: on WHOSE authority, over WHICH tenant, and within WHICH
+# job. The specification's own worked example is exact:
+#
+#     A Recruiter-authorized AI agent may assist with JD generation.
+#     It MUST NOT use that authority to modify Hiring Manager-controlled
+#     criteria.
+#
+# A tool grant cannot express that, because "write the must-have skills" and
+# "write the JD draft" would be the same tool called with different arguments,
+# and because the answer depends on the human, not on the agent.
+#
+# ONE AUTHORIZATION LAYER, NOT TWO
+# --------------------------------
+# spec-doc6 9.2 says to enforce this with the same layer the HTTP endpoints
+# use. So `authorize_agent_action` below resolves through `rbac.decide`, the
+# identical function `require_authorized` calls for a request. An agent
+# therefore inherits, for free and permanently: the tenant check that answers
+# 404, the 24 ceiling including its NEVER cells, the per-job assignment scope
+# of 23, and the state rules of 21, 22 and 26. A parallel implementation
+# would have had to re-derive all six and would have drifted on the first one
+# somebody forgot.
+#
+# THE SIX NAMED AGENTS
+# --------------------
+# specdoc5 and spec-doc6 name six agents by role. They map onto the tool-grant
+# names already in this module rather than replacing them: the tool grants are
+# about what an agent READS, and the capability declarations below are about
+# what a principal must be able to AUTHORISE. Both are needed and neither
+# subsumes the other.
+
+#: Bodha, the intake agent. Two mandates: the per-job SWOT session and the
+#: one-time-per-client Company DNA intake.
+AGENT_BODHA = "bodha"
+#: Sutra, the seven-stage matrix compiler.
+AGENT_SUTRA = "sutra"
+#: Yukti, resume-stage pre-screen grading.
+AGENT_YUKTI = "yukti"
+#: Vaada, evidence graphs.
+AGENT_VAADA = "vaada"
+#: Miti, the five-dimension scorer.
+AGENT_MITI = "miti"
+#: Siddhi, the PRISM report writer.
+AGENT_SIDDHI = "siddhi"
+
+NAMED_AGENTS: tuple[str, ...] = (
+    AGENT_BODHA,
+    AGENT_SUTRA,
+    AGENT_YUKTI,
+    AGENT_VAADA,
+    AGENT_MITI,
+    AGENT_SIDDHI,
+)
+
+
+# ── RBAC 34: the six named agents ────────────────────────────────────────────
+#
+# specdoc5 and spec-doc6 name six agents by role. They are recorded here beside
+# the runtime ids because both are agent IDENTITY, and `agents/identity.py`
+# already maps each name onto the runtime surface that executes it today.
+#
+# WHY THEIR CAPABILITY DECLARATIONS LIVE IN `services/rbac` AND NOT HERE
+# ----------------------------------------------------------------------
+# This module must stay an import LEAF within `app.services`. `identity.py`
+# reads `permissions.AGENT_*` at module scope, and the moment this module
+# imports another service module those reads become an AttributeError as soon
+# as a cycle forms; `tests/test_import_graph.py` enforces exactly that, and it
+# caught this on the first attempt at putting the table here.
+#
+# The placement is better on its own terms anyway. RBAC 34 and spec-doc6 9.2
+# both say an agent must be authorised by the SAME layer the HTTP endpoints
+# use, and `services/rbac` is that layer. What belongs here is what an agent
+# READS (the tool grants above) and what an agent IS (the names below). What an
+# agent may CAUSE is an authorization question and lives with the other
+# authorization questions.
+
+#: Bodha, the intake agent. Two mandates: the per-job SWOT session and the
+#: one-time-per-client Company DNA intake.
+AGENT_BODHA = "bodha"
+#: Sutra, the seven-stage matrix compiler.
+AGENT_SUTRA = "sutra"
+#: Yukti, resume-stage pre-screen grading.
+AGENT_YUKTI = "yukti"
+#: Vaada, the candidate conversational agent.
+AGENT_VAADA = "vaada"
+#: Miti, the five-dimension scorer.
+AGENT_MITI = "miti"
+#: Siddhi, the PRISM report writer.
+AGENT_SIDDHI = "siddhi"
+
+NAMED_AGENTS: tuple[str, ...] = (
+    AGENT_BODHA,
+    AGENT_SUTRA,
+    AGENT_YUKTI,
+    AGENT_VAADA,
+    AGENT_MITI,
+    AGENT_SIDDHI,
+)
+

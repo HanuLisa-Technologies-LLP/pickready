@@ -49,21 +49,74 @@ def test_default_matrix_uses_known_capabilities_only() -> None:
 
 
 def test_hierarchy_roles_begin_with_the_same_operational_template() -> None:
-    # PRD v1.0 §4 (FINAL): HR Manager, Recruiter, Hiring Manager are EQUAL.
+    """The flat model still holds for the OPERATIONAL set, and stops there.
+
+    PRD v1.0 4 (FINAL) made HR Manager, Recruiter and Hiring Manager equal, and
+    this test asserted `rm == hr == rec` on the whole grant dict. That equality
+    stopped being true on 2026-08-29, when `docs/spec/RBAC_SPECIFICATION.md`
+    arrived as precedence rank 1 and 25.1 drew the distinction it calls
+    fundamental: the Recruiter DRAFTS the JD and the Hiring Manager OWNS the
+    role definition. Two roles that hold identical grants cannot express that.
+
+    So the assertion is narrowed rather than deleted, and narrowed to the thing
+    the flat model was actually about: every staff role still reaches the whole
+    operational pipeline, and nobody lost a capability they use daily. What
+    diverges is exactly the set 10.4 hands to the Hiring Manager and 9.4 takes
+    from the Recruiter, and `test_the_flat_model_diverges_only_where_24_says_so`
+    below pins that the divergence is that set and nothing else.
+    """
     rm = DEFAULT_PERMISSION_MATRIX[Role.recruitment_manager]
     hr = DEFAULT_PERMISSION_MATRIX[Role.hr_manager]
     rec = DEFAULT_PERMISSION_MATRIX[Role.recruiter]
     hm = DEFAULT_PERMISSION_MATRIX[Role.hiring_manager]
-    assert rm == hr == rec
-    assert {**hm, MANAGE_STAFF: True} == rm
-    assert hm[MANAGE_STAFF] is False
-    # ...and each grants at least the full operational set (all True).
-    # `==` was too tight once the three staff roles were widened to the same
-    # customer-side set migration 0031 seeds globally: the code template has to
-    # be able to grow with the migration, because `_seed_permissions` copies
-    # this dict into tenant rows that OVERRIDE the migration's global rows.
-    assert _STAFF_OPERATIONAL.items() <= hr.items()
-    assert all(v is True for v in hr.values())
+    # The operational half is still identical across all four.
+    for grants in (rm, hr, rec, hm):
+        assert _STAFF_OPERATIONAL.items() <= grants.items()
+    # ...and the two organisation-wide roles are still identical to each other.
+    assert rm == hr
+
+
+def test_the_flat_model_diverges_only_where_24_says_so() -> None:
+    """The divergence is the Hiring-Manager-controlled set, and nothing else.
+
+    Written as a difference rather than as two lists, because the value is in
+    catching an UNINTENDED divergence: a capability that quietly stopped being
+    shared would otherwise look exactly like this one, which was deliberate.
+    """
+    from app.services.capabilities import (
+        ASSIGN_ROLES,
+        HIRING_MANAGER_CONTROLLED,
+        INTEGRITY_DISPOSITION,
+        REJECT_JD,
+        SEND_JD_TO_HIRING_MANAGER,
+        VIEW_COMPANY_JOBS,
+    )
+
+
+    hr = DEFAULT_PERMISSION_MATRIX[Role.hr_manager]
+    rec = DEFAULT_PERMISSION_MATRIX[Role.recruiter]
+    differing = {c for c in hr if hr.get(c) != rec.get(c)}
+    expected = set(HIRING_MANAGER_CONTROLLED) | {
+        # 24: "Reject JD" is the HR Manager's and the Super Admin's.
+        REJECT_JD,
+        # 7.3 / 24: staff and role administration is the Super Admin's, and
+        # the HR Manager's cell is the conservative NO*.
+        ASSIGN_ROLES,
+        # spec-doc6 C7: HR Manager by right, Super Admin by audited override.
+        INTEGRITY_DISPOSITION,
+    }
+    assert differing == expected, (
+        "the Recruiter and HR Manager grants diverge somewhere RBAC 24 does "
+        f"not sanction: {sorted(differing ^ expected)}"
+    )
+    # The Recruiter keeps the one hand-off 9.3 gives them.
+    assert rec[SEND_JD_TO_HIRING_MANAGER] is True
+    # Job visibility does NOT diverge at the grant layer, and that is the
+    # design: both hold it, and the SCOPED cell in RBAC_INVARIANTS is what
+    # narrows the Recruiter to their assigned jobs (9.2, 23). Expressing the
+    # scope as a missing grant would leave a Recruiter unable to see the job
+    # they own.
+    assert hr[VIEW_COMPANY_JOBS] is rec[VIEW_COMPANY_JOBS] is True
 
 
 def test_every_hierarchy_role_has_operational_defaults() -> None:

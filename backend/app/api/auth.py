@@ -61,7 +61,19 @@ router = APIRouter()
 
 PORTAL_ROLES = {
     "candidate": {Role.candidate},
-    "org": {Role.client, Role.hr_manager, Role.recruiter, Role.hiring_manager},
+    # Every tenant role. `recruitment_manager` and `interview_manager` were
+    # both absent here and in `core.security._ORG_ROLES`, which meant a portal
+    # choice silently filtered those accounts out of their own sign-in.
+    # Asserted against `Role` in tests/test_rbac_conformance.py so the next
+    # role added fails a test rather than a login.
+    "org": {
+        Role.client,
+        Role.recruitment_manager,
+        Role.hr_manager,
+        Role.recruiter,
+        Role.hiring_manager,
+        Role.interview_manager,
+    },
     "bd": {Role.bd},
     "owner": {Role.super_admin},
 }

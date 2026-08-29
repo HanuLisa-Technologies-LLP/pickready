@@ -24,12 +24,15 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { ComplianceDocumentsSection } from "@/components/compliance-documents-section";
+import { CustomerActivitySection } from "@/components/customer-activity-section";
 
 const ROLE_LABELS: Record<string, string> = {
   recruitment_manager: "Recruitment Manager",
   hr_manager: "HR Manager",
   recruiter: "Recruiter",
   hiring_manager: "Hiring Manager",
+  // RBAC_SPECIFICATION.md 5 and 13, added 2026-08-29. A job may have several.
+  interview_manager: "Interview Manager",
   client: "Company Admin",
 };
 
@@ -235,6 +238,13 @@ export function CustomerDetailPanel({
                 }`
               }
             />
+
+            <Separator />
+
+            {/* RBAC 31. Collapsed and loaded on demand: the trail is
+                unbounded and this dialog is opened to check a phone number as
+                often as to investigate something. */}
+            <CustomerActivitySection customerId={customer.id} />
           </div>
         )}
 

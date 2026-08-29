@@ -70,6 +70,20 @@ HIERARCHY: tuple[tuple[Role, ...], ...] = (
     (Role.recruitment_manager, Role.hr_manager),
     (Role.recruiter,),
     (Role.hiring_manager,),
+    # RBAC_SPECIFICATION.md 6 and 13. The Interview Manager is an evaluation
+    # participant: they read what a job's candidates produced and add Team
+    # Review remarks, and 13.5 lists eleven things they must not do. Bottom
+    # tier, so nobody below them exists to manage.
+    #
+    # 6 actually draws all four non-Super-Admin roles as siblings under the
+    # Super Admin rather than as a descending chain, and says explicitly that
+    # it is "an authority hierarchy, not necessarily an inheritance
+    # implementation". This module's chain is retained because it is what the
+    # existing staff screens enforce; what governs authorization is
+    # `capabilities.RBAC_INVARIANTS`, where 24 already denies staff management
+    # to everybody except the Super Admin. The chain can therefore only ever
+    # be narrower than 24, never wider.
+    (Role.interview_manager,),
 )
 
 ROLE_RANK: dict[Role, int] = {
@@ -82,6 +96,7 @@ ROLE_LABELS: dict[Role, str] = {
     Role.hr_manager: "HR Manager",
     Role.recruiter: "Recruiter",
     Role.hiring_manager: "Hiring Manager",
+    Role.interview_manager: "Interview Manager",
 }
 
 #: Roles a customer's own team can create. `client` is excluded: the Super
@@ -89,7 +104,13 @@ ROLE_LABELS: dict[Role, str] = {
 #: mint another one would let a Recruitment Manager promote themselves past
 #: every rule in this module.
 MANAGEABLE_ROLES: frozenset[Role] = frozenset(
-    {Role.recruitment_manager, Role.hr_manager, Role.recruiter, Role.hiring_manager}
+    {
+        Role.recruitment_manager,
+        Role.hr_manager,
+        Role.recruiter,
+        Role.hiring_manager,
+        Role.interview_manager,
+    }
 )
 
 #: Below every rank in the hierarchy. Used as the rank of a role this module

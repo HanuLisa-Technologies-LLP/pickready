@@ -374,3 +374,209 @@ async def timeline(session: AsyncSession, link_id: uuid.UUID) -> list[dict[str, 
         }
         for row in rows
     ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TWO "STAGE" CONCEPTS, TWO TYPES (spec-doc6 C11 / 8.2, RBAC 17)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# A JOB moves through a lifecycle. A CANDIDATE'S APPLICATION moves through a
+# pipeline. Both were called "stage" in conversation and neither had a type,
+# and the failure that invites is not subtle: an application status written
+# into a job column, or a job state offered in a candidate's "Move to"
+# dropdown. RBAC 17 defines the first, the Dashboard Specification defines the
+# second, and spec-doc6 C11 rules that they are different enums on different
+# entities that never share a table.
+#
+# THE RECONCILIATION IS THREE-WAY, NOT TWO
+# ----------------------------------------
+# This module already had a validated ten-value pipeline, and it is the one
+# production rows sit in. So there are three vocabularies:
+#
+#   1. RBAC 17's JOB lifecycle          8 states, on `jobs`
+#   2. The Dashboard's CANDIDATE stages 6 coarse stages, presentation only
+#   3. This module's PIPELINE_ORDER    10 stages + `offered`, on
+#                                       `job_candidate_links.status` and
+#                                       `pipeline_status`
+#
+# (2) and (3) describe the SAME entity at two resolutions, so (2) becomes a
+# derived VIEW of (3) rather than a replacement: `DASHBOARD_STAGE` maps each
+# stored status onto the coarse stage a dashboard column renders. Nothing is
+# deleted. `shortlisted` in particular stays exactly where it is -- historic
+# applications sit in it and it is still the only route into
+# `interview_scheduled` (see MANUAL_TRANSITION_EXCLUDED above).
+#
+# (1) is a different entity entirely and gets its own type below.
+
+from enum import Enum
+
+
+class JobLifecycleState(str, Enum):
+    """RBAC 17. The state of a JOB, on `jobs.lifecycle_state`.
+
+    17 permits different internal names as long as the semantic states are
+    preserved; the specification's own names are used verbatim, because a
+    reader holding the specification should be able to grep for them.
+
+    CLOSED_ARCHIVED collapses 17's "CLOSED / ARCHIVED", which the document
+    draws as one terminal box. This product already archives a job with
+    `jobs.archived_at` and closes one by the end of its 30-day posting window,
+    so the two are recorded there and this is the single terminal state.
+    """
+
+    DRAFT = "DRAFT"
+    SENT_TO_HIRING_MANAGER = "SENT_TO_HIRING_MANAGER"
+    IN_REVIEW = "IN_REVIEW"
+    FINALIZED = "FINALIZED"
+    PUBLISHED = "PUBLISHED"
+    CANDIDATE_APPLICATIONS = "CANDIDATE_APPLICATIONS"
+    HIRING_PROCESS = "HIRING_PROCESS"
+    CLOSED_ARCHIVED = "CLOSED_ARCHIVED"
+
+
+#: 17's order, which is also the legal forward path.
+JOB_LIFECYCLE_ORDER: tuple[JobLifecycleState, ...] = (
+    JobLifecycleState.DRAFT,
+    JobLifecycleState.SENT_TO_HIRING_MANAGER,
+    JobLifecycleState.IN_REVIEW,
+    JobLifecycleState.FINALIZED,
+    JobLifecycleState.PUBLISHED,
+    JobLifecycleState.CANDIDATE_APPLICATIONS,
+    JobLifecycleState.HIRING_PROCESS,
+    JobLifecycleState.CLOSED_ARCHIVED,
+)
+
+#: States in which the role definition is still being drafted. RBAC 24***
+#: limits the Recruiter's JD editing to exactly these, and 19 describes the
+#: Hiring Manager working inside them.
+DRAFTING_STATES: frozenset[str] = frozenset(
+    {
+        JobLifecycleState.DRAFT.value,
+        JobLifecycleState.SENT_TO_HIRING_MANAGER.value,
+        JobLifecycleState.IN_REVIEW.value,
+    }
+)
+
+#: FINALIZED and everything after it. 21 makes this the precondition for
+#: publication and 22 makes it the point after which criteria stop being
+#: silently mutable.
+FINALIZED_OR_LATER: frozenset[str] = frozenset(
+    {
+        JobLifecycleState.FINALIZED.value,
+        JobLifecycleState.PUBLISHED.value,
+        JobLifecycleState.CANDIDATE_APPLICATIONS.value,
+        JobLifecycleState.HIRING_PROCESS.value,
+        JobLifecycleState.CLOSED_ARCHIVED.value,
+    }
+)
+
+#: Forward edges. A lifecycle has no "always available" escape the way the
+#: candidate pipeline does: a job is archived, which is CLOSED_ARCHIVED, and
+#: that is reachable from anywhere.
+_LIFECYCLE_FORWARD: dict[JobLifecycleState, frozenset[JobLifecycleState]] = {
+    JobLifecycleState.DRAFT: frozenset({JobLifecycleState.SENT_TO_HIRING_MANAGER}),
+    JobLifecycleState.SENT_TO_HIRING_MANAGER: frozenset({JobLifecycleState.IN_REVIEW}),
+    JobLifecycleState.IN_REVIEW: frozenset({JobLifecycleState.FINALIZED}),
+    JobLifecycleState.FINALIZED: frozenset({JobLifecycleState.PUBLISHED}),
+    JobLifecycleState.PUBLISHED: frozenset({JobLifecycleState.CANDIDATE_APPLICATIONS}),
+    JobLifecycleState.CANDIDATE_APPLICATIONS: frozenset(
+        {JobLifecycleState.HIRING_PROCESS}
+    ),
+    JobLifecycleState.HIRING_PROCESS: frozenset({JobLifecycleState.CLOSED_ARCHIVED}),
+    JobLifecycleState.CLOSED_ARCHIVED: frozenset(),
+}
+
+
+def lifecycle_allowed_transitions(
+    current: JobLifecycleState | str | None,
+) -> frozenset[JobLifecycleState]:
+    """Every lifecycle state reachable from `current`.
+
+    A job can be archived from any live state, which is how a client stops a
+    requisition that is no longer needed. Nothing leaves CLOSED_ARCHIVED: 22
+    requires a controlled revision mechanism rather than a reopen.
+    """
+    if current is None:
+        state = JobLifecycleState.DRAFT
+    else:
+        state = (
+            current
+            if isinstance(current, JobLifecycleState)
+            else JobLifecycleState(str(current))
+        )
+    if state is JobLifecycleState.CLOSED_ARCHIVED:
+        return frozenset()
+    return frozenset(
+        _LIFECYCLE_FORWARD[state] | {JobLifecycleState.CLOSED_ARCHIVED}
+    ) - {state}
+
+
+class CandidatePipelineStage(str, Enum):
+    """The Dashboard Specification's coarse candidate stage, column 8.
+
+    A PRESENTATION type. The stored, authoritative value is still one of
+    `PIPELINE_ORDER` on `job_candidate_links.status`, and this enum is
+    derived from it by `dashboard_stage` below. Making it the stored value
+    would throw away the distinction between "invited" and "in progress",
+    which is the difference between chasing a candidate and waiting for one.
+    """
+
+    APPLIED = "Applied"
+    SCREENING = "Screening"
+    SHORTLISTED = "Shortlisted"
+    INTERVIEW = "Interview"
+    OFFER = "Offer"
+    CLOSED = "Closed"
+
+
+#: Stored pipeline status -> the dashboard stage that renders it. Every value
+#: in ALL_STATUSES appears exactly once, asserted by
+#: `tests/test_stage_enum_separation.py`, so a stage added to the FSM without
+#: a dashboard home fails a test rather than rendering as blank.
+DASHBOARD_STAGE: dict[str, CandidatePipelineStage] = {
+    APPLIED: CandidatePipelineStage.APPLIED,
+    ASSESSMENT_INVITED: CandidatePipelineStage.SCREENING,
+    ASSESSMENT_IN_PROGRESS: CandidatePipelineStage.SCREENING,
+    ASSESSMENT_COMPLETED: CandidatePipelineStage.SCREENING,
+    SHORTLISTED: CandidatePipelineStage.SHORTLISTED,
+    INTERVIEW_SCHEDULED: CandidatePipelineStage.INTERVIEW,
+    INTERVIEW_COMPLETED: CandidatePipelineStage.INTERVIEW,
+    OFFER_EXTENDED: CandidatePipelineStage.OFFER,
+    OFFERED: CandidatePipelineStage.OFFER,
+    JOINED: CandidatePipelineStage.CLOSED,
+    REJECTED: CandidatePipelineStage.CLOSED,
+    # `hold` is deliberately ABSENT, and forcing it into the enum was the
+    # first attempt. It has no home: the Dashboard Specification treats hold
+    # as an ACTION taken on a candidate rather than as a stage they occupy,
+    # and the stored FSM agrees, because `hold` returns to whatever stage it
+    # paused rather than carrying outward edges of its own (see _FORWARD).
+    # Mapping it to Screening would claim the candidate had moved backwards;
+    # mapping it to Closed would say the process had ended. `dashboard_stage`
+    # returns None for it and the caller renders the pause as a modifier.
+}
+
+#: Statuses that are a MODIFIER on a stage rather than a stage. One entry,
+#: named rather than left implicit, so the absence above reads as a decision.
+NO_DASHBOARD_STAGE: frozenset[str] = frozenset({HOLD})
+
+
+def dashboard_stage(status: str | None) -> CandidatePipelineStage | None:
+    """Coarse stage for a stored pipeline status.
+
+    None for `hold`, which is a pause on a stage rather than a stage. Unknown
+    reads as Applied: a dashboard that raised on one unexpected row is worse
+    than one that shows that row at the start of the funnel.
+    """
+    normalised = normalize(status)
+    if normalised in NO_DASHBOARD_STAGE:
+        return None
+    return DASHBOARD_STAGE.get(normalised, CandidatePipelineStage.APPLIED)
+
+
+#: The two vocabularies, for the separation test to compare. Kept as data so
+#: the test asserts a property rather than restating a list somebody has to
+#: keep in step by hand.
+JOB_LIFECYCLE_VALUES: frozenset[str] = frozenset(
+    state.value for state in JobLifecycleState
+)
+CANDIDATE_PIPELINE_VALUES: frozenset[str] = frozenset(ALL_STATUSES)

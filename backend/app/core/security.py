@@ -34,8 +34,33 @@ AUDIENCE_CANDIDATE = "pickready:candidate"  # candidate portal — separate sess
 AUDIENCE_INTERNAL = AUDIENCE_ORG
 
 # Roles that live in the org (tenant) portal. super_admin is deliberately NOT
-# here — it is the owner portal; candidate is its own portal.
-_ORG_ROLES = frozenset({"client", "hr_manager", "recruiter", "hiring_manager"})
+# here, it is the owner portal; candidate is its own portal; bd is a platform
+# console that shares the owner audience.
+#
+# TWO ROLES WERE MISSING FROM THIS SET AND NEITHER COULD SIGN IN
+# --------------------------------------------------------------
+# `recruitment_manager` was added by the hierarchy release (migration 0050) and
+# never added here, so `audience_for_role` raised
+# `ValueError: no audience defined for role 'recruitment_manager'` for every
+# such account. That is not a permission refusal a user could understand: the
+# token is never minted, so the login fails before any capability is consulted.
+# It went unnoticed because a hand-maintained list has no failure mode until
+# somebody holds the missing value.
+#
+# `interview_manager` (2026-08-29, RBAC_SPECIFICATION.md 5) would have arrived
+# with the identical defect. `test_rbac_conformance` now asserts that this set
+# is exactly `Role` minus the three non-org portals, so the next role added
+# fails a test instead of failing a person's login.
+_ORG_ROLES = frozenset(
+    {
+        "client",
+        "recruitment_manager",
+        "hr_manager",
+        "recruiter",
+        "hiring_manager",
+        "interview_manager",
+    }
+)
 
 ALGORITHM = "HS256"
 

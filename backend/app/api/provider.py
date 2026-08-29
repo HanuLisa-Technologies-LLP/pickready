@@ -48,7 +48,8 @@ from app.schemas.provider import (
     document_slots,
 )
 from app.services import provider_analytics
-from app.services.audit import audit
+from app.services.audit import ACTIVITY_ACTIONS, audit
+from app.services.audit import activity as audit_activity
 from app.services.document_storage import fetch_document_bytes
 
 router = APIRouter()
@@ -537,3 +538,108 @@ async def download_compliance_document(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+# ── Company activity (RBAC_SPECIFICATION.md 31) ──────────────────────────────
+#
+# WHOSE VIEW THIS IS, AND WHOSE IT IS NOT
+# ---------------------------------------
+# RBAC 31 asks for a SUPER ADMIN activity dashboard, and in that document
+# "Super Admin" means the CLIENT Super Admin, which is `Role.client` in this
+# codebase and works in the Customer Portal (`api/companies.py`). That is where
+# the client-facing version of this view belongs, and it does not exist yet;
+# `docs/RBAC.md` records it under "Not yet wired".
+#
+# What is here is the PLATFORM owner's view of the same rows, for one customer
+# at a time. It is not a substitute: it answers the same seven questions 31
+# lists, for a support engineer rather than for the customer. Both read
+# `services/audit.activity`, which is the point -- the reader is written once,
+# so the client-side route is a handler that calls it and a response model,
+# not a second query somebody has to keep in step.
+#
+# Read-only by absence, like every other route in this module: there is no
+# handler here that writes an audit row, and there could not be one, because
+# the trail is append-only and the application role holds no UPDATE or DELETE
+# grant on it.
+
+ACTIVITY_PAGE_SIZE = 50
+MAX_ACTIVITY_PAGE_SIZE = 200
+
+
+@router.get("/customers/{customer_id}/activity")
+async def customer_activity(
+    customer_id: uuid.UUID,
+    limit: int = Query(ACTIVITY_PAGE_SIZE, ge=1, le=MAX_ACTIVITY_PAGE_SIZE),
+    offset: int = Query(0, ge=0),
+    job_id: uuid.UUID | None = Query(None),
+    candidate_id: uuid.UUID | None = Query(None),
+    important_only: bool = Query(
+        False,
+        description=(
+            "Restrict to the actions RBAC 31 calls important company activity. "
+            "Off by default: a filter that hides rows by default would make the "
+            "trail depend on what the view chose to show."
+        ),
+    ),
+    session: AsyncSession = Depends(get_superadmin_db),
+) -> dict:
+    """One customer's audit trail, newest first, answering RBAC 31's questions.
+
+    Filtered and paginated in SQL. The customer list on this same portal
+    already learned why: filtering a fetched page in the browser makes the
+    result depend on which page happened to be loaded.
+
+    `customer_id` comes from the path and is checked against a real tenant
+    before anything is read, so a random uuid answers 404 rather than an empty
+    page that reads as "this customer did nothing".
+    """
+    tenant = await session.get(Tenant, customer_id)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    rows = await audit_activity(
+        session,
+        tenant_id=customer_id,
+        limit=limit,
+        offset=offset,
+        actions=ACTIVITY_ACTIONS if important_only else None,
+        job_id=job_id,
+        candidate_id=candidate_id,
+    )
+    return {
+        "customer_id": str(customer_id),
+        "items": [_activity_row(row) for row in rows],
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def _activity_row(row: dict) -> dict:
+    """One row, shaped as RBAC 31's seven questions.
+
+    `previous_state` and `new_state` are passed through as stored. They are
+    the writer's own before/after snapshots, already narrowed to the fields the
+    action changed, so summarising them here would be this view deciding what
+    an auditor is allowed to see.
+    """
+    return {
+        "id": str(row["id"]),
+        "at": row["at"],
+        # Who changed this, and under what authority at the time.
+        "actor_user_id": str(row["actor_user_id"]) if row["actor_user_id"] else None,
+        "actor_role": row["actor_role"],
+        # What did they change.
+        "action": row["action"],
+        "resource_type": row["resource_type"],
+        "resource_id": row["resource_id"],
+        # Which job, which candidate.
+        "job_id": str(row["job_id"]) if row["job_id"] else None,
+        "application_id": str(row["application_id"]) if row["application_id"] else None,
+        "candidate_id": str(row["candidate_id"]) if row["candidate_id"] else None,
+        # What was the previous state, what is the current state.
+        "previous_state": row["previous_state"],
+        "new_state": row["new_state"],
+        # RBAC 34: an agent action names the agent beside its human principal.
+        "agent_name": row["agent_name"],
+        # A 24-asterisked cell was used (7.5 override, C13 exception).
+        "exceptional": bool(row["exceptional"]),
+    }
