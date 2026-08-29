@@ -1,0 +1,163 @@
+{
+  "artifact_version": 1,
+  "behavioural_competencies": [
+    {
+      "assessment_route": "structured_behavioural_probe",
+      "id": "CDNA-01",
+      "statement": "Has taken a project from an unclear brief to a shipped outcome and can describe the decisions they made when nobody told them what to do."
+    },
+    {
+      "assessment_route": "structured_behavioural_probe",
+      "id": "CDNA-02",
+      "statement": "Has moved a blocking function such as compliance or legal to a decision without holding authority over it, and can describe how they got there."
+    },
+    {
+      "assessment_route": "structured_behavioural_probe",
+      "id": "CDNA-03",
+      "statement": "Has taken an unpredictable team to a predictable delivery cadence and can describe the mechanism they introduced."
+    },
+    {
+      "assessment_route": "structured_behavioural_probe",
+      "id": "CDNA-04",
+      "statement": "Has rewritten a system that was already carrying traffic and can describe how they cut over without an outage."
+    },
+    {
+      "assessment_route": "structured_behavioural_probe",
+      "id": "CDNA-05",
+      "statement": "Has caught a defect in their own work before a customer did and can describe what they changed afterwards."
+    }
+  ],
+  "constraints": {
+    "cross_border": "Singapore candidate data stays in Singapore and is not copied into the India estate.",
+    "data_receivable": "The assessment report, the resume and the interview transcript. No raw proctoring footage.",
+    "location_rules": "Relocation is supported for Bengaluru and Pune. The Singapore roles cannot be relocated into.",
+    "notice_tolerance": "Up to ninety days for a manager, sixty for everyone else.",
+    "reference_timing": "Only after an offer",
+    "retention_period": "Eighteen months after the application closes.",
+    "statutory_requirements": "Background verification before an offer, and a valid work authorisation for the country of employment."
+  },
+  "disqualifiers": [
+    "Must hold a valid CA licence for the finance controller roles"
+  ],
+  "dna_version": 1,
+  "dossier_preferences": {
+    "decider": "The hiring manager with HR",
+    "depth": "The standard dossier",
+    "first_pass": "Anonymised first pass",
+    "language": "English",
+    "note": "Changes emphasis and length. Never what is assessed."
+  },
+  "evidence_max_age_days": null,
+  "exploration_slots": 3,
+  "independence_required": 2,
+  "observable_signals": [
+    "Has taken a project from an unclear brief to a shipped outcome and can describe the decisions they made when nobody told them what to do.",
+    "Has moved a blocking function such as compliance or legal to a decision without holding authority over it, and can describe how they got there.",
+    "Has taken an unpredictable team to a predictable delivery cadence and can describe the mechanism they introduced.",
+    "Has rewritten a system that was already carrying traffic and can describe how they cut over without an outage.",
+    "Has caught a defect in their own work before a customer did and can describe what they changed afterwards."
+  ],
+  "prohibited_filters_confirmed": true,
+  "provenance": [
+    {
+      "applied": 1.06,
+      "bound": {
+        "high": 2.0,
+        "low": 0.5
+      },
+      "clamped": false,
+      "key": "competency_weight",
+      "layer": "company",
+      "requested": 1.06,
+      "subject": "track_record_impact"
+    },
+    {
+      "applied": 0.9964,
+      "bound": {
+        "high": 2.0,
+        "low": 0.5
+      },
+      "clamped": false,
+      "key": "competency_weight",
+      "layer": "company",
+      "requested": 0.9964,
+      "subject": "trajectory_potential"
+    },
+    {
+      "applied": 0.9964,
+      "bound": {
+        "high": 2.0,
+        "low": 0.5
+      },
+      "clamped": false,
+      "key": "competency_weight",
+      "layer": "company",
+      "requested": 0.9964,
+      "subject": "verified_competence"
+    },
+    {
+      "applied": 1.06,
+      "bound": {
+        "high": 2.0,
+        "low": 0.5
+      },
+      "clamped": false,
+      "key": "competency_weight",
+      "layer": "company",
+      "requested": 1.06,
+      "subject": "authenticity_consistency"
+    },
+    {
+      "applied": 1.06,
+      "bound": {
+        "high": 3.0,
+        "low": 0.8
+      },
+      "clamped": false,
+      "key": "evidence_threshold",
+      "layer": "company",
+      "requested": 1.06,
+      "subject": "overall"
+    }
+  ],
+  "recruiter_context": {
+    "band_vs_market": "We sit at about the sixtieth percentile for engineering and at market for everything else.",
+    "counter_offer_patterns": "Counter offers are common from the two largest local competitors and usually arrive after the offer is signed.",
+    "interview_capacity": "Two panels per role per week, and that is the real ceiling rather than an aspiration.",
+    "note": "Risk register and recruiter context. Never a scoring input, and compensation is never a ranking input (RPN-PHIL-001 §12.4).",
+    "time_to_hire": "Forty five days for an engineer and closer to ninety for a manager, measured rather than targeted.",
+    "turnaround_commitments": "Feedback within three working days of every stage."
+  },
+  "refusals": [
+    {
+      "alternative": "Most of these are better modelled as a weighted constraint a candidate can partially satisfy, with the risk stated, rather than as a filter (§12.5).",
+      "escalate_to": "fairness_audit",
+      "key": "disqualifier",
+      "layer": "company",
+      "reason": "Rests on a protected attribute (an age limit). A disqualifier must be lawful and job-related (RPN-PHIL-001 §12.3, §12.4).",
+      "rule": "role_disqualifier_is_a_protected_proxy"
+    }
+  ],
+  "refused_disqualifiers": [
+    "No candidates over 45"
+  ],
+  "risk_probes": [
+    "Two strong individual contributors we promoted into manager roles stalled when they had to negotiate with a function that did not report to them, and both left within a year.",
+    "One senior engineer delivered nothing for a quarter because nobody handed them a defined process, and they never asked for one."
+  ],
+  "schema_version": 1,
+  "sourcing_hints": {
+    "note": "Ranking prior only. Never decides who is assessed.",
+    "slate_goals": "At least one third of every sourced slate from under-represented groups, measured at sourcing and never at scoring.",
+    "talent_pools": "Engineers who have shipped under an audit regime, and managers who have run a team through a compliance review.",
+    "target_industries": "Payments, banking infrastructure and regulated marketplaces."
+  },
+  "tenure_reading": "Long tenures read favourably; short ones are worth a question.",
+  "threshold_modifier": 1.06,
+  "weight_modifiers": {
+    "authenticity_consistency": 1.06,
+    "track_record_impact": 1.06,
+    "trajectory_potential": 0.9964,
+    "verified_competence": 0.9964
+  }
+}

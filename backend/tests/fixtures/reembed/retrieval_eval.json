@@ -1,0 +1,506 @@
+{
+  "note": "A fixed retrieval evaluation set for app/scripts/reembed.py, spec-doc6 section 7. Hand authored from the recruitment domain this platform retrieves over: resume-shaped documents, JD-shaped documents, and the queries a recruiter or the matching pipeline would actually issue. Fixed rather than generated, so a change in a score is a change in the embedding model or in the text that was embedded, never a change in the questions. NOT SCORED AGAINST A LIVE MODEL: no Voyage credential exists in this phase, and the numbers a real model produces are listed in VERIFICATION_PENDING.md as outstanding.",
+  "recall_at": 3,
+  "documents": [
+    {
+      "id": "res-kafka-platform",
+      "text": "Senior platform engineer. Ran Kafka clusters at 40k messages per second, owned partition rebalancing and consumer lag alerting, migrated three services off RabbitMQ."
+    },
+    {
+      "id": "res-kafka-junior",
+      "text": "Backend developer, two years. Wrote Kafka consumers in Java for an order pipeline, learned about consumer groups and offset commits from the team lead."
+    },
+    {
+      "id": "res-postgres-dba",
+      "text": "Database engineer. PostgreSQL tuning, autovacuum configuration, logical replication between regions, query plan analysis and index design for a 4TB estate."
+    },
+    {
+      "id": "res-pgvector-search",
+      "text": "Search engineer. Built hybrid retrieval with pgvector and tsvector, reciprocal rank fusion over semantic and lexical candidates, embedding pipeline on managed GPUs."
+    },
+    {
+      "id": "res-terraform-aws",
+      "text": "Infrastructure engineer. Terraform modules for ECS Fargate, RDS and ElastiCache, per-service scoped IAM policies, immutable ECR tags and digest-verified deploys."
+    },
+    {
+      "id": "res-kubernetes-sre",
+      "text": "Site reliability engineer. Kubernetes on EKS, cluster autoscaling, Prometheus and Grafana alerting, incident command for two Sev1 outages."
+    },
+    {
+      "id": "res-react-frontend",
+      "text": "Frontend engineer. React and TypeScript, Next.js app router, server components, accessibility audits against WCAG AA and a design system in Tailwind."
+    },
+    {
+      "id": "res-ios-swift",
+      "text": "iOS engineer. SwiftUI, Combine, offline-first sync with Core Data, shipped four App Store releases and cut cold start by 40 percent."
+    },
+    {
+      "id": "res-android-kotlin",
+      "text": "Android engineer. Kotlin, Jetpack Compose, coroutines and Flow, modularised a monolith app into feature modules."
+    },
+    {
+      "id": "res-ml-nlp",
+      "text": "Machine learning engineer. Fine-tuned transformer models for text classification, built an evaluation harness with stratified holdout sets and calibration curves."
+    },
+    {
+      "id": "res-ml-vision",
+      "text": "Computer vision engineer. Object detection on edge devices, quantisation and pruning, ONNX runtime deployment on ARM."
+    },
+    {
+      "id": "res-data-eng-spark",
+      "text": "Data engineer. Spark on EMR, Delta Lake tables, dbt models and Airflow orchestration for a 200 table warehouse."
+    },
+    {
+      "id": "res-analytics",
+      "text": "Analytics engineer. SQL modelling, cohort retention analysis, experiment readouts and dashboard design for a product team."
+    },
+    {
+      "id": "res-security-appsec",
+      "text": "Application security engineer. Threat modelling, SAST and DAST pipelines, secret scanning, wrote the secure coding guidance the platform teams follow."
+    },
+    {
+      "id": "res-security-cloud",
+      "text": "Cloud security engineer. IAM least privilege reviews, VPC segmentation with no internet route to data subnets, KMS key policy design."
+    },
+    {
+      "id": "res-qa-automation",
+      "text": "QA automation engineer. Playwright end to end suites, contract tests against recorded fixtures, flake triage and a quarantine policy."
+    },
+    {
+      "id": "res-product-manager",
+      "text": "Product manager. Owned a two-sided marketplace roadmap, ran discovery interviews, wrote the pricing experiment that lifted conversion."
+    },
+    {
+      "id": "res-designer",
+      "text": "Product designer. Design systems, dark mode token architecture, contrast auditing and motion specifications for a dashboard product."
+    },
+    {
+      "id": "res-recruiter",
+      "text": "Technical recruiter. Full cycle hiring for backend and platform roles, structured interview design, offer negotiation and pipeline reporting."
+    },
+    {
+      "id": "res-hr-generalist",
+      "text": "HR generalist. Onboarding, performance cycles, employee relations casework and compensation banding."
+    },
+    {
+      "id": "res-finance-controller",
+      "text": "Financial controller. Monthly close, revenue recognition under Ind AS 115, statutory audit coordination and GST filings."
+    },
+    {
+      "id": "res-sales-enterprise",
+      "text": "Enterprise account executive. Closed seven figure annual contracts in SaaS, MEDDIC qualification, multi-threaded stakeholder mapping."
+    },
+    {
+      "id": "jd-backend-python",
+      "text": "We need a backend engineer in Python and FastAPI, async SQLAlchemy, Postgres and Redis, Celery for background work, comfortable owning a service end to end."
+    },
+    {
+      "id": "jd-platform-streaming",
+      "text": "Platform engineer wanted for our streaming estate. Kafka, schema registry, exactly once semantics, consumer lag SLOs and capacity planning."
+    },
+    {
+      "id": "jd-sre",
+      "text": "Reliability engineer. Kubernetes, Terraform, observability, on call rotation, blameless postmortems and error budget policy."
+    },
+    {
+      "id": "jd-frontend-react",
+      "text": "Frontend engineer. React, TypeScript, Next.js, design system contribution, accessibility and performance budgets."
+    },
+    {
+      "id": "jd-ml-platform",
+      "text": "Machine learning platform engineer. Feature stores, model serving, evaluation harnesses, GPU scheduling and cost control."
+    },
+    {
+      "id": "jd-data-warehouse",
+      "text": "Data engineer. Build and own the warehouse: Spark or dbt, orchestration, data quality tests and lineage."
+    },
+    {
+      "id": "jd-appsec",
+      "text": "Application security engineer. Threat modelling, pipeline security controls, dependency and secret scanning, developer enablement."
+    },
+    {
+      "id": "jd-hiring-manager-eng",
+      "text": "Engineering manager for a platform group. Hire and grow a team of eight, own delivery, partner with product on roadmap and set technical direction."
+    }
+  ],
+  "pairs": [
+    {
+      "query": "who has run kafka partition rebalancing in production",
+      "expected": [
+        "res-kafka-platform"
+      ]
+    },
+    {
+      "query": "kafka consumer group experience",
+      "expected": [
+        "res-kafka-platform",
+        "res-kafka-junior"
+      ]
+    },
+    {
+      "query": "engineer for our streaming platform role",
+      "expected": [
+        "jd-platform-streaming",
+        "res-kafka-platform"
+      ]
+    },
+    {
+      "query": "consumer lag monitoring and alerting",
+      "expected": [
+        "res-kafka-platform",
+        "jd-platform-streaming"
+      ]
+    },
+    {
+      "query": "someone junior who has touched kafka",
+      "expected": [
+        "res-kafka-junior"
+      ]
+    },
+    {
+      "query": "postgres autovacuum and query plan tuning",
+      "expected": [
+        "res-postgres-dba"
+      ]
+    },
+    {
+      "query": "logical replication between regions",
+      "expected": [
+        "res-postgres-dba"
+      ]
+    },
+    {
+      "query": "large postgres estate administration",
+      "expected": [
+        "res-postgres-dba"
+      ]
+    },
+    {
+      "query": "pgvector hybrid search with rank fusion",
+      "expected": [
+        "res-pgvector-search"
+      ]
+    },
+    {
+      "query": "semantic and lexical retrieval combined",
+      "expected": [
+        "res-pgvector-search"
+      ]
+    },
+    {
+      "query": "embedding pipeline engineer",
+      "expected": [
+        "res-pgvector-search",
+        "jd-ml-platform"
+      ]
+    },
+    {
+      "query": "terraform modules for ecs fargate",
+      "expected": [
+        "res-terraform-aws"
+      ]
+    },
+    {
+      "query": "scoped iam policies per service",
+      "expected": [
+        "res-terraform-aws",
+        "res-security-cloud"
+      ]
+    },
+    {
+      "query": "immutable container tags and digest verification",
+      "expected": [
+        "res-terraform-aws"
+      ]
+    },
+    {
+      "query": "kubernetes autoscaling and prometheus alerting",
+      "expected": [
+        "res-kubernetes-sre"
+      ]
+    },
+    {
+      "query": "incident commander for severity one outages",
+      "expected": [
+        "res-kubernetes-sre"
+      ]
+    },
+    {
+      "query": "reliability engineer with on call experience",
+      "expected": [
+        "jd-sre",
+        "res-kubernetes-sre"
+      ]
+    },
+    {
+      "query": "error budget policy and postmortems",
+      "expected": [
+        "jd-sre"
+      ]
+    },
+    {
+      "query": "react and typescript with next js app router",
+      "expected": [
+        "res-react-frontend"
+      ]
+    },
+    {
+      "query": "accessibility audit against wcag",
+      "expected": [
+        "res-react-frontend",
+        "res-designer"
+      ]
+    },
+    {
+      "query": "frontend role on our design system",
+      "expected": [
+        "jd-frontend-react",
+        "res-react-frontend"
+      ]
+    },
+    {
+      "query": "swiftui and combine ios developer",
+      "expected": [
+        "res-ios-swift"
+      ]
+    },
+    {
+      "query": "offline first mobile sync",
+      "expected": [
+        "res-ios-swift"
+      ]
+    },
+    {
+      "query": "jetpack compose android engineer",
+      "expected": [
+        "res-android-kotlin"
+      ]
+    },
+    {
+      "query": "kotlin coroutines and flow",
+      "expected": [
+        "res-android-kotlin"
+      ]
+    },
+    {
+      "query": "fine tuning transformers for classification",
+      "expected": [
+        "res-ml-nlp"
+      ]
+    },
+    {
+      "query": "model evaluation harness and calibration",
+      "expected": [
+        "res-ml-nlp",
+        "jd-ml-platform"
+      ]
+    },
+    {
+      "query": "object detection on edge devices",
+      "expected": [
+        "res-ml-vision"
+      ]
+    },
+    {
+      "query": "model quantisation and onnx deployment",
+      "expected": [
+        "res-ml-vision"
+      ]
+    },
+    {
+      "query": "machine learning platform with model serving",
+      "expected": [
+        "jd-ml-platform"
+      ]
+    },
+    {
+      "query": "spark and delta lake data engineer",
+      "expected": [
+        "res-data-eng-spark"
+      ]
+    },
+    {
+      "query": "dbt models and airflow orchestration",
+      "expected": [
+        "res-data-eng-spark",
+        "jd-data-warehouse"
+      ]
+    },
+    {
+      "query": "own the data warehouse end to end",
+      "expected": [
+        "jd-data-warehouse"
+      ]
+    },
+    {
+      "query": "data quality tests and lineage",
+      "expected": [
+        "jd-data-warehouse"
+      ]
+    },
+    {
+      "query": "cohort retention analysis in sql",
+      "expected": [
+        "res-analytics"
+      ]
+    },
+    {
+      "query": "experiment readouts for a product team",
+      "expected": [
+        "res-analytics"
+      ]
+    },
+    {
+      "query": "threat modelling and sast pipelines",
+      "expected": [
+        "res-security-appsec",
+        "jd-appsec"
+      ]
+    },
+    {
+      "query": "secret scanning in ci",
+      "expected": [
+        "res-security-appsec",
+        "jd-appsec"
+      ]
+    },
+    {
+      "query": "secure coding guidance author",
+      "expected": [
+        "res-security-appsec"
+      ]
+    },
+    {
+      "query": "iam least privilege review",
+      "expected": [
+        "res-security-cloud"
+      ]
+    },
+    {
+      "query": "vpc segmentation with no internet route",
+      "expected": [
+        "res-security-cloud"
+      ]
+    },
+    {
+      "query": "kms key policy design",
+      "expected": [
+        "res-security-cloud"
+      ]
+    },
+    {
+      "query": "playwright end to end test suites",
+      "expected": [
+        "res-qa-automation"
+      ]
+    },
+    {
+      "query": "contract tests against recorded fixtures",
+      "expected": [
+        "res-qa-automation"
+      ]
+    },
+    {
+      "query": "flaky test triage and quarantine",
+      "expected": [
+        "res-qa-automation"
+      ]
+    },
+    {
+      "query": "marketplace product roadmap owner",
+      "expected": [
+        "res-product-manager"
+      ]
+    },
+    {
+      "query": "pricing experiment that lifted conversion",
+      "expected": [
+        "res-product-manager"
+      ]
+    },
+    {
+      "query": "dark mode token architecture",
+      "expected": [
+        "res-designer"
+      ]
+    },
+    {
+      "query": "motion specification for a dashboard",
+      "expected": [
+        "res-designer"
+      ]
+    },
+    {
+      "query": "full cycle technical recruiter",
+      "expected": [
+        "res-recruiter"
+      ]
+    },
+    {
+      "query": "structured interview design",
+      "expected": [
+        "res-recruiter"
+      ]
+    },
+    {
+      "query": "onboarding and performance cycles",
+      "expected": [
+        "res-hr-generalist"
+      ]
+    },
+    {
+      "query": "compensation banding experience",
+      "expected": [
+        "res-hr-generalist"
+      ]
+    },
+    {
+      "query": "revenue recognition and statutory audit",
+      "expected": [
+        "res-finance-controller"
+      ]
+    },
+    {
+      "query": "gst filings and monthly close",
+      "expected": [
+        "res-finance-controller"
+      ]
+    },
+    {
+      "query": "enterprise saas account executive",
+      "expected": [
+        "res-sales-enterprise"
+      ]
+    },
+    {
+      "query": "meddic qualification and stakeholder mapping",
+      "expected": [
+        "res-sales-enterprise"
+      ]
+    },
+    {
+      "query": "fastapi and async sqlalchemy backend role",
+      "expected": [
+        "jd-backend-python"
+      ]
+    },
+    {
+      "query": "celery background workers with redis",
+      "expected": [
+        "jd-backend-python"
+      ]
+    },
+    {
+      "query": "engineering manager for a platform group",
+      "expected": [
+        "jd-hiring-manager-eng"
+      ]
+    },
+    {
+      "query": "hire and grow a team of eight engineers",
+      "expected": [
+        "jd-hiring-manager-eng"
+      ]
+    }
+  ]
+}

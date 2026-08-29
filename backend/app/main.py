@@ -10,7 +10,6 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api import (
@@ -21,6 +20,7 @@ from app.api import (
     billing,
     candidates,
     companies,
+    company_dna,
     dashboard,
     emails,
     jobs,
@@ -107,6 +107,9 @@ API_PREFIX = "/api/v1"
 app.include_router(auth.router, prefix=f"{API_PREFIX}/auth", tags=["auth"])
 app.include_router(admin.router, prefix=f"{API_PREFIX}/admin", tags=["admin"])
 app.include_router(companies.router, prefix=f"{API_PREFIX}/companies", tags=["companies"])
+# Company DNA intake (Layer 2, spec-doc6 4.2 / D3). Mounted at the bare API
+# prefix because its routes are client-scoped: /clients/{client_id}/company-dna.
+app.include_router(company_dna.router, prefix=API_PREFIX, tags=["company-dna"])
 app.include_router(jobs.router, prefix=f"{API_PREFIX}/jobs", tags=["jobs"])
 app.include_router(candidates.router, prefix=f"{API_PREFIX}/candidates", tags=["candidates"])
 app.include_router(matching.router, prefix=f"{API_PREFIX}/matching", tags=["matching"])
@@ -147,10 +150,14 @@ app.include_router(bd.router, prefix="/api/v2/bd", tags=["bd-v2"])
 
 @app.get("/health")
 async def health() -> dict:
-    # This endpoint is the staged-deploy gate, so a process-only response would
-    # allow a revision with broken Cloud SQL credentials/networking to promote.
-    from app.core.db import get_session_factory
+    """The ALB target group's health check, and therefore the deploy gate.
 
-    async with get_session_factory()() as session:
-        await session.execute(text("SELECT 1"))
-    return {"status": "ok", "database": "ok"}
+    The probes live in `app/api/health.py`; read the module docstring there for
+    why the broker is checked alongside the database. In short: an unreachable
+    Redis does not raise on publish, it HANGS, so a task with a broken broker
+    accepts requests and stops partway through them with no error anywhere. A
+    database-only probe promotes that task.
+    """
+    from app.api.health import probe_dependencies
+
+    return await probe_dependencies()
