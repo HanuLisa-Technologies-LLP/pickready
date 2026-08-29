@@ -38,4 +38,12 @@ class ContextChunk(Base, UUIDPKMixin, CreatedAtMixin):
     #: only the chunks whose text actually changed.
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))
+    # ── Embedding provenance (migration 0062) ────────────────────────────────
+    # Same four columns, same reason, as `profiles.embedding`: the width of a
+    # vector says nothing about which model produced it, and this index holds
+    # rows from both sides of the single-vendor consolidation.
+    embedding_model: Mapped[str | None] = mapped_column(String(64))
+    embedding_contract_version: Mapped[str | None] = mapped_column(String(32))
+    embedding_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    embedding_shadow: Mapped[list[float] | None] = mapped_column(Vector(1024))
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

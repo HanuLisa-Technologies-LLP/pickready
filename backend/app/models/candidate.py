@@ -83,7 +83,23 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
     resume_text: Mapped[str | None] = mapped_column(Text)  # extracted; tsvector col in migration
     aspects_json: Mapped[dict | None] = mapped_column(JSONB)  # {"1": {...}, ..., "40": {...}}
     parsed_fields_json: Mapped[dict | None] = mapped_column(JSONB)  # skills, experience, education, employment_history
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))  # BGE-M3
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))  # voyage-context-4, EMBEDDING_DIM
+    # ── Embedding provenance (migration 0062) ────────────────────────────────
+    # WHICH MODEL PRODUCED THE VECTOR ABOVE, answerable by query rather than by
+    # inference. The column is `vector(1024)` and so was the BGE-M3 vector that
+    # preceded Voyage, so width proves nothing: a row written before the
+    # single-vendor consolidation and a row written after it are
+    # indistinguishable without this. NULL means "produced by an unrecorded
+    # model" and is deliberately not backfilled to Voyage, because that would
+    # assert something nobody can check. `app.scripts.reembed` selects on it.
+    embedding_model: Mapped[str | None] = mapped_column(String(64))
+    #: OUR version of how the embedded text was built (input type, output
+    #: dimension, template), because the vendor does not version a model id.
+    embedding_contract_version: Mapped[str | None] = mapped_column(String(32))
+    embedding_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Where a re-embedding run writes before the swap, so a run that fails
+    #: part way never leaves the live column serving two vector spaces.
+    embedding_shadow: Mapped[list[float] | None] = mapped_column(Vector(1024))
     aspects_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
