@@ -85,6 +85,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 from app.services.hiring import layers
+from app.services.hiring import runbook_data
 from app.services.hiring.department_models import (
     DIM_AUTHENTICITY,
     DIM_ROLE_FIT,
@@ -108,17 +109,25 @@ _ALL_DIMENSIONS: tuple[str, ...] = (
 def _arrow_magnitudes() -> dict[str, float]:
     """{arrow level: multiplier}, from the Runbook data package.
 
-    RAISES RATHER THAN SUPPLYING A NUMBER, and this is the site where that rule
-    costs something, so it is worth stating why it is still right.
+    RESOLVED 2026-08-29. This function previously raised, because §11.3 bounded
+    four of the six situation types and said nothing about Scale-up or
+    Succession, so there was no magnitude to read. Refusing was right at the
+    time: a literal here would have carried a section citation it did not have,
+    which is worse than no number, because the citation makes it look settled.
 
-    §18.4 states each situation's weight consequence as arrows and attaches no
-    magnitude to any of them. §11.3 supplies an additive bound for four of the
-    six ("+0.08 combined", "+0.07 combined", "+-0.06") and nothing at all for
-    Scale-up or Succession. So there is no multiplier for these arrows anywhere
-    in RPN-PHIL-001, and a literal here would be a number with a section
-    citation it does not have -- which is worse than no number, because the
-    citation would make it look settled. Recorded as a RUNBOOK-AMBIGUITY and
-    escalated; see RUNBOOK_OPEN_QUESTIONS_PHASE0B.md.
+    The Runbook now bounds all six. §11.3 gained a row for each missing type and
+    states the three rules that set every bound, so the values are derived from
+    the table's own structure rather than chosen: a situation emphasising an
+    evidence-based dimension (D1, D2, D3) gets 0.08, one emphasising D5 gets
+    0.07 because trajectory is the most speculative thing this system judges,
+    and one with no emphasised dimension gets 0.06. Scale-up is the only type
+    whose §18.4 consequence is two plain arrows, so it takes the floor.
+
+    Still read from the data package rather than restated here, per spec-doc6
+    §10.1 rule 5, so `test_runbook_parity.py` can hold the file and the Runbook
+    to each other. The remaining question is arithmetic, not a missing value:
+    §11.3 bounds additively and this product composes multiplicatively, which
+    the data file explains and Q16 tracks.
     """
     raw = layers.runbook_value("situation_types", "arrow_magnitudes")
     if not isinstance(raw, dict) or not raw:
@@ -130,7 +139,14 @@ def _arrow_magnitudes() -> dict[str, float]:
             "section it is standing in for. It is deliberately not restated "
             "here."
         )
-    return {str(k): float(v) for k, v in raw.items()}
+    # `source` is the citation every entry in the data package carries, not a
+    # magnitude. Skipped by name rather than by "anything that will not cast to
+    # float", because a silent skip would hide a genuinely malformed number.
+    return {
+        str(k): float(v)
+        for k, v in raw.items()
+        if k != runbook_data.SOURCE_KEY
+    }
 
 __all__ = [
     "GAP_FILL",

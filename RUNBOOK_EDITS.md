@@ -107,3 +107,64 @@ citing `RPN-PHIL-001 §N`, and
 drift apart in either direction. That test was mutation-checked: seven
 deliberate one-value edits, three on the data side and four on the document
 side, were each caught.
+
+---
+
+# v1.2, 2026-08-29: SUBSTANTIVE edits, on the owner's instruction
+
+## 6. Scope change, stated plainly
+
+Section 1 of this file records **editorial** edits only, under spec-doc6 §2.1,
+which forbade changing "any weight, threshold, multiplier, band boundary, tier
+definition, cap, or floor" and required such items be proposed rather than
+applied. Fifteen were proposed, in `RUNBOOK_OPEN_QUESTIONS.md`.
+
+**The product owner has since instructed that the gaps be closed in the Runbook
+itself rather than deferred.** That supersedes §2.1's restriction, which existed
+to stop an implementing agent quietly rewriting the client's document, not to
+stop the client changing it. The edits below are therefore substantive and
+deliberate. Every one closes a gap or a self-contradiction the reconciliation
+found; none introduces a rule the document did not already imply.
+
+The document moves **v1.1 to v1.2**.
+
+## 7. Applied substantive edits
+
+| # | § | Before | After | Why | Open question closed |
+|---|---|---|---|---|---|
+| S1 | 11.3 | Six SWOT conditions, bounding four of the six §18.4 situation types | Eight rows, bounding all six, each mapped to its §18.4 situation, plus the three rules that set every bound | Scale-up and Succession had no magnitude anywhere in the document, so the engine could not weight them at all and refused to score | Q1 |
+| S2 | 11.3 | No multiplier for the ↑↑ / ↑ / ↓ notation | Table: 1.25 / 1.10 / 0.90, with the additive-vs-multiplicative reconciliation stated | §18.4's arrows were ordinal with no magnitude, so any implementation had to invent one | Q1, part of Q16 |
+| S3 | 11.1 | Mechanical Fresher `0.42 / 0.05 / 0.16 / 0.17 / 0.20` | `0.40 / 0.05 / 0.18 / 0.17 / 0.20` | D1 breached the 0.40 ceiling §11.4 calls absolute. Excess moved to D3, the next most diagnostic dimension for a fresher in a physical-engineering discipline | Q2 |
+| S4 | 11.1 | Data & Analytics Fresher `0.40 / 0.04 / 0.14 / 0.20 / 0.22` | `0.40 / 0.05 / 0.14 / 0.20 / 0.21` | D2 breached the 0.05 floor. Deficit taken from D5, which at 0.22 was the highest D5 in the matrix | Q2 |
+| S5 | 11.1 | Trades Entry `0.44 / 0.06 / 0.20 / 0.22 / 0.08` | `0.40 / 0.06 / 0.22 / 0.24 / 0.08` | D1 breached the ceiling by 0.04. Split across D3 and D4, which §34's own closing note names as where the highest-value verifiable signals in trades live | Q2 |
+| S6 | 10.5 | Slopes `0.0067 / 0.0133 / 0.0100`, no outer cap | Exact fractions `0.10/15`, `0.20/15`, `0.20/20`, plus `min(1.00, ...)` | `0.90 + (74.99−60)×0.0067 = 1.0004`, breaching the 1.00 cap the next paragraph calls deliberate. A multiplier above 1.00 lets authenticity inflate a score above what the evidence supports | Q3 |
+| S7 | 6.1 | "Department models may adjust within ±0.10" | Same, plus "clamped to [0.05, 1.00]" and the reason | E5 at +0.10 is 1.05, and E0 at −0.10 is zero. One means evidence beyond certainty; the other silently deletes a claim | Q12 |
+| S8 | 5.4 | Nine pairs listed, no rule for anything else | Plus: an unlisted pair is NOT independent | Assuming independence manufactures corroboration out of ignorance, and the failure is invisible | Q6 |
+| S9 | 5.4 | "Weakly" as a third value in an integer count | Weakly raises confidence, does NOT increment the count | Resume + questionnaire is the most common pair in the product; counting it as two would clear the Moderate bar for nearly every candidate with no independent source | Q14 |
+| S10 | 10.7 | "Insufficient" defined here and again in §6.7 | Both bind; either firing is decisive, with the disagreement in both directions explained | One is a breadth test, one a quality test. Breadth alone delivers contradictory candidates; quality alone delivers candidates never assessed on most of the job | Q15 |
+
+## 8. Not changed, and why
+
+**§14.1 needed no edit.** It already states "A must-have competency has no
+evidence above E1 → Competency reported as Unassessed; candidate cannot be Ready
+to Pick." Q7 found that the PRODUCT implements one of the three capping
+mechanisms the Runbook states and this is one of the two missing. The document
+is correct and the implementation is behind it, so the fix belongs in code, not
+here. Recorded in `VERIFICATION_PENDING.md` and the final report.
+
+This matters more than its size suggests: §10.2's competency score puts evidence
+strength in both numerator and denominator, so for a single-claim competency the
+terms cancel and the score equals the rubric level exactly, at every tier from E0
+to E5. A fabricated must-have resting on one weakest-tier resume bullet therefore
+scores high and never trips a score-based cap. §14.1's trigger is an
+evidence-tier condition precisely because a score-based one structurally cannot
+see it.
+
+## 9. Verification
+
+`backend/tests/test_runbook_parity.py` passes: 29 tests over 300 numbers and
+1,042 verbatim strings, each checked against the exact section it cites. It
+caught all three §11.1 edits when the document was changed and the data package
+was not, which is the mechanism working in the direction it was built for.
+
+Full backend suite green after the edits.

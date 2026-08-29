@@ -11,7 +11,7 @@
 
 meta:
   document: RPN-PHIL-001
-  runbook_version: "1.1"
+  runbook_version: "1.2"
   description: "Department competency models (Part VI) and the Layer 1 baseline weight matrix they select a family from."
 
 reading_rule:
@@ -34,7 +34,7 @@ baseline_weight_families:
     source: "RPN-PHIL-001 §11.1"
     label: "Mechanical / Electrical / Civil / Manufacturing"
     weights:
-      "Fresher": {D1: 0.42, D2: 0.05, D3: 0.16, D4: 0.17, D5: 0.20}
+      "Fresher": {D1: 0.40, D2: 0.05, D3: 0.18, D4: 0.17, D5: 0.20}
       "2–5 yrs": {D1: 0.38, D2: 0.17, D3: 0.18, D4: 0.17, D5: 0.10}
       "5–10 yrs": {D1: 0.34, D2: 0.23, D3: 0.20, D4: 0.15, D5: 0.08}
       "10+": {D1: 0.28, D2: 0.28, D3: 0.22, D4: 0.14, D5: 0.08}
@@ -43,7 +43,7 @@ baseline_weight_families:
     source: "RPN-PHIL-001 §11.1"
     label: "Data & Analytics / R&D"
     weights:
-      "Fresher": {D1: 0.40, D2: 0.04, D3: 0.14, D4: 0.20, D5: 0.22}
+      "Fresher": {D1: 0.40, D2: 0.05, D3: 0.14, D4: 0.20, D5: 0.21}
       "2–5 yrs": {D1: 0.36, D2: 0.15, D3: 0.16, D4: 0.22, D5: 0.11}
       "5–10 yrs": {D1: 0.32, D2: 0.22, D3: 0.18, D4: 0.20, D5: 0.08}
       "10+": {D1: 0.26, D2: 0.26, D3: 0.22, D4: 0.18, D5: 0.08}
@@ -97,7 +97,7 @@ baseline_weight_families:
     source: "RPN-PHIL-001 §11.1"
     label: "Skilled trades / Blue-collar / Non-technical support"
     weights:
-      "Entry": {D1: 0.44, D2: 0.06, D3: 0.20, D4: 0.22, D5: 0.08}
+      "Entry": {D1: 0.40, D2: 0.06, D3: 0.22, D4: 0.24, D5: 0.08}
       "Experienced": {D1: 0.40, D2: 0.14, D3: 0.22, D4: 0.18, D5: 0.06}
       "Supervisory": {D1: 0.32, D2: 0.22, D3: 0.24, D4: 0.16, D5: 0.06}
 

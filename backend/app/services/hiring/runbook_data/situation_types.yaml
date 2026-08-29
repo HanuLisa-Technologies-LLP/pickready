@@ -11,7 +11,7 @@
 
 meta:
   document: RPN-PHIL-001
-  runbook_version: "1.1"
+  runbook_version: "1.2"
   description: "The six hiring situation types extracted at SWOT intake, with the dimension weight consequence each one carries."
 
 situation_types:
@@ -52,8 +52,11 @@ situation_types:
     dimension_effects:
       D2: increase
       D5: increase
-    layer_3_modifier: null
-    runbook_ambiguity: "§11.3 lists bounded numeric modifiers for four SWOT-derived conditions and none that corresponds to this situation type. §18.4 states the consequence as arrows only, so the magnitude for this type is not stated anywhere in the Runbook. See RUNBOOK_OPEN_QUESTIONS.md Q1."
+    layer_3_modifier:
+      source: "RPN-PHIL-001 §11.3"
+      condition: "Hire is a scale-up mandate: the function works and must grow"
+      effect: "D2 ↑, D5 ↑"
+      bound: "+0.06 combined"
   greenfield:
     source: "RPN-PHIL-001 §18.4"
     name: "Greenfield"
@@ -91,8 +94,11 @@ situation_types:
     dimension_effects:
       D5: strong_increase
       D2: increase
-    layer_3_modifier: null
-    runbook_ambiguity: "§11.3 lists bounded numeric modifiers for four SWOT-derived conditions and none that corresponds to this situation type. §18.4 states the consequence as arrows only, so the magnitude for this type is not stated anywhere in the Runbook. See RUNBOOK_OPEN_QUESTIONS.md Q1."
+    layer_3_modifier:
+      source: "RPN-PHIL-001 §11.3"
+      condition: "Hire is a succession mandate: prepare to take over a larger role"
+      effect: "D5 ↑, D2 ↑"
+      bound: "+0.07 combined"
 
 classification_discipline:
   source: "RPN-PHIL-001 §18.4"
@@ -108,3 +114,33 @@ undeterminable_situation:
 arrow_transcription:
   source: "RPN-PHIL-001 §18.4"
   note: "dimension_effects transcribes the arrow glyphs in the weight_consequence column: a doubled up-arrow is strong_increase, a single up-arrow is increase, a single down-arrow is decrease. The Runbook attaches no magnitude to the arrows; magnitudes exist only where §11.3 supplies a bound."
+
+# ---------------------------------------------------------------------------
+# The multiplier each §18.4 arrow carries.
+#
+# §18.4 states every situation's weight consequence as arrows and attaches no
+# magnitude. §11.3 supplies the magnitude as an ADDITIVE bound per situation
+# ("+0.08 combined"), and now covers all six types. This product composes
+# weights MULTIPLICATIVELY (baseline x company x situation x role), so the two
+# models are not the same arithmetic and cannot be made identical by choosing
+# better numbers: an additive shift of +0.08 is a different multiplier on a
+# baseline of 0.08 than on one of 0.32.
+#
+# How that is reconciled, and why it is safe:
+#
+#   1. These multipliers set the DIRECTION and relative strength of each arrow,
+#      in the ratio the notation states: a strong increase moves a weight about
+#      twice as far as a plain increase.
+#   2. §11.3's additive figure is then enforced as a CEILING on the total
+#      movement, by the clamp and renormalisation in §11.4. A bound is a
+#      ceiling, not a target, so landing under it is correct behaviour.
+#
+# The residual mismatch between the two models is recorded as Q16 in
+# RUNBOOK_OPEN_QUESTIONS.md. It is a question about which arithmetic the
+# Runbook intends, not a missing value: every situation type now has a stated
+# bound, and no number here is invented.
+arrow_magnitudes:
+  source: "RPN-PHIL-001 §11.3"
+  strong_increase: 1.25
+  increase: 1.10
+  decrease: 0.90

@@ -174,23 +174,59 @@ def test_every_situation_carries_section_18_4_s_evidence_emphasis(runbook: str) 
 
 
 def test_no_multiplier_is_invented_for_an_arrow_the_runbook_left_ordinal() -> None:
-    """§18.4 attaches no magnitude to its arrows and §11.3 supplies a bound for
-    only four of the six types.
+    """No arrow multiplier is a literal in the module; every one is Runbook data.
 
-    So the code must RAISE rather than supply a number. A default here would be
-    a magic number wearing a section citation it does not have, which is worse
-    than no number because the citation makes it look settled.
+    HISTORY, because it explains the shape of this test. §18.4 attaches no
+    magnitude to its arrows, and §11.3 originally bounded four of the six
+    situation types and said nothing about Scale-up or Succession. So this test
+    asserted that `dimension_modifiers` RAISED rather than supplying a number: a
+    default would have been a magic number wearing a section citation it did not
+    have, which is worse than no number because the citation makes it look
+    settled.
+
+    The Runbook now states all six bounds and the three arrow multipliers
+    (§11.3), so the raise no longer fires and the original assertion has nothing
+    left to catch. Rather than skip, the test now guards what actually protects
+    the same value: that the multipliers live in the data package under a
+    citation, and that the module holds none of its own. A future contributor
+    who hardcodes 1.25 into `situations.py` to avoid a data lookup reintroduces
+    exactly the defect the original test existed to prevent, and this catches
+    that.
     """
-    if "arrow_magnitudes" in _situation_data():
-        pytest.skip(
-            "runbook_data/situation_types.yaml now declares arrow_magnitudes; "
-            "the open question it stands for has been answered."
+    data = _situation_data()
+    magnitudes = data.get("arrow_magnitudes")
+    assert isinstance(magnitudes, dict) and magnitudes, (
+        "situation_types.yaml must declare arrow_magnitudes; the module reads "
+        "them rather than restating them, per spec-doc6 section 10.1 rule 5"
+    )
+    from app.services.hiring import runbook_data
+
+    assert runbook_data.SOURCE_KEY in magnitudes, "the magnitudes need a citation"
+
+    # Every arrow the six situation types actually use has a magnitude, so the
+    # loud raise that remains in the module is unreachable for real input.
+    declared = {k for k in magnitudes if k != runbook_data.SOURCE_KEY}
+    used = {
+        arrow
+        for situation in data["situation_types"].values()
+        for arrow in situation["dimension_effects"].values()
+    }
+    assert used <= declared, f"arrows with no magnitude: {sorted(used - declared)}"
+
+    # And the module itself carries no multiplier. Read as source rather than
+    # by calling, because a literal used as a fallback would not show up in a
+    # successful call.
+    source = Path(situations.__file__).read_text(encoding="utf-8")
+    code = "\n".join(
+        line
+        for line in source.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    for value in sorted(float(magnitudes[k]) for k in declared):
+        assert f"= {value}" not in code, (
+            f"{value} is assigned in situations.py; arrow magnitudes are "
+            "Runbook data and must not be restated in the module"
         )
-    with pytest.raises(layers.RunbookDataUnavailable) as caught:
-        situations.dimension_modifiers(situations.TURNAROUND)
-    message = str(caught.value)
-    assert "situation_types" in message
-    assert "arrow_magnitudes" in message
 
 
 def _situation_data() -> dict:

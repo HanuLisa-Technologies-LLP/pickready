@@ -11,7 +11,7 @@
 
 meta:
   document: RPN-PHIL-001
-  runbook_version: "1.1"
+  runbook_version: "1.2"
   description: "Permitted and prohibited hard disqualifiers, and the soft-constraint alternative."
 
 permitted:

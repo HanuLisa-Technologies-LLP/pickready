@@ -11,7 +11,7 @@
 
 meta:
   document: RPN-PHIL-001
-  runbook_version: "1.1"
+  runbook_version: "1.2"
   description: "The Role SWOT intake instrument (Layer 3): quadrants, session protocol, the seven high-value probes, the rejection rules, the seven-stage transformation pipeline and the scorecard rules."
 
 why_swot:

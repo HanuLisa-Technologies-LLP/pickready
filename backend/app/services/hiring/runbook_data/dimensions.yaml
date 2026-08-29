@@ -11,7 +11,7 @@
 
 meta:
   document: RPN-PHIL-001
-  runbook_version: "1.1"
+  runbook_version: "1.2"
   description: "The five evaluation dimensions D1-D5, their rubric anchors, and the arithmetic that turns them into a composite."
 
 dimensions:

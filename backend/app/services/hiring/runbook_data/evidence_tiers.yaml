@@ -11,7 +11,7 @@
 
 meta:
   document: RPN-PHIL-001
-  runbook_version: "1.1"
+  runbook_version: "1.2"
   description: "The six-tier evidence strength hierarchy, its quality modifiers, the decay clocks, the independence rules and the sufficiency floor."
 
 tiers:

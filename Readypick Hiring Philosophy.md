@@ -1,7 +1,7 @@
 # READY PICK NOW
 # HIRING PHILOSOPHY & INTELLIGENCE RUNBOOK
 
-**Version 1.1 — The Standard Runbook**
+**Version 1.2 — The Standard Runbook**
 **Owner:** Hanulisa Technologies LLP · Ready Pick Now
 **Classification:** Proprietary & Confidential — Internal + Controlled Client Disclosure
 **Document type:** Operating doctrine, decision engine specification, and delivery standard
@@ -13,8 +13,8 @@
 | Field | Value |
 |---|---|
 | Document ID | RPN-PHIL-001 |
-| Version | 1.1 |
-| Date | 2026-08-29 (v1.1 editorial revision). The v1.0 issue date was not recorded in the source document and has not been invented here. |
+| Version | 1.2 |
+| Date | 2026-08-29 (v1.2 substantive revision). The v1.0 issue date was not recorded in the source document and has not been invented here. |
 | Owner | Hanulisa Technologies LLP (legal entity) · Ready Pick Now (product) |
 | Status | Standard (binding on all delivery pods and all engine releases) |
 | Supersedes | All prior evaluation notes, ranking heuristics, and ad-hoc scoring sheets |
@@ -27,6 +27,7 @@
 | Ver | Date | Section | Change | Authority |
 |---|---|---|---|---|
 | 1.0 | Not recorded | All | Initial standard issued | Hiring Standards Board |
+| 1.2 | 2026-08-29 | 5.4; 6.1; 10.5; 10.7; 11.1; 11.3 | SUBSTANTIVE revision, on the product owner's instruction, closing gaps that spec-doc6 section 2.1 had required be proposed rather than applied. 11.3 now bounds all six 18.4 situation types and states the arrow multipliers, so Scale-up and Succession can be weighted at all. Three 11.1 baselines that breached the 11.4 clamp were corrected (Mechanical Fresher D1 0.42, Trades Entry D1 0.44, Data Fresher D2 0.04); every row still sums to 1.00. 10.5's slopes are exact fractions with an outer cap, closing a case where the multiplier reached 1.0004 against its own stated 1.00 ceiling. 6.1 clamps an adjusted tier strength to [0.05, 1.00]. 5.4 rules that an unlisted pair is not independent and that "Weakly" does not increment the count. 10.7 states that its "Insufficient" and 6.7's both bind. Each edit is itemised in RUNBOOK_EDITS.md section 7 with the open question it closes. | Substantive (owner-directed) |
 | 1.1 | 2026-08-29 | Front matter; §2; §6.3; §16; Appendices D, E, F; new table of contents and changelog | Editorial revision under spec-doc6 section 2.1. Front matter completed; table of contents added; §16's twelve subsections numbered §16.1-§16.12, which resolves the §16.3 cross-reference in §51; Appendix D and Appendix E subsections renumbered D.1-D.4 and E.1-E.7 so they stop colliding with the dimension names D1-D5 and the tier names E0-E5; two cross-references repaired (C5 cited §12.4, the PROHIBITED disqualifier list, where it means §12.3, the legitimate one; §6.3 cited §11.4 for adverse-impact monitoring, which is §52.5); product naming normalised; glossary extended with the canonical spellings. Every edit is itemised in RUNBOOK_EDITS.md. No weight, threshold, multiplier, band boundary, tier definition, cap, floor, intake question or example pair was changed. | Editorial (no Standards Board decision required) |
 
 ---
@@ -579,6 +580,30 @@ Corroboration only counts when the sources are genuinely independent. Two eviden
 
 **Independence groups** are declared in the schema. The independence count for a claim is the number of *distinct groups* supporting it, not the number of evidence items.
 
+**Two rules close the gaps in the table above.**
+
+**A pair that is not listed is NOT independent.** The table names nine pairs and
+the product will meet more. Treating an unrecognised pair as independent would
+manufacture corroboration out of ignorance, and the failure is invisible: the
+claim reads as confirmed and nobody can see which two sources confirmed it. A
+new pair earns independence by being added to this table with a reason, never by
+default.
+
+**"Weakly" independent raises confidence and does NOT increment the
+independence count.** Resume plus validation questionnaire is one person saying
+one thing twice, under unseen and specific probes; the probes make the second
+telling more informative, which is why the row is not a flat No, but they do not
+make it a second originator. So a claim resting only on resume plus
+questionnaire has an independence count of **1**, not 2, and cannot on its own
+satisfy any threshold in §6.7 that asks for evidence beyond self-report. The
+count stays an integer, and the thing being counted stays what the section says
+it is: distinct originators.
+
+This matters more than it looks. Resume plus validation questionnaire is the
+most common evidence pair in the product, because every applicant produces both.
+If it counted as two, almost every candidate would clear the Moderate
+confidence bar on paper without a single independent source ever having spoken.
+
 ### 5.5 Chain of custody
 
 Every evidence node records: who collected it, when, under what conditions, and whether the candidate consented. Evidence collected outside the declared process (a recruiter's informal impression from an unlogged phone call; a social-media inference) is **inadmissible** — it may not appear in the graph and may not be used in a dossier. This is not bureaucratic; unlogged evidence is where bias hides.
@@ -599,6 +624,14 @@ Every evidence node records: who collected it, when, under what conditions, and 
 | **E5** | Third-party verified | Credential confirmed with issuing body; reference corroboration on a specific claim; verified commit history with sustained authorship; documented client/employer confirmation | Very high | 0.95 |
 
 These are **default** strengths. Department models may adjust within ±0.10 with justification, recorded in the department model, not applied ad hoc.
+
+**The adjusted strength is clamped to [0.05, 1.00].** Without the clamp, E5 at
+its +0.10 allowance is 1.05, and a strength above 1.00 means a single piece of
+evidence counts for more than complete certainty, which is not a thing evidence
+can be. The floor exists for the mirror reason: E0 at its −0.10 allowance is
+zero, and a strength of zero silently deletes a claim from the ledger rather
+than recording it as weak. A weak claim that is visible can be probed; a claim
+that arithmetic removed cannot.
 
 ### 6.2 The fabrication-cost principle
 
@@ -1048,14 +1081,25 @@ D4 therefore acts **twice**: once as a weighted dimension, and once as a multipl
 
 ```
 authenticity_multiplier =
-     1.00                    if D4 ≥ 75
-     0.90 + (D4−60)×0.0067   if 60 ≤ D4 < 75      (0.90 → 1.00)
-     0.70 + (D4−45)×0.0133   if 45 ≤ D4 < 60      (0.70 → 0.90)
-     0.50 + (D4−25)×0.0100   if 25 ≤ D4 < 45      (0.50 → 0.70)
-     HOLD — not scored, mandatory human review    if D4 < 25
+     1.00                       if D4 ≥ 75
+     0.90 + (D4−60)×(0.10/15)   if 60 ≤ D4 < 75   (0.90 → 1.00)
+     0.70 + (D4−45)×(0.20/15)   if 45 ≤ D4 < 60   (0.70 → 0.90)
+     0.50 + (D4−25)×(0.20/20)   if 25 ≤ D4 < 45   (0.50 → 0.70)
+     HOLD — not scored, mandatory human review     if D4 < 25
+
+authenticity_multiplier = min(1.00, authenticity_multiplier)
 
 RPS = RPS_raw × authenticity_multiplier
 ```
+
+**The slopes are written as exact fractions, and the outer `min` is not
+redundant.** The earlier form rounded them to 0.0067, 0.0133 and 0.0100, and the
+first of those does not close its own interval: 0.90 + (74.99−60)×0.0067 =
+1.0004, which exceeds the 1.00 cap the very next paragraph calls deliberate. A
+multiplier above 1.00 would let a clean authenticity record inflate a score
+above what the evidence supports, which is the one thing this mechanism exists
+to prevent. Exact fractions remove the defect; the `min` makes it unreachable
+even if someone re-rounds them later.
 
 **Note the asymmetry, and it is deliberate:** high authenticity does not inflate a score above what the evidence supports (multiplier caps at 1.00). Low authenticity suppresses it. Authenticity is a *licence to believe the other four dimensions*, not a fifth way to win.
 
@@ -1092,6 +1136,31 @@ Mapped to labels:
 | 0.60–0.79 | **Moderate** | Deliverable; dossier states what would raise confidence |
 | 0.40–0.59 | **Low** | Deliverable only with explicit label + recruiter note; not counted toward guaranteed shortlist size |
 | < 0.40 | **Insufficient** | Not delivered. Collect more evidence or exclude with reason. |
+
+**"Insufficient" is defined twice in this document, and both definitions bind.**
+§6.7 declares a candidate Insufficient when fewer than half the must-have
+competencies have any evidence above E1. This section declares Insufficient when
+`confidence_score < 0.40`. They are not the same test and neither implies the
+other, so:
+
+> A candidate is Insufficient if **either** condition fires. Whichever is
+> stricter for that candidate is the one that decides.
+
+They can disagree in both directions, which is exactly why both are kept:
+
+- **Coverage is only 35% of `confidence_score`.** A candidate with evidence on
+  40% of must-haves can still clear 0.40 overall if depth, independence and
+  consistency are strong. §10.7 alone would deliver them, while more than half
+  of what the job actually requires has never been examined. §6.7 catches that.
+- **§6.7 counts competencies and cannot see contradictions.** A candidate with
+  evidence above E1 on every must-have passes §6.7 outright, even with
+  unresolved moderate contradictions dragging `consistency` down and confidence
+  below 0.40. §10.7 catches that.
+
+One is a breadth test and one is a quality test. A system that ran only the
+breadth test would deliver contradictory candidates; one that ran only the
+quality test would deliver well-evidenced candidates who were never assessed on
+most of the job.
 
 ### 10.8 Score bands
 
@@ -1183,7 +1252,7 @@ Baselines are Ready Pick Now's professional judgement, expressed as calibration 
 
 | Seniority | D1 | D2 | D3 | D4 | D5 |
 |---|---|---|---|---|---|
-| Fresher | 0.42 | 0.05 | 0.16 | 0.17 | 0.20 |
+| Fresher | 0.40 | 0.05 | 0.18 | 0.17 | 0.20 |
 | 2–5 yrs | 0.38 | 0.17 | 0.18 | 0.17 | 0.10 |
 | 5–10 yrs | 0.34 | 0.23 | 0.20 | 0.15 | 0.08 |
 | 10+ | 0.28 | 0.28 | 0.22 | 0.14 | 0.08 |
@@ -1193,7 +1262,7 @@ Baselines are Ready Pick Now's professional judgement, expressed as calibration 
 
 | Seniority | D1 | D2 | D3 | D4 | D5 |
 |---|---|---|---|---|---|
-| Fresher | 0.40 | 0.04 | 0.14 | 0.20 | 0.22 |
+| Fresher | 0.40 | 0.05 | 0.14 | 0.20 | 0.21 |
 | 2–5 yrs | 0.36 | 0.15 | 0.16 | 0.22 | 0.11 |
 | 5–10 yrs | 0.32 | 0.22 | 0.18 | 0.20 | 0.08 |
 | 10+ | 0.26 | 0.26 | 0.22 | 0.18 | 0.08 |
@@ -1254,7 +1323,7 @@ Baselines are Ready Pick Now's professional judgement, expressed as calibration 
 
 | Seniority | D1 | D2 | D3 | D4 | D5 |
 |---|---|---|---|---|---|
-| Entry | 0.44 | 0.06 | 0.20 | 0.22 | 0.08 |
+| Entry | 0.40 | 0.06 | 0.22 | 0.24 | 0.08 |
 | Experienced | 0.40 | 0.14 | 0.22 | 0.18 | 0.06 |
 | Supervisory | 0.32 | 0.22 | 0.24 | 0.16 | 0.06 |
 
@@ -1275,14 +1344,63 @@ The client's Company DNA may shift weights within declared bounds:
 
 ### 11.3 Layer 3 modifiers (role SWOT)
 
-| SWOT-derived condition | Effect | Bound |
+| SWOT-derived condition | Effect | Bound | §18.4 situation |
+|---|---|---|---|
+| Hire must close a specific named capability gap | D3 ↑, D1 ↑ | +0.08 combined | Gap-fill |
+| Hire is a turnaround / crisis mandate | D2 ↑, D3 ↑ | +0.08 combined | Turnaround |
+| Hire is a scale-up mandate: the function works and must grow | D2 ↑, D5 ↑ | +0.06 combined | Scale-up |
+| Hire is greenfield / zero-to-one | D5 ↑, D3 ↑ | +0.07 combined | Greenfield |
+| Role is a defined, stable execution seat | D1 ↑, D5 ↓ | ±0.06 | Steady-state |
+| Hire is a succession mandate: prepare to take over a larger role | D5 ↑, D2 ↑ | +0.07 combined | Succession |
+| Role will change substantially within a year | D5 ↑ | +0.06 | — |
+| High-trust / high-blast-radius role | D4 ↑ | +0.06 | — |
+
+**Every §18.4 situation type now has a bound, and the bounds are not arbitrary.**
+Three rules govern them, and they are stated here so a future situation type can
+be added without re-deciding by feel:
+
+1. **A situation whose emphasised dimension is evidence-based (D1, D2 or D3)
+   gets 0.08.** These dimensions rest on things that have already happened and
+   can be corroborated, so the system can afford to lean on them.
+2. **A situation whose emphasised dimension is D5 gets 0.07.** Trajectory and
+   potential are the most speculative things this system judges. Every rule in
+   this document is deliberately more conservative about letting D5 move a
+   decision, and this bound is that same caution expressed numerically.
+   Greenfield and Succession are both D5-emphasised and both sit here.
+3. **A situation with no emphasised dimension gets 0.06,** which is also the
+   bound on every single-arrow condition in this table. Scale-up is the only
+   situation type of the six whose §18.4 consequence is two plain arrows with no
+   ↑↑, and that is a real statement about it: the function is working, and a
+   hire into something that works should not re-weight the whole matrix.
+
+Note that Scale-up is the mildest of the six and Turnaround the sharpest. That
+ordering is the intended product behaviour: growing a working team is a smaller
+departure from the department baseline than repairing a broken one.
+
+**Arrow magnitudes.** §18.4 states each situation's consequence in arrows. Those
+arrows carry these multipliers, applied to the dimension weight:
+
+| Arrow | Meaning | Multiplier |
 |---|---|---|
-| Hire must close a specific named capability gap | D3 ↑, D1 ↑ | +0.08 combined |
-| Hire is a turnaround / crisis mandate | D2 ↑, D3 ↑ | +0.08 combined |
-| Hire is greenfield / zero-to-one | D5 ↑, D3 ↑ | +0.07 combined |
-| Role will change substantially within a year | D5 ↑ | +0.06 |
-| Role is a defined, stable execution seat | D1 ↑, D5 ↓ | ±0.06 |
-| High-trust / high-blast-radius role | D4 ↑ | +0.06 |
+| ↑↑ | Strong increase | 1.25 |
+| ↑ | Increase | 1.10 |
+| ↓ | Decrease | 0.90 |
+
+A strong increase moves a weight roughly twice as far from 1.00 as a plain
+increase, which is what the doubled arrow is already saying in the notation.
+
+**These multipliers are bounded by the table above, not replaced by it.** The
+bound is the ceiling on how far a situation may move the vector in total; the
+multipliers set the direction and the relative strength of each arrow. Apply the
+multipliers, then apply §11.4. A situation landing under its bound is correct
+behaviour, because a bound is a ceiling and not a target.
+
+An implementation composing weights multiplicatively and one composing them
+additively will not produce identical vectors from this table, because an
+additive shift of +0.08 is a different multiplier on a baseline of 0.08 than on
+one of 0.32. §11.4's clamp and renormalisation is what makes both safe: whichever
+arithmetic is used, no dimension leaves [0.05, 0.40], D4 never falls below 0.12,
+and the vector sums to 1.0.
 
 ### 11.4 Normalisation and clamping rules
 
