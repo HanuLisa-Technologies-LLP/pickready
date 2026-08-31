@@ -22,6 +22,7 @@ from app.models.email_log import EMAIL_TYPE_ASSESSMENT_INVITATION
 from app.services import assessment_invite, capabilities as caps
 from app.services import credits
 from app.services import hiring_pipeline as pipeline
+from app.services import telemetry_events
 from app.services.audit import audit
 from app.workers.celery_app import celery_app
 
@@ -110,7 +111,8 @@ async def _link_or_404(session: AsyncSession, user: CurrentUser, link_id: uuid.U
             text(
                 """
                 SELECT l.id, l.tenant_id, l.job_id, l.candidate_id, l.status,
-                       l.status_updated_at, j.title, c.full_name, c.email
+                       l.status_updated_at, j.title, j.correlation_id,
+                       c.full_name, c.email
                 FROM job_candidate_links l
                 JOIN jobs j ON j.id = l.job_id
                 JOIN candidates c ON c.id = l.candidate_id
@@ -417,6 +419,20 @@ async def change_status(
         )
     except pipeline.InvalidTransition as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # Master Directive Part 2 section 5.1: EV_HM_DECISION, one row per explicit
+    # pipeline decision. Feeds SLA_PR / PRL (services/metrics.py).
+    await telemetry_events.emit(
+        session,
+        tenant_id=user.tenant_id,
+        event_code=telemetry_events.EV_HM_DECISION,
+        job_id=row["job_id"],
+        candidate_id=row["candidate_id"],
+        job_candidate_link_id=link_id,
+        actor_user_id=user.user_id,
+        correlation_id=row["correlation_id"],
+        payload={"from_status": result.previous, "to_status": result.status},
+    )
 
     queued = False
     if body.send_email and result.email_type:

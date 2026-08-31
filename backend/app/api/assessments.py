@@ -73,6 +73,7 @@ from app.services import (
     reference_code,
     retake,
     swot_intake,
+    telemetry_events,
     tenant_cache,
 )
 from app.services.audit import audit
@@ -2226,6 +2227,19 @@ async def respond(
     ) and not conversation.pending_prompt:
         conversation.status = "completed"
         conversation.completed_at = datetime.now(timezone.utc)
+        # Master Directive Part 2 section 5.1: EV_INT_COMPLETED, the AI
+        # assessment interview session ending. Feeds the TTF evaluation
+        # segment (services/metrics.py); never allowed to fail the completion.
+        await telemetry_events.emit(
+            session,
+            tenant_id=job.tenant_id,
+            event_code=telemetry_events.EV_INT_COMPLETED,
+            job_id=job.id,
+            candidate_id=link.candidate_id,
+            job_candidate_link_id=link.id,
+            correlation_id=job.correlation_id,
+            payload={"conversation_id": str(conversation.id)},
+        )
         # One full credit, charged at the moment completed_at is set. Idempotent,
         # and deliberately NOT deferred to the scoring task: the customer should
         # see the deduction at the same time they see the report, and a failed

@@ -21,6 +21,8 @@ from app.models.enums import LinkSource, PipelineStatus
 from app.models.job import Job
 from app.schemas.dashboard import DashboardSummaryOut, JobMetricsOut
 from app.services import audit, capabilities as caps
+from app.services import metrics as metrics_service
+from app.services import telemetry_events
 
 router = APIRouter()
 
@@ -871,6 +873,24 @@ async def move_stage(
         previous_state={"status": previous},
         new_state={"status": result.status},
     )
+    # Master Directive Part 2 section 5.1: EV_HM_DECISION. The dashboard's
+    # stage control and pipeline.change_status are the same lifecycle point
+    # reached from two surfaces, so both emit. Never allowed to fail the move.
+    await telemetry_events.emit(
+        session,
+        tenant_id=user.tenant_id,
+        event_code=telemetry_events.EV_HM_DECISION,
+        job_id=job_id,
+        candidate_id=link["candidate_id"],
+        job_candidate_link_id=link_id,
+        actor_user_id=user.user_id,
+        correlation_id=(
+            await session.execute(
+                select(Job.correlation_id).where(Job.id == job_id)
+            )
+        ).scalar_one_or_none(),
+        payload={"from_status": previous, "to_status": result.status},
+    )
     return _stage_options(result.status, can_move=True, reason=None)
 
 
@@ -990,4 +1010,46 @@ async def calibration_divergences(
     return DivergenceListOut(
         divergences=[DivergenceOut(**row) for row in rows],
         override_rate=OverrideRateOut(**rate.as_dict()),
+    )
+
+
+# ── Metric engine overview (Master Directive Part 2 section 3) ───────────────
+
+
+@router.get("/metrics/overview")
+async def metrics_overview(
+    since: dt.date | None = Query(default=None),
+    until: dt.date | None = Query(default=None),
+    user: CurrentUser = Depends(require_capability(caps.VIEW_DASHBOARD)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Every computable Part 2 section 3 metric for the caller's tenant.
+
+    Same authorization as /summary (VIEW_DASHBOARD); tenant comes from the
+    session, never from the request. The optional date range bounds the
+    event-window metrics (PRL, SLA, AISP, TTF); stagnation is always a "now"
+    reading. `until` is inclusive of its whole day.
+
+    The response also names the section 3 metrics that CANNOT be computed
+    yet and why (no offer/onboarding/calibration/scorecard surfaces), so the
+    UI renders a documented gap rather than a hole. Plain dict rather than a
+    response_model: the metric shapes live in services/metrics.py and this
+    route adds nothing to them.
+    """
+    since_at = (
+        None
+        if since is None
+        else dt.datetime.combine(since, dt.time.min, tzinfo=dt.timezone.utc)
+    )
+    until_at = (
+        None
+        if until is None
+        else dt.datetime.combine(
+            until + dt.timedelta(days=1), dt.time.min, tzinfo=dt.timezone.utc
+        )
+    )
+    if since_at is not None and until_at is not None and until_at <= since_at:
+        raise HTTPException(status_code=422, detail="until precedes since")
+    return await metrics_service.overview(
+        session, user.tenant_id, since=since_at, until=until_at
     )

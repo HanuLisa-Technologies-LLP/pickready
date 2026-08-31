@@ -66,6 +66,7 @@ from app.services import job_candidates
 from app.services import job_posting
 from app.services import hiring_pipeline
 from app.services import rbac
+from app.services import telemetry_events
 from app.services.audit import audit
 from app.workers.celery_app import celery_app
 
@@ -445,6 +446,23 @@ async def create_job(
     )
     session.add(job)
     await session.flush()
+
+    # Master Directive Part 2 section 5.1: EV_REQ_CREATED, emitted the moment
+    # the requisition exists. Never allowed to fail the create (emit swallows).
+    await telemetry_events.emit(
+        session,
+        tenant_id=user.tenant_id,
+        event_code=telemetry_events.EV_REQ_CREATED,
+        job_id=job.id,
+        actor_user_id=user.user_id,
+        correlation_id=job.correlation_id,
+        payload={
+            "title": body.title,
+            "department": body.department,
+            "grade": body.grade,
+            "role_classification": role_classification,
+        },
+    )
 
     if body.publish:
         # Direct publish: draft → ratified in one step (no submit/approve chain).
@@ -1447,6 +1465,19 @@ async def _store_one_databank_resume(
     )
     session.add(link)
     await session.flush()
+    # Master Directive Part 2 section 5.1: EV_PROFILE_SUBMIT for a profile
+    # entering the pipeline via the databank upload path.
+    await telemetry_events.emit(
+        session,
+        tenant_id=user.tenant_id,
+        event_code=telemetry_events.EV_PROFILE_SUBMIT,
+        job_id=job.id,
+        candidate_id=candidate.id,
+        job_candidate_link_id=link.id,
+        actor_user_id=user.user_id,
+        correlation_id=job.correlation_id,
+        payload={"source": SOURCE_TYPE_DATABANK},
+    )
     return DatabankUploadResultOut(
         filename=filename, ok=True, email=email, identified=identified,
         candidate_id=candidate.id, profile_id=profile.id, link_id=link.id,

@@ -54,6 +54,7 @@ from app.services import hiring_pipeline
 from app.services import job_posting
 from app.services import job_relevance
 from app.services import retake
+from app.services import telemetry_events
 from app.services.audit import audit
 from app.workers.celery_app import celery_app
 from app.services.resume_storage import apply_resume_asset, copy_resume_metadata, store_resume
@@ -937,6 +938,21 @@ async def apply_to_job(
     )
     session.add(link)
     await session.flush()
+
+    # Master Directive Part 2 section 5.1: EV_PROFILE_SUBMIT, the profile
+    # entering this job's pipeline. `source_type` was derived by the link's
+    # before_insert listener, so applied/sourced/databank all report truthfully.
+    await telemetry_events.emit(
+        session,
+        tenant_id=job.tenant_id,
+        event_code=telemetry_events.EV_PROFILE_SUBMIT,
+        job_id=job.id,
+        candidate_id=candidate.id,
+        job_candidate_link_id=link.id,
+        actor_user_id=user.user_id,
+        correlation_id=job.correlation_id,
+        payload={"source": link.source_type},
+    )
 
     # ── Retake classification ────────────────────────────────────────────────
     # Every application now runs its own assessment: under PPI the questions

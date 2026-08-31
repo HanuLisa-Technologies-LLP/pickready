@@ -87,6 +87,7 @@ from app.models.job_setup import (
     JobMatchingCategory,
     JobSwotIntake,
 )
+from app.models.telemetry import TelemetryEvent
 from app.models.tenant import AuditLog, LLMProviderKey, RolePermission, Tenant
 from app.models.hiring import (
     CalibrationRecord,
@@ -183,6 +184,7 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_PARTIAL",
     "STATUS_SUCCESS",
+    "TelemetryEvent",
     "Tenant",
     "TechnicalQuestion",
     "Tier",
