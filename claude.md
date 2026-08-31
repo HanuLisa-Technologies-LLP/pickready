@@ -103,21 +103,54 @@ The general lesson: extend parity checking from VALUE parity to CITATION-TARGET
 parity, because a citation annotating a permitted list must fail loudly if it
 resolves to a section headed "prohibited".
 
-### Part A is NOT on a live path, and the gates therefore block nothing
+### Part A IS on the live path now (2026-08-29). It was not, and that is the history
 
 `grep -rn "hiring\.\|miti\.\|siddhi\." backend/app/api backend/app/workers`
-returns **nothing**. The only non-test importer of the whole Part A stack is
-`app/scripts/worked_example.py`. G1 to G4 exist and are real checks, but G1's
-only caller is `miti/pipeline.py:290`, which no route or worker imports.
+returned **nothing** for the whole of spec-doc5. The only non-test importer of
+the entire Part A stack was `app/scripts/worked_example.py`. G1 to G4 were real
+checks guarding nothing: G1's only caller was `miti/pipeline.py:290`, which no
+route or worker imported. **spec-doc6 D2's "gate G1 already blocks
+evaluation... Use it" was therefore false**, and anything written against it was
+relying on nothing.
 
-**spec-doc6 D2 is therefore wrong when it says "gate G1 already blocks
-evaluation... Use it."** Anything relying on that is relying on nothing. Do not
-build a second enforcement path either; make the dependency loud and refuse.
+That grep now returns hits in `api/assessments.py`, `api/jobs.py`,
+`api/dashboard.py`, `api/company_dna.py` and `workers/tasks.py`. Job setup runs
+Bodha's SWOT and Sutra's seven stages and freezes a matrix behind G1; Yukti
+grades a resume on the evidence model and the ontology; Miti's five isolated
+evaluators score live with a model-free aggregator; Siddhi composes the PRISM
+report through a citation chokepoint with no bypass parameter. The old
+single-pass generators are DELETED, not flagged off.
 
-`services/agents/identity.py` points every Part A agent NAME at the OLD modules,
-so logs and A2A artifacts show Bodha, Sutra, Miti and Siddhi succeeding while
-the three-layer framework runs nowhere. When you test an agent, be precise about
-which code you are actually exercising.
+**Keep that grep as the check.** It is the cheapest honest answer to "is the
+framework actually reachable", and it is the one that was quietly false for a
+whole phase while every module was green in isolation.
+
+### A test-isolation trap that hid nineteen failures
+
+The Miti live harness installed a fake scorecard with
+`monkeypatch.setitem(sys.modules, "app.services.hiring.scorecard", fake)`. That
+reads correctly and is wrong: **`from package import submodule` resolves the
+PACKAGE ATTRIBUTE once anything has imported the real module**, and after that
+the `sys.modules` entry is never consulted again. So the fake worked when the
+file ran alone and silently stopped working the moment any earlier test touched
+the real module. Nineteen tests passed in isolation and failed in the suite.
+
+Set BOTH bindings when faking a submodule, and when testing the missing-module
+case remove both, because a genuinely absent module has neither.
+
+### Normalisation makes a stored weight scale-invariant, and a test must know that
+
+`scorecard._rank_and_normalise` divides the scored items by their total so the
+matrix sums to 1.0, which is what Runbook §20.1's own scorecard table does. The
+consequence: when a situation type or a company philosophy lifts every scored
+item alike, because they sit on dimensions it treats alike, **normalisation
+divides the lift straight back out and the stored shares match to fifteen
+decimal places.** Nothing is broken; the quantity cannot show it.
+
+The effect lands in the four-term product `baseline x company x situation x
+role`, kept in `provenance["raw_value"]` precisely so it stays observable.
+spec-doc6 §4.3's acceptance evidence is about THAT number. A test asserting a
+layer moved a weight must read `raw_value`, not the stored share.
 
 ### One scale, and it had silently become three
 
