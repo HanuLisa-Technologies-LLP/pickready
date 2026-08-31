@@ -1,15 +1,20 @@
-"""Contract tests for the Anthropic and Voyage clients (spec-doc6 §12.2).
+"""Contract tests for the OpenAI and Voyage clients (spec-doc6 §12.2).
 
 WHAT THESE TESTS PROVE, AND WHAT THEY DO NOT
 ---------------------------------------------
 **This proves the code's logic without proving the vendor's behaviour.** Every
 fixture under `tests/fixtures/vendor/` was hand-authored from the vendors'
 published API schemas and has never been checked against a live call; there is
-no Anthropic key and no Voyage key in this phase, so nothing here is a
-recording of traffic. What is asserted below is that this codebase parses,
-classifies, backs off, times out and trips its breaker correctly GIVEN those
-shapes. If the published documentation is wrong, or a schema changes, every
-test in this file still passes and the product is still broken.
+no OpenAI key and no Voyage key in this phase, so nothing here is a recording
+of traffic. What is asserted below is that this codebase parses, classifies,
+backs off, times out and trips its breaker correctly GIVEN those shapes. If the
+published documentation is wrong, or a schema changes, every test in this file
+still passes and the product is still broken.
+
+The OpenAI half carries one further unproven claim the Anthropic half did not:
+`gpt-5.6-terra` and `gpt-5.6-luna` are the product owner's strings and have
+never been resolved against a models endpoint, so a wrong id would arrive as a
+404 or a 403 rather than as a shape disagreement.
 
 The mechanism that covers that gap is deliberately not a test. It is
 `app/services/reliability/vendor_contract.py`, which checks the FIRST live
@@ -78,7 +83,7 @@ def body(relative: str) -> dict[str, Any]:
 def http_error(relative: str) -> httpx.HTTPStatusError:
     """The `httpx` error the transport would raise for a recorded failure."""
     envelope = load(relative)
-    request = httpx.Request("POST", llm_providers.ANTHROPIC_MESSAGES_URL)
+    request = httpx.Request("POST", llm_providers.OPENAI_CHAT_COMPLETIONS_URL)
     response = httpx.Response(
         int(envelope["status"]),
         request=request,
@@ -99,7 +104,9 @@ def _clean(monkeypatch: pytest.MonkeyPatch) -> Any:
     llm_router.clear_provider_breaker()
     vendor_contract.reset_first_use()
     monkeypatch.setattr(
-        llm_router, "_load_key", lambda: _RouterKey(api_key="k-test", fingerprint="fp1")
+        llm_router,
+        "key_for_model",
+        lambda model: _RouterKey(api_key="k-test", fingerprint="fp1"),
     )
     yield
     llm_router.reset_provider_stats()
@@ -114,9 +121,10 @@ def test_there_are_fixtures_for_both_vendors_and_every_failure_branch() -> None:
     """A contract suite with nothing recorded in it passes for the wrong reason."""
     assert len(ALL_FIXTURES) >= 10
     statuses = {load(name)["status"] for name in ALL_FIXTURES}
-    # Success, credential, permission, rate limit, provider fault, overload, and
-    # the two documented request rejections.
-    assert {200, 400, 401, 403, 429, 500, 529} <= statuses
+    # Success, the documented request rejection, credential, permission, rate
+    # limit, provider fault and overload. 503 replaced 529 with the vendor
+    # change: 529 was one vendor's overload status and 503 is the other's.
+    assert {200, 400, 401, 403, 429, 500, 503} <= statuses
 
 
 @pytest.mark.parametrize("name", ALL_FIXTURES)
@@ -149,12 +157,28 @@ def test_the_provenance_note_states_what_the_fixtures_do_not_prove() -> None:
 # ── The declared contract and the recorded payloads agree ────────────────────
 
 
-def test_the_anthropic_fixture_satisfies_the_contract_that_names_it() -> None:
-    contract = vendor_contract.ANTHROPIC_MESSAGES
-    vendor_contract.check_anthropic_response(
+def test_the_openai_fixture_satisfies_the_contract_that_names_it() -> None:
+    contract = vendor_contract.OPENAI_CHAT_COMPLETIONS
+    vendor_contract.check_openai_response(
         body(contract.fixture),
-        model=llm_providers.MODEL_SONNET,
+        model=llm_providers.MODEL_TERRA,
         json_mode=False,
+        force=True,
+    )
+
+
+def test_the_json_mode_fixture_satisfies_the_contract_too() -> None:
+    """Both success fixtures, not just the one the contract names.
+
+    The contract names one fixture because an error message has to point
+    somewhere, and it is the JSON-mode path where the extra rule lives. A
+    fixture that satisfied nothing would let the JSON-mode branch below assert
+    against a shape the contract would have rejected.
+    """
+    vendor_contract.check_openai_response(
+        body("openai/chat_completion_luna_json.json"),
+        model=llm_providers.MODEL_LUNA,
+        json_mode=True,
         force=True,
     )
 
@@ -177,7 +201,7 @@ def test_the_voyage_fixture_satisfies_the_contract_that_names_it() -> None:
 
 def test_the_reasoning_response_parses_into_text_and_usage() -> None:
     result = llm_router.parse_response(
-        body("anthropic/messages_response_sonnet_reasoning.json"), json_mode=False
+        body("openai/chat_completion_terra_reasoning.json"), json_mode=False
     )
     assert result.content.startswith("The evidence supports")
     assert result.prompt_tokens == 2095
@@ -185,17 +209,18 @@ def test_the_reasoning_response_parses_into_text_and_usage() -> None:
     assert result.had_usage is True
 
 
-def test_json_mode_prepends_the_prefill_and_the_result_is_one_top_level_object() -> None:
-    """JSON mode is a PREFILL, not an instruction.
+def test_a_json_mode_response_is_one_whole_top_level_object() -> None:
+    """JSON mode is `response_format`, and there is no prefill any more.
 
-    The Messages API has no `response_format`, so the router seeds the assistant
-    turn with an opening brace and prepends it back. The recorded response is
-    therefore the REMAINDER of the object, and the test that matters is that
-    what the caller receives parses as a top-level dict: every JSON-mode caller
-    in this codebase does `json.loads(...)` and then subscripts it.
+    The recorded response carries the WHOLE object, opening brace included,
+    which is what the native format guarantees and what the deleted prefill
+    used to approximate by constraining the first character. The property that
+    matters is unchanged and is what is asserted: every JSON-mode caller in this
+    codebase does `json.loads(...)` and then subscripts it, so the text must
+    parse to a top-level dict rather than to a list, a number or a fragment.
     """
     result = llm_router.parse_response(
-        body("anthropic/messages_response_haiku_json_prefill.json"), json_mode=True
+        body("openai/chat_completion_luna_json.json"), json_mode=True
     )
     assert result.content.startswith("{")
     decoded = json.loads(result.content)
@@ -204,22 +229,25 @@ def test_json_mode_prepends_the_prefill_and_the_result_is_one_top_level_object()
     assert "comments" in decoded
 
 
-def test_the_same_body_without_the_prefill_would_not_have_parsed() -> None:
-    """The negative direction, which is what makes the test above mean anything.
+def test_nothing_is_prepended_to_a_json_mode_response() -> None:
+    """The negative direction, and the one that would catch a half-finished
+    removal of the prefill.
 
-    Without the prepend the response is a bare fragment. If `parse_response`
-    ever stopped prepending, the assertion above would still describe a shape
-    nothing produces, so the failure is pinned from both sides.
+    A `parse_response` that still prepended a brace would turn this fixture into
+    `{{"skills": ...`, which is not JSON. Reading the same body in both modes
+    and getting the same text is the cheapest possible statement that json_mode
+    no longer alters the payload.
     """
-    raw = llm_router.parse_response(
-        body("anthropic/messages_response_haiku_json_prefill.json"), json_mode=False
-    )
-    with pytest.raises(json.JSONDecodeError):
-        json.loads(raw.content)
+    payload = body("openai/chat_completion_luna_json.json")
+    as_json = llm_router.parse_response(payload, json_mode=True).content
+    as_text = llm_router.parse_response(payload, json_mode=False).content
+    assert as_json == as_text
+    assert not as_json.startswith("{{")
+    assert json.loads(as_json)["skills"] == 72
 
 
 def test_a_response_that_omits_usage_under_reports_rather_than_crashing() -> None:
-    payload = body("anthropic/messages_response_sonnet_reasoning.json")
+    payload = body("openai/chat_completion_terra_reasoning.json")
     del payload["usage"]
     result = llm_router.parse_response(payload, json_mode=False)
     assert result.prompt_tokens == 0
@@ -233,11 +261,11 @@ def test_a_response_that_omits_usage_under_reports_rather_than_crashing() -> Non
 @pytest.mark.parametrize(
     ("fixture", "kind", "retryable", "credential"),
     [
-        ("anthropic/error_401_authentication.json", "credential", False, True),
-        ("anthropic/error_403_permission.json", "credential", False, True),
-        ("anthropic/error_429_rate_limit.json", "rate_limit", True, False),
-        ("anthropic/error_500_api_error.json", "provider_error", True, False),
-        ("anthropic/error_529_overloaded.json", "provider_error", True, False),
+        ("openai/error_401_authentication.json", "credential", False, True),
+        ("openai/error_403_permission.json", "credential", False, True),
+        ("openai/error_429_rate_limit.json", "rate_limit", True, False),
+        ("openai/error_500_server_error.json", "provider_error", True, False),
+        ("openai/error_503_overloaded.json", "provider_error", True, False),
     ],
 )
 def test_each_recorded_failure_classifies_the_way_the_router_assumes(
@@ -257,18 +285,18 @@ def test_a_recorded_400_is_not_retried() -> None:
     Spending the budget on it delays the caller's deterministic fallback for
     nothing, which is the whole reason the classification splits this way.
     """
-    exc = http_error("anthropic/error_400_prefill_rejected.json")
+    exc = http_error("openai/error_400_invalid_request.json")
     assert llm_router.is_retryable(exc) is False
     assert llm_router.is_account_level_failure(exc) is False
 
 
 def test_the_vendors_retry_after_is_read_rather_than_guessed_at() -> None:
-    exc = http_error("anthropic/error_429_rate_limit.json")
+    exc = http_error("openai/error_429_rate_limit.json")
     assert llm_router.retry_after_seconds(exc) == 3.0
 
 
 def test_a_failure_carrying_no_retry_after_falls_back_to_the_local_curve() -> None:
-    exc = http_error("anthropic/error_500_api_error.json")
+    exc = http_error("openai/error_500_server_error.json")
     assert llm_router.retry_after_seconds(exc) is None
     assert llm_providers.backoff_seconds(2) == llm_providers.BACKOFF_BASE_SECONDS
     assert llm_providers.backoff_seconds(99) == llm_providers.BACKOFF_MAX_SECONDS
@@ -289,7 +317,7 @@ def _stub(monkeypatch: pytest.MonkeyPatch, results: list[Any]) -> list[int]:
             raise outcome
         return outcome
 
-    monkeypatch.setattr(llm_router, "_call_anthropic", fake_call)
+    monkeypatch.setattr(llm_router, "_call_openai", fake_call)
     return calls
 
 
@@ -303,7 +331,7 @@ async def test_a_credential_failure_trips_the_breaker_on_the_first_occurrence(
     both clear on their own. A 401 does not clear on its own, so the caller's
     deterministic fallback should start one attempt sooner rather than three.
     """
-    calls = _stub(monkeypatch, [http_error("anthropic/error_401_authentication.json")])
+    calls = _stub(monkeypatch, [http_error("openai/error_401_authentication.json")])
     with pytest.raises(LLMUnavailableError):
         await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
     assert len(calls) == 1
@@ -311,7 +339,9 @@ async def test_a_credential_failure_trips_the_breaker_on_the_first_occurrence(
     # The breaker is now open, so the NEXT call does not reach the transport at
     # all. That is the observable half: a closed breaker that still spends an
     # attempt is a breaker in name only.
-    second = _stub(monkeypatch, [body("anthropic/messages_response_sonnet_reasoning.json")])
+    second = _stub(
+        monkeypatch, [body("openai/chat_completion_terra_reasoning.json")]
+    )
     with pytest.raises(LLMUnavailableError):
         await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
     assert second == []
@@ -325,7 +355,7 @@ async def test_a_rate_limit_does_not_trip_the_breaker_on_one_occurrence(
     _stub(
         monkeypatch,
         [
-            http_error("anthropic/error_429_rate_limit.json"),
+            http_error("openai/error_429_rate_limit.json"),
             llm_router._Result(content="recovered"),
         ],
     )
@@ -342,7 +372,7 @@ async def test_the_breaker_reopens_after_the_cooldown(
     This product has already shipped that bug once: a persisted `healthy=false`
     with no expiry left every credential skipped forever.
     """
-    _stub(monkeypatch, [http_error("anthropic/error_401_authentication.json")])
+    _stub(monkeypatch, [http_error("openai/error_401_authentication.json")])
     with pytest.raises(LLMUnavailableError):
         await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
 
@@ -389,7 +419,7 @@ def test_the_deadline_predicts_rather_than_merely_observing() -> None:
     """
     ctx = llm_router._RouteContext(
         task_type="rerank",
-        model=llm_providers.MODEL_HAIKU,
+        model=llm_providers.MODEL_LUNA,
         key=_RouterKey(api_key="k", fingerprint="fp"),
         messages=[],
         json_mode=False,
@@ -412,7 +442,7 @@ async def test_a_retry_after_longer_than_the_remaining_budget_stops_the_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Waiting out a backoff you can no longer use is worse than failing now."""
-    request = httpx.Request("POST", llm_providers.ANTHROPIC_MESSAGES_URL)
+    request = httpx.Request("POST", llm_providers.OPENAI_CHAT_COMPLETIONS_URL)
     response = httpx.Response(429, request=request, headers={"retry-after": "600"})
     exc = httpx.HTTPStatusError("slow down", request=request, response=response)
     calls = _stub(monkeypatch, [exc, llm_router._Result(content="never reached")])
@@ -453,71 +483,125 @@ def test_a_background_task_is_not_held_to_the_interactive_cap() -> None:
 
 
 def test_a_response_shaped_differently_raises_and_names_the_fixture() -> None:
-    payload = body("anthropic/messages_response_sonnet_reasoning.json")
-    payload["content"] = "a bare string where the contract requires a list"
+    payload = body("openai/chat_completion_terra_reasoning.json")
+    payload["choices"] = "a bare string where the contract requires a list"
     with pytest.raises(VendorContractViolation) as excinfo:
-        vendor_contract.check_anthropic_response(
-            payload, model=llm_providers.MODEL_SONNET, json_mode=False
+        vendor_contract.check_openai_response(
+            payload, model=llm_providers.MODEL_TERRA, json_mode=False
         )
-    assert excinfo.value.fixture == vendor_contract.ANTHROPIC_MESSAGES.fixture
-    assert "messages_response_sonnet_reasoning.json" in str(excinfo.value)
-    assert "'content' is a str" in str(excinfo.value)
+    assert excinfo.value.fixture == vendor_contract.OPENAI_CHAT_COMPLETIONS.fixture
+    assert "chat_completion_terra_reasoning.json" in str(excinfo.value)
+    assert "'choices' is a str" in str(excinfo.value)
 
 
-def test_a_response_with_no_text_block_raises_rather_than_parsing_to_empty() -> None:
+def test_a_null_content_raises_rather_than_parsing_to_empty() -> None:
     """This is the case `parse_response` alone cannot catch.
 
-    It joins the text of every block whose type is `text`, so a body carrying
-    only other block types yields "" -- which reads downstream exactly like a
-    model that had nothing to say, and a report written from it looks thin
-    rather than broken.
+    It reads `choices[0].message.content` and coerces a null to "" -- which
+    reads downstream exactly like a model that had nothing to say, and a report
+    written from it looks thin rather than broken. A null content is the
+    tool-call shape, which this platform never requests, so seeing one means the
+    request or the response is not what this codebase believes it is.
     """
-    payload = body("anthropic/messages_response_sonnet_reasoning.json")
-    payload["content"] = [{"type": "thinking", "thinking": ""}]
+    payload = body("openai/chat_completion_terra_reasoning.json")
+    payload["choices"][0]["message"]["content"] = None
     assert llm_router.parse_response(payload, json_mode=False).content == ""
     with pytest.raises(VendorContractViolation) as excinfo:
-        vendor_contract.check_anthropic_response(
-            payload, model=llm_providers.MODEL_SONNET, json_mode=False
+        vendor_contract.check_openai_response(
+            payload, model=llm_providers.MODEL_TERRA, json_mode=False
         )
-    assert "no content block has type 'text'" in str(excinfo.value)
+    assert "content is null" in str(excinfo.value)
+
+
+def test_a_streaming_chunk_raises_rather_than_parsing_to_empty() -> None:
+    """The near-miss the `object` field exists to catch.
+
+    A chunk carries `choices[0].delta` where this codebase reads `message`, so
+    the parser's answer is an empty string. Nothing about that looks like an
+    error until a report comes out blank.
+    """
+    payload = body("openai/chat_completion_terra_reasoning.json")
+    payload["object"] = "chat.completion.chunk"
+    with pytest.raises(VendorContractViolation) as excinfo:
+        vendor_contract.check_openai_response(
+            payload, model=llm_providers.MODEL_TERRA, json_mode=False
+        )
+    assert "chat.completion.chunk" in str(excinfo.value)
 
 
 def test_a_json_mode_response_that_opens_with_a_fence_raises() -> None:
-    """If the prefill did not take, prepending a brace produces text, not JSON."""
-    payload = body("anthropic/messages_response_haiku_json_prefill.json")
-    payload["content"] = [{"type": "text", "text": "```json\n{\"skills\": 1}\n```"}]
+    """The top-level-object invariant, enforced at the vendor boundary.
+
+    This is where the deleted prefill's guarantee now lives. A fenced or prosy
+    response reaches the caller's `json.loads` as a parse error with no
+    explanation attached, and the caller then degrades exactly as it would for
+    an outage -- so the disagreement is raised here, naming the fixture.
+    """
+    payload = body("openai/chat_completion_luna_json.json")
+    payload["choices"][0]["message"]["content"] = '```json\n{"skills": 1}\n```'
     with pytest.raises(VendorContractViolation) as excinfo:
-        vendor_contract.check_anthropic_response(
-            payload, model=llm_providers.MODEL_HAIKU, json_mode=True
+        vendor_contract.check_openai_response(
+            payload, model=llm_providers.MODEL_LUNA, json_mode=True
         )
-    assert "prefill did not constrain the response" in str(excinfo.value)
+    assert "rather than an opening brace" in str(excinfo.value)
+
+
+def test_a_json_mode_response_that_is_a_top_level_array_raises() -> None:
+    """The specific shape the old prefill made impossible.
+
+    Prefilling `{` meant an array could not be returned at all. `response_format`
+    permits any JSON value, so the constraint every caller relies on -- a
+    top-level OBJECT -- has to be asserted rather than assumed. A list would
+    `json.loads` perfectly well and then fail on the first subscript, several
+    frames away from anything that could explain it.
+    """
+    payload = body("openai/chat_completion_luna_json.json")
+    payload["choices"][0]["message"]["content"] = '[{"skills": 1}]'
+    with pytest.raises(VendorContractViolation) as excinfo:
+        vendor_contract.check_openai_response(
+            payload, model=llm_providers.MODEL_LUNA, json_mode=True
+        )
+    assert "rather than an opening brace" in str(excinfo.value)
+
+
+def test_a_plain_text_response_is_not_held_to_the_json_rule() -> None:
+    """The negative direction. A check that fired on every response would take
+    down the reasoning path, which legitimately returns prose."""
+    vendor_contract.check_openai_response(
+        body("openai/chat_completion_terra_reasoning.json"),
+        model=llm_providers.MODEL_TERRA,
+        json_mode=False,
+        force=True,
+    )
 
 
 def test_the_check_runs_once_per_path_and_not_once_per_call() -> None:
-    good = body("anthropic/messages_response_sonnet_reasoning.json")
-    vendor_contract.check_anthropic_response(
-        good, model=llm_providers.MODEL_SONNET, json_mode=False
+    good = body("openai/chat_completion_terra_reasoning.json")
+    vendor_contract.check_openai_response(
+        good, model=llm_providers.MODEL_TERRA, json_mode=False
     )
     assert vendor_contract.already_checked(
-        vendor_contract.anthropic_path(llm_providers.MODEL_SONNET)
+        vendor_contract.openai_path(llm_providers.MODEL_TERRA)
     )
     # A later malformed response on the same path is NOT re-checked. The
     # tradeoff is deliberate: an undocumented schema change shows up on the
     # first response as readily as on the thousandth, and a per-call assertion
     # is a per-call chance for a validator bug to break a working integration.
     broken = dict(good)
-    broken.pop("content")
-    vendor_contract.check_anthropic_response(
-        broken, model=llm_providers.MODEL_SONNET, json_mode=False
+    broken.pop("choices")
+    vendor_contract.check_openai_response(
+        broken, model=llm_providers.MODEL_TERRA, json_mode=False
     )
-    # The other model is a different path and is still unchecked.
+    # The other model is a different path and is still unchecked. Neither id has
+    # been resolved against a live endpoint, so one working path must never
+    # vouch for the other.
     assert not vendor_contract.already_checked(
-        vendor_contract.anthropic_path(llm_providers.MODEL_HAIKU)
+        vendor_contract.openai_path(llm_providers.MODEL_LUNA)
     )
 
 
 def test_every_model_in_the_roster_has_a_first_use_path() -> None:
-    paths = {vendor_contract.anthropic_path(m) for m in llm_providers.ALLOWED_MODELS}
+    paths = {vendor_contract.openai_path(m) for m in llm_providers.ALLOWED_MODELS}
     assert len(paths) == len(llm_providers.ALLOWED_MODELS)
     assert vendor_contract.voyage_path().endswith(llm_providers.EMBEDDING_MODEL)
 
@@ -643,117 +727,110 @@ def test_the_embedding_client_raises_on_a_contract_violation(
     assert "not 0..n-1" in str(excinfo.value)
 
 
-# ── The documented request hazards ───────────────────────────────────────────
+# ── The documented request hazard ────────────────────────────────────────────
 #
-# These are the two published constraints the request this codebase builds does
-# not satisfy on the Sonnet path. They are recorded rather than worked around:
-# changing the request shape changes what every Sonnet call sends, which is an
-# owner decision. See VERIFICATION_PENDING.md rows 10 and 11.
+# One published constraint on the request this codebase builds:
+# `response_format: {"type": "json_object"}` is rejected with a 400 unless the
+# token "json" appears somewhere in the messages. The request satisfies it today
+# through `llm_router._JSON_SYSTEM_SUFFIX`, and that is exactly why the check is
+# worth having: the constant reads like ordinary prompt wording, and nothing
+# about it announces that rewording it turns every extraction call in the
+# product into a 400.
+#
+# The two hazards this replaced were Anthropic-specific and are gone with the
+# vendor: a last-assistant-turn prefill (there is no prefill any more) and a
+# non-default temperature (a property of that vendor's models, not of this
+# transport).
 
 
-def test_the_json_mode_payload_ends_on_an_assistant_turn() -> None:
-    """The prefill, stated as the property the hazard check keys on."""
+def test_the_json_mode_payload_satisfies_the_published_constraint() -> None:
+    """The positive direction: as built, the request is clean."""
     payload = llm_router.build_payload(
-        model=llm_providers.MODEL_SONNET,
-        messages=[{"role": "user", "content": "grade this"}],
+        model=llm_providers.MODEL_LUNA,
+        messages=[{"role": "user", "content": "extract this"}],
         json_mode=True,
         max_tokens=1024,
         temperature=0.0,
     )
-    assert payload["messages"][-1] == {"role": "assistant", "content": "{"}
-
-
-def test_the_prefill_hazard_is_recorded_for_the_model_that_rejects_it() -> None:
-    payload = llm_router.build_payload(
-        model=llm_providers.MODEL_SONNET,
-        messages=[{"role": "user", "content": "grade this"}],
-        json_mode=True,
-        max_tokens=1024,
-        temperature=llm_providers.DEFAULT_TEMPERATURE,
+    assert payload["response_format"] == llm_providers.JSON_OBJECT_RESPONSE_FORMAT
+    assert (
+        vendor_contract.describe_request_hazards(llm_providers.MODEL_LUNA, payload)
+        == ()
     )
-    hazards = vendor_contract.describe_request_hazards(
-        llm_providers.MODEL_SONNET, payload
-    )
-    assert any("prefill" in h for h in hazards)
 
 
-def test_the_sampling_hazard_is_recorded_for_a_non_default_temperature() -> None:
-    payload = llm_router.build_payload(
-        model=llm_providers.MODEL_SONNET,
-        messages=[{"role": "user", "content": "grade this"}],
-        json_mode=False,
-        max_tokens=1024,
-        temperature=0.0,
-    )
-    hazards = vendor_contract.describe_request_hazards(
-        llm_providers.MODEL_SONNET, payload
-    )
-    assert any("temperature" in h for h in hazards)
+def test_the_hazard_is_recorded_when_the_required_token_is_missing() -> None:
+    """The negative direction, and it is the whole test.
 
-
-def test_the_haiku_path_carries_neither_hazard() -> None:
-    """Not a formality: it is why the two paths are recorded separately.
-
-    Haiku 4.5 predates both constraints, so the extraction path's request shape
-    is unaffected. If the hazard check flagged everything it would be telling
-    nobody anything.
+    A check that could never fire would be telling nobody anything. This builds
+    the shape a reworded system suffix would produce -- the format asked for,
+    the token absent -- and asserts the sentence appears.
     """
     payload = llm_router.build_payload(
-        model=llm_providers.MODEL_HAIKU,
-        messages=[{"role": "user", "content": "extract"}],
+        model=llm_providers.MODEL_LUNA,
+        messages=[{"role": "user", "content": "extract this"}],
         json_mode=True,
         max_tokens=1024,
         temperature=0.0,
     )
-    assert (
-        vendor_contract.describe_request_hazards(llm_providers.MODEL_HAIKU, payload)
-        == ()
+    payload["messages"] = [{"role": "user", "content": "extract this"}]
+    hazards = vendor_contract.describe_request_hazards(
+        llm_providers.MODEL_LUNA, payload
     )
+    assert any(llm_providers.JSON_MODE_REQUIRED_TOKEN in h for h in hazards)
+    assert any("_JSON_SYSTEM_SUFFIX" in h for h in hazards)
 
 
-def test_a_request_that_omits_the_hazards_is_reported_clean() -> None:
-    """The remedy, stated executably, so it is clear what would settle this."""
+def test_a_plain_text_request_carries_no_hazard() -> None:
+    """A request that never asks for the format cannot be rejected for it, and
+    a hazard check that flagged it anyway would fire on every 400 in the
+    product."""
     payload = llm_router.build_payload(
-        model=llm_providers.MODEL_SONNET,
-        messages=[{"role": "user", "content": "grade this"}],
+        model=llm_providers.MODEL_TERRA,
+        messages=[{"role": "user", "content": "write the report"}],
         json_mode=False,
         max_tokens=1024,
-        temperature=vendor_contract.DEFAULT_TEMPERATURE,
+        temperature=0.0,
     )
+    assert "response_format" not in payload
     assert (
-        vendor_contract.describe_request_hazards(llm_providers.MODEL_SONNET, payload)
+        vendor_contract.describe_request_hazards(llm_providers.MODEL_TERRA, payload)
         == ()
     )
 
 
-def test_a_hazard_sentence_never_quotes_the_request(
-) -> None:
-    """A Messages request carries a real candidate's answers."""
-    payload = llm_router.build_payload(
-        model=llm_providers.MODEL_SONNET,
-        messages=[{"role": "user", "content": "SECRET-ANSWER-TEXT"}],
-        json_mode=True,
-        max_tokens=1024,
-        temperature=0.0,
+def test_a_hazard_sentence_never_quotes_the_request() -> None:
+    """A chat request carries a real candidate's answers."""
+    payload = {
+        "model": llm_providers.MODEL_LUNA,
+        "messages": [{"role": "user", "content": "SECRET-ANSWER-TEXT"}],
+        "response_format": dict(llm_providers.JSON_OBJECT_RESPONSE_FORMAT),
+    }
+    hazards = vendor_contract.describe_request_hazards(
+        llm_providers.MODEL_LUNA, payload
     )
-    for hazard in vendor_contract.describe_request_hazards(
-        llm_providers.MODEL_SONNET, payload
-    ):
+    assert hazards, "the shape under test must actually produce a hazard"
+    for hazard in hazards:
         assert "SECRET-ANSWER-TEXT" not in hazard
 
 
 @pytest.mark.asyncio
-async def test_a_four_hundred_on_the_sonnet_path_names_the_hazard(
+async def test_a_four_hundred_names_the_hazard_when_there_is_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The point of recording the hazards at all.
+    """The point of recording the hazard at all.
 
-    Without this, the documented failure arrives as "invalid_request (400)",
-    is correctly classified as our bug, is correctly not retried, and every
-    caller correctly degrades to its deterministic fallback -- which is exactly
-    what an outage looks like, forever, with nothing naming the cause.
+    Without it, the documented failure arrives as "client_error (400)", is
+    correctly classified as our bug, is correctly not retried, and every caller
+    correctly degrades to its deterministic fallback -- which is exactly what an
+    outage looks like, forever, with nothing naming the cause.
+
+    The system suffix is stubbed out here rather than the check being called
+    directly, because what is under test is the WIRING: the router rebuilding
+    its own payload on a 400 and appending the sentence to the error.
     """
-    _stub(monkeypatch, [http_error("anthropic/error_400_prefill_rejected.json")])
+    monkeypatch.setattr(llm_router, "_JSON_SYSTEM_SUFFIX", "Reply with one object.")
+    _stub(monkeypatch, [http_error("openai/error_400_invalid_request.json")])
     with pytest.raises(LLMUnavailableError) as excinfo:
         await llm_router.invoke_llm(
             "report_synthesis",
@@ -762,5 +839,24 @@ async def test_a_four_hundred_on_the_sonnet_path_names_the_hazard(
         )
     message = str(excinfo.value)
     assert "known request hazard" in message
-    assert "prefill" in message
+    assert llm_providers.JSON_MODE_REQUIRED_TOKEN in message
     assert "write the report" not in message
+
+
+@pytest.mark.asyncio
+async def test_a_four_hundred_with_no_hazard_still_fails_loudly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The request as actually built carries no hazard, so a 400 on it must
+    still raise rather than being quietly swallowed by a hazard list that
+    happened to be empty."""
+    calls = _stub(monkeypatch, [http_error("openai/error_400_invalid_request.json")])
+    with pytest.raises(LLMUnavailableError) as excinfo:
+        await llm_router.invoke_llm(
+            "report_synthesis",
+            [{"role": "user", "content": "write the report"}],
+            response_format_json=True,
+        )
+    assert "known request hazard" not in str(excinfo.value)
+    assert "client_error (400)" in str(excinfo.value)
+    assert len(calls) == 1, "a 400 is our bug and is not retried"

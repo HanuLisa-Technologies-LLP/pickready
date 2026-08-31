@@ -52,20 +52,44 @@ class Settings(BaseSettings):
     otp_max_attempts: int = 5
     otp_cooldown_minutes: int = 15
 
-    # ── LLM and embeddings (spec-doc5 Part B) ───────────────────────────────
+    # ── LLM and embeddings ──────────────────────────────────────────────────
     #
-    # TWO CREDENTIALS PLATFORM-WIDE. This replaced a 21-slot roster (7 keys each
-    # for Groq, Gemini and OpenRouter) that existed to route around three free
-    # tiers' failure modes -- a retired model id, an exhausted prepaid balance,
-    # an 8000-token-per-minute organisation pool, a withdrawn free-tier model.
-    # One paid vendor removes that whole class of problem, so it removes the
-    # roster with it.
+    # THREE CREDENTIALS PLATFORM-WIDE, ONE PER MODEL. This replaced a 21-slot
+    # roster (7 keys each for Groq, Gemini and OpenRouter) that existed to route
+    # around three free tiers' failure modes -- a retired model id, an exhausted
+    # prepaid balance, an 8000-token-per-minute organisation pool, a withdrawn
+    # free-tier model. One paid vendor removes that whole class of problem, so
+    # it removes the roster with it.
     #
-    # Both are mounted from AWS Secrets Manager in a deployed environment and
-    # are never composed into a loggable env var, continuing the discipline
+    # THE MODEL VENDOR CHANGED ON 2026-08-31, from Anthropic to OpenAI, by owner
+    # decision. `ANTHROPIC_API_KEY` is gone rather than deprecated: a retained
+    # credential is a credential something eventually reads. The embedding
+    # VENDOR did not change; the variable its key is read from did.
+    #
+    # TWO KEYS FOR ONE MODEL VENDOR is unusual and is what the owner has: the
+    # reasoning tier and the extraction tier are billed separately. Which model
+    # is called with which is DATA in `config/llm_providers.SETTINGS_ATTR_FOR_MODEL`,
+    # never a branch in the router, and an absent key for the model being called
+    # raises rather than falling back to the other one.
+    #
+    # All three are mounted from AWS Secrets Manager in a deployed environment
+    # and are never composed into a loggable env var, continuing the discipline
     # established when DATABASE_URL was hardened.
-    anthropic_api_key: str = ""
-    voyage_api_key: str = ""
+    openai_gpt_terra: str = ""
+    openai_gpt_luna: str = ""
+
+    # THE EMBEDDING CREDENTIAL IS NAMED AFTER THE MODEL IT UNLOCKS:
+    # `VOYAGE_CONTEXT_4` for `voyage-context-4`. Same convention as the two
+    # model keys above, and it replaces `VOYAGE_API_KEY` outright rather than
+    # sitting beside it as an alias. One name per thing.
+    #
+    # READING THE WRONG NAME HERE WOULD NOT RAISE, which is why
+    # `tests/test_embeddings.py` pins this exact variable as a literal.
+    # `services/embeddings` falls back to deterministic pseudo-random unit
+    # vectors when the key is absent, so a mistyped name leaves every retrieval
+    # returning meaningless vectors of the right width, with no exception, no
+    # log line and no empty result to notice.
+    voyage_context_4: str = ""
 
     # Retained, unread by the router. `llm_provider_keys` still holds encrypted
     # rows for the three retired vendors and this is what decrypts them; a

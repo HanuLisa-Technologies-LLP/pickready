@@ -129,7 +129,7 @@ class BenignExplanation:
 
 #: Per-axis stock explanations, used as the DETERMINISTIC floor.
 #:
-#: The model generates explanations too (that is the Sonnet half of this stage),
+#: The model generates explanations too (that is the reasoning half of this stage),
 #: but the requirement cannot depend on it: a provider outage would otherwise
 #: leave every contradiction unable to reach two explanations and therefore
 #: permanently un-escalatable, which sounds safe and is not -- it would mean an
@@ -427,7 +427,7 @@ def triangulate(
 ) -> TriangulationResult:
     """Apply independence counting and the benign rule to a whole report.
 
-    `generated` is the model's per-axis explanations from the Sonnet half of
+    `generated` is the model's per-axis explanations from the reasoning half of
     this stage. It is MERGED with the deterministic stock list rather than
     replacing it, so the two-explanation floor holds during a provider outage --
     an outage that silently disabled integrity escalation would be the worst

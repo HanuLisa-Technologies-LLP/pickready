@@ -2,7 +2,7 @@
 
     python -m app.scripts.reembed --dry-run          # the work plan
     python -m app.scripts.reembed --status           # what each column holds
-    python -m app.scripts.reembed --confirm          # needs VOYAGE_API_KEY
+    python -m app.scripts.reembed --confirm          # needs VOYAGE_CONTEXT_4
     python -m app.scripts.reembed --evaluate         # retrieval quality
 
 WHAT THIS EXISTS TO FIX
@@ -479,7 +479,9 @@ async def _tenants(session: AsyncSession) -> list[dict[str, str]]:
 
 
 async def collect_status(session: AsyncSession) -> Plan:
-    plan = Plan(keys_present=bool((get_settings().voyage_api_key or "").strip()))
+    plan = Plan(
+        keys_present=bool((get_settings().voyage_context_4 or "").strip())
+    )
     tenants = await _tenants(session)
     for target in TARGETS:
         a = _alias(target)
@@ -685,7 +687,7 @@ async def run(
         return plan, []
     if embedder is None and not plan.keys_present:
         raise ReembedRefused(
-            "--confirm needs VOYAGE_API_KEY. Without it `embeddings.embed` "
+            "--confirm needs VOYAGE_CONTEXT_4. Without it `embeddings.embed` "
             "returns deterministic pseudo-random unit vectors, and this script "
             "would write them into every profile and stamp them "
             f"'{EMBEDDING_MODEL}'. Retrieval would then return confident "
@@ -838,7 +840,7 @@ async def _dry_run(_: argparse.Namespace) -> int:
     if not plan.keys_present:
         print()
         print(
-            "NOT EXECUTED. VOYAGE_API_KEY is absent, so `--confirm` refuses. "
+            "NOT EXECUTED. VOYAGE_CONTEXT_4 is absent, so `--confirm` refuses. "
             "This plan is the work that is waiting; see VERIFICATION_PENDING.md."
         )
     return 0
@@ -863,13 +865,13 @@ async def _confirm(args: argparse.Namespace) -> int:
 
 async def _evaluate(_: argparse.Namespace) -> int:
     payload = load_eval_set()
-    if not (get_settings().voyage_api_key or "").strip():
+    if not (get_settings().voyage_context_4 or "").strip():
         print(
             f"Evaluation set loaded: {len(payload['pairs'])} query/expected "
             f"pairs over {len(payload['documents'])} documents."
         )
         print(
-            "NOT SCORED. Scoring needs VOYAGE_API_KEY. `embeddings.embed` would "
+            "NOT SCORED. Scoring needs VOYAGE_CONTEXT_4. `embeddings.embed` would "
             "otherwise return deterministic pseudo-random vectors, and a recall "
             "figure computed from those measures nothing while looking exactly "
             "like a measurement. See VERIFICATION_PENDING.md."

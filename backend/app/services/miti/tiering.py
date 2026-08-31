@@ -2,7 +2,7 @@
 
 spec-doc5 §A.3 specifies this stage as "tier, provenance, independence group,
 specificity/attribution/scale/decay modifiers", and §B.3 assigns it to
-"Haiku 4.5 (deterministic where possible) -- mostly rule-based; only the
+"the extraction tier (deterministic where possible) -- mostly rule-based; only the
 specificity modifier needs model judgment".
 
 THIS MODULE IS THE "DETERMINISTIC WHERE POSSIBLE" HALF, and it turns out that is

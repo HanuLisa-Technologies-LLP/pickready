@@ -1,0 +1,33 @@
+{
+  "_provenance": {
+    "authored_from": "OpenAI Chat Completions published response schema: an object carrying id, object 'chat.completion', created, model, a choices list of {index, message: {role, content}, finish_reason}, and usage with prompt_tokens, completion_tokens and total_tokens.",
+    "observed": false,
+    "notes": "The reasoning path. Terra judges and writes; this is the plain-text, non-JSON-mode response the dimension evaluators and report synthesis read. The model id is the owner's string and has never been resolved against a live models endpoint."
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json",
+    "x-request-id": "req_fixture_terra_reasoning"
+  },
+  "body": {
+    "id": "chatcmpl_fixture_terra_reasoning",
+    "object": "chat.completion",
+    "created": 1788000000,
+    "model": "gpt-5.6-terra",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "The evidence supports the claim at the level asserted. Two independent originators describe the same delivery: the resume states it and a named former manager corroborates it in the reference form. The interview transcript restates the resume line and is therefore not a third source."
+        },
+        "finish_reason": "stop"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 2095,
+      "completion_tokens": 218,
+      "total_tokens": 2313
+    }
+  }
+}

@@ -57,7 +57,8 @@ __all__ = [
     "gather_evidence",
 ]
 
-#: The task type the five evaluators run under. Sonnet, temperature 0.0, and
+#: The task type the five evaluators run under. The reasoning tier,
+#: temperature 0.0, and
 #: `config/llm_providers.py` is the closed mapping that says so. Named here
 #: rather than passed in so no caller can route a grading call somewhere else.
 EVALUATION_TASK = "dimension_evaluation"

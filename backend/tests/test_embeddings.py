@@ -24,11 +24,36 @@ from app.services import embeddings
 
 
 class _Settings:
-    voyage_api_key = "vk-test"
+    voyage_context_4 = "vk-test"
 
 
 class _NoKey:
-    voyage_api_key = ""
+    voyage_context_4 = ""
+
+
+def test_the_embedding_credential_is_read_from_exactly_one_named_variable() -> None:
+    """`VOYAGE_CONTEXT_4`, written as a literal, because the hole a rename would
+    open is SILENT.
+
+    `embeddings.embed` falls back to deterministic pseudo-random unit vectors
+    when the key is absent, so reading a variable nobody sets returns
+    meaningless vectors of the right width: no exception, no log line, no empty
+    result, and retrieval that has quietly stopped meaning anything. A test that
+    derived the name from the setting would agree with any rename, including the
+    one that reopens this.
+
+    The old name is asserted GONE in the same breath. An alias left beside the
+    canonical name is two names for one credential, and the one that is set is
+    then a matter of which file somebody read.
+    """
+    from app.core.config import Settings
+
+    # pydantic-settings maps a field to the env var of the same name,
+    # case-insensitively, so the field name IS the contract with the
+    # environment.
+    assert "VOYAGE_CONTEXT_4".lower() in Settings.model_fields
+    assert "voyage_api_key" not in Settings.model_fields
+    assert embeddings.EMBEDDING_MODEL == "voyage-context-4"
 
 
 # ── Width ────────────────────────────────────────────────────────────────────

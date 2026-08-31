@@ -1,13 +1,27 @@
 """The single-vendor LLM router: every model call in ReadyPick goes through here.
 
-Anthropic Messages API, two model ids, one credential (spec-doc5 Part B). A
-compiled LangGraph state machine drives the retry loop, exactly as it did in the
+OpenAI Chat Completions, two model ids, one credential PER MODEL. A compiled
+LangGraph state machine drives the retry loop, exactly as it did in the
 multi-provider era -- `claude.md` rule 9 documents that state machine as an
-architectural decision, and consolidating vendors is not a reason to quietly
-drop it. What consolidating vendors DID remove is the reason the loop was
+architectural decision, and changing vendors is not a reason to quietly drop
+it. What consolidating vendors DID remove is the reason the loop was
 complicated: there is no longer a fallback chain to walk, no capacity registry
 to consult, and no quota domain to discover. An attempt is now only ever worth
 making against a transient.
+
+THE VENDOR CHANGED ON 2026-08-31 AND THE SHAPE OF THIS MODULE DID NOT
+----------------------------------------------------------------------
+This module called the Anthropic Messages API until 2026-08-31, by a rule
+written down in three places. The owner reversed the rule and the documents
+were changed with the code rather than left contradicting it. Anthropic is
+REMOVED, not kept as a fallback: there is no second transport, no
+`if provider ==` branch, and no retained credential. One vendor, pointed
+somewhere new.
+
+Everything that was provider-agnostic survived untouched: retries, exponential
+backoff, the per-attempt timeout, the total wall-clock budget, the predictive
+deadline, the circuit breaker with half-open recovery, and a credential failure
+tripping the breaker on the first occurrence.
 
 WHAT THIS MODULE IS RESPONSIBLE FOR
 ------------------------------------
@@ -21,8 +35,8 @@ nothing to say, and the caller would render it. `agent_loop.run_loop` and every
 direct caller own the user-visible degradation; this module owns only the
 question of whether the vendor answered.
 
-WHY httpx AND NOT THE ANTHROPIC SDK
-------------------------------------
+WHY httpx AND NOT THE VENDOR SDK
+---------------------------------
 The SDK is good and this is not a criticism of it. The reason is that the SDK
 runs its own retry policy, its own timeout handling and its own backoff, and
 this module already owns all three against a per-task budget the SDK cannot see.
@@ -33,24 +47,33 @@ from the other's side -- which is precisely the failure this file's
 timeout, is a thing a reviewer can check. `httpx` was also already the transport
 here, so this is continuity rather than a new dependency.
 
-JSON MODE
----------
-The Anthropic Messages API has no `response_format: json_object`. Structured
-output is obtained by two mechanisms used together:
+JSON MODE IS NOW NATIVE, AND THE PREFILL IS GONE
+-------------------------------------------------
+Until 2026-08-31 this module obtained structured output by PREFILLING the
+assistant turn with a single `{` and prepending it back onto the response,
+because the Messages API had no `response_format`. That mechanism is DELETED --
+the prefill branch in `build_payload`, the re-prepend in `parse_response`, and
+the constant that carried the brace. Nothing here seeds an assistant turn any
+more.
 
-  1. an explicit system instruction to emit one raw JSON object and nothing
-     else, and
-  2. PREFILLING the assistant turn with a single `{`, which the API then
-     continues. The prefill is re-prepended to the response before it is
-     returned, so callers see exactly the shape they always saw.
+Chat Completions takes `response_format: {"type": "json_object"}`, which is a
+STRONGER guarantee of the same property from the same direction: the prefill
+constrained the first character and left the rest to the sampler, while the
+native format constrains the whole body to parseable JSON. The invariant the
+prefill existed to protect is unchanged and still pinned: every JSON-mode
+caller in this codebase parses a top-level OBJECT (verified: no caller scans
+for a leading `[`, and `tests/test_llm_router.py` re-runs that scan), so
+`vendor_contract.check_openai_response` refuses a JSON-mode response whose text
+does not open with `{` rather than handing a caller something its `json.loads`
+will reject with no explanation attached.
 
-The prefill is what makes this a structural guarantee rather than a request: the
-response physically cannot open with an apology or a markdown fence, because the
-first character was not the model's to choose. Every JSON-mode caller in this
-codebase parses a top-level OBJECT (verified: no caller scans for a leading
-`[`), so constraining to `{` is correct for all of them, and
-`tests/test_llm_router.py` pins that assumption so a future array-returning
-caller fails loudly here instead of mysteriously there.
+The system instruction survives and is now load bearing for a second reason:
+the published API REJECTS `json_object` with a 400 unless the token "json"
+appears somewhere in the messages. `_JSON_SYSTEM_SUFFIX` is what satisfies
+that, `llm_providers.JSON_MODE_REQUIRED_TOKEN` is the token, and
+`vendor_contract.describe_request_hazards` names the constraint on any 400 so
+the failure arrives as a sentence rather than as a permanent silent
+degradation.
 
 DEADLINES PREDICT, THEY DO NOT MERELY OBSERVE
 ----------------------------------------------
@@ -62,6 +85,20 @@ the second attempt takes. The check is
 `elapsed + longest_attempt_so_far >= deadline`, so an attempt that cannot FINISH
 inside the budget is never started. A failed attempt's duration counts, because
 a timeout is the slowest and most informative thing that can happen.
+
+TWO KEYS, ONE PER MODEL
+------------------------
+`key_for_model` resolves the credential from
+`llm_providers.SETTINGS_ATTR_FOR_MODEL`, which is DATA. An absent key for the
+model being called raises `LLMUnavailableError` naming the missing environment
+variable, exactly as an absent single credential did. It never falls back to
+the other key: that would send a judging call to the extraction tier, which is
+the boundary violation the two-tier split exists to prevent, and it would leave
+no trace that it happened.
+
+The breaker is keyed by credential FINGERPRINT, so the two keys trip
+independently. That is the correct granularity and it always was: a revoked
+reasoning key should not take the extraction path off models.
 
 CIRCUIT BREAKER
 ---------------
@@ -96,10 +133,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing_extensions import TypedDict
 
 from app.config.llm_providers import (
-    ANTHROPIC_API_VERSION,
-    ANTHROPIC_MESSAGES_URL,
     CREDENTIAL_STATUSES,
+    ENV_VAR_FOR_MODEL,
+    JSON_OBJECT_RESPONSE_FORMAT,
+    OPENAI_CHAT_COMPLETIONS_URL,
     PROVIDER,
+    SETTINGS_ATTR_FOR_MODEL,
     backoff_seconds,
     classify_status,
     estimate_cost_usd,
@@ -120,19 +159,23 @@ _COOLDOWN_SECONDS = 15 * 60     # 15 min cool-off (claude.md rule 9)
 _MIN_SUCCESS_RATE = 0.5         # below this, the vendor is logged as degraded
 _STATS_ALARM_MIN_ATTEMPTS = 5   # don't alarm on a single unlucky call
 
-#: The instruction half of JSON mode. The prefill is the other half; neither is
-#: sufficient alone. Deliberately terse: a long instruction competes with the
-#: caller's own system prompt for attention, and the prefill is what actually
+#: The instruction half of JSON mode, and the half the API itself REQUIRES.
+#:
+#: `response_format: {"type": "json_object"}` is rejected with a 400 unless the
+#: token "json" appears somewhere in the messages, so this constant is load
+#: bearing for the request to be accepted at all and not merely for the model to
+#: cooperate. It is written with the token in lower case for that reason: the
+#: documented check is on the literal string, and relying on a case fold that is
+#: not written down anywhere would be a guess sitting on the request path of
+#: every extraction call in the product.
+#:
+#: Deliberately terse beyond that. A long instruction competes with the caller's
+#: own system prompt for attention, and `response_format` is what actually
 #: enforces the shape.
 _JSON_SYSTEM_SUFFIX = (
-    "Respond with exactly one raw JSON object and nothing else. "
+    "Respond with exactly one raw json object and nothing else. "
     "No prose before or after it, and no markdown code fences."
 )
-
-#: What the assistant turn is seeded with in JSON mode, and what is prepended
-#: back onto the response. Both halves must stay in step, so they are one
-#: constant read twice rather than two literals.
-_JSON_PREFILL = "{"
 
 logger = logging.getLogger(__name__)
 
@@ -165,20 +208,43 @@ class _RouterKey:
     source: str = "env"
 
 
-def _load_key() -> _RouterKey | None:
-    """The one credential, from the environment.
+def key_for_model(model: str) -> _RouterKey | None:
+    """The credential for one model, from the environment.
+
+    TWO KEYS, ONE PER MODEL. Which settings attribute belongs to which model is
+    DATA in `llm_providers.SETTINGS_ATTR_FOR_MODEL`, so adding or repointing a
+    model is an edit to a table rather than a branch here.
+
+    Returns None when the key for THIS model is absent, and the caller raises
+    naming the environment variable. It deliberately does not fall back to the
+    other key: an extraction credential serving a `dimension_evaluation` call
+    would run a grade on the wrong tier, produce a plausible answer, and leave
+    nothing in the record saying so.
+
+    An unknown model raises rather than returning None, because "no credential
+    for this model" and "this is not a model we route to" have completely
+    different remedies and a shared return value would hide one behind the
+    other.
 
     THE `llm_provider_keys` TABLE IS NO LONGER READ, and it was deliberately not
     dropped in the same change that stopped reading it. It holds encrypted rows
     for three retired vendors, an audit trail of which credential served which
-    call is still attached to it through the telemetry, and a rollback of this
+    call is still attached to it through the telemetry, and a rollback of the
     consolidation would need those rows intact rather than restored from a
     backup. It is unread, not gone -- the same treatment `technical_questions`
     got for the same reason.
     """
     from app.core.config import get_settings  # noqa: PLC0415 -- import cycle
 
-    api_key = (get_settings().anthropic_api_key or "").strip()
+    try:
+        attribute = SETTINGS_ATTR_FOR_MODEL[model]
+    except KeyError as exc:
+        raise ValueError(
+            f"No credential mapping for model {model!r}; expected one of "
+            f"{sorted(SETTINGS_ATTR_FOR_MODEL)}"
+        ) from exc
+
+    api_key = (getattr(get_settings(), attribute, "") or "").strip()
     if not api_key:
         return None
     return _RouterKey(api_key=api_key, fingerprint=_fingerprint(api_key))
@@ -307,7 +373,7 @@ def provider_stats() -> dict[str, dict[str, Any]]:
 def model_stats() -> dict[str, dict[str, Any]]:
     """Per-model counters. The axis that actually varies now.
 
-    Sonnet and Haiku have different latency profiles and a 3x price difference,
+    The two tiers have different latency profiles and a price difference,
     so "which model is spending the budget" is the operator question the old
     per-provider breakdown used to answer.
     """
@@ -412,7 +478,7 @@ def is_account_level_failure(exc: Exception) -> bool:
     Retained under its original name because callers and tests import it. What
     it no longer includes is 402 -- that was OpenRouter's "this prepaid balance
     cannot cover the request you priced", which has no analogue on a paid
-    Anthropic account and whose adaptive-max_tokens remedy went with it.
+    account and whose adaptive-max_tokens remedy went with it.
     """
     status = status_of(exc)
     return status is not None and status in CREDENTIAL_STATUSES
@@ -452,7 +518,7 @@ def retry_after_seconds(exc: Exception) -> float | None:
         return None
 
 
-# ── The Anthropic call ───────────────────────────────────────────────────────
+# ── The vendor call ──────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -475,7 +541,7 @@ def as_result(value: "_Result | str") -> _Result:
     """Normalise whatever the call layer returned.
 
     A bare string is accepted and wrapped, because tests substitute simple
-    string-returning stubs for `_call_anthropic` and a change to how the router
+    string-returning stubs for `_call_openai` and a change to how the router
     ACCOUNTS should not require rewriting every routing test. Accounting is
     monitoring; it must never be the thing that fails a request.
     """
@@ -487,16 +553,18 @@ def as_result(value: "_Result | str") -> _Result:
 def split_system(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     """Separate system text from the conversation turns.
 
-    The Messages API takes the system prompt as a TOP-LEVEL parameter, not as a
-    message with `role: "system"`. Every caller in this codebase writes the
-    OpenAI shape, and rewriting twenty-odd call sites to a vendor's transport
-    detail would push a vendor concern out into the services. It is translated
-    here, once, which is what a router is for.
+    Chat Completions takes the system prompt as a MESSAGE at the head of the
+    array rather than as a top-level field, so the two halves are recombined in
+    `build_payload` immediately after being split here. The split is still
+    worth doing rather than passing the caller's list through: JSON mode has to
+    append its instruction to the system text, and several callers send more
+    than one system message.
 
-    Multiple system messages are joined rather than dropped: several callers
-    build a system prompt in layers (a base instruction plus retrieved context
-    plus an experience-memory hint), and losing any layer would silently change
-    what was asked without changing what the caller wrote.
+    Multiple system messages are joined rather than dropped, and that is the
+    behaviour that must not be lost in the vendor change: several callers build
+    a system prompt in layers (a base instruction plus retrieved context plus
+    an experience-memory hint), and losing any layer would silently change what
+    was asked without changing what the caller wrote.
     """
     system_parts = [
         str(m.get("content") or "")
@@ -520,13 +588,13 @@ def build_payload(
     max_tokens: int,
     temperature: float,
 ) -> dict[str, Any]:
-    """The request body, built once so the shape is reviewable in one place."""
+    """The request body, built once so the shape is reviewable in one place.
+
+    The system prompt goes back on the FRONT of the message array, which is
+    where Chat Completions takes it. There is no prefill and no trailing
+    assistant turn: JSON mode is `response_format`, natively.
+    """
     system, turns = split_system(messages)
-    if json_mode:
-        system = f"{system}\n\n{_JSON_SYSTEM_SUFFIX}".strip()
-        # The prefill. See the module docstring: this is the half that makes
-        # JSON mode structural rather than advisory.
-        turns = turns + [{"role": "assistant", "content": _JSON_PREFILL}]
     payload: dict[str, Any] = {
         "model": model,
         "messages": turns,
@@ -536,38 +604,49 @@ def build_payload(
         # depend on when they were scored.
         "temperature": temperature,
     }
+    if json_mode:
+        # Two halves, and both are required. `response_format` is the guarantee;
+        # the system suffix is what the API demands before it will accept the
+        # format at all, because the token "json" must appear in the messages.
+        system = f"{system}\n\n{_JSON_SYSTEM_SUFFIX}".strip()
+        payload["response_format"] = dict(JSON_OBJECT_RESPONSE_FORMAT)
     if system:
-        payload["system"] = system
+        payload["messages"] = [{"role": "system", "content": system}] + turns
     return payload
 
 
 def parse_response(payload: dict[str, Any], *, json_mode: bool) -> _Result:
-    """Turn a Messages API response into text plus usage.
+    """Turn a Chat Completions response into text plus usage.
 
-    In JSON mode the prefill is prepended back, so the caller receives the whole
-    object it would have received from an endpoint with a native JSON mode. The
-    caller never learns the prefill happened, which is the point: the mechanism
-    is this module's business.
+    `json_mode` no longer changes what this function does to the text, and that
+    is the visible half of the prefill's removal: there is nothing to prepend,
+    because the response IS the whole object. The parameter is retained because
+    `_call_openai` passes it on to the contract check, which does still care --
+    a JSON-mode body that does not open with `{` is a violation there rather
+    than a `json.JSONDecodeError` in some caller with no explanation attached.
+
+    A response with no choices, or a choice whose content is null, yields "" --
+    which is exactly the silent failure `vendor_contract.check_openai_response`
+    exists to catch on the first live call, and exactly why that check cannot
+    be folded in here.
     """
-    blocks = payload.get("content") or []
-    text = "".join(
-        str(block.get("text") or "")
-        for block in blocks
-        if isinstance(block, dict) and block.get("type") == "text"
-    )
-    if json_mode:
-        text = _JSON_PREFILL + text
+    choices = payload.get("choices") or []
+    text = ""
+    if choices and isinstance(choices[0], dict):
+        message = choices[0].get("message")
+        if isinstance(message, dict):
+            text = str(message.get("content") or "")
     usage = payload.get("usage") or {}
     had_usage = bool(usage)
     return _Result(
         content=text,
-        prompt_tokens=int(usage.get("input_tokens") or 0),
-        completion_tokens=int(usage.get("output_tokens") or 0),
+        prompt_tokens=int(usage.get("prompt_tokens") or 0),
+        completion_tokens=int(usage.get("completion_tokens") or 0),
         had_usage=had_usage,
     )
 
 
-async def _call_anthropic(
+async def _call_openai(
     client: httpx.AsyncClient,
     key: _RouterKey,
     model: str,
@@ -584,15 +663,15 @@ async def _call_anthropic(
         temperature=temperature,
     )
     resp = await client.post(
-        ANTHROPIC_MESSAGES_URL,
+        OPENAI_CHAT_COMPLETIONS_URL,
         headers={
             # The key travels in a HEADER, never a query string. As a query
             # parameter it lands in httpx's own INFO log line and from there
             # into the platform's log sink in plain text, which is how this
             # module's "keys are never logged" guarantee was broken once before
-            # on a different vendor.
-            "x-api-key": key.api_key,
-            "anthropic-version": ANTHROPIC_API_VERSION,
+            # on a different vendor. The scheme changed with the vendor; the
+            # rule did not.
+            "Authorization": f"Bearer {key.api_key}",
             "content-type": "application/json",
         },
         json=payload,
@@ -604,9 +683,9 @@ async def _call_anthropic(
     # endpoint, so the first response on each model is checked against it and a
     # disagreement raises an error naming the fixture rather than being parsed
     # into an empty string. `parse_response` cannot do this job: it reads
-    # `content[].text` and a differently shaped body simply yields "", which
-    # reads downstream exactly like a model that had little to say.
-    vendor_contract.check_anthropic_response(body, model=model, json_mode=json_mode)
+    # `choices[0].message.content` and a differently shaped body simply yields
+    # "", which reads downstream exactly like a model that had little to say.
+    vendor_contract.check_openai_response(body, model=model, json_mode=json_mode)
     return parse_response(body, json_mode=json_mode)
 
 
@@ -690,7 +769,7 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
 
     started = time.monotonic()
     try:
-        raw = await _call_anthropic(
+        raw = await _call_openai(
             ctx.client,
             ctx.key,
             ctx.model,
@@ -714,7 +793,7 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
             )
         _record_failure(ctx.key, terminal=terminal_credential)
         # The message names the classification and the status, and NEVER the
-        # response body: an Anthropic error body can echo the request, and the
+        # response body: a vendor error body can echo the request, and the
         # request carries a real candidate's answers.
         ctx.errors.append(f"{kind} ({status if status is not None else type(exc).__name__})")
         if status == 400:
@@ -822,9 +901,10 @@ async def invoke_llm(
 ) -> str:
     """Run a completion for `task_type` through the router.
 
-    `messages` uses the OpenAI shape -- [{"role": "system"|"user"|"assistant",
-    "content": str}] -- which is translated to the Messages API's system/turns
-    split here rather than at twenty-odd call sites.
+    `messages` uses the [{"role": "system"|"user"|"assistant", "content": str}]
+    shape every caller already writes. The system messages are lifted out,
+    joined, and put back at the head of the array here rather than at
+    twenty-odd call sites.
 
     `session` is retained in the signature and is now unused. It used to load
     credentials from `llm_provider_keys`; it is kept because roughly twenty
@@ -874,10 +954,15 @@ async def _invoke_llm_inner(
             f"task_type={task_type} using the caller's fallback"
         )
 
-    key = _load_key()
+    key = key_for_model(model)
     if key is None:
+        # Names the variable, and names the model it belongs to. "No credential
+        # configured" with two keys in play would leave an operator checking
+        # the wrong one, and the symptom is one tier of tasks degrading while
+        # the other looks perfectly healthy.
         raise LLMUnavailableError(
-            "No Anthropic credential configured (ANTHROPIC_API_KEY is unset)"
+            f"No credential configured for model {model} "
+            f"({ENV_VAR_FOR_MODEL[model]} is unset); task_type={task_type}"
         )
     if _is_cooling_down(key):
         logger.warning(
@@ -886,7 +971,8 @@ async def _invoke_llm_inner(
             task_type, key.fingerprint,
         )
         raise LLMUnavailableError(
-            f"The Anthropic credential is cooling down for task_type={task_type}"
+            f"The credential for model {model} is cooling down for "
+            f"task_type={task_type}"
         )
 
     request_timeout = timeout if timeout is not None else timeout_for(task_type)
@@ -916,7 +1002,7 @@ async def _invoke_llm_inner(
     if result is not None:
         return result
     raise LLMUnavailableError(
-        f"Anthropic exhausted for task_type={task_type}: {'; '.join(ctx.errors)}"
+        f"{PROVIDER} exhausted for task_type={task_type}: {'; '.join(ctx.errors)}"
     )
 
 

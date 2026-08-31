@@ -43,7 +43,7 @@ Backend suite against `docker-compose.test.yml`, via `./scripts/test.sh unit`.
 
 The single remaining skip is
 `tests/test_ai_reach_semantic.py::test_real_embedding_model_ranks_known_catalogue`,
-category `live-credential-required`: it needs `VOYAGE_API_KEY`, which spec-doc6
+category `live-credential-required`: it needs `VOYAGE_CONTEXT_4`, which this
 D6 states is unavailable this phase. It is declared in `docs/SKIPS.md` and pinned
 by `backend/tests/test_skip_inventory.py`.
 

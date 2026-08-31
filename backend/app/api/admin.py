@@ -970,7 +970,7 @@ async def llm_stats(
     Per-KEY counters were added on 2026-08-11 to answer "which of the seven keys
     on this provider is failing", and with one credential that question no
     longer exists. `models` replaces it as the breakdown that still varies:
-    Sonnet 5 and Haiku 4.5 have different latency profiles and a threefold price
+    gpt-5.6-terra and gpt-5.6-luna have different latency profiles and a price
     difference, so "which model is spending the budget" is now the operator
     question the per-provider table used to answer. `keys` is retained because
     it is where the fingerprint and the breaker state are visible.

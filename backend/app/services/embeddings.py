@@ -35,7 +35,7 @@ a row can be stale.
 
 THE DEV FALLBACK IS KEPT, DELIBERATELY
 ---------------------------------------
-With no `VOYAGE_API_KEY` the module returns deterministic pseudo-random unit
+With no `VOYAGE_CONTEXT_4` the module returns deterministic pseudo-random unit
 vectors seeded from a hash of the text. That is not laziness: without it the
 entire matching pipeline, the whole test suite and every local dev run would
 require a paid credential to execute at all, and CI would become a thing that
@@ -93,7 +93,7 @@ def is_semantic() -> bool:
     this rather than inferring it, so "we could not embed" never renders as "we
     embedded and this is the order".
     """
-    return bool(get_settings().voyage_api_key)
+    return bool(get_settings().voyage_context_4)
 
 
 def _dev_fallback_vector(text: str) -> list[float]:
@@ -179,16 +179,18 @@ async def embed(
 ) -> list[list[float]]:
     """Embed a batch of texts into `EMBEDDING_DIM`-dim vectors.
 
-    Uses voyage-context-4 when `VOYAGE_API_KEY` is set, otherwise the
+    Uses voyage-context-4 when `VOYAGE_CONTEXT_4` is set, otherwise the
     deterministic dev fallback (see the module docstring). Order is preserved:
     `embed(texts)[i]` is always the vector for `texts[i]`.
     """
     if not texts:
         return []
 
-    api_key = (get_settings().voyage_api_key or "").strip()
+    # VOYAGE_CONTEXT_4, named after the model it unlocks. See core/config.py
+    # for why the name is pinned by a test rather than left to a rename.
+    api_key = (get_settings().voyage_context_4 or "").strip()
     if not api_key:
-        # ── DEV FALLBACK (no VOYAGE_API_KEY configured) ──
+        # ── DEV FALLBACK (no VOYAGE_CONTEXT_4 configured) ──
         return [_dev_fallback_vector(t) for t in texts]
 
     embeddings: list[list[float]] = []

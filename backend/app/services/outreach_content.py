@@ -28,7 +28,7 @@ from app.prompts import registry
 logger = logging.getLogger(__name__)
 
 # Task-type routing: outreach copy is short, but it is prose a candidate reads
-# over the client's name, so it runs on Sonnet 5 rather than the cheaper tier
+# over the client's name, so it runs on the reasoning tier rather than the cheaper one
 # (config/llm_providers.MODEL_FOR_TASK, where that choice is argued).
 _ROLE_HINT = "email_composition"
 

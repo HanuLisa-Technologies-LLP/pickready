@@ -1,0 +1,20 @@
+{
+  "_provenance": {
+    "authored_from": "OpenAI published error schema. 401 is documented as invalid_request_error with code invalid_api_key, and is non-retryable.",
+    "observed": false,
+    "notes": "Trips the credential breaker on the FIRST occurrence. No amount of waiting fixes a revoked key, and the breaker is keyed by fingerprint so only the credential that failed is taken out of service."
+  },
+  "status": 401,
+  "headers": {
+    "content-type": "application/json",
+    "x-request-id": "req_fixture_401"
+  },
+  "body": {
+    "error": {
+      "message": "Incorrect API key provided.",
+      "type": "invalid_request_error",
+      "param": null,
+      "code": "invalid_api_key"
+    }
+  }
+}

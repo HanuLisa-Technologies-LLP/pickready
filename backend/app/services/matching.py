@@ -4,7 +4,7 @@
 2. Keyword stage     -- Postgres ts_rank over profiles.resume_tsv using the
                        JD's skills/keywords, over the same eligible pool.
 3. 4-parameter LLM scoring -- union of (1)+(2): the LLM (rerank chain,
-                       Haiku 4.5) rates each profile on skills_match,
+                       the extraction tier) rates each profile on skills_match,
                        experience_relevance, role_alignment and education_fit,
                        each an integer 1-10 + comment, plus a genuinely
                        holistic 5th overall comment. There is NO weighting
@@ -455,7 +455,7 @@ async def _backfill_missing_embeddings(
     Two distinct causes of a NULL `profiles.embedding`:
       * resume text IS present (parsing ran) but the embedding was never
         written -- embed it here; `embed()` is cheap and already degrades to a
-        deterministic dev vector when VOYAGE_API_KEY is unset.
+        deterministic dev vector when VOYAGE_CONTEXT_4 is unset.
       * no resume text at all -- re-queue the EXISTING `pickready.parse_resume`
         task (never a new one) for profiles whose Cloudinary metadata is
         complete enough for it to succeed. A profile with an incomplete asset

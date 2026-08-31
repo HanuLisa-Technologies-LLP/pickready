@@ -195,7 +195,7 @@ async def _seed_llm_keys(session: AsyncSession) -> None:
 
     This used to seed nine `llm_provider_keys` rows from the Groq / Gemini /
     OpenRouter env slots so a fresh dev database could route. The router no
-    longer reads that table -- `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY` come
+    longer reads that table -- the model keys and `VOYAGE_CONTEXT_4` come
     straight from the environment -- so seeding it would write rows nothing
     consults and give a reader the false impression that credentials live in
     the database.
@@ -243,7 +243,7 @@ async def _seed_candidates(session: AsyncSession, tenant_id: uuid.UUID) -> None:
         )
         session.add(candidate)
         await session.flush()
-        # embed() uses the deterministic dev fallback when VOYAGE_API_KEY is
+        # embed() uses the deterministic dev fallback when VOYAGE_CONTEXT_4 is
         # unset  -  no GPU service needed to seed locally.
         embedding = (await embed([resume_text]))[0]
         session.add(

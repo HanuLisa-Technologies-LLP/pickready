@@ -3,19 +3,26 @@
 
     THIS COMMAND HAS NEVER BEEN RUN.
 
-There is no `ANTHROPIC_API_KEY` and no `VOYAGE_API_KEY` in this phase
-(spec-doc6 D6), so nothing in this repository has been executed against a live
-provider. This script exists so that the moment a key arrives, the gap between
-"the code parses the shape we believe the vendor sends" and "the vendor sends
-that shape" closes in one command with a printed table, rather than by degrees
-over a production incident.
+There is no `OPENAI_GPT_TERRA`, no `OPENAI_GPT_LUNA` and no
+`VOYAGE_CONTEXT_4` in this phase, so nothing in this repository has been
+executed against a live provider. This script exists so that the moment a key
+arrives, the gap between "the code parses the shape we believe the vendor
+sends" and "the vendor sends that shape" closes in one command with a printed
+table, rather than by degrees over a production incident.
+
+IT HAS ONE MORE THING TO SETTLE THAN IT USED TO. `gpt-5.6-terra` and
+`gpt-5.6-luna` are the product owner's strings and have never been resolved
+against a models endpoint, so this command is also the first thing that would
+discover a wrong id. That arrives as a 404 or a 403 on the path concerned
+rather than as a shape disagreement, and the table reports it as a FAIL with
+the status in the detail column.
 
 WHAT IT DOES (spec-doc6 §12.1)
 ------------------------------
 Exactly one realistic round trip per code path, and no more:
 
-  reasoning   Sonnet 5, plain text, through `llm_router.invoke_llm`.
-  extraction  Haiku 4.5, JSON mode, through `llm_router.invoke_llm`.
+  reasoning   the reasoning model, plain text, through `llm_router.invoke_llm`.
+  extraction  the extraction model, JSON mode, through `llm_router.invoke_llm`.
   embedding   voyage-context-4, one document batch, through `embeddings.embed`.
 
 Then one call per failure branch that can be provoked SAFELY:
@@ -54,7 +61,7 @@ settle.
 
     python scripts/verify_live.py --help     # never needs a key
     python scripts/verify_live.py --dry-run  # prints the plan, calls nothing
-    python scripts/verify_live.py            # needs both keys
+    python scripts/verify_live.py            # needs all three keys
 
 Run from `backend/`.
 """
@@ -89,9 +96,10 @@ RESULTS_PATH = REPO_ROOT / "VERIFICATION_RESULTS.md"
 #: top of `--help` is the only place a reader is guaranteed to look.
 NEVER_RUN_BANNER = (
     "NOT YET EXECUTED: this command has never been run against a live vendor. "
-    "There is no ANTHROPIC_API_KEY and no VOYAGE_API_KEY in this phase, and "
-    "no result in this repository comes from a real request. Absence of "
-    "VERIFICATION_RESULTS.md is the record of that."
+    "There is no OPENAI_GPT_TERRA, no OPENAI_GPT_LUNA and no VOYAGE_CONTEXT_4 "
+    "in this phase, and no result in this repository comes from a real "
+    "request. The two model ids have never been resolved against a models "
+    "endpoint either. Absence of VERIFICATION_RESULTS.md is the record of that."
 )
 
 PASS = "PASS"
@@ -142,23 +150,24 @@ def build_plan() -> Plan:
     plan.add(
         Outcome(
             path="reasoning",
-            vendor="Anthropic",
-            model=llm_providers.MODEL_SONNET,
+            vendor="OpenAI",
+            model=llm_providers.MODEL_TERRA,
             what_it_proves=(
-                "the Messages API returns the block list, text block and usage "
-                "object that vendor_contract.ANTHROPIC_MESSAGES declares"
+                "the model id resolves at all, and Chat Completions returns the "
+                "choice list, message content and usage object that "
+                "vendor_contract.OPENAI_CHAT_COMPLETIONS declares"
             ),
         )
     )
     plan.add(
         Outcome(
             path="extraction",
-            vendor="Anthropic",
-            model=llm_providers.MODEL_HAIKU,
+            vendor="OpenAI",
+            model=llm_providers.MODEL_LUNA,
             what_it_proves=(
-                "JSON mode's assistant-turn prefill is accepted and the "
-                "response, with the prefill prepended back, parses as one "
-                "top-level object"
+                "the model id resolves, the json_object response format is "
+                "accepted with the token 'json' present in the messages, and "
+                "the response parses as one top-level object"
             ),
         )
     )
@@ -177,8 +186,8 @@ def build_plan() -> Plan:
     plan.add(
         Outcome(
             path="credential_failure",
-            vendor="Anthropic",
-            model=llm_providers.MODEL_HAIKU,
+            vendor="OpenAI",
+            model=llm_providers.MODEL_LUNA,
             what_it_proves=(
                 "a deliberately invalid key returns 401 or 403, which is what "
                 "trips the breaker on the first occurrence"
@@ -188,8 +197,8 @@ def build_plan() -> Plan:
     plan.add(
         Outcome(
             path="timeout",
-            vendor="Anthropic",
-            model=llm_providers.MODEL_SONNET,
+            vendor="OpenAI",
+            model=llm_providers.MODEL_TERRA,
             what_it_proves=(
                 "a deliberately tiny per-attempt timeout is classified as a "
                 "transport failure and the router stops inside its budget"
@@ -199,8 +208,8 @@ def build_plan() -> Plan:
     plan.add(
         Outcome(
             path="rate_limit",
-            vendor="Anthropic",
-            model=llm_providers.MODEL_HAIKU,
+            vendor="OpenAI",
+            model=llm_providers.MODEL_LUNA,
             what_it_proves=(
                 "a 429 carries a retry-after the router reads rather than "
                 "guesses at. Reported NOT PROVOKED unless a 429 actually "
@@ -326,14 +335,13 @@ async def _run_credential_failure(outcome: Outcome) -> None:
     started = time.monotonic()
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(
-            llm_providers.ANTHROPIC_MESSAGES_URL,
+            llm_providers.OPENAI_CHAT_COMPLETIONS_URL,
             headers={
-                "x-api-key": "sk-ant-deliberately-invalid-key-for-verification",
-                "anthropic-version": llm_providers.ANTHROPIC_API_VERSION,
+                "Authorization": "Bearer sk-deliberately-invalid-key-for-verification",
                 "content-type": "application/json",
             },
             json=llm_router.build_payload(
-                model=llm_providers.MODEL_HAIKU,
+                model=llm_providers.MODEL_LUNA,
                 messages=[{"role": "user", "content": "verification probe"}],
                 json_mode=False,
                 max_tokens=16,
@@ -513,8 +521,8 @@ from documentation.
 
 - Run at: {stamp}
 - Commit: `{git_sha()}`
-- Sonnet path: `{llm_providers.MODEL_SONNET}`
-- Haiku path: `{llm_providers.MODEL_HAIKU}`
+- Reasoning path: `{llm_providers.MODEL_TERRA}`
+- Extraction path: `{llm_providers.MODEL_LUNA}`
 - Embedding path: `{llm_providers.EMBEDDING_MODEL}`
 
 {verdict}
@@ -540,10 +548,18 @@ a run that was attempted.
     return RESULTS_PATH
 
 
+#: Every credential a full run needs, derived from the routing table rather
+#: than typed out, so a repointed model cannot leave this list naming a variable
+#: nothing reads.
+REQUIRED_ENV_VARS: tuple[str, ...] = tuple(
+    sorted(llm_providers.ENV_VAR_FOR_MODEL.values())
+) + ("VOYAGE_CONTEXT_4",)
+
+
 def missing_keys() -> list[str]:
     return [
         name
-        for name in ("ANTHROPIC_API_KEY", "VOYAGE_API_KEY")
+        for name in REQUIRED_ENV_VARS
         if not (os.environ.get(name) or "").strip()
     ]
 
@@ -558,8 +574,8 @@ def main(argv: list[str] | None = None) -> int:
             "writes VERIFICATION_RESULTS.md."
         ),
         epilog=(
-            "Needs ANTHROPIC_API_KEY and VOYAGE_API_KEY. Run from backend/. "
-            "The rows it would settle are listed in VERIFICATION_PENDING.md."
+            f"Needs {', '.join(REQUIRED_ENV_VARS)}. Run from backend/. "
+            f"The rows it would settle are listed in VERIFICATION_PENDING.md."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

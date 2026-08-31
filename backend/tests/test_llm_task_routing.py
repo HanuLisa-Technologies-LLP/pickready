@@ -1,18 +1,33 @@
 """Every task type resolves to exactly one of the two permitted models.
 
-This file is spec-doc5 §B's acceptance criterion executed rather than asserted
-in prose:
+This file is the single-vendor acceptance criterion executed rather than
+asserted in prose:
 
-    "Every model call in the system resolves to exactly one of Sonnet 5,
-     Haiku 4.5, or Voyage-context-4 -- grep the codebase for any other model
-     string and confirm zero results outside historical comments/docs."
-    "The per-component assignment table in §B.3 matches what the code actually
-     calls, verified, not assumed from reading the code once."
+    "Every model call in the system resolves to exactly one of the reasoning
+     model, the extraction model, or voyage-context-4 -- grep the codebase for
+     any other model string and confirm zero results outside historical
+     comments/docs."
+    "The per-component assignment table matches what the code actually calls,
+     verified, not assumed from reading the code once."
 
 The second sentence is the reason the grep below reads SOURCE rather than
 importing the config: a table that agrees with itself proves nothing. What can
 go wrong is a model id typed into a service, and only a scan of the files can
 see that.
+
+RE-POINTED 2026-08-31, NOT RELAXED. The model vendor moved from Anthropic to
+OpenAI by owner decision, so the two permitted ids changed and every pattern
+below changed with them. The closure itself is the point and it is stricter
+than before in one respect: `claude-*` is now forbidden outright, where it
+previously carried two exemptions. Deleting this test to make the vendor change
+pass would have removed the only thing standing between this codebase and a
+third model arriving by accident.
+
+The TIERING did not change and `SPEC_B3_ASSIGNMENT` below is what proves it:
+every task that ran on the reasoning tier still does, and every task that ran on
+the extraction tier still does. `claim_extraction` in particular MUST NOT
+EVALUATE, and a vendor swap is exactly the kind of change during which a task
+quietly moves a tier because both ids were being retyped anyway.
 
 It replaces the multi-provider version, which asserted that every task named a
 provider chain and that every chain was a subset of the three known providers.
@@ -40,9 +55,29 @@ APP_ROOT = pathlib.Path(__file__).resolve().parents[1] / "app"
 
 def test_only_two_models_are_permitted() -> None:
     assert llm_providers.ALLOWED_MODELS == {
-        llm_providers.MODEL_SONNET,
-        llm_providers.MODEL_HAIKU,
+        llm_providers.MODEL_TERRA,
+        llm_providers.MODEL_LUNA,
     }
+
+
+def test_the_two_permitted_ids_are_the_ones_the_owner_named() -> None:
+    """The ids written out literally, so the closure test above cannot pass by
+    agreeing with a typo.
+
+    NEITHER ID HAS BEEN RESOLVED AGAINST A LIVE ENDPOINT. There is no OpenAI key
+    in this phase, so "this id exists" is unproven; see VERIFICATION_PENDING.md.
+    What this test does prove is that the string in the config is the string the
+    owner gave, which is the half that can be checked here.
+    """
+    assert llm_providers.MODEL_TERRA == "gpt-5.6-terra"
+    assert llm_providers.MODEL_LUNA == "gpt-5.6-luna"
+    assert llm_providers.EMBEDDING_MODEL == "voyage-context-4"
+
+
+def test_the_two_tiers_are_distinct_models() -> None:
+    """One id in both slots would satisfy every other assertion in this file and
+    silently collapse the judge/extract boundary the split exists to hold."""
+    assert llm_providers.MODEL_TERRA != llm_providers.MODEL_LUNA
 
 
 @pytest.mark.parametrize("task_type", sorted(llm_providers.MODEL_FOR_TASK))
@@ -69,26 +104,27 @@ def test_an_unknown_task_type_raises_rather_than_defaulting() -> None:
 # that was not intended has to be made twice to pass.
 
 SPEC_B3_ASSIGNMENT = {
-    # Bodha -- SWOT / Company DNA conversational intake -> Sonnet 5
-    "swot_intake": llm_providers.MODEL_SONNET,
-    "company_dna_intake": llm_providers.MODEL_SONNET,
+    # Bodha -- SWOT / Company DNA conversational intake -> the reasoning tier
+    "swot_intake": llm_providers.MODEL_TERRA,
+    "company_dna_intake": llm_providers.MODEL_TERRA,
     # Sutra -- competency naming, observable-evidence authoring, weight
-    # derivation -> Sonnet 5
-    "competency_transformation": llm_providers.MODEL_SONNET,
-    # Yukti -- AI Score / category matching -> Haiku 4.5 (must be fast)
-    "rerank": llm_providers.MODEL_HAIKU,
-    # Vaada -- conversation / question generation -> Sonnet 5
-    "conversation_turn": llm_providers.MODEL_SONNET,
-    # Miti -- claim extraction -> Haiku 4.5 (narrow, mechanical, must not evaluate)
-    "claim_extraction": llm_providers.MODEL_HAIKU,
-    # Miti -- evidence tiering -> Haiku 4.5
-    "evidence_tiering": llm_providers.MODEL_HAIKU,
-    # Miti -- five dimension evaluators -> Sonnet 5
-    "dimension_evaluation": llm_providers.MODEL_SONNET,
-    # Miti -- triangulation agent -> Sonnet 5
-    "triangulation": llm_providers.MODEL_SONNET,
-    # Siddhi -- dossier / PRISM generation -> Sonnet 5
-    "report_synthesis": llm_providers.MODEL_SONNET,
+    # derivation -> the reasoning tier
+    "competency_transformation": llm_providers.MODEL_TERRA,
+    # Yukti -- AI Score / category matching -> the extraction tier (must be fast)
+    "rerank": llm_providers.MODEL_LUNA,
+    # Vaada -- conversation / question generation -> the reasoning tier
+    "conversation_turn": llm_providers.MODEL_TERRA,
+    # Miti -- claim extraction -> the extraction tier (narrow, mechanical,
+    # must not evaluate)
+    "claim_extraction": llm_providers.MODEL_LUNA,
+    # Miti -- evidence tiering -> the extraction tier
+    "evidence_tiering": llm_providers.MODEL_LUNA,
+    # Miti -- five dimension evaluators -> the reasoning tier
+    "dimension_evaluation": llm_providers.MODEL_TERRA,
+    # Miti -- triangulation agent -> the reasoning tier
+    "triangulation": llm_providers.MODEL_TERRA,
+    # Siddhi -- dossier / PRISM generation -> the reasoning tier
+    "report_synthesis": llm_providers.MODEL_TERRA,
 }
 
 
@@ -113,16 +149,50 @@ def test_the_aggregator_has_no_task_type() -> None:
 
 #: Any model-id-shaped string that is NOT one of the two permitted ones. Built
 #: as vendor-family prefixes because that is how a stray id actually appears --
-#: somebody pastes `claude-3-5-sonnet-20241022` or `gpt-4o` out of a snippet.
+#: somebody pastes `gpt-4o` or `claude-3-5-sonnet-20241022` out of a snippet.
+#:
+#: The `gpt-` row carries the only two exemptions in the list, and they name the
+#: two permitted ids exactly. The `claude-` row carries NONE: it used to hold
+#: two, and losing them is the visible shape of the 2026-08-31 vendor change in
+#: this file. A `claude-` id in executable source is now a failure, which is the
+#: correct meaning of "Anthropic is removed rather than kept as a fallback".
 _FORBIDDEN_MODEL_PATTERNS = [
-    re.compile(r"\bclaude-(?!sonnet-5\b|haiku-4-5-20251001\b)[a-z0-9.\-]+", re.I),
-    re.compile(r"\bgpt-[0-9o]", re.I),
+    re.compile(r"\bgpt-(?!5\.6-terra\b|5\.6-luna\b)[a-z0-9.\-]+", re.I),
+    re.compile(r"\bclaude-[a-z0-9.\-]+", re.I),
     re.compile(r"\bllama-[0-9]", re.I),
     re.compile(r"\bgemini-[a-z0-9.\-]+", re.I),
     re.compile(r"\bmixtral|\bmistral-", re.I),
     re.compile(r"\bbge-m3\b", re.I),
     re.compile(r"\bvoyage-(?!context-4\b)[a-z0-9.\-]+", re.I),
 ]
+
+
+def test_the_grep_would_catch_a_third_model() -> None:
+    """The negative direction, and it is not a formality.
+
+    The exemptions in the `gpt-` pattern are a lookahead over two literal ids.
+    A lookahead written a character wrong exempts the whole family, the sweep
+    then passes over anything at all, and nothing announces that the closure
+    stopped being enforced. So: the permitted ids pass, and near-misses of them
+    do not.
+    """
+    permitted = (llm_providers.MODEL_TERRA, llm_providers.MODEL_LUNA)
+    for identifier in permitted:
+        line = f'MODEL = "{identifier}"'
+        assert not any(p.search(line) for p in _FORBIDDEN_MODEL_PATTERNS), identifier
+
+    for stray in (
+        "gpt-4o",
+        "gpt-5.6-sol",
+        "gpt-5.7-terra",
+        "claude-sonnet-5",
+        "claude-haiku-4-5-20251001",
+        "gemini-2.0-flash",
+        "voyage-3-large",
+        "BAAI/bge-m3",
+    ):
+        line = f'MODEL = "{stray}"'
+        assert any(p.search(line) for p in _FORBIDDEN_MODEL_PATTERNS), stray
 
 
 def _code_lines(path: pathlib.Path) -> list[tuple[int, str]]:
@@ -182,8 +252,9 @@ def test_no_other_model_id_appears_in_executable_code() -> None:
                             f"{match.group(0)!r}"
                         )
     assert not offenders, (
-        "spec-doc5 §B.2 permits exactly Sonnet 5, Haiku 4.5 and voyage-context-4. "
-        "These executable lines name another model:\n  " + "\n  ".join(offenders)
+        f"This platform permits exactly {llm_providers.MODEL_TERRA}, "
+        f"{llm_providers.MODEL_LUNA} and {llm_providers.EMBEDDING_MODEL}. "
+        f"These executable lines name another model:\n  " + "\n  ".join(offenders)
     )
 
 
@@ -191,9 +262,9 @@ def test_no_other_model_id_appears_in_a_recorded_vendor_fixture() -> None:
     """The fixtures are data a contract test reads, not code, and the grep
     above cannot see them.
 
-    A recorded response naming a fourth model would make
+    A recorded response naming a third model would make
     `vendor_contract.check_voyage_response`'s model-echo check pass against the
-    wrong id, and a Messages fixture naming a retired Claude would quietly
+    wrong id, and a completion fixture naming a retired model would quietly
     become the shape somebody built a parser to.
     """
     fixtures = APP_ROOT.parent / "tests" / "fixtures" / "vendor"
@@ -211,20 +282,27 @@ def test_no_other_model_id_appears_in_a_recorded_vendor_fixture() -> None:
 
 
 def test_the_retired_providers_are_gone_from_the_source_tree() -> None:
-    """The removal is real, not a disabled flag (spec-doc5 §B.1).
+    """The removal is real, not a disabled flag.
 
     Checks for the MODULES and the client entry points, not for the words: the
     words survive legitimately in comments recording why the tier was removed.
+
+    `_call_anthropic` and the credential that fed it join the list on
+    2026-08-31. A retained second transport is a second transport something
+    eventually calls, and a retained credential is a credential something
+    eventually reads.
     """
     assert not (APP_ROOT / "services" / "llm_capacity.py").exists()
     assert not (APP_ROOT / "scripts" / "probe_llm_models.py").exists()
 
+    from app.core.config import Settings
     from app.services import llm_router
 
     for gone in (
         "_call_groq",
         "_call_gemini",
         "_call_openrouter",
+        "_call_anthropic",
         "capacity_ordered",
         "probe_each_provider_first",
         "rotate_within_provider",
@@ -232,6 +310,12 @@ def test_the_retired_providers_are_gone_from_the_source_tree() -> None:
         "is_org_wide_size_failure",
     ):
         assert not hasattr(llm_router, gone), gone
+
+    assert "anthropic_api_key" not in Settings.model_fields
+    # The embedding vendor did NOT change, and asserting its credential is
+    # still there is what keeps the line above from reading as "all the vendor
+    # keys went".
+    assert "voyage_context_4" in Settings.model_fields
 
     for gone in (
         "TASK_ROUTES",
@@ -244,6 +328,8 @@ def test_the_retired_providers_are_gone_from_the_source_tree() -> None:
         "KEY_SLOTS_PER_PROVIDER",
         "DECLARED_CONTEXT_LIMITS",
         "MIN_CEILING_FRACTION",
+        "ANTHROPIC_API_VERSION",
+        "ANTHROPIC_MESSAGES_URL",
     ):
         assert not hasattr(llm_providers, gone), gone
 
@@ -334,14 +420,16 @@ def test_only_transients_are_retried() -> None:
 
 
 def test_an_unpriced_model_is_distinguishable_from_a_free_one() -> None:
-    assert llm_providers.is_priced(llm_providers.MODEL_SONNET)
+    assert llm_providers.is_priced(llm_providers.MODEL_TERRA)
     assert llm_providers.estimate_cost_usd("some-unpriced-model", 1000, 1000) == 0.0
     assert not llm_providers.is_priced("some-unpriced-model")
 
 
-def test_sonnet_costs_more_than_haiku_for_identical_traffic() -> None:
-    """Not a price check -- a check that the two are not accidentally equal,
-    which is what a copy-paste in the table would look like."""
-    sonnet = llm_providers.estimate_cost_usd(llm_providers.MODEL_SONNET, 10_000, 2_000)
-    haiku = llm_providers.estimate_cost_usd(llm_providers.MODEL_HAIKU, 10_000, 2_000)
-    assert sonnet > haiku > 0
+def test_the_reasoning_tier_costs_more_than_the_extraction_tier() -> None:
+    """Not a price check -- the rates for these two ids are unverified and the
+    config says so. This checks that the two rows are not accidentally EQUAL,
+    which is what a copy-paste in the table would look like, and that the
+    ordering an operator reads the cost breakdown for still holds."""
+    reasoning = llm_providers.estimate_cost_usd(llm_providers.MODEL_TERRA, 10_000, 2_000)
+    extraction = llm_providers.estimate_cost_usd(llm_providers.MODEL_LUNA, 10_000, 2_000)
+    assert reasoning > extraction > 0

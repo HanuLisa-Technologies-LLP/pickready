@@ -13,7 +13,8 @@ they bear on, how material they are -- and never verdicts. The evidence
 supporting or contradicting each claim is stage 3's job, and whether it holds is
 stage 4 and 5's.
 
-THIS STAGE MUST NOT EVALUATE (Runbook §57.1, and it is why it runs on Haiku)
+THIS STAGE MUST NOT EVALUATE (Runbook §57.1, and it is why it runs on the
+extraction tier)
 ------------------------------------------------------------------------------
 spec-doc5 §B.3 assigns claim extraction to Haiku 4.5 with the note "narrow,
 mechanical, must-not-evaluate". The model tier is a consequence of that rule,

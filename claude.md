@@ -204,14 +204,15 @@ No dual code paths for one product behaviour. No placeholder prose (`TODO`,
 `FIXME`, `XXX`, "in a real implementation", "for now", "this is a simplified",
 "stub" outside test doubles). No dead code, delete rather than deprecate. No
 magic numbers, every one comes from `runbook_data/` with a citation. No new
-model strings beyond Sonnet 5, Haiku 4.5 and voyage-context-4. No wildcard IAM.
+model strings beyond `gpt-5.6-terra`, `gpt-5.6-luna` and
+`voyage-context-4`. No wildcard IAM.
 No em dashes in generated product copy. Docstrings state provenance. **A test
 whose only assertion is that a mock was called is not a test.** No commented-out
 code. **One implementation per concept**, which is the rule `tiers.py` broke.
 
 ### Verification honesty
 
-**There is no Anthropic or Voyage key in this phase.** No wording in code,
+**There is no OpenAI or Voyage key in this phase.** No wording in code,
 comments, docs, commit messages or reports may imply a live vendor call has
 succeeded. The phrases "verified against the API", "confirmed working" and
 "tested live" are CI-checked in this phase's documentation. The honest framing
@@ -276,16 +277,48 @@ worth deepening.
 
 ### PART B, one vendor, three endpoints
 
-- **Every model call resolves to Claude Sonnet 5 or Claude Haiku 4.5, and every
-  embedding to voyage-context-4.** `MODEL_FOR_TASK` in
+**THE MODEL VENDOR CHANGED ON 2026-08-31, FROM ANTHROPIC TO OPENAI.** Owner
+decision, and a deliberate reversal of the rule this section used to state. The
+three places that forbade it -- this section, `test_llm_task_routing.py`'s
+closure test, and `.env.example` -- were all changed with the code rather than
+left contradicting it. **What was reversed is the VENDOR, not the discipline.**
+A prior phase deleted Groq, Gemini, OpenRouter and a 1371-line capacity registry
+to reach one vendor; none of that comes back, there is no fallback chain, and
+`claude-*` is now forbidden in executable source where it previously had two
+exemptions. Anthropic is REMOVED, not kept as a fallback, and
+`ANTHROPIC_API_KEY` is deleted rather than deprecated.
+
+- **Every model call resolves to `gpt-5.6-terra` or `gpt-5.6-luna`, and every
+  embedding to `voyage-context-4`.** `MODEL_FOR_TASK` in
   `config/llm_providers.py` is a closed mapping onto exactly two ids and
   `tests/test_llm_task_routing.py` greps the executable source for any other
-  model string. No Opus, no Fable, no fourth model on implementation judgment.
-- **The split is JUDGE-or-WRITE versus EXTRACT-or-CLASSIFY.** `claim_extraction`
-  is Haiku and MUST NOT EVALUATE: an opinion formed there enters the pipeline
-  before the dimension evaluators, without a rubric, without their isolation and
-  without a citation, and downstream it is indistinguishable from a finding.
-  Putting Sonnet on it would be a boundary violation, not an upgrade.
+  model string. No third model on implementation judgment.
+- **THE TWO MODEL IDS ARE UNVERIFIED AND CANNOT BE VERIFIED THIS PHASE.** There
+  is no OpenAI key, so neither has been resolved against a models endpoint.
+  They are the owner's strings, used verbatim, and they are named CONSTANTS
+  (`MODEL_TERRA`, `MODEL_LUNA`) so a wrong id is a one-line fix. A wrong id
+  arrives as a 404 or a 403, which classifies as our bug and is not retried, so
+  the symptom would be every caller degrading silently -- which is why the
+  first live response on each path is checked against a hand-authored fixture.
+  `VERIFICATION_PENDING.md` carries the row.
+- **The split is JUDGE-or-WRITE versus EXTRACT-or-CLASSIFY, and NO TASK MOVED
+  TIER in the vendor change.** Every task on Sonnet went to Terra and every task
+  on Haiku went to Luna, one for one. `claim_extraction` is Luna and MUST NOT
+  EVALUATE: an opinion formed there enters the pipeline before the dimension
+  evaluators, without a rubric, without their isolation and without a citation,
+  and downstream it is indistinguishable from a finding. Putting Terra on it
+  would be a boundary violation, not an upgrade. A vendor swap is exactly the
+  change during which a task quietly moves a tier because both ids were being
+  retyped anyway, so `SPEC_B3_ASSIGNMENT` in `test_llm_task_routing.py` states
+  the assignment a second time, independently.
+- **TWO CREDENTIALS FOR ONE VENDOR, one per model.** `OPENAI_GPT_TERRA` and
+  `OPENAI_GPT_LUNA`; the embedding key is `VOYAGE_CONTEXT_4`, renamed from
+  `VOYAGE_API_KEY` so every credential is named after the model it unlocks.
+  Which model uses which is DATA in `SETTINGS_ATTR_FOR_MODEL`, never a branch.
+  `llm_router.key_for_model` RAISES when the key for the called model is absent
+  and never falls back to the other one: that would run a judging call on the
+  extraction credential and leave nothing in the record saying so. The breaker
+  is keyed by credential fingerprint, so the two trip independently.
 - **Groq, Gemini and OpenRouter are GONE, not disabled.** `llm_capacity.py`
   (1371 lines: the capacity registry, `route_score`, quota-domain discovery) and
   `scripts/probe_llm_models.py` are deleted. So is the 21-key roster. What that
@@ -307,17 +340,35 @@ worth deepening.
   started. Same rule `agent_loop` already follows, and for the same reason.
 - **THE INTERACTIVE CAP IS NOW TWO TIERS, and this amends the flat 15s rule.**
   Short-output interactive tasks keep 15s/30s. `jd_generation` is 25s/50s,
-  because a multi-thousand-token JD cannot finish in 15 seconds on Sonnet and
-  holding the cap would not make the button faster -- it would make every
-  generation time out and fall back to the template, permanently. That is the
-  argument the brief already accepts for `report_synthesis`, one tier down.
+  because a multi-thousand-token JD cannot finish in 15 seconds on a
+  reasoning-tier model and holding the cap would not make the button faster --
+  it would make every generation time out and fall back to the template,
+  permanently. That is the argument the brief already accepts for
+  `report_synthesis`, one tier down.
   `test_platform_audit.py` encodes both tiers and asserts the exception list
   stays short, so it is a reviewed rule rather than a drifted number.
-- **JSON mode is a PREFILL, not an instruction.** The Messages API has no
-  `response_format`, so `llm_router` seeds the assistant turn with `{` and
-  prepends it back. The response physically cannot open with an apology or a
-  fence. Every JSON-mode caller in this codebase parses a top-level OBJECT and
-  `test_llm_router.py` pins that assumption.
+- **JSON MODE IS NATIVE `response_format`, AND THE PREFILL IS DELETED.** This
+  supersedes the rule that read "JSON mode is a PREFILL, not an instruction".
+  The Messages API had no `response_format`, so `llm_router` seeded the
+  assistant turn with `{` and prepended it back; Chat Completions has
+  `response_format: {"type": "json_object"}`, which is a STRONGER guarantee of
+  the same property, so the prefill branch, the re-prepend and the constant
+  carrying the brace are gone rather than kept beside it. Two mechanisms for one
+  behaviour is the rule `tiers.py` broke.
+  **The invariant the prefill protected is unchanged and is pinned in three
+  places**: every JSON-mode caller in this codebase parses a top-level OBJECT.
+  `test_llm_router.py` still greps the services for a caller scanning for a
+  leading `[`; `build_payload` is asserted to send the format; and
+  `vendor_contract.check_openai_response` REFUSES a JSON-mode response whose
+  text does not open with `{`, because `response_format` permits any JSON value
+  and an array would `json.loads` perfectly and then fail on the first subscript.
+  **The system instruction survives and is now load bearing for a second
+  reason**: the published API rejects the format with a 400 unless the token
+  "json" appears in the messages, so `_JSON_SYSTEM_SUFFIX` is what makes the
+  request acceptable at all. `describe_request_hazards` names that constraint on
+  any 400, because a 400 is classified as our bug, is correctly not retried, and
+  would otherwise look exactly like a permanent outage with nothing explaining
+  it.
 - **ONE EMBEDDING MODEL, INCLUDING AI REACH.** `reach_embeddings` was a second
   stack -- `BAAI/bge-small-en-v1.5` on CPU at 384 dims -- and it now delegates
   to the shared client. Migration 0058 widens `jobs.reach_embedding` to 1024 and

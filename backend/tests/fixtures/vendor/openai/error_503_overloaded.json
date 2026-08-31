@@ -1,0 +1,20 @@
+{
+  "_provenance": {
+    "authored_from": "OpenAI published error schema. 503 is documented for an overloaded engine and is retryable. It replaces the vendor-specific 529 the previous fixture set carried.",
+    "observed": false,
+    "notes": "Classified as provider_error, exactly like a 500. Kept as its own fixture because it is the status a capacity problem arrives as, and a classifier only ever exercised against 500 would be untested against the failure the platform is most likely to meet at peak."
+  },
+  "status": 503,
+  "headers": {
+    "content-type": "application/json",
+    "x-request-id": "req_fixture_503"
+  },
+  "body": {
+    "error": {
+      "message": "The engine is currently overloaded, please try again later.",
+      "type": "server_error",
+      "param": null,
+      "code": null
+    }
+  }
+}

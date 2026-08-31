@@ -27,7 +27,7 @@ Only imports that RUN AT IMPORT TIME:
 Deliberately excluded, because none of them can close a runtime cycle:
 
   * imports inside a function or method. That is the documented remedy in this
-    codebase -- `llm_router._load_key` imports `get_settings` inside the
+    codebase -- `llm_router.key_for_model` imports `get_settings` inside the
     function with a comment naming the cycle -- and flagging the remedy would
     make the check argue with the fix.
   * imports under `if TYPE_CHECKING:`, which never execute.
@@ -209,7 +209,7 @@ def main() -> int:
         "next module-level constant added to either turns it into the "
         "'partially initialized module' AttributeError this codebase has "
         "already shipped twice. Break it by moving the import inside the "
-        "function that needs it, as llm_router._load_key does."
+        "function that needs it, as llm_router.key_for_model does."
     )
     return 1
 

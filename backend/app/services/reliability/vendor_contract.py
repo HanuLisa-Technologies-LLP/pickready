@@ -1,16 +1,21 @@
 """The response shapes this codebase assumes its two vendors return, and the
 first-live-use check that makes a wrong assumption announce itself.
 
-spec-doc6 §12.5. There is no Anthropic key and no Voyage key in this phase, so
+spec-doc6 §12.5. There is no OpenAI key and no Voyage key in this phase, so
 every statement this module makes about the vendors is derived from their
-PUBLISHED API SCHEMAS and has never been observed against a live endpoint. That
-is not a caveat to skim: a shape derived from documentation is a guess with a
-citation, and the failure mode of a wrong guess here is silent. `parse_response`
-in `llm_router` reads `content[].text` and returns "" when the block list is
-shaped differently; `embeddings._embed_batch` sorts on `data[].index` and would
-raise only if the key were absent entirely. Neither notices a response that is
-merely DIFFERENT from what was expected, and a report written from an empty
-string reads exactly like a report written from a model that had little to say.
+PUBLISHED API SCHEMAS and has never been observed against a live endpoint. The
+two model ids are additionally the owner's strings and have never been resolved
+against a models endpoint, so "does this id exist" is unproven here alongside
+"is this the shape it returns".
+
+That is not a caveat to skim: a shape derived from documentation is a guess with
+a citation, and the failure mode of a wrong guess here is silent.
+`parse_response` in `llm_router` reads `choices[0].message.content` and returns
+"" when the choice list is shaped differently or the content is null;
+`embeddings._embed_batch` sorts on `data[].index` and would raise only if the
+key were absent entirely. Neither notices a response that is merely DIFFERENT
+from what was expected, and a report written from an empty string reads exactly
+like a report written from a model that had little to say.
 
 WHAT THIS MODULE DOES
 ---------------------
@@ -34,23 +39,39 @@ contract it names. The two therefore cannot drift: editing the contract without
 editing the fixture fails the suite, and so does the reverse. Same discipline
 `test_runbook_parity.py` applies to the Runbook.
 
-THE KNOWN REQUEST HAZARDS ARE NOT SPECULATION, AND THEY ARE NOT FIXED HERE
----------------------------------------------------------------------------
-`describe_request_hazards` records two published constraints that the request
-this codebase currently builds does not satisfy on the Sonnet 5 path. They are
-recorded rather than worked around because changing the request shape changes
-what every Sonnet call sends, which is an owner decision and not a typing
-cleanup. Their entries in `VERIFICATION_PENDING.md` carry the command that
-settles them. What this module guarantees is that if they are real, the first
-live call says so in one specific sentence instead of degrading quietly into
-every caller's deterministic fallback.
+THE KNOWN REQUEST HAZARD IS NOT SPECULATION
+--------------------------------------------
+`describe_request_hazards` records the one published constraint on the Chat
+Completions request this codebase builds that a future edit could plausibly
+break: `response_format: {"type": "json_object"}` is rejected with a 400 unless
+the token "json" appears somewhere in the messages. `llm_router`'s
+`_JSON_SYSTEM_SUFFIX` satisfies it today, which is precisely why the check is
+worth having -- the constant reads like ordinary prompt wording and nothing
+about it announces that deleting a word from it turns every JSON-mode call in
+the product into a 400.
+
+A 400 is classified as OUR bug and is correctly not retried, so without this the
+symptom would be every caller degrading to its deterministic fallback with
+nothing naming the cause. That is what an outage looks like, forever.
+
+TWO HAZARDS WERE DELETED HERE ON 2026-08-31, and they are worth naming so a
+reader does not go looking for them: `PREFILL_REJECTING_MODELS` and
+`SAMPLING_REJECTING_MODELS` recorded that the Anthropic 5-series rejected a
+last-assistant-turn prefill and a non-default temperature. The prefill no longer
+exists -- JSON mode is `response_format` now -- and the temperature constraint
+was a property of that vendor's models, not of this transport. Both are gone
+rather than disabled.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.config.llm_providers import EMBEDDING_MODEL, MODEL_SONNET
+from app.config.llm_providers import (
+    EMBEDDING_MODEL,
+    JSON_MODE_REQUIRED_TOKEN,
+    JSON_OBJECT_RESPONSE_FORMAT,
+)
 
 # ── The fixture directory, named once ────────────────────────────────────────
 
@@ -98,7 +119,7 @@ class ResponseContract:
     """One vendor response shape, and the fixture it was authored against.
 
     `required_top_level` is a mapping of key to the type the parser needs it to
-    be, not merely to be present: `content` arriving as a string rather than a
+    be, not merely to be present: `choices` arriving as an object rather than a
     list is the exact shape difference that makes `parse_response` return an
     empty string instead of raising.
     """
@@ -116,28 +137,40 @@ class ResponseContract:
     )
 
 
-#: The Messages API response. One contract for both models: the endpoint,
-#: the block list and the usage object are identical, and the split this
-#: codebase cares about (Sonnet judges and writes, Haiku extracts and
-#: classifies) is a routing decision rather than a transport one.
-ANTHROPIC_MESSAGES = ResponseContract(
-    name="anthropic.messages",
-    vendor="Anthropic",
-    fixture="anthropic/messages_response_sonnet_reasoning.json",
+#: What a non-streaming Chat Completions body declares itself to be. Checked
+#: rather than merely parsed, because the near-miss is a streaming chunk: it
+#: carries `choices[0].delta` where this codebase reads `choices[0].message`,
+#: and the parser's answer to that is an empty string.
+CHAT_COMPLETION_OBJECT = "chat.completion"
+
+#: The Chat Completions response. One contract for both models: the endpoint,
+#: the choice list and the usage object are identical, and the split this
+#: codebase cares about (Terra judges and writes, Luna extracts and classifies)
+#: is a routing decision rather than a transport one.
+#:
+#: `object` is required and is not read by anything, for the same reason
+#: `model` is required on the Voyage contract: it is the one cheap assertion
+#: that the body is the KIND of body it claims to be. A streaming chunk carries
+#: `chat.completion.chunk` and a choice with a `delta` rather than a `message`,
+#: and `parse_response` would quietly return "" for one.
+OPENAI_CHAT_COMPLETIONS = ResponseContract(
+    name="openai.chat_completions",
+    vendor="OpenAI",
+    fixture="openai/chat_completion_terra_reasoning.json",
     authored_from=(
-        "Anthropic Messages API published response schema: a message object "
-        "carrying id, type, role, model, a content block list, stop_reason and "
-        "usage with input_tokens and output_tokens."
+        "OpenAI Chat Completions published response schema: an object carrying "
+        "id, object 'chat.completion', created, model, a choices list whose "
+        "elements carry index, a message with role and content, and "
+        "finish_reason, plus usage with prompt_tokens and completion_tokens."
     ),
     required_top_level={
-        "type": str,
-        "role": str,
+        "object": str,
         "model": str,
-        "content": list,
+        "choices": list,
         "usage": dict,
     },
-    element_list_key="content",
-    required_per_element={"type": str},
+    element_list_key="choices",
+    required_per_element={"message": dict},
 )
 
 #: The Voyage embeddings response. `index` is load-bearing and is why this
@@ -175,29 +208,10 @@ VOYAGE_EMBEDDINGS = ResponseContract(
     required_per_element={"embedding": list, "index": int},
 )
 
-CONTRACTS: tuple[ResponseContract, ...] = (ANTHROPIC_MESSAGES, VOYAGE_EMBEDDINGS)
+CONTRACTS: tuple[ResponseContract, ...] = (OPENAI_CHAT_COMPLETIONS, VOYAGE_EMBEDDINGS)
 
 
 # ── Known request hazards, derived from published documentation ──────────────
-
-#: Models whose published API rejects a last-assistant-turn prefill with a 400.
-#:
-#: `llm_router.build_payload` appends `{"role": "assistant", "content": "{"}` in
-#: JSON mode. That is the mechanism CLAUDE.md records as making JSON mode
-#: structural rather than advisory, and it is correct for a model that accepts
-#: a prefill. The published schema says the 5-series does not.
-PREFILL_REJECTING_MODELS: frozenset[str] = frozenset({MODEL_SONNET})
-
-#: Models whose published API rejects a non-default `temperature` with a 400.
-#:
-#: `build_payload` always sends `temperature`, from
-#: `config.llm_providers.temperature_for(task_type)`. Every value that function
-#: returns in this codebase is 0.0 or 0.7, and both are non-default.
-SAMPLING_REJECTING_MODELS: frozenset[str] = frozenset({MODEL_SONNET})
-
-#: The Messages API `temperature` default. A request that omits the parameter,
-#: or sends exactly this, is accepted by every model in the roster.
-DEFAULT_TEMPERATURE = 1.0
 
 
 def describe_request_hazards(model: str, payload: dict[str, Any]) -> tuple[str, ...]:
@@ -205,37 +219,42 @@ def describe_request_hazards(model: str, payload: dict[str, Any]) -> tuple[str, 
 
     Returns sentences, not codes, because the one place this is read is a log
     line and an error message a human is looking at after a 400 they did not
-    expect. Never quotes the payload: a Messages request carries a real
-    candidate's answers and a real job description.
+    expect. NEVER quotes the payload: a chat request carries a real candidate's
+    answers and a real job description, so the sentence is built from the model
+    id and the SHAPE of the body rather than from its content.
+
+    One hazard today. The published API rejects
+    `response_format: {"type": "json_object"}` with a 400 unless the token
+    "json" appears somewhere in the messages, and `llm_router`'s
+    `_JSON_SYSTEM_SUFFIX` is the only thing in this codebase that satisfies it.
+    That constant reads like ordinary prompt wording, so the check is here to
+    make the day somebody rewords it a sentence rather than a silent, permanent
+    degradation of every extraction call in the product.
     """
     hazards: list[str] = []
 
-    turns = payload.get("messages")
-    if (
-        model in PREFILL_REJECTING_MODELS
-        and isinstance(turns, list)
-        and turns
-        and isinstance(turns[-1], dict)
-        and turns[-1].get("role") == "assistant"
-    ):
-        hazards.append(
-            f"the request ends on an assistant turn (JSON mode's prefill) and "
-            f"the published schema for {model} rejects a last-assistant-turn "
-            f"prefill with a 400; the documented replacement is a structured "
-            f"output format or a system-prompt instruction"
+    response_format = payload.get("response_format")
+    asks_for_json = (
+        isinstance(response_format, dict)
+        and response_format.get("type") == JSON_OBJECT_RESPONSE_FORMAT["type"]
+    )
+    if asks_for_json:
+        messages = payload.get("messages")
+        contents = (
+            [str(m.get("content") or "") for m in messages if isinstance(m, dict)]
+            if isinstance(messages, list)
+            else []
         )
-
-    temperature = payload.get("temperature")
-    if (
-        model in SAMPLING_REJECTING_MODELS
-        and isinstance(temperature, (int, float))
-        and float(temperature) != DEFAULT_TEMPERATURE
-    ):
-        hazards.append(
-            f"the request sets a non-default temperature and the published "
-            f"schema for {model} rejects temperature, top_p and top_k with a "
-            f"400; the documented replacement is to omit the parameter"
-        )
+        if not any(JSON_MODE_REQUIRED_TOKEN in text.lower() for text in contents):
+            hazards.append(
+                f"the request asks for the "
+                f"{JSON_OBJECT_RESPONSE_FORMAT['type']} response format and no "
+                f"message contains the token {JSON_MODE_REQUIRED_TOKEN!r}, "
+                f"which the published API requires before it will accept that "
+                f"format; the call to {model} is rejected with a 400 and the "
+                f"remedy is in llm_router._JSON_SYSTEM_SUFFIX, not in the "
+                f"caller's prompt"
+            )
 
     return tuple(hazards)
 
@@ -351,9 +370,15 @@ def _check_shape(
                 )
 
 
-def anthropic_path(model: str) -> str:
-    """The first-use path key for one Anthropic model."""
-    return f"anthropic.messages:{model}"
+def openai_path(model: str) -> str:
+    """The first-use path key for one OpenAI model.
+
+    Per MODEL rather than per endpoint. Both models are served by the same URL
+    and the same parser, but they are billed separately, keyed separately and
+    -- since neither id has ever been resolved -- may not both exist. One
+    checked path must not vouch for the other.
+    """
+    return f"openai.chat_completions:{model}"
 
 
 def voyage_path() -> str:
@@ -361,69 +386,84 @@ def voyage_path() -> str:
     return f"voyage.embeddings:{EMBEDDING_MODEL}"
 
 
-def check_anthropic_response(
+def check_openai_response(
     payload: object, *, model: str, json_mode: bool, force: bool = False
 ) -> None:
-    """Check a Messages API response against the contract, once per model.
+    """Check a Chat Completions response against the contract, once per model.
 
     `json_mode` is checked as well as the envelope, because JSON mode's whole
-    claim is that the response is a top-level object: the prefill seeds the
-    assistant turn with an opening brace and `parse_response` prepends it back.
-    A first text block that opens with a fence or an apology means the prefill
-    did not take, and the caller's `json.loads` would be the thing that noticed
-    -- as a parse error with no explanation attached.
+    claim is that the response is ONE TOP-LEVEL OBJECT. That claim used to rest
+    on an assistant-turn prefill that made the opening brace structurally
+    unavoidable; it now rests on `response_format`, which is a stronger
+    guarantee and, unlike the prefill, a guarantee made entirely on the
+    vendor's side of the wire. This is where that guarantee is checked rather
+    than assumed: text that does not open with a brace reaches the caller's
+    `json.loads` as a parse error with no explanation attached, and the caller
+    then degrades exactly as it would for an outage.
 
     `force` bypasses the once-per-path memo. `verify_live.py` uses it; nothing
     on a request path should.
     """
-    path = anthropic_path(model)
+    path = openai_path(model)
     if not force and path in _checked:
         return
-    _check_shape(ANTHROPIC_MESSAGES, path, payload)
+    _check_shape(OPENAI_CHAT_COMPLETIONS, path, payload)
 
     assert isinstance(payload, dict)  # narrowed by _check_shape
-    blocks = payload["content"]
-    text_blocks = [
-        b for b in blocks if isinstance(b, dict) and b.get("type") == "text"
-    ]
-    if not text_blocks:
-        types = ", ".join(
-            str(b.get("type")) for b in blocks if isinstance(b, dict)
-        )
+    if payload["object"] != CHAT_COMPLETION_OBJECT:
         raise VendorContractViolation(
-            vendor="Anthropic",
+            vendor="OpenAI",
             path=path,
-            fixture=ANTHROPIC_MESSAGES.fixture,
+            fixture=OPENAI_CHAT_COMPLETIONS.fixture,
             detail=(
-                f"no content block has type 'text' (saw: {types or 'none'}), "
-                f"and every caller in this codebase reads text"
+                f"the response declares object {payload['object']!r} and this "
+                f"codebase parses {CHAT_COMPLETION_OBJECT!r}; a streaming chunk "
+                f"carries a 'delta' where the parser reads a 'message' and "
+                f"would yield an empty string rather than raising"
+            ),
+        )
+
+    message = payload["choices"][0]["message"]
+    content = message.get("content")
+    if not isinstance(content, str):
+        raise VendorContractViolation(
+            vendor="OpenAI",
+            path=path,
+            fixture=OPENAI_CHAT_COMPLETIONS.fixture,
+            detail=(
+                f"choices[0].message.content is "
+                f"{type(content).__name__ if content is not None else 'null'} "
+                f"and every caller in this codebase reads text; a null content "
+                f"is the tool-call shape, which this platform never requests"
             ),
         )
 
     usage = payload["usage"]
-    if not isinstance(usage, dict) or "input_tokens" not in usage:
+    if not isinstance(usage, dict) or "prompt_tokens" not in usage:
         raise VendorContractViolation(
-            vendor="Anthropic",
+            vendor="OpenAI",
             path=path,
-            fixture=ANTHROPIC_MESSAGES.fixture,
+            fixture=OPENAI_CHAT_COMPLETIONS.fixture,
             detail=(
-                "'usage' carries no 'input_tokens', so cost accounting would "
+                "'usage' carries no 'prompt_tokens', so cost accounting would "
                 "report zero for a call that was billed"
             ),
         )
 
     if json_mode:
-        head = str(text_blocks[0].get("text") or "").lstrip()
-        if head.startswith("```") or head.startswith('"'):
+        head = content.lstrip()
+        if not head.startswith("{"):
+            opening = head[:12] if head else "an empty string"
             raise VendorContractViolation(
-                vendor="Anthropic",
+                vendor="OpenAI",
                 path=path,
-                fixture="anthropic/messages_response_haiku_json_prefill.json",
+                fixture="openai/chat_completion_luna_json.json",
                 detail=(
-                    "the first text block opens with a fence or a quote, so "
-                    "the assistant-turn prefill did not constrain the "
-                    "response and prepending the opening brace back would "
-                    "produce text that is not JSON"
+                    f"the response was requested in JSON object mode and its "
+                    f"text opens with {opening!r} rather than an opening "
+                    f"brace, so the format did not constrain it and every "
+                    f"JSON-mode caller in this codebase would fail its "
+                    f"json.loads with no explanation attached"
                 ),
             )
 
@@ -505,20 +545,18 @@ def check_voyage_response(
 
 
 __all__ = [
-    "ANTHROPIC_MESSAGES",
+    "CHAT_COMPLETION_OBJECT",
     "CONTRACTS",
-    "DEFAULT_TEMPERATURE",
     "FIXTURE_ROOT",
-    "PREFILL_REJECTING_MODELS",
-    "SAMPLING_REJECTING_MODELS",
+    "OPENAI_CHAT_COMPLETIONS",
     "VOYAGE_EMBEDDINGS",
     "ResponseContract",
     "VendorContractViolation",
     "already_checked",
-    "anthropic_path",
-    "check_anthropic_response",
+    "check_openai_response",
     "check_voyage_response",
     "describe_request_hazards",
+    "openai_path",
     "reset_first_use",
     "voyage_path",
 ]

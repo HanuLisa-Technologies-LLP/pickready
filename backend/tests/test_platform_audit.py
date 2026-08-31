@@ -339,10 +339,10 @@ IMMEDIATE_INTERACTIVE_TASKS = (
 #: A request handler is blocked and the output is a DOCUMENT.
 #:
 #: THIS TIER IS AN EXCEPTION AND IT IS DELIBERATE. The brief's flat 15s cap was
-#: measured against a flash-class model; against Sonnet 5 a multi-thousand-token
-#: JD cannot finish inside it, so holding the cap would not make the Generate JD
-#: button faster -- it would make every generation time out and fall back to the
-#: deterministic template, permanently. That is the same argument the brief
+#: measured against a flash-class model; against a reasoning-tier model a
+#: multi-thousand-token JD cannot finish inside it, so holding the cap would not
+#: make the Generate JD button faster -- it would make every generation time
+#: out and fall back to the deterministic template, permanently. That is the same argument the brief
 #: already accepts for report_synthesis, one tier down. It is a NAMED, BOUNDED
 #: list rather than a raised global cap, so a future task cannot join it by
 #: accident.

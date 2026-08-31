@@ -502,7 +502,7 @@ async def test_running_without_a_voyage_key_refuses(monkeypatch) -> None:
 
     with pytest.raises(reembed.ReembedRefused) as raised:
         await reembed.run(_Factory(), apply=True)
-    assert "VOYAGE_API_KEY" in str(raised.value)
+    assert "VOYAGE_CONTEXT_4" in str(raised.value)
     assert "voyage-context-4" in str(raised.value)
 
 

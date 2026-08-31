@@ -27,7 +27,7 @@
  * The consequence is deliberate and slightly annoying, which is how you know it
  * is real: adding a secret to a service is a Terraform change with a plan you
  * can read, not a thing that already worked because the role was broad. A
- * reviewer looking at the plan sees "the worker can now read ANTHROPIC_API_KEY"
+ * reviewer looking at the plan sees "the worker can now read OPENAI_GPT_TERRA"
  * as a line, which is the whole point.
  *
  * `test_deploy_secret_hygiene.py` already asserts the codebase never inlines a

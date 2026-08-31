@@ -409,11 +409,14 @@ def _env_check():
     hard = {
         "FIREBASE_SERVICE_ACCOUNT_JSON": settings.firebase_service_account_json,
         "S3_BUCKET": settings.s3_bucket,
-        # The one model credential. Without it every generative and every
-        # scoring path degrades to its deterministic fallback -- which is
-        # correct behaviour and an unacceptable steady state, so it is HARD
-        # here rather than a warning.
-        "ANTHROPIC_API_KEY": settings.anthropic_api_key,
+        # The two model credentials, one per tier. Without either, every task
+        # on that tier degrades to its deterministic fallback -- which is
+        # correct behaviour and an unacceptable steady state, so both are
+        # HARD here rather than warnings. They are listed separately because
+        # one present and one absent is the state that otherwise reads as
+        # healthy while half the product is degraded.
+        "OPENAI_GPT_TERRA": settings.openai_gpt_terra,
+        "OPENAI_GPT_LUNA": settings.openai_gpt_luna,
     }
     missing_hard = [k for k, v in hard.items() if not v]
     if missing_hard:
@@ -424,7 +427,7 @@ def _env_check():
 def _embedding_check():
     """Report the embedding model HONESTLY, including when it is the fallback.
 
-    Without `VOYAGE_API_KEY` the platform still runs: `services/embeddings`
+    Without `VOYAGE_CONTEXT_4` the platform still runs: `services/embeddings`
     returns deterministic pseudo-random vectors so local dev and CI work end to
     end. Those vectors carry no semantic meaning, so every ranking built on them
     is arbitrary-but-stable. A stack validator that reported "embeddings: ok"
@@ -437,7 +440,7 @@ def _embedding_check():
         return PASS, f"{embeddings.EMBEDDING_MODEL} at {embeddings.EMBEDDING_DIM} dims"
     return (
         WARN,
-        "VOYAGE_API_KEY unset: embeddings are the DETERMINISTIC DEV FALLBACK. "
+        "VOYAGE_CONTEXT_4 unset: embeddings are the DETERMINISTIC DEV FALLBACK. "
         "Matching, AI Reach and every RAG surface will return a stable but "
         "MEANINGLESS ordering. Never ship this.",
     )

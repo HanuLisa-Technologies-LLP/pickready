@@ -15,9 +15,16 @@ below: a breaker with no way back is a permanent outage wearing a reliability
 feature's name, and this codebase has already shipped that bug once.
 
 The new coverage on top of it is the things a single-vendor layer can get wrong:
-the OpenAI-shape-to-Messages-API translation (a dropped system message changes
-what was asked without changing what the caller wrote), JSON mode's prefill, the
-predictive deadline, and the rule that a non-429 4xx is not retried.
+the system-message lift (a dropped system message changes what was asked
+without changing what the caller wrote), JSON mode, the predictive deadline, and
+the rule that a non-429 4xx is not retried.
+
+RE-POINTED 2026-08-31, when the model vendor moved from Anthropic to OpenAI.
+One thing genuinely went away and is asserted absent below rather than left to
+rot: the assistant-turn PREFILL. JSON mode is now `response_format`, which is a
+stronger guarantee of the same property, and the invariant the prefill existed
+to protect -- every JSON-mode caller parses a top-level OBJECT -- is pinned in
+three places instead of one.
 """
 from __future__ import annotations
 
@@ -35,6 +42,10 @@ from app.services.llm_router import (
     LLMUnavailableError,
     _RouterKey,
 )
+# Bound at import time, so it is the REAL resolver rather than the stub the
+# autouse fixture installs on the module attribute. One test below needs to
+# exercise the resolver itself rather than the router's use of it.
+from app.services.llm_router import key_for_model as _real_key_for_model
 
 
 @pytest.fixture(autouse=True)
@@ -43,16 +54,45 @@ def _clean(monkeypatch):
     # A credential, so the router gets past the "nothing configured" guard.
     # Tests that want the unconfigured path clear it explicitly.
     monkeypatch.setattr(
-        llm_router, "_load_key", lambda: _RouterKey(api_key="k-test", fingerprint="fp1")
+        llm_router,
+        "key_for_model",
+        lambda model: _RouterKey(api_key="k-test", fingerprint="fp1"),
     )
     yield
     llm_router.reset_provider_stats()
 
 
 def _http_error(status: int, headers: dict | None = None) -> httpx.HTTPStatusError:
-    request = httpx.Request("POST", llm_providers.ANTHROPIC_MESSAGES_URL)
+    request = httpx.Request("POST", llm_providers.OPENAI_CHAT_COMPLETIONS_URL)
     response = httpx.Response(status, request=request, headers=headers or {})
     return httpx.HTTPStatusError("boom", request=request, response=response)
+
+
+def _completion(text: str, usage: dict | None = None) -> dict:
+    """The Chat Completions body shape `parse_response` reads.
+
+    Built here rather than loaded from a fixture because these tests are about
+    the parser's behaviour on shapes that are DELIBERATELY odd (a null content,
+    an empty choice list). The fixture set is asserted separately in
+    `test_vendor_contracts.py`, against the contract that names it.
+    """
+    payload: dict = {
+        "id": "chatcmpl_test",
+        "object": "chat.completion",
+        "created": 0,
+        "model": llm_providers.MODEL_LUNA,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": usage
+        if usage is not None
+        else {"prompt_tokens": 0, "completion_tokens": 0},
+    }
+    return payload
 
 
 def _stub_calls(monkeypatch, results):
@@ -80,7 +120,7 @@ def _stub_calls(monkeypatch, results):
             raise outcome
         return outcome
 
-    monkeypatch.setattr(llm_router, "_call_anthropic", _fake)
+    monkeypatch.setattr(llm_router, "_call_openai", _fake)
     return calls
 
 
@@ -149,9 +189,67 @@ async def test_a_cooling_credential_fails_fast_rather_than_calling(monkeypatch) 
 
 @pytest.mark.asyncio
 async def test_no_credential_configured_raises_the_typed_error(monkeypatch) -> None:
-    monkeypatch.setattr(llm_router, "_load_key", lambda: None)
-    with pytest.raises(LLMUnavailableError):
+    monkeypatch.setattr(llm_router, "key_for_model", lambda model: None)
+    with pytest.raises(LLMUnavailableError) as excinfo:
         await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+    # It must name the variable AND the model. With two keys in play, "no
+    # credential configured" leaves an operator checking the wrong one, and the
+    # symptom is one tier of tasks degrading while the other looks healthy.
+    assert llm_providers.ENV_VAR_FOR_MODEL[llm_providers.MODEL_LUNA] in str(
+        excinfo.value
+    )
+    assert llm_providers.MODEL_LUNA in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_the_key_is_chosen_by_the_model_and_never_substituted(
+    monkeypatch,
+) -> None:
+    """Two keys, one vendor. The mapping is DATA and the router reads it.
+
+    Falling back to the other key when one is absent would run a judging call on
+    the extraction credential, produce a plausible answer, and leave nothing in
+    the record saying which tier it came from. So the absence raises, and the
+    raise names the tier that is missing rather than the other one.
+    """
+    monkeypatch.setattr(
+        llm_router,
+        "key_for_model",
+        lambda model: (
+            _RouterKey(api_key="k-luna", fingerprint="fp-luna")
+            if model == llm_providers.MODEL_LUNA
+            else None
+        ),
+    )
+    calls = _stub_calls(monkeypatch, ["ok"])
+
+    # `rerank` routes to Luna, whose key is present.
+    assert (
+        await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
+        == "ok"
+    )
+    assert calls[0]["key"] == "fp-luna"
+
+    # `report_synthesis` routes to Terra, whose key is not. It must refuse
+    # rather than reach for the credential that happens to be there.
+    with pytest.raises(LLMUnavailableError) as excinfo:
+        await llm_router.invoke_llm(
+            "report_synthesis", [{"role": "user", "content": "hi"}]
+        )
+    assert llm_providers.ENV_VAR_FOR_MODEL[llm_providers.MODEL_TERRA] in str(
+        excinfo.value
+    )
+    assert len(calls) == 1, "the Terra call must not have reached the transport"
+
+
+def test_the_credential_mapping_covers_every_permitted_model() -> None:
+    """A model with no key mapping raises at resolution rather than at the
+    endpoint, and a model in the roster with no mapping would be unreachable."""
+    assert set(llm_providers.SETTINGS_ATTR_FOR_MODEL) == set(
+        llm_providers.ALLOWED_MODELS
+    )
+    with pytest.raises(ValueError):
+        _real_key_for_model("some-model-we-do-not-route-to")
 
 
 @pytest.mark.asyncio
@@ -205,8 +303,8 @@ async def test_the_retry_budget_bounds_the_attempts(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_the_error_message_never_quotes_a_response_body(monkeypatch) -> None:
-    """An Anthropic error body can echo the request, and the request carries a
-    real candidate's answers."""
+    """A vendor error body can echo the request, and the request carries a real
+    candidate's answers."""
     _stub_calls(monkeypatch, [_http_error(503)])
     with pytest.raises(LLMUnavailableError) as excinfo:
         await llm_router.invoke_llm(
@@ -229,7 +327,7 @@ def test_the_deadline_predicts_the_next_attempt() -> None:
     """
     ctx = llm_router._RouteContext(
         task_type="conversation_turn",
-        model=llm_providers.MODEL_SONNET,
+        model=llm_providers.MODEL_TERRA,
         key=_RouterKey(api_key="k", fingerprint="fp1"),
         messages=[],
         json_mode=False,
@@ -252,7 +350,7 @@ def test_a_failed_attempts_duration_counts_toward_the_prediction(monkeypatch) ->
     excluding failures from the estimate would exclude the worst case."""
     ctx = llm_router._RouteContext(
         task_type="rerank",
-        model=llm_providers.MODEL_HAIKU,
+        model=llm_providers.MODEL_LUNA,
         key=_RouterKey(api_key="k", fingerprint="fp1"),
         messages=[],
         json_mode=False,
@@ -274,7 +372,7 @@ def test_a_failed_attempts_duration_counts_toward_the_prediction(monkeypatch) ->
 def test_no_deadline_means_no_budget_check() -> None:
     ctx = llm_router._RouteContext(
         task_type="rerank",
-        model=llm_providers.MODEL_HAIKU,
+        model=llm_providers.MODEL_LUNA,
         key=_RouterKey(api_key="k", fingerprint="fp1"),
         messages=[],
         json_mode=False,
@@ -341,71 +439,121 @@ def test_an_unknown_role_is_treated_as_user_rather_than_dropped() -> None:
 
 def test_a_payload_carries_the_task_temperature_and_ceiling() -> None:
     payload = llm_router.build_payload(
-        model=llm_providers.MODEL_SONNET,
+        model=llm_providers.MODEL_TERRA,
         messages=[{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
         json_mode=False,
         max_tokens=512,
         temperature=0.3,
     )
-    assert payload["model"] == llm_providers.MODEL_SONNET
-    assert payload["system"] == "s"
+    assert payload["model"] == llm_providers.MODEL_TERRA
     assert payload["max_tokens"] == 512
     assert payload["temperature"] == 0.3
-    assert payload["messages"] == [{"role": "user", "content": "u"}]
+    # The system prompt is a MESSAGE at the head of the array, not a top-level
+    # field. That is the one shape difference the vendor change forced on the
+    # request, and it is the one a reviewer would otherwise have to take on
+    # trust from a docstring.
+    assert payload["messages"] == [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+    ]
+    assert "system" not in payload
 
 
-def test_a_payload_with_no_system_message_omits_the_key() -> None:
-    """An empty `system` is not the same as no system prompt, and sending one
-    spends tokens on nothing."""
+def test_a_payload_with_no_system_message_carries_no_system_turn() -> None:
+    """An empty system message is not the same as no system prompt, and sending
+    one spends tokens on nothing."""
     payload = llm_router.build_payload(
-        model=llm_providers.MODEL_HAIKU,
+        model=llm_providers.MODEL_LUNA,
         messages=[{"role": "user", "content": "u"}],
         json_mode=False,
         max_tokens=64,
         temperature=0.0,
     )
-    assert "system" not in payload
+    assert payload["messages"] == [{"role": "user", "content": "u"}]
+    assert all(m["role"] != "system" for m in payload["messages"])
 
 
 # ── JSON mode ────────────────────────────────────────────────────────────────
 
 
-def test_json_mode_prefills_the_assistant_turn() -> None:
-    """The prefill is what makes JSON mode structural rather than advisory: the
-    response physically cannot open with an apology or a markdown fence, because
-    the first character was not the model's to choose."""
+def test_json_mode_asks_for_the_native_format_and_says_the_required_token() -> None:
+    """JSON mode is `response_format`, and the instruction is not decoration.
+
+    Both halves are asserted because both are required for the request to be
+    ACCEPTED: the published API rejects the json_object format with a 400
+    unless the token "json" appears somewhere in the messages, so the system
+    suffix is load bearing for the call rather than merely persuasive.
+    """
     payload = llm_router.build_payload(
-        model=llm_providers.MODEL_HAIKU,
+        model=llm_providers.MODEL_LUNA,
         messages=[{"role": "user", "content": "u"}],
         json_mode=True,
         max_tokens=64,
         temperature=0.0,
     )
-    assert payload["messages"][-1] == {"role": "assistant", "content": "{"}
-    assert "raw JSON object" in payload["system"]
+    assert payload["response_format"] == llm_providers.JSON_OBJECT_RESPONSE_FORMAT
+    system = payload["messages"][0]
+    assert system["role"] == "system"
+    assert llm_providers.JSON_MODE_REQUIRED_TOKEN in system["content"].lower()
 
 
-def test_json_mode_prepends_the_prefill_back_onto_the_response() -> None:
-    """The caller must receive exactly the shape a native JSON mode would give
-    it. The mechanism is the router's business, not the caller's."""
-    result = llm_router.parse_response(
-        {"content": [{"type": "text", "text": '"grade": "Matching"}'}]},
+def test_a_non_json_call_asks_for_no_response_format() -> None:
+    """The negative direction. A `response_format` sent on every call would
+    make the assertion above pass for free."""
+    payload = llm_router.build_payload(
+        model=llm_providers.MODEL_TERRA,
+        messages=[{"role": "user", "content": "u"}],
+        json_mode=False,
+        max_tokens=64,
+        temperature=0.0,
+    )
+    assert "response_format" not in payload
+
+
+def test_the_prefill_machinery_is_gone_rather_than_disabled() -> None:
+    """DELETED on 2026-08-31, and asserted absent rather than trusted.
+
+    The prefill seeded a trailing assistant turn with an opening brace and
+    `parse_response` prepended it back. `response_format` is a stronger
+    guarantee of the same property, so keeping both would be two mechanisms for
+    one behaviour -- and the leftover trailing assistant turn would still be on
+    the wire, where at least one published API rejects it.
+    """
+    payload = llm_router.build_payload(
+        model=llm_providers.MODEL_LUNA,
+        messages=[{"role": "user", "content": "u"}],
         json_mode=True,
+        max_tokens=64,
+        temperature=0.0,
+    )
+    assert payload["messages"][-1]["role"] != "assistant"
+    assert not hasattr(llm_router, "_JSON_PREFILL")
+
+    # And nothing is prepended: the response IS the whole object now.
+    result = llm_router.parse_response(
+        _completion('{"grade": "Matching"}'), json_mode=True
     )
     assert result.content == '{"grade": "Matching"}'
 
-    plain = llm_router.parse_response(
-        {"content": [{"type": "text", "text": "hello"}]}, json_mode=False
+
+def test_the_text_is_read_from_the_choice_and_json_mode_does_not_alter_it() -> None:
+    assert llm_router.parse_response(_completion("hello"), json_mode=False).content == (
+        "hello"
     )
-    assert plain.content == "hello"
+    assert llm_router.parse_response(_completion("hello"), json_mode=True).content == (
+        "hello"
+    )
 
 
 def test_no_json_mode_caller_expects_a_top_level_array() -> None:
-    """Pins the assumption the prefill rests on.
+    """Pins the invariant the prefill used to rest on, which outlived it.
 
-    Prefilling `{` is correct only because every JSON-mode caller in this
-    codebase parses a top-level OBJECT. A future caller that wanted an array
-    should fail loudly HERE rather than mysteriously at its own parse.
+    Every JSON-mode caller in this codebase parses a top-level OBJECT. The
+    prefill enforced that by constraining the first character; the enforcement
+    now sits in `vendor_contract.check_openai_response`, which refuses a
+    JSON-mode response whose text does not open with a brace. Either way the
+    assumption is the same, and a future array-returning caller should fail
+    loudly HERE rather than mysteriously at its own parse.
     """
     import pathlib
     import re
@@ -423,19 +571,21 @@ def test_no_json_mode_caller_expects_a_top_level_array() -> None:
     )
 
 
-def test_only_text_blocks_are_concatenated() -> None:
-    """A response can carry non-text blocks. Stringifying them would put a dict
-    repr into a JSON parse."""
-    result = llm_router.parse_response(
-        {
-            "content": [
-                {"type": "thinking", "thinking": "internal"},
-                {"type": "text", "text": "visible"},
-            ]
-        },
-        json_mode=False,
-    )
-    assert result.content == "visible"
+def test_a_null_content_reads_as_empty_rather_than_as_the_string_none() -> None:
+    """A null content is the tool-call shape, which this platform never asks
+    for. Stringifying it would put "None" into a JSON parse, and into a report.
+
+    The empty string it yields instead is not a good outcome either, which is
+    exactly why `check_openai_response` refuses a null content on the first
+    live response rather than leaving it to look like a quiet model.
+    """
+    payload = _completion("x")
+    payload["choices"][0]["message"]["content"] = None
+    assert llm_router.parse_response(payload, json_mode=False).content == ""
+
+
+def test_a_response_with_no_choices_reads_as_empty_rather_than_raising() -> None:
+    assert llm_router.parse_response({"choices": []}, json_mode=False).content == ""
 
 
 # ── Accounting ───────────────────────────────────────────────────────────────
@@ -443,18 +593,15 @@ def test_only_text_blocks_are_concatenated() -> None:
 
 def test_usage_is_recorded_and_a_missing_one_stays_distinguishable() -> None:
     with_usage = llm_router.parse_response(
-        {
-            "content": [{"type": "text", "text": "x"}],
-            "usage": {"input_tokens": 10, "output_tokens": 4},
-        },
+        _completion("x", usage={"prompt_tokens": 10, "completion_tokens": 4}),
         json_mode=False,
     )
     assert (with_usage.prompt_tokens, with_usage.completion_tokens) == (10, 4)
     assert with_usage.had_usage
 
-    without = llm_router.parse_response(
-        {"content": [{"type": "text", "text": "x"}]}, json_mode=False
-    )
+    payload = _completion("x")
+    payload.pop("usage")
+    without = llm_router.parse_response(payload, json_mode=False)
     assert (without.prompt_tokens, without.completion_tokens) == (0, 0)
     assert not without.had_usage
 
@@ -473,9 +620,9 @@ async def test_stats_separate_the_model_from_the_credential(monkeypatch) -> None
     await llm_router.invoke_llm("report_synthesis", [{"role": "user", "content": "b"}])
 
     models = llm_router.model_stats()
-    assert models[llm_providers.MODEL_HAIKU]["successes"] == 1
-    assert models[llm_providers.MODEL_SONNET]["successes"] == 1
-    assert llm_router.provider_stats()["anthropic"]["attempts"] == 2
+    assert models[llm_providers.MODEL_LUNA]["successes"] == 1
+    assert models[llm_providers.MODEL_TERRA]["successes"] == 1
+    assert llm_router.provider_stats()[llm_providers.PROVIDER]["attempts"] == 2
     assert llm_router.key_stats()["fp1"]["attempts"] == 2
 
 
@@ -489,9 +636,9 @@ async def test_no_key_material_reaches_the_stats_surface(monkeypatch) -> None:
 
 
 def test_a_fingerprint_is_not_reversible_and_is_stable() -> None:
-    a = llm_router._fingerprint("sk-ant-secret")
-    assert a == llm_router._fingerprint("sk-ant-secret")
-    assert a != llm_router._fingerprint("sk-ant-other")
+    a = llm_router._fingerprint("sk-secret")
+    assert a == llm_router._fingerprint("sk-secret")
+    assert a != llm_router._fingerprint("sk-other")
     assert "secret" not in a
     assert len(a) == 12
 
@@ -514,7 +661,7 @@ async def test_chat_completion_is_a_pure_alias(monkeypatch) -> None:
         await llm_router.chat_completion("rerank", [{"role": "user", "content": "hi"}])
         == "ok"
     )
-    assert calls[0]["model"] == llm_providers.MODEL_HAIKU
+    assert calls[0]["model"] == llm_providers.MODEL_LUNA
 
 
 @pytest.mark.asyncio

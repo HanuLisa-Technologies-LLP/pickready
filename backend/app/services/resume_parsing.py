@@ -1,7 +1,7 @@
 """Resume parsing pipeline (ESD §9, FR-6.2).
 
 Raw PDF/DOCX -> text extraction (pypdf / python-docx) -> LLM extraction
-(`extraction` task type, Haiku 4.5 -- narrow, mechanical, must not evaluate)
+(`extraction` task type, the extraction tier -- narrow, mechanical, must not evaluate)
 into a fixed structured schema -> profiles.parsed_fields_json. Also sets
 profiles.resume_text and the voyage-context-4 embedding used by the semantic
 matching stage.

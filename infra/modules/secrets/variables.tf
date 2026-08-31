@@ -18,7 +18,8 @@ variable "region" {
 variable "secret_names" {
   description = <<-EOT
     Every secret this environment holds. spec-doc5 §B.5 puts the platform at
-    TWO model credentials -- ANTHROPIC_API_KEY and VOYAGE_API_KEY -- and the
+    THREE credentials -- OPENAI_GPT_TERRA and OPENAI_GPT_LUNA for the two
+    model tiers, and VOYAGE_CONTEXT_4 for embeddings -- and the
     rest of this list is what the product already needed.
 
     The container is created here; the VALUE is not. A value in Terraform is a
@@ -27,8 +28,9 @@ variable "secret_names" {
   EOT
   type        = list(string)
   default = [
-    "ANTHROPIC_API_KEY",
-    "VOYAGE_API_KEY",
+    "OPENAI_GPT_TERRA",
+    "OPENAI_GPT_LUNA",
+    "VOYAGE_CONTEXT_4",
     "DATABASE_URL",
     "REDIS_URL",
     "JWT_SECRET",
@@ -67,8 +69,9 @@ variable "service_secrets" {
       "DATABASE_URL",
       "REDIS_URL",
       "JWT_SECRET",
-      "ANTHROPIC_API_KEY",
-      "VOYAGE_API_KEY",
+      "OPENAI_GPT_TERRA",
+      "OPENAI_GPT_LUNA",
+      "VOYAGE_CONTEXT_4",
       "FIREBASE_SERVICE_ACCOUNT_JSON",
       "RAZORPAY_KEY_SECRET",
       "LLM_KEY_ENCRYPTION_SECRET",
@@ -76,8 +79,9 @@ variable "service_secrets" {
     worker = [
       "DATABASE_URL",
       "REDIS_URL",
-      "ANTHROPIC_API_KEY",
-      "VOYAGE_API_KEY",
+      "OPENAI_GPT_TERRA",
+      "OPENAI_GPT_LUNA",
+      "VOYAGE_CONTEXT_4",
       "SMTP_PASSWORD",
       "TAVILY_API_KEY",
       "MSG91_API_KEY",

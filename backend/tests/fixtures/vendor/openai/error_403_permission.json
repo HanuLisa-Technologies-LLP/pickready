@@ -1,0 +1,20 @@
+{
+  "_provenance": {
+    "authored_from": "OpenAI published error schema. 403 is documented for a key that is valid and not permitted to use the requested resource, and is non-retryable.",
+    "observed": false,
+    "notes": "Classified identically to 401 by this codebase, and for the same reason: retrying does not grant a permission. This is also the likely answer if a model id exists but this credential is not entitled to it."
+  },
+  "status": 403,
+  "headers": {
+    "content-type": "application/json",
+    "x-request-id": "req_fixture_403"
+  },
+  "body": {
+    "error": {
+      "message": "You are not allowed to use this model with this API key.",
+      "type": "invalid_request_error",
+      "param": null,
+      "code": "model_not_permitted"
+    }
+  }
+}

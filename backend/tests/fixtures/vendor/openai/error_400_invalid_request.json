@@ -1,0 +1,20 @@
+{
+  "_provenance": {
+    "authored_from": "OpenAI published error schema: an object with an error carrying message, type, param and code. The documented constraint reproduced here is that a response_format of type json_object is rejected unless the token json appears somewhere in the messages. The message text is representative of the documented class, not a transcription of a specific response.",
+    "observed": false,
+    "notes": "A 400 is OUR bug by classification and is not retried, so the symptom would be every caller degrading to its deterministic fallback with nothing naming the cause. vendor_contract.describe_request_hazards is what names it."
+  },
+  "status": 400,
+  "headers": {
+    "content-type": "application/json",
+    "x-request-id": "req_fixture_400"
+  },
+  "body": {
+    "error": {
+      "message": "'messages' must contain the word 'json' in some form to use 'response_format' of type 'json_object'.",
+      "type": "invalid_request_error",
+      "param": "messages",
+      "code": null
+    }
+  }
+}

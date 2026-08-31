@@ -32,16 +32,47 @@ timeout, an explicit output ceiling, per-task temperature, a bounded retry
 budget, and a circuit breaker. Those are in this file and in `llm_router`
 unchanged in intent.
 
+THE VENDOR CHANGED ON 2026-08-31, AND THE DISCIPLINE DID NOT
+-------------------------------------------------------------
+This file described Anthropic until 2026-08-31. It now describes OpenAI. That
+is a deliberate reversal of a documented rule, made by the product owner, and
+it is recorded here rather than left to be discovered from a diff.
+
+What was reversed is the VENDOR. What was NOT reversed is the single-vendor
+discipline that made the previous phase worth doing: one vendor, two model ids,
+a closed mapping, a grep that fails on a third id. Groq, Gemini, OpenRouter and
+a 1371-line capacity registry were deleted to reach that state, and none of it
+comes back. There is no fallback chain, no `if provider ==` branch, and no
+second transport.
+
 THE THREE ENDPOINTS, AND NOTHING ELSE
 --------------------------------------
-    reasoning / writing / judgment  -> Claude Sonnet 5
-    extraction / classification     -> Claude Haiku 4.5
+    reasoning / writing / judgment  -> gpt-5.6-terra
+    extraction / classification     -> gpt-5.6-luna
     every embedding                 -> voyage-context-4
 
-No Opus, no Fable, no other Claude tier, no second embedding model. spec-doc5
-§B.2 is explicit that adding a fourth model is a later decision and not one to
-take on implementation judgment, so `MODEL_FOR_TASK` is a closed mapping onto
-exactly two ids and `tests/test_llm_task_routing.py` asserts the closure.
+The two-tier split is the point of the mapping and it survived the vendor
+change intact: every task that ran on the reasoning tier still runs on the
+reasoning tier, and every task that ran on the extraction tier still runs on
+the extraction tier. No task moved. `claim_extraction` in particular MUST NOT
+EVALUATE, and moving it up a tier would be a boundary violation rather than an
+upgrade -- see `MODEL_FOR_TASK` below.
+
+No third model, no second embedding model. Adding one is a later decision and
+not one to take on implementation judgment, so `MODEL_FOR_TASK` is a closed
+mapping onto exactly two ids and `tests/test_llm_task_routing.py` asserts the
+closure and greps the executable source for any other model string.
+
+THE TWO MODEL IDS HAVE NEVER BEEN SENT TO A LIVE ENDPOINT
+----------------------------------------------------------
+There is no OpenAI key in this phase, so neither `gpt-5.6-terra` nor
+`gpt-5.6-luna` has been resolved against the models endpoint. They are the
+owner's strings, used verbatim. They are named constants here precisely so a
+wrong id is a one-line fix rather than a search, and the first live response on
+each path is checked against a hand-authored fixture by
+`app/services/reliability/vendor_contract.py`, which raises rather than parsing
+a differently shaped body into an empty string. `VERIFICATION_PENDING.md`
+carries the row and the command.
 """
 from __future__ import annotations
 
@@ -51,18 +82,18 @@ from typing import Literal
 #
 # Pinned ids, not aliases. The old file kept `gemini-flash-latest` as a rolling
 # alias precisely because a free-tier model had been withdrawn underneath a
-# pinned id; on a paid Anthropic account that pressure does not exist, and a
-# pinned id is what makes a scoring call reproducible across a deploy. A model
-# that changes underneath a grade is the same defect as a temperature above
-# zero: the candidate's grade depends on WHEN they were scored.
+# pinned id; on a paid account that pressure does not exist, and a pinned id is
+# what makes a scoring call reproducible across a deploy. A model that changes
+# underneath a grade is the same defect as a temperature above zero: the
+# candidate's grade depends on WHEN they were scored.
 
 #: Reasoning, writing and judgment. Every task that requires genuine
 #: evaluation, dialogue generation, or evidence-grounded writing.
-MODEL_SONNET = "claude-sonnet-5"
+MODEL_TERRA = "gpt-5.6-terra"
 
 #: Extraction, classification and routing. High-volume, low-ambiguity,
 #: mechanical sub-tasks.
-MODEL_HAIKU = "claude-haiku-4-5-20251001"
+MODEL_LUNA = "gpt-5.6-luna"
 
 #: The sole embedding model for every RAG surface in the platform.
 #:
@@ -75,23 +106,52 @@ MODEL_HAIKU = "claude-haiku-4-5-20251001"
 #: reason.
 EMBEDDING_MODEL = "voyage-context-4"
 
-#: Every model id this platform may call. spec-doc5 §B acceptance criterion:
-#: "grep the codebase for any other model string and confirm zero results".
-#: `tests/test_llm_task_routing.py` is that grep, executed.
-ALLOWED_MODELS: frozenset[str] = frozenset({MODEL_SONNET, MODEL_HAIKU})
+#: Every model id this platform may call. The acceptance criterion is unchanged
+#: by the vendor swap: "grep the codebase for any other model string and confirm
+#: zero results". `tests/test_llm_task_routing.py` is that grep, executed.
+ALLOWED_MODELS: frozenset[str] = frozenset({MODEL_TERRA, MODEL_LUNA})
 
 #: Kept as a single-element tuple rather than deleted. Two callers read it --
 #: the admin health endpoint's key roster and `matching`'s reasoning trace --
 #: and both are answering "which vendor served this", which is still a real
 #: question with a now-boring answer. A one-element tuple keeps those call
 #: sites honest instead of having them hardcode the string.
-PROVIDERS: tuple[str, ...] = ("anthropic",)
-PROVIDER = "anthropic"
+PROVIDERS: tuple[str, ...] = ("openai",)
+PROVIDER = "openai"
 
-#: The Anthropic Messages API version header. Pinned, like the model ids.
-ANTHROPIC_API_VERSION = "2023-06-01"
-ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+#: WHICH CREDENTIAL EACH MODEL IS CALLED WITH.
+#:
+#: Two keys for one vendor is unusual and it is what the owner has, so it is
+#: DATA here rather than a branch in the router. The value is the `Settings`
+#: attribute, which is populated from the environment variable of the same name
+#: uppercased: `OPENAI_GPT_TERRA` and `OPENAI_GPT_LUNA`.
+#:
+#: `llm_router.key_for_model` is the only reader. An absent key for the model
+#: being called raises the same loud `LLMUnavailableError` an absent single key
+#: used to raise, naming the variable that is missing -- never a silent switch
+#: to the other key, which would send a judging call to the extraction tier and
+#: change what a grade was produced by without changing anything visible.
+SETTINGS_ATTR_FOR_MODEL: dict[str, str] = {
+    MODEL_TERRA: "openai_gpt_terra",
+    MODEL_LUNA: "openai_gpt_luna",
+}
+
+#: The environment variable behind each of those settings, for error messages
+#: and for `configured_key_count`. Derived rather than written twice.
+ENV_VAR_FOR_MODEL: dict[str, str] = {
+    model: attribute.upper() for model, attribute in SETTINGS_ATTR_FOR_MODEL.items()
+}
+
+OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
 VOYAGE_EMBEDDINGS_URL = "https://api.voyageai.com/v1/embeddings"
+
+#: The `response_format` this platform asks for in JSON mode, and the token the
+#: published API requires to be present somewhere in the messages before it will
+#: accept that format. Both are DATA rather than literals in the router because
+#: `vendor_contract.describe_request_hazards` has to check the same two facts
+#: the router relies on, and two copies of a published constraint drift.
+JSON_OBJECT_RESPONSE_FORMAT: dict[str, str] = {"type": "json_object"}
+JSON_MODE_REQUIRED_TOKEN = "json"
 
 
 # ── Task types ───────────────────────────────────────────────────────────────
@@ -124,63 +184,63 @@ TaskType = Literal[
 
 #: WHICH MODEL EACH TASK RUNS ON (spec-doc5 §B.3).
 #:
-#: The split is one question: does this task JUDGE or WRITE (Sonnet), or does it
-#: EXTRACT, CLASSIFY or ROUTE (Haiku)? Two entries below are worth their own
+#: The split is one question: does this task JUDGE or WRITE (Terra), or does it
+#: EXTRACT, CLASSIFY or ROUTE (Luna)? Two entries below are worth their own
 #: sentence because the obvious answer is the wrong one:
 #:
-#:   * `claim_extraction` is Haiku and MUST NOT EVALUATE. Runbook §57.1 makes
+#:   * `claim_extraction` is Luna and MUST NOT EVALUATE. Runbook §57.1 makes
 #:     extraction a narrow mechanical step precisely so that a model's opinion
 #:     of a claim cannot leak into the pipeline before the dimension evaluators,
-#:     which are the only components allowed to hold one. Putting Sonnet here
+#:     which are the only components allowed to hold one. Putting Terra here
 #:     would not be an upgrade, it would be a boundary violation.
-#:   * `rerank` is Haiku because reranking exists to be fast and orders a list
-#:     it does not grade. `dimension_evaluation` is Sonnet because it grades.
+#:   * `rerank` is Luna because reranking exists to be fast and orders a list
+#:     it does not grade. `dimension_evaluation` is Terra because it grades.
 #:
 #: What is NOT here: the aggregator. spec-doc5 §B.3 assigns it "No model.
 #: Deterministic code only", so it has no task type at all, and
 #: `tests/test_miti_pipeline.py` asserts the aggregation module imports no
 #: router. A task type would be a door into a room that must not have one.
 MODEL_FOR_TASK: dict[str, str] = {
-    # ── Sonnet 5: evaluation, dialogue, evidence-grounded writing ───────────
+    # ── Terra: evaluation, dialogue, evidence-grounded writing ─────────────
     # Vaada. "Human-quality dialogue is a stated product bar" (§B.3).
-    "conversation_turn": MODEL_SONNET,
-    "jd_generation": MODEL_SONNET,
-    "technical_questions": MODEL_SONNET,
+    "conversation_turn": MODEL_TERRA,
+    "jd_generation": MODEL_TERRA,
+    "technical_questions": MODEL_TERRA,
     # Bodha, both mandates: structured interview judgment and probe selection.
-    "swot_intake": MODEL_SONNET,
-    "company_dna_intake": MODEL_SONNET,
+    "swot_intake": MODEL_TERRA,
+    "company_dna_intake": MODEL_TERRA,
     # Sutra: competency naming, observable-evidence authoring, weight
     # derivation. Judgment-heavy.
-    "competency_transformation": MODEL_SONNET,
-    "behavioral_assessment": MODEL_SONNET,
+    "competency_transformation": MODEL_TERRA,
+    "behavioral_assessment": MODEL_TERRA,
     # Miti: five isolated rubric-anchored evaluators.
-    "dimension_evaluation": MODEL_SONNET,
+    "dimension_evaluation": MODEL_TERRA,
     # Miti: contradiction reasoning and benign-explanation generation.
-    "triangulation": MODEL_SONNET,
+    "triangulation": MODEL_TERRA,
     # Siddhi: writing quality and evidence-citation enforcement.
-    "report_synthesis": MODEL_SONNET,
-    # ASSUMPTION: §B.3's table does not list email composition. Assigned Sonnet
-    # rather than Haiku because a lifecycle email is prose a candidate reads
+    "report_synthesis": MODEL_TERRA,
+    # ASSUMPTION: §B.3's table does not list email composition. Assigned Terra
+    # rather than Luna because a lifecycle email is prose a candidate reads
     # over the client's name, which is the "writing" side of §B.2's split, and
     # because every send is human-editable before it goes out -- a draft a
     # person will not want to rewrite is worth the better model. Surfaced here
     # rather than left as a silent judgment call.
-    "email_composition": MODEL_SONNET,
-    # ── Haiku 4.5: extraction, classification, routing ──────────────────────
+    "email_composition": MODEL_TERRA,
+    # ── Luna: extraction, classification, routing ───────────────────────────
     # Bodha's situation-type call is a six-way classification over a completed
     # SWOT, and the Hiring Manager confirms it explicitly before the session
     # closes, so a wrong label is caught by a human rather than by a rescore.
-    "situation_classification": MODEL_HAIKU,
+    "situation_classification": MODEL_LUNA,
     # Miti stage 2. Narrow, mechanical, must-not-evaluate.
-    "claim_extraction": MODEL_HAIKU,
+    "claim_extraction": MODEL_LUNA,
     # Miti stage 3. Mostly rule-based; only the specificity modifier needs
     # model judgment at all.
-    "evidence_tiering": MODEL_HAIKU,
+    "evidence_tiering": MODEL_LUNA,
     # Yukti's AI Score. "Must be fast; this is an 'instant' product
     # requirement" (§B.3).
-    "rerank": MODEL_HAIKU,
+    "rerank": MODEL_LUNA,
     # Resume parsing and field extraction.
-    "extraction": MODEL_HAIKU,
+    "extraction": MODEL_LUNA,
 }
 
 #: An unlisted task is a programming error, not a default. Kept as an explicit
@@ -232,9 +292,9 @@ def provider_order(task_type: str) -> list[str]:
 #   BACKGROUND -- a Celery task. Nobody is watching, and a truncated report is
 #   worse than a slow one.
 #
-# Sonnet is slower per token than the free-tier flash models this replaces, and
-# the interactive numbers were raised accordingly rather than left where a
-# faster model had put them. Leaving them would have converted a model upgrade
+# The reasoning tier is slower per token than the free-tier flash models it
+# replaced, and the interactive numbers were raised accordingly rather than
+# left where a faster model had put them. Leaving them would have converted a model upgrade
 # into a timeout regression: the caller degrades, the product looks unchanged,
 # and nothing announces which of the two happened.
 TASK_TIMEOUTS: dict[str, float] = {
@@ -260,8 +320,8 @@ TASK_TIMEOUTS: dict[str, float] = {
     #    the cap was relaxed out of convenience.
     #
     #    The brief's flat 15s cap was measured against a flash-class model
-    #    emitting a 4096-token ceiling in a few seconds. Sonnet 5 is slower per
-    #    token and better per token, and holding 15s against it would not make
+    #    emitting a 4096-token ceiling in a few seconds. A reasoning-tier model
+    #    is slower per token and better per token, and holding 15s would not make
     #    the Generate JD button faster -- it would make every generation time
     #    out and fall back to the deterministic template, permanently. That is
     #    the exact failure the brief's own reasoning already names for
@@ -327,9 +387,12 @@ def total_budget_for(task_type: str) -> float:
 
 # ── Output ceiling ───────────────────────────────────────────────────────────
 #
-# `max_tokens` is REQUIRED by the Anthropic Messages API -- it is not optional
-# the way it was on the OpenAI-shaped endpoints -- so this table is now load
-# bearing for the request to be accepted at all, not merely for cost control.
+# `max_tokens` is optional on Chat Completions, and this table is sent anyway,
+# for the reason it existed before the parameter was mandatory: an unbounded
+# generation is an unbounded bill and an unbounded wait, and `report_synthesis`
+# asking for seven sections needs a ceiling large enough to finish rather than
+# no ceiling at all. It is cost control and latency control, not a transport
+# requirement.
 TASK_MAX_TOKENS: dict[str, int] = {
     "conversation_turn": 2048,
     "jd_generation": 4096,
@@ -463,7 +526,7 @@ def backoff_seconds(attempt: int) -> float:
 
 # ── Failure classification (spec-doc5 §B.4) ──────────────────────────────────
 #
-# Simplified to what actually applies to the Anthropic and Voyage APIs. Every
+# Simplified to what actually applies to the OpenAI and Voyage APIs. Every
 # branch that existed only for another vendor's quirk is gone, and it is worth
 # naming them so a reader does not go looking: the OpenRouter 402
 # ("can only afford N tokens") and its adaptive max_tokens re-ask, the Groq 413
@@ -507,18 +570,26 @@ def is_retryable_status(status: int) -> bool:
 # same reason timeouts are: a commercial number changes on someone else's
 # schedule and must be editable without touching the retry loop.
 #
-# These are LIST PRICES AND ARE LABELLED AS ESTIMATES EVERYWHERE THEY SURFACE.
+# THESE TWO ROWS ARE UNVERIFIED FOR THESE TWO MODEL IDS, and saying so is the
+# point of this paragraph. No published price sheet has been read for
+# `gpt-5.6-terra` or `gpt-5.6-luna`; the rates below carry forward the previous
+# roster's reasoning-tier and extraction-tier figures unchanged, so what they
+# encode honestly is the RATIO between the tiers and not the absolute cost of
+# either. `VERIFICATION_PENDING.md` carries the row.
+#
+# That is survivable because of how the number is used and how it is labelled.
 # The router reports `estimated_cost_usd`, never `cost`: prompt caching, batch
 # discounts and the vendor's own rounding all move the invoice, and the number
-# here cannot see any of them. What it IS good for is the comparison an operator
-# actually needs -- which task_type is consuming the budget -- and that ordering
-# is stable even when the absolute figure is not.
+# here could never see any of them even with the right rates. What it IS good
+# for is the comparison an operator actually needs -- which task_type is
+# consuming the budget -- and that ordering is stable under a uniform error in
+# either row.
 #
 # Keyed by MODEL, not by provider, because with one vendor the model is the only
 # axis on which price varies.
 TOKEN_PRICES_USD_PER_MILLION: dict[str, dict[str, float]] = {
-    MODEL_SONNET: {"prompt": 3.00, "completion": 15.00},
-    MODEL_HAIKU: {"prompt": 1.00, "completion": 5.00},
+    MODEL_TERRA: {"prompt": 3.00, "completion": 15.00},
+    MODEL_LUNA: {"prompt": 1.00, "completion": 5.00},
 }
 
 
@@ -546,14 +617,37 @@ def is_priced(model: str) -> bool:
 # ── Credentials ──────────────────────────────────────────────────────────────
 
 def configured_key_count() -> dict[str, int]:
-    """{provider: 1 or 0} -- whether the Anthropic credential is present.
+    """{provider: how many of the two model credentials are present}.
 
     Retained for the admin health endpoint and `scripts/validate_stack.py`,
-    which report the roster without ever leaking key material. With one vendor
-    this is a boolean wearing a dict's clothes, and that is the honest shape:
-    the endpoint's question is "is the platform able to call a model", and the
-    answer is now yes or no rather than a count.
+    which report the roster without ever leaking key material. It counts rather
+    than reporting a boolean because the two keys can be present independently,
+    and one of two is a state an operator needs to see: every task on the
+    unconfigured tier raises and degrades to its caller's deterministic
+    fallback while every task on the other tier looks perfectly healthy.
     """
     from app.core.config import get_settings  # noqa: PLC0415 -- avoids an import cycle
 
-    return {PROVIDER: 1 if get_settings().anthropic_api_key else 0}
+    settings = get_settings()
+    present = sum(
+        1
+        for attribute in SETTINGS_ATTR_FOR_MODEL.values()
+        if (getattr(settings, attribute, "") or "").strip()
+    )
+    return {PROVIDER: present}
+
+
+def configured_models() -> dict[str, bool]:
+    """{model id: whether its credential is set}. Never the key material.
+
+    The per-model view `configured_key_count` deliberately flattens. Two of
+    two and zero of two are unambiguous; one of two is not, and this is what
+    says which one.
+    """
+    from app.core.config import get_settings  # noqa: PLC0415 -- avoids an import cycle
+
+    settings = get_settings()
+    return {
+        model: bool((getattr(settings, attribute, "") or "").strip())
+        for model, attribute in sorted(SETTINGS_ATTR_FOR_MODEL.items())
+    }

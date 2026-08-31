@@ -1833,16 +1833,16 @@ def render_survey(survey: Survey) -> str:
     w("# 4. Re-embed BEFORE regrading: the regrade reads retrieval, and")
     w("#    re-embedding changes what retrieval returns.")
     w("python -m app.scripts.reembed --dry-run")
-    w("python -m app.scripts.reembed --confirm        # needs VOYAGE_API_KEY")
+    w("python -m app.scripts.reembed --confirm        # needs VOYAGE_CONTEXT_4")
     w("")
-    w("# 5. Regrade. Plan first; --confirm needs ANTHROPIC_API_KEY and")
-    w("#    VOYAGE_API_KEY and refuses without them.")
+    w("# 5. Regrade. Plan first; --confirm needs the model credentials and")
+    w("#    VOYAGE_CONTEXT_4, and refuses without them.")
     w("python -m app.scripts.legacy_reset --regrade")
     w("python -m app.scripts.legacy_reset --regrade --confirm")
     w("```")
     w("")
     w(
-        "Steps 4 and 5 cannot run in this phase: there is no Anthropic key and "
+        "Steps 4 and 5 cannot run in this phase: there is no OpenAI key and "
         "no Voyage key. Both are listed in `VERIFICATION_PENDING.md` with their "
         "measured work plans and the command that settles each one."
     )
@@ -2475,7 +2475,7 @@ async def run_purge(
 
 # ── Regrade ──────────────────────────────────────────────────────────────────
 #
-# CANNOT EXECUTE IN THIS PHASE. spec-doc6 decision D6: there is no Anthropic and
+# CANNOT EXECUTE IN THIS PHASE. spec-doc6 decision D6: there is no OpenAI and
 # no Voyage key, so the pre-screen grading calls cannot be made. `--regrade`
 # without `--confirm` produces the work plan; `--regrade --confirm` refuses to
 # start without a key rather than silently grading every candidate on the
@@ -2596,7 +2596,11 @@ async def plan_regrade(session: AsyncSession) -> RegradePlan:
         embedding_calls=embedding_calls,
         estimated_cost_usd=estimated_cost,
         estimated_seconds=llm_calls * timeout_for(REGRADE_TASK),
-        keys_present=bool(settings.anthropic_api_key and settings.voyage_api_key),
+        keys_present=bool(
+            settings.openai_gpt_terra
+            and settings.openai_gpt_luna
+            and settings.voyage_context_4
+        ),
     )
 
 
@@ -2635,7 +2639,8 @@ async def run_regrade(
     if matcher is None:
         if not plan.keys_present:
             raise MissingCredentials(
-                "--regrade --confirm needs ANTHROPIC_API_KEY and VOYAGE_API_KEY. "
+                "--regrade --confirm needs OPENAI_GPT_TERRA, OPENAI_GPT_LUNA and "
+                "VOYAGE_CONTEXT_4. "
                 "Without them every candidate would be graded on the "
                 "deterministic dev fallback, and a hash-derived ranking written "
                 "into the column a recruiter sorts on is worse than no grade."

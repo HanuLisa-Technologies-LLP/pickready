@@ -22,7 +22,7 @@ baseline below, and `docs/TEST_BASELINE.md` for the numbers.
 
 | Test | Category | Reason |
 |---|---|---|
-| `tests/test_ai_reach_semantic.py::test_real_embedding_model_ranks_known_catalogue` | live-credential-required | VOYAGE_API_KEY unset: semantic quality cannot be measured against the deterministic dev fallback |
+| `tests/test_ai_reach_semantic.py::test_real_embedding_model_ranks_known_catalogue` | live-credential-required | VOYAGE_CONTEXT_4 unset: semantic quality cannot be measured against the deterministic dev fallback |
 
 ## What the count was, and what closed it
 

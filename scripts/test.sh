@@ -70,12 +70,12 @@ export S3_TEST_ACCESS_KEY="readypick_test"
 export S3_TEST_SECRET_KEY="readypick_test"
 export AWS_DEFAULT_REGION="ap-south-1"
 
-# DELIBERATELY UNSET: ANTHROPIC_API_KEY and VOYAGE_API_KEY. The suite must pass
+# DELIBERATELY UNSET: the model and embedding credentials. The suite must pass
 # with no model credential at all (spec-doc6 D6), every generative path has a
 # deterministic fallback, and a key here would let a vendor outage fail the
 # build. `tests/test_ai_reach_semantic.py` skips one test for this reason and
 # `docs/SKIPS.md` records it as the one legitimate skip in the inventory.
-unset ANTHROPIC_API_KEY VOYAGE_API_KEY || true
+unset OPENAI_GPT_TERRA OPENAI_GPT_LUNA VOYAGE_CONTEXT_4 || true
 
 teardown() {
   if [[ "${KEEP}" -eq 1 ]]; then

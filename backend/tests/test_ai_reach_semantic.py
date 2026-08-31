@@ -92,14 +92,14 @@ async def test_real_embedding_model_ranks_known_catalogue() -> None:
     with no meaning at all.
 
     Before spec-doc5 Part B this ran on a CPU-local `fastembed` model baked into
-    the image, so it could run offline; it now needs `VOYAGE_API_KEY`, because
+    the image, so it could run offline; it now needs `VOYAGE_CONTEXT_4`, because
     the platform has one embedding model and it is a hosted one. A skip that
     says so is honest. Letting it run against the fallback and pass would be
     worse than not having the test: it would report that role search works when
     what it measured was a hash function.
     """
     if not embeddings.is_semantic():
-        pytest.skip("VOYAGE_API_KEY unset: semantic quality cannot be measured "
+        pytest.skip("VOYAGE_CONTEXT_4 unset: semantic quality cannot be measured "
                     "against the deterministic dev fallback")
     skills_by_title = {
         "Java Backend Developer": ("Java", "Spring Boot", "REST", "MySQL", "Docker"),

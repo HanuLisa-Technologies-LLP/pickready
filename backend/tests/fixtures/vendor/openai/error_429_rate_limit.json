@@ -1,0 +1,21 @@
+{
+  "_provenance": {
+    "authored_from": "OpenAI published error schema. 429 is documented as rate_limit_exceeded and retryable, with a retry-after header carrying seconds.",
+    "observed": false,
+    "notes": "The retry-after header is the whole point of this fixture: honouring the vendor's own number is the difference between backing off and guessing. The router bounds it by the remaining wall-clock budget rather than trusting it blindly."
+  },
+  "status": 429,
+  "headers": {
+    "content-type": "application/json",
+    "retry-after": "3",
+    "x-request-id": "req_fixture_429"
+  },
+  "body": {
+    "error": {
+      "message": "Rate limit reached for requests.",
+      "type": "requests",
+      "param": null,
+      "code": "rate_limit_exceeded"
+    }
+  }
+}

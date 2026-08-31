@@ -18,6 +18,11 @@ they are the ones that were always about safety rather than about routing:
 The third question is new, and it is the one the consolidation created: with two
 models at a threefold price difference, "which MODEL is spending the budget" is
 now the breakdown the old per-provider table used to give.
+
+The vendor changed on 2026-08-31 and none of the three questions moved. What did
+move is that there are now TWO credentials rather than one, so the per-key
+breakdown is once again an axis that varies -- and it is still filed by
+fingerprint, never by key material.
 """
 from __future__ import annotations
 
@@ -34,8 +39,10 @@ def _clean(monkeypatch):
     llm_router.reset_provider_stats()
     monkeypatch.setattr(
         llm_router,
-        "_load_key",
-        lambda: _RouterKey(api_key="sk-ant-do-not-log-me", fingerprint="fp-alpha"),
+        "key_for_model",
+        lambda model: _RouterKey(
+            api_key="sk-do-not-log-me", fingerprint="fp-alpha"
+        ),
     )
     yield
     llm_router.reset_provider_stats()
@@ -54,7 +61,7 @@ def _usage(prompt: int, completion: int, text: str = "ok"):
 
 
 def _http_error(status: int) -> httpx.HTTPStatusError:
-    request = httpx.Request("POST", llm_providers.ANTHROPIC_MESSAGES_URL)
+    request = httpx.Request("POST", llm_providers.OPENAI_CHAT_COMPLETIONS_URL)
     return httpx.HTTPStatusError(
         "boom", request=request, response=httpx.Response(status, request=request)
     )
@@ -67,29 +74,29 @@ def _http_error(status: int) -> httpx.HTTPStatusError:
 async def test_tokens_and_cost_are_attributed_to_the_model_and_the_credential(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(llm_router, "_call_anthropic", _usage(1000, 200))
+    monkeypatch.setattr(llm_router, "_call_openai", _usage(1000, 200))
     await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
 
     key_entry = llm_router.key_stats()["fp-alpha"]
     assert key_entry["prompt_tokens"] == 1000
     assert key_entry["completion_tokens"] == 200
-    assert key_entry["model"] == llm_providers.MODEL_HAIKU
+    assert key_entry["model"] == llm_providers.MODEL_LUNA
     assert key_entry["estimated_cost_usd"] > 0
 
-    model_entry = llm_router.model_stats()[llm_providers.MODEL_HAIKU]
+    model_entry = llm_router.model_stats()[llm_providers.MODEL_LUNA]
     assert model_entry["prompt_tokens"] == 1000
 
 
 @pytest.mark.asyncio
 async def test_usage_accumulates_across_calls_and_models(monkeypatch) -> None:
-    monkeypatch.setattr(llm_router, "_call_anthropic", _usage(100, 50))
+    monkeypatch.setattr(llm_router, "_call_openai", _usage(100, 50))
     await llm_router.invoke_llm("rerank", [{"role": "user", "content": "a"}])
     await llm_router.invoke_llm("rerank", [{"role": "user", "content": "b"}])
     await llm_router.invoke_llm("report_synthesis", [{"role": "user", "content": "c"}])
 
     models = llm_router.model_stats()
-    assert models[llm_providers.MODEL_HAIKU]["prompt_tokens"] == 200
-    assert models[llm_providers.MODEL_SONNET]["prompt_tokens"] == 100
+    assert models[llm_providers.MODEL_LUNA]["prompt_tokens"] == 200
+    assert models[llm_providers.MODEL_TERRA]["prompt_tokens"] == 100
     # The credential served all three: it is the axis that no longer varies.
     assert llm_router.key_stats()["fp-alpha"]["prompt_tokens"] == 300
 
@@ -107,7 +114,7 @@ async def test_a_response_with_no_usage_is_distinguishable_from_zero(
     async def _silent(client, key, model, messages, json_mode, max_tokens, temperature):
         return llm_router._Result(content="ok")
 
-    monkeypatch.setattr(llm_router, "_call_anthropic", _silent)
+    monkeypatch.setattr(llm_router, "_call_openai", _silent)
     await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
 
     entry = llm_router.key_stats()["fp-alpha"]
@@ -124,7 +131,7 @@ async def test_a_bare_string_response_still_counts_as_a_success(monkeypatch) -> 
     async def _plain(client, key, model, messages, json_mode, max_tokens, temperature):
         return "just text"
 
-    monkeypatch.setattr(llm_router, "_call_anthropic", _plain)
+    monkeypatch.setattr(llm_router, "_call_openai", _plain)
     assert (
         await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
         == "just text"
@@ -155,7 +162,7 @@ async def test_a_failure_is_identifiable_by_fingerprint(monkeypatch) -> None:
     async def _fail(client, key, model, messages, json_mode, max_tokens, temperature):
         raise _http_error(500)
 
-    monkeypatch.setattr(llm_router, "_call_anthropic", _fail)
+    monkeypatch.setattr(llm_router, "_call_openai", _fail)
     with pytest.raises(llm_router.LLMUnavailableError):
         await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
 
@@ -171,11 +178,11 @@ async def test_latency_is_recorded_for_failed_attempts_too(monkeypatch) -> None:
     async def _fail(client, key, model, messages, json_mode, max_tokens, temperature):
         raise _http_error(503)
 
-    monkeypatch.setattr(llm_router, "_call_anthropic", _fail)
+    monkeypatch.setattr(llm_router, "_call_openai", _fail)
     with pytest.raises(llm_router.LLMUnavailableError):
         await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
 
-    entry = llm_router.provider_stats()["anthropic"]
+    entry = llm_router.provider_stats()[llm_providers.PROVIDER]
     assert entry["attempts"] >= 1
     assert entry["avg_latency_ms"] >= 0.0
 
@@ -190,12 +197,12 @@ async def test_one_success_closes_the_breaker_again(monkeypatch) -> None:
             raise _http_error(503)
         return llm_router._Result(content="recovered", had_usage=True)
 
-    monkeypatch.setattr(llm_router, "_call_anthropic", _flaky)
+    monkeypatch.setattr(llm_router, "_call_openai", _flaky)
     assert (
         await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
         == "recovered"
     )
-    key = _RouterKey(api_key="sk-ant-do-not-log-me", fingerprint="fp-alpha")
+    key = _RouterKey(api_key="sk-do-not-log-me", fingerprint="fp-alpha")
     assert not llm_router._is_cooling_down(key)
 
 
@@ -204,7 +211,7 @@ async def test_one_success_closes_the_breaker_again(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_no_snapshot_ever_carries_key_material(monkeypatch) -> None:
-    monkeypatch.setattr(llm_router, "_call_anthropic", _usage(10, 10))
+    monkeypatch.setattr(llm_router, "_call_openai", _usage(10, 10))
     await llm_router.invoke_llm("rerank", [{"role": "user", "content": "hi"}])
 
     for snapshot in (
@@ -212,13 +219,23 @@ async def test_no_snapshot_ever_carries_key_material(monkeypatch) -> None:
         llm_router.model_stats(),
         llm_router.provider_stats(),
     ):
-        assert "sk-ant-do-not-log-me" not in repr(snapshot)
+        assert "sk-do-not-log-me" not in repr(snapshot)
 
 
-def test_the_configured_key_count_reports_presence_not_the_key(monkeypatch) -> None:
-    from app.core import config as core_config
-
+def test_the_configured_key_count_reports_presence_not_the_key() -> None:
     counts = llm_providers.configured_key_count()
-    assert set(counts) == {"anthropic"}
-    assert counts["anthropic"] in (0, 1)
-    assert "sk-ant" not in repr(counts)
+    assert set(counts) == {llm_providers.PROVIDER}
+    # Zero, one or two: the two model credentials are independent, and one of
+    # two is a state an operator has to be able to see. Everything on the
+    # unconfigured tier raises and degrades while the other tier looks healthy.
+    assert counts[llm_providers.PROVIDER] in (0, 1, 2)
+    assert "sk-" not in repr(counts)
+
+
+def test_the_per_model_view_says_which_credential_is_missing() -> None:
+    """A count of one is ambiguous and the ambiguity is operationally
+    expensive: which half of the product is down depends on which key it is."""
+    models = llm_providers.configured_models()
+    assert set(models) == set(llm_providers.ALLOWED_MODELS)
+    assert all(isinstance(present, bool) for present in models.values())
+    assert "sk-" not in repr(models)

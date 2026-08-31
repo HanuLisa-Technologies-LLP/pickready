@@ -1,0 +1,20 @@
+{
+  "_provenance": {
+    "authored_from": "OpenAI published error schema. 500 is documented as server_error and retryable.",
+    "observed": false,
+    "notes": "A provider fault. Retried within the task budget, and it takes two consecutive transients to open the breaker."
+  },
+  "status": 500,
+  "headers": {
+    "content-type": "application/json",
+    "x-request-id": "req_fixture_500"
+  },
+  "body": {
+    "error": {
+      "message": "The server had an error while processing your request.",
+      "type": "server_error",
+      "param": null,
+      "code": null
+    }
+  }
+}
