@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "border-l-4",
+        "createdAt": "2026-08-31T14:34:19.659Z",
+        "reason": "Candidate Dashboard Specification Column 7/row-states asks for this left rule by name: it marks a row under INTEGRITY REVIEW, the one row state that must be findable while scanning a hundred candidates without reading any of them. Never carries the state alone (column 4 reads Under Review, stage control shows a lock with tooltip, announced to screen readers with its meaning). Documented with the same reason in .impeccable-exceptions.md, which the CI gate reads."
+      }
+    ]
+  }
+}
