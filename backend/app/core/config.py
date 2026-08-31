@@ -152,6 +152,10 @@ class Settings(BaseSettings):
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
     razorpay_webhook_secret: str = ""
+    # ReadyPick's own GST registration number, printed on every credit-pack
+    # invoice (Master Directive Part 5 §5.2). Configuration, not code: it is a
+    # legal identifier that changes with registration, never with a release.
+    readypick_gstin: str = ""
 
     # App
     environment: str = "development"

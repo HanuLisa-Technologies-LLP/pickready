@@ -95,6 +95,23 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     credit_warning_2_sent: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # ── Credit-pack purchase state (Master Directive Part 5) ─────────────────
+    #: Rule 1: TRUE after the first purchase; every later purchase is 50+.
+    trial_used: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: Rule 6: once TRUE the setup fee is never charged again — including when
+    #: it was waived, which also sets this.
+    setup_fee_paid: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: §5.1: within the first 15 client accounts, the fee was waived.
+    setup_fee_waived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    #: Client GSTIN, collected for B2B input-credit purposes (§5.2). Optional;
+    #: printed on the invoice when present.
+    gstin: Mapped[str | None] = mapped_column(String(20))
 
 
 #: `tenants.status` values. Mirrors the CHECK constraint in migration 0020.

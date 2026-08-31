@@ -94,6 +94,21 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "Top up immediately:\n\n{{billing_url}}\n\n"
         "Regards,\nReadyPick",
     ),
+    # Master Directive Part 5 §7.3 — the GST invoice email that accompanies a
+    # settled credit-pack purchase. The invoice itself is a PDF attachment
+    # rendered by the worker; the body only confirms the top-up and points at
+    # the billing page, where the invoice stays downloadable.
+    "credit_invoice": (
+        "Your ReadyPick credit purchase and invoice {{invoice_number}}",
+        "Hello,\n\n"
+        "Your credit purchase for {{company_name}} is confirmed. "
+        "{{credits_total}} credits have been added to your account and never "
+        "expire.\n\n"
+        "Invoice {{invoice_number}} (total Rs. {{total_inr}} incl. GST) is "
+        "attached, and remains available from your billing page:\n\n"
+        "{{billing_url}}\n\n"
+        "Regards,\nReadyPick",
+    ),
     "interview_invite": (
         "Interview invitation, {{job_title}} at {{company_name}}",
         "Dear {{candidate_name}},\n\n"

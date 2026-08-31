@@ -69,6 +69,7 @@ celery_app.conf.update(
         "pickready.send_lifecycle_email": {"queue": QUEUE_MAIL},
         "pickready.send_payment_failed_email": {"queue": QUEUE_MAIL},
         "pickready.send_credit_warning_email": {"queue": QUEUE_MAIL},
+        "pickready.send_credit_invoice_email": {"queue": QUEUE_MAIL},
         "pickready.send_application_confirmation": {"queue": QUEUE_MAIL},
         "pickready.send_assessment_reminder": {"queue": QUEUE_MAIL},
         "pickready.send_verification_requests": {"queue": QUEUE_MAIL},

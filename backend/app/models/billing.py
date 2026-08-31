@@ -246,3 +246,82 @@ class WebhookEvent(Base, UUIDPKMixin, CreatedAtMixin):
     event_type: Mapped[str] = mapped_column(String(80), nullable=False)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     payload_json: Mapped[dict | None] = mapped_column(JSONB)
+
+
+# ── Credit-pack purchases (Master Directive Part 5) ──────────────────────────
+
+#: Headline price. NEVER discounted: volume levels add FREE credits instead
+#: (Rule 3), so the invoice always shows purchased credits at this rate.
+PRICE_PER_CREDIT_INR = 600
+#: 18% GST, collected on every transaction and remitted (Rule 7). Stored per
+#: purchase in rupees, computed from the subtotal at purchase time.
+GST_RATE_PERCENT = 18
+#: One-time onboarding fee, waived for the first 15 client accounts (§5.1).
+SETUP_FEE_INR = 5000
+SETUP_FEE_WAIVER_LIMIT = 15
+#: The one purchase allowed below the standard minimum (Rule 1).
+TRIAL_CREDITS = 20
+#: Every purchase after the first (Rule 2). Custom/Enterprise is negotiated
+#: and does not go through the self-serve packs.
+MIN_PURCHASE_CREDITS = 50
+
+#: slug -> (credits purchased, bonus credits). §3.2's table verbatim.
+CREDIT_PACKS: dict[str, tuple[int, int]] = {
+    "trial_20": (TRIAL_CREDITS, 0),
+    "standard_50": (50, 0),
+    "volume_100": (100, 5),
+    "volume_200": (200, 15),
+}
+
+PURCHASE_CREATED = "created"
+PURCHASE_PAID = "paid"
+PURCHASE_FAILED = "failed"
+
+
+class CreditPurchase(Base, UUIDPKMixin, CreatedAtMixin):
+    """One credit-pack purchase, from Razorpay Order to GST invoice.
+
+    The row is created BEFORE payment (status `created`) so the webhook and
+    the browser's verify call race safely: whichever arrives first flips the
+    status to `paid` inside the same statement that checks it, and the credit
+    grant's idempotency key is derived from the order id, so the loser of the
+    race grants nothing twice. `razorpay_order_id` is UNIQUE for the same
+    reason `billing_transactions.razorpay_payment_id` is.
+
+    Every rupee figure is stored EXCLUSIVE of GST except `total_inr`, and the
+    GST amount is its own column: the §5.2 invoice shows each line separately
+    and a stored breakdown cannot drift from a recomputed one.
+    """
+
+    __tablename__ = "credit_purchases"
+    __table_args__ = (
+        UniqueConstraint("razorpay_order_id", name="uq_credit_purchases_order"),
+        Index("ix_credit_purchases_tenant_at", "tenant_id", "created_at"),
+    )
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    pack_slug: Mapped[str] = mapped_column(String(30), nullable=False)
+    credits_purchased: Mapped[int] = mapped_column(Integer, nullable=False)
+    bonus_credits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: credits_purchased x PRICE_PER_CREDIT_INR, excl. GST.
+    subtotal_inr: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 0 when already paid or waived; SETUP_FEE_INR when charged here (§5.1).
+    setup_fee_inr: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    setup_fee_waived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    gst_inr: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_inr: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=PURCHASE_CREATED
+    )
+    razorpay_order_id: Mapped[str | None] = mapped_column(String(100))
+    razorpay_payment_id: Mapped[str | None] = mapped_column(String(100))
+    #: Sequential GST invoice number, assigned when the purchase settles.
+    invoice_number: Mapped[str | None] = mapped_column(String(40))
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

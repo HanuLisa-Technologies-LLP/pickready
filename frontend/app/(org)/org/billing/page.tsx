@@ -16,15 +16,19 @@
 // needs `manage_billing`, which the Company Admin holds alone.
 
 import * as React from "react";
-import { AlertTriangle, ArrowUpRight, Loader2 } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Download, Loader2 } from "lucide-react";
 
-import { ApiError, apiGet, apiPost } from "@/lib/api";
+import { API_BASE, ApiError, apiGet, apiPost } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { openCheckout } from "@/lib/razorpay";
+import { openCheckout, openOrderCheckout } from "@/lib/razorpay";
 import type {
   BillingOverview,
   CreditEventType,
+  CreditPack,
+  CreditPacksResponse,
+  CreditPurchaseRow,
   PricingPlan,
+  PurchaseCreateResponse,
   SubscribeResponse,
 } from "@/lib/types";
 import { PageHeader } from "@/components/app-shell";
@@ -71,12 +75,31 @@ const STATUS_LABELS: Record<string, string> = {
   halted: "Halted",
 };
 
+/** Plain-text purchase statuses (directive Part 5 section 7.3): typography,
+ *  not colored pills, tells the reader where a purchase stands. */
+const PURCHASE_STATUS_LABELS: Record<string, string> = {
+  created: "Payment pending",
+  pending: "Payment pending",
+  paid: "Paid",
+  failed: "Failed",
+  refunded: "Refunded",
+};
+
 function formatInr(value: number): string {
   return new Intl.NumberFormat("en-IN", {
     style: "currency",
     currency: "INR",
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+/**
+ * Same-origin proxied invoice path (directive Part 5 section 7.3). A plain
+ * <a download>, not an apiGet: the browser streams the PDF itself, carrying
+ * its cookies through the same /api proxy every other call uses.
+ */
+function invoiceHref(purchaseId: string): string {
+  return `${API_BASE}/billing/purchases/${purchaseId}/invoice`;
 }
 
 function formatDate(value: string | null): string {
@@ -108,6 +131,17 @@ export default function BillingPage() {
   const [forbidden, setForbidden] = React.useState(false);
   const [busySlug, setBusySlug] = React.useState<string | null>(null);
 
+  // Credit pack purchase state (directive Part 5 sections 3 and 7.2). The two
+  // pack calls fail SOFT: a backend that predates the credit-pack endpoints
+  // must not blank the whole billing page, only its own section.
+  const [packs, setPacks] = React.useState<CreditPacksResponse | null>(null);
+  const [packsError, setPacksError] = React.useState<string | null>(null);
+  const [purchases, setPurchases] = React.useState<CreditPurchaseRow[] | null>(
+    null
+  );
+  const [selectedSlug, setSelectedSlug] = React.useState<string | null>(null);
+  const [payBusy, setPayBusy] = React.useState(false);
+
   const canManage = hasCapability("manage_billing");
 
   const load = React.useCallback(async () => {
@@ -128,9 +162,108 @@ export default function BillingPage() {
     }
   }, []);
 
+  const loadPacks = React.useCallback(async () => {
+    setPacksError(null);
+    try {
+      setPacks(await apiGet<CreditPacksResponse>("/billing/credit-packs"));
+    } catch (error) {
+      setPacks(null);
+      setPacksError(
+        error instanceof Error ? error.message : "Could not load credit packs."
+      );
+    }
+  }, []);
+
+  const loadPurchases = React.useCallback(async () => {
+    try {
+      setPurchases(await apiGet<CreditPurchaseRow[]>("/billing/purchases"));
+    } catch {
+      // No history section rather than a second error banner: the overview and
+      // packs errors already say everything actionable.
+      setPurchases(null);
+    }
+  }, []);
+
   React.useEffect(() => {
     void load();
-  }, [load]);
+    void loadPacks();
+    void loadPurchases();
+  }, [load, loadPacks, loadPurchases]);
+
+  /**
+   * The credit pack purchase flow (directive Part 5 section 3.3): create the
+   * order server-side, collect payment through Razorpay Checkout, then let the
+   * SERVER verify the signature. Success is only ever claimed after verify
+   * returns OK; the handler firing proves nothing by itself.
+   */
+  const buyPack = React.useCallback(
+    async (pack: CreditPack) => {
+      setPayBusy(true);
+      try {
+        const order = await apiPost<PurchaseCreateResponse>(
+          "/billing/purchase",
+          { pack_slug: pack.slug }
+        );
+        const opened = await openOrderCheckout({
+          keyId: order.razorpay_key_id,
+          orderId: order.razorpay_order_id,
+          amountInr: order.total_inr,
+          name: "ReadyPick",
+          description: `${order.credits} Intelligence Report credits, one-time purchase`,
+          prefill: {
+            email: user?.email ?? undefined,
+            name: user?.full_name ?? undefined,
+          },
+          onSuccess: async (payload) => {
+            try {
+              const overview = await apiPost<BillingOverview>(
+                "/billing/purchase/verify",
+                payload
+              );
+              setData(overview);
+              setSelectedSlug(null);
+              toast({
+                title: "Credits added",
+                description: `Payment confirmed. Your new balance is ${overview.credits.balance_credits} credits. Your GST invoice is under Purchases and invoices below.`,
+              });
+            } catch (error) {
+              toast({
+                variant: "destructive",
+                title: "We could not confirm that payment",
+                description:
+                  error instanceof Error
+                    ? error.message
+                    : "Reload this page in a moment to check its status.",
+              });
+            }
+            setPayBusy(false);
+            // Refresh everything the purchase can have changed: balance,
+            // trial availability and the invoice list.
+            await Promise.all([load(), loadPacks(), loadPurchases()]);
+          },
+          onDismiss: () => setPayBusy(false),
+        });
+        if (!opened) {
+          setPayBusy(false);
+          toast({
+            variant: "destructive",
+            title: "Checkout could not open",
+            description:
+              "Check that your browser is not blocking payment scripts, then retry.",
+          });
+        }
+      } catch (error) {
+        setPayBusy(false);
+        toast({
+          variant: "destructive",
+          title: "That did not go through",
+          description:
+            error instanceof Error ? error.message : "Try again in a moment.",
+        });
+      }
+    },
+    [load, loadPacks, loadPurchases, toast, user]
+  );
 
   const choosePlan = React.useCallback(
     async (plan: PricingPlan) => {
@@ -205,6 +338,12 @@ export default function BillingPage() {
     },
     [data, load, toast, user]
   );
+
+  // Hidden packs stay hidden: the trial card disappears after first use
+  // (directive Part 5 section 3.1) and the selection dies with it.
+  const availablePacks = packs?.packs.filter((pack) => pack.available) ?? [];
+  const selectedPack =
+    availablePacks.find((pack) => pack.slug === selectedSlug) ?? null;
 
   if (forbidden) {
     return (
@@ -427,14 +566,200 @@ export default function BillingPage() {
             </div>
           </Section>
 
-          {/* ── Plans ──────────────────────────────────────────────────── */}
+          {/* ── Credit packs (directive Part 5 sections 3 and 7.2) ─────── */}
+          {/* This wrapper carries the #billing-plans anchor the warning
+              banners scroll to: a top-up has to land on the packs, not on the
+              legacy subscription plans further down. */}
           <div id="billing-plans" className="scroll-mt-24">
+            <Section
+              title="Purchase ReadyPick Intelligence Report Credits"
+              description={
+                canManage
+                  ? `One-time purchases at ${formatInr(packs?.price_per_credit_inr ?? 600)} per credit. Credits never expire, and volume packs add bonus credits free.`
+                  : `One-time purchases at ${formatInr(packs?.price_per_credit_inr ?? 600)} per credit. Ask your Company Admin to buy credits.`
+              }
+            >
+              {/* Balance shown BEFORE the choice (directive Part 5 §7.2). */}
+              <p className="text-sm leading-6">
+                Current balance:{" "}
+                <span className="text-lg font-bold">
+                  {data.credits.balance_credits}
+                </span>{" "}
+                credits
+              </p>
+
+              {packsError ? (
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <p className="text-sm leading-6">
+                    Could not load credit packs. {packsError}
+                  </p>
+                  <Button variant="outline" onClick={() => void loadPacks()}>
+                    Retry
+                  </Button>
+                </div>
+              ) : !packs ? (
+                <div className="mt-4">
+                  <LoadingRows rows={2} label="Loading credit packs" />
+                </div>
+              ) : (
+                <>
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                    {availablePacks.map((pack) => {
+                      const selected = pack.slug === selectedSlug;
+                      return (
+                        <button
+                          key={pack.slug}
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() =>
+                            setSelectedSlug(selected ? null : pack.slug)
+                          }
+                          className={
+                            "flex flex-col rounded-xl border p-5 text-left transition-colors " +
+                            (selected
+                              ? "border-brand-600 ring-1 ring-brand-600/30"
+                              : "border-border hover:border-brand-600/50")
+                          }
+                        >
+                          <p className="text-2xl font-bold">
+                            {pack.credits}
+                            <span className="ml-1 text-sm font-medium">
+                              credits
+                            </span>
+                          </p>
+                          {pack.trial ? (
+                            <p className="mt-1 text-xs font-semibold uppercase tracking-[0.08em]">
+                              Trial, first purchase only
+                            </p>
+                          ) : null}
+                          {pack.bonus_credits > 0 ? (
+                            <p className="mt-1 text-sm font-medium leading-6">
+                              +{pack.bonus_credits} bonus credits free
+                            </p>
+                          ) : null}
+                          <div className="flex-1" />
+                          <p className="mt-3 font-semibold">
+                            {formatInr(pack.total_inr)}
+                          </p>
+                          <p className="text-xs leading-5">
+                            one-time, incl. GST
+                          </p>
+                        </button>
+                      );
+                    })}
+                    {/* Custom volume is Enterprise, by conversation and never
+                        self-serve (directive Part 5 section 3.2). */}
+                    <a
+                      href="mailto:hello@pickready.app?subject=Enterprise%20credits"
+                      className="flex flex-col rounded-xl border border-border p-5 transition-colors hover:border-brand-600/50"
+                    >
+                      <p className="text-2xl font-bold">Custom</p>
+                      <p className="mt-1 text-sm leading-6">
+                        {packs.min_custom_credits}+ credits, priced by
+                        agreement. No self-serve checkout.
+                      </p>
+                      <div className="flex-1" />
+                      <p className="mt-3 inline-flex items-center gap-1 font-semibold underline">
+                        Talk to us about Enterprise
+                        <ArrowUpRight
+                          className="h-3.5 w-3.5"
+                          aria-hidden="true"
+                        />
+                      </p>
+                    </a>
+                  </div>
+
+                  {/* Live breakdown of the selected pack (directive Part 5
+                      section 3.3 step 2). Every figure below is the server's:
+                      the page renders the calculation, it never performs it. */}
+                  {selectedPack ? (
+                    <div className="mt-6 max-w-md rounded-xl border border-border bg-surface p-5">
+                      <p className="font-semibold">Order summary</p>
+                      <dl className="mt-3 space-y-2 text-sm leading-6">
+                        <div className="flex justify-between gap-4">
+                          <dt>Credits</dt>
+                          <dd className="font-medium">
+                            {selectedPack.credits}
+                          </dd>
+                        </div>
+                        {selectedPack.bonus_credits > 0 ? (
+                          <div className="flex justify-between gap-4">
+                            <dt>Bonus credits</dt>
+                            <dd className="font-medium">
+                              +{selectedPack.bonus_credits} free
+                            </dd>
+                          </div>
+                        ) : null}
+                        <div className="flex justify-between gap-4">
+                          <dt>Subtotal</dt>
+                          <dd className="font-medium">
+                            {formatInr(selectedPack.subtotal_inr)}
+                          </dd>
+                        </div>
+                        {selectedPack.setup_fee_inr > 0 ||
+                        selectedPack.setup_fee_waived ? (
+                          <div className="flex justify-between gap-4">
+                            <dt>Account setup fee</dt>
+                            <dd className="font-medium">
+                              {selectedPack.setup_fee_waived
+                                ? "Waived"
+                                : formatInr(selectedPack.setup_fee_inr)}
+                            </dd>
+                          </div>
+                        ) : null}
+                        <div className="flex justify-between gap-4">
+                          <dt>GST @ {packs.gst_rate_percent}%</dt>
+                          <dd className="font-medium">
+                            {formatInr(selectedPack.gst_inr)}
+                          </dd>
+                        </div>
+                        <div className="flex justify-between gap-4 border-t border-border pt-2">
+                          <dt className="font-semibold">Total payable</dt>
+                          <dd className="text-base font-bold">
+                            {formatInr(selectedPack.total_inr)}
+                          </dd>
+                        </div>
+                      </dl>
+                      <Button
+                        className="mt-5 w-full"
+                        disabled={!canManage || payBusy}
+                        onClick={() => void buyPack(selectedPack)}
+                      >
+                        {payBusy ? (
+                          <>
+                            <Loader2
+                              className="h-4 w-4 animate-spin"
+                              aria-hidden="true"
+                            />
+                            Working
+                          </>
+                        ) : (
+                          "Proceed to Payment"
+                        )}
+                      </Button>
+                      {!canManage ? (
+                        <p className="mt-2 text-xs leading-5">
+                          Only your Company Admin can complete a purchase.
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </Section>
+          </div>
+
+          {/* ── Legacy subscription plans ──────────────────────────────── */}
+          {/* Only for accounts that already hold a subscription. A new
+              customer buys credit packs above and never sees this section
+              (directive Part 5 section 3). */}
+          {data.subscription.plan ? (
           <Section
-            title={data.subscription.plan ? "Change plan" : "Choose a plan"}
+            title="Change plan"
             description={
               canManage
-                ? "Every plan is the whole product. Only the monthly application volume changes."
-                : "Every plan is the whole product. Ask your Company Admin to change it."
+                ? "The legacy subscription path, shown only because this account already has one. New credit is bought as packs above."
+                : "The legacy subscription path, shown only because this account already has one. Ask your Company Admin to change it."
             }
           >
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -505,7 +830,7 @@ export default function BillingPage() {
               </a>
             </p>
           </Section>
-          </div>
+          ) : null}
 
           {/* ── Statement ──────────────────────────────────────────────── */}
           <Section
@@ -568,6 +893,114 @@ export default function BillingPage() {
               </>
             )}
           </Section>
+
+          {/* ── Purchase history (directive Part 5 sections 7.3, 7.4) ──── */}
+          {/* Hidden while the endpoint is unavailable; empty text otherwise,
+              so a paid invoice is never silently absent from a loaded list. */}
+          {purchases !== null ? (
+            <Section
+              title="Purchases and invoices"
+              description="Every credit pack purchase, with its GST invoice."
+            >
+              {purchases.length === 0 ? (
+                <p className="leading-7">
+                  No purchases yet. Your first credit pack will appear here
+                  with its downloadable GST invoice.
+                </p>
+              ) : (
+                <>
+                  <div className="hidden md:block">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Date</TableHead>
+                          <TableHead>Credits</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Invoice</TableHead>
+                          <TableHead className="text-right">Total</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {purchases.map((row) => (
+                          <TableRow key={row.id}>
+                            <TableCell>{formatDate(row.created_at)}</TableCell>
+                            <TableCell>
+                              {row.credits_purchased}
+                              {row.bonus_credits > 0
+                                ? ` + ${row.bonus_credits} bonus`
+                                : ""}
+                            </TableCell>
+                            <TableCell>
+                              {PURCHASE_STATUS_LABELS[row.status] ?? row.status}
+                            </TableCell>
+                            <TableCell>
+                              {row.status === "paid" ? (
+                                <a
+                                  className="inline-flex items-center gap-1 underline"
+                                  href={invoiceHref(row.id)}
+                                  download
+                                >
+                                  <Download
+                                    className="h-3.5 w-3.5"
+                                    aria-hidden="true"
+                                  />
+                                  {row.invoice_number ?? "Download invoice"}
+                                </a>
+                              ) : (
+                                (row.invoice_number ?? "Not issued")
+                              )}
+                            </TableCell>
+                            <TableCell className="text-right font-medium">
+                              {formatInr(row.total_inr)}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  <ul className="space-y-3 md:hidden">
+                    {purchases.map((row) => (
+                      <li
+                        key={row.id}
+                        className="rounded-xl border border-border bg-surface p-4"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium">
+                              {row.credits_purchased} credits
+                              {row.bonus_credits > 0
+                                ? ` + ${row.bonus_credits} bonus`
+                                : ""}
+                            </p>
+                            <p className="mt-1 text-xs leading-5">
+                              {formatDate(row.created_at)},{" "}
+                              {PURCHASE_STATUS_LABELS[row.status] ?? row.status}
+                            </p>
+                          </div>
+                          <span className="shrink-0 text-sm font-semibold">
+                            {formatInr(row.total_inr)}
+                          </span>
+                        </div>
+                        {row.status === "paid" ? (
+                          <a
+                            className="mt-2 inline-flex items-center gap-1 text-sm underline"
+                            href={invoiceHref(row.id)}
+                            download
+                          >
+                            <Download
+                              className="h-3.5 w-3.5"
+                              aria-hidden="true"
+                            />
+                            {row.invoice_number ?? "Download invoice"}
+                          </a>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </Section>
+          ) : null}
 
           {data.transactions.length > 0 ? (
             <Section title="Payments" description="What was charged, and when.">

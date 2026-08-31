@@ -1471,6 +1471,90 @@ def send_credit_warning_email(tenant_id: str, level: int):
     return _run(_task())
 
 
+@celery_app.task(name="pickready.send_credit_invoice_email")
+def send_credit_invoice_email(purchase_id: str):
+    """Email the GST invoice PDF for a settled credit-pack purchase.
+
+    Master Directive Part 5 §3.3 step 5 / §7.3: the invoice goes to the
+    account admin immediately on payment confirmation. Rendered HERE, not in
+    the settlement path — a payment confirmation must never wait on PDF
+    generation, and a broker outage already cannot break settlement because
+    the enqueue there is best-effort. The PDF is regenerated from the stored
+    purchase row, so a redelivered task sends the same invoice again rather
+    than a different one.
+    """
+    async def _task():
+        import base64
+
+        async with _worker_session() as session:
+            from app.models.billing import PURCHASE_PAID, CreditPurchase
+            from app.services import credit_packs
+
+            purchase = (
+                await session.execute(
+                    select(CreditPurchase).where(
+                        CreditPurchase.id == uuid.UUID(purchase_id)
+                    )
+                )
+            ).scalars().first()
+            if purchase is None or purchase.status != PURCHASE_PAID:
+                logger.warning(
+                    "billing.credit_invoice_email_not_paid purchase=%s", purchase_id
+                )
+                return {"sent": False, "reason": "purchase not paid"}
+            tenant = (
+                await session.execute(
+                    select(Tenant).where(Tenant.id == purchase.tenant_id)
+                )
+            ).scalars().first()
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT u.email, t.name FROM users u JOIN tenants t ON t.id = u.tenant_id "
+                        "WHERE u.tenant_id = :tid AND u.role = 'client' "
+                        "AND u.status <> 'disabled' AND u.email IS NOT NULL "
+                        "ORDER BY u.created_at LIMIT 1"
+                    ),
+                    {"tid": str(purchase.tenant_id)},
+                )
+            ).mappings().first()
+            if row is None or tenant is None:
+                logger.warning(
+                    "billing.credit_invoice_email_no_recipient purchase=%s", purchase_id
+                )
+                return {"sent": False, "reason": "no recipient"}
+
+            pdf = credit_packs.render_invoice_pdf(purchase, tenant)
+            celery_app.send_task(
+                "pickready.send_email",
+                args=[
+                    str(purchase.tenant_id),
+                    row["email"],
+                    "credit_invoice",
+                    {
+                        "company_name": row["name"],
+                        "credits_total": str(
+                            purchase.credits_purchased + purchase.bonus_credits
+                        ),
+                        "invoice_number": purchase.invoice_number or "",
+                        "total_inr": f"{purchase.total_inr:,}",
+                        "billing_url": f"{get_settings().frontend_url}/org/billing",
+                    },
+                ],
+                kwargs={
+                    "attachments": [
+                        {
+                            "filename": f"{purchase.invoice_number or purchase_id}.pdf",
+                            "content": base64.b64encode(pdf).decode("ascii"),
+                        }
+                    ]
+                },
+            )
+            return {"sent": True, "invoice": purchase.invoice_number}
+
+    return _run(_task())
+
+
 # ── Dashboard (ESD §14) ─────────────────────────────────────────────────────
 
 @celery_app.task(

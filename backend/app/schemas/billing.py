@@ -18,6 +18,12 @@ __all__ = [
     "BillingOverviewOut",
     "CheckoutVerifyIn",
     "CreditLedgerEntryOut",
+    "CreditPackQuoteOut",
+    "CreditPacksOut",
+    "CreditPurchaseCreatedOut",
+    "CreditPurchaseIn",
+    "CreditPurchaseOut",
+    "CreditPurchaseVerifyIn",
     "CreditSummaryOut",
     "PlanOut",
     "ProviderBillingRowOut",
@@ -192,6 +198,92 @@ class BillingOverviewOut(BaseModel):
     razorpay_key_id: str | None
     recent_ledger: list[CreditLedgerEntryOut]
     transactions: list[TransactionOut]
+
+
+# ── Credit-pack purchases (Master Directive Part 5) ──────────────────────────
+
+class CreditPackQuoteOut(BaseModel):
+    """One purchase option, priced for THIS tenant.
+
+    The setup fee (and its waiver) is folded into every quote rather than
+    listed once beside them, because §3.3 step 2 requires the full breakdown
+    the customer will actually pay, and the fee depends on tenant state.
+    """
+
+    slug: str
+    credits: int
+    bonus_credits: int
+    subtotal_inr: int
+    setup_fee_inr: int
+    setup_fee_waived: bool
+    gst_inr: int
+    total_inr: int
+    #: False for the trial pack once `trial_used` is set. The UI hides an
+    #: unavailable pack (§7.2); the API states the fact so it cannot be
+    #: resurrected by a stale client.
+    available: bool
+    trial: bool
+
+
+class CreditPacksOut(BaseModel):
+    packs: list[CreditPackQuoteOut]
+    price_per_credit_inr: int
+    gst_rate_percent: int
+    #: The Rule 2 floor for the custom-amount field.
+    min_custom_credits: int
+    trial_used: bool
+
+
+class CreditPurchaseIn(BaseModel):
+    """Exactly one of the two: a named pack, or a custom credit count."""
+
+    pack_slug: str | None = Field(default=None, max_length=30)
+    custom_credits: int | None = Field(default=None, ge=1, le=100_000)
+
+
+class CreditPurchaseCreatedOut(BaseModel):
+    """What the browser needs to open Razorpay Checkout for the Order, plus
+    the stored breakdown so the confirmation screen shows the same figures
+    the invoice will."""
+
+    purchase_id: uuid.UUID
+    razorpay_order_id: str
+    razorpay_key_id: str
+    total_inr: int
+    credits: int
+    bonus_credits: int
+    subtotal_inr: int
+    setup_fee_inr: int
+    gst_inr: int
+
+
+class CreditPurchaseVerifyIn(BaseModel):
+    """The handler payload Razorpay Checkout returns for an ORDERS payment.
+
+    Signed as ``order_id|payment_id`` — the reverse of the subscription flow
+    (see services/razorpay.verify_order_signature).
+    """
+
+    razorpay_order_id: str = Field(min_length=1, max_length=100)
+    razorpay_payment_id: str = Field(min_length=1, max_length=100)
+    razorpay_signature: str = Field(min_length=1, max_length=200)
+
+
+class CreditPurchaseOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    pack_slug: str
+    credits_purchased: int
+    bonus_credits: int
+    subtotal_inr: int
+    setup_fee_inr: int
+    gst_inr: int
+    total_inr: int
+    status: str
+    invoice_number: str | None = None
+    created_at: datetime
+    paid_at: datetime | None = None
 
 
 class ProviderBillingRowOut(BaseModel):

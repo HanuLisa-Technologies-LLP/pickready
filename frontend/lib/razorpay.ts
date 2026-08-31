@@ -88,8 +88,60 @@ export async function openCheckout(options: OpenCheckoutOptions): Promise<boolea
     name: "ReadyPick",
     description: `${options.planName} plan, billed monthly`,
     prefill: options.prefill ?? {},
-    theme: { color: "#5028E0" },
+    theme: { color: "#0A2540" },
     handler: (response: CheckoutHandlerPayload) => options.onSuccess(response),
+    modal: { ondismiss: () => options.onDismiss?.() },
+  });
+  checkout.open();
+  return true;
+}
+
+/** What Razorpay hands back for a one-time ORDER payment. The field names are
+ *  Razorpay's own and travel unchanged into POST /billing/purchase/verify,
+ *  where the server recomputes the signature; nothing here proves payment. */
+export interface OrderCheckoutHandlerPayload {
+  razorpay_order_id: string;
+  razorpay_payment_id: string;
+  razorpay_signature: string;
+}
+
+export interface OpenOrderCheckoutOptions {
+  keyId: string;
+  orderId: string;
+  /** Total payable in RUPEES; converted to paise at the Razorpay boundary. */
+  amountInr: number;
+  name: string;
+  description: string;
+  /** Prefills the Checkout form. All optional. */
+  prefill?: { name?: string; email?: string; contact?: string };
+  onSuccess: (payload: OrderCheckoutHandlerPayload) => void;
+  onDismiss?: () => void;
+}
+
+/**
+ * Open Razorpay Checkout for a one-time ORDER: a credit pack purchase
+ * (directive Part 5 section 3.3), as opposed to the recurring subscription
+ * `openCheckout` above starts. Same script loader, same contract: resolves
+ * false when Checkout could not load, so the caller can tell the user instead
+ * of leaving a button that silently does nothing.
+ */
+export async function openOrderCheckout(
+  options: OpenOrderCheckoutOptions
+): Promise<boolean> {
+  const ready = await loadCheckout();
+  if (!ready || !window.Razorpay) return false;
+
+  const checkout = new window.Razorpay({
+    key: options.keyId,
+    order_id: options.orderId,
+    // Razorpay speaks paise; the billing API contract speaks whole rupees.
+    amount: Math.round(options.amountInr * 100),
+    currency: "INR",
+    name: options.name,
+    description: options.description,
+    prefill: options.prefill ?? {},
+    theme: { color: "#0A2540" },
+    handler: (response: OrderCheckoutHandlerPayload) => options.onSuccess(response),
     modal: { ondismiss: () => options.onDismiss?.() },
   });
   checkout.open();

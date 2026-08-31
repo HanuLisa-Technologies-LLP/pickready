@@ -24,7 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,6 +39,12 @@ from app.core import cache
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.models.billing import (
+    GST_RATE_PERCENT,
+    MIN_PURCHASE_CREDITS,
+    PRICE_PER_CREDIT_INR,
+    PURCHASE_CREATED,
+    PURCHASE_FAILED,
+    PURCHASE_PAID,
     SUBSCRIPTION_ACTIVE,
     SUBSCRIPTION_CANCELLED,
     SUBSCRIPTION_HALTED,
@@ -46,6 +52,7 @@ from app.models.billing import (
     SUBUNITS_PER_CREDIT,
     BillingTransaction,
     CreditLedgerEntry,
+    CreditPurchase,
     PricingPlan,
     WebhookEvent,
 )
@@ -55,6 +62,12 @@ from app.schemas.billing import (
     BillingOverviewOut,
     CheckoutVerifyIn,
     CreditLedgerEntryOut,
+    CreditPackQuoteOut,
+    CreditPacksOut,
+    CreditPurchaseCreatedOut,
+    CreditPurchaseIn,
+    CreditPurchaseOut,
+    CreditPurchaseVerifyIn,
     CreditSummaryOut,
     PlanOut,
     ProviderBillingRowOut,
@@ -65,7 +78,7 @@ from app.schemas.billing import (
     UsageBreakdownOut,
 )
 from app.services import capabilities as caps
-from app.services import credits, razorpay
+from app.services import credit_packs, credits, razorpay
 from app.services.audit import audit
 
 log = logging.getLogger(__name__)
@@ -607,9 +620,187 @@ async def cancel(
     )
 
 
+# ── Credit-pack purchases (Master Directive Part 5) ──────────────────────────
+
+@router.get("/credit-packs", response_model=CreditPacksOut)
+async def credit_pack_quotes(
+    user: CurrentUser = Depends(require_capability(caps.VIEW_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> CreditPacksOut:
+    """Every pack priced for THIS tenant, breakdown included (§3.3 step 2).
+
+    Priced server-side rather than letting the client multiply, because the
+    setup fee and the trial's availability depend on tenant state the client
+    cannot know (the §5.1 waiver count lives across all tenants), and the
+    figure the customer accepts must be the figure the Order is created for.
+    """
+    tenant = await _tenant_or_404(session, user.tenant_id)
+    quotes = await credit_packs.quote(session, tenant)
+    return CreditPacksOut(
+        packs=[CreditPackQuoteOut(**q.__dict__) for q in quotes],
+        price_per_credit_inr=PRICE_PER_CREDIT_INR,
+        gst_rate_percent=GST_RATE_PERCENT,
+        min_custom_credits=MIN_PURCHASE_CREDITS,
+        trial_used=tenant.trial_used,
+    )
+
+
+@router.post("/purchase", response_model=CreditPurchaseCreatedOut)
+async def create_credit_purchase(
+    body: CreditPurchaseIn,
+    user: CurrentUser = Depends(require_capability(caps.MANAGE_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> CreditPurchaseCreatedOut:
+    """Validate the purchase and mint its Razorpay Order.
+
+    Credits are NOT granted here — a created Order is an intent to pay, and
+    the grant happens on payment confirmation (§3.3 step 5), exactly as the
+    subscription flow separates /subscribe from the charge event. The rule
+    violations (trial reuse, sub-50 amounts) are 422s with the service's own
+    message, so the form can show the reason verbatim.
+    """
+    tenant = await _tenant_or_404(session, user.tenant_id)
+    try:
+        purchase = await credit_packs.create_purchase(
+            session,
+            tenant,
+            user.user_id,
+            pack_slug=body.pack_slug,
+            custom_credits=body.custom_credits,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (razorpay.RazorpayError, razorpay.RazorpayNotConfigured) as exc:
+        raise _razorpay_or_503(exc) from exc
+
+    await audit(
+        session, tenant_id=tenant.id, actor_user_id=user.user_id,
+        action="credit_purchase_created", target_type="credit_purchase",
+        target_id=purchase.id,
+        metadata={
+            "pack_slug": purchase.pack_slug,
+            "credits": purchase.credits_purchased,
+            "total_inr": purchase.total_inr,
+            "razorpay_order_id": purchase.razorpay_order_id,
+        },
+    )
+    return CreditPurchaseCreatedOut(
+        purchase_id=purchase.id,
+        razorpay_order_id=purchase.razorpay_order_id,
+        razorpay_key_id=razorpay.config().key_id,
+        total_inr=purchase.total_inr,
+        credits=purchase.credits_purchased,
+        bonus_credits=purchase.bonus_credits,
+        subtotal_inr=purchase.subtotal_inr,
+        setup_fee_inr=purchase.setup_fee_inr,
+        gst_inr=purchase.gst_inr,
+    )
+
+
+@router.post("/purchase/verify", response_model=BillingOverviewOut)
+async def verify_credit_purchase(
+    body: CreditPurchaseVerifyIn,
+    user: CurrentUser = Depends(require_capability(caps.MANAGE_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> BillingOverviewOut:
+    """Verify the Checkout handler payload for an Order and settle.
+
+    Same shape as /checkout/verify and for the same reason: the customer sees
+    their credits the moment Checkout closes instead of staring at the old
+    balance until the webhook lands. Settlement is idempotent, so whichever of
+    this and the webhook runs second is a no-op.
+    """
+    if not razorpay.verify_order_signature(
+        order_id=body.razorpay_order_id,
+        payment_id=body.razorpay_payment_id,
+        signature=body.razorpay_signature,
+    ):
+        raise HTTPException(status_code=400, detail="Payment could not be verified")
+
+    purchase = (
+        await session.execute(
+            select(CreditPurchase).where(
+                CreditPurchase.razorpay_order_id == body.razorpay_order_id
+            )
+        )
+    ).scalars().first()
+    # The tenant-scoped session's RLS already filters to the caller's rows,
+    # but the ownership check is stated explicitly: the signature proves
+    # Razorpay issued the payment, not that the order is the caller's.
+    if purchase is None or purchase.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="No such purchase")
+
+    settled = await credit_packs.settle_purchase(
+        session, purchase, body.razorpay_payment_id
+    )
+    await audit(
+        session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
+        action="credit_purchase_verified", target_type="credit_purchase",
+        target_id=purchase.id,
+        metadata={"settled": settled, "payment_id": body.razorpay_payment_id},
+    )
+    return await billing_overview(user=user, session=session)
+
+
+@router.get("/purchases", response_model=list[CreditPurchaseOut])
+async def list_credit_purchases(
+    limit: int = Query(default=100, ge=1, le=500),
+    user: CurrentUser = Depends(require_capability(caps.VIEW_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> list[CreditPurchaseOut]:
+    """The tenant's purchase history, newest first — §7.4's transaction view,
+    and where the §7.3 invoice download links come from. Bounded like every
+    other list route: the newest hundred purchases cover years of buying at
+    any plausible cadence, and the ceiling keeps the page alive past that."""
+    rows = (
+        await session.execute(
+            select(CreditPurchase)
+            .where(CreditPurchase.tenant_id == user.tenant_id)
+            .order_by(CreditPurchase.created_at.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return [CreditPurchaseOut.model_validate(row) for row in rows]
+
+
+@router.get("/purchases/{purchase_id}/invoice")
+async def download_credit_invoice(
+    purchase_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_BILLING)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> Response:
+    """The GST invoice PDF, downloadable at any time (§7.3).
+
+    404 for anything that is not the caller's own PAID purchase: an unpaid
+    purchase has no invoice (§9: no invoice on a failed payment), and a
+    non-existent one and another tenant's must be indistinguishable.
+    """
+    purchase = (
+        await session.execute(
+            select(CreditPurchase).where(CreditPurchase.id == purchase_id)
+        )
+    ).scalars().first()
+    if (
+        purchase is None
+        or purchase.tenant_id != user.tenant_id
+        or purchase.status != PURCHASE_PAID
+    ):
+        raise HTTPException(status_code=404, detail="No invoice for this purchase")
+    tenant = await _tenant_or_404(session, user.tenant_id)
+    pdf = credit_packs.render_invoice_pdf(purchase, tenant)
+    filename = f"{purchase.invoice_number or purchase.id}.pdf"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ── Razorpay webhook ─────────────────────────────────────────────────────────
 
 _HANDLED_EVENTS = {
+    "payment.captured",
+    "order.paid",
     "subscription.charged",
     "subscription.cancelled",
     "subscription.halted",
@@ -697,6 +888,56 @@ async def razorpay_webhook(
     payload = body.get("payload") or {}
     subscription_entity = ((payload.get("subscription") or {}).get("entity")) or {}
     payment_entity = ((payload.get("payment") or {}).get("entity")) or {}
+    order_entity = ((payload.get("order") or {}).get("entity")) or {}
+
+    # ── Credit-pack purchases first (Master Directive Part 5 §3.3 step 5) ────
+    # A payment.captured / order.paid / payment.failed whose order id matches
+    # a credit_purchases row belongs to the pack flow, whatever else the event
+    # carries. Resolved by order id, not by tenant: the WebhookEvent dedupe
+    # above plus settle_purchase's own status-flip idempotency give the §9
+    # duplicate-webhook guarantee twice over.
+    order_id = payment_entity.get("order_id") or order_entity.get("id")
+    if order_id:
+        purchase = (
+            await session.execute(
+                select(CreditPurchase).where(
+                    CreditPurchase.razorpay_order_id == order_id
+                )
+            )
+        ).scalars().first()
+        if purchase is not None:
+            if event_type in {"payment.captured", "order.paid"}:
+                await credit_packs.settle_purchase(
+                    session, purchase, payment_entity.get("id")
+                )
+            elif event_type == "payment.failed":
+                # §9: no credits, no invoice. Marked failed only while still
+                # `created` — a purchase the settle path already won stays
+                # paid, and the client retries with a NEW purchase.
+                await session.execute(
+                    text(
+                        "UPDATE credit_purchases SET status = :failed "
+                        "WHERE id = :id AND status = :created"
+                    ),
+                    {
+                        "failed": PURCHASE_FAILED,
+                        "created": PURCHASE_CREATED,
+                        "id": str(purchase.id),
+                    },
+                )
+            await session.execute(
+                text(
+                    "UPDATE webhook_events SET processed_at = now() "
+                    "WHERE provider = 'razorpay' AND event_id = :eid"
+                ),
+                {"eid": event_id},
+            )
+            return {"status": "ok"}
+    if event_type in {"payment.captured", "order.paid"}:
+        # A captured payment with no matching purchase row is a subscription
+        # charge's payment leg (subscription.charged handles those) or noise.
+        return {"status": "ignored"}
+
     subscription_id = subscription_entity.get("id") or payment_entity.get("subscription_id")
     tenant = await _tenant_for_subscription(
         session, subscription_id, subscription_entity.get("notes") or payment_entity.get("notes")

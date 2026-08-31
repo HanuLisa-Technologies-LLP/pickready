@@ -146,6 +146,30 @@ async def create_customer(*, name: str, email: str | None, contact: str | None) 
     return body["id"]
 
 
+# ── Orders (one-time credit-pack purchases, Master Directive Part 5) ─────────
+
+async def create_order(
+    *, amount_paise: int, receipt: str, notes: dict | None = None
+) -> dict:
+    """Create a one-time Razorpay Order and return the full entity.
+
+    Credit packs use the ORDERS API, not Subscriptions: Part 5 §1 is explicit
+    that there are no monthly plans, and an Order is exactly one charge. The
+    receipt is our purchase row's id, so a stray order in the Razorpay
+    dashboard is traceable back to its `credit_purchases` row by inspection.
+    """
+    return await _request(
+        "POST",
+        "/orders",
+        {
+            "amount": amount_paise,
+            "currency": "INR",
+            "receipt": receipt,
+            "notes": notes or {},
+        },
+    )
+
+
 # ── Subscriptions ────────────────────────────────────────────────────────────
 
 async def create_subscription(
@@ -219,6 +243,21 @@ def verify_checkout_signature(
     if not cfg.key_secret:
         return False
     expected = _hmac_hex(cfg.key_secret, f"{payment_id}|{subscription_id}")
+    return hmac.compare_digest(expected, signature or "")
+
+
+def verify_order_signature(*, order_id: str, payment_id: str, signature: str) -> bool:
+    """Verify the Checkout handler payload for an ORDERS payment.
+
+    Orders sign ``order_id|payment_id`` — the REVERSE of the subscription
+    helper above, which signs ``payment_id|subscription_id``. Same stakes as
+    documented there: the wrong order fails 100% of good payments, so the
+    direction is pinned by tests/test_credit_packs.py.
+    """
+    cfg = config()
+    if not cfg.key_secret:
+        return False
+    expected = _hmac_hex(cfg.key_secret, f"{order_id}|{payment_id}")
     return hmac.compare_digest(expected, signature or "")
 
 

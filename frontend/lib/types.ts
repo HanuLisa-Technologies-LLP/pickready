@@ -1094,6 +1094,66 @@ export interface BillingOverview {
   transactions: BillingTransaction[];
 }
 
+// ── Credit packs, one-time purchases (directive Part 5 sections 3 and 7) ─────
+
+/**
+ * One purchasable credit pack, PRICED SERVER-SIDE. The server sends every line
+ * of the breakdown (subtotal, setup fee, GST, total) already computed, so the
+ * page renders arithmetic it never performs and can never disagree with the
+ * invoice. `available: false` covers the trial pack after first use
+ * (directive Part 5 section 3.1) and anything else the account cannot buy.
+ */
+export interface CreditPack {
+  slug: string;
+  credits: number;
+  bonus_credits: number;
+  subtotal_inr: number;
+  setup_fee_inr: number;
+  setup_fee_waived: boolean;
+  gst_inr: number;
+  total_inr: number;
+  available: boolean;
+  trial: boolean;
+}
+
+export interface CreditPacksResponse {
+  packs: CreditPack[];
+  price_per_credit_inr: number;
+  gst_rate_percent: number;
+  /** Hard minimum for a bespoke Enterprise order, quoted in the Custom card. */
+  min_custom_credits: number;
+  trial_used: boolean;
+}
+
+/** POST /billing/purchase: a Razorpay Order created and waiting for payment. */
+export interface PurchaseCreateResponse {
+  purchase_id: string;
+  razorpay_order_id: string;
+  razorpay_key_id: string;
+  total_inr: number;
+  credits: number;
+  bonus_credits: number;
+  subtotal_inr: number;
+  setup_fee_inr: number;
+  gst_inr: number;
+}
+
+/** One row of GET /billing/purchases: the purchase history with invoices. */
+export interface CreditPurchaseRow {
+  id: string;
+  pack_slug: string;
+  credits_purchased: number;
+  bonus_credits: number;
+  subtotal_inr: number;
+  setup_fee_inr: number;
+  gst_inr: number;
+  total_inr: number;
+  status: string;
+  invoice_number: string | null;
+  created_at: string;
+  paid_at: string | null;
+}
+
 export interface ProviderBillingRow {
   tenant_id: string;
   customer_name: string;
