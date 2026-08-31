@@ -47,9 +47,31 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 
 from app.services import agent_loop
+from app.services.agents import provenance
 from app.services.reliability import budget as budgeting
 
-__all__ = ["RunBudget", "Envelope", "new_workflow_id"]
+__all__ = [
+    "RunBudget",
+    "Envelope",
+    "MissingCorrelationId",
+    "new_workflow_id",
+    "Principal",
+]
+
+
+class MissingCorrelationId(ValueError):
+    """A stage that cannot be joined to the flow it belongs to.
+
+    A `ValueError` and not a `PermissionError`, unlike `MissingPrincipal`: this
+    is a traceability defect rather than an authorization one, and the two get
+    fixed by different people.
+    """
+
+#: Re-exported so a stage builds its envelope and its principal from one import.
+#: An alias rather than a second class: two `Principal` types would eventually
+#: disagree about whether a blank user id is allowed, and one of them would be
+#: the one the audit writer trusts.
+Principal = provenance.Principal
 
 
 def _uuid_hex() -> str:
@@ -139,7 +161,29 @@ class Envelope:
     candidate_id: str | None = None
     assessment_id: str | None = None
 
+    # ── who authorised this run (RBAC 34) ────────────────────────────────────
+    #: The HUMAN the agent is acting for. Optional on the dataclass and NOT
+    #: optional on the live Part A path: `require_principal` raises, and
+    #: `orchestration.enforcement.run_stage` calls it before any handler runs.
+    #:
+    #: It is optional here only because the legacy publishers in `ppi`,
+    #: `matching` and `swot_intake` build envelopes today and are being deleted
+    #: rather than migrated. `tests/test_no_silent_degradation.py` ratchets that
+    #: set so it can shrink and cannot grow.
+    principal: provenance.Principal | None = None
+
     # ── run identity ─────────────────────────────────────────────────────────
+    #: One id for the WHOLE flow, issued at job creation (spec-doc6 4.1). It is
+    #: distinct from `workflow_id`, which identifies one pipeline execution: a
+    #: rescore is a second workflow inside the same flow, and collapsing the two
+    #: would make "everything that happened to this candidate" unanswerable the
+    #: first time anything is re-run.
+    #:
+    #: NEVER DEFAULTED, for the same reason `tenant_id` is not. A minted-on-
+    #: demand correlation id would give every stage a flow of its own, and six
+    #: stages with six flows is precisely the state this field exists to end --
+    #: while looking, in every log line, exactly like a flow that was traced.
+    correlation_id: str | None = None
     workflow_id: str = field(default_factory=new_workflow_id)
     task_id: str = field(default_factory=_uuid_hex)
     #: Set only on a sub-task. A root task has none, and that absence is how a
@@ -173,6 +217,8 @@ class Envelope:
         job_id: str | None = None,
         candidate_id: str | None = None,
         assessment_id: str | None = None,
+        principal: provenance.Principal | None = None,
+        correlation_id: str | None = None,
         workflow_id: str | None = None,
         parent_task_id: str | None = None,
         context_version: str = UNVERSIONED,
@@ -199,6 +245,8 @@ class Envelope:
             job_id=str(job_id) if job_id else None,
             candidate_id=str(candidate_id) if candidate_id else None,
             assessment_id=str(assessment_id) if assessment_id else None,
+            principal=principal,
+            correlation_id=correlation_id,
             workflow_id=workflow_id or new_workflow_id(),
             parent_task_id=parent_task_id,
             context_version=context_version,
@@ -222,6 +270,13 @@ class Envelope:
         A fresh `execution_id` is minted: the sub-task is a distinct execution
         even though it belongs to the same workflow, and reusing the parent's id
         would collapse two rows in the trace table into one.
+
+        `correlation_id` and `principal` are COPIED for the same reason the
+        scope is. Re-minting the correlation id would give a sub-task a flow of
+        its own, and the flow is the thing spec-doc6 4.1 asks to be traceable
+        end to end; dropping the principal would produce a sub-task that acted
+        on nobody's authority while its parent was properly attributed, which is
+        the shape of an unauthorised write that passes review.
         """
         return replace(
             self,
@@ -230,6 +285,51 @@ class Envelope:
             parent_task_id=self.task_id,
             execution_id=_uuid_hex(),
         )
+
+    def require_correlation_id(self) -> str:
+        """The flow this run belongs to, or a refusal.
+
+        Rejects a malformed value as hard as a missing one. The failure that
+        catches is a caller threading a raw job id or a workflow id into the
+        slot: it is hex, it reads correctly in a log line, and it joins the
+        stage to no audit row at all -- which is worse than an empty column,
+        because an empty column is visibly empty.
+        """
+        if not provenance.is_correlation_id(self.correlation_id):
+            raise MissingCorrelationId(
+                f"agent {self.agent_id!r} has no usable correlation id "
+                f"({self.correlation_id!r}). One id is issued at job creation "
+                "and carried through Bodha, Sutra, Yukti, Vaada, Miti and "
+                "Siddhi; a stage that mints its own opens a second flow."
+            )
+        return self.correlation_id  # type: ignore[return-value]
+
+    def require_principal(self) -> provenance.Principal:
+        """The human this run acts for, or a refusal.
+
+        RBAC 34 is not satisfiable after the fact: an audit row written without
+        the human principal cannot be repaired later, because by then nobody
+        knows who it was. So this raises BEFORE the stage handler runs, which is
+        the same ordering the tool layer uses -- a refusal that ran the handler
+        first has already read the row it was refusing to show.
+
+        The tenant is checked against the envelope's own scope as well. An
+        envelope whose principal belongs to a different tenant is not a
+        bookkeeping mismatch, it is a cross-tenant action with a plausible
+        audit row attached.
+        """
+        if self.principal is None:
+            raise provenance.MissingPrincipal(
+                f"agent {self.agent_id!r} has no human principal; RBAC 34 "
+                "requires every AI-initiated action to be attributable to both "
+                "the human who authorised it and the agent that executed it"
+            )
+        if self.principal.tenant_id != self.tenant_id:
+            raise provenance.MissingPrincipal(
+                f"agent {self.agent_id!r} runs in tenant {self.tenant_id!r} on "
+                f"behalf of a principal in tenant {self.principal.tenant_id!r}"
+            )
+        return self.principal
 
     def expired(self, now: datetime | None = None) -> bool:
         """Whether the deadline has passed. No deadline means never expired."""
@@ -250,6 +350,9 @@ class Envelope:
             "candidate_id": self.candidate_id,
             "assessment_id": self.assessment_id,
             "agent_id": self.agent_id,
+            "principal_user_id": self.principal.user_id if self.principal else None,
+            "principal_role": self.principal.role if self.principal else None,
+            "correlation_id": self.correlation_id,
             "workflow_id": self.workflow_id,
             "task_id": self.task_id,
             "parent_task_id": self.parent_task_id,

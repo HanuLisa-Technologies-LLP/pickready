@@ -1,0 +1,46 @@
+# Coverage measurement for the per-package floors (spec-doc6 §11.1).
+#
+#   "Unit tests for every new module, at >=90% line and branch coverage for
+#    app/hiring/, app/miti/, app/siddhi/, the Company DNA package and the RBAC
+#    authorization layer. Coverage floors enforced in CI, per-package, not
+#    global."
+#
+# PER-PACKAGE IS THE WHOLE POINT. A global floor is satisfiable by a large,
+# thoroughly covered surface carrying a small, untested one, and the small
+# untested one is always the new module. `scripts/check-coverage-floors.py`
+# reads the JSON this configuration produces and enforces one floor per package
+# named there; this file only decides what is measured.
+#
+# BRANCH COVERAGE IS ON. A line-only figure treats `if grade is None:` as
+# covered the moment either arm runs, and the arms of a band cap are exactly
+# where this product's defects live.
+
+[run]
+branch = True
+parallel = False
+source =
+    app
+omit =
+    */__pycache__/*
+    */tests/*
+    app/scripts/seed_*.py
+    app/scripts/backfill_*.py
+    app/scripts/migrate_resumes_to_gcs.py
+
+[report]
+# `exclude_lines` is not a way to make a number look better. Each entry below is
+# a line that CANNOT be executed under the suite by construction, and a covered
+# figure that counted them would be understating coverage rather than
+# overstating it.
+exclude_lines =
+    pragma: no cover
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    ^\s*\.\.\.$
+    if __name__ == .__main__.:
+precision = 2
+show_missing = False
+
+[json]
+output = coverage.json
+pretty_print = False

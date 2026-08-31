@@ -90,11 +90,9 @@ __all__ = [
     "REQUIRED_LEVEL_SCORES",
     "RUBRIC_SCORED_CATEGORIES",
     "generate_candidate_questions",
-    "generate_framework",
     "framework_is_complete",
     "is_forbidden_competency",
     "load_framework",
-    "load_swot",
     "matrix_is_complete",
     "matrix_version",
     "published_matrix",
@@ -106,6 +104,7 @@ __all__ = [
     "resolve_question_target",
     "conversation_may_close",
     "required_level_score",
+    "requirement_word",
     "typical_split",
 ]
 
@@ -358,492 +357,33 @@ def required_level_score(label: Any) -> int:
     return REQUIRED_LEVEL_SCORES.get(str(label).strip(), DEFAULT_REQUIRED_LEVEL)
 
 
-# ── Deterministic fallback matrix ────────────────────────────────────────────
-# CLAUDE.md rule 9: degrade, never crash. With the whole LLM chain down, a job
-# still gets a usable matrix built from its own JD, and the Hiring Manager can
-# edit it -- which is the review step the workflow already requires.
-
-_FALLBACK_BEHAVIOURAL: tuple[tuple[str, str], ...] = (
-    ("Ownership", "Sees committed work through to a finished, verified outcome."),
-    ("Communication", "Explains decisions and trade-offs clearly to the people affected."),
-    ("Collaboration", "Works effectively across roles and asks for help at the right moment."),
-    ("Problem solving", "Breaks an unfamiliar problem down and reasons to a defensible answer."),
-    ("Adaptability", "Adjusts approach when priorities, constraints or information change."),
-    ("Judgement", "Weighs incomplete evidence and commits to a decision they can defend."),
-)
-
-#: How many items the deterministic fallback builds per aspect. Small on
-#: purpose: this is the matrix a human is about to review, and a short honest
-#: matrix drawn from the JD's own words is more useful to review than a padded
-#: one full of mechanically derived names.
-_FALLBACK_PER_CATEGORY = 4
-
-
-def _jd_terms(job: Job, field: str) -> list[str]:
-    value = (job.jd_json or {}).get(field)
-    items = value if isinstance(value, list) else ([value] if isinstance(value, str) else [])
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in items:
-        text = str(item).strip()
-        if not text:
-            continue
-        # A responsibility line is prose; take its leading clause so the label
-        # reads as a skill rather than an instruction.
-        label = re.split(r"[,;:.]| that | which | so that ", text, maxsplit=1)[0].strip()
-        label = label[:120].strip(" -,")
-        if label and label.casefold() not in seen:
-            seen.add(label.casefold())
-            out.append(label[:1].upper() + label[1:])
-    return out
-
-
-def _captured_points(swot: JobSwotIntake | dict[str, Any] | None) -> dict[str, list]:
-    """The four quadrants, whether they arrived as an artifact or as ORM rows.
-
-    Sutra normally reads Bodha's published artifact, and falls back to the rows
-    for a job whose SWOT predates the artifact layer. Both shapes are accepted
-    HERE, once, rather than at each of the three call sites: a per-call
-    `getattr` would silently return nothing for a Mapping, and "nothing" is
-    indistinguishable from "the authority listed no strengths".
-    """
-    if swot is None:
-        return {}
-    if isinstance(swot, dict):
-        return {area: list(swot.get(area) or []) for area in SWOT_AREAS}
-    return swot.captured()
-
-
-def _swot_terms(swot: JobSwotIntake | dict[str, Any] | None) -> list[str]:
-    """Short labels mined from the SWOT intake, for the offline fallback.
-
-    The fallback has no model, so it cannot reason about what the authority
-    said -- but their own phrases are still better raw material for a matrix a
-    human is about to edit than the JD alone, which is the input the SWOT was
-    collected to supplement.
-    """
-    captured = _captured_points(swot)
-    if not captured:
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for area in ("strengths", "weaknesses"):
-        for item in captured.get(area) or []:
-            label = str(item).strip()
-            if not label:
-                continue
-            label = re.split(r"[,;:.]", label, maxsplit=1)[0].strip()[:120]
-            if label and label.casefold() not in seen:
-                seen.add(label.casefold())
-                out.append(label[:1].upper() + label[1:])
-    return out
-
-
-def _fallback_framework(
-    job: Job, swot: JobSwotIntake | dict[str, Any] | None = None
-) -> list[dict[str, Any]]:
-    """A matrix built from the job's own words, with no network call.
-
-    No padding loop, and that is the change Draft v4 allowed. The old fallback
-    had to reach a floor of five per aspect and manufactured names like
-    "Kafka (further core)" to get there -- filler that landed on the one screen
-    a human is required to review. With no minimum to hit, the fallback returns
-    what the JD and SWOT actually support and stops.
-    """
-    pool = _swot_terms(swot) + _jd_terms(job, "skills")
-    topics = _jd_terms(job, "responsibilities") + _jd_terms(job, "accountabilities")
-    seen = {term.casefold() for term in pool}
-    pool += [topic for topic in topics if topic.casefold() not in seen]
-    if not pool:
-        pool = [job.title or "this role"]
-
-    must = pool[:_FALLBACK_PER_CATEGORY]
-    nice = pool[_FALLBACK_PER_CATEGORY : _FALLBACK_PER_CATEGORY * 2]
-    rows: list[dict[str, Any]] = []
-    for name in must:
-        rows.append(
-            {
-                "category": CATEGORY_MUST_HAVE,
-                "name": name,
-                "description": f"Core capability the job description names as required: {name}.",
-                "required_level": GRADE_HIGHLY,
-            }
-        )
-    for name in nice:
-        rows.append(
-            {
-                "category": CATEGORY_NICE_TO_HAVE,
-                "name": name,
-                "description": f"Supporting capability that strengthens delivery of the role: {name}.",
-                "required_level": GRADE_MATCHING,
-            }
-        )
-    if not nice:
-        # Every aspect needs at least one item or the report grades an empty
-        # section. Derived from the role rather than duplicated from must_have,
-        # so the Hiring Manager sees a placeholder to rename and not a repeat.
-        rows.append(
-            {
-                "category": CATEGORY_NICE_TO_HAVE,
-                "name": f"Adjacent experience for {job.title or 'this role'}"[:_MAX_NAME],
-                "description": (
-                    "Placeholder for the hiring team to rename during review: a "
-                    "supporting capability beyond those the job description names."
-                ),
-                "required_level": GRADE_MODERATELY,
-            }
-        )
-    for name, description in _FALLBACK_BEHAVIOURAL[:_FALLBACK_PER_CATEGORY]:
-        rows.append(
-            {
-                "category": CATEGORY_BEHAVIOURAL,
-                "name": name,
-                "description": description,
-                "required_level": GRADE_MATCHING,
-            }
-        )
-    return rows
-
-
-_MAX_NAME = 255
-
-
-def _maximum_total(job: Job) -> int:
-    """The most items this job's matrix may hold: one question each, at most."""
-    return max_questions(job.assessment_grade)
-
-
-def _framework_system_prompt(job: Job) -> str:
-    """Rendered per job, because the ceiling is a property of the job's grade.
-
-    Rendered at call time rather than at import: the old module-level constant
-    could not carry a value that varies per job, and a ceiling stated in the
-    prompt is what stops a generation the save handler would then have to
-    refuse.
-    """
-    return registry.render(
-        "ppi_framework_system",
-        maximum_total=_maximum_total(job),
-        grade_highly=GRADE_HIGHLY,
-        grade_matching=GRADE_MATCHING,
-        grade_moderately=GRADE_MODERATELY,
-    )
-
-
-def _valid_competency(row: Any) -> bool:
-    return (
-        isinstance(row, dict)
-        and str(row.get("category", "")) in CATEGORIES
-        and bool(str(row.get("name", "")).strip())
-    )
-
-
-def _normalise(rows: list[Any], *, maximum_total: int) -> list[dict[str, Any]]:
-    """Clean, de-duplicate and cap a generated matrix.
-
-    Culture entries are DROPPED here rather than rejected: refusing a whole
-    generation because one entry was disallowed would send the recruiter back to
-    an empty screen for a problem the product can fix itself.
-
-    The cap is on the TOTAL rather than per aspect, because that is the bound
-    that actually matters -- it is the grade's question ceiling, and every item
-    kept must be askable. Items are taken in the order the model returned them,
-    which is the order it ranked them.
-    """
-    out: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for row in rows:
-        if len(out) >= maximum_total:
-            break
-        if not _valid_competency(row):
-            continue
-        category = str(row["category"])
-        name = str(row["name"]).strip()[:_MAX_NAME]
-        if category == CATEGORY_BEHAVIOURAL and is_forbidden_competency(name):
-            logger.info("ppi.framework.culture_entry_dropped name=%s", name)
-            continue
-        key = (category, name.casefold())
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(
-            {
-                "category": category,
-                "name": name,
-                "description": (str(row.get("description") or "").strip() or None),
-                "required_level": row.get("required_level"),
-            }
-        )
-    return out
-
-
-def _ensure_every_aspect(
-    rows: list[dict[str, Any]], job: Job, swot: JobSwotIntake | dict[str, Any] | None
-) -> list[dict[str, Any]]:
-    """Guarantee one item per aspect, drawing from the JD fallback.
-
-    This is the whole of what remains of the old `_top_up`. It closes a
-    structural hole, not a count: an aspect with no items still renders a grade,
-    a remark and a radar chart, and there would be nothing behind any of them.
-    """
-    present = {row["category"] for row in rows}
-    missing = [category for category in CATEGORIES if category not in present]
-    if not missing:
-        return rows
-    existing = {(row["category"], row["name"].casefold()) for row in rows}
-    for filler in _fallback_framework(job, swot):
-        if filler["category"] not in missing:
-            continue
-        key = (filler["category"], filler["name"].casefold())
-        if key in existing:
-            continue
-        existing.add(key)
-        missing.remove(filler["category"])
-        rows.append(filler)
-        if not missing:
-            break
-    for category in list(missing):
-        rows.append(
-            {
-                "category": category,
-                "name": f"{job.title or 'This role'} ({CATEGORY_LABELS[category].lower()})"[:_MAX_NAME],
-                "description": (
-                    "Placeholder for the hiring team to rename during review: a "
-                    "capability this role needs beyond those the job description "
-                    "names."
-                ),
-                "required_level": GRADE_MATCHING,
-            }
-        )
-    return rows
-
-
-async def load_swot(session: AsyncSession, job_id: Any) -> JobSwotIntake | None:
-    return (
-        await session.execute(
-            select(JobSwotIntake).where(JobSwotIntake.job_id == job_id)
-        )
-    ).scalars().first()
-
-
-#: What `_consume_swot_evidence` says it read. Recorded on the log line rather
-#: than inferred later, because "the matrix was built from the artifact" and
-#: "the matrix was built from the rows because the artifact was refused" produce
-#: identical matrices and must not be identical in the record.
-SWOT_FROM_ARTIFACT = "artifact"
-SWOT_FROM_INTAKE_ROWS = "intake_rows"
-SWOT_ABSENT = "absent"
-
-
-async def _consume_swot_evidence(
-    session: AsyncSession, job: Job
-) -> tuple[dict[str, Any] | None, str]:
-    """Sutra reads Bodha's SWOT evidence, verifying it before it reads it.
-
-    The artifact is the intended path (spec §4): it is typed, scoped and
-    verified, so Sutra can tell a real intake from one that degraded, which
-    reading the rows directly cannot.
-
-    THE ROW PATH IS A FALLBACK AND MUST STAY ONE. Every job that existed before
-    the artifact layer was wired has an intake and no artifact, and there are
-    live jobs in that state right now. Refusing to generate a matrix without an
-    artifact would strand each of them at `questions_pending_review` with no way
-    forward, which is exactly the failure nineteen jobs were already found in on
-    2026-08-06 -- a setup step that could not complete and no screen that said
-    so. So a missing or refused artifact costs the verification and nothing
-    else, and the reason is written on the log line.
-    """
-    from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
-    try:
-        artifact = await swot_intake.published_evidence(session, job)
-    except Exception:
-        logger.warning("ppi.swot_artifact_unavailable job_id=%s", job.id, exc_info=True)
-        artifact = None
-
-    if artifact is not None:
-        verdict = artifacts.verify_for_consumer(
-            artifact,
-            identity.SUTRA,
-            tenant_id=str(job.tenant_id),
-            job_id=str(job.id),
-        )
-        if verdict.passed:
-            return {area: list(artifact.payload.get(area) or []) for area in SWOT_AREAS}, (
-                SWOT_FROM_ARTIFACT
-            )
-        logger.warning(
-            "ppi.swot_artifact_refused job_id=%s issues=%s",
-            job.id,
-            [finding.issue for finding in verdict.findings],
-        )
-
-    swot = await load_swot(session, job.id)
-    if swot is None:
-        return None, SWOT_ABSENT
-    return swot.captured(), SWOT_FROM_INTAKE_ROWS
-
-
-async def generate_framework(
-    session: AsyncSession, job: Job, *, replace: bool = False
-) -> list[JobCompetency]:
-    """Generate the job's PPI matrix and leave it AWAITING REVIEW.
-
-    Generated from the JD **and** the reporting authority's SWOT intake
-    (spec §5.2). The intake is not a hard gate here: a job whose SWOT is missing
-    still gets a matrix from the JD alone rather than being stranded with none,
-    and the setup screen is what tells the team the intake is outstanding. What
-    IS gated is the job reaching candidates, which `_refresh_setup_status`
-    holds until both halves of the setup session are finalised.
-
-    This never approves anything. The matrix becomes the job's fixed evaluation
-    criteria only when the Hiring Manager saves it (spec §5.3).
-
-    Idempotent by default: a job that already has items keeps them, so a Celery
-    redelivery cannot discard a matrix a human has already edited.
-    """
-    existing = (
-        await session.execute(
-            select(JobCompetency)
-            .where(JobCompetency.job_id == job.id)
-            .order_by(JobCompetency.ordinal)
-        )
-    ).scalars().all()
-    if existing and not replace:
-        return list(existing)
-
-    # Bodha's evidence, verified before it is read. `swot` is the four
-    # quadrants as a plain mapping from here down, whichever path produced them,
-    # so nothing below can tell an artifact from a row -- and nothing below
-    # should: the matrix is built from what the authority said, not from how it
-    # travelled.
-    swot, swot_origin = await _consume_swot_evidence(session, job)
-    maximum_total = _maximum_total(job)
-    payload = json.dumps(
-        {
-            "title": job.title,
-            "grade": job.assessment_grade,
-            "experience_min_years": job.experience_min_years,
-            "experience_max_years": job.experience_max_years,
-            "jd": job.jd_json,
-            "jd_markdown": (job.jd_markdown or "")[:6000],
-            "swot_intake": swot,
-        }
-    )
-    system_prompt = _framework_system_prompt(job)
-
-    async def _execute(reflection: str) -> list[dict[str, Any]]:
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": payload},
-        ]
-        if reflection:
-            messages.append({"role": "user", "content": reflection})
-        raw = await llm_router.chat_completion(
-            "jd_generation", messages, response_format_json=True, session=session
-        )
-        return _normalise(
-            json.loads(raw).get("competencies", []), maximum_total=maximum_total
-        )
-
-    def _evaluate(candidate: list[dict[str, Any]]) -> agent_loop.Critique:
-        """Deterministic criteria. The count is NOT one of them.
-
-        Draft v4 removed the per-aspect minimum, so "you returned three and I
-        need five" is no longer a defect -- three may be the right answer for
-        the job. What remains checkable is structural: every aspect has to be
-        represented, or the report grades an empty section.
-        """
-        present = {row["category"] for row in candidate}
-        missing = [
-            CATEGORY_LABELS[category]
-            for category in CATEGORIES
-            if category not in present
-        ]
-        if missing:
-            return agent_loop.reject(
-                "return at least one item in each aspect; these came back empty: "
-                + ", ".join(missing)
-            )
-        return agent_loop.ok()
-
-    result = await agent_loop.run_loop(
-        name="ppi_framework",
-        execute=_execute,
-        evaluate=_evaluate,
-        # The JD-derived matrix, which needs no network at all. This is what
-        # repaired 19 stranded live jobs on 2026-08-06 with every provider down.
-        fallback=_normalise(_fallback_framework(job, swot), maximum_total=maximum_total),
-        max_attempts=agent_loop.BACKGROUND_ATTEMPTS,
-        deadline_seconds=agent_loop.BACKGROUND_DEADLINE,
-        max_generated_tokens=agent_loop.BACKGROUND_TOKEN_BUDGET,
-    )
-    if result.degraded:
-        logger.warning(
-            "ppi.framework.degraded job_id=%s attempts=%d reasons=%s",
-            job.id, result.attempts, list(result.reasons),
-        )
-    rows = result.value
-    if not rows:
-        rows = _normalise(_fallback_framework(job, swot), maximum_total=maximum_total)
-    rows = _ensure_every_aspect(rows, job, swot)
-
-    # Deactivate rather than delete on `replace`: an item may already be
-    # referenced by a generated candidate question or a written report, and a
-    # regenerated matrix must not orphan either.
-    for row in existing:
-        row.is_active = False
-
-    ordinal_by_category = {category: 0 for category in CATEGORIES}
-    created: list[JobCompetency] = []
-    for row in sorted(rows, key=lambda item: CATEGORIES.index(item["category"])):
-        ordinal_by_category[row["category"]] += 1
-        created.append(
-            JobCompetency(
-                tenant_id=job.tenant_id,
-                job_id=job.id,
-                category=row["category"],
-                name=row["name"],
-                description=row["description"],
-                required_level=required_level_score(row["required_level"]),
-                ordinal=ordinal_by_category[row["category"]],
-            )
-        )
-    if not created:
-        # THE STAMP IS EVIDENCE, NOT INTENT. Nineteen live jobs carried
-        # `framework_generated_at` and had no competency rows, and because every
-        # health check in the product asked the stamp rather than the table, the
-        # failure was invisible for weeks -- the reminder task even filters on
-        # this column being set, so it specifically excluded the jobs that had
-        # failed. Leaving it NULL is what lets `reconcile_job_setup` and the
-        # setup screen both see that there is work still to do.
-        logger.warning(
-            "ppi.framework.produced_nothing job_id=%s tenant_id=%s", job.id, job.tenant_id
-        )
-        await session.flush()
-        return []
-
-    session.add_all(created)
-    job.framework_generated_at = datetime.now(timezone.utc)
-    # Resolved here and not per candidate: every candidate on this job is asked
-    # the same NUMBER of questions, which is part of what makes two reports
-    # comparable. Recomputed on a regenerate because the matrix size moved.
-    job.question_target = resolve_question_target(job.assessment_grade, len(created))
-    await session.flush()
-    logger.info(
-        "ppi.framework.generated job_id=%s must_have=%d nice_to_have=%d "
-        "behavioural=%d target=%d swot=%s swot_origin=%s",
-        job.id,
-        *(sum(1 for c in created if c.category == cat) for cat in CATEGORIES),
-        job.question_target,
-        bool(swot) and any(swot.values()),
-        swot_origin,
-    )
-    # Sutra's hand-off to Yukti, Vaada, Miti and Siddhi (spec §5). Published
-    # LAST, after the rows and both stamps are flushed, so a contract bug in the
-    # artifact layer cannot cost a job the matrix it just generated -- the same
-    # ordering the SWOT publish uses, and for the same reason.
-    publish_tatva_matrix(job, created, version=_next_matrix_version(existing))
-    return created
+# ── Sutra builds the matrix: `hiring/scorecard.compile_matrix` ──────────────
+#
+# DELETED 2026-08-29 (spec-doc6 D1, section 4.1 "delete on activation").
+#
+# `generate_framework` lived here: one model call asking for a whole matrix in
+# one pass, with `_fallback_framework` assembling a matrix out of the JD's own
+# noun phrases whenever the model was unavailable. Both are gone, along with
+# `_normalise`, `_ensure_every_aspect`, `_maximum_total`, `_valid_competency`,
+# `_jd_terms`, `_swot_terms`, `_captured_points`, `_consume_swot_evidence` and
+# `load_swot`. The prompt file went with them.
+#
+# TWO THINGS WERE WRONG WITH IT AND ONLY ONE WAS VISIBLE.
+#
+# The visible one: a weight a model chooses in one pass has no terms to store,
+# so the matrix could not carry "which Layer 1 / Layer 2 / Layer 3 input
+# produced this and what each contributed" -- which is the product requirement
+# this phase is built around.
+#
+# The quiet one: the fallback produced a matrix that LOOKED like the real
+# thing. It was reviewed, approved, and graded against for the life of the job,
+# and it rested on nothing but the JD -- which Runbook section 18 calls "almost
+# never an accurate specification of the hiring problem". A degradation that
+# leaves no trace in what it produces is indistinguishable from success.
+#
+# What survives in this module is everything downstream of the matrix: loading
+# it, versioning it, publishing it as an artifact, checking it may be saved, and
+# generating one candidate's questions against it.
 
 
 async def load_framework(session: AsyncSession, job_id: Any) -> list[JobCompetency]:
@@ -888,18 +428,6 @@ def matrix_version(rows: list[JobCompetency]) -> int:
     return max(1, len(batches))
 
 
-def _next_matrix_version(existing: list[JobCompetency]) -> int:
-    """The version the batch about to be written will carry.
-
-    Computed from the PREVIOUS rows rather than from the new ones, because the
-    new ones get their `created_at` from a server default that this process has
-    not read back yet: counting them would silently fail to increment, and an
-    unchanged version on changed criteria is the one thing a consumer cannot
-    detect for itself.
-    """
-    return matrix_version(existing) + (1 if existing else 0)
-
-
 async def _all_competencies(session: AsyncSession, job_id: Any) -> list[JobCompetency]:
     """Every generation's rows, which is what `matrix_version` has to count."""
     return list(
@@ -913,7 +441,7 @@ async def _all_competencies(session: AsyncSession, job_id: Any) -> list[JobCompe
     )
 
 
-def _requirement_word(required_level: Any) -> str:
+def requirement_word(required_level: Any) -> str:
     """The required level as a WORD.
 
     An integer here would be a number crossing an agent boundary on its way
@@ -937,7 +465,7 @@ def _matrix_item(row: JobCompetency) -> dict[str, Any]:
         # that question, not here: a rubric copied onto the matrix would be a
         # second copy that drifts from the one the scorer actually reads.
         "rubric": row.description or "",
-        "required_level": _requirement_word(row.required_level),
+        "required_level": requirement_word(row.required_level),
         "evidence_expectation": (
             "At least one answer in the candidate's own words describing what "
             "they did, in what context, and what resulted."
@@ -1321,9 +849,14 @@ async def generate_candidate_questions(
     if existing:
         return list(existing)
 
+    # GATE G1. Questions are written against the job's criteria, so a job with
+    # no approved, frozen matrix has nothing to write them against. This used to
+    # generate one on demand, which meant a candidate could be asked questions
+    # derived from criteria nobody had reviewed -- and then graded against them.
+    from app.services.hiring import scorecard  # noqa: PLC0415
+
+    await scorecard.require_frozen_matrix(session, job.id)
     framework = await load_framework(session, job.id)
-    if not framework:
-        framework = await generate_framework(session, job)
     grade = grade or job.assessment_grade or DEFAULT_GRADE
     # The job's resolved target, not a per-candidate decision. Falls back to
     # resolving it now for a job whose matrix predates `question_target`.

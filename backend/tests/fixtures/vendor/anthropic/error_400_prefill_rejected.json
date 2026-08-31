@@ -1,0 +1,17 @@
+{
+  "_provenance": {
+    "authored_from": "Anthropic published documentation: last-assistant-turn prefills return 400 invalid_request_error on Claude Sonnet 5 and the rest of the 4.6-and-later family. The message text below is representative of the documented class, not a transcription of a specific response.",
+    "observed": false,
+    "notes": "THIS IS THE RESPONSE THE JSON-MODE SONNET PATH IS EXPECTED TO RECEIVE. llm_router.build_payload appends an assistant turn seeded with an opening brace whenever json_mode is set. See VERIFICATION_PENDING.md, the row that names it."
+  },
+  "status": 400,
+  "headers": {"content-type": "application/json", "request-id": "req_fixture_400_prefill"},
+  "body": {
+    "type": "error",
+    "error": {
+      "type": "invalid_request_error",
+      "message": "messages: final assistant content cannot be prefilled for this model"
+    },
+    "request_id": "req_fixture_400_prefill"
+  }
+}

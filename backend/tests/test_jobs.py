@@ -213,6 +213,29 @@ def _stub_create_deps(monkeypatch) -> dict:
     return calls
 
 
+def _satisfy_publication_gate(monkeypatch, job: Job) -> None:
+    """Make `_publication_blocked` return None, the honest way.
+
+    RBAC 21 refuses to publish a job whose Hiring-Manager-controlled
+    components are incomplete, and that gate asks the TABLE rather than a
+    stamp. A test of "publish returns the public link" has to satisfy the
+    precondition rather than route around it, or it silently becomes a test
+    that publishing works with no evaluation criteria, which is exactly what
+    the gate exists to prevent.
+
+    Stubbed rather than seeded because these are unit tests over a fake
+    session; `test_job_setup_live.py` exercises the real matrix end to end.
+    """
+    job.swot_completed_at = datetime.now(timezone.utc)
+
+    async def _frozen(session, job_id):
+        return SimpleNamespace(job_id=job_id, version=1, items=())
+
+    from app.services.hiring import scorecard
+
+    monkeypatch.setattr(scorecard, "load_frozen_matrix", _frozen)
+
+
 def _job_create_body() -> JobCreateIn:
     return JobCreateIn(
         title="Backend Engineer", grade="non_managerial",
@@ -707,6 +730,7 @@ async def test_publish_returns_the_public_application_link(monkeypatch) -> None:
     calls = _stub_publish_deps(monkeypatch)
     user = _user()
     job = _draft_job(user)
+    _satisfy_publication_gate(monkeypatch, job)
     out = await jobs_api.publish_job(job.id, user=user, session=_PublishSession(job))
 
     assert out.ratified_at is not None

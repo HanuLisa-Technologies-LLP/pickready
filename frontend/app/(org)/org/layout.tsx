@@ -15,6 +15,7 @@ import {
   Settings,
   ShieldCheck,
   Users,
+  Users2,
   AlertTriangle,
 } from "lucide-react";
 
@@ -122,6 +123,16 @@ export default function OrgLayout({
       : null,
     // Shared staff surface, identical for every staff role (flat).
     { href: "/org/jobs", label: "Jobs", icon: Briefcase },
+    // The Candidate Dashboard, the client's daily working surface. NOT gated
+    // on a capability here, and deliberately: the route is authorized by
+    // `view_candidate_ratings`, which is one of the RBAC 24 grants the engine
+    // resolves server-side and which is not in the client-side
+    // `ALL_CAPABILITIES` list, so `hasCapability` cannot see it. A nav item
+    // hidden by a stale client-side list is a page somebody is told does not
+    // exist. The page itself asks the server what this person may do and
+    // renders scoped or full accordingly, which is the more honest
+    // arrangement in any case. Same reasoning as Company DNA below.
+    { href: "/org/candidates", label: "Candidates", icon: Users2 },
     // Company Profile (2026-07-27 spec §3.2): the About / Work Life / Benefits
     // sections every new job snapshots into its JD.
     { href: "/org/profile", label: "Company Profile", icon: FileText },

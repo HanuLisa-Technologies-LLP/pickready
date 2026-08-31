@@ -132,6 +132,42 @@ BANDS: tuple[tuple[str, int], ...] = (
 _BAND_SCORES: dict[str, int] = dict(BANDS)
 
 
+def rubric_anchor_text(dimension: str) -> str:
+    """Section 9.x's six scoring anchors for ONE dimension, as prompt text.
+
+    THE ANCHORS ARE PER DIMENSION AND ARE UNIVERSAL. Sections 9.1 to 9.5 each
+    carry one six-band table over 0 to 100, stated once and never restated per
+    department or per seniority; exactly one department carries anything per
+    seniority (section 21.11's emphasis notes for IT and Software) and those are
+    not anchors. Section 57.3 names "retrieved rubric anchors from the
+    department model" as an evaluator input, which is what led an earlier
+    version to build them per department; what the department model actually
+    supplies is the COMPETENCY SET the anchors are applied to.
+
+    So each of the five evaluators gets its OWN dimension's table, and none of
+    them gets another's. Handing all five the same string, which is what
+    happened before, meant four of them were anchored against a rubric written
+    for a question they were not asked.
+
+    Raises through `department_models` if the anchors are missing: an evaluator
+    with no anchor produces a band nobody can defend, and a generic substitute
+    would look exactly like a real one in the prompt.
+    """
+    from app.services.hiring.department_models import dimension_rubric_anchors
+    from app.services.hiring.situations import RUNBOOK_ID_BY_DIMENSION
+
+    runbook_id = RUNBOOK_ID_BY_DIMENSION.get(dimension)
+    if runbook_id is None:
+        raise ValueError(
+            f"Unknown dimension {dimension!r}; it maps to no Runbook D1 to D5 "
+            f"identifier, so no section 9.x anchor table can be retrieved."
+        )
+    return "\n".join(
+        f"  {anchor.band}: {anchor.meaning}"
+        for anchor in dimension_rubric_anchors(runbook_id)
+    )
+
+
 def band_for(band: str) -> int:
     """The representative score for a band. Raises for an unknown band.
 
@@ -218,6 +254,29 @@ class EvidenceView:
     independence_group: str
     #: current | recent | dated, from the ledger's freshness rules.
     freshness: str
+    #: Whether the text carried checkable specifics -- numbers, systems, names,
+    #: mechanisms. Section 6.1's own words, and the whole of what separates an
+    #: E0 assertion from an E1 self-report with specificity. Decided where the
+    #: text is, because the ledger stores a locator and never the sentence.
+    has_specifics: bool = False
+
+    @property
+    def tier(self) -> str:
+        """This piece of evidence's Runbook tier, E0 to E5 (section 6.1).
+
+        DERIVED, never stored, from the three fields above. Storing it would
+        create a second place where a tier could be set, and the one thing
+        section 14.1's control cannot survive is a tier somebody assigned by
+        hand: it decides whether a Must-have is Unassessed, which decides
+        whether the candidate can be delivered as Ready to Pick at all.
+        """
+        from app.services.evidence import tiers
+
+        return tiers.tier_for(
+            source_type=self.source_kind,
+            trust=self.trust,
+            has_specifics=self.has_specifics,
+        )
 
 
 @dataclass(frozen=True)

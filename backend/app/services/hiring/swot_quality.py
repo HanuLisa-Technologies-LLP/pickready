@@ -76,13 +76,42 @@ __all__ = [
     "probe_for",
     "trade_off_question",
     "REJECTION_RULES",
+    "QUADRANT_CATEGORY",
     "excludes_best_performer",
     "Rejection",
     "QualityReport",
     "review",
     "MAX_MUST_HAVE_SHARE",
+    "MAX_SCORECARD_COMPETENCIES",
     "MIN_INTERNAL_WEAKNESSES",
 ]
+
+
+# ── §18.1: which quadrant produces which aspect of the scorecard ─────────────
+#
+# Read straight off §18.1's "What it produces" column, and held HERE rather than
+# in either of its two callers. Bodha needs it to run §18.5's
+# everything-is-must-have rule (which asks what share of the proposed items are
+# essential) and Sutra needs it to categorise what it builds. Two copies would
+# drift, and the drift would be silent: one module refusing an intake for a
+# share the other module's own mapping does not produce.
+#
+#   Weaknesses     "the gap competencies - the highest-weighted items"  Must-have
+#   Strengths      "competencies to deprioritise"                       Nice-to-have
+#   Opportunities  "trajectory and adjacency signals to reward"         Nice-to-have
+#   Threats        "risk probes, thresholds, disqualifiers"             Behavioural
+#
+# The strengths row is the counterintuitive one and §19.2 spells out why: a team
+# strength REDUCES the weight of that competency, because the hire does not need
+# to supply it. A system that weighted everything the JD mentions "gets this
+# exactly backwards and consistently selects candidates who duplicate existing
+# strengths while leaving the real gap unfilled".
+QUADRANT_CATEGORY: dict[str, str] = {
+    "weaknesses": "must_have",
+    "strengths": "nice_to_have",
+    "opportunities": "nice_to_have",
+    "threats": "behavioural",
+}
 
 # ── The seven high-value probes (§18.3) ──────────────────────────────────────
 #

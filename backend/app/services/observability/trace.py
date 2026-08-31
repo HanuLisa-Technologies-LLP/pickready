@@ -8,6 +8,19 @@ answered HTTP. A trace answers the questions a green pipeline cannot: did the
 planner take the fast path, did retrieval return anything, how many attempts did
 the loop spend, what did the verifier reject, and what did it cost.
 
+THE CORRELATION ID IS CARRIED, NOT PERSISTED, AND THAT IS STATED HONESTLY
+--------------------------------------------------------------------------
+spec-doc6 4.1 requires the flow's correlation id in "every audit row and log
+line". `audit_log.correlation_id` (migration 0061) is the durable half and is
+already there. This module supplies the log half: `correlation_id` is on the
+trace, appears in `log()` and in `as_dict()`.
+
+`agent_execution_traces` has NO correlation column, so `persist` does not write
+one. That is a gap and it is written down rather than papered over by stuffing
+the id into `stages`, which would put it somewhere no query looks and let this
+docstring claim persistence it does not have. The audit trail, not the trace
+table, is where a flow is reconstructed months later.
+
 CONTENT NEVER CROSSES THIS MODULE
 ----------------------------------
 Stage names, statuses, millisecond counts, token counts, typed defects. No
@@ -125,6 +138,12 @@ class RequestTrace:
     agent_type: str
     task_type: str
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
+    #: The flow this run belongs to (spec-doc6 4.1). NOT defaulted and not
+    #: minted here: a trace that invented its own correlation id would put a
+    #: plausible value on every log line and join to no audit row, which is
+    #: worse than an absent one because an absent one is visibly absent.
+    #: `provenance.correlation_for_job` is where a real one comes from.
+    correlation_id: str | None = None
     tenant_id: uuid.UUID | None = None
     job_id: uuid.UUID | None = None
     link_id: uuid.UUID | None = None
@@ -217,6 +236,7 @@ class RequestTrace:
     def as_dict(self) -> dict[str, Any]:
         return {
             "request_id": self.request_id,
+            "correlation_id": self.correlation_id,
             "agent_type": self.agent_type,
             "task_type": self.task_type,
             "status": self.status,
@@ -242,10 +262,11 @@ class RequestTrace:
         construction because every field here is an identifier or a number.
         """
         logger.info(
-            "agent.run request_id=%s agent=%s task=%s status=%s complexity=%s "
-            "fast_path=%s attempts=%d degraded=%s duration_ms=%d tokens=%d "
-            "cost_usd=%.6f tools=%d rca=%s",
+            "agent.run request_id=%s correlation_id=%s agent=%s task=%s status=%s "
+            "complexity=%s fast_path=%s attempts=%d degraded=%s duration_ms=%d "
+            "tokens=%d cost_usd=%.6f tools=%d rca=%s",
             self.request_id,
+            self.correlation_id or "-",
             self.agent_type,
             self.task_type,
             self.status,

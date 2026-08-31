@@ -3,11 +3,13 @@ LLM-output-parsing paths that sit above the pure scoring math in test_scoring.py
 
 Covers:
   * _extract_valid — malformed LLM entries are skipped, not crashed on.
-  * deterministic fallback breakdowns when the LLM chain is unavailable
-    (ordering preserved, ceiling below the Highly-Matching boundary, comments
-    flagged "AI scoring unavailable").
-  * _score_batch falling back on llm_router.LLMUnavailableError instead of
+  * the deterministic breakdown when the LLM chain is unavailable, which since
+    spec-doc6 §4.4 comes from Yukti's pre-screen EVIDENCE reading rather than
+    from a retrieval rank. The ceiling below the Highly Matching boundary is
+    kept, and now has a reason rather than a constant behind it.
+  * _score_batch degrading on llm_router.LLMUnavailableError instead of
     aborting the batch.
+  * the ontology-expanded, OR-ed lexical stage (spec-doc6 §4.6).
 
 No DB — the DB-touching run_matching() is exercised by the live seeded run in
 the build report, not here.
@@ -24,8 +26,6 @@ from app.services.matching import (
     PARAMETERS,
     RANKING_COMMENT_KEYS,
     _extract_valid,
-    _fallback_breakdown,
-    _fallback_param_score,
     comment_fields_out_of_range,
     compute_overall_score,
     enforce_breakdown_comments,
@@ -33,7 +33,31 @@ from app.services.matching import (
     ranking_payload,
     word_count,
 )
+from app.services.hiring import prescreen
 from app.services.tiers import assign_tier
+
+
+def _prescreen(resume: str, requirements=("python",), skills=("Python",)):
+    """A real pre-screen result, built the way the live path builds one."""
+    return prescreen.grade(
+        prescreen.PreScreenInput(
+            requirements=tuple(requirements),
+            requirement_source=prescreen.REQUIREMENTS_FROM_JD,
+            claims=prescreen.claims_from_resume(resume, skills=list(skills)),
+        )
+    )
+
+
+#: A resume whose only evidence is a bare skills list. RPN-PHIL-001 §6.1 calls
+#: that E0: an unverifiable self-claim, free to produce.
+ASSERTED_ONLY = "Worked across several teams on a range of responsibilities."
+
+#: The same claim with a mechanism, a checkable number and clear ownership in
+#: it, which is what §6.1 calls E1.
+CHECKABLE = (
+    "I owned the migration of the Python billing service, cutting p99 latency "
+    "from 900ms to 120ms across 40 million requests a day."
+)
 
 
 def _in_range(text: str) -> bool:
@@ -113,42 +137,70 @@ def test_extract_valid_ignores_unwanted_and_duplicate_ids():
     assert missing == set()
 
 
-# ── Deterministic fallback (LLM unavailable) ────────────────────────────────
+# ── The deterministic breakdown is EVIDENCE, not similarity ─────────────────
 
-def test_fallback_param_score_band_and_monotonicity():
-    # single candidate -> top of band
-    assert _fallback_param_score(0, 1) == matching._FALLBACK_MAX
-    # best and worst hit the band edges
-    assert _fallback_param_score(0, 5) == matching._FALLBACK_MAX
-    assert _fallback_param_score(4, 5) == matching._FALLBACK_MIN
-    # monotonic non-increasing with rank
-    scores = [_fallback_param_score(i, 10) for i in range(10)]
-    assert scores == sorted(scores, reverse=True)
-    assert min(scores) >= matching._FALLBACK_MIN
-    assert max(scores) <= matching._FALLBACK_MAX
+def test_the_retrieval_rank_band_is_gone():
+    """The deleted half of spec-doc6 §4.4, asserted by absence.
+
+    A grade derived from a retrieval rank is a grade derived from document
+    similarity, which is the measurement RPN-PHIL-001 §58 says systematically
+    undervalues candidates who use non-standard vocabulary. Naming the deleted
+    symbols here is what stops one quietly coming back beside the new grader and
+    reopening the dual path spec-doc6 §4.1 forbids.
+    """
+    for gone in (
+        "_fallback_breakdown",
+        "_fallback_param_score",
+        "_fallback_comment",
+        "_FALLBACK_MIN",
+        "_FALLBACK_MAX",
+        "_FALLBACK_COMMENTS",
+        "_AI_UNAVAILABLE_COMMENT",
+    ):
+        assert not hasattr(matching, gone), gone
 
 
-def test_fallback_breakdown_shape_and_flagged_comments():
-    bd = _fallback_breakdown(0, 1)
+def test_deterministic_breakdown_shape_and_flagged_comments():
+    bd = matching.prescreen_breakdown(_prescreen(CHECKABLE))
     for param in PARAMETERS:
-        # Real, readable, in-contract text — never the old placeholder.
+        # Real, readable, in-contract text — never a placeholder.
         assert _in_range(bd[param]["comment"])
         assert "AI scoring unavailable" not in bd[param]["comment"]
         assert 1 <= bd[param]["score"] <= 10
     assert _in_range(bd["overall"]["comment"])
-    assert "AI scoring unavailable" not in bd["overall"]["comment"]
-    # the degraded mode is flagged in a machine-readable way instead
-    assert bd["scoring_mode"] == "retrieval_fallback"
-    # overall is the Python-computed weighted average of the fallback scores
+    # The deterministic mode is flagged in a machine-readable way instead.
+    assert bd["scoring_mode"] == matching.SCORING_MODE_PRESCREEN
+    # overall is the Python-computed mean of the category scores.
     assert bd["overall"]["score"] == compute_overall_score(
         {p: bd[p]["score"] for p in PARAMETERS}
     )
 
 
-def test_fallback_never_reaches_highly_matching_tier():
-    # Even the single best fallback candidate stays below the 90 boundary, so a
-    # fallback score never fabricates a "Highly Matching" result.
-    bd = _fallback_breakdown(0, 1)
+def test_stronger_resume_evidence_scores_higher_than_a_bare_assertion():
+    """The property a retrieval rank could not have: the number tracks the
+    EVIDENCE. Same requirement, same skills list, two resumes, one asserting and
+    one carrying a mechanism, a number and clear ownership."""
+    weak = matching.prescreen_breakdown(_prescreen(ASSERTED_ONLY))
+    strong = matching.prescreen_breakdown(_prescreen(CHECKABLE))
+    assert strong["overall"]["score"] > weak["overall"]["score"]
+
+
+def test_deterministic_breakdown_never_reaches_highly_matching_tier():
+    """A resume-only pass can never fabricate a top-tier match.
+
+    The ceiling is kept from the deleted band and now has a reason rather than a
+    constant behind it: RPN-PHIL-001 §6.1 puts a candidate's own document at E2
+    at best, and every tier above it requires a controlled response, an
+    observation or a third party. The top grade is a claim about verified depth,
+    and a resume contains none.
+    """
+    best = _prescreen(
+        "I owned the rewrite, see https://github.com/example/service, cutting "
+        "p99 latency from 900ms to 40ms for 200 million requests with a team of 12.",
+        requirements=("python",),
+        skills=(),
+    )
+    bd = matching.prescreen_breakdown(best)
     match_score = round(bd["overall"]["score"] * 10, 1)
     assert match_score <= 80.0
     assert assign_tier(match_score) != Tier.highly_matching
@@ -166,27 +218,28 @@ class _FakeProfile:
 
 
 @pytest.mark.asyncio
-async def test_score_batch_falls_back_when_llm_unavailable(monkeypatch):
+async def test_score_batch_degrades_to_the_evidence_reading(monkeypatch):
     async def _down(*a, **k):
         raise matching.llm_router.LLMUnavailableError("all providers exhausted")
 
     monkeypatch.setattr(matching.llm_router, "chat_completion", _down)
 
-    batch = [_FakeProfile(), _FakeProfile()]
-    rank_by_id = {p.id: i for i, p in enumerate(batch)}
+    strong, weak = _FakeProfile(), _FakeProfile()
+    prescreened = {
+        strong.id: _prescreen(CHECKABLE),
+        weak.id: _prescreen(ASSERTED_ONLY),
+    }
     result = await matching._score_batch(
-        session=None, jd_text="JD", batch=batch, rank_by_id=rank_by_id, total=len(batch)
+        session=None, jd_text="JD", batch=[strong, weak], prescreened=prescreened
     )
-    # Every profile still gets a (fallback) breakdown — the batch never aborts.
-    assert set(result) == {p.id for p in batch}
-    for pid, bd in result.items():
-        assert bd["scoring_mode"] == "retrieval_fallback"
+    # Every profile still gets a breakdown — the batch never aborts.
+    assert set(result) == {strong.id, weak.id}
+    for bd in result.values():
+        assert bd["scoring_mode"] == matching.SCORING_MODE_PRESCREEN
         assert comment_fields_out_of_range(bd) == {}
-    # Rank ordering preserved: earlier profile scores >= later profile.
-    assert (
-        result[batch[0].id]["overall"]["score"]
-        >= result[batch[1].id]["overall"]["score"]
-    )
+    # Ordering follows the EVIDENCE, which is the whole change: the resume that
+    # can be checked outranks the one that only asserts.
+    assert result[strong.id]["overall"]["score"] > result[weak.id]["overall"]["score"]
 
 
 @pytest.mark.asyncio
@@ -199,9 +252,11 @@ async def test_score_batch_malformed_then_skipped(monkeypatch):
     monkeypatch.setattr(matching.llm_router, "chat_completion", _junk)
 
     batch = [_FakeProfile()]
-    rank_by_id = {batch[0].id: 0}
     result = await matching._score_batch(
-        session=None, jd_text="JD", batch=batch, rank_by_id=rank_by_id, total=1
+        session=None,
+        jd_text="JD",
+        batch=batch,
+        prescreened={batch[0].id: _prescreen(CHECKABLE)},
     )
     assert result == {}  # skipped, not crashed
 
@@ -316,7 +371,7 @@ async def test_score_batch_regenerates_when_comments_are_out_of_range(monkeypatc
 
     result = await matching._score_batch(
         session=None, jd_text="JD", batch=[profile],
-        rank_by_id={profile.id: 0}, total=1,
+        prescreened={profile.id: _prescreen(CHECKABLE)},
     )
     assert len(calls) == 2, "expected exactly one corrective regeneration pass"
     corrective = calls[1][-1]["content"]
@@ -346,7 +401,7 @@ async def test_score_batch_repairs_deterministically_when_retry_also_fails(monke
 
     result = await matching._score_batch(
         session=None, jd_text="JD", batch=[profile],
-        rank_by_id={profile.id: 0}, total=1,
+        prescreened={profile.id: _prescreen(CHECKABLE)},
     )
     bd = result[profile.id]
     assert comment_fields_out_of_range(bd) == {}
@@ -366,7 +421,7 @@ async def test_score_batch_no_retry_when_everything_is_in_range(monkeypatch):
     monkeypatch.setattr(matching.llm_router, "chat_completion", _fake)
     result = await matching._score_batch(
         session=None, jd_text="JD", batch=[profile],
-        rank_by_id={profile.id: 0}, total=1,
+        prescreened={profile.id: _prescreen(CHECKABLE)},
     )
     assert len(calls) == 1
     assert comment_fields_out_of_range(result[profile.id]) == {}
@@ -385,7 +440,7 @@ def test_ranking_payload_keys_are_exactly_the_contract():
 
 
 def test_ranking_payload_ready_has_all_five_in_range_comments():
-    bd = _fallback_breakdown(0, 1)
+    bd = matching.prescreen_breakdown(_prescreen(CHECKABLE))
     payload = ranking_payload(bd)
     assert payload["ranking_status"] == "ready"
     for key in RANKING_COMMENT_KEYS.values():
@@ -428,10 +483,10 @@ def test_client_breakdown_strips_every_numeric_score():
     screen gets the comments and the scoring_mode, never a number."""
     from app.services.matching import client_breakdown
 
-    stored = matching._fallback_breakdown(0, 4)
+    stored = matching.prescreen_breakdown(_prescreen(CHECKABLE))
     out = client_breakdown(stored)
     assert out is not None
-    assert out["scoring_mode"] == "retrieval_fallback"
+    assert out["scoring_mode"] == matching.SCORING_MODE_PRESCREEN
     for field in (*matching.PARAMETERS, "overall"):
         assert "score" not in out[field]
         assert out[field]["comment"] == stored[field]["comment"]

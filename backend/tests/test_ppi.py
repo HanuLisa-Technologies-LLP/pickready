@@ -8,6 +8,7 @@ import pytest
 
 from app.services import ppi, rating
 from app.services import application_validation as av
+from app.services.hiring import layers, scorecard, swot_quality, transformation
 
 
 # ── The one rating scale (spec §10.2) ────────────────────────────────────────
@@ -85,267 +86,234 @@ def test_the_retired_aspect_names_are_gone() -> None:
     assert not hasattr(ppi, "CATEGORY_SECONDARY")
 
 
-# ── Matrix generation ────────────────────────────────────────────────────────
+# ── Matrix generation: Sutra's seven stages ──────────────────────────────────
+#
+# The single-pass generator these tests used to exercise is DELETED (spec-doc6
+# D1, "delete on activation"), along with the deterministic JD-derived fallback
+# that stood in for it during an outage. `hiring/scorecard.py` replaced both.
+#
+# The end-to-end path -- a real SWOT session, a real Company DNA artifact and a
+# real matrix, through the HTTP API -- is `tests/test_job_setup_live.py`, which
+# needs a database because the layers it composes are stored ones. What is
+# tested HERE is the arithmetic and the refusals, which need neither.
 
-class _StubSession:
-    """A session stub that answers both shapes `generate_framework` uses.
 
-    `.all()` for the existing matrix and `.first()` for the SWOT intake. Both
-    are modelled rather than only the one under test, because a stub that
-    raises AttributeError on an unexercised path makes an unrelated code change
-    look like a test failure.
+def test_the_single_pass_generator_and_its_fallback_are_gone() -> None:
+    """spec-doc6 D1: the old implementation is removed, not flagged off.
+
+    Named symbols rather than a grep, because the failure this prevents is a
+    partial revert: a `generate_framework` that came back would be a second way
+    to produce criteria, and the two would disagree about provenance without
+    anything failing.
     """
+    for symbol in (
+        "generate_framework",
+        "_fallback_framework",
+        "_ensure_every_aspect",
+        "_normalise",
+        "_maximum_total",
+        "_framework_system_prompt",
+        "load_swot",
+    ):
+        assert not hasattr(ppi, symbol), f"ppi.{symbol} came back"
+    from app.prompts import registry
 
-    def __init__(self, existing: list | None = None, swot=None) -> None:
-        self.added: list = []
-        self._existing = existing or []
-        self._swot = swot
+    assert "ppi_framework_system" not in registry.names()
 
-    async def execute(self, statement, *a, **k):
-        rows = self._existing
-        swot = self._swot
-        return SimpleNamespace(
-            scalars=lambda: SimpleNamespace(
-                all=lambda: rows, first=lambda: swot
-            )
-        )
 
-    def add_all(self, rows) -> None:
-        self.added.extend(rows)
+def test_the_quadrant_mapping_is_section_18_1s() -> None:
+    """§18.1's "What it produces" column, and there is only one copy of it.
 
-    def add(self, row) -> None:
-        self.added.append(row)
+    Bodha reads it to run §18.5's everything-is-must-have rule and Sutra reads
+    it to categorise what it builds. Two copies would drift, and the drift would
+    be silent: one module refusing an intake for a share the other module's own
+    mapping does not produce.
+    """
+    assert swot_quality.QUADRANT_CATEGORY == {
+        "weaknesses": ppi.CATEGORY_MUST_HAVE,
+        "strengths": ppi.CATEGORY_NICE_TO_HAVE,
+        "opportunities": ppi.CATEGORY_NICE_TO_HAVE,
+        "threats": ppi.CATEGORY_BEHAVIOURAL,
+    }
+    assert scorecard.QUADRANT_CATEGORY is swot_quality.QUADRANT_CATEGORY
 
-    async def flush(self) -> None:
-        return None
 
-    async def get(self, *a, **k):
-        return None
+def test_a_team_strength_deprioritises_and_a_weakness_promotes() -> None:
+    """§19.2's counterintuitive move, and §18.1's "highest-weighted items".
+
+    A team strength REDUCES the weight of that competency because the hire does
+    not need to supply it. A system that weighted everything the JD mentions
+    "gets this exactly backwards and consistently selects candidates who
+    duplicate existing strengths while leaving the real gap unfilled".
+
+    The magnitudes are read off `layers.BOUNDS` rather than written down, so
+    this asserts the DIRECTION and the fact that neither endpoint escapes the
+    declared bound.
+    """
+    emphasis = scorecard._quadrant_emphasis()
+    bound = layers.BOUNDS["competency_weight"]
+    assert emphasis["weaknesses"] > 1.0 > emphasis["strengths"]
+    assert emphasis["weaknesses"] == bound.high
+    assert emphasis["strengths"] == bound.low
+    for value in emphasis.values():
+        assert bound.contains(value)
 
 
 def _job(grade: str = "non_managerial") -> SimpleNamespace:
+    """Just enough of a job for the pure helpers: a grade and an id."""
     return SimpleNamespace(
         id=uuid.uuid4(), tenant_id=uuid.uuid4(), title="Backend Engineer",
-        assessment_grade=grade, jd_markdown="",
-        experience_min_years=3, experience_max_years=6,
-        jd_json={
-            "skills": ["Python", "PostgreSQL", "Kafka"],
-            "responsibilities": ["Design and own service APIs", "Run the on-call rota"],
-            "accountabilities": ["Latency stays within the agreed budget"],
-        },
+        department=None, assessment_grade=grade, jd_markdown="",
+        jd_json={"skills": ["Python", "PostgreSQL", "Kafka"]},
         framework_generated_at=None, framework_approved_at=None,
-        question_target=None, swot_completed_at=None,
+        question_target=None, swot_completed_at=None, correlation_id="job-test",
     )
 
 
-@pytest.mark.asyncio
-async def test_a_generated_matrix_covers_every_aspect(monkeypatch) -> None:
-    """There is NO minimum item count in Draft v4 (spec §5.2).
+def _item(name: str, category: str, weight: float) -> transformation.Item:
+    return transformation.build_item(
+        phrase=name,
+        category=category,
+        department="generic",
+        seniority="non_managerial",
+        observable_evidence=(
+            "Has shipped a change to a live system and can reconstruct what "
+            "they decided and why."
+        ),
+        role_emphasis={name: weight},
+    )
 
-    What is still structural is coverage: every aspect is graded, remarked and
-    charted on each report, so none of the three may come back empty.
+
+def test_the_force_ranking_is_total_and_has_no_ties() -> None:
+    """§20.3: "Rank the required competencies 1..n (max 6). No ties."
+
+    Two competencies whose derived weights are identical must still get
+    different ranks, because a rank two items share is not a ranking. The tie is
+    broken deterministically by name, so the same matrix ranks the same way
+    twice.
     """
-    async def _chat(*a, **k):
-        return (
-            '{"competencies":[{"category":"must_have","name":"Python",'
-            '"description":"Writes production Python.","required_level":"Highly Matching"}]}'
-        )
+    built = [
+        _item("Alpha", ppi.CATEGORY_MUST_HAVE, 1.0),
+        _item("Bravo", ppi.CATEGORY_MUST_HAVE, 1.0),
+        _item("Charlie", ppi.CATEGORY_NICE_TO_HAVE, 1.0),
+    ]
+    ranking = scorecard._rank_and_normalise(built)
+    ranks = [ranking[index][0] for index in range(len(built))]
+    assert sorted(ranks) == [1, 2, 3]
+    assert scorecard._rank_and_normalise(built) == ranking
 
-    monkeypatch.setattr(ppi.llm_router, "chat_completion", _chat)
-    job = _job()
-    rows = await ppi.generate_framework(_StubSession(), job)
-    assert {row.category for row in rows} == set(ppi.CATEGORIES)
-    assert job.framework_generated_at is not None
-    # The question count is resolved WITH the matrix and stored on the job, so
-    # every candidate on it answers the same number.
-    assert job.question_target == ppi.resolve_question_target(
-        job.assessment_grade, len(rows)
+
+def test_the_scored_weights_are_shares_that_sum_to_one() -> None:
+    """§20.1's own scorecard sums to 1.00 (0.35+0.25+0.20+0.12+0.08).
+
+    Normalising is what keeps the stored weight a SHARE rather than a raw
+    product, and it is also what makes a Layer 2 or Layer 3 change observable:
+    raising one competency's multiplier raises its share and lowers everyone
+    else's.
+    """
+    built = [
+        _item("Alpha", ppi.CATEGORY_MUST_HAVE, 2.0),
+        _item("Bravo", ppi.CATEGORY_MUST_HAVE, 1.0),
+        _item("Charlie", ppi.CATEGORY_BEHAVIOURAL, 1.0),
+    ]
+    ranking = scorecard._rank_and_normalise(built)
+    scored = [
+        ranking[index][1]
+        for index, item in enumerate(built)
+        if item.category in scorecard.SCORED_CATEGORIES
+    ]
+    assert abs(sum(scored) - 1.0) < 1e-9
+    # Alpha carries twice Bravo's emphasis, so it must carry the larger share.
+    assert ranking[0][1] > ranking[1][1]
+    # Behavioural is normalised among itself: §20.1's scorecard has no
+    # behavioural row, so it is not part of the scored ranking.
+    assert ranking[2][0] is None
+    assert abs(ranking[2][1] - 1.0) < 1e-9
+
+
+def test_the_six_competency_ceiling_drops_the_lowest_and_says_so() -> None:
+    """§20.2: "Maximum six. No exceptions."
+
+    And the removal is LOUD. A matrix quietly shorter than the session it came
+    from is how a criterion somebody cared about disappears with nobody
+    noticing, so each drop is a rejection carrying the competency's name.
+    """
+    built = [
+        (_item(f"Skill {index}", ppi.CATEGORY_MUST_HAVE, 2.0 - index * 0.1), "weaknesses")
+        for index in range(9)
+    ]
+    rejections: list = []
+    kept = scorecard._apply_ceilings(built, _job(), rejections)
+    scored = [item for item, _q in kept if item.category in scorecard.SCORED_CATEGORIES]
+    assert len(scored) == swot_quality.MAX_SCORECARD_COMPETENCIES
+    assert len(rejections) == 3
+    assert all("20.2" in row["reason"] for row in rejections)
+    # The ones kept are the highest-weighted, not the first six seen.
+    assert {item.name for item in scored} == {f"Skill {index}" for index in range(6)}
+
+
+def test_a_row_that_never_ran_the_stages_is_not_a_matrix_item() -> None:
+    """A row written by the retired generator has no dimension and no weight.
+
+    None rather than a filled-in default: substituting values would present
+    criteria nobody derived as though the pipeline had derived them, and G1
+    would then pass on a job that has never been through setup.
+    """
+    row = SimpleNamespace(
+        id=uuid.uuid4(), name="Python", category=ppi.CATEGORY_MUST_HAVE,
+        description="", required_level=95, ordinal=1,
+        dimension=None, observable_evidence=None, evidence_sources=None,
+        assessment_method=None, weight=None, threshold_json=None,
+        disqualifier=None, provenance_json=None, swot_origin=None,
+        anchor_key=None, force_rank=None,
     )
-    # Generation NEVER approves: the Hiring Manager does (spec §5.3).
-    assert job.framework_approved_at is None
+    assert scorecard.item_from_row(row) is None
 
 
-@pytest.mark.asyncio
-async def test_a_short_generation_is_no_longer_padded(monkeypatch) -> None:
-    """The old floor of five per aspect manufactured names like
-    "Kafka (further core)" to reach it, and that filler landed on the one screen
-    a human is required to review. With no minimum, three items is a valid
-    answer and stays three items."""
-    async def _chat(*a, **k):
-        return (
-            '{"competencies":['
-            '{"category":"must_have","name":"Python","required_level":"Highly Matching"},'
-            '{"category":"nice_to_have","name":"Terraform","required_level":"Matching"},'
-            '{"category":"behavioural","name":"Ownership","required_level":"Matching"}]}'
-        )
+def test_the_provenance_a_hiring_manager_reads_carries_no_number() -> None:
+    """spec-doc6 §4.3 asks for the traceability "in plain language".
 
-    monkeypatch.setattr(ppi.llm_router, "chat_completion", _chat)
-    rows = await ppi.generate_framework(_StubSession(), _job())
-    assert [row.name for row in rows] == ["Python", "Terraform", "Ownership"]
-    assert not any("(" in row.name for row in rows)
-
-
-@pytest.mark.asyncio
-async def test_a_matrix_never_exceeds_the_grades_question_ceiling(monkeypatch) -> None:
-    """Every item is probed at least once, so the grade's question ceiling is
-    also the matrix's ceiling (spec §5.4)."""
-    async def _chat(*a, **k):
-        items = ",".join(
-            f'{{"category":"must_have","name":"Skill {index}",'
-            f'"required_level":"Matching"}}'
-            for index in range(60)
-        )
-        return '{"competencies":[' + items + "]}"
-
-    monkeypatch.setattr(ppi.llm_router, "chat_completion", _chat)
-    job = _job("cxo")
-    rows = await ppi.generate_framework(_StubSession(), job)
-    assert len(rows) <= ppi.max_questions("cxo") + len(ppi.CATEGORIES)
-    ok, _ = ppi.matrix_is_complete(list(rows), "cxo")
-    # Whatever the model returned, what is SAVED must be saveable.
-    assert len(rows) <= ppi.max_questions("cxo") or not ok
-
-
-@pytest.mark.asyncio
-async def test_the_matrix_survives_a_total_llm_outage(monkeypatch) -> None:
-    async def _boom(*a, **k):
-        raise RuntimeError("all providers down")
-
-    monkeypatch.setattr(ppi.llm_router, "chat_completion", _boom)
-    rows = await ppi.generate_framework(_StubSession(), _job())
-    assert {row.category for row in rows} == set(ppi.CATEGORIES)
-    # Built from the JD's own words, not from a generic template.
-    must_have = [row.name for row in rows if row.category == ppi.CATEGORY_MUST_HAVE]
-    assert "Python" in must_have
-
-
-@pytest.mark.asyncio
-async def test_the_swot_intake_reaches_the_generator(monkeypatch) -> None:
-    """Spec §5.2: the matrix comes from the JD AND the SWOT intake together."""
-    seen: list[str] = []
-
-    async def _chat(role_hint, messages, **k):
-        seen.append(" ".join(m["content"] for m in messages))
-        return (
-            '{"competencies":[{"category":"must_have","name":"Incident command",'
-            '"required_level":"Highly Matching"}]}'
-        )
-
-    monkeypatch.setattr(ppi.llm_router, "chat_completion", _chat)
-    swot = SimpleNamespace(
-        strengths=["Runs a calm incident bridge"],
-        weaknesses=["People here freeze during a live outage"],
-        opportunities=[],
-        threats=[],
-        captured=lambda: {
-            "strengths": ["Runs a calm incident bridge"],
-            "weaknesses": ["People here freeze during a live outage"],
-            "opportunities": [],
-            "threats": [],
+    A hiring manager confirming "1.4850" is confirming that the arithmetic looks
+    plausible; a hiring manager confirming "you said the last person never owned
+    anything in production" is confirming the thing they actually said. The
+    standing no-numbers rule and the usability requirement point the same way
+    here.
+    """
+    item = scorecard.MatrixItem(
+        competency_id=uuid.uuid4(),
+        competency="Production incident ownership",
+        category=ppi.CATEGORY_MUST_HAVE,
+        dimension="verified_competence",
+        observable_evidence="Has carried production on-call and can narrate an incident.",
+        evidence_sources=("assessment_answer",),
+        assessment_method="conversation",
+        weight=0.35,
+        threshold={"independence_required": 2},
+        disqualifier=None,
+        provenance={
+            "terms": {
+                "baseline_layer1": 1.2,
+                "company_layer2": 1.1,
+                "situation_layer3": 1.25,
+                "role_layer3": 1.35,
+            },
+            "situation_key": "turnaround",
+            "unreachable_sources": ["reference"],
         },
-        is_empty=lambda: False,
+        swot_origin="The last person never owned anything in production.",
+        anchor_key="delivery_ownership",
+        force_rank=1,
+        required_level="Highly Matching",
+        ordinal=1,
     )
-    await ppi.generate_framework(_StubSession(swot=swot), _job())
-    assert any("freeze during a live outage" in blob for blob in seen)
-
-
-@pytest.mark.parametrize(
-    "jd_json",
-    [
-        # A job created from `jd_markdown` alone: the per-section columns are
-        # derived and can be empty, so the whole pool is the job title.
-        {"skills": [], "responsibilities": [], "accountabilities": []},
-        {},
-        {"skills": ["Python"]},
-        {"skills": ["Python", "FastAPI"], "responsibilities": ["Build APIs"]},
-        {"skills": ["a", "b", "c", "d"]},
-        {"skills": ["a", "b", "c", "d", "e"]},
-        # Duplicates collapse to one distinct term, which is the shape that
-        # actually hung the old padding loop: the pool is non-empty but has
-        # nothing new to offer.
-        {"skills": ["Python", "python", "PYTHON"]},
-    ],
-)
-def test_a_thin_jd_still_covers_every_aspect_and_terminates(jd_json) -> None:
-    """Regression, production 2026-08-01.
-
-    The old `_fallback_framework` padded to a per-aspect floor by cycling the JD
-    pool and appending only when the generated name was new. Once every pool
-    term had been used it regenerated names it had already rejected and made no
-    further progress, so any JD with fewer distinct terms than the floor spun
-    forever. The Celery task held a worker slot until the 600s soft time limit
-    and then autoretried five times, starving every other assessment task behind
-    it -- which is what "assessments are not available" looked like.
-
-    Draft v4 removed the floor that forced the padding, so the loop is gone
-    rather than merely bounded. This still asserts termination and coverage,
-    because the shape of JD that triggered it has not gone anywhere.
-
-    pytest-timeout is not a dependency here, so termination is asserted by the
-    test simply returning: a hang fails the run by never finishing.
-    """
-    job = _job()
-    job.jd_json = jd_json
-    rows = ppi._ensure_every_aspect(
-        ppi._normalise(ppi._fallback_framework(job), maximum_total=28), job, None
-    )
-    assert {row["category"] for row in rows} == set(ppi.CATEGORIES)
-    # Every name must be distinct within its aspect, or the matrix saves fewer
-    # rows than it counted.
-    keys = [(row["category"], row["name"].casefold()) for row in rows]
-    assert len(keys) == len(set(keys))
-    assert not any(
-        row["category"] == ppi.CATEGORY_BEHAVIOURAL
-        and ppi.is_forbidden_competency(row["name"])
-        for row in rows
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_thin_jd_survives_a_total_llm_outage(monkeypatch) -> None:
-    """The same regression, through the real entry point."""
-    async def _boom(*a, **k):
-        raise RuntimeError("all providers down")
-
-    monkeypatch.setattr(ppi.llm_router, "chat_completion", _boom)
-    job = _job()
-    job.jd_json = {"skills": [], "responsibilities": [], "accountabilities": []}
-    rows = await ppi.generate_framework(_StubSession(), job)
-    assert {row.category for row in rows} == set(ppi.CATEGORIES)
-
-
-@pytest.mark.asyncio
-async def test_a_generated_culture_competency_is_dropped_not_stored(monkeypatch) -> None:
-    """Dropped rather than rejected: refusing the whole generation over one bad
-    entry would leave the recruiter staring at an empty screen."""
-    async def _chat(*a, **k):
-        return (
-            '{"competencies":['
-            '{"category":"behavioural","name":"Culture fit","required_level":"Matching"},'
-            '{"category":"behavioural","name":"Ownership","required_level":"Matching"}]}'
-        )
-
-    monkeypatch.setattr(ppi.llm_router, "chat_completion", _chat)
-    rows = await ppi.generate_framework(_StubSession(), _job())
-    assert not any(ppi.is_forbidden_competency(row.name) for row in rows)
-    assert "Ownership" in [row.name for row in rows]
-
-
-@pytest.mark.asyncio
-async def test_regeneration_is_refused_once_a_matrix_exists(monkeypatch) -> None:
-    """A Celery redelivery must not discard a matrix a human has edited."""
-    calls = []
-
-    async def _chat(*a, **k):
-        calls.append(1)
-        return '{"competencies":[]}'
-
-    monkeypatch.setattr(ppi.llm_router, "chat_completion", _chat)
-    existing = [SimpleNamespace(id=uuid.uuid4(), category=ppi.CATEGORY_MUST_HAVE,
-                                name="Kept", ordinal=1, is_active=True)]
-    rows = await ppi.generate_framework(_StubSession(existing), _job())
-    assert [row.name for row in rows] == ["Kept"]
-    assert calls == []
+    lines = scorecard.plain_provenance(item)
+    assert lines, "a derived item must be able to say where its weight came from"
+    blob = " ".join(lines)
+    assert not any(character.isdigit() for character in blob), blob
+    # Every layer that moved the weight is accounted for by a sentence.
+    assert "philosophy" in blob
+    assert "Turnaround" in blob
+    assert "never owned anything in production" in blob
 
 
 def test_required_levels_never_offer_not_matching() -> None:

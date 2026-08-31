@@ -379,7 +379,18 @@ def render_report_pdf(
     tenant_name: str,
     generated_at: datetime,
 ) -> bytes:
-    """Return a complete report PDF; no underlying numeric score is rendered."""
+    """Return a complete report PDF; no underlying numeric score is rendered.
+
+    THE NUMBER BAN RUNS BEFORE ANY BYTE IS WRITTEN (spec-doc6 D8). A PDF is the
+    copy that gets forwarded, so a number that reaches one outlives every access
+    control on the document it came from, and there is no version of "strip it
+    quietly" that leaves the reader able to tell a redaction from an omission.
+    The check is at the top of the renderer rather than in a wrapper because the
+    download route calls this function directly.
+    """
+    from app.services.siddhi import numbers
+
+    numbers.assert_clean(report, where="prism.pdf")
     output = io.BytesIO()
     document = SimpleDocTemplate(
         output,

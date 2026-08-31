@@ -30,9 +30,18 @@ def test_the_gate_runs_before_the_report_row_is_touched():
 
 
 def test_the_verdict_is_written_onto_the_row():
-    """A log line is invisible to the one person who acts on the document."""
+    """A log line is invisible to the one person who acts on the document.
+
+    The assertion is on the FLAG BEING SET FROM THE VERDICT, not on the exact
+    expression. The expression legitimately grows: a failing gate is one reason
+    to flag a report and the evidence ledger's own uncertainty is another, and
+    the day a third is added this test must not fail for having memorised the
+    line. What it must still catch is the verdict being dropped out of it,
+    which is the change that would leave a rejected report reading as clean.
+    """
     source = inspect.getsource(fa.synthesis_node)
-    assert '"needs_human_review": not gate_verdict.passed' in source
+    flag = source[source.index('"needs_human_review"') :][:400]
+    assert "gate_verdict.passed" in flag
     assert '"review_findings_json"' in source
 
 
@@ -100,31 +109,166 @@ def _ungrounded(name: str) -> dict:
     }
 
 
+def _gate_claims(*names: str) -> "verification.Verdict":
+    """Run the gate on ungrounded claims DIRECTLY, not through the adapter.
+
+    The severity policy is the gate's, and since Siddhi went live the adapter
+    can no longer produce its input: `synthesis.evidence_refs_for` mints a
+    `searched` record for every rated item, so a claim about an item on the
+    report always carries at least that. The policy still has to hold for a
+    caller that hands the gate a claim with nothing behind it, and this is where
+    it is now exercised.
+    """
+    from app.services.agents import gates
+
+    return gates.run_gate(
+        "siddhi",
+        {
+            "ai_score": [],
+            "ppi_assessment": [],
+            "validation": {},
+            "validation_source": {},
+            "gap_analysis": [],
+            "overall_summary": "overall remark",
+            "grades": {},
+            "miti_grades": {},
+            "claims": [
+                {"id": name, "text": "Led the team decisively.", "evidence_refs": []}
+                for name in names
+            ],
+        },
+    )
+
+
 def test_one_ungrounded_claim_is_recorded_without_failing_the_report():
     """The severity policy in `verification/base` is deliberate and this pins
     the quiet half of it: one medium finding is worth telling the next attempt
     about and is not worth discarding an otherwise sound report over."""
-    verdict = fa._gate_report(
-        {"link": _Link(), "validation": {}},
-        [_ungrounded("Leadership")],
-        "overall remark",
-        {"groups": []},
-        {},
-    )
+    verdict = _gate_claims("Leadership")
     assert verdict.passed
     assert any(f.issue == "claim_not_grounded" for f in verdict.findings)
 
 
 def test_two_ungrounded_claims_do_fail_the_report():
     """One thing wrong is a slip; two independent things wrong is a pattern."""
+    assert not _gate_claims("Leadership", "Ownership").passed
+
+
+class _Competency:
+    def __init__(self, name: str) -> None:
+        self.id = f"competency-{name}"
+        self.name = name
+
+
+class _Question:
+    def __init__(self, competency: _Competency) -> None:
+        self.id = f"question-{competency.name}"
+        self.competency_id = competency.id
+        self.prompt = f"Walk me through your work on {competency.name}."
+
+
+def _answered_state(name: str) -> dict:
+    """A state where exactly one competency actually has an answer behind it."""
+    competency = _Competency(name)
+    question = _Question(competency)
+    return {
+        "link": _Link(),
+        "validation": {},
+        "competencies": [competency],
+        "candidate_questions": [question],
+        "answers": {question.id: ["I rebuilt the ingest path myself over two sprints."]},
+    }
+
+
+def test_the_adapter_hands_the_gate_the_refs_siddhi_actually_minted(monkeypatch):
+    """THE REGRESSION THIS PART OF THE FILE EXISTS TO PIN.
+
+    A dimension row carries no `evidence_refs` key and never has, so the
+    adapter's `row.get("evidence_refs") or []` gave the gate an empty list for
+    every claim. Two rated items produced two `claim_not_grounded` findings, the
+    gate failed, and EVERY report with more than one dimension was written
+    `needs_human_review=True`. A check wired to something it cannot read does
+    not report a wiring error; it reports a blanket verdict, which is
+    indistinguishable from the product working and flagging everybody.
+
+    The refs now come from Siddhi's own index, and they are the ANSWER refs
+    rather than everything the index holds. That distinction is deliberate and
+    is the reason this test asserts BOTH directions below: a claim resting only
+    on the record that a criterion was searched IS a weaker claim, so
+    `claim_not_grounded` has to stay able to fire, or the fix would swing the
+    defect the other way into a check that reads as enforced and never is.
+    """
+    from app.services.agents import gates
+    from app.services.siddhi import evidence as siddhi_evidence
+
+    seen: dict[str, object] = {}
+    real = gates.run_gate
+
+    def _capture(name, payload):
+        seen["payload"] = payload
+        return real(name, payload)
+
+    monkeypatch.setattr(gates, "run_gate", _capture)
     verdict = fa._gate_report(
-        {"link": _Link(), "validation": {}},
-        [_ungrounded("Leadership"), _ungrounded("Ownership")],
+        _answered_state("Leadership"),
+        [_ungrounded("Leadership")],
         "overall remark",
         {"groups": []},
         {},
     )
-    assert not verdict.passed
+    assert not any(f.issue == "claim_not_grounded" for f in verdict.findings), [
+        f.as_dict() for f in verdict.findings
+    ]
+
+    # Asserted against the payload the gate actually received, and compared to
+    # Siddhi's own index rather than to a literal, so this keeps holding
+    # whichever node kinds the adapter chooses to expose. What it cannot survive
+    # is a revert to `row.get("evidence_refs")`: that key does not exist on a
+    # dimension row, so the claim would arrive with nothing while the index
+    # plainly holds an answer node for the same item.
+    index = siddhi_evidence.EvidenceIndex.build(
+        items=["Leadership"],
+        exchanges={
+            "Leadership": [
+                {
+                    "question": "Walk me through your work on Leadership.",
+                    "answer": "I rebuilt the ingest path myself over two sprints.",
+                }
+            ]
+        },
+    )
+    claim = seen["payload"]["claims"][0]  # type: ignore[index]
+    assert claim["id"] == "Leadership"
+    assert claim["evidence_refs"]
+    assert set(claim["evidence_refs"]) <= set(index.refs_for("Leadership"))
+
+
+def test_the_adapter_hands_the_gate_a_list_of_probes_it_can_iterate():
+    """The same defect class in the opposite direction. The whole `gaps` DICT
+    was passed where the gate iterates a LIST, so `grounded_in_answer` never ran
+    on a single probe and the section reported a clean pass rather than an
+    error."""
+    verdict = fa._gate_report(
+        {"link": _Link(), "validation": {}},
+        [_ungrounded("Leadership")],
+        "overall remark",
+        {
+            "groups": [
+                {
+                    "category": "behavioural",
+                    "items": [
+                        {"name": "Leadership", "probes": ["Walk me through the call."]}
+                    ],
+                }
+            ]
+        },
+        {},
+    )
+    # No exchange was recorded for Leadership, so the probe cannot be grounded
+    # in an answer and the gate says so. The finding is the proof the check ran.
+    assert any(f.issue == "generic_gap_probe" for f in verdict.findings), [
+        f.as_dict() for f in verdict.findings
+    ]
 
 
 def test_an_evidence_locator_is_not_mistaken_for_a_number_a_client_reads():

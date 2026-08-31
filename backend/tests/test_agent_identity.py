@@ -186,3 +186,113 @@ def test_an_expired_deadline_is_visible_without_a_clock_argument_being_wrong() -
     envelope = _envelope()
     assert not envelope.expired()
     assert envelope.expired(datetime.now(timezone.utc) + timedelta(days=1))
+
+
+# =============================================================================
+# A NAME MUST NOT POINT AT CODE NOTHING REACHES
+# =============================================================================
+#
+# THE DEFECT. `implemented_by` read `services/ppi`, `services/matching`,
+# `services/functional_assessment` and so on -- the OLD modules, in a path-like
+# spelling nothing could resolve -- while the three-layer framework in
+# `hiring/`, `miti/` and `siddhi/` was imported by no route and no worker.
+#
+# The consequence was not cosmetic. Every log line and every A2A artifact showed
+# Bodha, Sutra, Yukti, Vaada, Miti and Siddhi running and succeeding, so anybody
+# reading a trace would have concluded Part A was live. It was not. All four
+# pipeline gates were real, arithmetic, provider-free checks guarding nothing,
+# because their only caller was a module nothing imported.
+#
+# EVERY UNIT TEST IN THIS FILE PASSED THROUGHOUT. That is the point: no test of
+# any module can see this, because the question is not "is this module correct"
+# but "can a request handler get to it". So the check is over the IMPORT GRAPH,
+# computed statically from `app/api/**`, `app/workers/**` and `app/main.py`.
+#
+# Static rather than by importing, deliberately. Importing the package to find
+# out would answer what pytest's import order happens to have loaded, which is
+# the same ordering luck that hid the import-cycle defect for weeks.
+
+from app.orchestration_checks import (  # noqa: E402
+    reachable_modules,
+    unreachable_agent_modules,
+)
+
+
+def test_the_reachability_graph_finds_the_obvious_entry_points() -> None:
+    """A guard whose analyser silently returned an empty set would pass every
+    assertion below for the wrong reason, so the analyser is checked first."""
+    reachable = reachable_modules()
+    assert "app.services.matching" in reachable
+    assert "app.services.functional_assessment" in reachable
+    # A module that exists and that nothing imports. If this were reported as
+    # reachable, the graph would be over-approximating and the guard useless.
+    assert "app.scripts.worked_example" not in reachable
+    assert len(reachable) > 100
+
+
+@pytest.mark.parametrize("agent_id", sorted(identity.AGENTS))
+def test_every_agent_name_resolves_to_reachable_code(agent_id: str) -> None:
+    """THE TEST THAT WOULD HAVE CAUGHT IT.
+
+    Every module an agent says implements it must be transitively importable
+    from a route or a worker. A name pointing at unreachable code makes every
+    log line and every artifact claim work that cannot have happened.
+    """
+    reachable = reachable_modules()
+    agent = identity.get(agent_id)
+    assert agent.implemented_by, f"{agent_id} names no implementing module"
+    unreachable = [m for m in agent.implemented_by if m not in reachable]
+    assert not unreachable, (
+        f"{agent.name} says it is implemented by {unreachable}, which no route "
+        "or worker can reach."
+    )
+
+
+@pytest.mark.parametrize("agent_id", sorted(identity.AGENTS))
+def test_every_named_module_is_an_importable_dotted_path(agent_id: str) -> None:
+    """The previous spelling, `services/ppi`, could not be resolved, imported or
+    checked. A shape rule here is what stops the next entry being written that
+    way and quietly opting out of the reachability check."""
+    agent = identity.get(agent_id)
+    for module in agent.implemented_by + agent.activates_to:
+        assert module.startswith("app.services."), module
+        assert "/" not in module, module
+
+
+def test_the_map_cannot_lag_behind_an_activation() -> None:
+    """The ratchet. The moment an agent's Part A implementation becomes
+    reachable, `implemented_by` must name some of it -- otherwise the table
+    still points at the module Part A replaced, which is the original defect
+    reappearing one stage at a time.
+
+    Granularity is per AGENT rather than per file on purpose: a per-file rule
+    would go red every time a collaborator lands one more module of a stage
+    that is already correctly mapped.
+    """
+    assert unreachable_agent_modules() == []
+
+
+def test_every_agent_declares_the_part_a_modules_it_activates_to() -> None:
+    """`activates_to` is what makes the ratchet possible. An agent with an empty
+    one opts itself out of the check silently."""
+    for agent_id, agent in identity.AGENTS.items():
+        assert agent.activates_to, (
+            f"{agent_id} declares no Part A target, so nothing can notice when "
+            "its stage goes live"
+        )
+
+
+def test_activation_status_reports_what_has_not_landed_yet() -> None:
+    """Honest reporting of the frontier, so a skip in the journey test can name
+    the stage rather than saying "something is missing"."""
+    status = identity.activation_status(reachable_modules())
+    assert set(status) == set(identity.AGENTS)
+    for agent_id, row in status.items():
+        assert set(row) >= {
+            "implemented_by",
+            "activates_to",
+            "activated",
+            "activated_but_unmapped",
+            "not_yet_reachable",
+            "live_but_unreachable",
+        }, agent_id

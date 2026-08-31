@@ -13,7 +13,7 @@ result asserted nothing that had not been assessed.
 PPI generates a fresh evaluation framework FROM EACH JOB'S OWN JD (spec §6.2).
 Job A's Primary Skills, Secondary Skills and Behavioural Competencies are not
 job B's. Copying a report across would state a grade against criteria the
-candidate was never assessed on — the identical error that has always kept the
+candidate was never assessed on, the identical error that has always kept the
 MATCHING section from travelling, now true of the whole report.
 
 Technical does not save it either: the technical bank is generated per job from
@@ -28,7 +28,7 @@ product-wide dimension set.
     prior report completed >= 6 months ago  -> fresh assessment
     no prior report at all                  -> fresh assessment
 
-Boundary: exactly six months old is a RETAKE — the window is the
+Boundary: exactly six months old is a RETAKE, and the window is the
 strictly-less-than side, so the rule never silently extends itself.
 """
 from __future__ import annotations
@@ -104,7 +104,7 @@ class RetakeDecision:
 def classify_age(assessed_at: datetime | None, now: datetime) -> tuple[str, int | None]:
     """Pure rule: (decision, age_in_days) for a prior assessment timestamp.
 
-    Naive timestamps are read as UTC — a stored value without a timezone is
+    Naive timestamps are read as UTC, because a stored value without a timezone is
     always UTC in this database, and treating it as local time would shift the
     boundary by hours. Unit-tested in tests/test_retake.py.
     """
@@ -133,7 +133,7 @@ async def decide(
     """Apply the rule for one candidate applying to one job.
 
     Looks for the candidate's most recent completed report on any OTHER job.
-    A report already existing for THIS job is ignored — that is a re-entry into
+    A report already existing for THIS job is ignored, because that is a re-entry into
     an assessment already in progress, not a retake question.
     """
     now = now or datetime.now(timezone.utc)

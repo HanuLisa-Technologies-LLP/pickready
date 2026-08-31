@@ -1,0 +1,10 @@
+{
+  "_provenance": {
+    "authored_from": "Voyage API published behaviour: exceeding the request or token rate limit returns 429.",
+    "observed": false,
+    "notes": "The embeddings client has no retry loop of its own: a 429 raises EmbeddingError and the caller decides. That is a real asymmetry with llm_router and it is recorded in VERIFICATION_PENDING.md rather than papered over here."
+  },
+  "status": 429,
+  "headers": {"content-type": "application/json", "retry-after": "5"},
+  "body": {"detail": "Rate limit exceeded."}
+}

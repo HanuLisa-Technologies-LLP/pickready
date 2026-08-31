@@ -1,0 +1,29 @@
+{
+  "_provenance": {
+    "authored_from": "Anthropic Messages API published response schema: a message object with id, type, role, model, a content block list, stop_reason, stop_sequence and usage.",
+    "observed": false,
+    "notes": "The reasoning path. Sonnet 5 judges and writes; this is the plain-text, non-JSON-mode response the dimension evaluators and report synthesis read."
+  },
+  "status": 200,
+  "headers": {"content-type": "application/json", "request-id": "req_fixture_sonnet_reasoning"},
+  "body": {
+    "id": "msg_fixture_sonnet_reasoning",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-sonnet-5",
+    "content": [
+      {
+        "type": "text",
+        "text": "The evidence supports the claim at the level asserted. Two independent originators describe the same delivery: the resume states it and a named former manager corroborates it in the reference form. The interview transcript restates the resume line and is therefore not a third source."
+      }
+    ],
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 2095,
+      "output_tokens": 218,
+      "cache_creation_input_tokens": 0,
+      "cache_read_input_tokens": 0
+    }
+  }
+}

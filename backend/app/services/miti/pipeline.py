@@ -68,7 +68,13 @@ from app.services.miti.dimensions import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["EvaluationInputs", "EvaluationOutcome", "evaluate", "build_evaluator_inputs"]
+__all__ = [
+    "EvaluationInputs",
+    "EvaluationOutcome",
+    "build_evaluator_inputs",
+    "evaluate",
+    "must_have_evidence",
+]
 
 
 @dataclass
@@ -96,8 +102,16 @@ class EvaluationInputs:
     #: G1's inputs.
     matrix_items: list[dict[str, Any]] = field(default_factory=list)
     scorecard_approved_at: Any = None
-    #: The per-item Must-have grades, for the hard cap.
-    must_have_grades: list[str] = field(default_factory=list)
+    #: {Must-have ITEM name: grade}, for section 12.1's competency threshold.
+    #: Keyed by name rather than a bare list of grades so the control can say
+    #: WHICH named competency failed its minimum.
+    must_have_grades: dict[str, str] = field(default_factory=dict)
+    #: {Must-have name: internal score}, and {Must-have name: the minimum the
+    #: approved scorecard sets}. Both optional: where the frozen matrix
+    #: declares no numeric threshold, section 12.1's minimum is the product's
+    #: published floor for an essential criterion and the grade carries it.
+    must_have_scores: dict[str, float] = field(default_factory=dict)
+    must_have_thresholds: dict[str, float] = field(default_factory=dict)
     #: The contradiction report from `evidence/contradictions.detect`.
     contradiction_report: detector.ContradictionReport | None = None
     #: Model-generated benign explanations, per axis.
@@ -187,16 +201,60 @@ def build_evaluator_inputs(inputs: EvaluationInputs) -> list[EvaluatorInput]:
             inputs.evidence_competencies,
             dimension,
         )
+        # THIS DIMENSION'S OWN section 9.x anchors, plus whatever role-level
+        # anchor Sutra derived. Not one shared string: sections 9.1 to 9.5
+        # state a different six-band table per dimension, and giving all five
+        # evaluators the same one anchors four of them against a rubric written
+        # for a question they were not asked.
+        anchor = dimensions.rubric_anchor_text(dimension)
+        if inputs.rubric_anchor:
+            anchor = f"{anchor}\n\nFor this role specifically:\n  {inputs.rubric_anchor}"
         payloads.append(
             EvaluatorInput(
                 dimension=dimension,
                 competencies=competencies,
-                rubric_anchor=inputs.rubric_anchor,
+                rubric_anchor=anchor,
                 evidence=evidence,
                 role_context=inputs.role_context,
             )
         )
     return payloads
+
+
+def must_have_evidence(
+    inputs: EvaluationInputs,
+) -> dict[str, aggregation.MustHaveEvidence]:
+    """What the record holds for each Must-have: its tiers and its independent
+    groups.
+
+    Stage 3's output, read per competency. Section 14.1 needs the tiers and
+    section 10.7 needs all three, and both are computed from the SAME
+    `EvidenceView` objects the five evaluators were handed. Deriving them here
+    rather than accepting them as a separate argument is what makes it
+    impossible for a cap to act on a tier the evaluators never saw.
+
+    A Must-have with nothing mapped to it is present with an empty tuple rather
+    than absent, so a reader of the result can tell "examined and found nothing"
+    from "never asked about".
+    """
+    out: dict[str, aggregation.MustHaveEvidence] = {}
+    for name, category in inputs.matrix.items():
+        if category != aggregation.CATEGORY_MUST_HAVE:
+            continue
+        views = [
+            view
+            for view in inputs.evidence
+            if name in set(inputs.evidence_competencies.get(view.ref, ()))
+        ]
+        out[name] = aggregation.MustHaveEvidence(
+            tiers=tuple(view.tier for view in views),
+            # GROUPS, never documents. A resume line and the candidate
+            # restating it in the interview are one source saying one thing
+            # twice, and counting them as two is how a confidently written
+            # resume becomes a well-corroborated candidate.
+            independence_groups=len({view.independence_group for view in views}),
+        )
+    return out
 
 
 def _degraded(dimension: str, reason: str) -> DimensionResult:
@@ -372,8 +430,19 @@ async def evaluate(inputs: EvaluationInputs, *, invoke) -> EvaluationOutcome:
         competency_categories=inputs.matrix,
         competency_weights=inputs.competency_weights,
         must_have_grades=inputs.must_have_grades,
-        independence=independence,
+        must_have_scores=inputs.must_have_scores,
+        must_have_thresholds=inputs.must_have_thresholds,
+        # Section 14.1's trigger and three of section 10.7's four confidence
+        # terms, both read off the SAME evidence the evaluators saw. Derived
+        # here rather than passed in so that the tiers a cap acts on cannot
+        # differ from the evidence a grade was written from.
+        must_have_evidence=must_have_evidence(inputs),
         unresolved_contradictions=outcome.triangulation.unresolved,
+        unresolved_severities=[
+            item.severity
+            for item in outcome.triangulation.contradictions
+            if not item.settled_benignly
+        ],
         integrity_flags=integrity_flags,
     )
 

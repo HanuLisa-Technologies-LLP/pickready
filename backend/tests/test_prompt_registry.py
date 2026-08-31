@@ -70,16 +70,6 @@ def _values_for(name: str) -> dict[str, object]:
             "word_min": outreach_content.WORD_MIN,
             "word_max": outreach_content.WORD_MAX,
         }
-    if name == "ppi_framework_system":
-        return {
-            # The ceiling is a property of the JOB's grade, so the module has no
-            # single constant to read. Rendered at the widest grade, which is
-            # what the snapshot was generated against.
-            "maximum_total": ppi.max_questions("non_managerial"),
-            "grade_highly": GRADE_HIGHLY,
-            "grade_matching": GRADE_MATCHING,
-            "grade_moderately": GRADE_MODERATELY,
-        }
     return {}
 
 
@@ -103,7 +93,11 @@ def test_every_externalised_prompt_is_unchanged(name: str) -> None:
 
 def test_the_snapshot_covers_every_agent_prompt() -> None:
     """A snapshot file that lost an entry would pass forever on the rest."""
-    assert len(SNAPSHOTS) == 9, f"the snapshot holds {len(SNAPSHOTS)} prompts"
+    # EIGHT since 2026-08-29. `ppi_framework_system` went with the
+    # single-pass matrix generator it drove (spec-doc6 D1, "delete on
+    # activation"); Sutra's replacement asks for two stages rather than a
+    # whole matrix and is a different prompt, not an edit of that one.
+    assert len(SNAPSHOTS) == 8, f"the snapshot holds {len(SNAPSHOTS)} prompts"
     for name in SNAPSHOTS:
         assert name in registry.names(), f"{name} has no prompt file"
 
@@ -117,7 +111,7 @@ def test_a_missing_prompt_fails_loudly_and_says_what_exists() -> None:
         registry.load("no_such_prompt_at_all")
     assert "no_such_prompt_at_all" in str(caught.value)
     # The message has to be actionable, so it lists what IS there.
-    assert "ppi_framework_system" in str(caught.value)
+    assert "ppi_candidate_questions_system" in str(caught.value)
 
 
 def test_a_missing_placeholder_value_raises_rather_than_being_sent() -> None:

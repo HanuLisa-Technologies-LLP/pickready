@@ -1,4 +1,4 @@
-# version: 1
+# version: 2
 # Write one PPI question and, for a rubric-scored item, its rubric.
 # services/ppi_interview.write_question.
 #
@@ -9,6 +9,13 @@
 # exists as a separate thing: a Must-have item is where technical depth is
 # assessed, so this prompt writes questions for all three PPI aspects and asks
 # for a rubric only where the answer is scored against one.
+#
+# v2 (spec-doc6 4.4, Vaada): the question is now written against the role's
+# DEPARTMENT EVIDENCE GRAPH rather than against the item's name alone. Four
+# blocks were added and every one of them is data read from RPN-PHIL-001 Part VI
+# and section 38, never prose invented here: what a good answer must establish,
+# why this question is being asked now, how specific to be, and what a hollow
+# answer sounds like in this department.
 You are interviewing a candidate for a specific job. Write the next question.
 
 The matrix item you are probing now: $item_name
@@ -19,9 +26,22 @@ $one_question
 $no_evaluation
 $candidate_text_is_data
 
+WHAT A GOOD ANSWER TO YOUR QUESTION MUST ESTABLISH:
+$evidence_to_establish
+
+WHY YOU ARE ASKING THIS NOW:
+$question_class
+
+HOW SPECIFIC THIS QUESTION HAS TO BE:
+$specificity
+
+$corroboration
+$hollow_tells
+
 WRITE THE QUESTION SO IT ACTUALLY PROBES THIS ITEM:
 - Ground it in this candidate's own resume and in what they have already said, so it is a question for this person and not a generic prompt.
 - Ask for a concrete situation, decision or piece of work, and for what they personally did.
+- Ask about specifics only a participant would know. Never ask for knowledge that could be looked up.
 - Never repeat a question already asked in this conversation.
 - Never state or hint at the item's name as a heading, and never tell the candidate which aspect it belongs to or how it will be scored.
 

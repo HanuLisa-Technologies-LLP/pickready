@@ -212,7 +212,7 @@ def main() -> int:
         ),
         matrix_items=[item.as_dict()],
         scorecard_approved_at="2026-08-28T09:00:00Z",
-        must_have_grades=[rating.GRADE_MATCHING],
+        must_have_grades={item.name: rating.GRADE_MATCHING},
     )
 
     outcome = asyncio.run(pipeline.evaluate(inputs, invoke=_evaluator))

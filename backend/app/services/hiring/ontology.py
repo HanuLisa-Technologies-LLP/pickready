@@ -87,7 +87,10 @@ __all__ = [
     "expand",
     "canonical",
     "equivalent",
+    "matches",
+    "mentions",
     "normalise",
+    "overlap",
 ]
 
 #: Groups of terms that name the same work. Every term in a group expands to
@@ -161,6 +164,70 @@ EQUIVALENCE_GROUPS: tuple[tuple[str, ...], ...] = (
     ("stakeholder management", "cross functional collaboration", "influence without authority"),
     ("change management", "transformation", "organisational change", "adoption"),
     ("mentoring", "coaching", "developing people", "talent development"),
+    # -- Job-title conventions, Indian and non-Indian --------------------------
+    #
+    # ADDED FOR spec-doc6 4.4, which asks in as many words for "non-Indian AND
+    # Indian job-title conventions". The groups above are mostly SKILL
+    # vocabulary; a title is the other half of the same fairness problem, and in
+    # this product's primary market it is the larger half. An Indian services
+    # firm advertises for a "Deputy Manager, Business Finance" and a US company
+    # advertises the identical job as an "FP&A Associate Manager"; the resumes
+    # come back written in whichever vocabulary the candidate has lived in, and
+    # a matcher that reads only one of them is measuring which country somebody
+    # worked in.
+    #
+    # Held to the same test as every other group: would a hiring manager reading
+    # both terms agree they describe the same WORK. Grade-ladder equivalences
+    # that vary by company (a "Senior Manager" against a "Director") are
+    # deliberately NOT here, because section 8.3 says title is context and scope
+    # is the score input, and encoding a grade ladder would be doing the exact
+    # normalisation section 8.3 refuses.
+    ("entry level", "fresher", "graduate trainee", "campus hire", "new graduate", "trainee engineer"),
+    ("software engineer", "software development engineer", "sde", "application developer",
+     "programmer analyst", "software developer"),
+    ("technical lead", "tech lead", "team lead", "module lead", "lead engineer"),
+    ("associate manager", "assistant manager", "deputy manager"),
+    ("project manager", "delivery manager", "engagement manager", "programme manager",
+     "program manager"),
+    ("quality assurance", "quality analyst", "test engineer", "qa engineer", "quality engineer"),
+    ("technical support", "service desk", "help desk", "l1 support", "first line support"),
+    ("business analyst", "functional consultant", "requirements analyst", "systems analyst"),
+    ("data analyst", "mis executive", "reporting analyst", "analytics executive"),
+    ("presales", "pre sales", "solution consulting", "sales engineering", "solution engineering"),
+    ("site engineer", "field engineer", "execution engineer", "project engineer"),
+    ("quantity surveying", "billing engineer", "bill of quantities", "boq", "quantity survey"),
+    ("plant maintenance", "preventive maintenance", "breakdown maintenance", "upkeep"),
+    ("tool design", "tool and die", "tooling", "die design", "jig and fixture design"),
+    ("articleship", "audit internship", "accounting internship"),
+    # -- Human resources ------------------------------------------------------
+    ("talent acquisition", "recruitment", "hiring", "staffing", "sourcing"),
+    ("industrial relations", "ir", "employee relations", "er"),
+    ("learning and development", "l&d", "training and development", "capability building"),
+    ("payroll", "compensation and benefits", "c&b", "salary administration"),
+    ("statutory compliance", "labour compliance", "regulatory compliance", "labour law compliance"),
+    # -- Vocabulary a non-standard-English resume reaches for -------------------
+    #
+    # spec-doc6 4.4 also asks for "candidates whose resumes are written in
+    # non-standard English". Most of that is PHRASING rather than vocabulary and
+    # is handled by the claim reader, which requires no particular English
+    # construction to tier a line. What belongs HERE is the narrower case where
+    # a different word is genuinely used for the same work: an engineer who
+    # learnt the craft in an Indian services firm writes "requirement gathering"
+    # and "production rollout" where another writes "requirements elicitation"
+    # and "release".
+    ("troubleshooting", "debugging", "issue resolution", "fault finding", "defect fixing"),
+    ("requirement gathering", "requirements elicitation", "requirement analysis",
+     "business requirement analysis"),
+    ("release", "deployment", "go live", "production rollout", "implementation"),
+    ("performance tuning", "performance optimisation", "performance optimization",
+     "latency optimisation", "latency optimization"),
+    ("code review", "peer review", "code walkthrough"),
+    ("technical documentation", "technical writing", "sop preparation", "runbook authoring"),
+    ("client servicing", "client handling", "customer handling", "client management"),
+    ("root cause analysis", "rca", "problem management", "defect analysis"),
+    ("cost optimisation", "cost optimization", "cost reduction", "cost saving",
+     "spend rationalisation", "spend rationalization"),
+    ("automation", "process automation", "scripting", "workflow automation"),
 )
 
 _WS = re.compile(r"[\s_\-/]+")
@@ -246,6 +313,119 @@ def expand(terms: Iterable[str]) -> list[str]:
                 seen.add(sibling)
                 ordered.append(sibling)
     return ordered
+
+
+#: Words too common in requirement and resume prose to carry any signal on
+#: their own. Deliberately short: an aggressive stop list is a second, invisible
+#: vocabulary filter, and the whole point of this module is that the product
+#: does not get to decide which words count.
+_NOISE = frozenset(
+    """
+    a an and are as at be by for from has have in is it its of on or that the to
+    with will you your our we they this these those been being do does not was
+    were and/or via per over under across using use used new strong good
+    excellent ability able skills skill knowledge experience experienced work
+    working role job team teams company year years
+    """.split()
+)
+
+#: Every known term, longest first, so "geometric dimensioning and tolerancing"
+#: is found before "geometric tolerancing" would be and a shorter term cannot
+#: shadow the longer one it is a prefix of.
+_TERMS_BY_LENGTH: tuple[str, ...] = tuple(
+    sorted(_INDEX, key=lambda t: (-len(t), t))
+)
+
+_BOUNDARY = re.compile(r"[a-z0-9]")
+
+
+def _tokens(text: str) -> list[str]:
+    """Normalised words, with the noise words dropped."""
+    return [w for w in normalise(text).split(" ") if w and w not in _NOISE]
+
+
+def _contains_phrase(haystack: str, needle: str) -> bool:
+    """Is `needle` present in `haystack` at token boundaries?
+
+    Plain `in` is wrong here in one direction that matters: "rag" is a term in
+    this table and it is a substring of "storage", "fragment" and "average". A
+    boundary check is the difference between finding retrieval-augmented
+    generation on a resume and finding it in the word "storage".
+    """
+    start = 0
+    while True:
+        index = haystack.find(needle, start)
+        if index < 0:
+            return False
+        before = haystack[index - 1] if index > 0 else " "
+        after_index = index + len(needle)
+        after = haystack[after_index] if after_index < len(haystack) else " "
+        if not _BOUNDARY.match(before) and not _BOUNDARY.match(after):
+            return True
+        start = index + 1
+
+
+def mentions(text: str) -> frozenset[str]:
+    """Every term in this table that `text` actually contains.
+
+    Phrase-aware, which is the property a bare word-set intersection does not
+    have: "we replaced the semantic technologies layer" contains the two-word
+    term "semantic technologies", and a set of single words does not, so a
+    requirement for "graph database" would have missed it. That miss is exactly
+    the fairness failure section 58 names, arriving through tokenisation rather
+    than through vocabulary.
+    """
+    haystack = normalise(text)
+    if not haystack:
+        return frozenset()
+    return frozenset(
+        term for term in _TERMS_BY_LENGTH if _contains_phrase(haystack, term)
+    )
+
+
+def matches(requirement: str, text: str) -> bool:
+    """Does `text` evidence `requirement`, ONCE VOCABULARY IS SET ASIDE?
+
+    THIS IS THE FUNCTION THE PRE-SCREEN ASKS, and it is deliberately not the
+    function a matrix item asks. This module's standing rule is that expansion
+    must never decide whether a Must-have is MET, because a job requiring
+    Kubernetes is not satisfied by "container orchestration" in the abstract and
+    that judgement belongs to a person. A pre-screen grade is a different
+    question: it is a triage reading of a document, and there the failure mode
+    runs the other way, because a candidate who wrote the other word for the
+    same work drops out of the list before any person sees them.
+
+    Two ways to match, in order:
+
+      1. The requirement, or any term this table calls equivalent to it, appears
+         in the text at token boundaries. This is what carries "semantic
+         technologies" against a requirement for "graph database", and it is
+         symmetric, because equivalence is.
+      2. Failing that, EVERY significant word of the requirement is present,
+         each satisfiable by its own equivalents. "Stakeholder management" needs
+         both halves; it is not met by a resume that only says "management".
+
+    Rule 2 is `all` rather than `any` on purpose. `any` would let one common
+    word carry a whole multi-word requirement, and a matcher that says yes to
+    everything is not fairer than one that says no to everything, it is just
+    wrong in the direction that is harder to notice.
+    """
+    haystack = normalise(text)
+    requirement_key = normalise(requirement)
+    if not haystack or not requirement_key:
+        return False
+
+    for sibling in equivalent(requirement_key):
+        if _contains_phrase(haystack, sibling):
+            return True
+
+    words = _tokens(requirement_key)
+    if not words:
+        return False
+    for word in words:
+        if not any(_contains_phrase(haystack, sibling) for sibling in equivalent(word)):
+            return False
+    return True
 
 
 def overlap(left: Iterable[str], right: Iterable[str]) -> frozenset[str]:

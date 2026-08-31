@@ -214,13 +214,6 @@ def provider_order(task_type: str) -> list[str]:
     return [PROVIDER]
 
 
-#: Retained for `matching`'s reasoning trace and the admin health view, which
-#: both want to say which model a task would use. Keyed by TASK now rather than
-#: by provider, because with one vendor the model is the interesting axis.
-def models_for_tasks(task_types: list[str]) -> dict[str, str]:
-    return {task: model_for(task) for task in task_types}
-
-
 # ── Timeouts ─────────────────────────────────────────────────────────────────
 #
 # Unchanged in intent from the multi-provider era, and the reasoning is
@@ -465,7 +458,7 @@ def backoff_seconds(attempt: int) -> float:
     """Delay before attempt number `attempt` (1-based). Bounded."""
     if attempt <= 1:
         return 0.0
-    return min(BACKOFF_BASE_SECONDS * (2 ** (attempt - 2)), BACKOFF_MAX_SECONDS)
+    return float(min(BACKOFF_BASE_SECONDS * (2 ** (attempt - 2)), BACKOFF_MAX_SECONDS))
 
 
 # ── Failure classification (spec-doc5 §B.4) ──────────────────────────────────
@@ -564,9 +557,3 @@ def configured_key_count() -> dict[str, int]:
     from app.core.config import get_settings  # noqa: PLC0415 -- avoids an import cycle
 
     return {PROVIDER: 1 if get_settings().anthropic_api_key else 0}
-
-
-def embeddings_configured() -> bool:
-    from app.core.config import get_settings  # noqa: PLC0415
-
-    return bool(get_settings().voyage_api_key)

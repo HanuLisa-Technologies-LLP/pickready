@@ -523,3 +523,325 @@ def test_the_verdict_confidence_is_arithmetic_not_a_models_opinion() -> None:
     assert not one_high.passed
     assert not two_medium.passed
     assert one_medium.passed
+
+
+# =============================================================================
+# G1 TO G4 ON THE LIVE PATH, EACH WITH AN ATTEMPT TO BYPASS IT
+# =============================================================================
+#
+# The six gates above are per-AGENT and check the artifact each one publishes.
+# These four are on the PIPELINE and check a precondition of the next phase.
+# Both axes are wanted: `sutra_gate` asks whether a matrix is well-formed, G1
+# asks whether a human has approved it, and a matrix can be perfectly
+# well-formed and unapproved.
+#
+# WHAT WAS WRONG UNTIL NOW. `hiring/gates.py` has held all four as real,
+# arithmetic, provider-free checks for a whole phase, and its only caller was
+# `miti/pipeline.py`, which no route and no worker imported. spec-doc6 D2 says
+# "gate G1 already blocks evaluation ... use it", and that sentence was false:
+# it blocked nothing, because nothing called it. Every test below goes through
+# `orchestration.enforcement`, which is where the gates now meet a real flow.
+#
+# spec-doc6 17 asks for "a test that attempts to bypass it and fails" per gate.
+# Each section below has one, marked BYPASS ATTEMPT.
+
+import ast  # noqa: E402
+import dataclasses  # noqa: E402
+import pathlib  # noqa: E402
+import uuid  # noqa: E402
+
+from app.services.agents import envelope as run_envelope  # noqa: E402
+from app.services.agents import provenance  # noqa: E402
+from app.services.hiring import gates as pipeline_gates  # noqa: E402
+from app.services.orchestration import enforcement  # noqa: E402
+
+_TENANT = uuid.uuid4()
+_JOB = uuid.uuid4()
+_HUMAN = uuid.uuid4()
+_CORRELATION = provenance.correlation_for_job(_JOB)
+_PRINCIPAL = provenance.Principal(
+    user_id=str(_HUMAN), role="hr_manager", tenant_id=str(_TENANT)
+)
+
+
+def _live_envelope(agent_id: str = identity.MITI) -> run_envelope.Envelope:
+    return run_envelope.Envelope.for_run(
+        tenant_id=str(_TENANT),
+        agent_id=agent_id,
+        task_type="scoring",
+        interactive=False,
+        job_id=str(_JOB),
+        candidate_id=str(uuid.uuid4()),
+        principal=_PRINCIPAL,
+        correlation_id=_CORRELATION,
+    )
+
+
+# -- G1: nothing is evaluated against an unapproved scorecard -----------------
+
+
+def test_g1_is_reachable_from_the_live_path_at_all() -> None:
+    """The regression that matters most: G1's implementation must be a module a
+    route or a worker can reach. It was not, for a whole phase."""
+    from app.orchestration_checks import reachable_modules
+
+    assert "app.services.hiring.scorecard" in reachable_modules()
+    assert "app.services.hiring.gates" in reachable_modules()
+
+
+def test_g1_refuses_a_scorecard_with_a_stamp_and_no_rows() -> None:
+    """A TIMESTAMP IS NOT EVIDENCE THAT WORK HAPPENED. Nineteen of thirty-five
+    live jobs carried `framework_generated_at` with zero competency rows, and
+    every health check asked the stamp rather than the table."""
+    result = pipeline_gates.scorecard_gate(matrix_items=[], approved_at="2026-08-01")
+    assert not result.passed
+    assert result.blocking
+    assert any("stamp is not evidence" in reason for reason in result.reasons)
+
+
+def test_g1_refuses_rows_that_nobody_approved() -> None:
+    result = pipeline_gates.scorecard_gate(
+        matrix_items=[{"name": "distributed systems"}], approved_at=None
+    )
+    assert not result.passed
+    assert result.blocking
+
+
+@pytest.mark.asyncio
+async def test_g1_bypass_attempt_evaluating_a_job_with_no_frozen_matrix() -> None:
+    """BYPASS ATTEMPT. Call the live entry point for a job that has no frozen
+    scorecard and confirm it raises rather than returning an empty matrix.
+
+    The refusal must arrive BEFORE any resume or transcript is read. Ordering,
+    not politeness: a refusal that ran the work first has already spent the
+    credit it was refusing.
+    """
+    from app.services.hiring import scorecard
+
+    class _EmptySession:
+        """Returns nothing for everything, which is what a job with no matrix
+        looks like from the gate's side."""
+
+        async def get(self, *_args, **_kwargs):
+            return None
+
+    with pytest.raises(scorecard.ScorecardNotFrozen) as exc:
+        await enforcement.require_frozen_scorecard(_EmptySession(), _JOB)
+    assert exc.value.result.gate == pipeline_gates.G1
+    assert exc.value.result.blocking
+
+
+# -- G2: evidence sufficiency, non-blocking, and it must still FIRE -----------
+
+
+def test_g2_fires_and_is_recorded_when_evidence_is_thin() -> None:
+    ledger = provenance.Ledger(_CORRELATION)
+    result = enforcement.record_evidence_sufficiency(
+        ledger,
+        _live_envelope(),
+        independent_sources=1,
+        judged_dimensions=1,
+        must_have_coverage={"payments domain": 0},
+    )
+    assert not result.passed
+    # NON-BLOCKING, and that is the fairness argument: a blocking sufficiency
+    # gate refuses a report to exactly the candidates who most need a person to
+    # look, which is a silent rejection with better manners.
+    assert not result.blocking
+    assert len(ledger) == 1
+    assert ledger.records[0].gate == pipeline_gates.G2
+    assert ledger.records[0].gate_passed is False
+
+
+def test_g2_passes_when_the_evidence_is_there() -> None:
+    ledger = provenance.Ledger(_CORRELATION)
+    result = enforcement.record_evidence_sufficiency(
+        ledger,
+        _live_envelope(),
+        independent_sources=3,
+        judged_dimensions=5,
+        must_have_coverage={"payments domain": 2},
+    )
+    assert result.passed
+    assert ledger.records[0].gate_passed is True
+
+
+def test_g2_bypass_attempt_running_it_with_nowhere_to_record() -> None:
+    """BYPASS ATTEMPT. A non-blocking gate is bypassed by letting its result go
+    nowhere, because a gate whose finding was not recorded is indistinguishable
+    from a gate that never ran. So the recorder is not optional: a ledger
+    belonging to a different flow is refused rather than quietly written to."""
+    foreign = provenance.Ledger(provenance.correlation_for_job(uuid.uuid4()))
+    with pytest.raises(ValueError):
+        enforcement.record_evidence_sufficiency(
+            foreign, _live_envelope(), independent_sources=1, judged_dimensions=1
+        )
+    assert len(foreign) == 0
+
+
+def test_g2_bypass_attempt_running_it_with_no_human_principal() -> None:
+    """BYPASS ATTEMPT. An unattributed gate result is one nobody can be asked
+    about, so it is refused before it is recorded."""
+    ledger = provenance.Ledger(_CORRELATION)
+    anonymous = run_envelope.Envelope.for_run(
+        tenant_id=str(_TENANT),
+        agent_id=identity.MITI,
+        task_type="scoring",
+        interactive=False,
+        job_id=str(_JOB),
+        correlation_id=_CORRELATION,
+    )
+    with pytest.raises(provenance.MissingPrincipal):
+        enforcement.record_evidence_sufficiency(
+            ledger, anonymous, independent_sources=1, judged_dimensions=1
+        )
+    assert len(ledger) == 0
+
+
+# -- G3: integrity, which fails loudly and blocks nothing ---------------------
+
+
+def test_g3_fires_on_an_unresolved_contradiction_and_still_does_not_block() -> None:
+    ledger = provenance.Ledger(_CORRELATION)
+    result = enforcement.record_integrity(
+        ledger,
+        _live_envelope(),
+        unresolved_contradictions=2,
+        contradiction_severity="material",
+        authenticity_band="partial",
+    )
+    assert not result.passed
+    # A BLOCKING INTEGRITY GATE WOULD BE AN AUTO-REJECTION: it would end a
+    # candidacy without a person ever seeing the finding or the evidence under
+    # it. NO FLAG EVER AUTO-REJECTS.
+    assert not result.blocking
+    assert ledger.records[0].gate == pipeline_gates.G3
+
+
+def test_g3_bypass_attempt_making_a_flag_reject_somebody() -> None:
+    """BYPASS ATTEMPT. Try to express a rejection through the integrity gate.
+
+    The enforcement is the ABSENCE OF THE CAPABILITY, not a check. `GateResult`
+    has no reject field, no status and no decision, so there is nothing to set.
+    Asserted over the dataclass rather than over one instance, because a field
+    added later would pass a value-level test on today's fixtures.
+    """
+    fields = {f.name for f in dataclasses.fields(pipeline_gates.GateResult)}
+    assert fields == {"gate", "passed", "blocking", "reasons"}
+    assert not fields & {"reject", "rejected", "status", "decision", "disposition"}
+
+    ledger = provenance.Ledger(_CORRELATION)
+    result = enforcement.record_integrity(
+        ledger,
+        _live_envelope(),
+        unresolved_contradictions=9,
+        contradiction_severity="critical",
+        authenticity_band="absent",
+    )
+    # The worst integrity finding the gate can express, and it still returns a
+    # result rather than ending anything.
+    assert not result.blocking
+
+
+# -- G4: a human DECIDED, before anything is delivered ------------------------
+
+
+@pytest.mark.parametrize("disposition", sorted(pipeline_gates.DISPOSITIONS))
+def test_g4_passes_on_every_recorded_human_decision_including_rejection(
+    disposition: str,
+) -> None:
+    """It asks whether a human DECIDED, not whether they approved. A gate
+    requiring approval could be satisfied by nagging until somebody clicked
+    yes; a gate requiring a recorded decision is satisfied only by a person
+    having looked."""
+    ledger = provenance.Ledger(_CORRELATION)
+    result = enforcement.require_human_disposition(
+        ledger,
+        _live_envelope(identity.SIDDHI),
+        needs_review=True,
+        disposition=disposition,
+        decided_by=_HUMAN,
+    )
+    assert result.passed
+    assert ledger.records[0].gate == pipeline_gates.G4
+
+
+def test_g4_bypass_attempt_delivering_with_no_disposition_recorded() -> None:
+    """BYPASS ATTEMPT. A flagged assessment with nothing recorded must not
+    reach a client, and the refusal is blocking rather than advisory."""
+    ledger = provenance.Ledger(_CORRELATION)
+    with pytest.raises(enforcement.GateBlocked) as exc:
+        enforcement.require_human_disposition(
+            ledger,
+            _live_envelope(identity.SIDDHI),
+            needs_review=True,
+            disposition=None,
+        )
+    assert exc.value.gate == pipeline_gates.G4
+    assert any("auto-resolve" in reason for reason in exc.value.reasons)
+    # The refused stage is still RECORDED, so a blocked delivery is visible
+    # rather than being an absence somebody has to notice.
+    assert ledger.records[0].gate_passed is False
+
+
+def test_g4_bypass_attempt_inventing_an_automatic_disposition() -> None:
+    """BYPASS ATTEMPT. There is no `auto_cleared` and there must never be one:
+    an automatic disposition satisfies G4 without a human, which is the entire
+    thing G4 exists to prevent."""
+    assert "auto_cleared" not in pipeline_gates.DISPOSITIONS
+    ledger = provenance.Ledger(_CORRELATION)
+    with pytest.raises(enforcement.GateBlocked):
+        enforcement.require_human_disposition(
+            ledger,
+            _live_envelope(identity.SIDDHI),
+            needs_review=True,
+            disposition="auto_cleared",
+            decided_by=_HUMAN,
+        )
+
+
+def test_g4_bypass_attempt_a_disposition_with_nobody_attached() -> None:
+    """BYPASS ATTEMPT. A decision nobody is named for is indistinguishable from
+    the pipeline having written it itself."""
+    ledger = provenance.Ledger(_CORRELATION)
+    with pytest.raises(enforcement.GateBlocked):
+        enforcement.require_human_disposition(
+            ledger,
+            _live_envelope(identity.SIDDHI),
+            needs_review=True,
+            disposition=pipeline_gates.DISPOSITION_CLEARED,
+            decided_by=None,
+        )
+
+
+def test_g4_does_not_block_an_assessment_that_was_never_flagged() -> None:
+    """The gate is not a review requirement on every candidate; it is a review
+    requirement on every FLAG."""
+    ledger = provenance.Ledger(_CORRELATION)
+    result = enforcement.require_human_disposition(
+        ledger, _live_envelope(identity.SIDDHI), needs_review=False, disposition=None
+    )
+    assert result.passed
+
+
+# -- The gates run without a provider, which is when they matter most ---------
+
+
+def test_no_pipeline_gate_calls_a_model() -> None:
+    """Read off the source, not asserted in a docstring. The moment a guard
+    matters most is the moment the provider is down, and a gate that needed one
+    would fail open exactly then."""
+    source = pathlib.Path(pipeline_gates.__file__).read_text(encoding="utf-8")
+    imported = {
+        node.module or ""
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom)
+    }
+    assert not any("llm_router" in name for name in imported)
+    assert "invoke_llm" not in source
+
+
+def test_the_enforcement_layer_calls_no_model_either() -> None:
+    source = pathlib.Path(enforcement.__file__).read_text(encoding="utf-8")
+    assert "llm_router" not in source
+    assert "invoke_llm" not in source

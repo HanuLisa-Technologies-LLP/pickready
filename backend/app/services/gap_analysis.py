@@ -58,6 +58,7 @@ from app.services.rating import (
     MODERATE_OR_BELOW,
     grade_for_percent,
 )
+from app.services.siddhi import synthesis as siddhi_synthesis
 
 logger = logging.getLogger(__name__)
 
@@ -316,6 +317,19 @@ async def _write_probes(
                         "already asked; go somewhere new with the answer they gave",
                     )
                 )
+            # GENERIC ADVICE IS THE FAILURE MODE THIS SECTION EXISTS TO STOP.
+            # spec-doc6 §4.5 names it directly. A probe that could have been
+            # written before the interview was not grounded in anything the
+            # candidate said, whatever it cites, and the corpus is checked
+            # through the product's one banned-phrase implementation so a close
+            # variant is caught without a second matcher to keep in step.
+            defects.extend(
+                agent_loop.banned_phrase_gate(
+                    probe,
+                    siddhi_synthesis.GENERIC_ADVICE_PHRASES,
+                    location=location,
+                ).defects
+            )
         return agent_loop.reject_defects(*defects) if defects else agent_loop.ok()
 
     result = await agent_loop.run_loop(
@@ -387,17 +401,39 @@ async def build_gap_analysis(
     session: AsyncSession | None,
     dimensions: list[dict[str, Any]],
     evidence_by_item: dict[str, list[dict[str, str]]],
+    *,
+    overall_summary: str | None = None,
+    overall_grade: str | None = None,
+    validation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The whole section, ready to render (spec §9.6).
+    """The whole section, ready to render (spec §9.6), THROUGH SIDDHI.
 
     `evidence_by_item` maps an item's NAME to the questions it was probed with
     and the answers the candidate gave. Keyed on the name rather than the
     competency id because a report row is the permanent record and its name is
     what survives an edit to the job's matrix.
 
-    Never raises. Every probe generation degrades to a deterministic, still
-    grounded probe, so a provider outage costs the section its polish and not
-    its structure.
+    THIS IS SIDDHI'S LIVE ENTRY POINT (spec-doc6 §4.5)
+    ---------------------------------------------------
+    The assessment graph's synthesis node calls this function, and this function
+    calls `siddhi.synthesis.compose`, which assembles every rated grade, every
+    remark, every gap and every probe as a `citations.Statement` and renders
+    them through `citations.Section.render`. That call is the chokepoint: a
+    statement with no evidence node raises `UncitedStatement` and a statement
+    citing a node that is not in this evaluation's set raises `UnknownEvidence`.
+    Neither is caught here.
+
+    THE ONE THING THAT STILL NEVER RAISES IS PROBE GENERATION. A provider outage
+    degrades a probe to a deterministic, still grounded one, because that costs
+    the section its polish and not its structure. An UNCITED statement is a
+    different class of problem entirely and is not degradable: a PRISM Report
+    whose claims are not traced is not a worse report, it is a different
+    product, and spec-doc6 §4.1 forbids the generic paragraph that would be the
+    only alternative.
+
+    `overall_summary`, `overall_grade` and `validation` are optional so that the
+    existing synthesis call site keeps working unchanged; supplying them brings
+    the Overall Assessment and the Validation section under the same chokepoint.
     """
     cap_applied = must_have_cap_applies(dimensions)
     groups: list[dict[str, Any]] = []
@@ -441,10 +477,49 @@ async def build_gap_analysis(
             }
         )
 
+    focus_summary = _focus_summary(ordered_gaps)
+
+    # ── THE CHOKEPOINT, ON THE LIVE PATH ────────────────────────────────────
+    #
+    # Every statement this report will deliver is assembled and rendered here.
+    # `compose` raises rather than returning a partial document, and nothing in
+    # this function catches it: the report is not written, the task fails
+    # loudly, and the failure names the section and the statement.
+    composed = siddhi_synthesis.compose(
+        dimensions=dimensions,
+        evidence_by_item=evidence_by_item,
+        gap_groups=groups,
+        focus_summary=focus_summary,
+        overall_summary=overall_summary,
+        overall_grade=overall_grade,
+        validation=validation,
+    )
+
     return {
-        "focus_summary": _focus_summary(ordered_gaps),
+        "focus_summary": focus_summary,
         "must_have_cap_applied": cap_applied,
         "groups": groups,
+        # SIDDHI'S OWN NAMESPACE ON THE IMMUTABLE ROW.
+        #
+        # The citation trail and the dashboard's Ready Pick Note are properties
+        # of the report and have to survive with it, and this dict is the one
+        # JSONB column that travels from here onto `functional_skills_reports`.
+        # Namespaced under one key so it is unmistakably Siddhi's rather than
+        # scattered among the gap section's own fields, and read by nothing that
+        # renders: `GapAnalysisOut` does not declare it, so it is stored for
+        # audit and never crosses the API boundary. A test asserts that.
+        #
+        # THE NOTE HERE IS NOT A SECOND SOURCE FOR THE DASHBOARD CELL. There is
+        # one producer, `siddhi.synthesis.ready_pick_note`, and two consumers of
+        # what it produced: the dashboard renders the SENTENCE, read from
+        # `evaluations.aggregate_json` under `synthesis.READY_PICK_NOTE_KEY`,
+        # and the immutable report keeps the sentence WITH ITS CITATIONS,
+        # because spec-doc6 §4.5 requires the note to carry them internally and
+        # the evaluation is replaceable by a rescore while this row is not.
+        "siddhi": {
+            "citations": composed.trail(),
+            "ready_pick_note": composed.note.as_dict(),
+        },
     }
 
 

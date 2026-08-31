@@ -77,7 +77,6 @@ from app.services import (
     matching_categories,
     ppi,
     ppi_interview,
-    rating,
 )
 from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELDS
 from app.prompts import registry
@@ -527,6 +526,7 @@ async def _record_answer_evidence(
     # a single test file went red, because pytest happened to initialise the
     # other side first.
     from app.services.evidence import ledger
+    from app.services.miti import claims as claim_model
 
     session = state.get("session")
     link = state.get("link")
@@ -568,6 +568,14 @@ async def _record_answer_evidence(
                         "question_id": str(question.id) if question else None,
                         "conversation_turn": ref.turn,
                         "recorded_at": datetime.now(timezone.utc).isoformat(),
+                        # A FACT ABOUT THE TEXT, decided while the text is in
+                        # hand, because it is the only moment anything holds
+                        # it: the ledger stores a locator and never the
+                        # sentence. Runbook section 6.1 separates E0
+                        # ("unverifiable self-claim") from E1 ("self-report
+                        # containing checkable specifics") on exactly this, and
+                        # section 14.1's abstention rule reads the tier.
+                        "has_specifics": claim_model.has_specifics(ref.content),
                     },
                     freshness_payload=ledger.freshness(ref.answered_at),
                 )
@@ -1039,14 +1047,41 @@ async def bounded_remark(
                     ),
                 )
             )
-        if conversation_guardrails.contains_forbidden_number(value):
+        # THE DELIVERED-REPORT RULE, WHICH IS STRICTER THAN THE CONVERSATION'S.
+        #
+        # `conversation_guardrails.contains_forbidden_number` DELIBERATELY
+        # PERMITS A BARE PERCENTAGE. It exists to keep interviewer speech
+        # natural, and "how did you bring p99 latency under 200ms?" is an
+        # ordinary interview question. A DELIVERED REPORT IS A DIFFERENT
+        # CONTEXT: the JSON serialiser and the PDF both RAISE on a bare
+        # percentage (D8, "technically impossible" rather than redacted), so a
+        # remark reading "cut cost by 30%" would pass a conversation-grade check
+        # here and then fail at delivery, after the report row was written.
+        #
+        # `siddhi.numbers.scan_text` is the delivered-document rule and it
+        # SUBSUMES the conversation one -- it calls
+        # `contains_forbidden_number` itself and adds the grade-then-digit and
+        # bare-percentage shapes. So it is called instead of, not beside, the
+        # weaker check: two overlapping guards would report one defect twice and
+        # give the model two instructions for one fix.
+        #
+        # Rejected, never redacted. A redacted remark is a sentence with a hole
+        # in it and the client reads the hole; a rejection is fed back verbatim
+        # and the model writes the sentence again. And the conversation guard is
+        # left alone: weakening it to satisfy the report would mangle real
+        # interview questions.
+        from app.services.siddhi import numbers as report_numbers
+
+        for violation in report_numbers.scan_text(value, path=f"remark.{name}"):
             defects.append(
                 agent_loop.Defect(
                     "numeric_score",
                     f"remark.{name}",
                     (
-                        "state no score, percentage, rating out of a total, or "
-                        "percentile; describe the evidence in words only"
+                        "a delivered report carries no figure at all, not a "
+                        "score, a rating out of a total, a percentile, or a "
+                        f"percentage quoted from the candidate: {violation.detail}. "
+                        "Describe the evidence in words only."
                     ),
                 )
             )
@@ -1123,6 +1158,11 @@ class AssessmentState(TypedDict, total=False):
     #: It flags the report for a person; it never moves a grade.
     evidence_review: bool
     evidence_findings: list[dict[str, Any]]
+    #: G4's inputs. Both absent on a first pass, which is correct: a human
+    #: disposition cannot exist before the flags that need one. A rescore after
+    #: a person has looked carries them, and G4 then passes.
+    review_disposition: str
+    review_decided_by: Any
     validation: dict[str, Any]
     report_id: str
 
@@ -1538,8 +1578,34 @@ def _gate_report(
     """
     from app.services.agents import gates
     from app.services import verification as verification_base
+    from app.services.siddhi import evidence as siddhi_evidence
 
     try:
+        evidence_by_item = _evidence_by_item(state)
+        # THE REFS THE GATE READS, COMPUTED FROM THE SAME INDEX THE GENERATOR
+        # USES. Dimension rows carry no `evidence_refs` key and never have, so
+        # `row.get("evidence_refs") or []` handed the gate an empty list for
+        # every claim: two or more rated items produced two or more
+        # `claim_not_grounded` findings, the gate failed, and EVERY report with
+        # more than one dimension was written `needs_human_review=True`. A gate
+        # wired to something it cannot read does not report a wiring error, it
+        # reports a blanket verdict, which is indistinguishable from the product
+        # working exactly as intended and flagging everybody.
+        #
+        # ANSWER refs, and not everything the index holds. `grounding` falls
+        # back to an item's `searched` record when nobody answered anything
+        # about it, so it is never empty -- and handing THAT to the gate would
+        # swing the defect the other way, into a `claim_not_grounded` check that
+        # reads as enforced and can never fire. A claim resting only on the
+        # record that a criterion was searched IS a weaker claim, and the gate
+        # is exactly where that difference should be visible.
+        index = siddhi_evidence.EvidenceIndex.build(
+            items=[str(row["name"]) for row in dimensions if row.get("name")],
+            exchanges={
+                str(key): list(value or [])
+                for key, value in evidence_by_item.items()
+            },
+        )
         graded = {row["name"]: row.get("grade") for row in dimensions if row.get("name")}
         # CLIENT-VISIBLE FIELDS ONLY in the sections. The first version of this
         # adapter passed the raw dimension rows, and the gate immediately
@@ -1570,7 +1636,32 @@ def _gate_report(
             # notice period has fabricated a fact in a document a client decides
             # from.
             "validation_source": dict(state.get("validation") or {}),
-            "gap_analysis": gaps,
+            # A LIST OF PROBES, because that is what the gate iterates. It was
+            # passed the whole `gaps` DICT, so `_items` returned nothing and the
+            # `grounded_in_answer` check never ran on a single probe -- the same
+            # class of defect as the empty citations above, in the opposite
+            # direction: a check wired to a shape it cannot read reports a clean
+            # pass rather than an error.
+            #
+            # `grounded_in_answer` is the property this layer can actually
+            # establish: a probe for an item with no recorded question and
+            # answer cannot be grounded in one. Whether the specific WORDING
+            # references the answer is decided upstream by
+            # `siddhi.synthesis.compose`, which raises rather than flagging, so
+            # duplicating it here would be a second, weaker copy of a rule that
+            # already holds.
+            "gap_analysis": [
+                {
+                    "id": f"{group.get('category')}.{entry.get('name')}.{index}",
+                    "text": probe,
+                    "grounded_in_answer": bool(
+                        evidence_by_item.get(str(entry.get("name")))
+                    ),
+                }
+                for group in (gaps.get("groups") or [])
+                for entry in (group.get("items") or [])
+                for index, probe in enumerate(entry.get("probes") or [])
+            ],
             "overall_summary": overall,
             # Miti's grades and Siddhi's must be the same grades. They are read
             # from one place here, so this check only has teeth once the two
@@ -1582,7 +1673,11 @@ def _gate_report(
                 {
                     "id": row.get("name"),
                     "text": row.get("remark") or "",
-                    "evidence_refs": row.get("evidence_refs") or [],
+                    "evidence_refs": list(
+                        index.refs_for(
+                            str(row.get("name")), kind=siddhi_evidence.KIND_ANSWER
+                        )
+                    ),
                 }
                 for row in dimensions
             ],
@@ -1613,6 +1708,14 @@ async def synthesis_node(state: AssessmentState) -> dict:
     that, and it is the rule spec §19 states in as many words: report synthesis
     does not finalise until PPI scoring has completed.
     """
+    # Imported inside the function, never at module scope. `miti.live` reaches
+    # `app.services.evidence` through `miti.tiering`, and that package sits on
+    # an import cycle this module has already closed once: the full suite went
+    # green while a single test file went red, because pytest happened to
+    # initialise the other side first.
+    from app.services import verification as verification_base
+    from app.services.miti import live as miti_live
+
     session = state["session"]
     matching = await _matching_dimensions(state)
     ppi_rows = state.get("ppi") or []
@@ -1622,23 +1725,61 @@ async def synthesis_node(state: AssessmentState) -> dict:
     # it at the head of the PPI section, below the AI Score, and the two are
     # deliberately never merged.
     assessed = [row for row in dimensions if row["category"] != CATEGORY_MATCHING]
-    overall_score = _mean([row["score"] for row in assessed])
 
-    # ── The Must-have hard cap (spec §5.5) ───────────────────────────────────
-    # Applied to the STORED score, not only to the displayed grade, and that is
-    # deliberate: the internal score also orders candidate lists, and a
-    # candidate with a Not Matching Must-have genuinely should sort below one
-    # without. `cap_to_moderately` only ever lowers, so a candidate already
-    # grading Not Matching is not promoted into the band the cap exists to keep
-    # people out of.
-    cap_applied = gap_analysis.must_have_cap_applies(dimensions)
-    if cap_applied:
-        capped = rating.cap_to_moderately(overall_score)
-        logger.info(
-            "functional_assessment.must_have_cap link_id=%s from=%s to=%s",
-            state["link"].id, overall_score, capped,
+    # ── MITI, STAGES 2 TO 6, ON THE LIVE PATH ────────────────────────────────
+    #
+    # This is where the five isolated dimension evaluators, triangulation and
+    # the deterministic aggregator actually run for a real candidate. Until
+    # 2026-08-29 the whole of that stack was reachable only from
+    # `app/scripts/worked_example.py`, so gates G1 to G4 were real checks
+    # guarding nothing.
+    #
+    # IT IS ALLOWED TO RAISE, AND THAT IS GATE G1. `require_frozen_matrix`
+    # refuses a job with no approved, frozen Tatva matrix, and Runbook section
+    # 14.1 states the consequence as "scoring blocked entirely". Catching it
+    # here and scoring against the job's competency rows instead would be a
+    # second implementation of the criteria, chosen at runtime, which is
+    # exactly the dual path the anti-slop rules forbid -- and it would let the
+    # first candidate assessed set the criteria for everyone.
+    #
+    # The composite, the confidence and the three band caps all come from
+    # Miti's aggregate. The per-ITEM grades in the sections above are the
+    # product's own rubric scoring and are unchanged; what changed is that the
+    # OVERALL grade is now the Runbook's composite rather than the plain mean
+    # of the item scores, which is what section 10.1 through 10.8 describe.
+    candidate = await session.get(Candidate, state["link"].candidate_id)
+    evaluation = await miti_live.evaluate_application(
+        session,
+        job=state["job"],
+        link=state["link"],
+        item_scores={row["name"]: row["score"] for row in assessed},
+        # The candidate's own name parts, removed from every evidence excerpt
+        # before an evaluator reads it. The structural guarantee is that
+        # `EvaluatorInput` has no name field; this is the second mechanism, and
+        # it is needed because the excerpts are the candidate's own prose.
+        subject_names=str(getattr(candidate, "full_name", "") or "").split(),
+        review_disposition=state.get("review_disposition"),
+        review_decided_by=state.get("review_decided_by"),
+    )
+    aggregate = evaluation.aggregate
+    if aggregate is None:
+        # A blocking gate stopped the pipeline before aggregation. `deliverable`
+        # and `blocking_reasons` carry which one and why; there is no grade to
+        # write and inventing one would be the silent degradation §4.1 forbids.
+        raise miti_live.ScorecardUnavailable(
+            "Miti produced no aggregate for link "
+            f"{state['link'].id}: {'; '.join(evaluation.outcome.blocking_reasons)}"
         )
-        overall_score = capped
+    overall_score = int(round(aggregate.delivered_score))
+    cap_applied = aggregate.must_have_cap_applied
+    if cap_applied:
+        logger.info(
+            "functional_assessment.band_cap link_id=%s from=%s to=%s controls=%s",
+            state["link"].id,
+            round(aggregate.adjusted_composite, 2),
+            overall_score,
+            sorted({cap.control for cap in aggregate.applied_caps}),
+        )
 
     weak_names = ", ".join(
         row["name"]
@@ -1659,11 +1800,26 @@ async def synthesis_node(state: AssessmentState) -> dict:
         rating=grade_for_percent(overall_score),
     )
 
+    validation = dict(state["validation"])
+
+    # The Overall Assessment and the Validation section travel INTO Siddhi's
+    # chokepoint rather than around it. Without these three the two sections are
+    # assembled outside `citations.Section.render`, which is the one place an
+    # uncited statement is refused, so they would be the only client-facing
+    # prose in the report exempt from the rule the rest of it is built on.
+    #
+    # `validation` is read HERE, before the gap section rather than after it,
+    # for the same reason: the section that must be exact-as-submitted has to
+    # exist before the chokepoint runs, or it goes round it.
     gaps = await gap_analysis.build_gap_analysis(
-        session, dimensions, _evidence_by_item(state)
+        session,
+        dimensions,
+        _evidence_by_item(state),
+        overall_summary=overall,
+        overall_grade=grade_for_percent(overall_score),
+        validation=validation,
     )
 
-    validation = dict(state["validation"])
     scoring_mode = state.get("ppi_mode", "llm_rubric")
     if scoring_mode != "llm_rubric":
         logger.warning(
@@ -1701,6 +1857,26 @@ async def synthesis_node(state: AssessmentState) -> dict:
     uncertainty_review = bool(state.get("evidence_review"))
     evidence_findings = list(state.get("evidence_findings") or [])
 
+    # ── Miti's own review verdict, beside those two ──────────────────────────
+    #
+    # NO FLAG AUTO-REJECTS, so everything Miti found routes here and nothing
+    # ends a candidacy. A held candidate (Runbook section 12.2's D4 floor of
+    # 25) and an unassessed Must-have (section 14.1) both reach a person with
+    # their evidence attached; neither is a status the pipeline may write.
+    #
+    # The reasons carry no number. `review_findings_json` is read from far more
+    # places than the report itself, and a score in it is a score outside the
+    # one conversion point `services/rating` exists to be.
+    miti_findings = [
+        {
+            "severity": verification_base.SEVERITY_MEDIUM,
+            "issue": "miti_review",
+            "location": "evaluation",
+            "recommendation": reason,
+        }
+        for reason in evaluation.review_reasons
+    ]
+
     current = (
         await session.execute(
             select(FunctionalSkillsReport).where(FunctionalSkillsReport.job_candidate_link_id == state["link"].id)
@@ -1719,7 +1895,12 @@ async def synthesis_node(state: AssessmentState) -> dict:
         # release needs no data restore. Reports written before today keep
         # theirs and still render it.
         "synthesized_at": datetime.now(timezone.utc),
-        "needs_human_review": not gate_verdict.passed or uncertainty_review,
+        "needs_human_review": (
+            not gate_verdict.passed
+            or uncertainty_review
+            or aggregate.needs_human_review
+            or bool(evaluation.unresolved_evidence)
+        ),
         # Issue, location and severity only. A finding's `detail` can quote the
         # report prose, and this column is read from far more places than the
         # report itself.
@@ -1734,6 +1915,7 @@ async def synthesis_node(state: AssessmentState) -> dict:
                 for finding in gate_verdict.findings
             ]
             + evidence_findings
+            + miti_findings
         ) or None,
     }
     if current is None:
@@ -1752,8 +1934,86 @@ async def synthesis_node(state: AssessmentState) -> dict:
     session.add_all(
         [ReportDimension(tenant_id=state["job"].tenant_id, report_id=current.id, **row) for row in dimensions]
     )
+    await _write_evaluation(state, evaluation, gaps, current, fields["scoring_mode"])
     await session.flush()
     return {"report_id": str(current.id)}
+
+
+async def _write_evaluation(
+    state: AssessmentState,
+    evaluation: Any,
+    gaps: dict[str, Any],
+    report: FunctionalSkillsReport,
+    scoring_mode: str,
+) -> None:
+    """Miti's WORKING record, beside the delivered report.
+
+    `evaluations` and `functional_skills_reports` are deliberately two tables.
+    One is the working -- five dimension bands, the evidence each cited, the
+    contradictions, every gate verdict -- and is legitimately replaced by a
+    rescore. The other is the delivered artifact and is immutable. One table
+    would force a choice between making the working immutable, so a rescore
+    could never correct anything, and making the report mutable, which breaks
+    the product's oldest rule.
+
+    THE DASHBOARD READS THIS ROW, NOT THE REPORT. Column 5's Ready Pick Note
+    comes from `aggregate_json` under `synthesis.READY_PICK_NOTE_KEY`, and never
+    from the delivered document: sourcing a list cell from the report would make
+    the row's pending state a statement about the report rather than about the
+    profile, so a candidate mid-assessment would read as having no note rather
+    than as not yet assessed. There is ONE producer of the sentence,
+    `siddhi.synthesis.ready_pick_note`, and two consumers: the dashboard takes
+    the sentence, and the immutable report keeps the sentence WITH its citations.
+
+    THE VERSIONS ARE COPIED, NEVER JOINED. Same rule
+    `report_dimensions.required_level` follows: an evaluation is a permanent
+    record of the criteria it was run against, and the job's matrix may be
+    re-frozen afterwards.
+    """
+    from app.models.hiring import Evaluation
+    from app.services.siddhi import evidence as siddhi_evidence
+
+    session = state["session"]
+    aggregate = evaluation.aggregate
+    matrix = evaluation.matrix
+    outcome = evaluation.outcome
+
+    payload = aggregate.as_dict()
+    note = ((gaps.get("siddhi") or {}).get("ready_pick_note") or {}).get("sentence")
+    if note:
+        payload[siddhi_synthesis.READY_PICK_NOTE_KEY] = note
+
+    session.add(
+        Evaluation(
+            tenant_id=state["job"].tenant_id,
+            job_id=state["job"].id,
+            link_id=state["link"].id,
+            report_id=report.id,
+            scorecard_version=int(getattr(matrix, "version", 1) or 1),
+            company_dna_version=getattr(matrix, "company_dna_version", None),
+            situation_type=getattr(matrix, "situation_key", None),
+            dimension_scores={
+                result.dimension: result.as_dict() for result in outcome.results
+            },
+            # Per COMPETENCY, from the evaluators' own per-item bands, with the
+            # citing dimension's refs. This is what makes citation enforcement
+            # possible after the fact and is why it cannot be retrofitted.
+            competency_scores={
+                name: {"band": band, "evidence_refs": list(result.evidence_refs)}
+                for result in outcome.results
+                for name, band in result.per_competency.items()
+            },
+            aggregate_json=payload,
+            triangulation_json=(
+                outcome.triangulation.as_dict() if outcome.triangulation else {}
+            ),
+            gate_results_json=[gate.as_dict() for gate in outcome.gate_results],
+            scoring_mode=scoring_mode,
+            confidence=aggregate.confidence,
+            needs_human_review=report.needs_human_review,
+            completed_at=datetime.now(timezone.utc),
+        )
+    )
 
 
 def build_assessment_graph():
@@ -1827,11 +2087,23 @@ async def run_assessment(
         else:
             transcript = []
 
+    # ── GATE G1 (spec-doc6 §4.3) ────────────────────────────────────────────
+    #
+    # No candidate is evaluated against a job without an approved, frozen
+    # scorecard. `require_frozen_matrix` IS the gate, and it runs BEFORE the
+    # scoring graph rather than after it: a refusal that scored first has
+    # already spent the work it was refusing.
+    #
+    # THIS REPLACED AN ON-DEMAND GENERATION. The two lines here used to call
+    # `ppi.generate_framework` when a job had no matrix, so a job that had never
+    # been through setup silently acquired criteria at the moment somebody was
+    # graded against them -- criteria no Hiring Manager had approved, which is
+    # precisely what the review step is the product's only comparability
+    # guarantee against.
+    from app.services.hiring import scorecard as _scorecard  # noqa: PLC0415
+
+    await _scorecard.require_frozen_matrix(session, job.id)
     competencies = await ppi.load_framework(session, job.id)
-    if not competencies:
-        logger.info("functional_assessment.generating_matrix_on_demand job_id=%s", job.id)
-        await ppi.generate_framework(session, job)
-        competencies = await ppi.load_framework(session, job.id)
 
     # This candidate's OWN questions, each rubric-scored one carrying the rubric
     # written with it. Generated on demand only for a link that never opened a

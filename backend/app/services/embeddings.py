@@ -57,6 +57,7 @@ import httpx
 
 from app.config.llm_providers import EMBEDDING_MODEL, VOYAGE_EMBEDDINGS_URL
 from app.core.config import get_settings
+from app.services.reliability import vendor_contract
 
 #: Must equal the width of every `vector(N)` column in the schema. Asserted in
 #: `tests/test_embeddings.py` against the model definitions rather than trusted,
@@ -153,6 +154,23 @@ async def _embed_batch(
         vectors = [list(row["embedding"]) for row in rows]
     except (KeyError, TypeError, ValueError) as exc:
         raise EmbeddingError("Voyage returned a malformed payload") from exc
+
+    # FAIL LOUD ON FIRST LIVE USE (spec-doc6 §12.5). Everything above was
+    # written against Voyage's PUBLISHED schema and has never been seen from
+    # the endpoint. This runs once per process and catches what the parse above
+    # cannot: an index set that is not 0..n-1 (duplicate indices sort perfectly
+    # well and silently yield the same vector twice), a short batch, and a
+    # response echoing a different model id -- which is a vector-space
+    # corruption that leaves every column the right width and every distance
+    # computable. It runs AFTER the parse so the typed `EmbeddingError` above
+    # keeps its meaning for the shapes it already covers.
+    #
+    # `expected_dimension=None` on purpose: `embed` already enforces the width
+    # with a typed error, and one rule implemented twice is the fault
+    # `services/tiers.py` cost this platform.
+    vendor_contract.check_voyage_response(
+        payload, expected_rows=len(texts), expected_dimension=None
+    )
     return vectors
 
 

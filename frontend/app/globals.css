@@ -137,7 +137,16 @@
     --rating-1-bg: 141 84% 93%; /* #DCFCE7 */
     --rating-2-fg: 142 69% 29%; /* #15803D  High / Matching */
     --rating-2-bg: 140 55% 95%; /* #E9F9EE */
-    --rating-3-fg: 42 95% 33%; /* #A16207  Medium / Moderate */
+    /* Darkened from 33% on 2026-08-29. At 33% this paints 3.71:1 on its
+       own --rating-3-bg, which is below WCAG 1.4.3's 4.5 for text, and
+       it is a TEXT token: it is the ink of the Moderately Matching
+       badge and of the Candidate Dashboard's Consider with
+       Reservations band. 28% paints 4.88:1 on the same background and
+       is otherwise the same hue. Found by
+       components/candidate-dashboard/contrast.test.ts, which asserts
+       the composed pair rather than the token against white, and now
+       keeps it from drifting back. */
+    --rating-3-fg: 42 95% 28%; /* #8F6A05  Medium / Moderate */
     --rating-3-bg: 48 96% 89%; /* #FEF3C7 */
     --rating-4-fg: 21 90% 40%; /* #C2410C  Low / Low */
     --rating-4-bg: 33 100% 92%; /* #FFEDD5 */

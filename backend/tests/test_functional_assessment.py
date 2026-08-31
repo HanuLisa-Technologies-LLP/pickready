@@ -713,13 +713,22 @@ def test_the_cap_holds_the_overall_grade_down_but_never_raises_it() -> None:
     A candidate whose aggregate already grades Not Matching must STAY Not
     Matching: a cap that SET the score would quietly promote the weakest
     candidates into the band it was written to keep the strong ones out of.
+
+    The arithmetic moved to `miti/caps.apply` on 2026-08-29, along with the two
+    Runbook controls the product never implemented, and its ceiling moved from
+    74 to the 71 the Runbook states. `rating.cap_to_moderately` is DELETED, not
+    deprecated: leaving it would have been a second implementation of one
+    concept, capping three points higher, under the more obvious name.
     """
-    assert rating.grade_for_percent(rating.cap_to_moderately(97)) == rating.GRADE_MODERATELY
-    assert rating.grade_for_percent(rating.cap_to_moderately(76)) == rating.GRADE_MODERATELY
+    from app.services.miti import caps
+
+    assert not hasattr(rating, "cap_to_moderately")
+    fired = [caps.BandCap("c", "cite", "Kafka", "why", 71)]
+    assert rating.grade_for_percent(caps.apply(97, fired)) == rating.GRADE_MODERATELY
+    assert rating.grade_for_percent(caps.apply(76, fired)) == rating.GRADE_MODERATELY
     # Already below the cap: untouched.
-    assert rating.cap_to_moderately(30) == 30
-    assert rating.grade_for_percent(rating.cap_to_moderately(30)) == rating.GRADE_NOT
-    assert rating.cap_to_moderately(None) is None
+    assert caps.apply(30, fired) == 30
+    assert rating.grade_for_percent(caps.apply(30, fired)) == rating.GRADE_NOT
 
 
 # ── Gap Analysis & Action Plan (spec §9.6) ───────────────────────────────────

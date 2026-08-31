@@ -111,6 +111,11 @@ STAGES: tuple[Stage, ...] = (
         "Combining both searches, then adding every candidate linked to this job so retrieval never decides who gets scored.",
     ),
     Stage(
+        "prescreen",
+        "Reading the evidence",
+        "Reading what each resume actually evidences, and how strongly, before any scoring happens.",
+    ),
+    Stage(
         "scoring",
         "Scoring against the categories",
         "Assessing each candidate against this job's own matching categories.",

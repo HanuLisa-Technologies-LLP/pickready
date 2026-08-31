@@ -175,6 +175,32 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
     matching_categories_finalized_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    #: RBAC 17's eight-state job lifecycle, added by migration 0061 and MAPPED
+    #: here by 0064. It was read through raw SQL by `rbac.load_job_resource`
+    #: from the day it landed, which was enough to AUTHORIZE against but not to
+    #: advance: nothing could write it without a mapped attribute, so every job
+    #: sat in the state 0061's backfill left it in. Nullable, because 0061 makes
+    #: it nullable and a row inserted by a pod that predates the mapping still
+    #: has to be legal.
+    lifecycle_state: Mapped[str | None] = mapped_column(String(40))
+    #: RBAC 20: "Finalization MUST record: user who finalized it, timestamp,
+    #: relevant version, relevant hiring criteria version." Added by 0061 and
+    #: mapped here by 0064, for the same reason `lifecycle_state` was: 0061
+    #: could authorize against them and nothing could write them.
+    finalized_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: RBAC 22 and 35: the version of the hiring criteria in force. Incremented
+    #: by an explicit revision, never by an edit.
+    criteria_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    #: spec-doc6 4.1's one correlation id per flow, issued at job creation and
+    #: never rewritten. Copied onto every audit row and artifact envelope from
+    #: Bodha through Siddhi, so the whole flow is one query rather than a
+    #: reconstruction from timestamps.
+    correlation_id: Mapped[str | None] = mapped_column(String(64))
 
 
 class JobApproval(Base, UUIDPKMixin):

@@ -59,7 +59,8 @@ logger = logging.getLogger(__name__)
 # A task that blew its 600-second soft time limit must NOT be retried.
 #
 # Observed in production 2026-08-01: `generate_technical_questions` reached an
-# unterminating loop in services/ppi._fallback_framework, held a pool slot for
+# unterminating loop in the deterministic fallback matrix builder (deleted
+# 2026-08-29 with the rest of the single-pass generator), held a pool slot for
 # the full soft limit, raised SoftTimeLimitExceeded, and was then handed
 # straight back to `autoretry_for=(Exception,)` -- which catches
 # SoftTimeLimitExceeded, because it derives from Exception. Two such tasks took
@@ -669,55 +670,78 @@ def run_matching(self, job_id: str):
 
 
 @celery_app.task(
-    name="pickready.generate_ppi_framework",
+    name="pickready.compile_tatva_matrix",
     autoretry_for=(Exception,),
     dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
     retry_backoff=True,
     max_retries=5,
 )
-def generate_ppi_framework(job_id: str, replace: bool = False):
-    """Job setup: the job's PPI evaluation matrix (spec §5.2).
+def compile_tatva_matrix(job_id: str, replace: bool = False, correlation_id: str = ""):
+    """Sutra: this job's Tatva matrix, through all seven stages.
 
-    THE TECHNICAL BANK USED TO BE GENERATED HERE TOO, AND THAT WAS THE BUG.
-    -----------------------------------------------------------------------
-    This task ran `generate_question_bank` FIRST and `generate_framework`
-    second, in one session. Any failure in the first half therefore took the
-    second half with it -- and the framework is the half that gates the job.
-    Measured on the live database on 2026-08-06: 19 of 35 jobs, across three
-    entire tenants, carried `framework_generated_at` with ZERO competency rows.
-    Every one of those jobs was permanently stuck at `questions_pending_review`
-    with an empty framework a recruiter could not approve, which is what "the
-    portal does not work for other companies" was.
+    RENAMED FROM `pickready.generate_ppi_framework` 2026-08-29, and the rename
+    is not cosmetic. The old task ran `ppi.generate_framework`, which asked one
+    model for a whole matrix in one pass and assembled one out of the JD's own
+    noun phrases when the model was unavailable. This one runs
+    `hiring.scorecard.compile_matrix`: Layer 1's department model, Layer 2's
+    compiled Company DNA and Layer 3's validated SWOT, through the seven stages,
+    with every weight's terms stored on the row it produced.
 
-    The preset bank is gone (2026-08-06), so the coupling is gone with it. This
-    task now does exactly one thing, which is also why it could be renamed: a
-    task named for half the work it did was part of how the failure stayed
-    unreadable.
+    IT CAN REFUSE, AND THE REFUSAL IS THE POINT. A job whose client has no
+    Company DNA, or whose Hiring Manager has not finished the SWOT session, gets
+    a `ScorecardInputMissing` naming what is outstanding. That is NOT retried:
+    no amount of waiting supplies a Company DNA artifact, and five backoff
+    attempts against a missing input is five log lines that look like a bug in
+    this task. The setup screen is what surfaces the block to the person who can
+    clear it.
 
-    It approves nothing. The job stays at `questions_pending_review` until a
-    recruiter saves the matrix -- one half of the single manual step in the
-    pipeline, and the product's only comparability guarantee.
+    It approves nothing. The matrix stays a draft until the Hiring Manager
+    finalises it (`hiring.scorecard.freeze`).
 
-    `replace` is what the SWOT intake sets when it finishes. The matrix is
-    generated from the JD AND the intake, so a matrix built before the intake
-    existed is built from half its inputs and is worth regenerating. The caller
-    is responsible for not asking for this once the matrix is approved: from
-    that moment the criteria are frozen, and `generate_framework` deactivates
-    rather than deletes so nothing already written against them is orphaned.
+    Idempotent by default: a job that already has active items keeps them, so a
+    Celery redelivery cannot discard a matrix a human has already edited.
     """
     from app.models.job import Job
-    from app.services.ppi import generate_framework
+    from app.services.hiring import pipeline_halt, scorecard
 
     async def _task():
         async with _worker_session() as session:
             job = await session.get(Job, uuid.UUID(str(job_id)))
             if job is None:
                 raise ValueError(f"Job {job_id} not found")
-            framework = await generate_framework(session, job, replace=bool(replace))
+            try:
+                result = await scorecard.compile_matrix(
+                    session,
+                    job,
+                    actor_user_id=job.created_by,
+                    correlation_id=correlation_id or job.correlation_id,
+                    replace=bool(replace),
+                )
+            except scorecard.ScorecardInputMissing as missing:
+                # Recorded at INFO, not ERROR, and not retried. This is the
+                # pipeline correctly refusing to build a scorecard it has no
+                # inputs for, and an operator paging on it would learn to
+                # ignore the alert.
+                logger.info(
+                    "job_setup.matrix_blocked job_id=%s layer=%s detail=%s",
+                    job_id, missing.layer, missing.detail,
+                )
+                return
+            except pipeline_halt.PipelineHalted:
+                # Already logged and audited by `pipeline_halt.enforce`. Not
+                # retried: a halt is an operator decision, and retrying it would
+                # turn one refusal into six.
+                return
             await session.commit()
             logger.info(
-                "job_setup.framework_generated job_id=%s grade=%s competencies=%d status=%s",
-                job_id, job.assessment_grade, len(framework), job.assessment_status,
+                "job_setup.matrix_compiled job_id=%s grade=%s items=%d rejected=%d "
+                "situation=%s dna_version=%d",
+                job_id,
+                job.assessment_grade,
+                len(result.items),
+                len(result.rejections),
+                result.situation_key,
+                result.company_dna_version,
             )
     _run(_task())
 
@@ -732,7 +756,7 @@ def generate_ppi_framework(job_id: str, replace: bool = False):
 def generate_matching_categories(job_id: str, replace: bool = False):
     """Job setup: the job's own Matching category list (spec §3.2).
 
-    Runs in PARALLEL with `generate_ppi_framework` rather than inside it. The
+    Runs in PARALLEL with `compile_tatva_matrix` rather than inside it. The
     two halves of job setup are independent inputs finalised in one session, and
     a task that generated both would take the gating half down with any failure
     in the other -- which is precisely how nineteen live jobs ended up carrying
@@ -758,10 +782,24 @@ def generate_matching_categories(job_id: str, replace: bool = False):
     _run(_task())
 
 
-#: The retired name, still registered. A beat entry, a queued message and a
-#: worker registration cannot all be changed atomically during a rolling deploy,
-#: so a task already sitting on the broker under the old name must still find a
-#: handler when it is delivered. Delegates rather than duplicating.
+#: TWO retired names, both still registered. A beat entry, a queued message and
+#: a worker registration cannot all be changed atomically during a rolling
+#: deploy, so a task already sitting on the broker under an old name must still
+#: find a handler when it is delivered. Both DELEGATE; neither carries logic of
+#: its own, so there is one implementation and two ways in.
+@celery_app.task(
+    name="pickready.generate_ppi_framework",
+    autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
+    retry_backoff=True,
+    max_retries=5,
+)
+def generate_ppi_framework(job_id: str, replace: bool = False):
+    """DEPRECATED alias for `pickready.compile_tatva_matrix` (2026-08-29)."""
+    logger.info("job_setup.legacy_task_name name=generate_ppi_framework job_id=%s", job_id)
+    compile_tatva_matrix(job_id, replace=replace)
+
+
 @celery_app.task(
     name="pickready.generate_technical_questions",
     autoretry_for=(Exception,),
@@ -770,33 +808,40 @@ def generate_matching_categories(job_id: str, replace: bool = False):
     max_retries=5,
 )
 def generate_technical_questions(job_id: str):
-    """DEPRECATED alias for `pickready.generate_ppi_framework`.
+    """DEPRECATED alias for `pickready.compile_tatva_matrix` (2026-08-06).
 
     Nothing enqueues this any more. It exists so an in-flight message from a
-    pre-2026-08-06 deploy is handled rather than dead-lettered, and it does the
-    only half of its old job that still exists.
+    pre-2026-08-06 deploy is handled rather than dead-lettered.
     """
-    logger.info("job_setup.legacy_task_name job_id=%s", job_id)
-    generate_ppi_framework(job_id)
+    logger.info("job_setup.legacy_task_name name=generate_technical_questions job_id=%s", job_id)
+    compile_tatva_matrix(job_id)
 
 
 @celery_app.task(name="pickready.reconcile_job_setup")
 def reconcile_job_setup():
-    """Find every job whose framework never landed, and generate it.
+    """Find every job whose matrix never landed, and try again.
 
     THE RULE THIS ENFORCES: a timestamp is not evidence that work happened.
 
-    `framework_generated_at` was stamped on 19 jobs that have no competency rows
+    `framework_generated_at` was stamped on 19 jobs that had no competency rows
     at all. Nothing noticed, because every health check in the product asked the
     stamp rather than the table -- including the reminder task, which filters on
     `framework_generated_at IS NOT NULL` and so specifically EXCLUDED the jobs
     whose generation had failed. The one safeguard on the manual step was blind
     to the failure that most needed it.
 
-    This asks the table. It runs on the beat schedule, is idempotent
-    (`generate_framework` returns existing rows untouched), and is bounded per
-    run so a tenant with a thousand broken jobs cannot occupy a worker
+    This asks the TABLE. It runs on the beat schedule, is idempotent, and is
+    bounded per run so a tenant with a thousand jobs cannot occupy a worker
     indefinitely -- the next tick picks up where this one stopped.
+
+    WHAT IT NO LONGER DOES (2026-08-29): repair every job it finds. Sutra
+    refuses to compile without a completed SWOT session and a compiled Company
+    DNA, and most jobs with no matrix now have no matrix for exactly that
+    reason. A sweep that logged a warning per job per tick would turn a normal
+    waiting state into recurring noise, and noise is how the nineteen-job
+    failure stayed invisible in the first place. So a blocked job is counted and
+    reported once per tick in aggregate, and only a job whose inputs are ready
+    is retried.
 
     Deliberately NOT scoped to a tenant. The defect was never tenant-specific;
     it only looked that way because the three demo tenants were seeded by a
@@ -804,18 +849,18 @@ def reconcile_job_setup():
     """
     from app.models.assessment import JobCompetency
     from app.models.job import Job
-    from app.services.ppi import generate_framework
+    from app.services.hiring import pipeline_halt, scorecard
 
-    #: Bounded per tick. Each job is one LLM call with a deterministic fallback,
-    #: so 25 is a few minutes of worker time at worst.
+    #: Bounded per tick. Each job is at most one model call, so 25 is a few
+    #: minutes of worker time at worst.
     BATCH = 25
 
     async def _task():
         async with _worker_session() as session:
-            # Jobs with no ACTIVE competency row. `is_active` matters: a
-            # framework whose rows were all soft-deleted is as unusable as one
-            # that was never generated, and the recruiter sees the same empty
-            # screen in both cases.
+            # Jobs with no ACTIVE competency row. `is_active` matters: a matrix
+            # whose rows were all soft-deleted is as unusable as one that was
+            # never built, and the recruiter sees the same empty screen in both
+            # cases.
             has_framework = (
                 select(JobCompetency.job_id)
                 .where(
@@ -827,32 +872,52 @@ def reconcile_job_setup():
             jobs = (
                 await session.execute(
                     select(Job)
-                    .where(Job.archived_at.is_(None), ~has_framework)
+                    .where(
+                        Job.archived_at.is_(None),
+                        Job.swot_completed_at.is_not(None),
+                        ~has_framework,
+                    )
                     .order_by(Job.created_at)
                     .limit(BATCH)
                 )
             ).scalars().all()
             if not jobs:
-                logger.debug("job_setup.reconcile_noop, every job has a framework")
+                logger.debug("job_setup.reconcile_noop, every job has a matrix")
                 return
             repaired = 0
+            blocked: dict[str, int] = {}
             for job in jobs:
                 try:
-                    rows = await generate_framework(session, job)
+                    result = await scorecard.compile_matrix(
+                        session,
+                        job,
+                        actor_user_id=job.created_by,
+                        correlation_id=job.correlation_id,
+                    )
+                except scorecard.ScorecardInputMissing as missing:
+                    blocked[missing.layer] = blocked.get(missing.layer, 0) + 1
+                    continue
+                except pipeline_halt.PipelineHalted:
+                    # Already audited. Stop the sweep: the operator halted this
+                    # stage, and grinding through 24 more jobs to write 24 more
+                    # audit rows is not what they asked for.
+                    logger.info("job_setup.reconcile_halted after=%d", repaired)
+                    break
                 except Exception as exc:  # noqa: BLE001
                     # One job's failure must not abandon the other 24. Logged at
-                    # warning because a repair that cannot repair is something an
-                    # operator should see.
+                    # warning because a repair that cannot repair is something
+                    # an operator should see.
                     logger.warning(
                         "job_setup.reconcile_failed job_id=%s tenant_id=%s error=%s",
                         job.id, job.tenant_id, type(exc).__name__,
                     )
                     continue
-                if rows:
+                if result.items:
                     repaired += 1
             await session.commit()
             logger.info(
-                "job_setup.reconciled examined=%d repaired=%d", len(jobs), repaired
+                "job_setup.reconciled examined=%d repaired=%d blocked=%s",
+                len(jobs), repaired, blocked or "{}",
             )
     _run(_task())
 

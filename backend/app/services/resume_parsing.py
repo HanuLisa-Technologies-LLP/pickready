@@ -5,6 +5,20 @@ Raw PDF/DOCX -> text extraction (pypdf / python-docx) -> LLM extraction
 into a fixed structured schema -> profiles.parsed_fields_json. Also sets
 profiles.resume_text and the voyage-context-4 embedding used by the semantic
 matching stage.
+
+THIS IS ALSO WHERE YUKTI'S PRE-SCREEN GRADE IS PRODUCED (spec-doc6 §4.4).
+`parse_resume` ends by calling `hiring.prescreen.grade_profile`, which writes an
+A / B / C / Hold onto every application this profile is attached to. It is here
+and not on each upload route on purpose: five routes accept a resume (a
+candidate applying, a candidate replacing their main resume, the databank bulk
+upload, the provider-side upload, the seeding path) and all five already enqueue
+`pickready.parse_resume`, so hanging the grade off the parse means no route had
+to learn about grading and no future route can forget to.
+
+It runs even when nothing could be extracted. A scanned image resume produces
+`Hold`, which is a graded outcome meaning a person should look, and that is a
+better dashboard cell than an empty one: an empty cell is indistinguishable from
+a candidate nobody has got to yet.
 """
 from __future__ import annotations
 
@@ -286,6 +300,7 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
         )
         profile.resume_text = ""
         profile.parsed_fields_json = dict(_EMPTY_PARSED_FIELDS)
+        await _prescreen(session, profile)
         await session.commit()
         return
 
@@ -305,4 +320,39 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
     profile.resume_text = resume_text
     profile.parsed_fields_json = parsed
     profile.embedding = (await embed([resume_text]))[0]
+    # Before the commit, so the grade and the parse it was written from land in
+    # ONE transaction. A grade committed separately could survive a rolled-back
+    # parse and would then describe a resume the row no longer holds, which is
+    # the same shape of defect as a `framework_generated_at` stamp with no
+    # competency rows behind it.
+    await _prescreen(session, profile)
     await session.commit()
+
+
+async def _prescreen(session: AsyncSession, profile: Profile) -> None:
+    """Grade this resume against every job the candidate is linked to.
+
+    Never fatal to the parse. Parsing a resume is what makes the candidate
+    searchable, matchable and assessable; a grading failure costs one dashboard
+    cell, and taking the parse down with it would cost the candidate their whole
+    presence in the product. The failure is logged with the profile it happened
+    on rather than swallowed, and the cell stays NULL, which the dashboard
+    renders as "not pre-screened" and never as a grade.
+    """
+    from app.services.hiring import prescreen  # noqa: PLC0415
+
+    # `getattr` on the identifier and not `profile.id`: this whole function is
+    # the path that must not raise, and a log line that reaches for an attribute
+    # is one AttributeError away from turning a grading failure into a parsing
+    # failure, which is the exact outcome the guard exists to prevent.
+    profile_id = getattr(profile, "id", None)
+    try:
+        graded = await prescreen.grade_profile(session, profile)
+    except Exception:  # noqa: BLE001 - logged with its subject, never silent
+        logger.warning(
+            "resume_parsing.prescreen_failed profile_id=%s", profile_id, exc_info=True
+        )
+        return
+    logger.info(
+        "resume_parsing.prescreened profile_id=%s applications=%d", profile_id, graded
+    )

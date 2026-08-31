@@ -57,6 +57,8 @@ from app.schemas.assessments import (
     TranscriptOut,
 )
 from app.services import capabilities as caps
+from app.services import rbac
+from app.services.hiring import pipeline_halt, scorecard, situations, swot_quality
 from app.services import (
     answer_classification,
     assessment_invite,
@@ -172,7 +174,7 @@ def _setup_out(job: Job, *, framework_pending: bool = False) -> JobSetupOut:
 
 
 async def _framework_repair_pending(session: AsyncSession, job: Job) -> bool:
-    """Whether this job has no usable framework, enqueueing one if so.
+    """Whether this job has no usable matrix, enqueueing Sutra if it can run.
 
     WHY THIS EXISTS
     ---------------
@@ -190,17 +192,26 @@ async def _framework_repair_pending(session: AsyncSession, job: Job) -> bool:
     timestamp was being treated as evidence that work happened, which is the
     exact failure this repo has a standing rule about.
 
-    So the read path repairs. Enqueueing here is safe and bounded:
-    `ppi.generate_framework` is idempotent, and Celery deduplicates nothing but
-    the task is a no-op when rows already exist. The recruiter is told the state
-    (`framework_pending`) instead of being shown an empty list that looks like a
-    finished, empty framework.
+    CHANGED 2026-08-29. It no longer enqueues unconditionally. Sutra refuses to
+    compile without a completed SWOT session, so a job whose intake is still
+    running has no matrix for a perfectly good reason, and enqueueing a task
+    that is certain to refuse would fill the log with a normal waiting state.
+    The enqueue is now conditioned on the one input this layer can see; every
+    other refusal is Sutra's and is surfaced by `_setup_out`'s own fields.
     """
     rows = await ppi.load_framework(session, job.id)
     if rows:
         return False
-    celery_app.send_task("pickready.generate_ppi_framework", args=[str(job.id)])
-    logger.info("assessments.framework_repair_enqueued job_id=%s", job.id)
+    if job.swot_completed_at is None:
+        # Nothing to enqueue. The setup screen says the SWOT session is
+        # outstanding, which is the actionable half of this state.
+        return True
+    celery_app.send_task(
+        "pickready.compile_tatva_matrix",
+        args=[str(job.id)],
+        kwargs={"correlation_id": job.correlation_id or ""},
+    )
+    logger.info("assessments.matrix_compile_enqueued job_id=%s", job.id)
     return True
 
 
@@ -241,6 +252,17 @@ async def job_setup(
 
 
 def _competency_out(row: JobCompetency) -> CompetencyOut:
+    """One matrix item as the review screen reads it.
+
+    THE SEVEN STAGES TRAVEL; THE ARITHMETIC DOES NOT. `weight`, the four
+    multiplier terms and `threshold` stay on the row. What crosses is the
+    plain-language provenance and the force-ranking POSITION, which is an order
+    rather than a score. spec-doc6 §4.3 asks for the traceability to be shown
+    "in plain language before finalisation", and a table of multipliers is not
+    plain language: a hiring manager confirming "1.4850" is confirming that the
+    arithmetic looks plausible.
+    """
+    item = scorecard.item_from_row(row)
     return CompetencyOut(
         id=row.id,
         category=row.category,
@@ -250,6 +272,12 @@ def _competency_out(row: JobCompetency) -> CompetencyOut:
         # requirement level: the client reads and writes the same four words.
         required_level=grade_for_percent(row.required_level) or GRADES[1],
         ordinal=row.ordinal,
+        observable_evidence=row.observable_evidence,
+        assessment_method=row.assessment_method,
+        disqualifier=row.disqualifier,
+        swot_origin=row.swot_origin,
+        force_rank=row.force_rank,
+        provenance=scorecard.plain_provenance(item) if item is not None else [],
     )
 
 
@@ -465,41 +493,88 @@ async def remove_competency(
 @router.post("/jobs/{job_id}/framework/finalize", response_model=FrameworkOut)
 async def finalize_framework(
     job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
+    user: CurrentUser = Depends(
+        rbac.require_authorized(caps.FINALIZE_ROLE_DEFINITION)
+    ),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> FrameworkOut:
-    """Save the matrix as the job's fixed evaluation criteria (spec §5.3).
+    """The Hiring Manager finalises the role definition (RBAC §12, §20).
 
-    The Save control at the end of the drag-and-drop review. From here the
-    matrix is what EVERY candidate on this job is graded against, and
-    `_reject_frozen` refuses to reopen it once anyone has been.
+    THIS IS THE ONE HUMAN ACT THE WHOLE PIPELINE TURNS ON. From here the matrix
+    is what EVERY candidate on this job is graded against, `_reject_frozen`
+    refuses to reopen it once anyone has been, and gate G1 starts answering yes.
+
+    RBAC §20 makes it an EXPLICIT transition and says what it has to record:
+    the user who finalized it, the timestamp, the relevant version and the
+    relevant hiring-criteria version. All four are written -- two onto the job,
+    two onto the append-only Company DNA binding -- and then again onto the
+    audit row, because the columns answer "what is in force" and the audit row
+    answers "what happened and who did it".
+
+    Authorised through `rbac.require_authorized` rather than
+    `require_capability`, and the difference is the point: this route names a
+    resource, so tenant, job assignment (RBAC §10.2: each job has exactly one
+    Hiring Manager) and lifecycle state all apply. The check runs BEFORE the
+    handler, so a refusal has not already read the criteria it was refusing to
+    show.
     """
     job = await _staff_job(session, user, job_id)
-    rows = await ppi.load_framework(session, job.id)
-    ok, reason = ppi.matrix_is_complete(rows, job.assessment_grade)
-    if not ok:
-        raise HTTPException(status_code=422, detail=reason)
-    job.framework_approved_at = datetime.now(timezone.utc)
-    # Frozen with the matrix, and for the same reason. Every candidate on this
-    # job is asked the same NUMBER of questions, so the count has to stop moving
-    # at the moment the criteria do.
-    job.question_target = ppi.resolve_question_target(job.assessment_grade, len(rows))
+    try:
+        matrix = await scorecard.freeze(
+            session,
+            job,
+            actor_user_id=user.user_id,
+            correlation_id=job.correlation_id,
+        )
+    except scorecard.ScorecardInputMissing as missing:
+        raise HTTPException(status_code=422, detail=missing.detail) from missing
+    except pipeline_halt.PipelineHalted as halt:
+        raise HTTPException(
+            status_code=503, detail=pipeline_halt.http_detail(halt)
+        ) from halt
+
+    # RBAC §17's explicit transition. IN_REVIEW -> FINALIZED, and it is the only
+    # way into FINALIZED, which is what makes §21's publish precondition
+    # checkable: `rbac._state_rules` refuses PUBLISH_JOB in any earlier state.
+    job.lifecycle_state = hiring_pipeline.JobLifecycleState.FINALIZED.value
+    job.finalized_by = user.user_id
+    job.finalized_at = matrix.approved_at
+    job.criteria_version = matrix.version
     await _refresh_setup_status(session, job)
-    await audit(
+    rows = await ppi.load_framework(session, job.id)
+    row = await audit(
         session,
         tenant_id=user.tenant_id,
         actor_user_id=user.user_id,
-        action="ppi_framework_finalized",
+        action="role_definition_finalized",
         target_type="job",
         target_id=job.id,
         metadata={
             "counts": {
-                category: sum(1 for row in rows if row.category == category)
+                category: sum(1 for item in rows if item.category == category)
                 for category in ppi.CATEGORIES
-            }
+            },
+            # RBAC §20's four required facts, in the row as well as the columns.
+            "jd_version": swot_intake.jd_version(job),
+            "criteria_version": matrix.version,
+            "company_dna_version": matrix.company_dna_version,
+            "situation_key": matrix.situation_key,
         },
     )
+    row.job_id = job.id
+    row.actor_role = user.role.value
+    row.correlation_id = job.correlation_id
+    row.new_state = {"lifecycle_state": job.lifecycle_state}
     await _invalidate_framework(job)
+    logger.info(
+        "assessments.role_definition_finalized job_id=%s by=%s criteria_version=%d "
+        "dna_version=%s correlation_id=%s",
+        job.id,
+        user.user_id,
+        matrix.version,
+        matrix.company_dna_version,
+        job.correlation_id,
+    )
     return await _framework_out(session, job)
 
 
@@ -620,22 +695,24 @@ async def reorder_framework(
     return await _framework_out(session, job)
 
 
-# ── The Reporting Authority SWOT intake (spec §5.1) ──────────────────────────
-# A short conversation with the hiring manager or HR head about the ROLE, run at
-# every job setup and at every grade, whose output feeds the PPI matrix
-# generator alongside the JD.
+# ── Bodha: the Hiring Manager SWOT session (Runbook §18) ───────────────────
+# The Layer 3 intake, run once per job before Sutra can compile anything. Four
+# quadrants, §18.3's seven high-value probes, §18.2's force-ranking and
+# disqualifier confirmation, §18.5's best-performer test, and §18.4's situation
+# classification read back for explicit confirmation.
 #
-# Gated on CREATE_JOB rather than on a new capability. The people who run this
-# intake are the ones who set a job up, the capability engine already grants
-# them exactly that, and a capability nobody can be given without a migration is
-# a capability that gets granted to everyone in a hurry the first time it blocks
-# someone.
+# RBAC §10.4 makes the SWOT a Hiring-Manager-controlled field, so these routes
+# authorise on EDIT_SWOT through the full RBAC chain (tenant, assignment,
+# lifecycle state) rather than on CREATE_JOB. RBAC §9.4 names "job-role SWOT
+# analysis" among the things a Recruiter "MUST NOT be able to authoritatively
+# modify", and §11 is separately clear that the Hiring Manager cannot REJECT the
+# JD -- Bodha handing a SWOT back for rework is a different act and is what
+# §18.5 requires.
 
 
 def _swot_out(job: Job, intake: JobSwotIntake, prompt: str | None) -> SwotIntakeOut:
-    area = None if swot_intake.is_complete(intake) else (
-        SWOT_AREAS[intake.area_index] if intake.area_index < len(SWOT_AREAS) else None
-    )
+    area = swot_intake.current_area(intake)
+    quality = dict(intake.quality_json or {})
     return SwotIntakeOut(
         job_id=job.id,
         status=intake.status,
@@ -646,13 +723,30 @@ def _swot_out(job: Job, intake: JobSwotIntake, prompt: str | None) -> SwotIntake
         captured=intake.captured(),
         areas_total=len(SWOT_AREAS),
         areas_done=min(intake.area_index, len(SWOT_AREAS)),
+        phase=intake.phase,
+        phase_label=swot_intake.PHASE_LABELS.get(intake.phase),
+        situation_key=intake.situation_key,
+        situation_label=(
+            situations.SITUATIONS[intake.situation_key].label
+            if situations.is_valid(intake.situation_key)
+            else None
+        ),
+        returned_for_rework=intake.phase == swot_intake.PHASE_REWORK,
+        # The §18.5 rules currently refusing, by NAME. The sentence to say is
+        # `prompt`; a screen that rendered both would say the same thing twice.
+        outstanding_rules=[
+            str(entry.get("rule"))
+            for entry in (quality.get("rejections") or [])
+            if entry.get("rule")
+        ],
+        instruments_asked=[str(key) for key in (intake.probes_asked or [])],
     )
 
 
 @router.get("/jobs/{job_id}/swot", response_model=SwotIntakeOut)
 async def get_swot_intake(
     job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
+    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> SwotIntakeOut:
     job = await _staff_job(session, user, job_id)
@@ -665,29 +759,76 @@ async def get_swot_intake(
 async def respond_swot_intake(
     job_id: uuid.UUID,
     body: SwotAnswerIn,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
+    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> SwotIntakeOut:
     """Record one answer and return the next question.
 
-    Completing the intake REGENERATES the matrix, and that is the whole point of
-    running it: a matrix built from the JD alone is what the intake exists to
-    improve on. Regeneration is refused once the matrix is approved or anyone
-    has been assessed, so a late intake cannot move the criteria underneath a
-    report that already states a grade against them.
+    CLOSING THE SESSION IS WHAT ACTIVATES SUTRA. §18.5's six rejection rules are
+    the only exit: an intake that trips one is handed back with the sentence
+    that says what is wanted, and nothing is enqueued. An intake that passes
+    them publishes Bodha's `swot_evidence` artifact and enqueues the seven-stage
+    compile.
+
+    The compile is a CELERY TASK, never inline. It is a model call plus a dozen
+    table lookups, and a hiring manager who has just finished a ninety-minute
+    session should not watch it run.
+
+    Regeneration is refused once the matrix is frozen, so a late intake cannot
+    move the criteria underneath a report that already states a grade against
+    them; `scorecard.compile_matrix` raises rather than overwriting.
     """
     job = await _staff_job(session, user, job_id)
     intake = await swot_intake.get_or_create(session, job, conducted_by=user.user_id)
     if swot_intake.is_complete(intake):
         return _swot_out(job, intake, None)
 
-    prompt = await swot_intake.submit_answer(session, job, intake, body.answer)
-    if swot_intake.is_complete(intake) and job.framework_approved_at is None:
-        celery_app.send_task(
-            "pickready.generate_ppi_framework", args=[str(job.id)], kwargs={"replace": True}
+    try:
+        prompt = await swot_intake.submit_answer(session, job, intake, body.answer)
+    except pipeline_halt.PipelineHalted as halt:
+        raise HTTPException(
+            status_code=503, detail=pipeline_halt.http_detail(halt)
+        ) from halt
+
+    if swot_intake.is_complete(intake):
+        row = await audit(
+            session,
+            tenant_id=user.tenant_id,
+            actor_user_id=user.user_id,
+            action="swot_session_completed",
+            target_type="job",
+            target_id=job.id,
+            metadata={
+                "situation_key": intake.situation_key,
+                "captured": {
+                    area: len(points) for area, points in intake.captured().items()
+                },
+                "instruments": list(intake.probes_asked or []),
+                "best_performer_excluded": intake.best_performer_excluded,
+            },
         )
-        await _invalidate_framework(job)
-        logger.info("assessments.swot_complete_matrix_regenerating job_id=%s", job.id)
+        row.job_id = job.id
+        row.actor_role = user.role.value
+        row.correlation_id = job.correlation_id
+        # RBAC §34: an AI-initiated mutation is attributable to BOTH the human
+        # principal and the agent that executed it. `actor_user_id` stays the
+        # human, always.
+        row.agent_name = "bodha"
+        if job.framework_approved_at is None:
+            celery_app.send_task(
+                "pickready.compile_tatva_matrix",
+                args=[str(job.id)],
+                kwargs={
+                    "replace": True,
+                    "correlation_id": job.correlation_id or "",
+                },
+            )
+            await _invalidate_framework(job)
+            logger.info(
+                "assessments.swot_complete_matrix_enqueued job_id=%s situation=%s",
+                job.id,
+                intake.situation_key,
+            )
     return _swot_out(job, intake, prompt)
 
 

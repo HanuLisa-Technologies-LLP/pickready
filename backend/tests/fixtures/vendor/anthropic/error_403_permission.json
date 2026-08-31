@@ -1,0 +1,14 @@
+{
+  "_provenance": {
+    "authored_from": "Anthropic published error schema. 403 is documented as permission_error, non-retryable: the key is valid and lacks access to the model.",
+    "observed": false,
+    "notes": "Classified identically to 401 by this codebase, and for the same reason: retrying does not grant a permission."
+  },
+  "status": 403,
+  "headers": {"content-type": "application/json", "request-id": "req_fixture_403"},
+  "body": {
+    "type": "error",
+    "error": {"type": "permission_error", "message": "Your API key does not have permission to use the specified resource."},
+    "request_id": "req_fixture_403"
+  }
+}

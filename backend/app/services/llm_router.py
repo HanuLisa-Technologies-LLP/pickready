@@ -113,6 +113,7 @@ from app.config.llm_providers import (
     total_budget_for,
 )
 from app.services import tracing
+from app.services.reliability import vendor_contract
 
 _FAILURE_THRESHOLD = 2          # consecutive transient failures before tripping
 _COOLDOWN_SECONDS = 15 * 60     # 15 min cool-off (claude.md rule 9)
@@ -483,7 +484,7 @@ def as_result(value: "_Result | str") -> _Result:
     return _Result(content=str(value))
 
 
-def split_system(messages: list[dict]) -> tuple[str, list[dict]]:
+def split_system(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     """Separate system text from the conversation turns.
 
     The Messages API takes the system prompt as a TOP-LEVEL parameter, not as a
@@ -514,7 +515,7 @@ def split_system(messages: list[dict]) -> tuple[str, list[dict]]:
 def build_payload(
     *,
     model: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     json_mode: bool,
     max_tokens: int,
     temperature: float,
@@ -540,7 +541,7 @@ def build_payload(
     return payload
 
 
-def parse_response(payload: dict, *, json_mode: bool) -> _Result:
+def parse_response(payload: dict[str, Any], *, json_mode: bool) -> _Result:
     """Turn a Messages API response into text plus usage.
 
     In JSON mode the prefill is prepended back, so the caller receives the whole
@@ -570,11 +571,18 @@ async def _call_anthropic(
     client: httpx.AsyncClient,
     key: _RouterKey,
     model: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     json_mode: bool,
     max_tokens: int,
     temperature: float,
 ) -> _Result:
+    payload = build_payload(
+        model=model,
+        messages=messages,
+        json_mode=json_mode,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
     resp = await client.post(
         ANTHROPIC_MESSAGES_URL,
         headers={
@@ -587,16 +595,19 @@ async def _call_anthropic(
             "anthropic-version": ANTHROPIC_API_VERSION,
             "content-type": "application/json",
         },
-        json=build_payload(
-            model=model,
-            messages=messages,
-            json_mode=json_mode,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        ),
+        json=payload,
     )
     resp.raise_for_status()
-    return parse_response(resp.json(), json_mode=json_mode)
+    body = resp.json()
+    # FAIL LOUD ON FIRST LIVE USE (spec-doc6 §12.5). The shape below was
+    # hand-authored from the published schema and has never been seen from the
+    # endpoint, so the first response on each model is checked against it and a
+    # disagreement raises an error naming the fixture rather than being parsed
+    # into an empty string. `parse_response` cannot do this job: it reads
+    # `content[].text` and a differently shaped body simply yields "", which
+    # reads downstream exactly like a model that had little to say.
+    vendor_contract.check_anthropic_response(body, model=model, json_mode=json_mode)
+    return parse_response(body, json_mode=json_mode)
 
 
 # ── The LangGraph state machine ──────────────────────────────────────────────
@@ -614,7 +625,7 @@ class _RouteContext:
     task_type: str
     model: str
     key: _RouterKey
-    messages: list[dict]
+    messages: list[dict[str, Any]]
     json_mode: bool
     client: httpx.AsyncClient
     retry_budget: int
@@ -665,7 +676,7 @@ def should_continue(state: RouterState) -> str:
     return "retry"
 
 
-async def _attempt(state: RouterState) -> dict:
+async def _attempt(state: RouterState) -> dict[str, Any]:
     ctx = state["ctx"]
     attempts = state.get("attempts", 0) + 1
 
@@ -706,6 +717,29 @@ async def _attempt(state: RouterState) -> dict:
         # response body: an Anthropic error body can echo the request, and the
         # request carries a real candidate's answers.
         ctx.errors.append(f"{kind} ({status if status is not None else type(exc).__name__})")
+        if status == 400:
+            # A 400 is OUR bug by classification, and it is not retried. Which
+            # of our bugs is the question a reader is left with, and the answer
+            # is usually one of two published constraints this request may not
+            # satisfy. Naming them costs nothing on the path that never fires
+            # and saves an outage's worth of guessing on the path that does.
+            # Built from the model and OUR OWN payload, never from the response
+            # body, which can echo a real candidate's answers.
+            for hazard in vendor_contract.describe_request_hazards(
+                ctx.model,
+                build_payload(
+                    model=ctx.model,
+                    messages=ctx.messages,
+                    json_mode=ctx.json_mode,
+                    max_tokens=ctx.max_tokens,
+                    temperature=ctx.temperature,
+                ),
+            ):
+                ctx.errors.append(f"known request hazard: {hazard}")
+                logger.error(
+                    "llm_router.request_hazard task=%s model=%s hazard=%s",
+                    ctx.task_type, ctx.model, hazard,
+                )
         logger.warning(
             "llm_router.attempt_failed task=%s model=%s key=%s kind=%s status=%s "
             "attempt=%d latency_ms=%.0f",
@@ -747,11 +781,11 @@ async def _attempt(state: RouterState) -> dict:
     return {"attempts": attempts, "result": result.content, "error": None}
 
 
-def _terminal(state: RouterState) -> dict:
+def _terminal(state: RouterState) -> dict[str, Any]:
     return {}
 
 
-def _build_graph():
+def _build_graph() -> Any:
     graph = StateGraph(RouterState)
     graph.add_node("attempt", _attempt)
     graph.add_node("succeeded", _terminal)
@@ -780,7 +814,7 @@ _RECURSION_LIMIT = 32
 
 async def invoke_llm(
     task_type: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     response_format_json: bool = False,
     session: AsyncSession | None = None,
     timeout: float | None = None,
@@ -822,7 +856,7 @@ async def invoke_llm(
 
 async def _invoke_llm_inner(
     task_type: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     response_format_json: bool,
     timeout: float | None,
     total_budget: float | None,
@@ -888,7 +922,7 @@ async def _invoke_llm_inner(
 
 async def chat_completion(
     role_hint: str,
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     response_format_json: bool = False,
     session: AsyncSession | None = None,
 ) -> str:

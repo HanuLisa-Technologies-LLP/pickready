@@ -3,6 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from app.schemas.reports import NumberFreeDelivery
 from app.services.ppi import CATEGORIES
 
 
@@ -51,6 +52,33 @@ class CompetencyOut(BaseModel):
     description: str | None
     required_level: str
     ordinal: int
+    # ── Sutra's seven stages, projected for the review screen ────────────────
+    #
+    # spec-doc6 4.3: "Traceability is a product requirement, not a log line ...
+    # The Hiring Manager's review screen shows this in plain language before
+    # finalisation."
+    #
+    # NO NUMBER CROSSES THIS BOUNDARY. `weight`, `threshold` and the four
+    # multiplier terms stay on the row; what a reviewer reads is `provenance`,
+    # a list of sentences, and `force_rank`, which is an ORDER rather than a
+    # score -- the same status the radar chart's band index has had all along,
+    # and it is what §20.3's force-ranking is FOR. A weight rendered as "1.4850"
+    # would be a number a hiring manager could not usefully argue with.
+
+    #: Stage 2: what we would SEE if a candidate had this.
+    observable_evidence: str | None = None
+    #: Stage 4, as a word.
+    assessment_method: str | None = None
+    #: Stage 7, when one applies.
+    disqualifier: str | None = None
+    #: The hiring manager's own sentence, quoted, when a Layer 3 input produced
+    #: this criterion.
+    swot_origin: str | None = None
+    #: §20.3's position in the force-ranking, 1..n, or null for a behavioural
+    #: competency (§20.1's scorecard has no behavioural row to rank).
+    force_rank: int | None = None
+    #: Where the weight came from, in sentences. `hiring.scorecard.plain_provenance`.
+    provenance: list[str] = []
 
 
 class CompetencyMoveIn(BaseModel):
@@ -129,6 +157,26 @@ class SwotIntakeOut(BaseModel):
     captured: dict[str, list[str]] = {}
     areas_total: int = 4
     areas_done: int = 0
+    # ── The rest of §18.2's session, which the four quadrants are only the
+    #    first four blocks of ──────────────────────────────────────────────
+    #: `swot_intake.PHASES`. Reported so the screen can say which block of the
+    #: session the manager is in rather than showing "Threats" through the
+    #: force-ranking, the best-performer test and the classification read-back.
+    phase: str = "areas"
+    phase_label: str | None = None
+    #: The §18.4 situation type the manager CONFIRMED, as a word, plus its
+    #: label. Never a proposal: a proposal shown as a confirmation is how the
+    #: most expensive error at intake gets made silently.
+    situation_key: str | None = None
+    situation_label: str | None = None
+    #: True while §18.5 has handed the intake back. A screen that showed this
+    #: the same as "in progress" would let a rejected intake look finished.
+    returned_for_rework: bool = False
+    #: The §18.5 rules currently refusing, by name. The SENTENCE to say is
+    #: `prompt`; these are for the progress panel.
+    outstanding_rules: list[str] = []
+    #: §18.3 probes and the other instruments already put to the manager.
+    instruments_asked: list[str] = []
 
 
 class JobSetupOut(BaseModel):
@@ -248,7 +296,11 @@ class GapAnalysisOut(BaseModel):
     groups: list[GapGroupOut] = []
 
 
-class FunctionalReportOut(BaseModel):
+class FunctionalReportOut(NumberFreeDelivery):
+    # THE SERIALISER-LEVEL NUMBER BAN (spec-doc6 D8). Inherited rather than
+    # asserted in the route: this model is the last shape a delivered PRISM
+    # Report holds before it becomes JSON, and a check placed anywhere earlier
+    # would be a check a second route could skip. See `schemas/reports.py`.
     id: uuid.UUID
     job_candidate_link_id: uuid.UUID
     #: COMPANY-JOB-CANDIDATE, the same code the candidate table renders under

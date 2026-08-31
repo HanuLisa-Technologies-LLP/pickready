@@ -49,10 +49,21 @@ icalendar>=5.0
 structlog>=24.0
 pytest>=8.3
 pytest-asyncio>=0.24
+# Per-package coverage floors (spec-doc6 §11.1), enforced by
+# scripts/check-coverage-floors.py against the JSON this produces. Branch
+# coverage is switched on in .coveragerc: a line-only figure treats a band cap
+# as covered the moment either arm runs, and the arms are where the defects are.
+pytest-cov>=5.0
 aiosqlite>=0.20
 # S3 stubbing for the storage tests. A test that needs a real bucket is a test
 # that does not run in CI.
 moto[s3]>=5.0
+# Property-based testing for the aggregator's band caps (spec-doc6 §4.4, §11.1).
+# The hard-cap invariant is a claim about EVERY set of item grades, not about
+# the handful a table-driven test can enumerate, and the ordering invariant
+# (delivered <= ceiling for every composite and every authenticity multiplier)
+# is a claim about a continuous range. Neither is expressible as examples.
+hypothesis>=6.100
 
 # Runbook data package (RPN-PHIL-001 extraction, app/services/hiring/runbook_data/).
 # Pinned EXPLICITLY rather than relied on transitively through langchain-core: the

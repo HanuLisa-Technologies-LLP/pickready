@@ -76,3 +76,12 @@ celerybeat-schedule*
 # A snapshot of which files were untracked at one moment. Stale the instant
 # anything is committed; the commit history is the durable record.
 UNTRACKED_INVENTORY.md
+
+# Coverage artifacts. `scripts/check-coverage-floors.py` reads the JSON and CI
+# regenerates it on every run, so a committed one is a stale number somebody
+# will eventually read as the current one.
+backend/coverage.json
+backend/coverage-full.json
+backend/.coverage
+backend/.coverage.*
+backend/htmlcov/

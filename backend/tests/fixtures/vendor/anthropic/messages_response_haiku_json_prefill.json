@@ -1,0 +1,27 @@
+{
+  "_provenance": {
+    "authored_from": "Anthropic Messages API published response schema, plus the documented behaviour of a last-assistant-turn prefill: the model continues the seeded turn, so the response text is the REMAINDER of the object and the opening brace is not repeated.",
+    "observed": false,
+    "notes": "The extraction path. The router seeds the assistant turn with an opening brace and prepends it back in parse_response, so the caller receives a whole top-level object."
+  },
+  "status": 200,
+  "headers": {"content-type": "application/json", "request-id": "req_fixture_haiku_json"},
+  "body": {
+    "id": "msg_fixture_haiku_json",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-haiku-4-5-20251001",
+    "content": [
+      {
+        "type": "text",
+        "text": "\"skills\": 72, \"experience\": 64, \"education\": 80, \"role_fit\": 69, \"comments\": {\"skills\": \"Names the three platform technologies the role lists and describes shipping each of them in a production setting, with the scale stated rather than implied.\"}}"
+      }
+    ],
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 1440,
+      "output_tokens": 96
+    }
+  }
+}

@@ -57,11 +57,14 @@ from app.schemas.jobs import (
     ReviewProfileOut,
 )
 from app.schemas.matching import RunMatchingOut
+from uuid import uuid4 as _uuid4
+
 from app.services import approval_fsm as fsm
 from app.services import capabilities as caps
 from app.services import credits
 from app.services import job_candidates
 from app.services import job_posting
+from app.services import hiring_pipeline
 from app.services import rbac
 from app.services.audit import audit
 from app.workers.celery_app import celery_app
@@ -395,6 +398,16 @@ async def create_job(
         # is no manual approval gate (user decision, 2026-07-25).
         assessment_grade=body.grade,
         assessment_status="questions_pending_review",
+        # RBAC 17's first state, written rather than left to the column default.
+        # A row whose lifecycle_state is NULL is refused every state-gated
+        # capability by `rbac._state_rules`, which is the safe direction and
+        # also an unhelpful one for a job that was just created correctly.
+        lifecycle_state=hiring_pipeline.JobLifecycleState.DRAFT.value,
+        # spec-doc6 4.1: ONE correlation id, issued at job creation, traceable
+        # through Bodha, Sutra, Yukti, Vaada, Miti and Siddhi, and present on
+        # every audit row and log line for that flow. Issued here because this
+        # is where the flow starts; nothing rewrites it afterwards.
+        correlation_id=f"job-{_uuid4().hex}",
     )
     session.add(job)
     await session.flush()
@@ -419,7 +432,13 @@ async def create_job(
     # it failed -- a broker hiccup, an exhausted retry budget, an exception in
     # the technical-bank half that used to share this task -- the job was
     # silently unusable forever. Nineteen live jobs were in exactly that state.
-    celery_app.send_task("pickready.generate_ppi_framework", args=[str(job.id)])
+    # NOT ENQUEUED HERE ANY MORE (2026-08-29). Sutra compiles the Tatva matrix
+    # from Bodha's completed SWOT session and the client's compiled Company DNA;
+    # at job creation neither exists, so a task fired here would refuse on every
+    # job the moment it ran. The compile is enqueued by the SWOT session's own
+    # completion (`api/assessments.respond_swot_intake`), which is the event
+    # that actually produces its input, and `pickready.reconcile_job_setup`
+    # sweeps for a job whose session finished and whose matrix never landed.
     # The two halves of job setup are generated IN PARALLEL (spec §10): the PPI
     # matrix from the JD and the SWOT intake, the Matching category list from
     # the JD. Two tasks rather than one, and that split is not stylistic. A
@@ -506,7 +525,7 @@ async def save_jd_markdown(
 @router.post("/{job_id}/publish", response_model=PublishJobOut)
 async def publish_job(
     job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.PUBLISH_JOB)),
+    user: CurrentUser = Depends(rbac.require_authorized(caps.PUBLISH_JOB)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> PublishJobOut:
     """Publish a drafted job and hand back its public application link.
@@ -538,8 +557,28 @@ async def publish_job(
                 "Generate a draft or type one, save it, then publish."
             ),
         )
+    # ── RBAC 21: publication is blocked while any Hiring-Manager-controlled
+    #    component is incomplete ───────────────────────────────────────────
+    #
+    # TWO CHECKS, AND BOTH ARE LOAD-BEARING. `rbac.require_authorized` above has
+    # already refused any state earlier than FINALIZED, which is the STRUCTURAL
+    # half: FINALIZED is reachable only through the Hiring Manager's explicit
+    # finalisation, so the state is the record that the components are complete.
+    #
+    # This second check asks the TABLE. The lesson is on record and was
+    # expensive: 19 live jobs carried `framework_generated_at` and had zero
+    # competency rows, and every health check in the product asked the stamp
+    # rather than the table. A lifecycle_state is a stamp like any other.
+    _blocked = await _publication_blocked(session, job)
+    if _blocked:
+        raise HTTPException(status_code=409, detail=_blocked)
 
     await fsm.apply_direct_publish(session, job)
+    # RBAC 17: FINALIZED -> PUBLISHED. Written here rather than inferred from
+    # `ratified_at`, because 21 requires publication to RECORD the publishing
+    # user, the timestamp, the published version and the job identifier, and a
+    # derived state records none of them.
+    job.lifecycle_state = hiring_pipeline.JobLifecycleState.PUBLISHED.value
     await session.flush()
     # Publishing moves `posting_start_date`, which regenerates the two derived
     # window columns in the database. Same refresh as `renew_job` below.
@@ -552,7 +591,14 @@ async def publish_job(
         action="job_published",
         target_type="job",
         target_id=job.id,
-        metadata={"title": job.title, "public_url": public_job_url(job.id)},
+        metadata={
+            "title": job.title,
+            "public_url": public_job_url(job.id),
+            # RBAC 21's four required facts. The publishing user and the
+            # timestamp are the audit row's own columns.
+            "published_version": job.criteria_version,
+            "job_identifier": str(job.id),
+        },
     )
     celery_app.send_task("pickready.run_matching", args=[str(job.id)])
 
@@ -564,6 +610,100 @@ async def publish_job(
     # is exactly what we just made this one, so it is never blank here.
     out.public_application_url = out.public_application_url or public_job_url(job.id)
     return out
+
+
+async def _publication_blocked(session: AsyncSession, job: Job) -> str | None:
+    """RBAC 21's precondition, asked of the TABLE. None when nothing blocks.
+
+    21 lists what must be finalised before a job may be published: the final JD,
+    Must-Have skills, Nice-to-Have skills, behavioural competencies, the job-role
+    philosophy, the SWOT analysis and the evaluation rubrics. In this product
+    those are three things a reader can check: the SWOT session closed, the
+    Tatva matrix exists with all three aspects, and the Hiring Manager froze it.
+
+    The message NAMES the outstanding step, because "publication blocked" sends
+    a recruiter to ask someone else what is wrong.
+    """
+    from app.services.hiring import scorecard  # noqa: PLC0415
+
+    if job.swot_completed_at is None:
+        return (
+            "The Hiring Manager has not finished the SWOT session for this "
+            "role, so the evaluation criteria do not exist yet. A published job "
+            "would take applications nobody could assess."
+        )
+    matrix = await scorecard.load_frozen_matrix(session, job.id)
+    if matrix is None:
+        return (
+            "The evaluation criteria for this role have not been finalised by "
+            "the Hiring Manager. They are what every candidate on this job is "
+            "graded against, so publication waits for them."
+        )
+    return None
+
+
+@router.post("/{job_id}/send-to-hiring-manager", response_model=JobOut)
+async def send_jd_to_hiring_manager(
+    job_id: uuid.UUID,
+    user: CurrentUser = Depends(
+        rbac.require_authorized(caps.SEND_JD_TO_HIRING_MANAGER)
+    ),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> JobOut:
+    """RBAC 9.3: the Recruiter hands the draft JD to the assigned Hiring Manager.
+
+    DRAFT -> SENT_TO_HIRING_MANAGER, which is the second state of 17's lifecycle
+    and the one that was previously unreachable: migration 0061 added the column
+    and backfilled it, and nothing in the product could advance it, so every job
+    sat in DRAFT forever and 21's publish precondition could never be satisfied
+    honestly.
+
+    A JD with nothing in it is refused. Sending an empty draft to a Hiring
+    Manager wastes the one review the workflow has, and 18 says in as many words
+    that "the job MUST NOT be published as an unfinished draft".
+    """
+    job = await _get_visible_job(session, user, job_id)
+    if not _has_publishable_jd(job):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Write the job description before sending it to the Hiring "
+                "Manager. Generate a draft or type one, save it, then send."
+            ),
+        )
+    current = job.lifecycle_state or hiring_pipeline.JobLifecycleState.DRAFT.value
+    target = hiring_pipeline.JobLifecycleState.SENT_TO_HIRING_MANAGER
+    if target not in hiring_pipeline.lifecycle_allowed_transitions(current):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This job is already past the draft stage ({current}), so it "
+                f"cannot be sent to the Hiring Manager again. A change after "
+                f"finalisation goes through the revision workflow."
+            ),
+        )
+    previous = job.lifecycle_state
+    job.lifecycle_state = target.value
+    await session.flush()
+    row = await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="jd_sent_to_hiring_manager",
+        target_type="job",
+        target_id=job.id,
+        metadata={"title": job.title},
+    )
+    row.job_id = job.id
+    row.actor_role = user.role.value
+    row.correlation_id = job.correlation_id
+    row.previous_state = {"lifecycle_state": previous}
+    row.new_state = {"lifecycle_state": job.lifecycle_state}
+    logger.info(
+        "jobs.sent_to_hiring_manager job_id=%s by=%s correlation_id=%s",
+        job.id, user.user_id, job.correlation_id,
+    )
+    return _with_public_url(job)
 
 
 @router.post("/{job_id}/renew", response_model=PublishJobOut)

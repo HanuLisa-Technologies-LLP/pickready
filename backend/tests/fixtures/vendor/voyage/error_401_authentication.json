@@ -1,0 +1,10 @@
+{
+  "_provenance": {
+    "authored_from": "Voyage API published behaviour: an invalid key returns 401. The body carries a detail string; it is reproduced only so this fixture is a whole HTTP response, and NOTHING in this codebase parses it.",
+    "observed": false,
+    "notes": "app/services/embeddings.py raises EmbeddingError naming the exception class and never the body, because an embedding request carries a real candidate's resume text."
+  },
+  "status": 401,
+  "headers": {"content-type": "application/json"},
+  "body": {"detail": "Provided API key is invalid."}
+}

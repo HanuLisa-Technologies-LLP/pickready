@@ -211,3 +211,173 @@ def test_verification_returns_a_verdict_the_loop_can_consume() -> None:
     critique = verdict.to_critique()
     assert not critique.ok
     assert critique.defects
+
+
+# =============================================================================
+# THE EIGHT A2A CONTRACT FIELDS (specdoc4 15, spec-doc6 4.1)
+# =============================================================================
+#
+# "Every artifact carries the A2A contract fields specdoc4 15 requires (Message
+#  / Task / Artifact / Status / Context / Provenance / Version / Correlation
+#  ID)."
+#
+# WHY THERE ARE TWO CHECKS AND NOT ONE. `verify_for_consumer` answers "may this
+# consumer read this artifact", and the honest answer to that is not changed by
+# an absent correlation id: the content is in scope, from the declared producer,
+# and safe to read. `require_contract_complete` answers "may this producer have
+# published it", and the honest answer there is no.
+#
+# Splitting them puts each check where its failure is actionable. A consumer
+# cannot repair a producer's missing provenance; refusing the read would punish
+# the wrong side of the boundary for a defect that does not make the content
+# unsafe. So the consumer records it as a low finding and the producer is
+# refused outright.
+
+import uuid  # noqa: E402
+
+from app.services.agents import provenance  # noqa: E402
+
+#: A real uuid, because a correlation id is DERIVED from the row it belongs to
+#: and derivation goes through `uuid.UUID`. The module-level `JOB` above is the
+#: string "job-1", which is deliberately not one: a malformed identifier must
+#: raise where it is written rather than produce a well-shaped id that joins to
+#: nothing.
+_JOB_UUID = uuid.uuid4()
+_CORRELATION = provenance.correlation_for_job(_JOB_UUID)
+_PRINCIPAL = provenance.Principal(
+    user_id="4b0f0e2c-6a1e-4c1a-9f2e-0d3b6a1c7e51",
+    role="recruitment_manager",
+    tenant_id=str(TENANT),
+)
+
+
+def _complete(**overrides) -> artifacts.Artifact:
+    kwargs = dict(
+        producer=identity.SUTRA,
+        artifact_type="tatva_matrix",
+        payload={"must_have": [], "nice_to_have": [], "behavioural": []},
+        tenant_id=str(TENANT),
+        job_id=str(_JOB_UUID),
+        source_refs=("job_competencies:1",),
+        validated=True,
+        correlation_id=_CORRELATION,
+        task_id="task-1",
+        principal=_PRINCIPAL,
+    )
+    kwargs.update(overrides)
+    return artifacts.publish(**kwargs)
+
+
+def test_a_complete_artifact_carries_all_eight_contract_fields() -> None:
+    fields = artifacts.contract_fields(_complete())
+    assert set(fields) == set(provenance.A2A_CONTRACT_FIELDS)
+    assert provenance.contract_gaps(fields) == []
+
+
+def test_the_contract_field_view_is_derived_and_not_a_second_set_of_columns() -> None:
+    """`message`, `task` and `artifact` are the identifiers the hand-off already
+    carries under their own names. Storing them twice under the spec's names
+    would create two fields that must agree."""
+    artifact = _complete()
+    fields = artifacts.contract_fields(artifact)
+    assert fields["artifact"] == artifact.artifact_id
+    assert fields["message"] == artifact.message_id
+    assert fields["task"] == artifact.task_id
+    assert fields["version"] == artifact.version
+    assert fields["correlation_id"] == artifact.correlation_id
+    assert fields["context"]["tenant_id"] == artifact.tenant_id
+    assert fields["provenance"]["producer"] == artifact.producer
+
+
+def test_publishing_without_the_contract_is_refused_by_the_producer_check() -> None:
+    bare = artifacts.publish(
+        producer=identity.SUTRA,
+        artifact_type="tatva_matrix",
+        payload={"must_have": [], "nice_to_have": [], "behavioural": []},
+        tenant_id=str(TENANT),
+    )
+    with pytest.raises(artifacts.IncompleteContract) as exc:
+        artifacts.require_contract_complete(bare)
+    gaps = str(exc.value)
+    # Every gap at once. A producer fixing one at a time learns about the next
+    # one on the next run, which turns one fix into four deploys.
+    assert "correlation_id" in gaps
+    assert "provenance.principal_user_id" in gaps
+    assert "provenance.source_refs" in gaps
+
+
+def test_the_completeness_check_is_not_simply_always_fail() -> None:
+    assert artifacts.require_contract_complete(_complete()) is not None
+
+
+def test_an_incomplete_contract_is_a_different_error_class_from_a_bad_payload() -> None:
+    """A missing payload field means the artifact cannot be READ; a missing
+    correlation id means it can be read perfectly well and cannot be TRACED.
+    Two classes because the two get fixed by different people."""
+    assert issubclass(artifacts.IncompleteContract, artifacts.ArtifactContractError)
+    with pytest.raises(artifacts.ArtifactContractError) as exc:
+        artifacts.publish(
+            producer=identity.SUTRA,
+            artifact_type="tatva_matrix",
+            payload={"must_have": []},
+            tenant_id=str(TENANT),
+        )
+    assert not isinstance(exc.value, artifacts.IncompleteContract)
+
+
+def test_a_consumer_records_a_missing_correlation_without_refusing_the_read() -> None:
+    """LOW, on purpose. See the section header: refusing here would punish the
+    consumer for the producer's defect, and the content is safe to read."""
+    bare = artifacts.publish(
+        producer=identity.SUTRA,
+        artifact_type="tatva_matrix",
+        payload={"must_have": [], "nice_to_have": [], "behavioural": []},
+        tenant_id=str(TENANT),
+        job_id=str(_JOB_UUID),
+        source_refs=("job_competencies:1",),
+        validated=True,
+    )
+    verdict = artifacts.verify_for_consumer(
+        bare, identity.VAADA, tenant_id=str(TENANT), job_id=str(_JOB_UUID)
+    )
+    issues = {finding.issue for finding in verdict.findings}
+    assert "correlation_id_absent" in issues
+    assert "principal_not_attributed" in issues
+    assert verdict.passed
+
+
+def test_an_artifact_published_for_another_tenants_principal_is_refused() -> None:
+    """A cross-tenant write with a plausible-looking attribution attached."""
+    stranger = provenance.Principal(
+        user_id="9f1d2b3c-4e5f-4a6b-8c7d-1e2f3a4b5c6d",
+        role="recruiter",
+        tenant_id="11111111-2222-3333-4444-555555555555",
+    )
+    with pytest.raises(artifacts.ArtifactContractError):
+        _complete(principal=stranger)
+
+
+def test_the_message_id_distinguishes_two_publications_of_one_task() -> None:
+    """Two republications of the same task must be tellable apart, or a consumer
+    holding one cannot know whether it has the later version."""
+    first = _complete()
+    second = _complete()
+    assert first.task_id == second.task_id
+    assert first.message_id != second.message_id
+
+
+def test_the_envelope_view_still_carries_no_payload() -> None:
+    """`as_dict` is what sits beside a trace, so it must stay content-free even
+    as contract fields are added to it."""
+    artifact = _complete(
+        payload={
+            "must_have": [{"name": "distributed systems"}],
+            "nice_to_have": [],
+            "behavioural": [],
+        }
+    )
+    rendered = artifact.as_dict()
+    assert "payload" not in rendered
+    assert "distributed systems" not in str(rendered)
+    assert rendered["correlation_id"] == _CORRELATION
+    assert rendered["principal_user_id"] == _PRINCIPAL.user_id

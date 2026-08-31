@@ -124,7 +124,7 @@ class Budget:
         self.check()
         self.replans += 1
 
-    def as_dict(self) -> dict[str, float | int | list[str]]:
+    def as_dict(self) -> dict[str, str | float | int | list[str]]:
         return {
             "task_type": self.task_type,
             "cost_limit_usd": self.cost_limit_usd,

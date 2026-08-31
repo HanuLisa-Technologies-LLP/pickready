@@ -3,6 +3,13 @@
 Routing is a table that a test forces to agree with the tool permission matrix.
 Coordination is a DAG with bounded concurrency, per-node failure isolation, and
 a cycle check that refuses before any work rather than deadlocking.
+
+`activation`, `enforcement` and `versioning` are the Part A live path: which
+module implements a stage, the four gates applied to a real flow, and the
+versions a candidate is evaluated against. They are deliberately NOT re-exported
+here. Every one of them resolves `hiring`, `miti` or `siddhi` late, and a
+convenience re-export would pull them in at package import time, closing the
+import cycle those late resolutions exist to avoid.
 """
 from __future__ import annotations
 

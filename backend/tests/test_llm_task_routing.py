@@ -158,22 +158,56 @@ def _code_lines(path: pathlib.Path) -> list[tuple[int, str]]:
     return lines
 
 
+#: Everything the grep reads. `app/` was the whole of it until the vendor
+#: verification work put executable code outside it: `scripts/verify_live.py`
+#: is the one command that would name a model id to a real endpoint, and it is
+#: the LAST place a stray id should be allowed to hide.
+_SCANNED_ROOTS = (APP_ROOT, APP_ROOT.parent / "scripts")
+
+
 def test_no_other_model_id_appears_in_executable_code() -> None:
     offenders: list[str] = []
-    for path in sorted(APP_ROOT.rglob("*.py")):
-        if "__pycache__" in path.parts:
+    for root in _SCANNED_ROOTS:
+        if not root.exists():
             continue
-        for number, line in _code_lines(path):
-            for pattern in _FORBIDDEN_MODEL_PATTERNS:
-                match = pattern.search(line)
-                if match:
-                    offenders.append(
-                        f"{path.relative_to(APP_ROOT.parent)}:{number} {match.group(0)!r}"
-                    )
+        for path in sorted(root.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            for number, line in _code_lines(path):
+                for pattern in _FORBIDDEN_MODEL_PATTERNS:
+                    match = pattern.search(line)
+                    if match:
+                        offenders.append(
+                            f"{path.relative_to(APP_ROOT.parent)}:{number} "
+                            f"{match.group(0)!r}"
+                        )
     assert not offenders, (
         "spec-doc5 §B.2 permits exactly Sonnet 5, Haiku 4.5 and voyage-context-4. "
         "These executable lines name another model:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_no_other_model_id_appears_in_a_recorded_vendor_fixture() -> None:
+    """The fixtures are data a contract test reads, not code, and the grep
+    above cannot see them.
+
+    A recorded response naming a fourth model would make
+    `vendor_contract.check_voyage_response`'s model-echo check pass against the
+    wrong id, and a Messages fixture naming a retired Claude would quietly
+    become the shape somebody built a parser to.
+    """
+    fixtures = APP_ROOT.parent / "tests" / "fixtures" / "vendor"
+    assert fixtures.is_dir(), fixtures
+    offenders: list[str] = []
+    seen = 0
+    for path in sorted(fixtures.rglob("*.json")):
+        seen += 1
+        text = path.read_text(encoding="utf-8")
+        for pattern in _FORBIDDEN_MODEL_PATTERNS:
+            for match in pattern.finditer(text):
+                offenders.append(f"{path.name} {match.group(0)!r}")
+    assert seen >= 10, seen
+    assert not offenders, "\n  ".join(offenders)
 
 
 def test_the_retired_providers_are_gone_from_the_source_tree() -> None:

@@ -183,6 +183,8 @@ async def test_extract_structured_fields_valid_json(monkeypatch):
 @pytest.mark.asyncio
 async def test_parse_resume_indexes_text_when_llm_is_unavailable(monkeypatch):
     profile = SimpleNamespace(
+        id=uuid.uuid4(),
+        candidate_id=uuid.uuid4(),
         resume_text="Python FastAPI PostgreSQL",
         parsed_fields_json=None,
         embedding=None,

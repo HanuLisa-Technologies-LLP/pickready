@@ -1,0 +1,152 @@
+{
+  "_about": [
+    "The vocabulary-mismatch regression corpus required by spec-doc6 section 4.4.",
+    "",
+    "Each row is TWO WORDS FOR ONE PIECE OF WORK. `requirement` is what a job",
+    "description asks for; `variant` is what a candidate who did that exact work",
+    "might have written instead, having learnt the craft somewhere else. Neither",
+    "is the correct word. That is the whole point: RPN-PHIL-001 section 58 says",
+    "vocabulary is not randomly distributed, it correlates with employer, country",
+    "and class, so a matcher that prefers one of these words is measuring where",
+    "somebody worked and calling it capability.",
+    "",
+    "`category` records why the row is in the corpus, so a reviewer deleting a",
+    "row can see what coverage they are giving up:",
+    "  runbook_named          one of the three pairings section 58 names itself",
+    "  skill_vocabulary       two names for the same technical work",
+    "  title_convention_in    a title as written in India against its counterpart",
+    "  title_convention_intl  a title as written outside India against its counterpart",
+    "  non_standard_english   the word a non-native or services-firm writer reaches for",
+    "",
+    "The test does not read the prose of these rows. It substitutes each term",
+    "into ONE identical sentence template, so the only variable between the two",
+    "gradings is the word itself. A corpus of hand-written sentence pairs would",
+    "have let sentence quality leak in and would have measured that instead."
+  ],
+  "pairs": [
+    {"requirement": "graph database", "variant": "semantic technologies", "category": "runbook_named"},
+    {"requirement": "gd&t", "variant": "geometric tolerancing", "category": "runbook_named"},
+    {"requirement": "fp&a", "variant": "business finance", "category": "runbook_named"},
+
+    {"requirement": "observability", "variant": "application monitoring", "category": "skill_vocabulary"},
+    {"requirement": "site reliability", "variant": "production support", "category": "skill_vocabulary"},
+    {"requirement": "ci/cd", "variant": "release automation", "category": "skill_vocabulary"},
+    {"requirement": "infrastructure as code", "variant": "terraform", "category": "skill_vocabulary"},
+    {"requirement": "container orchestration", "variant": "kubernetes", "category": "skill_vocabulary"},
+    {"requirement": "message queue", "variant": "kafka", "category": "skill_vocabulary"},
+    {"requirement": "relational database", "variant": "postgresql", "category": "skill_vocabulary"},
+    {"requirement": "nosql", "variant": "mongodb", "category": "skill_vocabulary"},
+    {"requirement": "vector search", "variant": "similarity search", "category": "skill_vocabulary"},
+    {"requirement": "machine learning", "variant": "predictive modelling", "category": "skill_vocabulary"},
+    {"requirement": "large language model", "variant": "generative ai", "category": "skill_vocabulary"},
+    {"requirement": "microservices", "variant": "service oriented architecture", "category": "skill_vocabulary"},
+    {"requirement": "api design", "variant": "restful services", "category": "skill_vocabulary"},
+    {"requirement": "test automation", "variant": "qa automation", "category": "skill_vocabulary"},
+    {"requirement": "incident management", "variant": "outage handling", "category": "skill_vocabulary"},
+    {"requirement": "data pipeline", "variant": "etl", "category": "skill_vocabulary"},
+    {"requirement": "data warehouse", "variant": "dimensional model", "category": "skill_vocabulary"},
+    {"requirement": "business intelligence", "variant": "mis reporting", "category": "skill_vocabulary"},
+    {"requirement": "pipeline generation", "variant": "lead generation", "category": "skill_vocabulary"},
+    {"requirement": "account management", "variant": "relationship management", "category": "skill_vocabulary"},
+    {"requirement": "enterprise sales", "variant": "corporate sales", "category": "skill_vocabulary"},
+    {"requirement": "solution selling", "variant": "consultative selling", "category": "skill_vocabulary"},
+    {"requirement": "internal controls", "variant": "sox", "category": "skill_vocabulary"},
+    {"requirement": "month end close", "variant": "book closure", "category": "skill_vocabulary"},
+    {"requirement": "business partnering", "variant": "commercial finance", "category": "skill_vocabulary"},
+    {"requirement": "process improvement", "variant": "six sigma", "category": "skill_vocabulary"},
+    {"requirement": "supply chain", "variant": "materials management", "category": "skill_vocabulary"},
+    {"requirement": "vendor management", "variant": "supplier management", "category": "skill_vocabulary"},
+    {"requirement": "capacity planning", "variant": "workforce planning", "category": "skill_vocabulary"},
+    {"requirement": "people management", "variant": "line management", "category": "skill_vocabulary"},
+    {"requirement": "stakeholder management", "variant": "cross functional collaboration", "category": "skill_vocabulary"},
+    {"requirement": "change management", "variant": "organisational change", "category": "skill_vocabulary"},
+    {"requirement": "mentoring", "variant": "coaching", "category": "skill_vocabulary"},
+
+    {"requirement": "entry level", "variant": "fresher", "category": "title_convention_in"},
+    {"requirement": "software engineer", "variant": "software development engineer", "category": "title_convention_in"},
+    {"requirement": "technical lead", "variant": "module lead", "category": "title_convention_in"},
+    {"requirement": "associate manager", "variant": "deputy manager", "category": "title_convention_in"},
+    {"requirement": "project manager", "variant": "delivery manager", "category": "title_convention_in"},
+    {"requirement": "quality assurance", "variant": "quality analyst", "category": "title_convention_in"},
+    {"requirement": "technical support", "variant": "l1 support", "category": "title_convention_in"},
+    {"requirement": "business analyst", "variant": "functional consultant", "category": "title_convention_in"},
+    {"requirement": "data analyst", "variant": "mis executive", "category": "title_convention_in"},
+    {"requirement": "site engineer", "variant": "execution engineer", "category": "title_convention_in"},
+    {"requirement": "quantity surveying", "variant": "billing engineer", "category": "title_convention_in"},
+    {"requirement": "articleship", "variant": "audit internship", "category": "title_convention_in"},
+    {"requirement": "learning and development", "variant": "capability building", "category": "title_convention_in"},
+    {"requirement": "industrial relations", "variant": "employee relations", "category": "title_convention_in"},
+
+    {"requirement": "presales", "variant": "sales engineering", "category": "title_convention_intl"},
+    {"requirement": "test automation", "variant": "sdet", "category": "title_convention_intl"},
+    {"requirement": "site reliability", "variant": "sre", "category": "title_convention_intl"},
+    {"requirement": "observability", "variant": "apm", "category": "title_convention_intl"},
+    {"requirement": "software engineer", "variant": "programmer analyst", "category": "title_convention_intl"},
+    {"requirement": "compensation and benefits", "variant": "payroll", "category": "title_convention_intl"},
+
+    {"requirement": "troubleshooting", "variant": "fault finding", "category": "non_standard_english"},
+    {"requirement": "requirements elicitation", "variant": "requirement gathering", "category": "non_standard_english"},
+    {"requirement": "release", "variant": "production rollout", "category": "non_standard_english"},
+    {"requirement": "performance tuning", "variant": "performance optimisation", "category": "non_standard_english"},
+    {"requirement": "code review", "variant": "code walkthrough", "category": "non_standard_english"},
+    {"requirement": "technical documentation", "variant": "sop preparation", "category": "non_standard_english"},
+    {"requirement": "client servicing", "variant": "customer handling", "category": "non_standard_english"},
+    {"requirement": "root cause analysis", "variant": "defect analysis", "category": "non_standard_english"},
+    {"requirement": "cost optimisation", "variant": "spend rationalisation", "category": "non_standard_english"},
+    {"requirement": "automation", "variant": "workflow automation", "category": "non_standard_english"}
+  ],
+
+  "_about_phrasings": [
+    "The second half of spec-doc6 section 4.4's fairness requirement: resumes",
+    "written in non-standard English. This is PHRASING and not vocabulary, so no",
+    "ontology entry can help with it and none is expected to. What is asserted is",
+    "that the claim reader requires no particular English construction to find a",
+    "mechanism, a number or an act of ownership in a sentence.",
+    "",
+    "`standard` and `variant` describe THE SAME WORK to the same depth. A pair",
+    "where one sentence genuinely says more than the other would be testing",
+    "content and reporting it as grammar."
+  ],
+  "phrasings": [
+    {
+      "requirement": "data pipeline",
+      "standard": "I owned the data pipeline migration, cutting the nightly run from 9 hours to 40 minutes across 12 source systems.",
+      "variant": "I am owned the data pipeline migration work, having cut the nightly run from 9 hours to 40 minutes across 12 source systems."
+    },
+    {
+      "requirement": "observability",
+      "standard": "I led the observability rollout and reduced mean time to detect from 45 minutes to 6 minutes.",
+      "variant": "I have led the observability roll out and reduced the mean time to detect from 45 minutes till 6 minutes."
+    },
+    {
+      "requirement": "month end close",
+      "standard": "I owned the month end close for 3 entities and shortened it from 11 days to 5 days.",
+      "variant": "Month end close for 3 entities was owned by me and same was shortened from 11 days to 5 days."
+    },
+    {
+      "requirement": "test automation",
+      "standard": "I built the test automation suite, taking regression from 6 hours to 25 minutes on 900 cases.",
+      "variant": "I have build the test automation suite, bringing the regression from 6 hours to 25 minutes on 900 cases."
+    },
+    {
+      "requirement": "supply chain",
+      "standard": "I led the supply chain redesign that consolidated 40 vendors into 12 and cut freight cost by 18 percent.",
+      "variant": "I led the supply chain re-design which consolidated the 40 vendors upto 12 nos and cut freight cost by 18 percent."
+    },
+    {
+      "requirement": "stakeholder management",
+      "standard": "I owned stakeholder management across 5 business units and negotiated a 3 month scope reduction.",
+      "variant": "Stakeholder management across the 5 business units is owned by me and I negotiated 3 months scope reduction."
+    },
+    {
+      "requirement": "incident management",
+      "standard": "I led incident management for 4 severity one outages and root caused each within 2 hours.",
+      "variant": "I am leading the incident management for 4 nos severity one outages and root caused every one within 2 hours."
+    },
+    {
+      "requirement": "process improvement",
+      "standard": "I owned the process improvement programme that automated 3 approvals and saved 600 hours a year.",
+      "variant": "I owned the process improvement programme which is automating 3 approvals and saving 600 hours per annum."
+    }
+  ]
+}

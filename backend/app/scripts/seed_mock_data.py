@@ -2012,11 +2012,13 @@ async def fill_link_scores(session: AsyncSession, dry_run: bool) -> dict[str, in
 
     NULL breakdown  -  the row would read "Not scored yet" forever.
 
-    `scoring_mode = "retrieval_fallback"`  -  written by the matching pipeline
-    when the whole LLM chain was unavailable. It is honest boilerplate ("Skill
-    overlap here is inferred from resume and job-description similarity...")
-    but it is IDENTICAL on every link that has it, and 868 of them do, sharing
-    just five distinct scores. The job page's inline comments are the most
+    `scoring_mode = "prescreen_evidence"`  -  written by the matching pipeline
+    when the whole LLM chain was unavailable, and named `retrieval_fallback`
+    until the resume-stage grade stopped coming from a retrieval rank. It is
+    honest boilerplate ("rests on self-description carrying checkable
+    specifics...") but it is IDENTICAL on every link that shares an evidence
+    tier, and 868 links carried the older form, sharing just five distinct
+    scores. The job page's inline comments are the most
     important thing on the screen, and rendering the same five sentences for
     every candidate is worse for a demo than rendering nothing  -  it makes the
     product look like it is not reading the resumes at all.
@@ -2048,7 +2050,7 @@ async def fill_link_scores(session: AsyncSession, dry_run: bool) -> dict[str, in
                 WHERE l.archived_at IS NULL
                   AND (
                         l.match_breakdown_json IS NULL
-                     OR l.match_breakdown_json->>'scoring_mode' = 'retrieval_fallback'
+                     OR l.match_breakdown_json->>'scoring_mode' IN ('prescreen_evidence', 'retrieval_fallback')
                      OR (:refresh AND l.match_breakdown_json->>'scoring_mode'
                                       = 'seeded_deterministic')
                   )
@@ -2271,7 +2273,8 @@ AUDIT_QUERIES: list[tuple[str, str]] = [
      "OR length(coalesce(work_life,'')) < 120 OR length(coalesce(benefits,'')) < 120"),
     ("candidate table rows sharing boilerplate ranking comments",
      "SELECT count(*) FROM job_candidate_links WHERE archived_at IS NULL "
-     "AND match_breakdown_json->>'scoring_mode' = 'retrieval_fallback'"),
+     "AND match_breakdown_json->>'scoring_mode' "
+     "IN ('prescreen_evidence', 'retrieval_fallback')"),
     ("jobs not published",
      "SELECT count(*) FROM jobs WHERE ratified_at IS NULL"),
     ("candidates without a complete profile form",

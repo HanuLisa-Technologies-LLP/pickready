@@ -85,6 +85,18 @@ MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 #: Dependencies that ARE authorization, spelled as they appear in a signature.
 GATES = (
     "require_capability",
+    # RBAC 3's full chain: tenant, the 24 ceiling, the grant, per-job
+    # assignment scope and resource state, run BEFORE the handler. Added
+    # 2026-08-29 with `rbac.require_authorized`, which is STRONGER than
+    # `require_capability` rather than an alternative to it: the older gate
+    # answers "may this role do this at all", which is still the right question
+    # for a route with no resource in it.
+    #
+    # It is spelled as a qualname fragment because the dependency is a CLOSURE
+    # (`require_authorized.<locals>.dependency`), so the signature string a
+    # route renders says `Depends(dependency)` and names nothing. `_gate_for`
+    # unwraps the parameter defaults for exactly that reason.
+    "require_authorized",
     "require_bd_capability",
     "get_superadmin_db",
     "get_current_candidate",
@@ -158,6 +170,21 @@ def _gate_for(route) -> str | None:
             return gate
     for dependency in getattr(route, "dependencies", []):
         call = getattr(dependency, "dependency", None) or getattr(dependency, "call", None)
+        qualname = getattr(call, "__qualname__", "")
+        for gate in GATES:
+            if gate in qualname:
+                return gate
+    # A gate passed as a PARAMETER DEFAULT rather than in `dependencies=[...]`.
+    #
+    # `Depends.__repr__` prints the callable's `__name__`, so a gate built by a
+    # factory renders as `Depends(dependency)` and the signature scan above
+    # sees nothing. That is not an edge case: it is how every route using
+    # `rbac.require_authorized` is written, and before this branch existed the
+    # sweep reported seven correctly-gated routes as authorized by nothing --
+    # which is the direction that matters, because the next reader would have
+    # started adding them to an exceptions list.
+    for parameter in inspect.signature(route.endpoint).parameters.values():
+        call = getattr(parameter.default, "dependency", None)
         qualname = getattr(call, "__qualname__", "")
         for gate in GATES:
             if gate in qualname:

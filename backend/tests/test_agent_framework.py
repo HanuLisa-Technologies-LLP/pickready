@@ -440,7 +440,23 @@ def test_an_injection_shaped_chunk_is_quarantined_not_fatal() -> None:
 
 
 def test_a_trace_carries_identifiers_and_never_content(caplog) -> None:
-    trace = tracing.RequestTrace(agent_type="ranking", task_type="ranking")
+    """THE REQUEST ID IS PINNED, AND THAT IS A BUG FIX, NOT A CONVENIENCE.
+
+    `RequestTrace.request_id` defaults to `uuid4().hex[:16]`, and roughly one
+    generated id in sixteen contains a run of ten or more digits -- which is
+    exactly what `pii._PHONE`'s generic long-number rule is looking for. So this
+    assertion failed for about six percent of runs, on a random value, with a
+    message about PII in a line that contained none.
+
+    A test that fails one run in sixteen is worse than no test, because it
+    trains people to re-run rather than to read. The identifier is therefore
+    fixed here; the property being asserted -- that no CONTENT reaches the log
+    -- is unaffected by which identifier is used, and the digit-run behaviour it
+    was accidentally exercising is pinned deliberately in the test below.
+    """
+    trace = tracing.RequestTrace(
+        agent_type="ranking", task_type="ranking", request_id="abcdefabcdefabcd"
+    )
     trace.start("execute")
     trace.end()
     with caplog.at_level("INFO", logger="app.services.observability.trace"):
@@ -448,6 +464,21 @@ def test_a_trace_carries_identifiers_and_never_content(caplog) -> None:
     logged = " ".join(record.getMessage() for record in caplog.records)
     assert "ranking" in logged
     assert not safety.contains_pii(logged)
+
+
+def test_a_hex_identifier_can_look_like_a_long_number_to_the_masker() -> None:
+    """The behaviour the test above used to discover by chance, stated once.
+
+    `_PHONE` bounds a 10-to-15 digit run so an ordinal or a year is not mistaken
+    for one, and a hex string is mostly digits. This is not a defect in the
+    masker: the rule is deliberately generic, and the reason it is harmless is
+    that NOTHING in the telemetry path masks a trace line. Traces carry
+    identifiers, counts and timings, so there is no content to mask -- and if
+    that ever stopped being true, masking would start corrupting the request id
+    an operator needs to find the run.
+    """
+    assert safety.contains_pii("request_id=b097811392924fbd")
+    assert not safety.contains_pii("request_id=abcdefabcdefabcd")
 
 
 def test_an_unknown_stage_field_is_dropped_rather_than_stored() -> None:

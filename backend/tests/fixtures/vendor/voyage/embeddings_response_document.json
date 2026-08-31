@@ -1,0 +1,26 @@
+{
+  "_provenance": {
+    "authored_from": "Voyage embeddings API published response schema: {object: list, data: [{object: embedding, embedding: [...], index: n}], model, usage: {total_tokens}}.",
+    "observed": false,
+    "notes": "VECTORS ARE TRUNCATED TO EIGHT COMPONENTS so this file can be read. The live contract is output_dimension 1024, stated explicitly at the call site because the schema's columns are vector(1024). Shape and width are separate assertions."
+  },
+  "status": 200,
+  "headers": {"content-type": "application/json"},
+  "body": {
+    "object": "list",
+    "data": [
+      {
+        "object": "embedding",
+        "embedding": [0.0163, -0.0421, 0.0088, 0.0512, -0.0197, 0.0334, -0.0059, 0.0271],
+        "index": 0
+      },
+      {
+        "object": "embedding",
+        "embedding": [-0.0092, 0.0377, 0.0145, -0.0263, 0.0408, -0.0116, 0.0229, -0.0044],
+        "index": 1
+      }
+    ],
+    "model": "voyage-context-4",
+    "usage": {"total_tokens": 418}
+  }
+}

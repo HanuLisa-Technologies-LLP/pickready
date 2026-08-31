@@ -173,6 +173,52 @@ departments:
       - level: "EM"
         emphasis_shift: "Delivery of a group; growing engineers; technical direction; D1 shifts from personal coding to technical judgement"
     subsections_present: 12
+    probe_design_pairs_source: "RPN-PHIL-001 §21.6"
+    probe_design_pairs:
+      - claim_type: "Scale"
+        weak_probe: "\"What is horizontal scaling?\""
+        strong_probe: "\"At what point did your system first fall over, what was the symptom, and what did you change first?\""
+      - claim_type: "Ownership"
+        weak_probe: "\"Did you lead the migration?\""
+        strong_probe: "\"Who else could have done your part, and what would have been different if they had?\""
+      - claim_type: "Architecture"
+        weak_probe: "\"Explain microservices.\""
+        strong_probe: "\"What did you split first, and what did you deliberately leave in the monolith - and why that boundary?\""
+      - claim_type: "Debugging"
+        weak_probe: "\"How do you debug?\""
+        strong_probe: "\"Describe a bug that took more than two days. What was your first wrong hypothesis?\""
+      - claim_type: "Impact"
+        weak_probe: "\"What was the improvement?\""
+        strong_probe: "\"How was the baseline measured, and what else changed during that period?\""
+      - claim_type: "AI use"
+        weak_probe: "\"Do you use AI tools?\""
+        strong_probe: "\"Describe a case where the model's suggestion was confidently wrong and how you caught it.\""
+    gaming_vectors_source: "RPN-PHIL-001 §21.7"
+    gaming_vectors:
+      - vector: "AI-written resume with perfect keyword alignment"
+        countermeasure: "Demote resume to E0/E1; weight walkthrough"
+      - vector: "AI-generated portfolio projects"
+        countermeasure: "Probe design decisions and failure modes; check repository history depth"
+      - vector: "AI-solved take-home"
+        countermeasure: "Permit AI explicitly; score the walkthrough"
+      - vector: "Live coding with off-screen assistance"
+        countermeasure: "Require reasoning aloud; ask unpredictable follow-ups on their own code; interrupt with a constraint change"
+      - vector: "Fabricated repository ownership"
+        countermeasure: "Signed-commit check; contribution graph; ask about a specific commit they made"
+      - vector: "Deepfake / proxy interviewing"
+        countermeasure: "Live synchronous stage mandatory at senior level; identity continuity checks across stages; unpredictable topic shifts"
+      - vector: "Inflated title/scope"
+        countermeasure: "Reference corroboration on scope; blast-radius questions"
+      - vector: "Memorised system-design answers"
+        countermeasure: "Use the client's actual constraints from the SWOT; canned answers fail immediately"
+    red_flags_source: "RPN-PHIL-001 §21.8"
+    red_flags:
+      - "Cannot explain a decision in a system they claim to have architected"
+      - "All repository activity created within weeks of applying, presented as multi-year work"
+      - "Fluent vocabulary with no operational specifics (\"we used Kafka for event-driven architecture\" with no partitioning, ordering or failure discussion)"
+      - "Claims production ownership but cannot describe a single incident"
+      - "Assessment performance dramatically inconsistent with claimed seniority in either direction"
+      - "Reference cannot confirm the scope the candidate claims"
   data_analytics_data_science_ai_ml:
     source: "RPN-PHIL-001 §22"
     number: 22
@@ -220,6 +266,33 @@ departments:
         observable_evidence: "Monitors drift, retrains, handles feedback loops and degradation"
     seniority_notes: null
     subsections_present: 10
+    validation_probes_source: "RPN-PHIL-001 §22.6"
+    validation_probes:
+      - "\"What did you check about the data before you trusted it?\""
+      - "\"What would have made you abandon this approach?\""
+      - "\"Who acted on this analysis, and what did they do differently?\""
+      - "\"What's the simplest thing that would have worked, and why didn't you do that?\""
+      - "\"Where could this result be wrong, and how badly?\""
+      - "For ML: \"How did it degrade in production, and how did you find out?\""
+    gaming_vectors_source: "RPN-PHIL-001 §22.7"
+    gaming_vectors:
+      - vector: "Kaggle/portfolio notebooks generated or copied"
+        countermeasure: "Probe assumptions and alternatives; require live critique"
+      - vector: "Vocabulary fluency without judgement"
+        countermeasure: "Flawed-analysis critique; ask what they checked, not what they used"
+      - vector: "Claiming model ownership on a team project"
+        countermeasure: "Attribution probe; reference; ask what they specifically decided"
+      - vector: "Overstated impact numbers"
+        countermeasure: "Ask for the decision the analysis changed and who made it"
+      - vector: "AI-generated take-home"
+        countermeasure: "Permit AI, require walkthrough, probe the assumptions the model made silently"
+    red_flags_source: "RPN-PHIL-001 §22.8"
+    red_flags:
+      - "Cannot name a single thing that could invalidate their own result"
+      - "presents accuracy without a baseline"
+      - "no awareness of how data was collected"
+      - "describes production ML with no mention of monitoring or drift"
+      - "impact claims with no decision attached"
   mechanical_engineering_manufacturing:
     source: "RPN-PHIL-001 §23"
     number: 23
@@ -272,6 +345,28 @@ departments:
         observable_evidence: "Has specified, sourced and qualified parts"
     seniority_notes: null
     subsections_present: 10
+    validation_probes_source: "RPN-PHIL-001 §23.6"
+    validation_probes:
+      - "\"What tolerance did you specify and why that value?\""
+      - "\"What did the shop floor tell you to change?\""
+      - "\"What was the cost driver in that assembly?\""
+      - "\"Which of your FEA assumptions were you least comfortable with?\""
+      - "\"Describe a root-cause investigation you ran end to end.\""
+      - "\"What machines have you personally stood next to while they ran?\""
+    gaming_vectors_source: "RPN-PHIL-001 §23.8"
+    gaming_vectors:
+      - vector: "Coursework projects presented as industrial experience (probe for manufacturing feedback and cost - coursework has neither)"
+      - vector: "tool lists without depth (require a live task)"
+      - vector: "borrowed team-project drawings (ask about a specific dimension)"
+      - vector: "certification claims (verify with issuer)"
+      - vector: "inflated plant/line scale (probe throughput, shift structure, headcount)"
+    red_flags_source: "RPN-PHIL-001 §23.9"
+    red_flags:
+      - "Cannot justify a single tolerance"
+      - "no failure story at all after five years"
+      - "describes designs with no cost or manufacturability dimension"
+      - "claims FEA competence but cannot state boundary conditions or mesh sensitivity concerns"
+      - "\"hands-on\" claimed with no specific equipment named"
   electrical_electronics_engineering:
     source: "RPN-PHIL-001 §24"
     number: 24
@@ -331,6 +426,12 @@ departments:
         side: "Both"
     seniority_notes: null
     subsections_present: 7
+    gaming_vectors_source: "RPN-PHIL-001 §24.6"
+    gaming_vectors:
+      - vector: "Simulation-only experience presented as field experience (probe commissioning specifics: what tripped, what you measured, who signed)"
+      - vector: "PLC \"knowledge\" without commissioning (ask about a live debug with production stopped)"
+      - vector: "safety language recited without behavioural specifics"
+      - vector: "claimed instrument use with no diagnostic story"
   civil_structural_construction:
     source: "RPN-PHIL-001 §25"
     number: 25
@@ -394,6 +495,13 @@ departments:
         track: "PM"
     seniority_notes: null
     subsections_present: 7
+    gaming_vectors_source: "RPN-PHIL-001 §25.6"
+    gaming_vectors:
+      - vector: "Project scale inflation (probe headcount, duration, contract value, their reporting line)"
+      - vector: "design-software familiarity without validation judgement (ask what they check when the software output looks wrong)"
+      - vector: "\"site experience\" that was supervisory visits (probe daily routine, who reported to them, what decisions they personally made)"
+      - vector: "safety claims without incident specifics"
+      - vector: "claimed authority interface without naming the approval process"
   rnd_product_development:
     source: "RPN-PHIL-001 §26"
     number: 26
@@ -438,6 +546,13 @@ departments:
         observable_evidence: "Has worked with manufacturing, quality, commercial"
     seniority_notes: null
     subsections_present: 7
+    red_flags_source: "RPN-PHIL-001 §26.6"
+    red_flags:
+      - "No abandoned projects"
+      - "cannot state the limitations of their own method"
+      - "claims results with no discussion of reproducibility"
+      - "describes only positive outcomes across a whole career"
+      - "inability to explain their specific contribution to a multi-author paper"
   design_ux_creative:
     source: "RPN-PHIL-001 §27"
     number: 27
@@ -484,6 +599,27 @@ departments:
         observable_evidence: "Works within/builds design systems; tool fluency"
     seniority_notes: null
     subsections_present: 9
+    validation_probes_source: "RPN-PHIL-001 §27.6"
+    validation_probes:
+      - "\"What did you try that you rejected, and why?\""
+      - "\"What did research tell you that surprised you?\""
+      - "\"What was the constraint you fought hardest against?\""
+      - "\"What shipped that you weren't happy with, and why did it ship that way?\""
+      - "\"What did the data say after launch?\""
+      - "\"Which part of this was someone else's work?\" (attribution - critical in agency and team portfolios)"
+    gaming_vectors_source: "RPN-PHIL-001 §27.7"
+    gaming_vectors:
+      - vector: "AI-generated visual work presented as original (probe process and iterations - AI output has no messy middle)"
+      - vector: "team work presented as individual (direct attribution probe, reference)"
+      - vector: "case studies written to a template with invented metrics (probe how the metric was measured)"
+      - vector: "trend-following portfolios with no problem framing"
+    red_flags_source: "RPN-PHIL-001 §27.8"
+    red_flags:
+      - "Only polished final screens, no process artefacts"
+      - "cannot name anything they rejected"
+      - "no failed or compromised project in an entire career"
+      - "metrics with no measurement mechanism"
+      - "cannot articulate a constraint they designed around"
   architecture_built_environment:
     source: "RPN-PHIL-001 §28"
     number: 28
@@ -527,6 +663,12 @@ departments:
         observable_evidence: "Applies environmental performance thinking substantively"
     seniority_notes: null
     subsections_present: 6
+    red_flags_source: "RPN-PHIL-001 §28.6"
+    red_flags:
+      - "Competition/conceptual work only, no built or documented work, presented as professional experience"
+      - "cannot explain a detail's construction sequence"
+      - "no code awareness"
+      - "claimed project role that reference or drawing-set authorship contradicts. ---"
   finance_accounting:
     source: "RPN-PHIL-001 §29"
     number: 29
@@ -589,6 +731,20 @@ departments:
         sub_function: "Leadership"
     seniority_notes: null
     subsections_present: 8
+    validation_probes_source: "RPN-PHIL-001 §29.6"
+    validation_probes:
+      - "\"Walk me through the three assumptions in your model that mattered most and how you set them.\""
+      - "\"Tell me about a number you were asked to produce that you pushed back on.\""
+      - "\"What did you find in a close that nobody else had noticed?\""
+      - "\"Describe a forecast you got badly wrong. What did you miss?\""
+      - "\"What was the size of the P&L you owned, and what were you actually allowed to decide?\""
+    gaming_vectors_source: "RPN-PHIL-001 §29.7"
+    gaming_vectors:
+      - vector: "Template models presented as built (require a live build)"
+      - vector: "P&L \"ownership\" that was reporting (probe decision rights explicitly)"
+      - vector: "credential claims (verify)"
+      - vector: "impact numbers with no baseline (probe the measurement)"
+      - vector: "confidentiality used to avoid all specificity (offer the abstraction route per §6.6, but a candidate who cannot discuss any mechanism is a genuine gap)"
   leadership_general_management_executive:
     source: "RPN-PHIL-001 §30"
     number: 30
@@ -638,6 +794,15 @@ departments:
         observable_evidence: "Has made a costly decision on principle"
     seniority_notes: null
     subsections_present: 8
+    gaming_vectors_source: "RPN-PHIL-001 §30.7"
+    gaming_vectors:
+      - vector: "Title/scope inflation (scope probe + verification)"
+      - vector: "claiming credit for organisational outcomes they were present for (attribution probe, multi-reference)"
+      - vector: "rehearsed narratives (decision archaeology defeats these)"
+      - vector: "no failure story"
+      - vector: "cannot name people they developed"
+      - vector: "strategic vocabulary with no operational specifics"
+      - vector: "every prior situation described as a success"
   human_resources:
     source: "RPN-PHIL-001 §31"
     number: 31
@@ -688,6 +853,14 @@ departments:
         observable_evidence: "Has owned the function; sat at the leadership table; influenced strategy"
     seniority_notes: null
     subsections_present: 6
+    red_flags_source: "RPN-PHIL-001 §31.5"
+    red_flags:
+      - "Describes programmes rather than outcomes"
+      - "attributes all attrition to compensation"
+      - "no ER experience at a level claimed to have owned it"
+      - "cannot cite applicable labour law relevant to their region"
+      - "\"culture\" work with no behavioural measurement"
+      - "HR technology \"implementation\" that was participation in someone else's project"
   sales_marketing_business_development:
     source: "RPN-PHIL-001 §32"
     number: 32
@@ -739,6 +912,14 @@ departments:
         observable_evidence: "Built and coached a team; improved team-level performance, not just their own"
     seniority_notes: null
     subsections_present: 6
+    gaming_vectors_source: "RPN-PHIL-001 §32.6"
+    gaming_vectors:
+      - vector: "Unverifiable attainment (probe context, seek reference)"
+      - vector: "team results claimed individually"
+      - vector: "\"managed a ₹X crore portfolio\" that was account servicing (probe new-business split)"
+      - vector: "no lost deals"
+      - vector: "discovery role-play that is a pitch"
+      - vector: "marketing attribution claims with no acknowledgement of attribution limits. ---"
   operations_supply_chain_logistics:
     source: "RPN-PHIL-001 §33"
     number: 33
@@ -787,6 +968,13 @@ departments:
         observable_evidence: "Volume, SKUs, sites, headcount, geography"
     seniority_notes: null
     subsections_present: 4
+    red_flags_source: "RPN-PHIL-001 §33.4"
+    red_flags:
+      - "Improvement claims with no baseline definition"
+      - "never handled a real failure"
+      - "\"managed operations\" with no volume or headcount numbers"
+      - "cost reduction with no service consequence discussed (there is always one)"
+      - "no awareness of frontline attrition reality in roles that require it. ---"
   skilled_trades_blue_collar_frontline:
     source: "RPN-PHIL-001 §34"
     number: 34
@@ -839,6 +1027,13 @@ departments:
         observable_evidence: "Works within a crew; takes direction; supports others"
     seniority_notes: null
     subsections_present: 10
+    red_flags_source: "RPN-PHIL-001 §34.9"
+    red_flags:
+      - "Cannot demonstrate the core task despite claimed years of experience"
+      - "unsafe behaviour during practical assessment"
+      - "credential claim not verifiable with the issuer"
+      - "verified attendance record materially inconsistent with claims"
+      - "unwillingness to accept the disclosed shift or safety requirements after honest disclosure"
   non_technical_support_administrative:
     source: "RPN-PHIL-001 §35"
     number: 35

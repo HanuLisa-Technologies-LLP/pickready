@@ -87,19 +87,21 @@ async def backfill(apply: bool) -> dict[str, int]:
                 )
             ).scalars().all()
             if not framework:
-                seeded = [
-                    JobCompetency(
-                        tenant_id=job.tenant_id, job_id=job.id, category=row["category"],
-                        name=row["name"], description=row["description"],
-                        ordinal=index,
-                        required_level=ppi.required_level_score(row["required_level"]),
-                    )
-                    for index, row in enumerate(ppi._fallback_framework(job), 1)
-                ]
-                if apply:
-                    session.add_all(seeded)
-                    await session.flush()
-                framework = seeded
+                # CHANGED 2026-08-29. This used to seed a framework from
+                # `ppi._fallback_framework`, which assembled criteria out of the
+                # JD's own noun phrases. That function is deleted (spec-doc6 D1
+                # and §4.1): a matrix nobody derived, approved here by a script
+                # with no human in it, is exactly the shape of criteria that
+                # look reviewed and are not.
+                #
+                # The job is SKIPPED and named. A demo job with no matrix needs
+                # Bodha's session and Sutra's seven stages like any other, and
+                # a backfill script is not the place to shortcut them.
+                print(
+                    f"  skip job {job.id} ({job.title!r}): no Tatva matrix. Run "
+                    f"the SWOT session and let Sutra build one."
+                )
+                continue
             framework = sorted(
                 framework, key=lambda row: (ppi.CATEGORIES.index(row.category), row.ordinal)
             )

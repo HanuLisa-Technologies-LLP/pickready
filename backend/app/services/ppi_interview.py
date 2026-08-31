@@ -44,24 +44,31 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
+from functools import lru_cache
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import CandidateQuestion, JobCompetency
 from app.models.job import Job
 from app.prompts import fragments, registry
 from app.services import agent_loop, llm_router, ppi
+from app.services.hiring import evidence_graph
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "DEFAULT_RUBRIC",
+    "EvidenceBrief",
+    "MAX_HOLLOW_TELLS",
     "MAX_QUESTION_CHARS",
     "MAX_RUBRIC_BAND_CHARS",
     "RUBRIC_BANDS",
+    "build_evidence_brief",
+    "department_hints",
     "is_rubric_scored",
     "load_for_link",
     "write_question",
@@ -235,8 +242,63 @@ def _normalise(payload: Any, *, rubric_required: bool) -> dict[str, Any] | None:
     return {"question": question, "rubric": rubric}
 
 
+#: Share of content words at which a generated question counts as a copy of a
+#: Runbook probe. Deliberately below the 0.8 the repeat check uses: these are
+#: short questions whose whole substance is four or five words, so a lower bar
+#: is the same strictness.
+PROBE_REUSE_THRESHOLD = 0.6
+
+
+def _matching_probe(question: str, probes: Sequence[str]) -> str | None:
+    """The Part VI weak probe this question reproduces, or None.
+
+    SECTION 21.6 IS THE ONLY PLACE THE RUNBOOK SAYS WHAT A BAD PROBE IS, and it
+    says it by example: "What is horizontal scaling?", "Explain microservices.",
+    "How do you debug?" against the participatory questions in the column
+    beside them. Its design rule is "probe for specifics that only a participant
+    would know, not for knowledge that is publicly retrievable", and a
+    retrievable question is exactly what a model reaches for when it has a
+    competency name and nothing else.
+
+    Compared on content words rather than as a string, because a model told to
+    ask about microservices writes "Can you explain microservices to me?" and
+    not the Runbook's four words. The threshold is high for the standing reason:
+    a false positive throws away a good question and shows the candidate the
+    stored one instead.
+
+    Used TWICE, against two different sets and for two different reasons: a
+    21.6 weak probe is refused because it asks for something retrievable, and a
+    Part VI validation probe is refused because reusing its words would make
+    every candidate for every job in that department read the same question,
+    which is the preset bank by another route.
+    """
+    def clean(text: str) -> set[str]:
+        # `_terms` keeps '.' inside a token so "CI/CD" and "3.5" survive, which
+        # also swallows the full stop on a sentence-final word. The Runbook
+        # prints its weak probes as complete quoted sentences, so without this
+        # "microservices." and "microservices" are different terms and the
+        # comparison never fires.
+        return {word.strip("./-") for word in _terms(text) if word.strip("./-")}
+
+    terms = clean(question)
+    if not terms:
+        return None
+    for probe in probes or ():
+        earlier = clean(probe)
+        if not earlier:
+            continue
+        if len(terms & earlier) / max(len(terms | earlier), 1) > PROBE_REUSE_THRESHOLD:
+            return probe
+    return None
+
+
 def _evaluate(
-    competency: JobCompetency, asked_before: list[str], *, rubric_required: bool
+    competency: JobCompetency,
+    asked_before: list[str],
+    *,
+    rubric_required: bool,
+    weak_probes: Sequence[str] = (),
+    field_probes: Sequence[str] = (),
 ) -> Any:
     """Build the deterministic criteria for one question.
 
@@ -248,6 +310,22 @@ def _evaluate(
         question = candidate["question"]
         rubric = candidate.get("rubric")
         reasons: list[str] = []
+
+        weak = _matching_probe(question, weak_probes)
+        if weak is not None:
+            reasons.append(
+                "that asks for something a candidate could look up rather than "
+                "something only a participant would know; the previous attempt "
+                "reads like the weak probe %r. Ask for one specific thing that "
+                "happened to them." % weak
+            )
+        copied = _matching_probe(question, field_probes)
+        if copied is not None:
+            reasons.append(
+                "the example probes were for calibration and must not be "
+                "asked; the previous attempt reproduces %r. Write a question "
+                "about something this candidate actually did." % copied
+            )
 
         if len(question) > MAX_QUESTION_CHARS:
             reasons.append(
@@ -303,6 +381,362 @@ def _evaluate(
     return evaluate
 
 
+# -- The department evidence graph, as this question's brief ------------------
+#
+# THE LIVE ENTRY POINT. `api/assessments._write_next_question_inner` calls
+# `write_question` for every base question a candidate reads, and this is where
+# Part VI enters that call. Before this, the question was written from the item
+# name, the item description, the JD and the resume: nothing in the prompt knew
+# what department the role was in, what evidence would actually establish the
+# competency, or what a hollow answer sounds like in that field.
+#
+# WHY THE CLASS PROSE IS PYTHON AND THE REST IS DATA. Everything Part VI and
+# section 38 supply -- what to establish, the specificity rung, the hollow
+# tells, the corroboration groups -- is read from `runbook_data/` and is checked
+# against the document by `test_runbook_parity.py`. The four sentences below
+# are NOT in the Runbook: they are the instruction that turns a class into a
+# question, and they live here for the same reason
+# `interviewer._CHALLENGE_BY_LABEL` does -- the class is chosen by code, so the
+# sentence that expresses it belongs beside the code that chooses it, and
+# `app/prompts/ppi_write_question.txt` keeps the surrounding wording.
+
+@lru_cache(maxsize=1)
+def _class_instructions() -> dict[str, str]:
+    """The four sentences, built on first use rather than at import.
+
+    A FUNCTION, NOT A MODULE-SCOPE DICT, and `tests/test_import_graph.py` is why:
+    reading `evidence_graph.CLASS_GAP` while this module is being imported is an
+    AttributeError the moment a cycle forms, and `gap_analysis` has already been
+    broken by exactly that. Same shape `ppi_report._remark_bounds` uses.
+    """
+    return {
+        evidence_graph.CLASS_CONFIRMATION: (
+            "The candidate has already said something about this. Do not ask "
+            "them to repeat it. Take one specific part of what they said and "
+            "ask for the detail that would only be available to somebody who "
+            "was actually there."
+        ),
+        evidence_graph.CLASS_GAP: (
+            "This has been raised and nothing usable has come back yet. Name "
+            "the kind of evidence you still need, in plain words, and ask for "
+            "one concrete instance of it."
+        ),
+        evidence_graph.CLASS_CONTRADICTION: (
+            "Two things the candidate has told us do not fit together. Put the "
+            "difference to them plainly and neutrally and give them the chance "
+            "to explain it. Do not accuse, do not imply doubt, and do not state "
+            "a conclusion: a candidate who is asked well explains most of these."
+        ),
+        evidence_graph.CLASS_DISCOVERY: (
+            "Nothing in this candidate's profile speaks to this at all. Do NOT "
+            "ask them to account for what is missing, which would only "
+            "establish that the profile is silent. Ask instead what they have "
+            "done that the profile does not show, and leave the question wide "
+            "enough that an unusual background can answer it well."
+        ),
+    }
+
+
+#: How many of Part VI's own validation probes are shown as calibration. The
+#: bound is the same reasoning as MAX_HOLLOW_TELLS: six literal questions in a
+#: prompt asking for one question is an invitation to pick one.
+MAX_FIELD_PROBES = 3
+
+#: How many of a department's gaming vectors are shown at once. All eight of
+#: section 21.7 would be a longer instruction than the question they are meant
+#: to shape, and the model reads the last thing best.
+MAX_HOLLOW_TELLS = 3
+
+
+@dataclass(frozen=True)
+class EvidenceBrief:
+    """What the department evidence graph says about the question being written."""
+
+    #: One of Part VI's fifteen department keys.
+    department: str
+    #: The Runbook's own title for it, e.g. "CIVIL, STRUCTURAL & CONSTRUCTION".
+    department_title: str
+    #: The Part VI menu row this matrix item was recognised as, or None when the
+    #: item is genuinely role-specific and the menu has no row for it.
+    node: evidence_graph.EvidenceNode | None
+    #: confirmation | gap | contradiction | discovery.
+    question_class: str
+    #: The rung of section 38.3's gradient this question aims at.
+    specificity: evidence_graph.SpecificityLevel
+    #: Independence groups the platform can reach, and the ones it cannot.
+    reachable: tuple[str, ...] = ()
+    out_of_band: tuple[str, ...] = ()
+    #: The sources Sutra's frozen matrix flagged as required for this
+    #: competency. Empty when the scorecard could not be read, which is logged
+    #: rather than silently treated as "none required".
+    required_sources: tuple[str, ...] = ()
+    #: Part VI's gaming vectors for this department. Empty for a department the
+    #: Runbook prints none for, and empty when `node` is None.
+    hollow_tells: tuple[str, ...] = ()
+    #: Section 21.6's retrievable probes, which a generated question must not
+    #: reproduce.
+    weak_probes: tuple[str, ...] = ()
+    #: Part VI's own validation probes for this department, where it prints
+    #: them. Shown as CALIBRATION and refused as a COPY: see `_specificity_block`
+    #: and `_evaluate`.
+    field_probes: tuple[str, ...] = ()
+
+    @property
+    def establishes(self) -> str:
+        return self.node.establishes if self.node is not None else ""
+
+
+def department_hints(job: Job) -> tuple[str, ...]:
+    """What `resolve_department` is given, in order of how specific it is.
+
+    The JD is included and truncated. A title alone is often ambiguous in
+    exactly the way Part VI's departments are adjacent -- "Site Reliability
+    Engineer" reads as civil site work on its words alone -- and the first part
+    of a JD carries the vocabulary that separates them.
+    """
+    return (
+        str(job.department or ""),
+        str(job.title or ""),
+        str(job.jd_markdown or "")[:1200],
+    )
+
+
+async def _prior_evidence(
+    session: AsyncSession | None, row: CandidateQuestion
+) -> tuple[int, int]:
+    """(answers, substantive answers) already filed under this matrix item.
+
+    Grouped by COMPETENCY, never by question, and that is the same rule
+    `api/assessments._coverage_rows` follows: several questions can probe one
+    item and a follow-up is filed under its parent's key, so counting questions
+    would make a third of the matrix look covered.
+
+    Returns (0, 0) on any failure. This decides which of the four classes the
+    next question belongs to; a database hiccup should cost the question its
+    class and nothing else, and (0, 0) with no resume claim is Discovery, which
+    is the class that assumes least about the candidate.
+    """
+    if session is None:
+        return 0, 0
+    try:
+        result = (
+            await session.execute(
+                sql_text(
+                    """
+                    SELECT COUNT(m.id) AS answers,
+                           COUNT(m.id) FILTER (
+                               WHERE COALESCE(m.answer_label, 'substantive')
+                                     = 'substantive'
+                           ) AS substantive
+                      FROM candidate_questions q
+                      LEFT JOIN assessment_messages m
+                             ON m.question_key = CAST(q.id AS text)
+                            AND m.speaker = 'candidate'
+                     WHERE q.job_candidate_link_id = :link_id
+                       AND q.competency_id = :competency_id
+                    """
+                ),
+                {
+                    "link_id": str(row.job_candidate_link_id),
+                    "competency_id": str(row.competency_id),
+                },
+            )
+        ).first()
+    except Exception as exc:  # noqa: BLE001 -- see the docstring
+        logger.info(
+            "ppi_interview.prior_evidence_unavailable error=%s", type(exc).__name__
+        )
+        return 0, 0
+    if result is None:
+        return 0, 0
+    return int(result[0] or 0), int(result[1] or 0)
+
+
+def _claim_present(competency: JobCompetency, resume_excerpt: str) -> bool:
+    """Whether the candidate's own profile already says something about this item.
+
+    THE LINE BETWEEN GAP AND DISCOVERY, and the reason the fourth class exists.
+    A profile that is silent on a competency has not failed at it: axiom 7 says
+    absence of evidence is not evidence of absence, and 6.6's Unknown discipline
+    says the same operationally. Asking a gap question of a silent profile
+    establishes only that the profile is silent, which is what an ATS already
+    concluded, so the silent case gets a Discovery question instead.
+
+    Matched on significant WORDS rather than as a substring, for the reason
+    `_mentions` gives: an item label is routinely a phrase a resume says in a
+    different order.
+    """
+    words = [
+        word for word in re.findall(r"[a-z0-9+#./-]{4,}", competency.name.casefold())
+        if word not in {"and", "the", "for", "with", "using"}
+    ]
+    if not words:
+        return False
+    haystack = (resume_excerpt or "").casefold()
+    return any(word in haystack for word in words)
+
+
+async def build_evidence_brief(
+    *,
+    session: AsyncSession | None,
+    job: Job,
+    row: CandidateQuestion,
+    competency: JobCompetency,
+    resume_excerpt: str = "",
+    conflicting: bool = False,
+) -> EvidenceBrief | None:
+    """Read the role's Department Evidence Graph for this one question.
+
+    Returns None when no Part VI department covers the role. NOTHING IS
+    SUBSTITUTED: section 36 requires a department model to be authored through
+    its own procedure rather than improvised, and the caller falls back to the
+    question `ppi.generate_candidate_questions` already wrote for this item from
+    this candidate's own resume, which is not a generic bank.
+
+    `conflicting` comes from the evidence ledger and is the caller's to supply;
+    it defaults to False so the classification degrades to Confirmation or Gap
+    rather than raising a contradiction nobody recorded.
+    """
+    try:
+        department = evidence_graph.resolve_department(*department_hints(job))
+    except evidence_graph.DepartmentUnmapped as exc:
+        logger.warning(
+            "ppi_interview.department_unmapped job_id=%s detail=%s",
+            getattr(job, "id", None), exc,
+        )
+        return None
+    graph = evidence_graph.graph_for(department)
+    node = evidence_graph.node_for_competency(competency.name, department)
+
+    answers, substantive = await _prior_evidence(session, row)
+    question_class = evidence_graph.question_class(
+        conflicting=conflicting,
+        claim_present=_claim_present(competency, resume_excerpt),
+        substantive_answers=substantive,
+        answers=answers,
+    )
+    specificity = evidence_graph.probe_level(
+        ordinal=int(row.ordinal or 0), prior_substantive=substantive
+    )
+
+    reachable: tuple[str, ...] = ()
+    out_of_band: tuple[str, ...] = ()
+    if node is not None:
+        inside, outside = evidence_graph.corroboration_targets(node)
+        reachable, out_of_band = tuple(inside), tuple(outside)
+
+    required: tuple[str, ...] = ()
+    try:
+        required = await evidence_graph.required_evidence_sources(
+            session, getattr(job, "id", None), competency.name
+        )
+    except evidence_graph.ScorecardUnavailable as exc:
+        # NARROW, AND LOGGED. Sutra's frozen matrix is another agent's
+        # deliverable; until it lands, the department graph still says what to
+        # establish and only the per-competency source routing is missing.
+        # Caught by its own class so a genuine data fault is not reported as
+        # "Sutra not wired yet" forever.
+        logger.info("ppi_interview.scorecard_unavailable detail=%s", exc)
+
+    return EvidenceBrief(
+        department=department,
+        department_title=graph.title,
+        node=node,
+        question_class=question_class,
+        specificity=specificity,
+        reachable=reachable,
+        out_of_band=out_of_band,
+        required_sources=required,
+        # THE MATRIX CORROBORATES THE DEPARTMENT. Part VI's gaming vectors are
+        # stated per department, and a department resolved from a job title is a
+        # judgement that can be wrong ("Site Reliability Engineer" reads as
+        # civil site work on its words alone). A matched menu row is independent
+        # evidence that the resolution was right, so the department's tells are
+        # only sent when one matched. Without that check a mis-resolved role
+        # would be probed for the wrong field's tells and nothing would notice.
+        hollow_tells=graph.hollow_tells[:MAX_HOLLOW_TELLS] if node is not None else (),
+        weak_probes=tuple(pair.weak_probe for pair in graph.probe_design_pairs),
+        field_probes=graph.validation_probes if node is not None else (),
+    )
+
+
+def _establishes_block(brief: EvidenceBrief | None, competency: JobCompetency) -> str:
+    if brief is not None and brief.establishes:
+        return (
+            "%s\n(That is what good looks like in %s work, from the department "
+            "evidence model for this role.)"
+            % (brief.establishes, brief.department_title.lower())
+        )
+    return str(competency.description or competency.name)
+
+
+def _specificity_block(brief: EvidenceBrief | None) -> str:
+    if brief is None:
+        return (
+            "Ask for the specifics of one real instance: what happened, what "
+            "the candidate personally decided, and what it cost."
+        )
+    level = brief.specificity
+    block = ["%s\nThat is a question %s." % (level.question, level.answerable_by)]
+    if brief.field_probes:
+        # SHOWN AS CALIBRATION, REFUSED AS A COPY, and both halves are needed.
+        # Part VI prints these as literal probes, which is the closest thing in
+        # the Runbook to a statement of what a good question in this field
+        # sounds like -- and also exactly the shape of the preset bank this
+        # codebase deleted on 2026-08-06, where every candidate read the same
+        # words. So the model is calibrated on them and `_evaluate` rejects a
+        # question that reproduces one. Teaching by example is the Runbook's own
+        # method: 21.6 does it with a weak column beside a strong one.
+        block.append(
+            "Assessors in this field ask questions of this kind. Use them for "
+            "calibration only. DO NOT ask any of them: the question you write "
+            "must be about this candidate's own work, in your own words.\n- "
+            + "\n- ".join(brief.field_probes[:MAX_FIELD_PROBES])
+        )
+    return "\n\n".join(block)
+
+
+def _corroboration_block(brief: EvidenceBrief | None) -> str:
+    """Where the answer's corroboration would have to come from.
+
+    THE TRIANGULATION HALF. Section 5.4 counts independence by ORIGINATOR, so a
+    candidate restating their own resume is one person saying one thing twice.
+    What the assessment can reach is the conversation itself and the factual
+    fields the candidate submitted; a reference and a work artefact are out of
+    band, and saying so is what stops a well-argued answer from being treated as
+    corroborated.
+    """
+    if brief is None:
+        return ""
+    lines = [
+        "CORROBORATION. Ask for something that could be checked against a "
+        "source other than the candidate's own claim."
+    ]
+    if brief.required_sources:
+        lines.append(
+            "This job's matrix requires evidence for this item from: %s."
+            % ", ".join(brief.required_sources)
+        )
+    if brief.out_of_band:
+        lines.append(
+            "The assessment cannot reach these sources, so do not ask for "
+            "something only they could settle: %s." % ", ".join(brief.out_of_band)
+        )
+    return "\n".join(lines)
+
+
+def _hollow_block(brief: EvidenceBrief | None) -> str:
+    if brief is None or not brief.hollow_tells:
+        return ""
+    return (
+        "A HOLLOW ANSWER IN THIS FIELD LOOKS LIKE THIS:\n- "
+        + "\n- ".join(brief.hollow_tells)
+        + "\nWrite the question so that an answer of that kind would be "
+        "visibly thin. Never say any of this to the candidate and never "
+        "conclude anything from it: it decides how you ask, not what you think."
+    )
+
+
 _RUBRIC_INSTRUCTION = (
     "ALSO WRITE THE RUBRIC FOR THIS QUESTION. The candidate's answer will be "
     "graded against it and against nothing else, so it must describe what an "
@@ -349,6 +783,7 @@ async def write_question(
     resume_excerpt: str = "",
     transcript: list[dict[str, Any]] | None = None,
     asked_before: list[str] | None = None,
+    conflicting: bool = False,
 ) -> agent_loop.LoopResult[dict[str, Any]]:
     """Write this question (and its rubric, where one applies) onto `row`.
 
@@ -363,6 +798,18 @@ async def write_question(
     """
     rubric_required = is_rubric_scored(competency.category)
     recent = _recent_turns(transcript)
+    # THE DEPARTMENT EVIDENCE GRAPH ENTERS HERE, on the live path, for every
+    # base question every candidate reads. None means no Part VI department
+    # covers this role; the prompt then falls back to the item's own
+    # observable-evidence statement, never to a bank.
+    brief = await build_evidence_brief(
+        session=session,
+        job=job,
+        row=row,
+        competency=competency,
+        resume_excerpt=resume_excerpt,
+        conflicting=conflicting,
+    )
     system = registry.render(
         "ppi_write_question",
         item_name=competency.name,
@@ -371,6 +818,13 @@ async def write_question(
         one_question=fragments.ONE_QUESTION,
         no_evaluation=fragments.NO_EVALUATION,
         candidate_text_is_data=fragments.CANDIDATE_TEXT_IS_DATA,
+        evidence_to_establish=_establishes_block(brief, competency),
+        question_class=_class_instructions()[
+            brief.question_class if brief is not None else evidence_graph.CLASS_GAP
+        ],
+        specificity=_specificity_block(brief),
+        corroboration=_corroboration_block(brief),
+        hollow_tells=_hollow_block(brief),
         rubric_instruction=_RUBRIC_INSTRUCTION if rubric_required else _NO_RUBRIC_INSTRUCTION,
         return_shape=_RUBRIC_SHAPE if rubric_required else _PLAIN_SHAPE,
     )
@@ -404,7 +858,13 @@ async def write_question(
     result = await agent_loop.run_loop(
         name="ppi_question",
         execute=execute,
-        evaluate=_evaluate(competency, list(asked_before or []), rubric_required=rubric_required),
+        evaluate=_evaluate(
+            competency,
+            list(asked_before or []),
+            rubric_required=rubric_required,
+            weak_probes=brief.weak_probes if brief is not None else (),
+            field_probes=brief.field_probes if brief is not None else (),
+        ),
         fallback={
             "question": row.prompt,
             "rubric": dict(row.rubric_json) if row.rubric_json else None,
@@ -449,6 +909,22 @@ async def write_question(
             row.job_candidate_link_id, row.ordinal, result.attempts,
             list(result.reasons),
         )
+    # LABELS AND KEYS ONLY, never question or answer text, exactly as
+    # `interview_telemetry` established for this channel. A department key, a
+    # class name and a gradient level are engineering metadata: they say WHICH
+    # graph shaped this turn, which is the only way to tell a role probed
+    # against Part VI from one that fell through to the item description.
+    logger.info(
+        "ppi_interview.evidence_graph link_id=%s ordinal=%d department=%s "
+        "matched=%s class=%s level=%d routed=%s",
+        row.job_candidate_link_id,
+        row.ordinal,
+        brief.department if brief is not None else "unmapped",
+        brief is not None and brief.node is not None,
+        brief.question_class if brief is not None else "none",
+        brief.specificity.level if brief is not None else 0,
+        bool(brief is not None and brief.required_sources),
+    )
     return result
 
 

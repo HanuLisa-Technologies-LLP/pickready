@@ -335,8 +335,13 @@ class CalibrationRecord(Base, UUIDPKMixin, CreatedAtMixin):
     """
 
     __tablename__ = "calibration_records"
+    # The two uniqueness rules are PARTIAL INDEXES created in migration 0069,
+    # not table constraints, because they are conditional on `source`: one
+    # outcome row per evaluation, and one divergence row per Team Review. A
+    # single UNIQUE(evaluation_id) held while the table had one meaning and
+    # became wrong the moment it had two, since an evaluation can carry an
+    # outcome AND a divergence from every reviewer who looked at it.
     __table_args__ = (
-        UniqueConstraint("evaluation_id", name="uq_calibration_evaluation"),
         Index("ix_calibration_tenant_job", "tenant_id", "job_id"),
     )
 
@@ -356,6 +361,23 @@ class CalibrationRecord(Base, UUIDPKMixin, CreatedAtMixin):
     evaluation_ref: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     detached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     detached_note: Mapped[str | None] = mapped_column(Text)
+    #: What KIND of calibration signal this row is (migration 0069).
+    #: `outcome` is the original meaning, a hiring outcome observed months
+    #: later. `team_review_divergence` is a reviewer whose verdict disagreed
+    #: with the Ready Pick Score (spec-doc6 8.2). Both answer "was the grade
+    #: right?", which is why they share a table rather than splitting into two
+    #: places a calibration analysis would have to join.
+    source: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="outcome", server_default="outcome"
+    )
+    #: The Team Review this divergence was raised from, for a divergence row.
+    #: NULL on an outcome row, and a CHECK enforces both directions. CASCADE:
+    #: a review that was deleted takes its divergence with it, because a
+    #: divergence is a statement ABOUT a remark and cannot outlive it.
+    team_review_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("candidate_team_reviews.id", ondelete="CASCADE"),
+    )
     #: The grade the pipeline gave. Copied, so a rescore cannot rewrite history.
     predicted_grade: Mapped[str] = mapped_column(String(30), nullable=False)
     predicted_confidence: Mapped[str | None] = mapped_column(String(10))

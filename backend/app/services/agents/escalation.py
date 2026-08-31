@@ -115,6 +115,12 @@ class Escalation:
     tenant_id: str | None = None
     job_id: str | None = None
     candidate_id: str | None = None
+    #: The flow this escalation came out of (spec-doc6 4.1). Carried because
+    #: the person picking it up needs to see what happened BEFORE the agent
+    #: stopped, and without the flow id that is six unrelated queries whose
+    #: answers cannot be joined. An identifier, not content: it points at the
+    #: audit trail rather than reproducing any of it.
+    correlation_id: str | None = None
     action: str | None = None
     #: INTERNAL engineering value. Recorded so an operator can see whether the
     #: escalation came from a low-confidence run or from a rule, and never
@@ -136,6 +142,7 @@ class Escalation:
             "tenant_id": self.tenant_id,
             "job_id": self.job_id,
             "candidate_id": self.candidate_id,
+            "correlation_id": self.correlation_id,
             "action": self.action,
             "confidence": self.confidence,
             "raised_at": self.raised_at.isoformat(),
@@ -154,6 +161,7 @@ def escalate(
     tenant_id: str | None = None,
     job_id: str | None = None,
     candidate_id: str | None = None,
+    correlation_id: str | None = None,
     action: str | None = None,
     confidence: float | None = None,
 ) -> Escalation:
@@ -193,6 +201,7 @@ def escalate(
         tenant_id=tenant_id,
         job_id=job_id,
         candidate_id=candidate_id,
+        correlation_id=correlation_id,
         action=action,
         confidence=confidence,
     )
@@ -206,6 +215,7 @@ def for_action(
     tenant_id: str | None = None,
     job_id: str | None = None,
     candidate_id: str | None = None,
+    correlation_id: str | None = None,
     evidence_present: Sequence[str] = (),
     evidence_missing: Sequence[str] = (),
 ) -> Escalation | None:
@@ -237,6 +247,7 @@ def for_action(
         tenant_id=tenant_id,
         job_id=job_id,
         candidate_id=candidate_id,
+        correlation_id=correlation_id,
         action=action,
         confidence=confidence,
     )
@@ -251,6 +262,7 @@ def from_verdict(
     tenant_id: str | None = None,
     job_id: str | None = None,
     candidate_id: str | None = None,
+    correlation_id: str | None = None,
 ) -> Escalation | None:
     """Turn a failed gate into an escalation, or None if the gate passed.
 
@@ -280,5 +292,6 @@ def from_verdict(
         tenant_id=tenant_id,
         job_id=job_id,
         candidate_id=candidate_id,
+        correlation_id=correlation_id,
         confidence=verdict.confidence,
     )

@@ -242,19 +242,31 @@ async def _open_jobs(session, tenant_id: uuid.UUID) -> list[Job]:
 
 
 async def _ensure_framework(session, job: Job, dry_run: bool) -> str:
-    """Generate and approve this job's PPI framework. Returns what happened.
+    """Approve this job's Tatva matrix, if Sutra has already built one.
 
-    Approval is stamped ONLY when `framework_is_complete` passes, which is the
-    same check the Hiring Manager's Save press goes through. A framework that
-    somehow came back short is left pending rather than approved short: a job
-    nobody can be invited to is a visible problem, and a report graded against
-    three Primary Skills is an invisible one.
+    CHANGED 2026-08-29. This used to CALL the matrix generator and then approve
+    what came back. It no longer generates anything, and the reason is spec-doc6
+    §4.3's own: a matrix is built from Bodha's SWOT session with the Hiring
+    Manager and the client's compiled Company DNA, neither of which a seed
+    script has. The old single-pass generator would produce one from the JD
+    alone, which is what made this call look reasonable.
+
+    So a demo job with no matrix is REPORTED and left alone. The approval half
+    stays, because a demo tenant genuinely does need its matrices approved
+    without a human present, and `matrix_is_complete` is the same check the
+    Hiring Manager's Save press goes through.
     """
     if job.framework_approved_at is not None:
         return "already approved"
 
-    rows = await ppi.generate_framework(session, job)  # idempotent, replace=False
-    ok, reason = ppi.framework_is_complete(list(rows))
+    rows = await ppi.load_framework(session, job.id)
+    if not rows:
+        return (
+            "NO MATRIX: run the SWOT session for this job and let Sutra build "
+            "one. A seed script has neither the hiring manager nor the "
+            "company's philosophy to build it from."
+        )
+    ok, reason = ppi.matrix_is_complete(list(rows), job.assessment_grade)
     if not ok:
         return f"INCOMPLETE, left pending: {reason}"
     if dry_run:

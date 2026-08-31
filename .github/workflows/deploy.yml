@@ -150,7 +150,21 @@ jobs:
 
       - name: Unit and integration suite
         working-directory: backend
-        run: pytest -q --no-header
+        # `--cov` rather than a second suite run. spec-doc6 §11.1 wants
+        # per-package coverage floors and the only way to get the figures is to
+        # measure the run that already happens; a separate coverage pass would
+        # double a nine-minute job to prove something about the same tests.
+        # Branch coverage is on in `.coveragerc`, deliberately: a line-only
+        # figure treats a band cap as covered the moment either arm runs.
+        run: pytest -q --no-header --cov --cov-report=json:coverage.json
+
+      - name: Coverage floors, per package
+        working-directory: backend
+        # spec-doc6 §11.1: ">=90% line and branch ... enforced in CI,
+        # per-package, not global." A global floor is satisfiable by a large
+        # well-covered surface carrying a small untested one, and the small
+        # untested one is always the module that shipped last week.
+        run: python scripts/check-coverage-floors.py
 
       - name: Agent evaluation gates
         working-directory: backend
@@ -213,6 +227,97 @@ jobs:
       - name: Build
         working-directory: frontend
         run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # STATIC GATES: typing, structure and vendor honesty (spec-doc6 §10.3, §11.3,
+  # §12.4).
+  #
+  # A separate job from `backend-tests` on purpose. None of these needs a
+  # database, a Redis or a migration, so they answer in about a minute and they
+  # answer while the suite is still running. A typing regression that has to
+  # wait behind twenty-five minutes of integration tests is a typing regression
+  # people learn to find out about from someone else.
+  #
+  # WHAT IS DELIBERATELY NOT HERE
+  # ------------------------------
+  #   * The model-string grep, the placeholder/TODO grep, the em-dash check,
+  #     the RBAC conformance matrix, the fairness regression, the determinism
+  #     runs and the skip-count assertion are all pytest tests
+  #     (`test_llm_task_routing.py`, `test_platform_audit.py`,
+  #     `test_rbac_conformance.py`, `test_skip_inventory.py` and their
+  #     neighbours) and therefore already blocking under the suite above.
+  #     Running them a second time here would be one rule with two owners,
+  #     which is the fault this codebase spent a phase removing from
+  #     `services/tiers.py`.
+  #   * `terraform fmt`, `validate`, `tflint`, `checkov` and the offline plan
+  #     are the `terraform` job below.
+  #   * `impeccable detect` and the frontend build are `frontend-checks`.
+  #   * The secret scan is `security-scan`.
+  code-quality:
+    name: Typing, structure and vendor honesty
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Typecheck (mypy --strict)
+        working-directory: backend
+        # The scope lives in `backend/mypy.ini` rather than in this line, so a
+        # reader finds out WHICH modules are strictly typed by opening the
+        # config instead of by reading a CI file. There are no per-file ignores
+        # in it (spec-doc6 §10.3) and adding one to get this green would be
+        # defeating the gate rather than passing it.
+        run: python -m mypy
+
+      - name: No import cycles
+        working-directory: backend
+        # spec-doc6 §10.3, "CI-checked, since one was found before". Distinct
+        # from `tests/test_import_graph.py`, which pins the shape that makes a
+        # cycle fatal rather than the existence of one.
+        run: python scripts/check-import-cycles.py
+
+      - name: No dead code
+        working-directory: backend
+        # Narrow by design: an undecorated module-level function whose name
+        # occurs nowhere but its own `def` line. Not held by a framework, not
+        # exported, not called. There is no second reading of that.
+        run: python scripts/check-dead-code.py
+
+      - name: The verification command still runs without a key
+        working-directory: backend
+        # `--help` and `--dry-run` must work with no credential at all, because
+        # the state this repository ships in is exactly that. A dry run that
+        # needed a key would be a plan nobody could read.
+        run: |
+          python scripts/verify_live.py --help
+          python scripts/verify_live.py --dry-run
+
+      - name: No wording implies a live vendor call succeeded
+        working-directory: backend
+        # spec-doc6 §12.4. There is no Anthropic key and no Voyage key in this
+        # phase, so the three phrases that would claim otherwise are refused
+        # across the repository. The phrases themselves are in the test rather
+        # than in this comment, which is not fussiness: the sweep covers this
+        # workflow file too, and a comment quoting them would be a finding
+        # against itself.
+        #
+        # Run here as well as under the suite because it is the one gate whose
+        # subject is the REPORT, and a report is written at the end of a long
+        # day.
+        run: python -m pytest tests/test_no_live_vendor_claims.py -q --no-header
 
   # ---------------------------------------------------------------------------
   security-scan:
@@ -368,7 +473,7 @@ jobs:
 
   build-and-push:
     name: Build and push to ECR
-    needs: [backend-tests, frontend-checks, security-scan, terraform]
+    needs: [backend-tests, code-quality, frontend-checks, security-scan, terraform]
     if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 40

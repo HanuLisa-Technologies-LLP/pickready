@@ -15,6 +15,23 @@
 4. Tier assignment   -- app.services.tiers.assign_tier over overall×10
                        (inclusive-upward boundaries, claude.md rule 8).
 
+THE DETERMINISTIC PATH IS NOW EVIDENCE, NOT SIMILARITY (spec-doc6 §4.4).
+When the provider chain is exhausted, this module used to map a profile's
+RETRIEVAL RANK linearly into a 4..8 band and store the result as a grade. That
+turned "this document reads like that document" into a number a recruiter acts
+on, and document similarity is precisely the measurement RPN-PHIL-001 §58 says
+systematically undervalues candidates who describe their work in non-standard
+vocabulary. The band, its two constants, its five hand-written comments and its
+`retrieval_fallback` mode are DELETED. `services/hiring/prescreen` supplies the
+deterministic breakdown now, from resume-stage evidence strength, and it is the
+same grader that writes the dashboard's Pre-Screen Grade: one implementation of
+the resume-stage reading, not a real one and a stand-in for it.
+
+Both retrieval stages ALSO run through the shared vocabulary ontology now
+(spec-doc6 §4.6, one implementation shared with Yukti), so the keyword stage
+looks for what a candidate may have called the same work rather than only for
+the JD's own words.
+
 The full breakdown JSON is stored in job_candidate_links.match_breakdown_json
 (column added in migration 0002; written via raw SQL like jobs.embedding --
 intentionally not on the SQLAlchemy model). match_score stays populated as
@@ -45,6 +62,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Job, JobCandidateLink, LinkSource, Profile
 from app.services import llm_router, matching_categories, rating
 from app.services.embeddings import EmbeddingError, embed
+from app.services.hiring import ontology, prescreen
 # `assign_tier` is the persisted spelling of `services.rating`'s four grades,
 # not a second scale: same 90 / 75 / 60 cut-points, same inclusive-upward rule.
 from app.services.tiers import assign_tier
@@ -62,12 +80,20 @@ _RESUME_SNIPPET_CHARS = 1500
 #: describe a chain the call was not actually made on.
 _SCORING_TASK = "rerank"
 
-# Deterministic-fallback band (used when the LLM chain is fully unavailable):
-# retrieval rank is mapped into [_FALLBACK_MIN, _FALLBACK_MAX] so ordering is
-# preserved but the ceiling stays below the "Highly Matching" boundary -- a
-# fallback score never fabricates a top-tier match (8×10 = 80 = Matching).
-_FALLBACK_MIN = 4
-_FALLBACK_MAX = 8
+#: What produced a stored breakdown. Read by the review screen, by the audit
+#: trail and by `ai_score`'s model metadata, so a consumer can always tell a
+#: model's judgement from a deterministic evidence reading.
+SCORING_MODE_LLM = "llm"
+SCORING_MODE_PRESCREEN = "prescreen_evidence"
+
+#: The ceiling a deterministic breakdown may reach on the 1-10 contract scale.
+#: 8 maps to a match_score of 80, which is `Matching` and not `Highly Matching`.
+#: The reason is not caution, it is that the top grade is a claim about verified
+#: depth and a resume contains none: RPN-PHIL-001 §6.1 puts a candidate's own
+#: document at E2 at best, and E3 upward all require a controlled response, an
+#: observation or a third party. A resume-only pass that could reach the top
+#: band would be asserting exactly the thing it has no evidence for.
+_PRESCREEN_PARAM_CEILING = 8
 
 # ── Comment word-range contract ─────────────────────────────────────────────
 # Every stored comment (the four parameters + the holistic overall) must be
@@ -97,43 +123,6 @@ _PAD_CLAUSES: tuple[str, ...] = (
     "role-specific evidence, recent outcomes, working context, and career motivation "
     "during a structured screening conversation.",
 )
-
-# Deterministic retrieval-only comments, used when the whole LLM chain is
-# unavailable. They are honest about being similarity-derived, are each 25-30
-# words, and deliberately avoid any "unavailable" placeholder wording -- the
-# machine-readable signal is breakdown["scoring_mode"] == "retrieval_fallback".
-_FALLBACK_COMMENTS: dict[str, str] = {
-    "skills_match": (
-        "Skill overlap here is inferred from resume and job-description similarity "
-        "rather than a detailed reading, so treat it as a preliminary signal and "
-        "confirm the specific tools against the resume."
-    ),
-    "experience_relevance": (
-        "Experience relevance is estimated from overall document similarity rather "
-        "than a function-by-function comparison, so please confirm seniority, scope, "
-        "and comparable delivery directly from the candidate's employment history."
-    ),
-    "role_alignment": (
-        "Role alignment is derived from retrieval similarity between the job "
-        "description and this profile, so verify the candidate's actual designation, "
-        "reporting line, and core duties before advancing them to the next stage."
-    ),
-    "education_fit": (
-        "Education fit is approximated from retrieval similarity and has not been "
-        "checked qualification by qualification, so confirm degree level, "
-        "specialisation, and any certifications the role requires against the resume."
-    ),
-    "overall": (
-        "This candidate was ranked by resume and job-description similarity alone, "
-        "so the placement is a preliminary retrieval signal; review the resume in "
-        "full before shortlisting, rejecting, or scheduling any interview."
-    ),
-}
-
-# Retained for backwards compatibility with older stored rows / callers that
-# look for the historical placeholder. It is NEVER written any more.
-_AI_UNAVAILABLE_COMMENT = "AI scoring unavailable, deterministic retrieval-based score."
-
 
 def word_count(text: str | None) -> int:
     """Count words in `text` -- whitespace-delimited tokens with a letter/digit.
@@ -350,12 +339,54 @@ def _jd_text(job: Job) -> str:
     return "\n".join(parts)
 
 
-def _keyword_query_terms(job: Job) -> str:
+def _keyword_query_terms(job: Job) -> list[str]:
+    """The JD's own skill terms PLUS what a candidate may have called the same
+    work (spec-doc6 §4.6, RPN-PHIL-001 §58).
+
+    ADDITIVE, never substitutive, which is `ontology.expand`'s own contract. The
+    JD's words come first and the equivalents follow, so a resume using the JD's
+    exact vocabulary still ranks on it; what changes is that a resume saying
+    "semantic technologies" against a JD asking for "graph database" stops
+    scoring a zero on the lexical stage. Retrieval is a ranking prior and never
+    decides who is scored, so a wrong expansion here costs a position in a list
+    and can never cost a candidate their assessment.
+    """
     jd = job.jd_json or {}
-    skills = jd.get("skills") or []
-    terms = [s for s in skills if isinstance(s, str)]
-    terms.append(job.title)
-    return " ".join(terms)
+    skills = [s for s in (jd.get("skills") or []) if isinstance(s, str)]
+    terms = [*skills]
+    if job.title:
+        terms.append(job.title)
+    return ontology.expand(terms)
+
+
+_TSQUERY_WORD = re.compile(r"[A-Za-z0-9]+")
+
+
+def _tsquery(terms: Sequence[str]) -> str:
+    """An OR tsquery over the expanded terms.
+
+    `plainto_tsquery` ANDs, and ANDing is wrong for this stage in a way that is
+    silent: a JD naming eight skills matched only a resume containing all eight,
+    so the lexical half almost never fired, and fusion still returned the
+    semantic hits so retrieval LOOKED like it worked. `services/rag/retrieval`
+    found this on the live index and fixed it there; this is the same fix on the
+    other lexical retriever, for the same reason, that precision is fusion's job
+    and not this retriever's.
+
+    ANDing also actively fights the ontology: every equivalent added to the
+    query would make the conjunction harder to satisfy, so expansion would
+    NARROW the pool it exists to widen.
+
+    Input is reduced to alphanumeric words before it reaches `to_tsquery`, which
+    parses operators out of its argument. "ci/cd" and "gd&t" would otherwise be
+    a syntax error rather than a search.
+    """
+    words: list[str] = []
+    for term in terms:
+        for word in _TSQUERY_WORD.findall(str(term or "").casefold()):
+            if len(word) > 1:
+                words.append(word)
+    return " | ".join(dict.fromkeys(words))
 
 
 async def _semantic_stage(
@@ -487,11 +518,12 @@ async def _backfill_missing_embeddings(
 
 
 async def _keyword_stage(
-    session: AsyncSession, job_id: uuid.UUID, query_terms: str, top_n: int
+    session: AsyncSession, job_id: uuid.UUID, query_terms: Sequence[str], top_n: int
 ) -> list[uuid.UUID]:
     """Top-N profile ids by full-text rank over resume_tsv (catches exact
     terms -- tool names, certifications -- that embeddings can miss)."""
-    if not query_terms.strip():
+    tsquery = _tsquery(query_terms)
+    if not tsquery:
         return []
     rows = await session.execute(
         text(
@@ -499,10 +531,10 @@ async def _keyword_stage(
             SELECT profile_id FROM (
                 SELECT DISTINCT ON (p.candidate_id)
                        p.id AS profile_id,
-                       ts_rank(p.resume_tsv, plainto_tsquery('english', :q)) AS rank
+                       ts_rank(p.resume_tsv, to_tsquery('english', :q)) AS rank
                 FROM profiles p
                 JOIN candidates c ON c.id = p.candidate_id
-                WHERE p.resume_tsv @@ plainto_tsquery('english', :q)
+                WHERE p.resume_tsv @@ to_tsquery('english', :q)
                   AND (
                     c.consent_databank = true
                     OR EXISTS (
@@ -516,7 +548,7 @@ async def _keyword_stage(
             LIMIT :top_n
             """
         ),
-        {"q": query_terms, "job_id": str(job_id), "top_n": top_n},
+        {"q": tsquery, "job_id": str(job_id), "top_n": top_n},
     )
     return [r.profile_id for r in rows]
 
@@ -535,65 +567,94 @@ def compute_overall_score(
     return round(sum(float(scores[key]) for key in keys) / len(keys), 1)
 
 
-def _fallback_param_score(rank_index: int, total: int) -> int:
-    """Map a 0-based retrieval rank into the deterministic fallback band.
+def _prescreen_param_score(value: float) -> int:
+    """One pre-screen score (0 to 100) on the breakdown's 1-10 contract scale.
 
-    Best-ranked profile → _FALLBACK_MAX, worst → _FALLBACK_MIN, linear in
-    between. Deterministic and monotonic so ordering follows the semantic +
-    keyword retrieval signal when no LLM score is available.
+    Anchored on the tier ladder rather than on an arbitrary stretch: a score of
+    `tier_strength(E2) x 100` is the point at which the pre-screen calls a
+    resume an A, meaning its claims stand at artefact strength, and that maps to
+    `_PRESCREEN_PARAM_CEILING`. Everything below it interpolates linearly to 1,
+    and everything above it clamps, because the ceiling is a statement about
+    what a resume can prove and not a scaling convenience.
     """
-    if total <= 1:
-        return _FALLBACK_MAX
-    frac = rank_index / (total - 1)  # 0.0 (best) .. 1.0 (worst)
-    span = _FALLBACK_MAX - _FALLBACK_MIN
-    return int(round(_FALLBACK_MAX - span * frac))
+    top = prescreen.tier_strength(prescreen.TIER_ARTEFACT) * 100
+    if top <= 0:  # pragma: no cover - only reachable if the Runbook data is broken
+        raise prescreen.PreScreenUnavailable(
+            "evidence_tiers.yaml reports a non-positive E2 strength, so the "
+            "deterministic breakdown has no scale to map onto"
+        )
+    span = _PRESCREEN_PARAM_CEILING - 1
+    scaled = 1 + span * (float(value) / top)
+    return max(1, min(_PRESCREEN_PARAM_CEILING, int(round(scaled))))
 
 
-def _fallback_comment(key: str, name: str) -> str:
-    """A retrieval-only comment for one category.
+def _prescreen_comment(name: str, result: prescreen.PreScreenResult) -> str:
+    """A readable 25-30 word note saying what this placement actually rests on.
 
-    The four legacy categories keep their hand-written comments, which say
-    plainly and in 25-30 words what a similarity-derived placement is and is
-    not. A category this release cannot have known about gets a generated
-    sentence in the same register: honest that the placement came from document
-    similarity, and specific enough to name the category the reader is looking
-    at.
+    Names the evidence, not the arithmetic. "Ranked by document similarity" was
+    the honest sentence when the placement came from a retrieval rank; the
+    honest sentence now is which tier of evidence the resume reached and how
+    much of the role it spoke to, because that is what a recruiter would need in
+    order to disagree with it.
     """
-    if key in _FALLBACK_COMMENTS:
-        return _FALLBACK_COMMENTS[key]
-    return (
-        f"{name} here is estimated from overall similarity between this resume and "
-        "the job description rather than a detailed reading, so confirm it directly "
-        "against the candidate's own document before deciding."
+    tier = result.internal.best_tier
+    covered = (
+        f"{result.internal.assessed_requirements} of "
+        f"{result.internal.total_requirements} stated requirements"
+    )
+    if tier is None:
+        return enforce_word_range(
+            f"{name} could not be read from this resume against {covered}, so this "
+            "placement carries no evidence behind it and the document needs a "
+            "person to look at it directly before any decision."
+        )
+    strength = {
+        prescreen.TIER_ARTEFACT: "an artefact the candidate supplied",
+        prescreen.TIER_SPECIFIC: "self-description carrying checkable specifics",
+        prescreen.TIER_ASSERTED: "self-description with nothing checkable behind it",
+    }[tier]
+    return enforce_word_range(
+        f"{name} rests on {strength}, drawn from {covered} on this resume alone, "
+        "so treat it as an early reading and confirm the specifics against the "
+        "document before shortlisting."
     )
 
 
-def _fallback_breakdown(
-    rank_index: int,
-    total: int,
+def prescreen_breakdown(
+    result: prescreen.PreScreenResult,
     categories: tuple[tuple[str, str, str], ...] | None = None,
 ) -> dict:
-    """A full breakdown in the contract shape from retrieval rank alone.
+    """A full breakdown in the contract shape, from resume-stage EVIDENCE.
 
-    Comments are real, readable 25-30 word notes that state plainly that the
-    ranking is similarity-derived; `scoring_mode` carries the machine-readable
-    flag so the UI/audit can tell an LLM score from a degraded one (claude.md
-    rule 9 -- degrade, never crash).
+    One score across every category, which is the same shape the retrieval-rank
+    band had and is honest for the same reason it was honest there: a
+    deterministic pass has one reading of the document and cannot separate
+    education fit from role alignment without a model. What changed is where the
+    number comes from. It is now RPN-PHIL-001 §6.5's effective evidence strength
+    over the requirements this resume actually speaks to, and a requirement the
+    resume is silent about is excluded rather than scored zero (§6.6), so the
+    number never charges a candidate for evidence nobody asked them for.
+
+    `scoring_mode` carries the machine-readable flag, as before. A consumer that
+    read `retrieval_fallback` and treated it as degraded should read
+    `prescreen_evidence` and treat it as deterministic: it is not a degradation
+    of the model pass, it is a different and narrower measurement, and the
+    comments say so in words.
     """
-    score = _fallback_param_score(rank_index, total)
+    score = _prescreen_param_score(result.internal.value)
     resolved = categories or tuple(
         (key, key.replace("_", " ").capitalize(), "") for key in PARAMETERS
     )
     keys = tuple(key for key, _, _ in resolved)
     breakdown: dict[str, Any] = {
-        key: {"score": score, "comment": _fallback_comment(key, name)}
+        key: {"score": score, "comment": _prescreen_comment(name, result)}
         for key, name, _ in resolved
     }
     breakdown["overall"] = {
         "score": compute_overall_score({key: score for key in keys}, keys),
-        "comment": _FALLBACK_COMMENTS["overall"],
+        "comment": _prescreen_comment("This candidate's overall placement", result),
     }
-    breakdown["scoring_mode"] = "retrieval_fallback"
+    breakdown["scoring_mode"] = SCORING_MODE_PRESCREEN
     return enforce_breakdown_comments(breakdown)
 
 
@@ -639,7 +700,7 @@ def _validate_entry(entry: Any, keys: tuple[str, ...] = PARAMETERS) -> dict | No
         ),
         "comment": overall_comment.strip(),
     }
-    breakdown["scoring_mode"] = "llm"
+    breakdown["scoring_mode"] = SCORING_MODE_LLM
     return breakdown
 
 
@@ -924,8 +985,7 @@ async def _score_batch(
     session: AsyncSession,
     jd_text: str,
     batch: list[Profile],
-    rank_by_id: dict[uuid.UUID, int],
-    total: int,
+    prescreened: dict[uuid.UUID, prescreen.PreScreenResult],
     customer_success_patterns: list[dict[str, Any]] | None = None,
     categories: tuple[tuple[str, str, str], ...] | None = None,
 ) -> dict[uuid.UUID, dict]:
@@ -938,8 +998,14 @@ async def _score_batch(
     repaired deterministically by `enforce_breakdown_comments` -- a comment
     outside 25-30 words is never returned from here. Profiles still malformed
     after the retry are skipped with a logged warning; if the whole LLM
-    provider chain is unavailable, every profile gets a deterministic
-    retrieval-rank fallback breakdown instead of crashing.
+    provider chain is unavailable, every profile gets its deterministic
+    pre-screen breakdown instead of crashing.
+
+    `prescreened` is REQUIRED and has no default. Every candidate in the pool is
+    graded before scoring starts, so there is no branch here that could decide a
+    profile is ungradeable and quietly drop it: a candidate linked to a job is
+    always scored, and a missing entry would be the one way that rule could be
+    broken without anything raising.
     """
     payload: dict[str, Any] = {
         "job_description": jd_text,
@@ -967,10 +1033,9 @@ async def _score_batch(
             "matching.llm_unavailable, deterministic fallback for %d profiles", len(batch)
         )
         return {
-            p.id: _fallback_breakdown(
-                rank_by_id.get(p.id, total - 1), total, resolved
-            )
+            p.id: prescreen_breakdown(prescreened[p.id], resolved)
             for p in batch
+            if p.id in prescreened
         }
     results, missing = _extract_valid(raw, {p.id for p in batch}, keys)
 
@@ -1056,6 +1121,7 @@ async def _llm_score(
     session: AsyncSession,
     jd_text: str,
     profiles: list[Profile],
+    prescreened: dict[uuid.UUID, prescreen.PreScreenResult],
     customer_success_patterns: list[dict[str, Any]] | None = None,
     categories: tuple[tuple[str, str, str], ...] | None = None,
 ) -> dict[uuid.UUID, dict]:
@@ -1063,12 +1129,9 @@ async def _llm_score(
 
     Returns {profile_id: breakdown} where breakdown matches the contract's
     "Matching results" JSON block (overall.score computed in Python). When the
-    LLM chain is unavailable, breakdowns are the deterministic retrieval-rank
-    fallback, flagged `scoring_mode = "retrieval_fallback"`."""
+    LLM chain is unavailable, breakdowns come from each candidate's pre-screen
+    evidence reading, flagged `scoring_mode = "prescreen_evidence"`."""
     total = len(profiles)
-    # profiles arrive in retrieval-union order (semantic-first, then keyword) --
-    # position is the fallback rank signal.
-    rank_by_id = {p.id: i for i, p in enumerate(profiles)}
     results: dict[uuid.UUID, dict] = {}
     for i in range(0, total, _RERANK_BATCH_SIZE):
         batch = profiles[i : i + _RERANK_BATCH_SIZE]
@@ -1077,8 +1140,7 @@ async def _llm_score(
                 session,
                 jd_text,
                 batch,
-                rank_by_id,
-                total,
+                prescreened,
                 customer_success_patterns,
                 categories,
             )
@@ -1188,7 +1250,7 @@ async def _customer_success_patterns(
 #     actually does: it removes NUMBERS, not FIELDS. A `{"semantic_rank": 3}`
 #     block would walk straight through it into an API response.
 #   * it has to carry NO assessment number at all. A grade crosses this boundary
-#     as a WORD, for the same reason `ppi._requirement_word` converts one: the
+#     as a WORD, for the same reason `ppi.requirement_word` converts one: the
 #     point at which an integer stops being convertible is the point at which
 #     somebody renders it, and Siddhi -- the declared consumer of `ai_score` --
 #     is the agent that writes the document a client keeps.
@@ -1335,10 +1397,10 @@ def _model_metadata(breakdown: dict) -> dict[str, Any]:
     order = list(llm_providers.provider_order(_SCORING_TASK))
     return {
         "task_type": _SCORING_TASK,
-        # The one field a consumer MUST read. A `retrieval_fallback` breakdown
-        # was ordered by document similarity and never read by a model, and a
-        # report presenting it as a judgement would be presenting a degradation
-        # as a result.
+        # The one field a consumer MUST read. A `prescreen_evidence` breakdown
+        # is a deterministic reading of resume-stage evidence strength and was
+        # never read by a model, and a report presenting it as a judgement would
+        # be presenting a narrower measurement as a wider one.
         "scoring_mode": str(breakdown.get("scoring_mode") or "unknown"),
         "provider": None,
         "provider_order": order,
@@ -1708,20 +1770,15 @@ async def run_matching(
     # per-candidate decision at all.
     categories = tuple(await matching_categories.resolved_categories(session, job_id))
     customer_patterns = await _customer_success_patterns(session, job)
-    reporter.start(
-        "scoring",
-        f"Assessing {len(profiles)} candidate(s) against "
-        f"{len(categories)} matching categor{'y' if len(categories) == 1 else 'ies'}.",
-    )
-    reporter.scored(0, len(profiles))
-    breakdowns = await _llm_score(
-        session, jd_text, profiles, customer_patterns, categories
-    )
-    reporter.scored(len(breakdowns), len(profiles))
-    reporter.finish("scoring")
-    reporter.start("remarks")
 
     # ── Ensure links exist for consenting Databank candidates (FR-4.2/4.4) ──
+    #
+    # BEFORE scoring rather than after, which it used not to be. Two things now
+    # need a link id before the model runs: the pre-screen grade is written onto
+    # the link, and the deterministic breakdown is derived from that same grade.
+    # Creating the links first also means a databank candidate the recruiter has
+    # never seen arrives on the dashboard already carrying a Pre-Screen Grade,
+    # rather than an empty column 3 until somebody re-runs matching.
     existing_links = (
         (
             await session.execute(
@@ -1744,8 +1801,7 @@ async def run_matching(
         )
     }
 
-    scored = 0
-    scored_links: list[tuple[Profile, JobCandidateLink, dict]] = []
+    eligible: list[tuple[Profile, JobCandidateLink]] = []
     for profile in profiles:
         link = links_by_candidate.get(profile.candidate_id)
         if link is None:
@@ -1763,7 +1819,45 @@ async def run_matching(
             links_by_candidate[profile.candidate_id] = link
         if link.profile_id is None:
             link.profile_id = profile.id
+        eligible.append((profile, link))
 
+    # New links need ids before `prescreen.store` can UPDATE them.
+    await session.flush()
+
+    # ── Yukti's pre-screen, refreshed for this run ──────────────────────────
+    #
+    # `resume_parsing.parse_resume` already graded every application at upload,
+    # so this is a REFRESH and not a second implementation: same function, same
+    # arithmetic, run again because the JD may have been edited or a competency
+    # list approved since the resume landed, and because the databank links
+    # created three lines above have never been graded at all.
+    reporter.start("prescreen", f"Reading resume-stage evidence for {len(eligible)} candidate(s).")
+    prescreened: dict[uuid.UUID, prescreen.PreScreenResult] = {}
+    for profile, link in eligible:
+        prescreened[profile.id] = await prescreen.grade_link(session, job, profile, link)
+    reporter.finish("prescreen", f"{len(prescreened)} resume(s) read for evidence.")
+
+    reporter.start(
+        "scoring",
+        f"Assessing {len(profiles)} candidate(s) against "
+        f"{len(categories)} matching categor{'y' if len(categories) == 1 else 'ies'}.",
+    )
+    reporter.scored(0, len(profiles))
+    breakdowns = await _llm_score(
+        session,
+        jd_text,
+        [profile for profile, _ in eligible],
+        prescreened,
+        customer_patterns,
+        categories,
+    )
+    reporter.scored(len(breakdowns), len(profiles))
+    reporter.finish("scoring")
+    reporter.start("remarks")
+
+    scored = 0
+    scored_links: list[tuple[Profile, JobCandidateLink, dict]] = []
+    for profile, link in eligible:
         if profile.id in breakdowns:
             # Belt and braces: nothing reaches storage outside 25-30 words.
             breakdown = enforce_breakdown_comments(breakdowns[profile.id])

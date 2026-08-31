@@ -515,12 +515,25 @@ async def test_an_empty_ledger_is_not_a_contradiction(monkeypatch) -> None:
 
 
 def test_the_report_row_carries_the_flag_beside_the_gates() -> None:
-    """Two independent questions -- is the DRAFT sound, and does the EVIDENCE
-    under it disagree with itself -- OR'd rather than blended, so a clean draft
-    cannot cancel out a contradiction nobody has resolved."""
+    """Four independent questions -- is the DRAFT sound, does the EVIDENCE under
+    it disagree with itself, did Miti's aggregation flag anything, and was any
+    recorded evidence unreadable -- OR'd rather than blended, so a clean draft
+    cannot cancel out a contradiction nobody has resolved.
+
+    Miti's own verdict joined the OR on 2026-08-29, when the five-dimension
+    engine went live. It is OR'd for the same reason as the other three: an
+    average of independent review signals lets one clean answer hide another.
+    """
     source = inspect.getsource(fa.synthesis_node)
-    assert '"needs_human_review": not gate_verdict.passed or uncertainty_review' in source
+    for term in (
+        "not gate_verdict.passed",
+        "uncertainty_review",
+        "aggregate.needs_human_review",
+        "evaluation.unresolved_evidence",
+    ):
+        assert term in source, term
     assert "+ evidence_findings" in source
+    assert "+ miti_findings" in source
 
 
 # ── 5. no grading rule changed ───────────────────────────────────────────────

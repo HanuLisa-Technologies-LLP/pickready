@@ -291,7 +291,7 @@ def test_no_engineering_VALUE_from_the_artifact_appears_on_a_client_surface() ->
 def test_the_internal_category_score_does_not_cross_the_agent_boundary() -> None:
     """A grade crosses as a WORD.
 
-    Same argument `ppi._requirement_word` makes: the point at which an integer
+    Same argument `ppi.requirement_word` makes: the point at which an integer
     stops being convertible is the point at which somebody renders it, and the
     declared consumer of this artifact is the agent that writes the report.
     """
@@ -591,10 +591,11 @@ async def test_the_handoff_still_publishes_with_the_whole_llm_chain_down(
 ) -> None:
     """The degraded run is the one a consumer most needs told about.
 
-    A `retrieval_fallback` breakdown was ordered by document similarity and
-    never read by a model. It still publishes -- refusing would leave Siddhi
-    unable to tell a degraded score from a candidate who was never matched --
-    and `model.scoring_mode` is the field that keeps that honest.
+    A `prescreen_evidence` breakdown is Yukti's deterministic reading of
+    resume-stage evidence strength and was never read by a model. It still
+    publishes -- refusing would leave Siddhi unable to tell a deterministic
+    score from a candidate who was never matched -- and `model.scoring_mode` is
+    the field that keeps that honest.
     """
     async def _down(*_args, **_kwargs):
         raise llm_router.LLMUnavailableError("every provider is dark")
@@ -606,7 +607,10 @@ async def test_the_handoff_still_publishes_with_the_whole_llm_chain_down(
     assert scored == 2
     assert len(harness.published) == 2
     for artifact in harness.published:
-        assert artifact.payload["model"]["scoring_mode"] == "retrieval_fallback"
+        assert (
+            artifact.payload["model"]["scoring_mode"]
+            == matching.SCORING_MODE_PRESCREEN
+        )
         assert artifact.payload["model"]["provider"] is None
 
 
@@ -806,12 +810,21 @@ class _FakeSession:
         self.added: list[Any] = []
 
     async def get(self, model: Any, _ident: Any = None) -> Any:
+        # `Candidate` resolves to None on purpose: the pre-screen reads a
+        # candidate only to strip that person's name out of their own resume
+        # text, and a fixture with no candidate row is the harder case, not the
+        # easier one.
         return self.job if model is Job else None
 
     async def execute(self, query: Any, params: dict | None = None) -> _Rows:
         if isinstance(query, TextClause):
             sql = str(query)
-            if "UPDATE job_candidate_links" in sql and params:
+            # Matched on the assigned COLUMN, not on the table. The pipeline
+            # now writes twice to this table per candidate, the pre-screen grade
+            # before scoring and the breakdown after it, and a table-level match
+            # would file one under the other's key and then fail on a parameter
+            # name it does not have.
+            if "SET match_breakdown_json" in sql and params:
                 self.written[params["id"]] = params["breakdown"]
             return _Rows([])
         entity = query.column_descriptions[0]["entity"]

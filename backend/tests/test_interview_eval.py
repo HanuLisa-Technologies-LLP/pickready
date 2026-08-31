@@ -50,9 +50,21 @@ async def test_the_eval_actually_exercises_the_agent() -> None:
         "question_integrity",
         "no_praise",
         "deterministic_budget",
+        # Added 2026-08-29. `evidence_graph.py` had ZERO importers, so the
+        # department graph was present in the codebase and reachable by nothing
+        # while every unit test on the module passed. This measurement is the
+        # number that moves if that happens again.
+        "department_evidence_graph",
+        "specificity_gradient",
     ):
         assert name in by_name, f"the {name} measurement disappeared"
         assert by_name[name].total > 0, f"{name} measured zero cases"
+
+    # A role from every one of Part VI's fifteen departments would be ideal and
+    # is not what this asserts: what it asserts is that the set cannot quietly
+    # shrink to one easy case.
+    assert len(eval_interview.ROLES_BY_DEPARTMENT) >= 12
+    assert len(eval_interview.ROLES_OUTSIDE_PART_VI) >= 3
 
     # The production strings that started all of this must stay in the set.
     assert by_name["non_answer_detection"].total >= len(eval_interview.NON_ANSWERS)

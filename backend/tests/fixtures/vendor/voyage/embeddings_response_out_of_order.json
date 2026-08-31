@@ -1,0 +1,26 @@
+{
+  "_provenance": {
+    "authored_from": "Voyage embeddings API published response schema. The documentation states that data rows carry an explicit index; it does not promise arrival order, which is why the client sorts on index rather than trusting position.",
+    "observed": false,
+    "notes": "The rows below are deliberately reversed. This fixture exists to prove the client restores request order, because an out-of-order batch attaches every candidate's vector to the next candidate's row and no test of the happy path would show it."
+  },
+  "status": 200,
+  "headers": {"content-type": "application/json"},
+  "body": {
+    "object": "list",
+    "data": [
+      {
+        "object": "embedding",
+        "embedding": [-0.0092, 0.0377, 0.0145, -0.0263, 0.0408, -0.0116, 0.0229, -0.0044],
+        "index": 1
+      },
+      {
+        "object": "embedding",
+        "embedding": [0.0163, -0.0421, 0.0088, 0.0512, -0.0197, 0.0334, -0.0059, 0.0271],
+        "index": 0
+      }
+    ],
+    "model": "voyage-context-4",
+    "usage": {"total_tokens": 418}
+  }
+}

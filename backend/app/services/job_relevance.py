@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.candidate import Profile
 from app.models.job import Job
 from app.services.candidate_profile_form import searchable_text
+from app.services.hiring import ontology
 
 logger = logging.getLogger(__name__)
 
@@ -142,11 +143,31 @@ def _job_terms(job: Job) -> set[str]:
 
 
 def keyword_score(signal: CandidateSignal, job: Job) -> float:
-    """Fraction of the job's distinctive terms the candidate's profile covers."""
+    """Fraction of the job's distinctive concepts the candidate's profile covers.
+
+    CONCEPTS, not words. This used to be a bare set intersection, which meant a
+    candidate whose resume says "production support" scored zero against a role
+    asking for "site reliability" and never saw the job on their own board. That
+    is the same fairness failure RPN-PHIL-001 §58 names on the recruiter side,
+    arriving at the candidate: the board a person is shown is decided by which
+    vocabulary they were trained in.
+
+    ONE ONTOLOGY, shared with Yukti's pre-screen and with the matching
+    pipeline's keyword stage (spec-doc6 §4.6). A second copy here would drift
+    from the first, and a fairness table that disagrees with itself between two
+    surfaces is worse than one table that is wrong, because only one of those is
+    findable.
+
+    The denominator stays the job's own distinct concepts, so expansion cannot
+    inflate the score by making the job look like it wants more things.
+    """
     job_terms = _job_terms(job)
     if not job_terms or not signal.terms:
         return 0.0
-    return len(job_terms & signal.terms) / len(job_terms)
+    concepts = {ontology.canonical(term) for term in job_terms}
+    if not concepts:
+        return 0.0
+    return len(ontology.overlap(job_terms, signal.terms)) / len(concepts)
 
 
 async def semantic_scores(

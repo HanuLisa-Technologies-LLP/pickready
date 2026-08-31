@@ -101,6 +101,7 @@ __all__ = [
     "MAX_FOLLOW_UPS",
     "MAX_FOLLOW_UPS_PER_QUESTION",
     "STOP_EVERY_DIMENSION_COVERED",
+    "STOP_EVIDENCE_SUFFICIENT",
     "STOP_FLOOR_REACHED",
     "STOP_NO_CONFLICT_OUTSTANDING",
     "STOP_NO_PROBE_OUTSTANDING",
@@ -110,6 +111,7 @@ __all__ = [
     "challenge_non_answer",
     "compose_next_question",
     "conversation_state",
+    "extension_ceiling",
     "follow_up_budget",
     "is_semantic_repeat",
     "next_follow_up",
@@ -313,6 +315,15 @@ class _DecideState(TypedDict, total=False):
     #: asked is worse than no probe: it spends a scarce budget to demonstrate
     #: that nobody was listening.
     asked_before: list[str]
+    #: How far up 38.3's specificity gradient this matrix item has already been
+    #: probed. Zero means "not above the base question", which is the ordinary
+    #: case and the default.
+    specificity_reached: int
+    #: What the department evidence graph says this item must establish, and
+    #: which corroboration is out of reach. Absent when no Part VI department
+    #: covers the role, in which case the probe is written from the answer
+    #: alone, exactly as it was before.
+    evidence_target: dict[str, Any] | None
     # working
     stop: bool
     raw: str | None
@@ -431,13 +442,54 @@ async def _decide_substance(state: _DecideState) -> _DecideState:
     return {"stop": False}
 
 
+def _probe_specificity(reached: int) -> dict[str, Any] | None:
+    """The rung of 38.3's gradient a probe should aim at, as payload data.
+
+    A FOLLOW-UP IS WHERE THE DISCRIMINATION HAPPENS, so the floor is the first
+    DISCRIMINATING rung rather than the next one after whatever the base
+    question used. 38.3 is explicit that a generative model produces plausible
+    level 1 to 3 content effortlessly and generic level 4 to 5 content, and that
+    real experience produces specific level 4 to 5 content. A probe that lands
+    below that line spends the conversation's scarcest budget on a rung the
+    base question already covered.
+
+    Returns None rather than raising when the Runbook data is unreachable. This
+    runs on a live turn with a candidate waiting, and the correct degradation is
+    the probe the product asked yesterday, not a failed request.
+    """
+    from app.services.hiring import evidence_graph  # noqa: PLC0415
+
+    try:
+        discriminators = evidence_graph.discriminator_levels()
+        floor = (min(discriminators) - 1) if discriminators else 0
+        level = evidence_graph.next_specificity_level(max(int(reached), floor))
+    except Exception as exc:  # noqa: BLE001 -- see the docstring
+        logger.info(
+            "interviewer.specificity_unavailable error=%s", type(exc).__name__
+        )
+        return None
+    if level is None:
+        return None
+    # THE RUNG NUMBER IS NOT SENT. It is engineering metadata and the model has
+    # no use for it, but it is a number in a payload one turn away from text a
+    # candidate reads, and this product's oldest rule is that no number reaches
+    # a client. The two sentences carry the whole rung.
+    return {"question": level.question, "answerable_by": level.answerable_by}
+
+
 async def _decide_assess(state: _DecideState) -> _DecideState:
     """The model call. Every exception becomes stop=True, never a raised error."""
-    payload = {
+    payload: dict[str, Any] = {
         "current_question": state.get("question"),
         "candidate_answer": state.get("answer"),
         "conversation_so_far": _recent(state.get("transcript")),
     }
+    specificity = _probe_specificity(int(state.get("specificity_reached") or 0))
+    if specificity is not None:
+        payload["probe_at_specificity"] = specificity
+    target = state.get("evidence_target")
+    if target:
+        payload["evidence_target"] = target
     try:
         raw = await llm_router.invoke_llm(
             "conversation_turn",
@@ -930,6 +982,10 @@ STOP_NO_PROBE_OUTSTANDING = "no_probe_outstanding"
 #: one outstanding throws away the only chance to ask.
 STOP_NO_CONFLICT_OUTSTANDING = "no_conflict_outstanding"
 STOP_PROMPTS_EXHAUSTED = "prompts_exhausted"
+#: 6.7's sufficiency floor, as far as a CONVERSATION can satisfy it. Added
+#: 2026-08-29 for spec-doc6 4.4: "Ends when Sutra's question-count range AND
+#: evidence sufficiency are both satisfied."
+STOP_EVIDENCE_SUFFICIENT = "evidence_sufficient"
 
 
 @dataclass(frozen=True)
@@ -943,6 +999,18 @@ class DimensionEvidence:
     #: From the ledger, never from the transcript.
     conflicting: bool = False
     weak: bool = False
+    #: Whether this matrix item is a Must-have. 6.7's sufficiency floor is
+    #: stated over MUST-HAVE competencies, and nothing else: "All must-have
+    #: competencies at >= 1 independent group beyond self-report". Defaults to
+    #: False so a caller that has not marked any keeps the strict reading below
+    #: rather than silently getting a weaker one.
+    must_have: bool = False
+    #: The question key an extension probe on this item would be filed under.
+    #: EMPTY IS NOT A DEFAULT VALUE, it is "this item cannot be extended": an
+    #: extension needs an existing `candidate_questions` row to answer under, or
+    #: the answer lands on a key `answers_by_key` has never heard of and every
+    #: scorer drops it silently.
+    question_key: str = ""
 
     @property
     def state(self) -> str:
@@ -975,6 +1043,10 @@ class ConversationState:
     total_written: int = 0
     floor: int = 0
     probe_outstanding: bool = False
+    #: How many extension probes this conversation has already spent. Counted
+    #: against `follow_ups_used`, which is already a persisted column, so an
+    #: extension survives a retry and needs no migration.
+    extensions_used: int = 0
 
     def _named(self, state: str) -> tuple[str, ...]:
         return tuple(
@@ -1039,6 +1111,65 @@ class ConversationState:
         )
 
     @property
+    def critical(self) -> tuple[DimensionEvidence, ...]:
+        """The dimensions 6.7's sufficiency floor is stated over.
+
+        ONE RULE, NOT TWO PATHS. 6.7 states the floor over MUST-HAVE
+        competencies. When the caller has marked which items those are, they are
+        the critical set; when it has marked none, every dimension is critical.
+        The second half is the strict direction and it is deliberate: "restrict
+        more when unsure" applies exactly here, because the higher authority is
+        silent about a matrix that does not say which of its items are
+        essential, and the alternative reading -- no must-haves marked, so the
+        floor is vacuously met -- would let an unwired caller declare every
+        conversation sufficient and close it at the grade minimum.
+        """
+        marked = tuple(item for item in self.dimensions if item.must_have)
+        return marked or self.dimensions
+
+    @property
+    def unevidenced(self) -> tuple[DimensionEvidence, ...]:
+        """Critical dimensions the conversation has not established.
+
+        A dimension is established when a SUBSTANTIVE answer stands under it
+        with nothing outstanding, which is `COVERAGE_COVERED`. That maps onto
+        6.7's Moderate row -- "all must-have competencies at >= 1 independent
+        group beyond self-report" -- because the assessment IS an independence
+        group beyond self-report: it is source 3 of 38.1's six, and the resume
+        the candidate wrote is source 1. An evasive or empty answer is not
+        evidence and does not establish anything, which is what stops a
+        candidate shortening their own assessment by not answering.
+        """
+        return tuple(
+            item for item in self.critical if item.state != COVERAGE_COVERED
+        )
+
+    @property
+    def evidence_sufficient(self) -> bool:
+        return bool(self.dimensions) and not self.unevidenced
+
+    def extension_targets(self, ceiling: int) -> tuple[DimensionEvidence, ...]:
+        """Which unevidenced items an extension may still probe, bounded.
+
+        `ceiling` is `evidence_graph.extension_ceiling()`, taken from 38.3 and
+        passed in rather than imported, so this stays a pure function and the
+        derivation stays in one place.
+
+        AN ITEM WITH NO `question_key` IS EXCLUDED, not extended under a new
+        key. An extension probe is answered under an EXISTING matrix item's
+        question key so `answers_by_key` files it with that item's other
+        answers; inventing a key would hand every scorer an entry it drops
+        silently, which is the failure the follow-up contract has always
+        prevented.
+        """
+        remaining = max(0, int(ceiling) - int(self.extensions_used))
+        if remaining <= 0:
+            return ()
+        return tuple(
+            item for item in self.unevidenced if item.question_key
+        )[:remaining]
+
+    @property
     def stop_conditions(self) -> tuple[str, ...]:
         """Which stop conditions currently hold, in a stable order.
 
@@ -1058,6 +1189,8 @@ class ConversationState:
             met.append(STOP_NO_PROBE_OUTSTANDING)
         if not self.conflicting_evidence:
             met.append(STOP_NO_CONFLICT_OUTSTANDING)
+        if self.evidence_sufficient:
+            met.append(STOP_EVIDENCE_SUFFICIENT)
         if self.total_written and self.asked >= self.total_written:
             met.append(STOP_PROMPTS_EXHAUSTED)
         return tuple(met)
@@ -1078,6 +1211,8 @@ class ConversationState:
             "conflicting_evidence": len(self.conflicting_evidence),
             "remaining": len(self.remaining),
             "asked": self.asked,
+            "unevidenced": len(self.unevidenced),
+            "extensions_used": self.extensions_used,
             "confidence": self.confidence,
             "stop_conditions": list(self.stop_conditions),
         }
@@ -1090,6 +1225,7 @@ def conversation_state(
     total_written: int,
     floor: int,
     probe_outstanding: bool,
+    extensions_used: int = 0,
 ) -> ConversationState:
     """Assemble the state. Pure, deterministic, and calls no model.
 
@@ -1103,7 +1239,33 @@ def conversation_state(
         total_written=int(total_written),
         floor=int(floor),
         probe_outstanding=bool(probe_outstanding),
+        extensions_used=int(extensions_used),
     )
+
+
+def extension_ceiling() -> int:
+    """How many probes a conversation may add above Sutra's written plan.
+
+    RE-EXPORTED FROM `evidence_graph`, imported lazily, and NEVER restated as a
+    number here. The derivation and its citation live in one place, and this is
+    the seam the conversation reads it through so a caller does not have to
+    reach into the hiring package for one integer.
+
+    Returns MAX_FOLLOW_UPS when the Runbook data is unreachable. That is the
+    floor this module already uses for a caller that passes no budget, so an
+    unreadable data package costs the conversation its extension and nothing
+    else -- a candidate is mid-assessment, and refusing the turn over a data
+    file would end their assessment rather than shorten it.
+    """
+    from app.services.hiring import evidence_graph  # noqa: PLC0415
+
+    try:
+        return int(evidence_graph.extension_ceiling())
+    except Exception as exc:  # noqa: BLE001 -- see the docstring
+        logger.info(
+            "interviewer.extension_ceiling_unavailable error=%s", type(exc).__name__
+        )
+        return MAX_FOLLOW_UPS
 
 
 # ── Public entry points ──────────────────────────────────────────────────────
@@ -1119,6 +1281,8 @@ async def next_follow_up(
     already_followed_up: bool,
     budget: int | None = None,
     asked_before: Sequence[str] | None = None,
+    specificity_reached: int = 0,
+    evidence_target: dict[str, Any] | None = None,
 ) -> str | None:
     """One adaptive follow-up, or None to ask the next scripted question.
 
@@ -1147,6 +1311,8 @@ async def next_follow_up(
                 "already_followed_up": already_followed_up,
                 "budget": budget if budget is not None else MAX_FOLLOW_UPS,
                 "asked_before": list(asked_before or ()),
+                "specificity_reached": int(specificity_reached or 0),
+                "evidence_target": evidence_target,
             }
         )
     except Exception as exc:  # noqa: BLE001

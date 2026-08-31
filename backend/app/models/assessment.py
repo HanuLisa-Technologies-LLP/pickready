@@ -13,7 +13,17 @@ Two tables joined the original Functional Skills set on 2026-07-30:
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -79,6 +89,51 @@ class JobCompetency(Base, UUIDPKMixin, CreatedAtMixin):
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── Sutra's seven stages (migration 0064, Runbook §19) ───────────────────
+    #
+    # Nothing enters the Tatva matrix without completing all seven, and these
+    # columns are where the other six land. Before 0064 the row kept stage 1's
+    # output and threw the rest away, so "why is this item weighted the way it
+    # is" could only be answered by re-running a pipeline whose inputs may since
+    # have changed -- which is not an answer.
+    #
+    # ALL NULLABLE, because a row written before 0064 has none of them and a
+    # NOT NULL column would have required inventing values for criteria that
+    # were never derived this way. `hiring.scorecard.load_frozen_matrix` reads
+    # the absence as "this job predates the seven-stage pipeline" and refuses,
+    # rather than filling in a weight nobody derived.
+    #
+    # INTERNAL. `weight`, `threshold_json` and `provenance_json` are ranking
+    # data of the same status as `report_dimensions.required_level`: they are
+    # projected to words by `ppi._matrix_item` and to sentences by
+    # `hiring.scorecard.plain_provenance`, and never serialised as numbers.
+
+    #: Stage 1's second output: which of the five evaluation dimensions this
+    #: competency speaks to. The situation-type multiplier acts through it.
+    dimension: Mapped[str | None] = mapped_column(String(40))
+    #: Stage 2. "What would we SEE if this were true?"
+    observable_evidence: Mapped[str | None] = mapped_column(Text)
+    #: Stage 3, a list of `department_models.EVIDENCE_SOURCES` keys.
+    evidence_sources: Mapped[list | None] = mapped_column(JSONB)
+    #: Stage 4, one of `transformation.METHODS`.
+    assessment_method: Mapped[str | None] = mapped_column(String(40))
+    #: Stage 5's value. The four terms behind it are in `provenance_json`.
+    weight: Mapped[float | None] = mapped_column(Float)
+    #: Stage 6, as `transformation.Threshold.as_dict()`.
+    threshold_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: Stage 7, the only optional stage.
+    disqualifier: Mapped[str | None] = mapped_column(Text)
+    #: The Layer 1 / Layer 2 / Layer 3 terms and every clamp that fired.
+    provenance_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: The hiring manager's own sentence, quoted so the review screen can show
+    #: their words beside the criterion those words produced.
+    swot_origin: Mapped[str | None] = mapped_column(Text)
+    #: The department-model competency stage 1 named this from, or NULL when the
+    #: requirement is genuinely role-specific. NULL is an honest provenance.
+    anchor_key: Mapped[str | None] = mapped_column(String(80))
+    #: §20.3's force-ranking position, 1..n within the scored competencies.
+    force_rank: Mapped[int | None] = mapped_column(Integer)
 
 
 class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):

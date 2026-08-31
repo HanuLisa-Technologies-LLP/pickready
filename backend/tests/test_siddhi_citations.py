@@ -245,8 +245,7 @@ def test_the_aggregates_evidence_refs_are_the_known_set() -> None:
         [
             DimensionResult("verified_competence", "strong", ("e1", "e2")),
             DimensionResult("track_record_impact", "solid", ("e2", "e3")),
-        ],
-        independence=2,
+        ]
     )
     # De-duplicated, order preserved: two dimensions citing the same evidence is
     # normal and must not double-count.

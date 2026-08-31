@@ -1,4 +1,4 @@
-"""Yukti's ontology and Vaada's evidence graph.
+"""Yukti's ontology.
 
 Both exist for the same reason and it is the one spec-doc5 states about the
 ontology: vocabulary mismatch is a FAIRNESS problem, not only a quality one.
@@ -7,16 +7,14 @@ training -- so a retrieval layer that scores "semantic technologies" below
 "graph database" is measuring which words somebody was taught, not what they can
 do.
 
-The evidence graph is the same idea applied to the conversation: without a
-coverage structure, a fluent interviewer can spend five questions establishing
-one thing five ways and never ask what would corroborate it.
+Vaada's Department Evidence Graph is the same idea applied to the conversation
+and is tested in `test_vaada_live.py`, beside the live path that reads it.
 """
 from __future__ import annotations
 
 import pytest
 
-from app.services.hiring import evidence_graph, ontology
-from app.services.hiring.department_models import DEPARTMENTS
+from app.services.hiring import ontology
 
 
 # ── The ontology ─────────────────────────────────────────────────────────────
@@ -120,130 +118,3 @@ def test_no_group_has_a_duplicate_member() -> None:
     for group in ontology.EQUIVALENCE_GROUPS:
         normalised = [ontology.normalise(t) for t in group]
         assert len(normalised) == len(set(normalised)), group
-
-
-# ── The evidence graph ───────────────────────────────────────────────────────
-
-
-def test_every_department_has_a_graph() -> None:
-    for key in DEPARTMENTS:
-        assert evidence_graph.nodes_for(key), key
-
-
-def test_every_node_points_at_a_real_competency() -> None:
-    """A node serving a competency no department model has is a node nothing
-    will ever reach."""
-    for department, nodes in evidence_graph.GRAPHS.items():
-        model = DEPARTMENTS[department]
-        known = {c.key for c in model.competencies}
-        for node in nodes:
-            assert node.competency_key in known, (department, node.competency_key)
-
-
-def test_every_node_names_a_hollow_tell_and_a_corroboration() -> None:
-    for department, nodes in evidence_graph.GRAPHS.items():
-        for node in nodes:
-            assert node.establishes.strip(), (department, node.key)
-            assert node.hollow_tell.strip(), (department, node.key)
-            assert node.corroborated_by, (department, node.key)
-
-
-def test_a_node_establishes_a_fact_rather_than_asking_a_question() -> None:
-    """A question is what Vaada writes fresh, per candidate. Putting questions
-    here would rebuild the preset bank this codebase deleted on 2026-08-06."""
-    for nodes in evidence_graph.GRAPHS.values():
-        for node in nodes:
-            assert not node.establishes.strip().endswith("?"), node.key
-
-
-def test_every_unlocked_node_exists_in_its_own_graph() -> None:
-    """A dangling edge would silently never fire."""
-    for department, nodes in evidence_graph.GRAPHS.items():
-        keys = {node.competency_key for node in nodes}
-        for node in nodes:
-            for unlocked in node.unlocks:
-                assert unlocked in keys, (department, node.key, unlocked)
-
-
-def test_the_next_target_is_deterministic() -> None:
-    """`interviewer` keeps its COVERAGE PLAN deterministic while letting the
-    WORDS vary per candidate, because a fixed plan is what keeps two candidates
-    on one job comparable. Same rule here."""
-    matrix = ["systems_design", "production_ownership", "code_quality"]
-    first = evidence_graph.next_target(department="engineering", matrix_keys=matrix)
-    again = evidence_graph.next_target(department="engineering", matrix_keys=matrix)
-    assert first is not None
-    assert first.key == again.key
-
-
-def test_the_next_target_respects_sutras_weights() -> None:
-    matrix = ["systems_design", "code_quality"]
-    default = evidence_graph.next_target(department="engineering", matrix_keys=matrix)
-    weighted = evidence_graph.next_target(
-        department="engineering",
-        matrix_keys=matrix,
-        weights={"code_quality": 5.0},
-    )
-    assert default is not None and weighted is not None
-    assert default.key == "systems_design"
-    assert weighted.key == "code_quality"
-
-
-def test_an_established_node_is_not_targeted_again() -> None:
-    matrix = ["systems_design", "production_ownership"]
-    first = evidence_graph.next_target(department="engineering", matrix_keys=matrix)
-    second = evidence_graph.next_target(
-        department="engineering", matrix_keys=matrix, established=[first.key]
-    )
-    assert second is not None and second.key != first.key
-
-
-def test_the_conversation_follows_the_graphs_edges() -> None:
-    """Following the edges is the difference between an interview and a
-    questionnaire."""
-    matrix = ["systems_design", "production_ownership", "code_quality", "collaboration"]
-    after_design = evidence_graph.next_target(
-        department="engineering", matrix_keys=matrix, established=["systems_design"]
-    )
-    # `systems_design` unlocks `production_ownership`.
-    assert after_design is not None
-    assert after_design.key == "production_ownership"
-
-
-def test_an_exhausted_graph_returns_none() -> None:
-    matrix = ["systems_design"]
-    assert (
-        evidence_graph.next_target(
-            department="engineering", matrix_keys=matrix, established=["systems_design"]
-        )
-        is None
-    )
-
-
-def test_a_competency_with_no_node_returns_none_not_a_substitute() -> None:
-    """A role-specific competency has no graph node, and Vaada falls back to the
-    matrix item's own observable-evidence statement -- which stage 2 guaranteed
-    exists."""
-    assert (
-        evidence_graph.node_for_competency("speaks_japanese", "engineering") is None
-    )
-
-
-def test_out_of_band_corroboration_is_reported_rather_than_dropped() -> None:
-    """A competency the assessment can probe and cannot confirm is one Miti
-    should hold confidence down on. Saying so is more honest than treating a
-    well-argued answer as corroborated."""
-    node = evidence_graph.node_for_competency("people_leadership", "generic")
-    assert node is not None
-    reachable, out_of_band = evidence_graph.corroboration_targets(
-        node, available_sources=["answer"]
-    )
-    assert any("reference" in target for target in out_of_band)
-
-
-def test_no_available_sources_means_everything_is_out_of_band() -> None:
-    node = evidence_graph.node_for_competency("core_craft", "generic")
-    assert node is not None
-    reachable, out_of_band = evidence_graph.corroboration_targets(node)
-    assert reachable == []
-    assert out_of_band

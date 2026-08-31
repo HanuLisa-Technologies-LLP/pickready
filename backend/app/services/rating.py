@@ -34,7 +34,6 @@ __all__ = [
     "MODERATE_OR_BELOW",
     "PROBE_THRESHOLD",
     "band_index_for",
-    "cap_to_moderately",
     "grade_for_percent",
     "grade_for_ten",
 ]
@@ -66,13 +65,24 @@ PROBE_THRESHOLD = 75
 #: so the Moderately band ends one point below where Matching begins, and a
 #: hand-written 74 here would silently stop agreeing with `grade_for_percent`
 #: the first time a cut-point moved.
+#:
+#: IT IS NOT THE BAND CAP'S CEILING, and it used to be. The Runbook's controls
+#: cap at the top of "Consider with reservations", which is 71 (RPN-PHIL-001
+#: section 10.8), and this is the top of "Moderately Matching" on the product's
+#: four-grade scale, which is 74. They are the SAME BAND on two scales and
+#: three points apart as numbers. The ceiling now comes from
+#: `runbook_data/bands.yaml` through `miti/caps.py`, and
+#: `tests/test_band_caps.py` pins both numbers so that anybody who "fixes" one
+#: to match the other has to decide which document they are following.
 MODERATELY_CEILING = PROBE_THRESHOLD - 1
 
 
 def grade_for_percent(score: int | float | None) -> str | None:
     """Grade for an internal 0-100 score. None in, None out.
 
-    Pure and side-effect free; unit-tested in tests/test_rating.py.
+    Pure and side-effect free. Swept across the whole 0-100 range by
+    tests/test_grade_scale_consistency.py, which also asserts that the
+    persisted `Tier` scale agrees with it at every point.
     """
     if score is None or isinstance(score, bool):
         return None
@@ -99,21 +109,15 @@ def grade_for_ten(score: int | float | None) -> str | None:
         return None
 
 
-def cap_to_moderately(score: int | float | None) -> int | None:
-    """Hold a score down to Moderately Matching, never raising it.
-
-    The arithmetic half of the Must-have hard cap (spec §5.5): if any Must-have
-    item grades Not Matching, the Overall Grade cannot exceed Moderately
-    Matching regardless of how strong everything else is.
-
-    `min`, not an assignment, and that is the whole subtlety. A candidate whose
-    aggregate already grades Not Matching must STAY Not Matching -- a cap that
-    set the score would quietly promote the weakest candidates into the band it
-    was written to keep the strong ones out of.
-    """
-    if score is None:
-        return None
-    return min(int(score), MODERATELY_CEILING)
+# `cap_to_moderately` was DELETED on 2026-08-29, not deprecated. It was the
+# arithmetic half of a rule called "the Must-have hard cap" that cited a spec
+# section the Runbook does not have, and it implemented ONE of the three
+# band-capping controls RPN-PHIL-001 states. All three now live in
+# `services/miti/caps.py`, with their ceilings read from
+# `runbook_data/bands.yaml` and composed by taking the lowest. Leaving this
+# function in place would have been a second implementation of one concept,
+# capping three points higher than the Runbook does, available to any caller
+# who reached for the obvious name.
 
 
 def band_index_for(label: str | None) -> int:

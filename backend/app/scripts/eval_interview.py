@@ -427,6 +427,120 @@ def _measure_no_numbers_reach_a_candidate() -> Result:
     return result
 
 
+#: Roles the resolver must place in the department Part VI names, one per
+#: department that a job board in this market would actually post. Kept SMALL
+#: and CONCRETE: this measures whether the graph is reachable for an ordinary
+#: role, not how clever the matcher is.
+ROLES_BY_DEPARTMENT: tuple[tuple[str, str], ...] = (
+    ("Senior Backend Engineer", "it_software_engineering"),
+    ("Data Scientist", "data_analytics_data_science_ai_ml"),
+    ("Mechanical Design Engineer", "mechanical_engineering_manufacturing"),
+    ("PLC Automation Engineer", "electrical_electronics_engineering"),
+    ("Quantity Surveyor", "civil_structural_construction"),
+    ("Project Architect", "architecture_built_environment"),
+    ("Financial Analyst", "finance_accounting"),
+    ("Talent Acquisition Specialist", "human_resources"),
+    ("Inside Sales Representative", "sales_marketing_business_development"),
+    ("Supply Chain Planner", "operations_supply_chain_logistics"),
+    ("CNC Machine Operator", "skilled_trades_blue_collar_frontline"),
+    ("Customer Support Associate", "non_technical_support_administrative"),
+)
+
+#: Roles Part VI does not cover. Section 36 names legal, healthcare clinical,
+#: education, hospitality, media, agriculture and public sector as departments
+#: Ready Pick Now will encounter, and requires a model authored through its own
+#: procedure. Guessing one of the fifteen for these is the failure.
+ROLES_OUTSIDE_PART_VI: tuple[str, ...] = (
+    "Staff Nurse",
+    "Legal Counsel",
+    "Sous Chef",
+    "Primary School Teacher",
+)
+
+
+def _measure_department_graph_reachability() -> Result:
+    """Whether an ordinary role can actually reach its Department Evidence Graph.
+
+    THE FAILURE THIS EXISTS FOR IS THE ONE spec-doc6 4.4 WAS WRITTEN ABOUT:
+    `evidence_graph.py` had zero importers, so the graph was present in the
+    codebase and reachable by nothing. A unit test on the module would have
+    passed throughout. This measures the path a job actually takes -- title to
+    department to menu row to what a good answer must establish -- and it is the
+    number that moves if any link in it is broken again.
+
+    Deterministic and offline, like everything else here: no model, no database,
+    and the same rate on every run.
+    """
+    from app.services.hiring import evidence_graph
+
+    result = Result("department_evidence_graph")
+    for title, expected in ROLES_BY_DEPARTMENT:
+        try:
+            placed = evidence_graph.resolve_department(title)
+        except evidence_graph.DepartmentUnmapped:
+            placed = None
+        result.record(placed == expected, f"{title!r} placed in {placed!r}")
+        if placed is None:
+            continue
+        graph = evidence_graph.graph_for(placed)
+        result.record(bool(graph.nodes), f"{placed} has no competency menu")
+        result.record(
+            all(node.establishes.strip() for node in graph.nodes),
+            f"{placed} has a node establishing nothing",
+        )
+    for title in ROLES_OUTSIDE_PART_VI:
+        placed = None
+        try:
+            placed = evidence_graph.resolve_department(title)
+        except evidence_graph.DepartmentUnmapped:
+            placed = None
+        result.record(
+            placed is None,
+            f"{title!r} was guessed into {placed!r}; section 36 requires a new "
+            f"department model rather than the nearest-looking menu",
+        )
+    return result
+
+
+def _measure_specificity_plan() -> Result:
+    """38.3's design rule, and the extension ceiling that comes out of it.
+
+    "at least 40% of probe items must sit at Level 4 or 5", for all validation
+    instruments across all departments. Measured at every interview length the
+    grade ranges produce, because the rule fails at some lengths and not others
+    if the assignment rounds the wrong way -- sixteen questions and a floor gives
+    six discriminators, and 6/16 is 0.375.
+    """
+    from app.services.hiring import evidence_graph
+
+    result = Result("specificity_gradient")
+    fraction = evidence_graph.minimum_discriminator_fraction()
+    for total in (7, 10, 11, 15, 16, 20, 22, 28):
+        levels = [evidence_graph.probe_level(ordinal=i) for i in range(total)]
+        share = sum(1 for level in levels if level.discriminating) / total
+        result.record(
+            share >= fraction,
+            f"{total} probes put only {share:.2f} at a discriminating level",
+        )
+        result.record(
+            all(level.level > 1 for level in levels),
+            f"{total} probes opened one on the rung anyone can answer",
+        )
+    result.record(
+        evidence_graph.extension_ceiling()
+        == len(evidence_graph.specificity_levels()),
+        "the extension ceiling stopped being the gradient's own length",
+    )
+    result.record(
+        evidence_graph.next_specificity_level(
+            max(evidence_graph.discriminator_levels())
+        )
+        is None,
+        "the gradient does not exhaust, so the extension is not finite",
+    )
+    return result
+
+
 def _measure_budget_determinism() -> Result:
     """The coverage plan and the budget are the reproducible half of the agent.
     Same interview, same ceiling, every time."""
@@ -469,6 +583,8 @@ async def run() -> list[Result]:
             _measure_injection_false_positives(),
             _measure_no_numbers_reach_a_candidate(),
             _measure_budget_determinism(),
+            _measure_department_graph_reachability(),
+            _measure_specificity_plan(),
         ]
     finally:
         # Restored even on failure: leaving a stub installed would silently

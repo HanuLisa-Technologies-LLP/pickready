@@ -81,6 +81,45 @@ class JobSwotIntake(Base, UUIDPKMixin, CreatedAtMixin):
     pending_prompt: Mapped[str | None] = mapped_column(Text)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # ── The §18.2 session protocol, persisted (migration 0064) ───────────────
+    #
+    # The intake is resumable, so every part of the protocol that is not one of
+    # the four arrays has to survive a page reload. Derived state would be
+    # worse than a column here for the same reason `area_index` is a column: a
+    # phase recomputed from the arrays would send a manager who genuinely had
+    # nothing more to add back round to the same question forever.
+
+    #: Which block of §18.2's timeline the session is in. See
+    #: `swot_intake.PHASES`.
+    phase: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="areas", server_default="areas"
+    )
+    #: One of `hiring.situations.SITUATIONS`, once the hiring manager has
+    #: CONFIRMED it. Proposed classifications are not written here: §18.4 calls
+    #: misclassification the most expensive error available at intake, and a
+    #: proposal stored in the same column as a confirmation is a proposal that
+    #: will eventually be read as one.
+    situation_key: Mapped[str | None] = mapped_column(String(30))
+    situation_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    #: `swot_quality.HIGH_VALUE_PROBES` keys already put to the manager. §18.3's
+    #: seven, asked once each and in order.
+    probes_asked: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    #: §18.5's best-performer test. THREE-VALUED: True refuses the intake, False
+    #: accepts it, and NULL means the question has not been put -- which is a
+    #: different state from "no" and must never be read as a pass.
+    best_performer_excluded: Mapped[bool | None] = mapped_column(Boolean)
+    #: The last `swot_quality.review` verdict, as `QualityReport.as_dict()`.
+    quality_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    #: The job's correlation id, copied so this session can be tied to the flow
+    #: it belongs to without a join (spec-doc6 §4.1).
+    correlation_id: Mapped[str | None] = mapped_column(String(64))
+
     def captured(self) -> dict[str, list]:
         """The four areas as the PPI agent reads them."""
         return {area: list(getattr(self, area) or []) for area in SWOT_AREAS}

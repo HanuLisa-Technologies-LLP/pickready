@@ -50,13 +50,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
-from app.services.agents import identity
+from app.services.agents import identity, provenance
 from app.services.verification import base as verification
 
 __all__ = [
     "Artifact",
     "ArtifactContractError",
+    "IncompleteContract",
     "publish",
+    "require_contract_complete",
     "verify_for_consumer",
     "REQUIRED_PAYLOAD_FIELDS",
 ]
@@ -176,6 +178,24 @@ class Artifact:
     artifact_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     job_id: str | None = None
     candidate_id: str | None = None
+    # ── the rest of specdoc4 15's contract fields ────────────────────────────
+    #: The flow this artifact belongs to, issued once at job creation. Optional
+    #: on the dataclass and mandatory on the live Part A path, which is what
+    #: `require_contract_complete` enforces: a legacy publisher that predates
+    #: the flow id must keep working while it is being deleted, and a new stage
+    #: must not be able to publish without one.
+    correlation_id: str | None = None
+    #: The task and message this artifact answers. `task_id` joins it to the
+    #: envelope's execution; `message_id` is the hand-off itself, so two
+    #: republications of the same task are distinguishable.
+    task_id: str | None = None
+    message_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    #: The HUMAN who authorised the run that produced this (RBAC 34). Carried on
+    #: the artifact and not only in the audit row, because a consumer verifying
+    #: an artifact should be able to answer "on whose authority" without a
+    #: database round trip it may not be in a position to make.
+    principal_user_id: str | None = None
+    principal_role: str | None = None
     immutable: bool = True
     #: Where the content came from: chunk ids, a resume id, a JD version. Ids
     #: only, so provenance can be shown without re-disclosing the source text.
@@ -209,6 +229,11 @@ class Artifact:
             "tenant_id": self.tenant_id,
             "job_id": self.job_id,
             "candidate_id": self.candidate_id,
+            "correlation_id": self.correlation_id,
+            "task_id": self.task_id,
+            "message_id": self.message_id,
+            "principal_user_id": self.principal_user_id,
+            "principal_role": self.principal_role,
             "quality": {
                 "validated": self.validated,
                 "provenance_complete": self.provenance_complete,
@@ -234,6 +259,9 @@ def publish(
     validated: bool = False,
     classification: str = CLASSIFICATION_INTERNAL,
     allowed_agents: Iterable[str] | None = None,
+    correlation_id: str | None = None,
+    task_id: str | None = None,
+    principal: provenance.Principal | None = None,
 ) -> Artifact:
     """Build an artifact, refusing anything the identity table does not permit.
 
@@ -280,6 +308,18 @@ def publish(
             f"{leaked}"
         )
 
+    if correlation_id is not None and not provenance.is_correlation_id(correlation_id):
+        raise ArtifactContractError(
+            f"{correlation_id!r} is not a correlation id issued by "
+            "provenance.new_correlation_id. A job id or a workflow id in this "
+            "slot reads correctly in a log line and joins the artifact to no flow."
+        )
+    if principal is not None and principal.tenant_id != str(tenant_id):
+        raise ArtifactContractError(
+            f"{producer} published into tenant {tenant_id!r} on behalf of a "
+            f"principal in tenant {principal.tenant_id!r}"
+        )
+
     consumers = _declared_consumers(artifact_type)
     permitted = tuple(allowed_agents) if allowed_agents is not None else consumers
     return Artifact(
@@ -301,7 +341,87 @@ def publish(
         provenance_complete=bool(tuple(source_refs)),
         classification=classification,
         allowed_agents=permitted,
+        correlation_id=correlation_id,
+        task_id=task_id,
+        principal_user_id=principal.user_id if principal else None,
+        principal_role=principal.role if principal else None,
     )
+
+
+def contract_fields(artifact: Artifact) -> dict[str, Any]:
+    """The eight specdoc4 15 contract fields, read off one artifact.
+
+    A view rather than eight more columns: `message`, `task` and `artifact` are
+    the three identifiers the hand-off already carries under their own names,
+    and duplicating them under the spec's names would create two fields that
+    must agree. `context` and `provenance` are composites, so they are built
+    here rather than stored flattened.
+    """
+    return {
+        "message": artifact.message_id,
+        "task": artifact.task_id,
+        "artifact": artifact.artifact_id,
+        "status": artifact.status,
+        "context": {
+            "tenant_id": artifact.tenant_id,
+            "job_id": artifact.job_id,
+            "candidate_id": artifact.candidate_id,
+        },
+        "provenance": {
+            "producer": artifact.producer,
+            "source_refs": list(artifact.source_refs),
+            "principal_user_id": artifact.principal_user_id,
+            "principal_role": artifact.principal_role,
+        },
+        "version": artifact.version,
+        "correlation_id": artifact.correlation_id,
+    }
+
+
+class IncompleteContract(ArtifactContractError):
+    """An artifact published on the live Part A path without its full contract.
+
+    A DIFFERENT error class from a malformed payload, and deliberately so. A
+    missing payload field means the artifact cannot be read; a missing
+    correlation id or principal means it can be read perfectly well and cannot
+    be TRACED or ATTRIBUTED, which is a governance failure rather than a data
+    one. Two error classes because the two get fixed by different people.
+    """
+
+
+def require_contract_complete(artifact: Artifact) -> Artifact:
+    """Refuse an artifact that does not carry all eight A2A contract fields.
+
+    THIS IS THE RAISING CHECK, and `verify_for_consumer` is not.
+
+    The split is not squeamishness. `verify_for_consumer` answers one question,
+    "may this consumer read this artifact", and the honest answer to that
+    question is not changed by an absent correlation id: the content is in
+    scope, from the declared producer, and safe to read. Recording the gap as a
+    low finding there and refusing here puts each check where its failure is
+    actionable -- the consumer cannot fix a producer's missing provenance, and
+    the producer can.
+
+    Called by `orchestration.enforcement.run_stage` for every Part A stage, so
+    a new stage physically cannot publish an untraceable artifact, while the
+    legacy publishers being deleted keep working until they are gone.
+    """
+    gaps = provenance.contract_gaps(contract_fields(artifact))
+    # `context` and `provenance` are composites and are never empty dicts, so a
+    # gap in either is really a gap in one of their parts. Named precisely,
+    # because "context is missing" sends a reader to the wrong place.
+    if artifact.principal_user_id is None:
+        gaps.append("provenance.principal_user_id")
+    if not artifact.source_refs:
+        gaps.append("provenance.source_refs")
+    if gaps:
+        raise IncompleteContract(
+            f"{artifact.producer} published {artifact.artifact_type!r} without "
+            f"the A2A contract fields {sorted(set(gaps))}. Every stage writes "
+            "provenance (spec-doc6 4.1); an artifact nobody can trace to a flow "
+            "or attribute to a human is not publishable."
+        )
+    return artifact
 
 
 def verify_for_consumer(
@@ -432,6 +552,28 @@ def verify_for_consumer(
                 f"{artifact.artifact_type}.source_refs",
                 "the artifact records no source references",
                 "Record the source ids the artifact was built from.",
+            )
+        )
+    # LOW, and `require_contract_complete` raises on the same two conditions.
+    # See that function's docstring: a consumer cannot repair a producer's
+    # missing provenance, and refusing the read would punish the wrong side of
+    # the boundary for a defect that does not make the content unsafe.
+    if not artifact.correlation_id:
+        findings.append(
+            verification.low(
+                "correlation_id_absent",
+                f"{artifact.artifact_type}.correlation_id",
+                "the artifact belongs to no traceable flow",
+                "Publish it with the correlation id issued at job creation.",
+            )
+        )
+    if not artifact.principal_user_id:
+        findings.append(
+            verification.low(
+                "principal_not_attributed",
+                f"{artifact.artifact_type}.principal_user_id",
+                "the artifact records no human principal for the run that made it",
+                "Publish it with the principal whose authority the agent acted under.",
             )
         )
 

@@ -29,7 +29,15 @@ import pytest
 from app.services import rating
 from app.services.evidence import contradictions as detector
 from app.services.hiring import gates
-from app.services.miti import aggregation, claims, dimensions, pipeline, tiering, triangulation
+from app.services.miti import (
+    aggregation,
+    caps,
+    claims,
+    dimensions,
+    pipeline,
+    tiering,
+    triangulation,
+)
 from app.services.miti.dimensions import (
     DimensionResult,
     EvaluatorInput,
@@ -53,6 +61,20 @@ def _view(ref: str, group: str = "candidate", trust: str = "observed") -> Eviden
 def _result(dimension: str, band: str = "solid", **kwargs) -> DimensionResult:
     kwargs.setdefault("evidence_refs", ("e1",))
     return DimensionResult(dimension=dimension, band=band, **kwargs)
+
+
+def _evidenced(*names: str) -> dict[str, aggregation.MustHaveEvidence]:
+    """Must-haves that section 14.1 has nothing to say about.
+
+    Two independent groups at E3, which is what an answer given in the
+    assessment conversation is worth. Used wherever a test is about a DIFFERENT
+    control, so that section 14.1's cap does not fire alongside it and make the
+    assertion ambiguous about which rule bound.
+    """
+    return {
+        name: aggregation.MustHaveEvidence(tiers=("E3", "E3"), independence_groups=2)
+        for name in names
+    }
 
 
 # ── ISOLATION: structural, not instructed ────────────────────────────────────
@@ -239,8 +261,8 @@ def test_the_aggregator_is_reproducible() -> None:
         _result("authenticity_consistency", "strong"),
         _result("trajectory_potential", "solid"),
     ]
-    first = aggregation.aggregate(results, independence=2).as_dict()
-    second = aggregation.aggregate(results, independence=2).as_dict()
+    first = aggregation.aggregate(results).as_dict()
+    second = aggregation.aggregate(results).as_dict()
     assert first == second
 
 
@@ -266,16 +288,21 @@ def _strong_results() -> list[DimensionResult]:
 
 
 def test_a_not_matching_must_have_caps_the_overall_grade() -> None:
-    uncapped = aggregation.aggregate(_strong_results(), independence=3)
+    uncapped = aggregation.aggregate(_strong_results())
     assert uncapped.overall_grade == rating.GRADE_HIGHLY
 
     capped = aggregation.aggregate(
         _strong_results(),
-        must_have_grades=[rating.GRADE_NOT, rating.GRADE_HIGHLY],
-        independence=3,
+        must_have_grades={"Kafka": rating.GRADE_NOT, "Go": rating.GRADE_HIGHLY},
+        must_have_evidence=_evidenced("Kafka", "Go"),
     )
     assert capped.overall_grade == rating.GRADE_MODERATELY
     assert capped.must_have_cap_applied
+    assert [cap.control for cap in capped.applied_caps] == [
+        caps.CONTROL_COMPETENCY_THRESHOLD
+    ]
+    assert capped.applied_caps[0].subject == "Kafka"
+    assert capped.applied_caps[0].citation == "RPN-PHIL-001 section 12.1"
 
 
 def test_the_cap_never_raises_a_weak_candidate() -> None:
@@ -290,7 +317,9 @@ def test_the_cap_never_raises_a_weak_candidate() -> None:
         _result("trajectory_potential", "absent"),
     ]
     capped = aggregation.aggregate(
-        weak, must_have_grades=[rating.GRADE_NOT], independence=3
+        weak,
+        must_have_grades={"Kafka": rating.GRADE_NOT},
+        must_have_evidence=_evidenced("Kafka"),
     )
     assert capped.overall_grade == rating.GRADE_NOT
 
@@ -301,7 +330,9 @@ def test_the_cap_is_applied_after_the_authenticity_multiplier() -> None:
     results = _strong_results()
     results[3] = _result("authenticity_consistency", "absent")
     out = aggregation.aggregate(
-        results, must_have_grades=[rating.GRADE_NOT], independence=3
+        results,
+        must_have_grades={"Kafka": rating.GRADE_NOT},
+        must_have_evidence=_evidenced("Kafka"),
     )
     assert out.authenticity_factor < 1.0
     assert out.adjusted_composite < out.raw_composite
@@ -312,7 +343,9 @@ def test_the_cap_is_recorded_when_it_binds() -> None:
     """A cap that fired silently is indistinguishable from a candidate who
     simply scored there."""
     capped = aggregation.aggregate(
-        _strong_results(), must_have_grades=[rating.GRADE_NOT], independence=3
+        _strong_results(),
+        must_have_grades={"Kafka": rating.GRADE_NOT},
+        must_have_evidence=_evidenced("Kafka"),
     )
     assert capped.client_projection()["capped_by_must_have"] is True
 
@@ -335,7 +368,7 @@ def test_an_insufficient_dimension_is_excluded_not_scored_low() -> None:
         evidence_refs=(),
         insufficient_evidence=True,
     )
-    out = aggregation.aggregate(results, independence=3)
+    out = aggregation.aggregate(results)
 
     assert "track_record_impact" in out.insufficient_dimensions
     # Excluded, so the surviving categories are still strong.
@@ -356,14 +389,12 @@ def test_insufficient_authenticity_does_not_penalise_the_composite() -> None:
         evidence_refs=(),
         insufficient_evidence=True,
     )
-    out = aggregation.aggregate(results, independence=3)
+    out = aggregation.aggregate(results)
     assert out.authenticity_factor == 1.0
 
 
 def test_a_missing_authenticity_result_is_neutral() -> None:
-    out = aggregation.aggregate(
-        [_result("verified_competence", "solid")], independence=1
-    )
+    out = aggregation.aggregate([_result("verified_competence", "solid")])
     assert out.authenticity_factor == 1.0
     assert "not evaluated" in out.authenticity_reason
 
@@ -372,34 +403,147 @@ def test_a_missing_authenticity_result_is_neutral() -> None:
 
 
 def test_confidence_never_asks_a_model_how_sure_it_is() -> None:
-    assert aggregation.confidence_for(
-        judged=5, independence=3, unresolved_contradictions=0
-    ) == aggregation.CONFIDENCE_HIGH
-    assert aggregation.confidence_for(
-        judged=3, independence=1, unresolved_contradictions=0
-    ) == aggregation.CONFIDENCE_MEDIUM
-    assert aggregation.confidence_for(
-        judged=1, independence=1, unresolved_contradictions=0
-    ) == aggregation.CONFIDENCE_LOW
+    """Section 10.7's weighted sum, computed from counts and tiers.
+
+    The coefficients sum to 1.00, so a candidate maximal on every term scores
+    exactly 1.0 and one minimal on every term scores exactly 0.0. Neither
+    number is available to a model to nudge.
+    """
+    assert aggregation.confidence_score(
+        evidence_coverage=1.0,
+        evidence_depth=1.0,
+        independence=1.0,
+        consistency=1.0,
+    ) == pytest.approx(1.0)
+    assert aggregation.confidence_score(
+        evidence_coverage=0.0,
+        evidence_depth=0.0,
+        independence=0.0,
+        consistency=0.0,
+    ) == pytest.approx(0.0)
+    # Coverage carries 0.35 of the total and nothing else, which is the exact
+    # reason section 6.7's breadth test has to exist beside it.
+    assert aggregation.confidence_score(
+        evidence_coverage=1.0,
+        evidence_depth=0.0,
+        independence=0.0,
+        consistency=0.0,
+    ) == pytest.approx(0.35)
 
 
-def test_one_independent_source_is_not_enough_for_high_confidence() -> None:
-    """One source is an account; two is corroboration. That is the entire
-    evidence model in one assertion."""
-    assert aggregation.confidence_for(
-        judged=5, independence=1, unresolved_contradictions=0
-    ) != aggregation.CONFIDENCE_HIGH
+def test_an_unknown_term_renormalises_rather_than_scoring_zero() -> None:
+    """Section 6.6: "a missing signal gets scored as zero, which is
+    mathematically identical to negative evidence, which is wrong and unfair."
+
+    A scorecard with no Must-have at all makes three of the four terms
+    undefined. Scoring them zero would floor every such candidate at 0.15.
+    """
+    renormalised = aggregation.confidence_score(
+        evidence_coverage=None,
+        evidence_depth=None,
+        independence=None,
+        consistency=1.0,
+    )
+    assert renormalised == pytest.approx(1.0)
+
+
+def test_corroboration_is_counted_and_one_group_scores_below_three() -> None:
+    """One source is an account; two is corroboration.
+
+    Section 10.7 spends 0.20 of the score on `min(1, mean group count / 3)`, so
+    a candidate whose every Must-have rests on one group scores strictly below
+    an otherwise identical candidate with three, and the term saturates at
+    three rather than rewarding a fourth. WHERE THE HARD FLOOR LIVES IS G2, not
+    here: section 6.7's "two independent groups" is a sufficiency gate that
+    routes to a human (`gates.MIN_INDEPENDENT_SOURCES`), and section 10.7 is a
+    continuous score. Putting the floor in both places would be two rules that
+    have to be kept in step by hand.
+    """
+    def _at(groups: int) -> float:
+        return aggregation.aggregate(
+            _strong_results(),
+            competency_categories={"Kafka": aggregation.CATEGORY_MUST_HAVE},
+            must_have_evidence={
+                "Kafka": aggregation.MustHaveEvidence(
+                    tiers=("E5",), independence_groups=groups
+                )
+            },
+        ).confidence_score
+
+    assert _at(1) < _at(2) < _at(3)
+    assert _at(3) == pytest.approx(_at(9))
 
 
 def test_an_unresolved_contradiction_caps_confidence() -> None:
     """A well-evidenced account that contradicts itself is not a confident
-    result -- it is the case most in need of a person."""
-    assert aggregation.confidence_for(
-        judged=5, independence=5, unresolved_contradictions=1
-    ) == aggregation.CONFIDENCE_MEDIUM
-    assert aggregation.confidence_for(
-        judged=5, independence=5, unresolved_contradictions=3
-    ) == aggregation.CONFIDENCE_LOW
+    result -- it is the case most in need of a person. Section 6.5's penalties
+    are what weight it: one material contradiction costs 0.30 of consistency."""
+    clean = aggregation._consistency_term((), 0)
+    one = aggregation._consistency_term((), 1)
+    three = aggregation._consistency_term((), 3)
+    assert clean == pytest.approx(1.0)
+    assert one == pytest.approx(0.7)
+    assert three == pytest.approx(0.1)
+    assert aggregation.confidence_score(
+        evidence_coverage=1.0, evidence_depth=1.0, independence=1.0,
+        consistency=one,
+    ) < aggregation.confidence_score(
+        evidence_coverage=1.0, evidence_depth=1.0, independence=1.0,
+        consistency=clean,
+    )
+
+
+def test_insufficient_fires_on_either_definition_and_neither_implies_the_other() -> None:
+    """Runbook v1.2 section 10.7: "A candidate is Insufficient if EITHER
+    condition fires."
+
+    Section 6.7 is a BREADTH test (fewer than half the Must-haves have any
+    evidence above E1) and section 10.7 is a QUALITY test (weighted score below
+    0.40). They disagree in both directions, which is why both are kept.
+    """
+    # Breadth fails, quality passes: one of three Must-haves examined, but that
+    # one is third-party verified from three independent groups.
+    breadth = aggregation.aggregate(
+        _strong_results(),
+        competency_categories={
+            name: aggregation.CATEGORY_MUST_HAVE for name in ("a", "b", "c")
+        },
+        must_have_evidence={
+            "a": aggregation.MustHaveEvidence(tiers=("E5",), independence_groups=3),
+            "b": aggregation.MustHaveEvidence(tiers=("E0",), independence_groups=3),
+            "c": aggregation.MustHaveEvidence(tiers=("E0",), independence_groups=3),
+        },
+    )
+    assert breadth.confidence == aggregation.CONFIDENCE_INSUFFICIENT
+
+    # Quality fails, breadth passes: exactly half the Must-haves are examined,
+    # which section 6.7 permits, and three unresolved material contradictions
+    # drag the weighted score under 0.40.
+    #
+    # NOTE ON SECTION 10.7's OWN EXAMPLE, which does not reproduce. The Runbook
+    # illustrates this direction with "a candidate with evidence above E1 on
+    # every must-have ... with unresolved moderate contradictions dragging
+    # consistency down and confidence below 0.40". That case is arithmetically
+    # unreachable: full coverage contributes 0.35 and the weakest tier above E1
+    # contributes 0.30 x 0.40 = 0.12, so such a candidate cannot score below
+    # 0.47 however many contradictions they carry. The DIRECTION the Runbook is
+    # arguing for is real and is what this case shows; only its illustration is
+    # wrong. Reported rather than worked around.
+    quality = aggregation.aggregate(
+        _strong_results(),
+        competency_categories={
+            name: aggregation.CATEGORY_MUST_HAVE for name in ("a", "b", "c", "d")
+        },
+        must_have_evidence={
+            "a": aggregation.MustHaveEvidence(tiers=("E2",), independence_groups=1),
+            "b": aggregation.MustHaveEvidence(tiers=("E2",), independence_groups=1),
+            "c": aggregation.MustHaveEvidence(tiers=("E0",), independence_groups=1),
+            "d": aggregation.MustHaveEvidence(tiers=("E0",), independence_groups=1),
+        },
+        unresolved_contradictions=3,
+    )
+    assert quality.confidence == aggregation.CONFIDENCE_INSUFFICIENT
+    assert quality.confidence_score < 0.40
 
 
 # ── THE BENIGN-EXPLANATION RULE ──────────────────────────────────────────────
@@ -800,7 +944,7 @@ def _inputs(**kwargs) -> pipeline.EvaluationInputs:
         },
         matrix_items=[{"name": "Core craft depth"}],
         scorecard_approved_at="2026-08-01",
-        must_have_grades=[rating.GRADE_MATCHING],
+        must_have_grades={"Core craft depth": rating.GRADE_MATCHING},
     )
     base.update(kwargs)
     return pipeline.EvaluationInputs(**base)
@@ -951,6 +1095,14 @@ def test_the_pipeline_module_imports_no_router() -> None:
         assert banned not in names, f"pipeline.py reaches {banned!r}"
 
 
+#: The ONE module in this package allowed to name the router: the live entry
+#: point, which is where the real `invoke` is supplied to a pipeline that takes
+#: it as a parameter. Kept as an explicit single-element set rather than a
+#: substring rule, so adding a second injection point fails this test and has
+#: to be argued for.
+_INJECTION_POINT = {"live.py"}
+
+
 def test_no_miti_module_reaches_a_model_except_through_the_injected_invoke() -> None:
     """The whole package, not just the two modules named above.
 
@@ -960,6 +1112,31 @@ def test_no_miti_module_reaches_a_model_except_through_the_injected_invoke() -> 
     aggregator a route to a provider through a sibling import.
     """
     for module in sorted(MITI_ROOT.glob("*.py")):
+        if module.name in _INJECTION_POINT:
+            continue
         names = _executable_names(module)
         assert "llm_router" not in names, module.name
         assert "invoke_llm" not in names, module.name
+
+
+def test_the_injection_point_reaches_the_router_only_inside_a_function() -> None:
+    """`live.py` is allowed to name the router and is not allowed to import it
+    at module scope.
+
+    Two reasons, and the second is the one that bites. A module-scope import
+    would put `llm_router` in the import graph of everything that imports
+    `miti`, including the deterministic aggregator. And `app.services.evidence`
+    sits on an import cycle that a module-scope import here has already closed
+    once, in `functional_assessment`: the full suite went green while a single
+    test file went red, because pytest happened to initialise the other side
+    first.
+    """
+    import ast
+
+    tree = ast.parse((MITI_ROOT / "live.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            rendered = ast.dump(node)
+            assert "llm_router" not in rendered, "module-scope router import"
+            assert "hiring.scorecard" not in rendered, "module-scope scorecard import"
+            assert "services.evidence" not in rendered, "module-scope evidence import"
