@@ -147,6 +147,10 @@ export default function OrgJobsPage() {
                   <TableHead>Department</TableHead>
                   <TableHead>Level</TableHead>
                   <TableHead>Requirement period</TableHead>
+                  {/* Directive Part 3 §7.2: role type + credits per report on
+                      every job row. Typography, not a coloured pill (Part 1
+                      §24). */}
+                  <TableHead>Role type</TableHead>
                   <TableHead>Posting</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
@@ -166,6 +170,11 @@ export default function OrgJobsPage() {
                     <TableCell>{job.department}</TableCell>
                     <TableCell>{job.level}</TableCell>
                     <TableCell>{job.requirement_period}</TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      {job.role_classification === "STEM" ? "STEM" : "Non-STEM"}
+                      {" · "}
+                      {(job.credit_cost_per_report ?? 1).toFixed(1)} credits/report
+                    </TableCell>
                     <TableCell>
                       <PostingWindowChip job={job} />
                     </TableCell>
@@ -215,6 +224,11 @@ export default function OrgJobsPage() {
                   </div>
                   <p className="text-xs">
                     Requirement period: {job.requirement_period}
+                  </p>
+                  <p className="text-xs">
+                    {job.role_classification === "STEM" ? "STEM" : "Non-STEM"} role
+                    {" · "}
+                    {(job.credit_cost_per_report ?? 1).toFixed(1)} credits per report
                   </p>
                 </RowCard>
               </li>

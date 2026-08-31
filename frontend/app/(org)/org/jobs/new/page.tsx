@@ -31,6 +31,7 @@ import { JOB_GRADES, type JobGrade } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
 import { JdEditor } from "@/components/jd-document";
+import { RoleTypeBadge } from "@/components/role-type-badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -63,6 +64,11 @@ interface ReportingToOptions {
 
 interface GeneratedJd {
   jd_markdown?: string | null;
+  /** Server-side draft reference, how the created job inherits the
+   * classification locked to the raw AI draft (directive Part 3 Rule 3). */
+  jd_draft_id?: string | null;
+  role_classification?: string | null;
+  credit_cost_per_report?: number | null;
 }
 
 interface CreatedJob {
@@ -102,6 +108,16 @@ export default function CreateJobPage() {
 
   // Free-form brief that seeds the draft. Not sent on create.
   const [brief, setBrief] = React.useState("");
+
+  // The classification the engine locked to the raw AI draft (directive
+  // Part 3 §3 Step 3). Read-only display + an opaque draft id passed back on
+  // create; nothing here is editable and nothing the recruiter types changes
+  // it.
+  const [classification, setClassification] = React.useState<{
+    jd_draft_id: string;
+    role_classification: string;
+    credit_cost_per_report: number;
+  } | null>(null);
 
   const [reportingOptions, setReportingOptions] = React.useState<string[]>([]);
   const [reportingChoice, setReportingChoice] = React.useState("");
@@ -175,6 +191,16 @@ export default function CreateJobPage() {
         (res as GeneratedJd)?.jd_markdown ?? jd.jd_markdown ?? "";
       if (!markdown.trim()) throw new Error("The draft came back empty.");
       setForm((prev) => ({ ...prev, jd_markdown: markdown }));
+      const generated = res as GeneratedJd;
+      setClassification(
+        generated?.jd_draft_id
+          ? {
+              jd_draft_id: generated.jd_draft_id,
+              role_classification: generated.role_classification ?? "NON_STEM",
+              credit_cost_per_report: generated.credit_cost_per_report ?? 1.0,
+            }
+          : null,
+      );
       setJustDrafted(true);
       toast({
         title: "Draft ready",
@@ -207,7 +233,10 @@ export default function CreateJobPage() {
     }
     setBusy(true);
     try {
-      const res = await apiPost<unknown>("/jobs", buildJobCreatePayload(form, true));
+      const res = await apiPost<unknown>("/jobs", {
+        ...buildJobCreatePayload(form, true),
+        jd_draft_id: classification?.jd_draft_id ?? null,
+      });
       const job = pick<CreatedJob>(res, "job");
       const link =
         (res as CreatedJob)?.public_application_url ??
@@ -439,6 +468,18 @@ export default function CreateJobPage() {
           </FormSection>
 
           <Separator />
+
+          {/* The read-only role type badge (directive Part 3 §7.1): shown the
+              moment the AI draft lands, above the JD editor, right-aligned.
+              No edit control exists, by rule. */}
+          {classification ? (
+            <div className="flex justify-end">
+              <RoleTypeBadge
+                classification={classification.role_classification}
+                creditCost={classification.credit_cost_per_report}
+              />
+            </div>
+          ) : null}
 
           {/* The one JD document. Explicit Edit button, per the client. */}
           <JdEditor

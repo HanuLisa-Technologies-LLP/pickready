@@ -87,7 +87,11 @@ function CreditStatusAlert() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5 text-amber-600" aria-hidden="true" />
-              {credits.exhausted ? "Credit pool exhausted" : "Credit balance below 30%"}
+              {credits.exhausted
+                ? "Credit pool exhausted"
+                : (credits.warning_level ?? 0) >= 2
+                  ? "Critical: credit balance at or below 10 credits"
+                  : "Credits running low"}
             </DialogTitle>
             <DialogDescription>{credits.alert_message}</DialogDescription>
           </DialogHeader>

@@ -264,6 +264,53 @@ export default function BillingPage() {
             </div>
           ) : null}
 
+          {/* Two-tier balance warnings (directive Part 5 §4): LOW at 20
+              credits, CRITICAL at 10, the critical tier is persistent and
+              urgent, and both carry the top-up action directly. */}
+          {!data.credits.in_deficit &&
+          (data.credits.warning_level ?? 0) > 0 &&
+          data.credits.alert_message ? (
+            <div
+              role="alert"
+              className={
+                (data.credits.warning_level ?? 0) >= 2
+                  ? "flex items-start gap-3 border border-destructive/50 bg-destructive/10 p-5"
+                  : "flex items-start gap-3 border border-warning/50 bg-warning/10 p-5"
+              }
+            >
+              <AlertTriangle
+                className={
+                  (data.credits.warning_level ?? 0) >= 2
+                    ? "mt-0.5 h-5 w-5 shrink-0 text-destructive"
+                    : "mt-0.5 h-5 w-5 shrink-0 text-warning"
+                }
+                aria-hidden="true"
+              />
+              <div className="min-w-0 flex-1">
+                <p className="font-semibold">
+                  {(data.credits.warning_level ?? 0) >= 2
+                    ? "Critical credit balance"
+                    : "Credits running low"}
+                </p>
+                <p className="mt-1 text-pretty leading-7">
+                  {data.credits.alert_message}
+                </p>
+              </div>
+              <Button
+                variant={(data.credits.warning_level ?? 0) >= 2 ? "default" : "outline"}
+                onClick={() =>
+                  document
+                    .getElementById("billing-plans")
+                    ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                }
+              >
+                {(data.credits.warning_level ?? 0) >= 2
+                  ? "Top Up Immediately"
+                  : "Top Up Credits"}
+              </Button>
+            </div>
+          ) : null}
+
           {/* ── Plan + balance ─────────────────────────────────────────── */}
           <Section
             title="Your plan"
@@ -310,6 +357,17 @@ export default function BillingPage() {
                     ? `${formatInr(Number(data.credits.balance_inr))} at your current plan rate`
                     : "INR value available after a plan is selected"}
                 </span>
+                {/* Directive Part 3 §7.3: projected assessments remaining,
+                    split by role type. */}
+                {Number(data.credits.balance_credits) > 0 ? (
+                  <span className="mt-1 block text-sm leading-6">
+                    At 1.0 credit/report (Non-STEM): ~
+                    {Math.floor(Number(data.credits.balance_credits))} more
+                    reports. At 1.5 credits/report (STEM): ~
+                    {Math.floor(Number(data.credits.balance_credits) / 1.5)}{" "}
+                    more reports.
+                  </span>
+                ) : null}
               </DetailItem>
             </dl>
           </Section>
@@ -370,6 +428,7 @@ export default function BillingPage() {
           </Section>
 
           {/* ── Plans ──────────────────────────────────────────────────── */}
+          <div id="billing-plans" className="scroll-mt-24">
           <Section
             title={data.subscription.plan ? "Change plan" : "Choose a plan"}
             description={
@@ -446,6 +505,7 @@ export default function BillingPage() {
               </a>
             </p>
           </Section>
+          </div>
 
           {/* ── Statement ──────────────────────────────────────────────── */}
           <Section

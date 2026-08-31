@@ -337,6 +337,13 @@ export interface Job {
   public_application_url?: string | null;
   /** Assessment grade (spec §5/§6), always present on a job response. */
   grade: JobGrade;
+  /**
+   * STEM / Non-STEM classification (directive Part 3). System-determined,
+   * read-only for the client; drives the per-report credit cost shown beside
+   * it. Absent on responses from a pre-directive backend.
+   */
+  role_classification?: "STEM" | "NON_STEM" | string;
+  credit_cost_per_report?: number;
   status: JobStatus;
   jd: JobJD;
   compensation?: Record<string, unknown> | null;
@@ -1049,6 +1056,13 @@ export interface CreditSummary {
   low_balance: boolean;
   balance_fraction: number;
   low_balance_threshold: number;
+  /** Directive Part 5 §4: 0 none, 1 LOW (≤20 credits), 2 CRITICAL (≤10). */
+  warning_level?: number;
+  warning_1_threshold_credits?: number;
+  warning_2_threshold_credits?: number;
+  /** §4.2 estimate: balance ÷ 30-day average credits per report. */
+  estimated_assessments_remaining?: number;
+  average_credits_per_assessment?: number;
   alert_message: string | null;
   unlimited: boolean;
 }

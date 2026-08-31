@@ -31,6 +31,7 @@ import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
+import { RoleTypeBadge } from "@/components/role-type-badge";
 import { ErrorState, LoadingRows } from "@/components/page-primitives";
 import { asJdLines } from "@/components/job-description";
 import { CandidateRankingTable } from "@/components/candidate-ranking-table";
@@ -442,7 +443,15 @@ export default function OrgJobDetailPage() {
         }
         actions={
           job ? (
-            <Badge variant="secondary">Level: {jobGradeLabel(job.grade)}</Badge>
+            <div className="flex flex-col items-end gap-2">
+              {/* Directive Part 3 Rule 5: the classification is VISIBLE here
+                  and editable nowhere. Disputes go to support. */}
+              <RoleTypeBadge
+                classification={job.role_classification}
+                creditCost={job.credit_cost_per_report}
+              />
+              <Badge variant="secondary">Level: {jobGradeLabel(job.grade)}</Badge>
+            </div>
           ) : undefined
         }
       />
