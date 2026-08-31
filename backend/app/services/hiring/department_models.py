@@ -67,14 +67,14 @@ TWO THINGS PART VI DOES NOT SUPPLY, AND BOTH ARE MARKED BELOW
    it, weighted by SWOT force-ranking. No role uses the whole menu." So
    `BaselineCompetency.baseline_weight` has no Runbook source, and the honest
    reading is that Layer 1 should supply a menu and a dimension vector while
-   Layer 3 supplies the ranking. Marked RUNBOOK-AMBIGUITY and escalated rather
+   Layer 3 supplies the ranking. Settled in RPN-PHIL-001 v1.3's Part VI preamble rather
    than silently re-derived, because changing it moves every weight in the
    product.
 
 2. A COMPETENCY-TO-DIMENSION MAPPING. §9 defines the five dimensions and §21.3
    lists the competencies, and nothing in between says which competency
    evidences which dimension. Miti's routing needs one. Marked
-   RUNBOOK-AMBIGUITY.
+   settled in v1.3.
 
 THE SENIORITY VOCABULARIES DO NOT MATCH, AND THAT IS A GENUINE CONFLICT
 -------------------------------------------------------------------------
@@ -202,7 +202,7 @@ class BaselineCompetency:
     #: SWOT phrase into one of these, and this is the quality bar it is held to:
     #: a behaviour somebody could have watched happen, never an adjective.
     observable_evidence: str
-    #: RUNBOOK-AMBIGUITY (Part VI, §11.1, §20.3): Baseline importance, before
+    #: SOURCE: RPN-PHIL-001 Part VI preamble (v1.3): Baseline importance, before
     #: Layer 2 and Layer 3 tuning. THE RUNBOOK SUPPLIES NO SUCH NUMBER. §11.1
     #: weights the five DIMENSIONS and §20.3 puts competency importance in the
     #: hiring manager's force-ranking at Layer 3 ("Rank the required
@@ -214,7 +214,7 @@ class BaselineCompetency:
     #: product. Relative within a department only -- comparing a weight across
     #: departments is meaningless and nothing does it.
     baseline_weight: float
-    #: RUNBOOK-AMBIGUITY (§9, §21.3): which of the five internal dimensions this
+    #: SOURCE: RPN-PHIL-001 Part VI preamble (v1.3): which of the five internal dimensions this
     #: competency mostly speaks to. §9 defines the dimensions and §21.3 lists
     #: the competencies; nothing between them maps one onto the other, and
     #: Miti's routing needs a mapping. A hint for that routing, not a partition:
@@ -247,7 +247,7 @@ class DepartmentModel:
     key: str
     label: str
     competencies: tuple[BaselineCompetency, ...]
-    #: RUNBOOK-AMBIGUITY (§9.1-§9.5, §21.11, §57.3): rubric anchor wording per
+    #: SOURCE: RPN-PHIL-001 §9.1 to §9.5 with §57.3 (v1.3): rubric anchor wording per
     #: seniority. THE RUNBOOK PUTS RUBRIC ANCHORS SOMEWHERE ELSE. §9.1 to §9.5
     #: each carry one six-band scoring-anchor table over 0 to 100, and those
     #: tables are universal: stated once per DIMENSION, never restated per

@@ -11,7 +11,7 @@
 
 meta:
   document: RPN-PHIL-001
-  runbook_version: "1.2"
+  runbook_version: "1.3"
   description: "The six hiring situation types extracted at SWOT intake, with the dimension weight consequence each one carries."
 
 situation_types:

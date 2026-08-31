@@ -420,7 +420,7 @@ class Bound:
         return self.low <= value <= self.high
 
 
-#: RUNBOOK-AMBIGUITY (§11.2, §11.3, §11.4): the Runbook bounds a layer modifier
+#: SOURCE: RPN-PHIL-001 §11.5 (v1.3): the Runbook bounds a layer modifier
 #: ADDITIVELY and this module bounds it MULTIPLICATIVELY, and the two cannot be
 #: converted into each other without choosing a baseline.
 #:

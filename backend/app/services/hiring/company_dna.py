@@ -988,7 +988,7 @@ def _scale(value: Any) -> int:
 
 #: How far one scale step moves a dimension weight.
 #:
-#: RUNBOOK-AMBIGUITY (§11.2): §11.2 states each Layer 2 modifier as an ADDITIVE
+#: SOURCE: RPN-PHIL-001 §11.2 with §11.5 (v1.3): §11.2 states each Layer 2 modifier as an ADDITIVE
 #: delta with a bound ("D2 up, D5 down, +-0.06"; "D5 up, D2 down, +-0.08"), and
 #: this module composes MULTIPLICATIVELY through `layers.resolve`. The Runbook
 #: gives no per-step multiplier, and there is no conversion between the two

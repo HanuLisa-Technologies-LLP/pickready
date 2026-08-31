@@ -373,11 +373,22 @@ async def evaluate_application(
     # So `must_have_thresholds` is deliberately left empty here and section
     # 12.1's minimum is the product's published floor for a criterion the
     # hiring manager declared essential: the item grades Not Matching.
-    # RUNBOOK-AMBIGUITY (section 12.1): the Runbook states the control and
-    # never states the number, and neither does the matrix. The Board owes one.
-    # `caps.competency_threshold_caps` already accepts declared thresholds, so
-    # the day the matrix carries a score this becomes a one-line change.
-    thresholds: dict[str, float] = {}
+    # SOURCE: RPN-PHIL-001 section 12.1 (v1.3), "A competency threshold has no
+    # Layer 1 default, and that is deliberate." The Hiring Manager proposes it
+    # at intake and the HR Manager approves it; a platform default would be a
+    # minimum applied to every role regardless of what the role needs, which is
+    # the free assignment section 20.3 forbids one paragraph later.
+    #
+    # So this reads what the matrix declared and caps nothing where nothing was
+    # declared. That is not silently uncapped: section 12.2's dimension floors
+    # and section 14.1's unassessed-Must-have rule both still apply, and both
+    # are EVIDENCE-based rather than score-based, which is what catches the case
+    # a missing threshold would otherwise let through.
+    thresholds: dict[str, float] = {
+        item.competency: float(item.threshold)
+        for item in getattr(matrix, "items", ())
+        if getattr(item, "threshold", None) is not None
+    }
 
     inputs = pipeline.EvaluationInputs(
         matrix=categories,

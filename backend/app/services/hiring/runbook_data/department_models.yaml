@@ -11,13 +11,18 @@
 
 meta:
   document: RPN-PHIL-001
-  runbook_version: "1.2"
+  runbook_version: "1.3"
   description: "Department competency models (Part VI) and the Layer 1 baseline weight matrix they select a family from."
 
 reading_rule:
   source: "RPN-PHIL-001 Part VI"
   menu_rule: "the competency list in each model is the menu. The scorecard for a given role selects at most six from it, weighted by SWOT force-ranking. No role uses the whole menu."
-  claimed_structure: "Every model follows the same eleven-section structure so that they are comparable and so that adding a new department is a filling-in exercise rather than an invention."
+  required_core_rule: "REQUIRED of every department model. A model missing any of these is incomplete and may not be used to configure a scorecard:"
+  required_core:
+    - "Role families"
+    - "Competency menu"
+    - "Red flags"
+  optional_sections: "OPTIONAL, and their absence is a known gap rather than a defect: evidence tiers specific to the department, validation probes, gaming vectors, credential logic, fresher variant, seniority notes, worked example."
   runbook_ambiguity: "The claimed eleven-section structure is not what the document delivers: subsection counts run from four (§33, §35) to twelve (§21), and §67.8 separately concedes that department coverage is uneven. See RUNBOOK_OPEN_QUESTIONS.md Q4."
 
 baseline_weight_families:

@@ -168,3 +168,43 @@ caught all three §11.1 edits when the document was changed and the data package
 was not, which is the mechanism working in the direction it was built for.
 
 Full backend suite green after the edits.
+
+---
+
+# v1.3, 2026-08-29: every remaining open question closed
+
+## 10. Applied substantive edits, second pass
+
+The owner instructed that the remaining ambiguities be settled in the document
+rather than deferred. All sixteen still open after v1.2 are closed here.
+
+| # | § | Question | Decision, and why that one |
+|---|---|---|---|
+| S11 | Part VI | Q4: the preamble claimed an "eleven-section structure"; counts run 4 to 12 and §67.8 conceded it | Replaced with a REQUIRED CORE of five sections plus an optional remainder. Softening the standard to match the weakest model would have lost the standard; naming a core keeps "adding a department is a filling-in exercise" true for the part that matters and makes every gap visible |
+| S12 | Part VI | Q18: no layer supplied a per-competency Layer 1 weight | Menus are declared ORDERED, descending baseline importance. Position converts to weight through §20.3's table. No new tables, and §11.1 stays what it is: a weighting of the five DIMENSIONS, which is a different question |
+| S13 | Part VI | Q19: nothing mapped a competency to a dimension, and Miti cannot route without it | A five-row rule keyed on what the competency's observable evidence is ABOUT, first match wins. Fifteen tables would have been fifteen tables to keep in step; the mapping was already recoverable from what each menu states |
+| S14 | Part VI | Q(evidence graph): "Department Evidence Graphs" implies edges that do not exist | Stated that there are none and why: a model ordering competencies by dependency asserts one cannot be demonstrated without another, which is false often enough to be unfair to the trajectories §40 protects |
+| S15 | 11.5 (new) | Q16: the Runbook bounds modifiers additively, the engine multiplicatively | Both, explicitly, because they are different objects. Additive on the DIMENSION VECTOR, which must sum to 1.0; multiplicative on the COMPETENCY, whose baseline varies so a fixed delta means something different at every position. Old §11.5 renumbered §11.6 |
+| S16 | 11.4 | Q17: step 5 undid step 3, measured at D1 = 0.4598 against a 0.40 ceiling | Steps 3 to 5 iterate to a fixed point; the excess redistributes among UNCLAMPED dimensions only; a vector that cannot satisfy its own bounds is refused as a configuration error rather than approximated |
+| S17 | 11.1 | Q20: seniority bands differ per family and do not map to the product's four grades | An explicit mapping table. Families collapse UPWARD, never downward, because inventing a row means inventing weights |
+| S18 | 20.3 | Q8: default weights existed for counts of 4, 5 and 6; §20.2 states no minimum | Added 1, 2 and 3, continuing the existing curve. A count of one is permitted and flagged: with one competency there is no ranking, so this section's protection is gone |
+| S19 | 18.5 | Q22: "every competency is marked must-have" is literal and catches almost nothing | "More than two thirds". Nineteen must-haves and one nice-to-have is not "every" while being the same failure. The threshold follows from §20.2 and §20.3 rather than being chosen |
+| S20 | 12.1 | Q(caps): three capping controls, no composition rule and no ceiling | The delivered band is the MINIMUM of every ceiling that fires; ceiling is the top of Consider with reservations; it is a `min` never an assignment, applied last |
+| S21 | 12.1 | Q(threshold): §12.1 names a competency threshold and no default | There is NO Layer 1 default, deliberately. A platform default applied to every role regardless of need is the free assignment §20.3 forbids one paragraph later. §12.2 and §14.1 still apply, and both are evidence-based |
+| S22 | 21.10 | Q10: "Suspend D2" breaks §11.4's no-zero rule and drives D1 to 0.50 | Removed. §11.1's fresher rows already floor D2, so it was redundant as well as illegal. A thin D2 for a fresher is absence of evidence, not evidence of absence |
+| S23 | 10.6 | Q5: `band_width` is named a width and behaves as a half-width | Renamed `band_half_width`. Only the name was wrong; both worked examples already used it as a half-width |
+| S24 | 10.11 | Q9: Candidate A's band centred on neither of its own scores | Recentred on the RPS, 44 not 50. An example binds nothing, which is exactly why a wrong one is worth fixing: it teaches a rule the document does not hold |
+| S25 | 6.4, 57.3 | Q13, Q23: two citations naming sections that do not carry what is claimed | §6.4 now cites §21.6 and Appendix D.2, which do carry the attribution instrument. §57.3 now says rubric anchors come from §9.1 to §9.5, universal per dimension, not "from the department model", which contains none |
+| S26 | 58 | Q21: an ontology is required and none is supplied | The ontology is versioned data outside this document, because it grows continuously and a printed table would need a document revision to fix a fairness defect. Four governance rules added; the three named pairings are its seed and acceptance test |
+| S27 | 38.3 | Q(session bound): the gradient bounds one claim, not a session | A session bound added. An unbounded session is the same failure at a different scale: a candidate answering an ever-deepening sequence learns that thoroughness is punished |
+| S28 | App. A3 | Q11: five blanks for a five-to-eight range | A repeating field, minimum five enforced, maximum eight |
+
+## 11. Result
+
+**Zero `RUNBOOK-AMBIGUITY` markers remain in the codebase.** Every one either
+became a `SOURCE:` citation to the rule this revision added, or was deleted with
+the behaviour it guarded now stated in the document.
+
+`test_runbook_parity.py` green: 29 tests over 300 numbers and 1,190 verbatim
+strings. It caught four data entries this revision invalidated, in the direction
+it exists for.

@@ -555,7 +555,13 @@ def test_the_force_ranking_default_weights_match_the_runbook(
     stored = runbook_data.swot_instrument()["scorecard"]["force_ranking"][
         "default_weights"]
     _hdr, rows = runbook.table("20.3")
-    assert len(rows) == len(stored) == 3, (len(rows), len(stored))
+    # Compared against each other rather than against a literal count. The
+    # assertion's job is "the data says what the Runbook says", and pinning the
+    # number of rows made it fail when §20.3 grew rows for counts of one, two
+    # and three -- reporting a Runbook edit as a parity failure, which is the
+    # opposite of what it exists to detect.
+    assert len(rows) == len(stored), (len(rows), len(stored))
+    assert rows, "§20.3 has no default-weight table"
     for row in rows:
         weights = [float(w) for w in row[1].split("/")]
         assert [float(w) for w in stored[int(row[0])]] == weights, row

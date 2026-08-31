@@ -11,7 +11,7 @@
 
 meta:
   document: RPN-PHIL-001
-  runbook_version: "1.2"
+  runbook_version: "1.3"
   description: "The five evaluation dimensions D1-D5, their rubric anchors, and the arithmetic that turns them into a composite."
 
 dimensions:
@@ -227,7 +227,7 @@ weight_normalisation:
     - "Apply L3 modifiers."
     - "Clamp each W_i to its floor and ceiling: no dimension may fall below 0.05 or rise above 0.40."
     - "D4 floor is 0.12 and cannot be lowered by any client."
-    - "Renormalise so Σ W_i = 1.0."
+    - "Renormalise so Σ W_i = 1.0, then repeat steps 3 to 5 until the vector is unchanged."
     - "Record the final vector, its derivation, and who requested each modifier, in the frozen configuration."
   dimension_floor: 0.05
   dimension_ceiling: 0.40
@@ -237,13 +237,13 @@ weight_normalisation:
 
 fresher_variant:
   source: "RPN-PHIL-001 §21.10"
-  instruction: "Suspend D2. Redistribute to D1 (+0.10) and D5 (+0.05)."
+  instruction: "D2 sits at its 0.05 floor, and no further redistribution is applied."
   d1_increase: 0.10
   d5_increase: 0.05
-  runbook_ambiguity: "Suspend reads as zero, and §11.4 forbids a zero weight explicitly. §9.2 says D2 is suspended OR heavily reduced without settling which. Applied to the IT fresher baseline the instruction also drives D1 to 0.50, above the 0.40 ceiling. See RUNBOOK_OPEN_QUESTIONS.md Q10."
+  resolution_note: "Settled in v1.3. §11.4 forbids a zero weight and §9.2 offers suspended OR heavily reduced; §11.1's fresher rows already put D2 at or near its floor, so there was nothing left to suspend and the redistribution drove D1 above its ceiling. A thin D2 for a fresher is absence of evidence, not evidence of absence (§8.5, Axiom 7)."
 
 transparency:
-  source: "RPN-PHIL-001 §11.5"
+  source: "RPN-PHIL-001 §11.6"
   rule: "The active weight vector is shown to the client in every dossier."
 
 layer_2_modifiers:

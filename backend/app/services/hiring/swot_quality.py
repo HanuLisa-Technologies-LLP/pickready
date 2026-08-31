@@ -303,11 +303,15 @@ def probe_for(area: str, *, asked: Iterable[str] = ()) -> Probe | None:
 #: be is EVERYTHING -- at which point every imperfect candidate grades the same
 #: and the matrix has stopped doing its one job.
 #:
-#: RUNBOOK-AMBIGUITY (§18.5, §20.3): §18.5's trigger is "every competency is
-#: marked must-have" and §20.3 requires a force-ranking with no ties, but
-#: neither states a share at which an intake is handed back. This threshold is
-#: therefore this implementation's, and the direction chosen is the one that
-#: refuses more. Recorded in RUNBOOK_OPEN_QUESTIONS_PHASE0B.md.
+#: SOURCE: RPN-PHIL-001 §18.5, "More than two thirds of the competencies are
+#: marked must-have". This was an implementer's number until the Runbook was
+#: amended on 2026-08-29 (v1.3, Q22): §18.5's trigger had read "every competency
+#: is marked must-have", which is literal and catches almost nothing, since
+#: nineteen must-haves and one nice-to-have is not "every" while being the same
+#: failure. The threshold now follows from §20.2 and §20.3: a scorecard capped
+#: at six and force-ranked with no ties is a statement about what matters MOST,
+#: and a manager who cannot separate a majority of six has not made it. Two
+#: thirds of six is four, so five must-haves trips it.
 MAX_MUST_HAVE_SHARE = 0.67
 
 #: A role with no internal weakness is a role nobody has thought about failing

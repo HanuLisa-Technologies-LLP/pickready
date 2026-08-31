@@ -71,9 +71,12 @@ keeps two candidates on one job comparable. A second ordering function here
 would be a planner nobody runs, and the day somebody ran it the two plans would
 disagree.
 
-RUNBOOK-AMBIGUITY (Part VI): the edges themselves. This is raised in the phase
-report and belongs as an entry in RUNBOOK_OPEN_QUESTIONS.md, which this change
-does not write; do not read this paragraph as evidence that the entry exists.
+SOURCE: RPN-PHIL-001 Part VI preamble (v1.3). There are no prerequisite EDGES
+between competencies and none are implied: the structure is competency to
+observable evidence to assessment route, which is what the menus carry. A model
+ordering its competencies by dependency would assert that one cannot be
+demonstrated without another, which is false often enough to be unfair,
+particularly for the non-traditional trajectories section 40 protects.
 
 TRIANGULATION IS COUNTED BY ORIGINATOR, NOT BY DOCUMENT
 --------------------------------------------------------
@@ -775,11 +778,14 @@ def extension_ceiling() -> int:
     (6.7, and the architecture note's "never convert unresolved uncertainty into
     artificial confidence").
 
-    RUNBOOK-AMBIGUITY (38.3): the Runbook bounds one claim's probing, not one
-    conversation's length. Raised in the phase report and owed an entry in
-    RUNBOOK_OPEN_QUESTIONS.md, which this change does not write. If the owner
-    sets a different ceiling it belongs in `runbook_data/` with its citation,
-    not as a number in this function.
+    SOURCE: RPN-PHIL-001 section 38.3 (v1.3). The gradient bounds how far ONE
+    claim is probed; the Runbook now also bounds the SESSION, "by the number of
+    specificity levels the gradient defines, applied across the session rather
+    than per claim". An unbounded session is the same failure at a different
+    scale: a candidate answering an ever-deepening sequence learns that
+    thoroughness is punished. When the bound is reached with evidence still
+    insufficient, the shortfall is reported as a shortfall and never converted
+    into a low score.
     """
     return len(specificity_levels())
 

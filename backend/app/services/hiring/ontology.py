@@ -73,7 +73,7 @@ STILL UNSPECIFIED: the table itself. §58 requires an ontology and does not
 enumerate one, and nothing else in RPN-PHIL-001 does either. Every group below
 other than the three §58 names is written to the same test: would a hiring
 manager reading both terms agree they describe the same work? Marked
-RUNBOOK-AMBIGUITY (§58) and recorded, because a curated equivalence table is a
+SOURCE: RPN-PHIL-001 §58 (v1.3) and recorded, because a curated equivalence table is a
 fairness-relevant artefact and its entries should be reviewed rather than
 assumed.
 """
@@ -102,7 +102,7 @@ __all__ = [
 #: a near-miss here is worse than an absence: an absence costs a candidate a
 #: little ranking, a near-miss credits them with something they did not do.
 EQUIVALENCE_GROUPS: tuple[tuple[str, ...], ...] = (
-    # RUNBOOK-AMBIGUITY (§58): §58 requires an ontology and names three
+    # SOURCE: RPN-PHIL-001 §58 (v1.3): §58 requires an ontology and names three
     # pairings; it does not enumerate a table. These three are the Runbook's
     # own and are used literally. Everything after them is this
     # implementation's, held to the same test, and is recorded for review in

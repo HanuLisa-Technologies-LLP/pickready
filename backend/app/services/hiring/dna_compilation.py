@@ -399,7 +399,7 @@ def _validate_evidence_list(question: company_dna.Question, raw: Any) -> str:
     for item in items:
         if not company_dna.is_observable(item):
             raise AnswerRejected(question.key, company_dna.rejection_message(item))
-    # RUNBOOK-AMBIGUITY (16.3): the section states "five to eight behaviours"
+    # SOURCE: RPN-PHIL-001 §16.3 (v1.3): the section states "five to eight behaviours"
     # while Appendix A3 prints five blank slots. Resolved as a repeating field
     # accepting five to eight, per RUNBOOK_OPEN_QUESTIONS.md Q11. The bounds are
     # read off the SECTION rather than restated here, so the resolution lives in

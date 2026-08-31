@@ -222,9 +222,17 @@ CLASSIFICATION: tuple[TableRule, ...] = (
     TableRule(
         "assessment_conversations",
         PURGE,
-        "One assessment run, and also the invitation. Purging one that is still "
-        "active ends an interview in progress, so the survey counts those "
-        "separately.",
+        "One assessment run, and also the invitation. A COMPLETED one is legacy "
+        "data and is purged. An ACTIVE one is not: spec-doc6 D2 says in as many "
+        "words that applications are not interrupted, and deleting a "
+        "conversation somebody is part-way through is the most direct way to "
+        "interrupt one. The survey counted 198 active at the time this "
+        "predicate was added, 197 of them seeded demo data and one a real "
+        "candidate, and the one is the reason. Preserving it costs nothing: "
+        "gate G1 blocks that candidate's evaluation until the job is "
+        "re-defined, so they finish typing and their scoring waits, which is "
+        "strictly better than losing their answers mid-assessment.",
+        predicate="completed_at IS NOT NULL",
         order=31,
     ),
     TableRule(

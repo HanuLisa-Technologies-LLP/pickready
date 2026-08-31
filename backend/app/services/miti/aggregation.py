@@ -321,7 +321,7 @@ class MustHaveEvidence:
 
 
 #: Section 6.5's contradiction penalties, used for section 10.7's "weighted
-#: unresolved contradiction severity". RUNBOOK-AMBIGUITY (section 10.7): the
+#: unresolved contradiction severity". SOURCE: RPN-PHIL-001 §10.7 with §6.7 (v1.3): the
 #: term is named and never defined, and section 6.5's minor / moderate / severe
 #: table is the only severity weighting the document states. The detector's
 #: four levels are aligned onto it top-down. The Board owes the definition;

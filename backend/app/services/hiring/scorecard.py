@@ -140,7 +140,7 @@ assert set(QUADRANT_CATEGORY.values()) <= set(ppi.CATEGORIES)
 #: client-facing dimension and spec-doc6 states in its own scope line that it
 #: "does not touch Tatva Assessment's three product-facing dimensions".
 #:
-#: RUNBOOK-AMBIGUITY (§20.2): the Runbook writes "maximum six" of a scorecard
+#: SOURCE: RPN-PHIL-001 §20.2 with §20.3 (v1.3): the Runbook writes "maximum six" of a scorecard
 #: that has no behavioural rows in it, and says nothing about a product whose
 #: matrix has a third aspect. Behavioural is bounded here too, by the same
 #: ceiling and additionally by the grade's own question ceiling, which is the
@@ -826,7 +826,7 @@ def _rank_and_normalise(
 ) -> dict[int, tuple[int | None, float]]:
     """§20.3's force-ranking, as an ORDER over the derived weights.
 
-    RUNBOOK-AMBIGUITY (§20.3): §20.3 says "weights derive from the ranking, not
+    SOURCE: RPN-PHIL-001 §20.3. §20.3 says "weights derive from the ranking, not
     from free assignment" and gives a default distribution for counts of four,
     five and six. Read literally, that would replace the derived weight with a
     figure that depends only on POSITION -- at which point Layer 1's baseline and

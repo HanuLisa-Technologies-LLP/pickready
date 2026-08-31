@@ -11,7 +11,7 @@
 
 meta:
   document: RPN-PHIL-001
-  runbook_version: "1.2"
+  runbook_version: "1.3"
   description: "The Role SWOT intake instrument (Layer 3): quadrants, session protocol, the seven high-value probes, the rejection rules, the seven-stage transformation pipeline and the scorecard rules."
 
 why_swot:
@@ -111,7 +111,7 @@ rejection_rules:
   rule: "An intake is rejected back to the hiring manager if any of:"
   conditions:
     - "Weaknesses are absent or purely external (\"the market is competitive\")"
-    - "Every competency is marked must-have"
+    - "More than two thirds of the competencies are marked must-have"
     - "Requirements are traits, not observable evidence"
     - "A prohibited disqualifier appears"
     - "The stated requirements would exclude the hiring manager's own current best performer (a devastating and highly effective test - run it)"
@@ -175,12 +175,15 @@ scorecard:
     source: "RPN-PHIL-001 §20.3"
     rule: "Competencies are ranked 1..n and weights derive from the ranking, not from free assignment."
     default_weights:
+      1: [1.00]
+      2: [0.60, 0.40]
+      3: [0.45, 0.32, 0.23]
       4: [0.36, 0.28, 0.22, 0.14]
       5: [0.32, 0.25, 0.20, 0.14, 0.09]
       6: [0.30, 0.23, 0.18, 0.13, 0.10, 0.06]
     manual_adjustment_bound: 0.05
     manual_adjustment_rule: "The hiring manager may adjust within +/-0.05 with a stated reason. The ordering may not be flattened."
-    runbook_ambiguity: "Default weights are stated for competency counts of 4, 5 and 6 only. §20.2 caps the count at six but states no minimum, so counts of 1, 2 and 3 have no derived weights anywhere in the Runbook. See RUNBOOK_OPEN_QUESTIONS.md Q8."
+    single_competency_note: "A count of one weights it 1.00 and removes this section's protection entirely: with one competency there is no ranking, so nothing forces the hiring manager to decide what matters most. Treat it as a signal to ask whether the role was scoped."
   calibration_commitment:
     source: "RPN-PHIL-001 §20.4"
     rule: "Approval of a scorecard includes the hiring manager's commitment to a calibration review: a scheduled session, after the first shortlist, in which they react to real candidates and we adjust."

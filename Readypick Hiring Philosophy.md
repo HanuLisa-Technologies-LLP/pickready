@@ -1,7 +1,7 @@
 # READY PICK NOW
 # HIRING PHILOSOPHY & INTELLIGENCE RUNBOOK
 
-**Version 1.2 — The Standard Runbook**
+**Version 1.3 — The Standard Runbook**
 **Owner:** Hanulisa Technologies LLP · Ready Pick Now
 **Classification:** Proprietary & Confidential — Internal + Controlled Client Disclosure
 **Document type:** Operating doctrine, decision engine specification, and delivery standard
@@ -13,8 +13,8 @@
 | Field | Value |
 |---|---|
 | Document ID | RPN-PHIL-001 |
-| Version | 1.2 |
-| Date | 2026-08-29 (v1.2 substantive revision). The v1.0 issue date was not recorded in the source document and has not been invented here. |
+| Version | 1.3 |
+| Date | 2026-08-29 (v1.3 substantive revision). The v1.0 issue date was not recorded in the source document and has not been invented here. |
 | Owner | Hanulisa Technologies LLP (legal entity) · Ready Pick Now (product) |
 | Status | Standard (binding on all delivery pods and all engine releases) |
 | Supersedes | All prior evaluation notes, ranking heuristics, and ad-hoc scoring sheets |
@@ -27,6 +27,7 @@
 | Ver | Date | Section | Change | Authority |
 |---|---|---|---|---|
 | 1.0 | Not recorded | All | Initial standard issued | Hiring Standards Board |
+| 1.3 | 2026-08-29 | 5.4 note; 6.4; 10.6; 10.11; 11.1; 11.4; 11.5 (new); 12.1; 18.5; 20.3; 21.10; 38.3; 57.3; Part VI preamble; Appendix A3 | SUBSTANTIVE revision closing every remaining open question, on the product owner's instruction. Part VI's false "eleven-section structure" claim replaced with a required core and an optional remainder, matching what 67.8 already conceded; competency menus declared ORDERED so Layer 1 has a per-competency baseline; a competency-to-dimension rule added so Miti can route without fifteen tables; no prerequisite edges, stated. 11.5 added distinguishing the additive DIMENSION vector from the multiplicative COMPETENCY multiplier (old 11.5 renumbered 11.6). 11.4 step 5 now iterates to a fixed point, closing a case where renormalising a clamped vector pushed a pinned weight back through its ceiling. 11.1 gained the seniority-band to four-grade mapping. 20.3 gained default weights for counts of one, two and three. 18.5's must-have trigger became "more than two thirds" instead of the literal "every". 12.1 gained the composition rule (delivered band is the minimum of every ceiling that fires) and states that a competency threshold has no Layer 1 default. 21.10's "Suspend D2" removed: it breached 11.4's no-zero rule, drove D1 above its ceiling, and was redundant because 11.1's fresher rows already floor D2. 10.6's band_width renamed band_half_width. 10.11's Candidate A band recentred on its own RPS. 6.4 and 57.3 citations corrected. 58 gained the ontology governance rules. 38.3 gained a session bound. Appendix A3 made a repeating field. Every edit is itemised in RUNBOOK_EDITS.md section 10. | Substantive (owner-directed) |
 | 1.2 | 2026-08-29 | 5.4; 6.1; 10.5; 10.7; 11.1; 11.3 | SUBSTANTIVE revision, on the product owner's instruction, closing gaps that spec-doc6 section 2.1 had required be proposed rather than applied. 11.3 now bounds all six 18.4 situation types and states the arrow multipliers, so Scale-up and Succession can be weighted at all. Three 11.1 baselines that breached the 11.4 clamp were corrected (Mechanical Fresher D1 0.42, Trades Entry D1 0.44, Data Fresher D2 0.04); every row still sums to 1.00. 10.5's slopes are exact fractions with an outer cap, closing a case where the multiplier reached 1.0004 against its own stated 1.00 ceiling. 6.1 clamps an adjusted tier strength to [0.05, 1.00]. 5.4 rules that an unlisted pair is not independent and that "Weakly" does not increment the count. 10.7 states that its "Insufficient" and 6.7's both bind. Each edit is itemised in RUNBOOK_EDITS.md section 7 with the open question it closes. | Substantive (owner-directed) |
 | 1.1 | 2026-08-29 | Front matter; §2; §6.3; §16; Appendices D, E, F; new table of contents and changelog | Editorial revision under spec-doc6 section 2.1. Front matter completed; table of contents added; §16's twelve subsections numbered §16.1-§16.12, which resolves the §16.3 cross-reference in §51; Appendix D and Appendix E subsections renumbered D.1-D.4 and E.1-E.7 so they stop colliding with the dimension names D1-D5 and the tier names E0-E5; two cross-references repaired (C5 cited §12.4, the PROHIBITED disqualifier list, where it means §12.3, the legitimate one; §6.3 cited §11.4 for adverse-impact monitoring, which is §52.5); product naming normalised; glossary extended with the canonical spellings. Every edit is itemised in RUNBOOK_EDITS.md. No weight, threshold, multiplier, band boundary, tier definition, cap, floor, intake question or example pair was changed. | Editorial (no Standards Board decision required) |
 
@@ -675,7 +676,7 @@ Beyond tier, four modifiers adjust an evidence node's contribution:
 | **Scale relevance** | ×0.8 – ×1.15 | Evidence at scale similar to the role's context increases |
 | **Corroboration** | ×1.0 – ×1.4 | Number of independent groups supporting the claim |
 
-**The attribution modifier deserves emphasis.** The distinction between *participated in* and *owned* is one of the highest-value discriminations in resume evaluation and is almost never made by similarity-based systems. Our validation instruments are designed specifically to force this distinction (§18.5, §21.3).
+**The attribution modifier deserves emphasis.** The distinction between *participated in* and *owned* is one of the highest-value discriminations in resume evaluation and is almost never made by similarity-based systems. Our validation instruments are designed specifically to force this distinction (§21.6's Ownership probe, and Appendix D.2, *Attribution probes*).
 
 ### 6.5 Effective evidence strength
 
@@ -1108,9 +1109,18 @@ even if someone re-rounds them later.
 A single number implies a precision we do not have. Every RPS is reported with a band derived from confidence:
 
 ```
-band_width = 20 × (1 − confidence_score)      (confidence_score ∈ [0,1])
+band_half_width = 20 × (1 − confidence_score)   (confidence_score ∈ [0,1])
+band            = RPS ± band_half_width
 Reported as:  RPS 78  [range 71–85, Moderate confidence]
 ```
+
+**It is a HALF-width, and the name now says so.** The quantity was previously
+called `band_width`, which normally means a full span. Read that way the example
+above needs `band_width = 14`, hence a confidence of 0.30, which §10.7 labels
+Insufficient and refuses to deliver, while the same line says Moderate. Under
+the half-width reading the arithmetic closes: 20 × (1 − 0.65) = 7, the span is
+71 to 85, and Moderate is correct. Both worked examples in §10.11 use it the
+same way. Only the name was wrong.
 
 Two candidates whose bands overlap are reported as **not meaningfully separated**, and the dossier says so explicitly. This single practice eliminates the most common false precision in AI hiring products: ranking #4 above #5 on a two-point difference that the evidence cannot support.
 
@@ -1213,7 +1223,9 @@ Active weights: D1 0.34 · D2 0.19 · D3 0.22 · D4 0.20 · D5 0.05
 
 RPS_raw = 0.34(61)+0.19(48)+0.22(55)+0.20(52)+0.05(60) = 20.7+9.1+12.1+10.4+3.0 = **55.3**
 Authenticity multiplier at D4=52 → 0.70+(52−45)(0.0133) = 0.793
-**RPS = 43.9** — Not recommended. Confidence: Moderate (0.66). Band 50 ± 7.
+**RPS = 43.9** — Not recommended. Confidence: Moderate (0.66). Band 44 ± 7.
+
+*(The band centres on the RPS, which is 43.9. This line previously read "Band 50 ± 7", a centre matching neither the RPS nor the raw 55.3. Every other figure in the example reconciles, so it was an arithmetic slip rather than a rule, and it is corrected here because an implementer checking their work against a worked example is entitled to have it close.)*
 
 **Candidate B** — plainer resume, fewer keywords.
 
@@ -1237,6 +1249,27 @@ A keyword-similarity system ranks A above B. Ready Pick Now ranks B forty points
 ### 11.1 Baseline matrix (Layer 1)
 
 Baselines are Ready Pick Now's professional judgement, expressed as calibration hypotheses (Axiom 13). They are revised only on calibration evidence. Values are D1/D2/D3/D4/D5.
+
+**Seniority bands differ per family, and this is how they map to the four
+grades a role carries.** IT runs five bands, Finance six, Leadership four,
+trades three. The product has one four-grade vocabulary,
+`non_managerial | managerial | leadership | cxo`, and deliberately only one: a
+second vocabulary for "how senior is this seat" is how this product previously
+acquired two parallel rating scales that had to be kept in step by hand.
+
+| Grade | Takes the band named | Where a family has no such band |
+|---|---|---|
+| `non_managerial` | The most junior individual-contributor band (Fresher / Entry / Executive / Entry–Mid) and the one above it (2–5 yrs) | Use the most junior band published |
+| `managerial` | The senior individual-contributor band (5–10 yrs / Experienced / Manager or BP / Mid / Senior) | Use the next band down |
+| `leadership` | The principal or first-leadership band (10+ / Principal / Supervisory / Director or VP / Head of / Leadership) | Use the most senior band published |
+| `cxo` | The executive band (CXO / CFO / CHRO / Eng leadership) | Use the most senior band published |
+
+**Read the grade as selecting a ROW, not as a claim about the person.** The
+grade describes the seat's scope, which is what decides how much a track record
+can be expected to exist at all; it says nothing about the candidate. A family
+with fewer bands than the vocabulary has grades collapses upward, never
+downward: a trades seat graded `cxo` reads the Supervisory row rather than
+inventing one, because inventing a row means inventing weights.
 
 **IT & Software**
 
@@ -1408,10 +1441,76 @@ and the vector sums to 1.0.
 2. Apply L3 modifiers.
 3. Clamp each `W_i` to its floor and ceiling: **no dimension may fall below 0.05 or rise above 0.40.** No dimension is ever zero — a dimension weighted zero is a dimension nobody is accountable for.
 4. **D4 floor is 0.12 and cannot be lowered by any client.** Authenticity is a Layer 1 integrity property.
-5. Renormalise so `Σ W_i = 1.0`.
+5. Renormalise so `Σ W_i = 1.0`, then **repeat steps 3 to 5 until the vector is unchanged.**
 6. Record the final vector, its derivation, and who requested each modifier, in the frozen configuration.
 
-### 11.5 Weight transparency
+**Step 5 repeats, and the repetition is not a refinement.** Read as a single
+pass, step 5 undoes step 3: renormalising multiplies every weight by the same
+factor, so a weight sitting exactly on the 0.40 ceiling ends up above it
+whenever the clamped vector summed to less than 1.0. Measured on a real vector
+during the 2026-08-29 reconciliation, D1 clamped to 0.40 left the procedure at
+0.4598, with the sum correct and the ceiling breached. Clamping and
+renormalising alternately converges, because each clamp removes strictly more
+than the following renormalisation can restore to a pinned weight; iterate to a
+fixed point and both properties hold at once.
+
+Two consequences worth stating rather than leaving to the implementer:
+
+- **The excess from a clamped dimension is redistributed among the UNCLAMPED
+  dimensions only.** Spreading it evenly would push a pinned weight straight
+  back through its ceiling on the next pass and the loop would not converge.
+- **If no fixed point is reachable, the configuration is refused, not
+  approximated.** That happens only when the floors alone sum above 1.0 or the
+  ceilings alone sum below it, which means the bounds themselves are wrong for
+  that department. A vector that cannot satisfy its own rules is a
+  configuration error and must be surfaced as one.
+
+### 11.5 Two levels of modifier, and they are not the same arithmetic
+
+§11.2 and §11.3 state every Layer 2 and Layer 3 modifier as a signed DELTA on a
+dimension weight, with an absolute cap, and §11.4 then clamps and renormalises
+the vector. That is one level. There is a second, and conflating them is how an
+implementation ends up applying a dimension rule to a competency and being
+unable to say why a number moved.
+
+**Level 1, the DIMENSION VECTOR. Additive.** Five weights, one per dimension,
+summing to 1.0. Modified by the deltas in §11.2 and §11.3, bounded by the caps
+stated there, clamped and renormalised by §11.4. This answers "how much does
+each of the five dimensions matter for this role".
+
+**Level 2, the COMPETENCY MULTIPLIER. Multiplicative, around 1.0.** One per
+competency, applied to that competency's baseline importance within its
+dimension. This answers "how much does this particular criterion matter relative
+to its siblings". A Layer 2 or Layer 3 input may raise or lower it within a
+declared bound; it may never zero one, for the same reason no dimension is ever
+zero.
+
+They are different objects and both are needed. A situation type says the whole
+Track Record dimension matters more here; a SWOT weakness says this one
+competency inside it is the reason the seat is open. Collapsing them into one
+number loses whichever statement was made second.
+
+**Why the arithmetic differs, stated so nobody "fixes" it.** An additive delta
+is the right shape for a vector that must sum to 1.0, because the deltas cancel
+and renormalisation is a correction rather than a rewrite. A multiplier is the
+right shape for a per-competency adjustment, because a competency's baseline
+importance varies across roles and a fixed delta would mean something different
+at every position in the ranking. A +0.08 delta on a baseline of 0.08 doubles
+it; on a baseline of 0.32 it is a quarter. The multiplier says the same thing
+in both places.
+
+**The composed product is bounded too, not only each term.** Two layers each
+applying their maximum must not compound past what one was allowed to ask for,
+or "within declared bounds" is a claim about the steps and not about the result.
+Clamp the product, and record every clamp: a clamp that left no trace is
+indistinguishable from an input that was already in range.
+
+**What is recorded.** Both levels, separately, with the four terms of the
+competency product (baseline, company, situation, role) kept individually.
+§11.6 requires a hiring manager to be shown why a weight is what it is, and a
+single composed number cannot answer that.
+
+### 11.6 Weight transparency
 
 The active weight vector is shown to the client in every dossier. A client who cannot see the weights cannot dispute them, and a weight nobody disputes is a weight nobody has validated.
 
@@ -1427,6 +1526,40 @@ The active weight vector is shown to the client in every dossier. A client who c
 | **Competency threshold** | Minimum score on a named competency; failure caps the band | Hiring Manager proposes, HR Manager approves | Yes |
 | **Dimension floor** | Minimum score on a dimension; failure caps the band | Layer 1 defaults + Layer 3 | Yes |
 | **Review trigger** | Routes to a human queue | Layer 1 and Layer 3 | Routes only, never rejects |
+
+**A competency threshold has no Layer 1 default, and that is deliberate.** The
+table above says who sets it: the Hiring Manager proposes and the HR Manager
+approves. A platform default would be a minimum score applied to every role
+regardless of what the role needs, which is the free assignment §20.3 forbids
+one paragraph later. So a Must-have competency carries the threshold its own
+intake declared, or it carries none.
+
+**A Must-have with no declared threshold is not silently uncapped.** §12.2's
+dimension floors and §14.1's unassessed-Must-have rule both still apply, and
+they are evidence-based rather than score-based, which is what catches the case
+a missing threshold would otherwise let through.
+
+**How the controls compose, and the ceiling each applies.** Three of the four
+controls above can cap a band, and this document previously stated each in
+isolation without saying what happens when two fire at once.
+
+> **The delivered band is the MINIMUM of every ceiling that fires.** Taking the
+> minimum is the only composition under which no stated control is quietly
+> ignored.
+
+The ceiling is the top of **Consider with reservations** (§10.8) in every case.
+A cap is a statement that the evidence does not support the band above; which
+control noticed does not change what the evidence supports.
+
+Two properties a cap must have, stated so an implementation cannot lose them:
+
+- **It is a `min`, never an assignment.** A candidate already below the ceiling
+  stays where they are. Assigning the ceiling would PROMOTE the weakest
+  candidates into the band the cap exists to keep the strong ones out of.
+- **It is applied last, after the authenticity multiplier of §10.5.** The
+  multiplier is bounded at 1.00 so it can only push further below a cap, but
+  cap-last is the only order that holds the ceiling under every value the
+  multiplier can take, including the boundary cases.
 
 ### 12.2 Layer 1 default dimension floors
 
@@ -1821,11 +1954,22 @@ Misclassifying the situation is the most expensive error available at intake, be
 An intake is rejected back to the hiring manager if any of:
 
 - Weaknesses are absent or purely external ("the market is competitive")
-- Every competency is marked must-have
+- More than two thirds of the competencies are marked must-have
 - Requirements are traits, not observable evidence
 - A prohibited disqualifier appears
 - The stated requirements would exclude the hiring manager's own current best performer (a devastating and highly effective test — run it)
 - The situation type cannot be determined
+
+**On the must-have share.** This trigger previously read "every competency is
+marked must-have", which is literal and therefore catches almost nothing:
+nineteen must-haves and one nice-to-have is not "every" while being exactly the
+same failure. Two thirds of a six-competency scorecard is four, so five
+must-haves now trips it, which is the intended bite.
+
+The threshold follows from §20.2 and §20.3 rather than being chosen. A scorecard
+capped at six, force-ranked with no ties, is a statement about what matters
+MOST. A manager who cannot separate a majority of six has not made that
+statement, and the intake is not ready to configure an evaluation.
 
 ---
 
@@ -1952,11 +2096,32 @@ Default derived weights:
 
 | Count | Weights (rank order) |
 |---|---|
+| 1 | 1.00 |
+| 2 | 0.60 / 0.40 |
+| 3 | 0.45 / 0.32 / 0.23 |
 | 4 | 0.36 / 0.28 / 0.22 / 0.14 |
 | 5 | 0.32 / 0.25 / 0.20 / 0.14 / 0.09 |
 | 6 | 0.30 / 0.23 / 0.18 / 0.13 / 0.10 / 0.06 |
 
 The hiring manager may adjust within ±0.05 with a stated reason. The ordering may not be flattened.
+
+**Counts of one, two and three were added 2026-08-29 and continue the same
+curve.** §20.2 sets a maximum of six and states no minimum, so a scorecard of
+three was permitted by that section and unweightable by this one. Three is not
+hypothetical: a narrow specialist seat plausibly has three must-haves, and
+§20.2's diagnosis of the over-long scorecard, that "the manager has not decided
+what matters", gives no reason to read a short one as a failure.
+
+The added rows extend the existing progression rather than inventing a shape.
+Top weight rises as the count falls (0.30, 0.32, 0.36, then 0.45, 0.60, 1.00)
+and the ratio between first and last narrows (5.0, 3.6, 2.6, then 2.0, 1.5, and
+1.0 where there is nothing to rank against).
+
+**A single-competency scorecard weights it 1.00 and that is deliberate**, but
+it should be rare and it removes this section's protection entirely: with one
+competency there is no ranking, so nothing forces the hiring manager to decide
+what matters most. Treat a count of one as a signal to ask whether the role was
+scoped, not as a configuration to optimise.
 
 ### 20.4 The calibration commitment
 
@@ -1972,9 +2137,79 @@ On HR Manager approval the scorecard is frozen as `v1`. Any change creates `v2`,
 
 *The department models are the operational core of the runbook. Each defines what "good" means in that function, what evidence proves it, how that evidence is tiered, what the department-specific gaming vectors are, and how to evaluate a fresher in that field.*
 
-**How to read a department model.** Every model follows the same eleven-section structure so that they are comparable and so that adding a new department is a filling-in exercise rather than an invention. The structure is deliberate: *what good means → competencies → evidence tiers → assessment design → validation probes → authenticity vectors → red flags → credential logic → fresher variant → seniority notes → worked example.*
+**How to read a department model.** The intended structure is: *what good means
+→ competencies → evidence tiers → assessment design → validation probes →
+authenticity vectors → red flags → credential logic → fresher variant →
+seniority notes → worked example.*
 
-**Universal rule across all departments:** the competency list in each model is the *menu*. The scorecard for a given role selects at most six from it, weighted by SWOT force-ranking. No role uses the whole menu.
+**Not every model carries all of it, and this section previously claimed
+otherwise.** It read "every model follows the same eleven-section structure",
+while §67.8 conceded in the same document that "department coverage is uneven".
+The tables settle it: subsection counts run from four to twelve, only §21 has
+seniority notes, and nine of the fifteen lack a fresher variant, credential
+logic, or both. Rather than soften the standard to match the weakest model, the
+structure is now stated as a required core and an optional remainder.
+
+**REQUIRED of every department model. A model missing any of these is
+incomplete and may not be used to configure a scorecard:**
+
+1. Role families
+2. What "good" means in this function
+3. Competency menu
+4. At least one signature assessment
+5. Red flags (which route to review, never to rejection)
+
+**OPTIONAL, and their absence is a known gap rather than a defect:** evidence
+tiers specific to the department, validation probes, gaming vectors, credential
+logic, fresher variant, seniority notes, worked example. Where a model lacks
+one, the universal rule applies instead: §6 for tiers, §9.1 to §9.5 for rubric
+anchors, §8.5 for freshers, §11.1 for seniority.
+
+Adding a department is a filling-in exercise **for the required core**. The
+optional sections are where a department earns its specificity, and a new model
+with only the core is honest rather than finished.
+
+**What the "graph" in this Part's title is, and what it is not.** A department
+model is a menu of competencies, each with its observable evidence and its
+assessment route. That IS the structure: competency to evidence to method. There
+are no prerequisite edges between competencies and none are implied. A model
+that ordered its competencies by dependency would be asserting that one cannot
+be demonstrated without another, which is false often enough to be unfair,
+particularly for the non-traditional trajectories §40 protects.
+
+**Universal rule across all departments:** the competency list in each model is
+the *menu*. The scorecard for a given role selects at most six from it, weighted
+by SWOT force-ranking. No role uses the whole menu.
+
+**A menu is ORDERED, and the order is its Layer 1 baseline.** Each menu lists
+its competencies in descending baseline importance for that function. That
+ordering is the Layer 1 statement of what matters in this department before any
+company philosophy or role SWOT is applied, and it is what orders a matrix when
+no SWOT exists yet. Convert position to a baseline weight with §20.3's table for
+the number of competencies actually selected. Nothing else in this document
+supplied a per-competency Layer 1 weight, and §11.1 does not: §11.1 weights the
+five DIMENSIONS, which is a different question.
+
+**Every competency evidences exactly one dimension, and which one is derived
+from its evidence, not declared per department.** Fifteen tables mapping
+competency to dimension would be fifteen tables to keep in step, and the mapping
+is recoverable from what each menu already states. Apply in order, first match
+wins:
+
+| If the competency's observable evidence is mainly about | Dimension |
+|---|---|
+| Whether the person can do the thing, demonstrated | D1 Verified Competence |
+| What changed because they did it, at what scale | D2 Track Record & Impact |
+| Whether this person suits THIS seat, context and constraints | D3 Role & Context Fit |
+| Whether the account holds up across sources | D4 Authenticity & Consistency |
+| What they have become able to do over time | D5 Trajectory & Potential |
+
+The order matters: a competency whose evidence is both a demonstration and an
+outcome is D1, because a demonstration is the harder evidence to fabricate and
+§6.2's fabrication-cost principle should decide ties. D4 is rarely a
+competency's home; it is mostly assessed across competencies by §38's
+triangulation, and a menu item routed to D4 should be checked for whether it is
+really a D1 competency being described by how it would be verified.
 
 ---
 
@@ -2080,7 +2315,22 @@ Software is the department where formal credentials matter **least**. Degrees an
 
 ### 21.10 Fresher variant
 
-Suspend D2. Redistribute to D1 (+0.10) and D5 (+0.05).
+**D2 sits at its 0.05 floor, and no further redistribution is applied.** This
+line previously read "Suspend D2. Redistribute to D1 (+0.10) and D5 (+0.05)",
+which breaks two of this document's own rules. §11.4 says no dimension is ever
+zero and gives the reason: a dimension weighted zero is a dimension nobody is
+accountable for. And applied to §11.1's IT fresher baseline (D1 0.40, D2 0.05,
+D3 0.15, D4 0.20, D5 0.20) the redistribution drives D1 to 0.50, above the 0.40
+ceiling, and the vector to a sum of 1.10.
+
+The instruction was also redundant. **§11.1's fresher rows already carry the
+reduction**: every one of them puts D2 at or near its floor, which is what
+"heavily reduced" in §9.2 means in practice. There is nothing left to suspend.
+
+So for a fresher: use §11.1's fresher row as published, and read a thin D2 as
+absence of evidence rather than as evidence of absence, per §8.5 and Axiom 7. A
+fresher has no track record because they have not had the chance, and §6.6's
+Unknown discipline governs what to do about it.
 
 Evidence sources that carry real weight for a fresher:
 - A project they can explain in depth, including what they got wrong — **one deep project outranks six shallow ones, and the model must not reward project count**
@@ -2979,6 +3229,20 @@ LEVEL 5  What would you do differently → only someone who reflected
 
 **Design rule for all validation instruments across all departments: at least 40% of probe items must sit at Level 4 or 5.**
 
+**A session bound, as well as a per-claim one.** The gradient above bounds how
+far ONE claim is probed. It says nothing about how long a conversation may run,
+and an unbounded session is the same failure at a different scale: a candidate
+answering an ever-deepening sequence learns that thoroughness is punished.
+
+> **A session's probing is bounded by the number of specificity levels the
+> gradient defines**, applied across the session rather than per claim. When the
+> bound is reached with evidence still insufficient, the session ends and the
+> shortfall is reported as a shortfall (§6.7, §14.1). It is never converted into
+> a low score.
+
+The bound belongs in configuration rather than in this sentence, so it can be
+tuned per department without a document revision, but it may not be absent.
+
 ### 38.4 Live verification requirements
 
 | Level | Minimum live requirement |
@@ -3574,7 +3838,7 @@ Candidates are told, before evaluation: that AI-assisted evaluation is used; wha
 **Mostly deterministic** — tier follows from evidence type and collection method, which are known. Only the specificity modifier requires model judgement.
 
 ### 57.3 Dimension evaluator (×5)
-**Input:** competency set for this dimension, retrieved rubric anchors from the department model, evidence mapped to those competencies, seniority context.
+**Input:** competency set for this dimension (from the department model's menu), the rubric anchors for this dimension (from §9.1 to §9.5, which are universal and stated once per dimension, NOT per department), evidence mapped to those competencies, and seniority context (from §11.1, plus §21.11's notes where a department carries them).
 **Output:** per-competency rubric level (0–100), each with mandatory citation to the evidence nodes that justified it.
 **Must not:** see the other dimensions' scores, the candidate's name, or the composite. Isolation prevents halo effects, which are as real in models as in humans.
 
@@ -3606,6 +3870,27 @@ Candidates are told, before evaluation: that AI-assisted evaluation is used; wha
 - The client's stated preference in free-text form (it must be compiled first, per §15)
 
 **Retrieval quality requirement:** a skills/competency ontology is required so that vocabulary mismatch does not cause missed evidence — "graph database" and "semantic technologies," "GD&T" and "geometric tolerancing," "FP&A" and "business finance" must resolve to the same competency node. Pure vector similarity fails on this and will systematically undervalue candidates who describe their work in non-standard vocabulary, which correlates with non-standard backgrounds.
+
+**The ontology is versioned data, not a table in this document, and that is
+deliberate.** It grows every time a candidate describes familiar work in
+unfamiliar words, which is continuously; a table printed here would be stale
+within a month and would need a document revision to fix a fairness defect. The
+three pairings named above are its seed and its acceptance test: an ontology
+that does not resolve them is not conformant.
+
+What this document governs, and what an implementation must honour:
+
+- **Every group carries a reason.** An equivalence asserted without one is
+  indistinguishable from a mistake, and the cost of a wrong equivalence is a
+  candidate credited with a competency they do not have.
+- **Groups are symmetric and never partial.** If "GD&T" resolves to
+  "geometric tolerancing", the reverse must hold, or the fairness property
+  depends on which vocabulary the job description happened to use.
+- **Adding a group is a fairness change and is reviewed as one.** The test is
+  whether two people who did the same work are now scored the same, not
+  whether a search returns more results.
+- **A missing equivalence is a defect against this section**, reported and
+  fixed, not an acceptable limit of the tool.
 
 ## 59. Data schema (core objects)
 
@@ -3893,6 +4178,15 @@ Stated in advance, per Axiom 13:
 
 ### A3. What "good" looks like — observable evidence only (5–8 items)
 > Format: "Has [done X] and can [describe/demonstrate Y]"
+>
+> **This is a REPEATING field, minimum five, maximum eight.** The printed form
+> previously showed five blanks for a range that goes to eight, which a paper
+> form resolves in the margin and a screen cannot. Five is the floor and is
+> enforced: fewer than five is refused with the count named, because a client
+> who can only produce three observable behaviours has described a role rather
+> than a standard. Items six to eight are offered and optional. Above eight the
+> field stops accepting, for §20.2's reason: a list nobody can rank is the same
+> as no list.
 13. ______________________________________________
 14. ______________________________________________
 15. ______________________________________________

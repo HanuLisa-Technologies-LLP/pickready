@@ -492,11 +492,12 @@ def unassessed_must_have_caps(
 def lowest_ceiling(caps: Sequence[BandCap]) -> int | None:
     """The binding ceiling: the lowest of whichever controls fired.
 
-    RUNBOOK-AMBIGUITY (section 12.1). The Runbook states three capping controls
-    and never states how they compose. Taking the minimum is the only reading
-    under which no stated rule is quietly ignored, and it is what
-    RUNBOOK_OPEN_QUESTIONS.md Q7 recommends. The Board owes the composition
-    rule and the ceiling section 12.1 itself omits.
+    SOURCE: RPN-PHIL-001 section 12.1 (v1.3), "The delivered band is the
+    MINIMUM of every ceiling that fires." The Runbook previously stated the
+    three capping controls in isolation and never said how they compose, so
+    this was an implementer's reading; taking the minimum is now the stated
+    rule, on the ground that it is the only composition under which no stated
+    control is quietly ignored.
     """
     return min((cap.ceiling for cap in caps), default=None)
 
