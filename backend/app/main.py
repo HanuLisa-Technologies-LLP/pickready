@@ -29,6 +29,7 @@ from app.api import (
     pipeline,
     portal,
     provider,
+    reports,
     telemetry,
     verification,
 )
@@ -128,6 +129,7 @@ app.include_router(bd.router, prefix=f"{API_PREFIX}/bd", tags=["bd"])
 # and a second prefix would just be a second URL for Razorpay's webhook to be
 # configured against by mistake.
 app.include_router(billing.router, prefix=f"{API_PREFIX}/billing", tags=["billing"])
+app.include_router(reports.router, prefix=f"{API_PREFIX}/reports", tags=["reports"])
 app.include_router(assessments.router, prefix="/api/v2/assessments", tags=["assessments-v2"])
 
 # ── /api/v2 aliases (2026-07-27 build spec) ──────────────────────────────────
