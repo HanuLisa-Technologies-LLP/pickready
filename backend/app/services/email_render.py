@@ -72,6 +72,28 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "flowing:\n\n{{billing_url}}\n\n"
         "Regards,\nReadyPick",
     ),
+    # Master Directive Part 5 §4 — the two credit-balance warning tiers. The
+    # figures are computed at send time by the worker; the copy states balance,
+    # estimated assessments remaining, and the top-up link, per §4.1's table.
+    "credit_warning_low": (
+        "Credits running low, {{company_name}}",
+        "Hello,\n\n"
+        "Credits running low. You have {{balance_credits}} credits remaining. "
+        "At current usage, this covers approximately "
+        "{{estimated_assessments}} more assessments.{{stem_note}}\n\n"
+        "Top up now to keep your pipeline moving:\n\n{{billing_url}}\n\n"
+        "Regards,\nReadyPick",
+    ),
+    "credit_warning_critical": (
+        "Critical: only {{balance_credits}} credits remaining",
+        "Hello,\n\n"
+        "Critical: only {{balance_credits}} credits remaining for "
+        "{{company_name}}. Some assessments may not complete. At current "
+        "usage, this covers approximately {{estimated_assessments}} more "
+        "assessments.{{stem_note}}\n\n"
+        "Top up immediately:\n\n{{billing_url}}\n\n"
+        "Regards,\nReadyPick",
+    ),
     "interview_invite": (
         "Interview invitation, {{job_title}} at {{company_name}}",
         "Dear {{candidate_name}},\n\n"

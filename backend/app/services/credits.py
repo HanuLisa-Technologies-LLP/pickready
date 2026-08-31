@@ -18,6 +18,7 @@ one of them true:
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
@@ -26,6 +27,8 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+log = logging.getLogger(__name__)
 
 from app.models.billing import (
     CONSUMPTION_SUBUNITS,
@@ -108,21 +111,33 @@ class BalanceSummary:
         return not self.unlimited and self.balance_subunits <= 0
 
     @property
-    def low_balance(self) -> bool:
-        """Below the warning threshold, but not yet exhausted (spec §11).
+    def warning_level(self) -> int:
+        """The Master Directive Part 5 §4 alert tier: 0 none, 1 LOW (balance
+        at or below 20 credits), 2 CRITICAL (at or below 10).
 
-        Measured against what was GRANTED rather than against a fixed number of
-        credits, because a customer on the 50 bundle and a customer on the 200
-        do not mean the same thing by "running low".
+        ABSOLUTE thresholds, replacing the old granted-fraction rule: §4.1
+        names 20 and 10 as fixed system values that are not configurable and
+        must not be adjusted without a product decision.
 
-        False for a customer who was never granted anything: a brand-new account
-        with an empty ledger is not "running low", it has not started, and an
-        urgent top-up warning on first sign-in is noise that teaches people to
-        dismiss the one that matters.
+        Zero for a customer who was never granted anything: a brand-new
+        account with an empty ledger is not "running low", it has not started,
+        and an urgent top-up warning on first sign-in is noise that teaches
+        people to dismiss the one that matters.
         """
-        if self.unlimited or self.exhausted or self.granted_subunits <= 0:
-            return False
-        return self.balance_subunits <= self.granted_subunits * LOW_BALANCE_FRACTION
+        if self.unlimited or self.granted_subunits <= 0:
+            return 0
+        if self.balance_subunits <= WARNING_2_CREDITS * SUBUNITS_PER_CREDIT:
+            return 2
+        if self.balance_subunits <= WARNING_1_CREDITS * SUBUNITS_PER_CREDIT:
+            return 1
+        return 0
+
+    @property
+    def low_balance(self) -> bool:
+        """True at either warning tier but not yet exhausted. Kept under its
+        established name for every existing consumer; the threshold behind it
+        is now the directive's absolute 20-credit line."""
+        return not self.exhausted and self.warning_level >= 1
 
     @property
     def balance_fraction(self) -> float:
@@ -236,6 +251,16 @@ async def grant(
     if entry is None:
         return False
     await _sync_deficit(session, tenant_id)
+    # Master Directive Part 5 Rule 5: every purchase resets BOTH warning
+    # flags, so Warning 1 fires again when the new combined balance drops back
+    # to 20 and Warning 2 again at 10.
+    await session.execute(
+        text(
+            "UPDATE tenants SET credit_warning_1_sent = FALSE, "
+            "credit_warning_2_sent = FALSE WHERE id = :tid"
+        ),
+        {"tid": str(tenant_id)},
+    )
     return True
 
 
@@ -281,6 +306,7 @@ async def consume(
     if entry is None:
         return False
     await _sync_deficit(session, tenant_id)
+    await _sync_warning_flags(session, tenant_id)
     return True
 
 
@@ -380,9 +406,123 @@ async def has_credit_headroom(session: AsyncSession, tenant_id: uuid.UUID) -> bo
 # keep assessing candidates once the quota is exhausted.
 
 #: Fraction of the granted pool at or below which the customer is warned. The
-#: client's number (spec: "below 30 percent"). Held here rather than in the API
-#: so the alert and the block are read from one module.
+#: old client number (spec: "below 30 percent"), retained ONLY because the
+#: API contract exposes it as `low_balance_threshold`; the live warning logic
+#: is the absolute two-tier rule below.
 LOW_BALANCE_FRACTION = 0.30
+
+# ── Two-tier warning alerts (Master Directive Part 5 §4) ─────────────────────
+#: Warning 1, LOW BALANCE: fires when the balance falls to or below this many
+#: credits. FIXED SYSTEM VALUE — not configurable by the client, not to be
+#: adjusted without a product decision (§4.1).
+WARNING_1_CREDITS = 20
+#: Warning 2, CRITICAL BALANCE: persistent banner + email (+ SMS where
+#: configured) at or below this many credits.
+WARNING_2_CREDITS = 10
+#: Platform default consumption for the alert's remaining-assessments
+#: estimate when the account has no 30-day history: the §4.2 mixed
+#: STEM/Non-STEM average.
+DEFAULT_CREDITS_PER_ASSESSMENT = Decimal("1.2")
+
+
+async def average_credits_per_assessment(
+    session: AsyncSession, tenant_id: uuid.UUID
+) -> Decimal:
+    """Average credits consumed per completed assessment, last 30 days.
+
+    §4.2's estimate input. Only FULL reports count — partials and no-shows are
+    residue of assessments that never produced a report, and folding them in
+    would understate what the next real assessment costs. No history → the
+    1.2-credit platform default.
+    """
+    row = (
+        await session.execute(
+            select(
+                func.count(CreditLedgerEntry.id),
+                func.coalesce(-func.sum(CreditLedgerEntry.subunits_delta), 0),
+            ).where(
+                CreditLedgerEntry.tenant_id == tenant_id,
+                CreditLedgerEntry.event_type == EVENT_COMPLETED,
+                CreditLedgerEntry.created_at >= func.now() - text("interval '30 days'"),
+            )
+        )
+    ).one()
+    count, subunits = int(row[0] or 0), int(row[1] or 0)
+    if count <= 0 or subunits <= 0:
+        return DEFAULT_CREDITS_PER_ASSESSMENT
+    return (Decimal(subunits) / Decimal(count) / Decimal(SUBUNITS_PER_CREDIT)).quantize(
+        Decimal("0.01")
+    )
+
+
+def estimated_assessments_remaining(balance_subunits: int, average: Decimal) -> int:
+    """§4.2: balance ÷ average credits per assessment, rounded DOWN, floor 0."""
+    if balance_subunits <= 0 or average <= 0:
+        return 0
+    balance = Decimal(balance_subunits) / Decimal(SUBUNITS_PER_CREDIT)
+    return int(balance / average)
+
+
+async def has_active_stem_jobs(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
+    """Whether the §4.2 alert should note the 1.5-credit STEM rate."""
+    flag = (
+        await session.execute(
+            text(
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE tenant_id = :tid "
+                "AND role_classification = 'STEM' AND archived_at IS NULL)"
+            ),
+            {"tid": str(tenant_id)},
+        )
+    ).scalar()
+    return bool(flag)
+
+
+async def _sync_warning_flags(session: AsyncSession, tenant_id: uuid.UUID) -> None:
+    """Stamp the warning-sent flags and queue the alert email on transition.
+
+    Runs after every deduction. Each tier's email goes out exactly once per
+    purchase cycle: the flag is checked and set in the same statement, so a
+    burst of concurrent completions cannot double-send, and `grant` resets
+    both flags (Rule 5) so the system starts fresh after each top-up.
+
+    The email is a Celery task and the enqueue is best-effort: a broker outage
+    must never turn a credit deduction into an error, so the failure is logged
+    and the flag stays set (the in-app banner from the summary API still
+    shows).
+    """
+    if await is_demo_tenant(session, tenant_id):
+        return
+    balance = await balance_subunits(session, tenant_id)
+    for level, threshold_credits, flag_column in (
+        (2, WARNING_2_CREDITS, "credit_warning_2_sent"),
+        (1, WARNING_1_CREDITS, "credit_warning_1_sent"),
+    ):
+        if balance > threshold_credits * SUBUNITS_PER_CREDIT:
+            continue
+        transitioned = (
+            await session.execute(
+                text(
+                    f"UPDATE tenants SET {flag_column} = TRUE "
+                    f"WHERE id = :tid AND {flag_column} = FALSE RETURNING id"
+                ),
+                {"tid": str(tenant_id)},
+            )
+        ).first()
+        if transitioned is None:
+            continue
+        try:
+            from app.workers.celery_app import celery_app
+
+            celery_app.send_task(
+                "pickready.send_credit_warning_email",
+                args=[str(tenant_id), level],
+            )
+        except Exception:  # noqa: BLE001 — alerting must never break billing
+            log.warning(
+                "credits.warning_email_enqueue_failed tenant=%s level=%s",
+                tenant_id, level, exc_info=True,
+            )
+        break  # the deeper tier subsumes the shallower one for this event
 
 
 async def has_positive_balance(session: AsyncSession, tenant_id: uuid.UUID) -> bool:

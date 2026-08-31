@@ -245,3 +245,38 @@ async def test_a_completed_assessment_charges_stem_rate_and_locks_the_job() -> N
             await session.rollback()
     finally:
         await engine.dispose()
+
+
+# ── Two-tier warning alerts (Part 5 §4) ─────────────────────────────────────
+
+def test_warning_tiers_use_the_fixed_absolute_thresholds() -> None:
+    """§4.1: 20 and 10 credits, fixed system values."""
+    def summary(balance_credits, granted=50, unlimited=False):
+        return credits.BalanceSummary(
+            balance_subunits=int(balance_credits * SUBUNITS_PER_CREDIT),
+            granted_subunits=granted * SUBUNITS_PER_CREDIT,
+            consumed_subunits=0, month_by_event={}, rollover_subunits=0,
+            in_deficit=False, unlimited=unlimited,
+        )
+
+    assert summary(21).warning_level == 0
+    assert summary(20).warning_level == 1      # falls TO the threshold
+    assert summary(11).warning_level == 1
+    assert summary(10).warning_level == 2
+    assert summary(1).warning_level == 2
+    assert summary(10, unlimited=True).warning_level == 0
+    assert summary(0, granted=0).warning_level == 0  # never-granted account
+    # low_balance keeps its name for existing consumers, on the new rule.
+    assert summary(20).low_balance is True
+    assert summary(21).low_balance is False
+
+
+def test_estimate_matches_the_directive_worked_example() -> None:
+    """Part 3 §7.4: 20 credits at 1.5 credits per STEM report covers
+    approximately 13 more assessments. Rounded DOWN (§4.2)."""
+    twenty = 20 * SUBUNITS_PER_CREDIT
+    assert credits.estimated_assessments_remaining(twenty, Decimal("1.5")) == 13
+    assert credits.estimated_assessments_remaining(twenty, Decimal("1.2")) == 16
+    assert credits.estimated_assessments_remaining(twenty, Decimal("1.0")) == 20
+    assert credits.estimated_assessments_remaining(0, Decimal("1.2")) == 0
+    assert credits.estimated_assessments_remaining(-60, Decimal("1.2")) == 0

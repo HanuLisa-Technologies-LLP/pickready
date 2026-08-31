@@ -180,16 +180,37 @@ _EXHAUSTED_MESSAGE = (
     "is written as soon as credits are available."
 )
 
-#: Shown below the threshold and above zero. Deliberately not alarming: the
-#: service is working, and the point is to be topped up BEFORE anything stops.
-_LOW_BALANCE_MESSAGE = (
-    "Your credit pool is running low. Purchase a credit bundle to keep creating "
-    "jobs and assessing candidates without interruption."
-)
+def _warning_message(
+    level: int, balance: Decimal, estimate: int, stem_active: bool
+) -> str | None:
+    """The Master Directive Part 5 §4.1 alert copy, tier by tier, with the
+    §4.2 estimate folded in. Composed server-side so the banner, the email and
+    the 402 refusal cannot describe one situation three different ways."""
+    if level <= 0:
+        return None
+    stem_note = (
+        " Note: STEM roles consume 1.5 credits per report." if stem_active else ""
+    )
+    if level >= 2:
+        return (
+            f"Critical: Only {balance} credits remaining. Some assessments may "
+            f"not complete. At current usage, this covers approximately "
+            f"{estimate} more assessments.{stem_note} Top up immediately."
+        )
+    return (
+        f"Credits running low. You have {balance} credits remaining. At current "
+        f"usage, this covers approximately {estimate} more assessments."
+        f"{stem_note} Top up now to keep your pipeline moving."
+    )
 
 
 async def _summary_out(session: AsyncSession, tenant_id: uuid.UUID) -> CreditSummaryOut:
     summary = await credits.summarize(session, tenant_id)
+    average = await credits.average_credits_per_assessment(session, tenant_id)
+    estimate = credits.estimated_assessments_remaining(
+        summary.balance_subunits, average
+    )
+    stem_active = await credits.has_active_stem_jobs(session, tenant_id)
     rate = (
         await session.execute(
             select(PricingPlan.rate_per_application_inr)
@@ -217,10 +238,17 @@ async def _summary_out(session: AsyncSession, tenant_id: uuid.UUID) -> CreditSum
         low_balance=summary.low_balance,
         balance_fraction=summary.balance_fraction,
         low_balance_threshold=credits.LOW_BALANCE_FRACTION,
+        warning_level=summary.warning_level,
+        warning_1_threshold_credits=credits.WARNING_1_CREDITS,
+        warning_2_threshold_credits=credits.WARNING_2_CREDITS,
+        estimated_assessments_remaining=estimate,
+        average_credits_per_assessment=float(average),
         alert_message=(
             _EXHAUSTED_MESSAGE
             if summary.exhausted
-            else (_LOW_BALANCE_MESSAGE if summary.low_balance else None)
+            else _warning_message(
+                summary.warning_level, summary.balance_credits, estimate, stem_active
+            )
         ),
         unlimited=summary.unlimited,
     )

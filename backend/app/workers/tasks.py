@@ -1410,6 +1410,67 @@ def send_payment_failed_email(tenant_id: str):
     return _run(_task())
 
 
+@celery_app.task(name="pickready.send_credit_warning_email")
+def send_credit_warning_email(tenant_id: str, level: int):
+    """The Part 5 §4 balance warnings: LOW at 20 credits, CRITICAL at 10.
+
+    Enqueued by `credits._sync_warning_flags` exactly once per tier per
+    purchase cycle. The estimate is computed HERE, at send time, so the figure
+    in the email matches the balance the deduction left behind rather than a
+    stale snapshot from whenever the task queued.
+    """
+    async def _task():
+        async with _worker_session() as session:
+            from app.services import credits as credits_service
+
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT u.email, t.name FROM users u JOIN tenants t ON t.id = u.tenant_id "
+                        "WHERE u.tenant_id = :tid AND u.role = 'client' "
+                        "AND u.status <> 'disabled' AND u.email IS NOT NULL "
+                        "ORDER BY u.created_at LIMIT 1"
+                    ),
+                    {"tid": tenant_id},
+                )
+            ).mappings().first()
+            if row is None:
+                logger.warning(
+                    "billing.credit_warning_email_no_recipient tenant=%s", tenant_id
+                )
+                return {"sent": False, "reason": "no recipient"}
+
+            tid = uuid.UUID(tenant_id)
+            balance = await credits_service.balance_subunits(session, tid)
+            average = await credits_service.average_credits_per_assessment(session, tid)
+            estimate = credits_service.estimated_assessments_remaining(balance, average)
+            stem_note = (
+                " Note: STEM roles consume 1.5 credits per report."
+                if await credits_service.has_active_stem_jobs(session, tid)
+                else ""
+            )
+            celery_app.send_task(
+                "pickready.send_email",
+                args=[
+                    tenant_id,
+                    row["email"],
+                    "credit_warning_critical" if level >= 2 else "credit_warning_low",
+                    {
+                        "company_name": row["name"],
+                        "balance_credits": str(
+                            credits_service.credits_from_subunits(balance)
+                        ),
+                        "estimated_assessments": str(estimate),
+                        "stem_note": stem_note,
+                        "billing_url": f"{get_settings().frontend_url}/org/billing",
+                    },
+                ],
+            )
+            return {"sent": True, "level": level}
+
+    return _run(_task())
+
+
 # ── Dashboard (ESD §14) ─────────────────────────────────────────────────────
 
 @celery_app.task(

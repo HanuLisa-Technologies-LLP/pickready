@@ -83,6 +83,18 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     is_demo: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # ── Two-tier credit warnings (Master Directive Part 5 §4) ────────────────
+    # "Sent" flags for the LOW (<= 20 credits) and CRITICAL (<= 10 credits)
+    # warning emails. Rule 5: BOTH reset to false on every new purchase, so the
+    # warning system starts fresh after each top-up. Stored here for the same
+    # reason `credit_deficit` is: the check runs after every deduction and must
+    # not re-aggregate the ledger.
+    credit_warning_1_sent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    credit_warning_2_sent: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
 
 #: `tenants.status` values. Mirrors the CHECK constraint in migration 0020.

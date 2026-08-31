@@ -135,6 +135,16 @@ class CreditSummaryOut(BaseModel):
     #: The fraction at which `low_balance` turns on, so the copy can name the
     #: threshold without hardcoding the product's number in the client.
     low_balance_threshold: float = 0.30
+    # ── Two-tier absolute warnings (Master Directive Part 5 §4) ─────────────
+    #: 0 none, 1 LOW (balance <= 20 credits), 2 CRITICAL (<= 10). Tier 2
+    #: renders as a PERSISTENT banner with urgent top-up styling.
+    warning_level: int = 0
+    warning_1_threshold_credits: int = 20
+    warning_2_threshold_credits: int = 10
+    #: §4.2's estimate: balance ÷ 30-day average credits per assessment
+    #: (platform default 1.2), rounded down.
+    estimated_assessments_remaining: int = 0
+    average_credits_per_assessment: float = 1.2
     #: Plain-language copy for whichever alert is showing. Resolved server-side
     #: so the API, the on-screen dialog and the 402 refusal cannot describe the
     #: same situation three different ways.
