@@ -29,7 +29,8 @@ GRADES = ("non_managerial", "managerial", "leadership", "cxo")
 # ── Question counts ──────────────────────────────────────────────────────────
 
 def test_question_ranges_follow_the_grade_table() -> None:
-    """Spec §5.4. Note the direction: MORE questions for a junior candidate.
+    """Master Directive Part 3 §6 — the non-STEM column, with seniority now
+    ADDING questions rather than removing them.
 
     A RANGE per grade, not a count. The count is resolved once per job from how
     many items that job's matrix actually holds, so two jobs at the same grade
@@ -37,10 +38,16 @@ def test_question_ranges_follow_the_grade_table() -> None:
     ONE job never can.
     """
     assert GRADE_QUESTION_RANGES == {
-        "non_managerial": (20, 28),
-        "managerial": (16, 22),
-        "leadership": (11, 16),
-        "cxo": (7, 11),
+        "non_managerial": (12, 18),
+        "managerial": (15, 22),
+        "leadership": (18, 25),
+        "cxo": (18, 25),
+    }
+    assert ppi.STEM_GRADE_QUESTION_RANGES == {
+        "non_managerial": (18, 28),
+        "managerial": (22, 35),
+        "leadership": (25, 38),
+        "cxo": (25, 38),
     }
 
 
@@ -58,7 +65,7 @@ def test_the_resolved_target_never_leaves_its_grade_range(grade, bounds) -> None
 
 
 def test_an_unknown_grade_resolves_as_non_managerial() -> None:
-    assert ppi.resolve_question_target(None, 24) == 24
+    assert ppi.resolve_question_target(None, 15) == 15
     assert ppi.max_questions("not-a-grade") == GRADE_QUESTION_RANGES["non_managerial"][1]
 
 

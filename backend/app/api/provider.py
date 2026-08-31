@@ -35,6 +35,10 @@ from app.models.enums import Role, UserStatus
 from app.models.tenant import CUSTOMER_ACTIVE, CUSTOMER_ARCHIVED, Tenant
 from app.models.user import User
 from app.schemas.provider import (
+    ClassificationReviewItem,
+    ClassificationSplitRow,
+    ReclassifyJobIn,
+    ReclassifyJobOut,
     TEAM_PREVIEW_LIMIT,
     ComplianceDocumentOut,
     ComplianceDocumentSlot,
@@ -643,3 +647,203 @@ def _activity_row(row: dict) -> dict:
         # A 24-asterisked cell was used (7.5 override, C13 exception).
         "exceptional": bool(row["exceptional"]),
     }
+
+
+# ── STEM classification admin (Master Directive Part 3 §9) ───────────────────
+# Three surfaces, all Provider-only: the review queue for tentative
+# classifications, the reclassify function (permitted strictly before the
+# first completed assessment — Rule 5), and the per-customer STEM/Non-STEM
+# commercial split. The CLIENT never sees any of this; their portal shows the
+# read-only badge and nothing else.
+
+
+@router.get(
+    "/classification/review-queue",
+    response_model=list[ClassificationReviewItem],
+)
+async def classification_review_queue(
+    session: AsyncSession = Depends(get_superadmin_db),
+    user: CurrentUser = Depends(get_current_user),
+) -> list[ClassificationReviewItem]:
+    """Jobs whose classification landed in the §4.4 tentative band
+    (stem-score 0.30–0.79) or came from the engine-error fallback, newest
+    first, for manual verification by the Hanulisa team."""
+    from app.models.job import Job
+
+    rows = (
+        await session.execute(
+            select(Job, Tenant.name)
+            .join(Tenant, Tenant.id == Job.tenant_id, isouter=True)
+            .where(Job.classification_tentative.is_(True))
+            .order_by(Job.created_at.desc())
+            .limit(200)
+        )
+    ).all()
+    return [
+        ClassificationReviewItem(
+            job_id=job.id,
+            tenant_id=job.tenant_id,
+            customer_name=name,
+            title=job.title,
+            role_classification=job.role_classification,
+            classification_confidence=job.classification_confidence,
+            classification_signals=list(job.classification_signals or []),
+            classification_locked=job.classification_locked,
+            classification_overridden=job.classification_overridden,
+            created_at=job.created_at,
+        )
+        for job, name in rows
+    ]
+
+
+@router.post("/jobs/{job_id}/reclassify", response_model=ReclassifyJobOut)
+async def reclassify_job(
+    job_id: uuid.UUID,
+    body: ReclassifyJobIn,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_superadmin_db),
+) -> ReclassifyJobOut:
+    """Support-team reclassification (Part 3 §8, §9).
+
+    Permitted ONLY while no candidate has completed an assessment against the
+    job. `classification_locked` is stamped by the completion charge, and a
+    live count backs it up so a race between a completing assessment and this
+    call cannot slip a reclassification through: once any completed
+    conversation exists, the answer is a credit adjustment, never a
+    retroactive reclassification.
+    """
+    from sqlalchemy import text as sql_text
+
+    from app.models.job import Job
+    from app.services import stem_classification
+
+    job = await session.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    completed = (
+        await session.execute(
+            sql_text(
+                "SELECT count(*) FROM assessment_conversations c "
+                "JOIN job_candidate_links l ON l.id = c.job_candidate_link_id "
+                "WHERE l.job_id = :jid AND c.completed_at IS NOT NULL"
+            ),
+            {"jid": str(job_id)},
+        )
+    ).scalar_one()
+    if job.classification_locked or int(completed) > 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Classification is locked: candidates have already completed "
+                "assessments against this job. Log the dispute and compensate "
+                "with a credit adjustment; never reclassify retroactively."
+            ),
+        )
+
+    previous = job.role_classification
+    job.role_classification = body.role_classification
+    job.credit_cost_per_report = stem_classification.credit_cost(
+        body.role_classification
+    )
+    job.classification_overridden = True
+    job.classification_override_by = user.user_id
+    job.classification_tentative = False
+    await session.flush()
+    await audit(
+        session,
+        tenant_id=job.tenant_id,
+        actor_user_id=user.user_id,
+        action="job_reclassified",
+        target_type="job",
+        target_id=job.id,
+        metadata={
+            "from": previous,
+            "to": body.role_classification,
+            "reason": body.reason,
+            "credit_cost_per_report": float(job.credit_cost_per_report),
+        },
+    )
+    return ReclassifyJobOut(
+        job_id=job.id,
+        role_classification=job.role_classification,
+        credit_cost_per_report=float(job.credit_cost_per_report),
+        classification_overridden=True,
+    )
+
+
+@router.get(
+    "/classification/split", response_model=list[ClassificationSplitRow]
+)
+async def classification_split(
+    session: AsyncSession = Depends(get_superadmin_db),
+    user: CurrentUser = Depends(get_current_user),
+) -> list[ClassificationSplitRow]:
+    """Per-customer STEM vs Non-STEM breakdown: job counts by type and
+    credits consumed at each rate (Part 3 §9's account-review report).
+
+    Consumption is read from the ledger's own audit trail — every deduction
+    row carries `role_classification` in its metadata — so the split reflects
+    what was actually charged, not what today's job flags would imply.
+    """
+    from sqlalchemy import text as sql_text
+
+    rows = (
+        await session.execute(
+            sql_text(
+                """
+                WITH job_counts AS (
+                    SELECT tenant_id,
+                           count(*) FILTER (WHERE role_classification = 'STEM')
+                               AS stem_jobs,
+                           count(*) FILTER (WHERE role_classification = 'NON_STEM')
+                               AS non_stem_jobs
+                      FROM jobs
+                     GROUP BY tenant_id
+                ),
+                consumption AS (
+                    SELECT tenant_id,
+                           -sum(subunits_delta) FILTER (
+                               WHERE event_type != 'grant'
+                                 AND metadata_json->>'role_classification' = 'STEM'
+                           ) AS stem_subunits,
+                           -sum(subunits_delta) FILTER (
+                               WHERE event_type != 'grant'
+                                 AND (metadata_json->>'role_classification'
+                                      IS DISTINCT FROM 'STEM')
+                           ) AS non_stem_subunits
+                      FROM credit_ledger
+                     WHERE subunits_delta < 0
+                     GROUP BY tenant_id
+                )
+                SELECT t.id AS tenant_id,
+                       t.name AS customer_name,
+                       COALESCE(j.stem_jobs, 0) AS stem_jobs,
+                       COALESCE(j.non_stem_jobs, 0) AS non_stem_jobs,
+                       COALESCE(c.stem_subunits, 0) AS stem_subunits,
+                       COALESCE(c.non_stem_subunits, 0) AS non_stem_subunits
+                  FROM tenants t
+                  LEFT JOIN job_counts j ON j.tenant_id = t.id
+                  LEFT JOIN consumption c ON c.tenant_id = t.id
+                 ORDER BY t.name
+                """
+            )
+        )
+    ).mappings().all()
+    from app.models.billing import SUBUNITS_PER_CREDIT
+
+    return [
+        ClassificationSplitRow(
+            tenant_id=row["tenant_id"],
+            customer_name=row["customer_name"],
+            stem_jobs=int(row["stem_jobs"]),
+            non_stem_jobs=int(row["non_stem_jobs"]),
+            stem_credits_consumed=round(
+                int(row["stem_subunits"] or 0) / SUBUNITS_PER_CREDIT, 2
+            ),
+            non_stem_credits_consumed=round(
+                int(row["non_stem_subunits"] or 0) / SUBUNITS_PER_CREDIT, 2
+            ),
+        )
+        for row in rows
+    ]

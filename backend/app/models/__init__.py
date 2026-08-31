@@ -79,7 +79,7 @@ from app.models.enums import (
     UserStatus,
     VerificationStatus,
 )
-from app.models.job import Job, JobApproval
+from app.models.job import JDDraft, Job, JobApproval
 from app.models.job_setup import (
     SWOT_AREAS,
     SWOT_STATUS_ACTIVE,

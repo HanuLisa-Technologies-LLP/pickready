@@ -173,22 +173,44 @@ def is_forbidden_competency(name: str) -> bool:
     )
 
 
-# ── Question volume by grade (spec §5.4) ─────────────────────────────────────
-# A RANGE per grade, resolved ONCE per job at setup from how many items that
-# job's matrix actually holds -- not a single fixed number per grade, and not a
-# number chosen per candidate.
+# ── Question volume by role type and grade (Master Directive Part 3 §6) ─────
+# A RANGE per (role classification, grade), resolved ONCE per job at setup
+# from how many items that job's matrix actually holds -- not a single fixed
+# number per grade, and not a number chosen per candidate.
 #
-# Note the direction: MORE questions for a junior candidate, fewer for a CXO.
-# That is the client's table verbatim and it is deliberate -- a CXO's evidence
-# is broader per answer, and their time is the scarce resource.
+# THE DIRECTIVE'S TABLE REPLACED THE OLD SINGLE-RANGE ONE (spec §5.4), in
+# direction as well as in numbers: STEM roles probe DEEPER at every grade
+# (Vaada's 25-35 exchange budget vs 15-20, Part 3 §1), and seniority now adds
+# questions rather than removing them. The directive's STEM rows are keyed by
+# seniority words this platform does not store (Junior/Mid/Senior/Principal);
+# they are mapped onto the four stored grades by role: a non-managerial STEM
+# IC gets the Mid-level band, a managerial one the Senior/Lead band, and
+# leadership/CXO the Principal/Architect band.
 
-#: grade -> (minimum total, maximum total)
+#: grade -> (minimum total, maximum total) — NON-STEM roles (the default).
 GRADE_QUESTION_RANGES: dict[str, tuple[int, int]] = {
-    "non_managerial": (20, 28),
-    "managerial": (16, 22),
-    "leadership": (11, 16),
-    "cxo": (7, 11),
+    "non_managerial": (12, 18),
+    "managerial": (15, 22),
+    "leadership": (18, 25),
+    "cxo": (18, 25),
 }
+
+#: grade -> (minimum total, maximum total) — STEM roles (Part 3 §6).
+STEM_GRADE_QUESTION_RANGES: dict[str, tuple[int, int]] = {
+    "non_managerial": (18, 28),
+    "managerial": (22, 35),
+    "leadership": (25, 38),
+    "cxo": (25, 38),
+}
+
+
+def _grade_ranges(role_classification: str | None) -> dict[str, tuple[int, int]]:
+    """The job's STEM flag is the input to this logic (Part 3 §6). None or an
+    unknown value resolves to the non-STEM table, same direction as every
+    other fallback in the feature."""
+    if role_classification == "STEM":
+        return STEM_GRADE_QUESTION_RANGES
+    return GRADE_QUESTION_RANGES
 
 #: grade -> {aspect: (low, high)}. ILLUSTRATIVE, and the spec says so in as many
 #: words: "typical, illustrative sub-splits ... not a rigid per-job formula".
@@ -198,24 +220,24 @@ GRADE_QUESTION_RANGES: dict[str, tuple[int, int]] = {
 #: them; only the grade TOTAL is enforced.
 TYPICAL_SPLITS: dict[str, dict[str, tuple[int, int]]] = {
     "non_managerial": {
-        CATEGORY_MUST_HAVE: (7, 11),
-        CATEGORY_NICE_TO_HAVE: (4, 6),
-        CATEGORY_BEHAVIOURAL: (8, 12),
+        CATEGORY_MUST_HAVE: (4, 7),
+        CATEGORY_NICE_TO_HAVE: (2, 4),
+        CATEGORY_BEHAVIOURAL: (6, 8),
     },
     "managerial": {
         CATEGORY_MUST_HAVE: (5, 8),
         CATEGORY_NICE_TO_HAVE: (3, 5),
-        CATEGORY_BEHAVIOURAL: (8, 11),
+        CATEGORY_BEHAVIOURAL: (7, 9),
     },
     "leadership": {
-        CATEGORY_MUST_HAVE: (2, 4),
-        CATEGORY_NICE_TO_HAVE: (1, 3),
-        CATEGORY_BEHAVIOURAL: (7, 10),
+        CATEGORY_MUST_HAVE: (5, 8),
+        CATEGORY_NICE_TO_HAVE: (3, 5),
+        CATEGORY_BEHAVIOURAL: (9, 12),
     },
     "cxo": {
-        CATEGORY_MUST_HAVE: (1, 2),
-        CATEGORY_NICE_TO_HAVE: (1, 2),
-        CATEGORY_BEHAVIOURAL: (5, 7),
+        CATEGORY_MUST_HAVE: (4, 7),
+        CATEGORY_NICE_TO_HAVE: (2, 4),
+        CATEGORY_BEHAVIOURAL: (11, 14),
     },
 }
 
@@ -226,19 +248,23 @@ def _grade(grade: str | None) -> str:
     return grade if grade in GRADE_QUESTION_RANGES else DEFAULT_GRADE
 
 
-def min_questions(grade: str | None) -> int:
-    return GRADE_QUESTION_RANGES[_grade(grade)][0]
+def min_questions(grade: str | None, role_classification: str | None = None) -> int:
+    return _grade_ranges(role_classification)[_grade(grade)][0]
 
 
-def max_questions(grade: str | None) -> int:
-    return GRADE_QUESTION_RANGES[_grade(grade)][1]
+def max_questions(grade: str | None, role_classification: str | None = None) -> int:
+    return _grade_ranges(role_classification)[_grade(grade)][1]
 
 
 def typical_split(grade: str | None) -> dict[str, tuple[int, int]]:
     return TYPICAL_SPLITS[_grade(grade)]
 
 
-def resolve_question_range(grade: str | None, item_count: int) -> tuple[int, int]:
+def resolve_question_range(
+    grade: str | None,
+    item_count: int,
+    role_classification: str | None = None,
+) -> tuple[int, int]:
     """The RANGE this job's assessment may run to, decided once by Sutra.
 
     A RANGE, not a number, and the difference is the whole of the 2026-08-23
@@ -268,12 +294,16 @@ def resolve_question_range(grade: str | None, item_count: int) -> tuple[int, int
     `matrix_is_complete` refuses the save, because silently dropping items would
     grade a candidate on criteria nobody asked them about.
     """
-    low, high = GRADE_QUESTION_RANGES[_grade(grade)]
+    low, high = _grade_ranges(role_classification)[_grade(grade)]
     resolved = max(low, min(high, int(item_count)))
     return low, resolved
 
 
-def resolve_question_target(grade: str | None, item_count: int) -> int:
+def resolve_question_target(
+    grade: str | None,
+    item_count: int,
+    role_classification: str | None = None,
+) -> int:
     """The CEILING of the range, i.e. how many questions are written up front.
 
     Retained under its original name and still stamped onto `job.question_target`
@@ -288,7 +318,7 @@ def resolve_question_target(grade: str | None, item_count: int) -> int:
     further prompts to reach for, and the fallback would be a question written
     mid-turn with no rubric behind it.
     """
-    return resolve_question_range(grade, item_count)[1]
+    return resolve_question_range(grade, item_count, role_classification)[1]
 
 
 def conversation_may_close(
@@ -298,6 +328,7 @@ def conversation_may_close(
     total_written: int,
     covered_dimensions: int,
     total_dimensions: int,
+    role_classification: str | None = None,
 ) -> bool:
     """Vaada's stopping decision: has enough been gathered, and may it stop yet?
 
@@ -321,7 +352,7 @@ def conversation_may_close(
     down. A model asked "have you gathered enough?" mid-outage returns nothing,
     and the safe direction on no answer must be "keep asking", not "stop".
     """
-    floor = min_questions(grade)
+    floor = min_questions(grade, role_classification)
     if asked < floor:
         return False
     if total_dimensions <= 0:
@@ -482,7 +513,9 @@ def _matrix_payload(
         category: [_matrix_item(row) for row in rows if row.category == category]
         for category in CATEGORIES
     }
-    minimum, maximum = resolve_question_range(job.assessment_grade, len(rows))
+    minimum, maximum = resolve_question_range(
+        job.assessment_grade, len(rows), job.role_classification
+    )
     return {
         **by_category,
         "coverage": {
@@ -689,7 +722,9 @@ def verify_matrix_for_consumer(
 
 
 def matrix_is_complete(
-    rows: list[JobCompetency], grade: str | None
+    rows: list[JobCompetency],
+    grade: str | None,
+    role_classification: str | None = None,
 ) -> tuple[bool, str | None]:
     """Whether a matrix may be saved as the job's fixed criteria.
 
@@ -714,7 +749,7 @@ def matrix_is_complete(
                 "and charted on each candidate's report, so each one needs at "
                 "least one item before the matrix can be saved."
             )
-    ceiling = max_questions(grade)
+    ceiling = max_questions(grade, role_classification)
     if len(active) > ceiling:
         surplus = len(active) - ceiling
         return False, (
@@ -734,7 +769,9 @@ def matrix_is_complete(
 
 
 def framework_is_complete(
-    rows: list[JobCompetency], grade: str | None = None
+    rows: list[JobCompetency],
+    grade: str | None = None,
+    role_classification: str | None = None,
 ) -> tuple[bool, str | None]:
     """Deprecated spelling of `matrix_is_complete`, kept for one release.
 
@@ -742,7 +779,7 @@ def framework_is_complete(
     name appears in tests and in the setup screen's error path, and a rename is
     not worth a broken import on a rolling deploy.
     """
-    return matrix_is_complete(rows, grade)
+    return matrix_is_complete(rows, grade, role_classification)
 
 
 # ── Per-candidate question generation (spec §5.6) ────────────────────────────
@@ -860,7 +897,9 @@ async def generate_candidate_questions(
     grade = grade or job.assessment_grade or DEFAULT_GRADE
     # The job's resolved target, not a per-candidate decision. Falls back to
     # resolving it now for a job whose matrix predates `question_target`.
-    total = job.question_target or resolve_question_target(grade, len(framework))
+    total = job.question_target or resolve_question_target(
+        grade, len(framework), job.role_classification
+    )
     allocation = _allocate(framework, total, grade)
     if not allocation:
         return []
@@ -950,10 +989,19 @@ async def generate_candidate_questions(
     return rows
 
 
-# Import-time integrity checks -- these ranges are a product contract (spec §5.4).
+# Import-time integrity checks -- these ranges are a product contract
+# (Master Directive Part 3 §6).
 assert set(GRADE_QUESTION_RANGES) == {"non_managerial", "managerial", "leadership", "cxo"}
+assert set(STEM_GRADE_QUESTION_RANGES) == set(GRADE_QUESTION_RANGES)
 assert set(TYPICAL_SPLITS) == set(GRADE_QUESTION_RANGES)
 assert all(low <= high for low, high in GRADE_QUESTION_RANGES.values())
+assert all(low <= high for low, high in STEM_GRADE_QUESTION_RANGES.values())
+# STEM probes deeper than non-STEM at every grade (Part 3 §1, §6).
+assert all(
+    STEM_GRADE_QUESTION_RANGES[g][0] >= GRADE_QUESTION_RANGES[g][0]
+    and STEM_GRADE_QUESTION_RANGES[g][1] >= GRADE_QUESTION_RANGES[g][1]
+    for g in GRADE_QUESTION_RANGES
+)
 assert set(CATEGORY_LABELS) == set(CATEGORIES)
 assert RUBRIC_SCORED_CATEGORIES < set(CATEGORIES)
 assert set(REQUIRED_LEVEL_SCORES) <= set(GRADES)

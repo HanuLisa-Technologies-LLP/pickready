@@ -164,6 +164,7 @@ def _job(grade: str = "non_managerial") -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid.uuid4(), tenant_id=uuid.uuid4(), title="Backend Engineer",
         department=None, assessment_grade=grade, jd_markdown="",
+        role_classification=None,
         jd_json={"skills": ["Python", "PostgreSQL", "Kafka"]},
         framework_generated_at=None, framework_approved_at=None,
         question_target=None, swot_completed_at=None, correlation_id="job-test",
@@ -404,9 +405,15 @@ def test_allocation_spends_the_remainder_on_the_most_weighted_aspect() -> None:
     assert all(row.category == heaviest for row in extras)
 
 
-def test_a_cxo_gets_fewer_questions_than_a_junior_candidate() -> None:
-    assert ppi.max_questions("cxo") < ppi.max_questions("non_managerial")
-    assert ppi.min_questions("cxo") < ppi.min_questions("non_managerial")
+def test_seniority_and_stem_both_raise_the_question_count() -> None:
+    # Master Directive Part 3 section 6 inverted the old direction: seniority
+    # now ADDS questions, and a STEM job probes deeper than a non-STEM one at
+    # every grade.
+    assert ppi.max_questions("cxo") >= ppi.max_questions("non_managerial")
+    assert ppi.min_questions("cxo") >= ppi.min_questions("non_managerial")
+    for grade in ("non_managerial", "managerial", "leadership", "cxo"):
+        assert ppi.min_questions(grade, "STEM") > ppi.min_questions(grade)
+        assert ppi.max_questions(grade, "STEM") > ppi.max_questions(grade)
 
 
 # ── Mandatory application fields (spec §7) ───────────────────────────────────

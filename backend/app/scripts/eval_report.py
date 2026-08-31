@@ -450,11 +450,12 @@ def _measure_question_counts_by_grade() -> Result:
     never can.
     """
     result = Result("question_counts_by_grade")
+    # Master Directive Part 3 §6, non-STEM column.
     expected = {
-        "non_managerial": (20, 28),
-        "managerial": (16, 22),
-        "leadership": (11, 16),
-        "cxo": (7, 11),
+        "non_managerial": (12, 18),
+        "managerial": (15, 22),
+        "leadership": (18, 25),
+        "cxo": (18, 25),
     }
     for grade, bounds in expected.items():
         actual = (ppi.min_questions(grade), ppi.max_questions(grade))

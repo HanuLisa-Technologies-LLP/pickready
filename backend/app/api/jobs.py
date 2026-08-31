@@ -378,6 +378,34 @@ async def create_job(
             max_years=body.experience_max_years,
         )
 
+    # ── STEM / Non-STEM classification (Master Directive Part 3) ────────────
+    # The AI flow passes `jd_draft_id`, and the job inherits the result that
+    # was locked to the RAW AI-generated JD at generation time — the recruiter
+    # edits between generate and create change nothing (Rule 3). The manual
+    # path (a typed JD, no draft) is classified here, once, on the document as
+    # first submitted; later PATCH edits never re-trigger it.
+    from app.models.job import JDDraft
+    from app.services import stem_classification
+
+    draft = None
+    if body.jd_draft_id is not None:
+        draft = await session.get(JDDraft, body.jd_draft_id)
+        if draft is not None and draft.tenant_id != user.tenant_id:
+            draft = None  # RLS already blocks this read; keep the guard anyway
+    if draft is not None:
+        role_classification = draft.role_classification
+        classification_confidence = draft.classification_confidence
+        classification_signals = list(draft.classification_signals or [])
+        classification_tentative = bool(draft.tentative or draft.engine_error)
+        raw_jd_text = draft.raw_jd_text
+    else:
+        classified = stem_classification.classify_safe(document, body.title)
+        role_classification = classified.classification
+        classification_confidence = classified.confidence
+        classification_signals = classified.signals
+        classification_tentative = bool(classified.tentative or classified.engine_error)
+        raw_jd_text = document or None
+
     job = Job(
         tenant_id=user.tenant_id,
         title=body.title,
@@ -386,6 +414,12 @@ async def create_job(
         requirement_period=body.requirement_period,
         jd_json=jd_sections,
         jd_markdown=document,
+        role_classification=role_classification,
+        classification_confidence=classification_confidence,
+        classification_signals=classification_signals,
+        classification_tentative=classification_tentative,
+        credit_cost_per_report=stem_classification.credit_cost(role_classification),
+        raw_jd_text=raw_jd_text,
         experience_min_years=body.experience_min_years,
         experience_max_years=body.experience_max_years,
         status=JobStatus.draft,
@@ -1039,6 +1073,9 @@ async def review_profile(
         # This reviewer has opened this profile before. Already paid for.
         return ReviewProfileOut(profile_age=age, charged=False, subunits_charged=0)
 
+    # The old-profile rate is FLAT across STEM and non-STEM (Part 5 §2.1 only
+    # differentiates full and partial reports); the classification is passed
+    # for the ledger's audit trail, not the price.
     charged = await credits.consume(
         session,
         tenant_id=user.tenant_id,
@@ -1046,6 +1083,7 @@ async def review_profile(
         idempotency_key=f"old-profile-review:{row.id}:{user.user_id}",
         job_candidate_link_id=row.id,
         metadata={"job_id": str(job.id)},
+        role_classification=job.role_classification,
     )
     return ReviewProfileOut(
         profile_age=age,
@@ -1255,6 +1293,31 @@ async def generate_jd(
         "department": body.department,
     }
     generated = await jd_generation.generate_jd_document(brief)
+
+    # ── STEM classification, at THIS moment (Master Directive Part 3 §3) ────
+    # Runs on the raw AI draft before the recruiter sees it, is persisted
+    # server-side, and is what the created job inherits. The recruiter's later
+    # edits never re-trigger it (Rule 3), and nothing the client sends can
+    # change it (Rule 2) — job creation references the row by id only.
+    from app.models.job import JDDraft
+    from app.services import stem_classification
+
+    result = stem_classification.classify_safe(generated["jd_markdown"], body.title)
+    draft = JDDraft(
+        tenant_id=user.tenant_id,
+        created_by=user.user_id,
+        title=body.title,
+        raw_jd_text=generated["jd_markdown"],
+        role_classification=result.classification,
+        classification_confidence=result.confidence,
+        stem_score=result.stem_score,
+        classification_signals=result.signals,
+        tentative=result.tentative,
+        engine_error=result.engine_error,
+    )
+    session.add(draft)
+    await session.flush()
+
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
                 action="job_jd_generated", target_type="job", target_id=None,
                 metadata={
@@ -1262,11 +1325,19 @@ async def generate_jd(
                     "generated_by_ai": generated.get("generated_by_ai", True),
                     "experience_min_years": body.experience_min_years,
                     "experience_max_years": body.experience_max_years,
+                    "jd_draft_id": str(draft.id),
+                    "role_classification": result.classification,
+                    "classification_confidence": result.confidence,
+                    "classification_tentative": result.tentative,
+                    "classification_engine_error": result.engine_error,
                 })
     return JDGenerateOut(
         jd_markdown=generated["jd_markdown"],
         jd=generated["jd"],
         generated_by_ai=bool(generated.get("generated_by_ai", True)),
+        jd_draft_id=draft.id,
+        role_classification=result.classification,
+        credit_cost_per_report=float(result.credit_cost_per_report),
     )
 
 

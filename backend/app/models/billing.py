@@ -59,14 +59,47 @@ LEDGER_EVENT_TYPES: tuple[str, ...] = (
     EVENT_ADJUSTMENT,
 )
 
-#: Sub-units consumed per billable event. Positive numbers; the ledger stores
-#: the negated value as `subunits_delta`.
+#: Sub-units consumed per billable event for a NON-STEM job. Positive numbers;
+#: the ledger stores the negated value as `subunits_delta`.
 CONSUMPTION_SUBUNITS: dict[str, int] = {
     EVENT_COMPLETED: SUBUNITS_PER_CREDIT,            # 60/1  — 1 credit
     EVENT_INCOMPLETE: SUBUNITS_PER_CREDIT // 3,      # 60/3  — 3 per credit
     EVENT_NO_SHOW: SUBUNITS_PER_CREDIT // 15,        # 60/15 — 15 per credit
     EVENT_OLD_PROFILE_REVIEW: SUBUNITS_PER_CREDIT // 20,  # 60/20 — 20 per credit
 }
+
+ROLE_STEM = "STEM"
+ROLE_NON_STEM = "NON_STEM"
+
+#: Master Directive Part 5 §2.1 — STEM rates. A STEM report is 1.5 credits
+#: (90 sub-units) and a STEM partial is 0.50 credits (30 sub-units): the same
+#: one-third-of-the-full-rate rule the non-STEM partial already follows, on
+#: the STEM base. No-shows and old-profile reviews are FLAT — the §2.1 table
+#: prices "Unfilled / No candidate response" identically for either type,
+#: because no AI assessment depth was ever spent on them.
+STEM_CONSUMPTION_SUBUNITS: dict[str, int] = {
+    EVENT_COMPLETED: SUBUNITS_PER_CREDIT * 3 // 2,   # 90 — 1.5 credits
+    EVENT_INCOMPLETE: SUBUNITS_PER_CREDIT // 2,      # 30 — 0.50 credits
+    EVENT_NO_SHOW: SUBUNITS_PER_CREDIT // 15,        # flat
+    EVENT_OLD_PROFILE_REVIEW: SUBUNITS_PER_CREDIT // 20,  # flat
+}
+
+
+def consumption_subunits(event_type: str, role_classification: str | None) -> int | None:
+    """Sub-unit cost of one billable event at the job's classified rate.
+
+    Part 5 Rule 9: the classification comes from the Job record and NOWHERE
+    else, and a NULL/unknown value bills at the non-STEM rate (the
+    commercially safe direction) rather than failing the deduction.
+    Returns None for a non-billable event type, mirroring the dict lookup the
+    callers previously did.
+    """
+    table = (
+        STEM_CONSUMPTION_SUBUNITS
+        if role_classification == ROLE_STEM
+        else CONSUMPTION_SUBUNITS
+    )
+    return table.get(event_type)
 
 SUBSCRIPTION_ACTIVE = "active"
 SUBSCRIPTION_PAST_DUE = "past_due"

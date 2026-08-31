@@ -115,6 +115,12 @@ class JobCreateIn(ExperienceBandMixin):
     about_company: str | None = Field(default=None, max_length=4000)
     work_life: str | None = Field(default=None, max_length=4000)
     benefits: str | None = Field(default=None, max_length=4000)
+    #: The server-side draft this job was created from (Master Directive
+    #: Part 3 Rule 3). When present, the job inherits the classification that
+    #: was locked to the RAW AI-generated JD at generation time. This is an
+    #: opaque reference — the classification itself never travels through the
+    #: client (Rule 2).
+    jd_draft_id: uuid.UUID | None = None
 
 
 class JobOut(BaseModel):
@@ -169,6 +175,26 @@ class JobOut(BaseModel):
     days_until_grace_ends: int | None = None
     #: The one-line description shown on the recruiter's job page.
     posting_summary: str | None = None
+
+    # ── STEM / Non-STEM classification (Master Directive Part 3 §7) ─────────
+    # Visible to the client on the job card and detail page, READ-ONLY (Rule
+    # 5): the label and what a report costs, nothing else. Confidence and
+    # signals are Provider Portal material and are not emitted here.
+    role_classification: str = "NON_STEM"
+    credit_cost_per_report: float = 1.0
+
+    @field_validator("role_classification", mode="before")
+    @classmethod
+    def _classification_never_null(cls, value: object) -> object:
+        # An unflushed ORM instance (unit tests, in-memory drafts) has not had
+        # its column default applied yet; Part 3 §11's deployment default is
+        # the same answer.
+        return value or "NON_STEM"
+
+    @field_validator("credit_cost_per_report", mode="before")
+    @classmethod
+    def _cost_never_null(cls, value: object) -> object:
+        return 1.0 if value is None else value
 
 
 class JobDetailOut(JobOut):
@@ -298,6 +324,15 @@ class JDGenerateOut(BaseModel):
     #: False when the provider chain was unavailable and the deterministic
     #: template was used, so the UI can tell the recruiter to rewrite it.
     generated_by_ai: bool = True
+
+    # ── STEM / Non-STEM classification (Master Directive Part 3 §3 Step 3) ──
+    # Classified server-side on the RAW draft the moment it was generated,
+    # BEFORE the recruiter edits anything. `jd_draft_id` is what the Create
+    # Job call passes back so the job inherits this exact result; the label
+    # and cost are display-only (read-only badge, Part 3 §7.1).
+    jd_draft_id: uuid.UUID | None = None
+    role_classification: str = "NON_STEM"
+    credit_cost_per_report: float = 1.0
 
     # ── Legacy mirrors (evolve additively) ───────────────────────────────────
     # Before 2026-07-28 this endpoint returned the JD section dict at the TOP

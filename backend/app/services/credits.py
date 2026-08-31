@@ -34,13 +34,17 @@ from app.models.billing import (
     EVENT_INCOMPLETE,
     EVENT_NO_SHOW,
     EVENT_OLD_PROFILE_REVIEW,
+    STEM_CONSUMPTION_SUBUNITS,
     SUBUNITS_PER_CREDIT,
     CreditLedgerEntry,
+    consumption_subunits,
 )
 
 __all__ = [
     "SUBUNITS_PER_CREDIT",
     "CONSUMPTION_SUBUNITS",
+    "STEM_CONSUMPTION_SUBUNITS",
+    "consumption_subunits",
     "EVENT_COMPLETED",
     "EVENT_GRANT",
     "EVENT_INCOMPLETE",
@@ -48,6 +52,7 @@ __all__ = [
     "EVENT_OLD_PROFILE_REVIEW",
     "BalanceSummary",
     "balance_subunits",
+    "can_start_assessment",
     "consume",
     "credits_from_subunits",
     "grant",
@@ -242,6 +247,7 @@ async def consume(
     idempotency_key: str,
     job_candidate_link_id: uuid.UUID | None = None,
     metadata: dict[str, Any] | None = None,
+    role_classification: str | None = None,
 ) -> bool:
     """Deduct for one billable event. Returns False when already charged.
 
@@ -250,8 +256,14 @@ async def consume(
     customer keeps the work. The balance is allowed to go negative and the
     tenant is flagged; what gets blocked is the NEXT invitation
     (`has_credit_headroom`), which is a thing a human can still choose not to do.
+
+    `role_classification` is the Job record's STEM flag (Master Directive
+    Part 5 Rule 9): STEM bills 90 sub-units for a completed report and 30 for
+    a partial; None/unknown bills at the non-STEM rate and is the caller's
+    data error to log, never a refusal here. The classification is copied into
+    the ledger row's metadata for the audit trail Part 3 §5.2 requires.
     """
-    cost = CONSUMPTION_SUBUNITS.get(event_type)
+    cost = consumption_subunits(event_type, role_classification)
     if cost is None:
         raise ValueError(f"{event_type} is not a billable consumption event")
     entry = await _write(
@@ -261,7 +273,10 @@ async def consume(
         subunits_delta=-cost,
         idempotency_key=idempotency_key,
         job_candidate_link_id=job_candidate_link_id,
-        metadata=metadata,
+        metadata={
+            **(metadata or {}),
+            "role_classification": role_classification or "NON_STEM",
+        },
     )
     if entry is None:
         return False
@@ -288,6 +303,42 @@ async def is_demo_tenant(session: AsyncSession, tenant_id: uuid.UUID) -> bool:
         )
     ).scalar()
     return bool(flag)
+
+
+async def can_start_assessment(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    *,
+    role_classification: str | None,
+) -> tuple[bool, Decimal, Decimal]:
+    """May an assessment START against a job of this classification?
+
+    Master Directive Part 5 §2.3: the pool must hold the FULL cost of the
+    report the assessment will produce — 1.5 credits for a STEM job, 1.0 for
+    non-STEM — before Vaada begins. A balance of 1.2 credits therefore starts
+    a non-STEM assessment and refuses a STEM one. The block is at start, never
+    at completion: a conversation already running always finishes and is
+    charged even into the negative (Rule 8).
+
+    Returns (allowed, required_credits, balance_credits) so the refusal
+    message can state the role type, the credits required, and the current
+    balance, exactly as §2.3 requires. A demonstration tenant is always
+    allowed, same as every other billing refusal.
+    """
+    from app.models.billing import EVENT_COMPLETED
+
+    required = consumption_subunits(EVENT_COMPLETED, role_classification)
+    assert required is not None  # EVENT_COMPLETED is always billable
+    if await is_demo_tenant(session, tenant_id):
+        return True, credits_from_subunits(required), credits_from_subunits(
+            await balance_subunits(session, tenant_id)
+        )
+    balance = await balance_subunits(session, tenant_id)
+    return (
+        balance >= required,
+        credits_from_subunits(required),
+        credits_from_subunits(balance),
+    )
 
 
 async def has_credit_headroom(session: AsyncSession, tenant_id: uuid.UUID) -> bool:

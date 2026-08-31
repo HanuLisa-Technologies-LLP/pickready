@@ -297,7 +297,9 @@ async def _framework_out(
     session: AsyncSession, job: Job, *, pending: bool | None = None
 ) -> FrameworkOut:
     rows = await ppi.load_framework(session, job.id)
-    ok, reason = ppi.matrix_is_complete(rows, job.assessment_grade)
+    ok, reason = ppi.matrix_is_complete(
+        rows, job.assessment_grade, job.role_classification
+    )
     if not rows and pending:
         reason = FRAMEWORK_PREPARING
     return FrameworkOut(
@@ -305,14 +307,18 @@ async def _framework_out(
         status=job.assessment_status,
         approved=job.framework_approved_at is not None,
         competencies=[_competency_out(row) for row in rows],
-        maximum_items=ppi.max_questions(job.assessment_grade),
+        maximum_items=ppi.max_questions(job.assessment_grade, job.role_classification),
         # Computed from what the matrix holds RIGHT NOW rather than read from
         # `job.question_target`, which is stamped at generation. The Hiring
         # Manager is mid-edit on this screen and needs to see what the matrix in
         # front of them would cost a candidate, not what the generated one did.
-        question_target=ppi.resolve_question_target(job.assessment_grade, len(rows)),
+        question_target=ppi.resolve_question_target(
+            job.assessment_grade, len(rows), job.role_classification
+        ),
         question_range=list(
-            ppi.resolve_question_range(job.assessment_grade, len(rows))
+            ppi.resolve_question_range(
+                job.assessment_grade, len(rows), job.role_classification
+            )
         ),
         minimum_per_category=ppi.MINIMUM_PER_CATEGORY,
         blocking_reason=None if ok else reason,
@@ -1608,7 +1614,7 @@ async def _conversation_state(
         ],
         asked=conversation.next_question_index,
         total_written=total_written,
-        floor=ppi.min_questions(job.assessment_grade),
+        floor=ppi.min_questions(job.assessment_grade, job.role_classification),
         probe_outstanding=conversation.pending_prompt is not None,
     )
 
@@ -2198,6 +2204,7 @@ async def respond(
         )
         evidence_complete = ppi.conversation_may_close(
             grade=job.assessment_grade,
+            role_classification=job.role_classification,
             asked=conversation.next_question_index,
             total_written=len(prompts),
             covered_dimensions=covered,

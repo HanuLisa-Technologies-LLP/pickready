@@ -266,7 +266,9 @@ async def _ensure_framework(session, job: Job, dry_run: bool) -> str:
             "one. A seed script has neither the hiring manager nor the "
             "company's philosophy to build it from."
         )
-    ok, reason = ppi.matrix_is_complete(list(rows), job.assessment_grade)
+    ok, reason = ppi.matrix_is_complete(
+        list(rows), job.assessment_grade, job.role_classification
+    )
     if not ok:
         return f"INCOMPLETE, left pending: {reason}"
     if dry_run:

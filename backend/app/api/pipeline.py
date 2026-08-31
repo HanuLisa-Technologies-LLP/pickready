@@ -223,7 +223,8 @@ async def select_candidates_for_assessment(
     job = (
         await session.execute(
             text(
-                "SELECT id, tenant_id, assessment_grade, assessment_status "
+                "SELECT id, tenant_id, assessment_grade, assessment_status, "
+                "       role_classification, credit_cost_per_report "
                 "FROM jobs WHERE id = :jid"
             ),
             {"jid": str(job_id)},
@@ -278,6 +279,26 @@ async def select_candidates_for_assessment(
                 "Your credit pool is exhausted, so no further candidates can be "
                 "moved into assessment. Purchase a credit bundle to continue. "
                 "Any conversation already in progress will finish."
+            ),
+        )
+
+    # ── The per-report gate (Master Directive Part 5 §2.3) ──────────────────
+    # Stricter than "above zero": the pool must hold the FULL cost of the
+    # report this job's classification produces before an assessment may
+    # start. 1.2 credits starts a non-STEM assessment (1.0) and refuses a
+    # STEM one (1.5). The message states role type, credits required and the
+    # current balance, and the client renders the top-up link with it.
+    allowed, required, balance = await credits.can_start_assessment(
+        session, user.tenant_id, role_classification=job["role_classification"]
+    )
+    if not allowed:
+        role_word = "STEM" if job["role_classification"] == "STEM" else "Non-STEM"
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"Insufficient credits. This {role_word} role requires "
+                f"{required} credits per assessment. Current balance: "
+                f"{balance} credits. Please top up to continue."
             ),
         )
 

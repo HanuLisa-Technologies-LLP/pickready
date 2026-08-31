@@ -250,3 +250,50 @@ class CustomerUpdateIn(BaseModel):
         if not self.model_fields_set:
             raise ValueError("provide at least one field to update")
         return self
+
+
+# ── STEM classification admin (Master Directive Part 3 §9) ───────────────────
+
+
+class ClassificationReviewItem(BaseModel):
+    """One job in the Classification Review Queue: the §4.4 tentative band
+    (stem-score 0.30–0.79) plus any engine-error fallbacks, for the Hanulisa
+    team to verify by hand."""
+
+    job_id: uuid.UUID
+    tenant_id: uuid.UUID
+    customer_name: str | None = None
+    title: str
+    role_classification: str
+    classification_confidence: float
+    classification_signals: list[str] = []
+    classification_locked: bool
+    classification_overridden: bool
+    created_at: datetime
+
+
+class ReclassifyJobIn(BaseModel):
+    """Support-team reclassification, permitted ONLY before the first
+    completed assessment (Part 3 Rule 5, §8)."""
+
+    role_classification: Literal["STEM", "NON_STEM"]
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class ReclassifyJobOut(BaseModel):
+    job_id: uuid.UUID
+    role_classification: str
+    credit_cost_per_report: float
+    classification_overridden: bool
+
+
+class ClassificationSplitRow(BaseModel):
+    """Per-customer STEM vs Non-STEM breakdown (Part 3 §9's commercial
+    analysis report): job counts by type, and credits consumed at each rate."""
+
+    tenant_id: uuid.UUID
+    customer_name: str | None = None
+    stem_jobs: int
+    non_stem_jobs: int
+    stem_credits_consumed: float
+    non_stem_credits_consumed: float

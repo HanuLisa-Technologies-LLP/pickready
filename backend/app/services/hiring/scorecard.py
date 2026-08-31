@@ -1110,7 +1110,7 @@ async def compile_matrix(
             row.is_active = False
     job.framework_generated_at = datetime.now(timezone.utc)
     job.question_target = ppi.resolve_question_target(
-        job.assessment_grade, len(created)
+        job.assessment_grade, len(created), job.role_classification
     )
     await session.flush()
     logger.info(
@@ -1258,7 +1258,11 @@ def _apply_ceilings(
 
     keep_scored = scored[:ceiling]
     behavioural_room = max(
-        1, min(ceiling, ppi.max_questions(job.assessment_grade) - len(keep_scored))
+        1, min(
+            ceiling,
+            ppi.max_questions(job.assessment_grade, job.role_classification)
+            - len(keep_scored),
+        )
     )
     keep_behavioural = behavioural[:behavioural_room]
     kept = {id(item) for item, _quadrant in keep_scored + keep_behavioural}
@@ -1311,7 +1315,9 @@ async def freeze(
         correlation_id=correlation_id or job.correlation_id,
     )
     rows = await ppi.load_framework(session, job.id)
-    ok, reason = ppi.matrix_is_complete(rows, job.assessment_grade)
+    ok, reason = ppi.matrix_is_complete(
+        rows, job.assessment_grade, job.role_classification
+    )
     if not ok:
         raise ScorecardInputMissing("matrix", reason or "The matrix is incomplete.")
     underived = [row.name for row in rows if row.weight is None or not row.dimension]
@@ -1327,7 +1333,9 @@ async def freeze(
     version = scorecard_version(previous)
 
     job.framework_approved_at = datetime.now(timezone.utc)
-    job.question_target = ppi.resolve_question_target(job.assessment_grade, len(rows))
+    job.question_target = ppi.resolve_question_target(
+        job.assessment_grade, len(rows), job.role_classification
+    )
     session.add(
         JobCompanyDNABinding(
             tenant_id=job.tenant_id,

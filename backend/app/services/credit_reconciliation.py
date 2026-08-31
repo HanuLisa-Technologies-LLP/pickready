@@ -71,8 +71,11 @@ _SETTLED_SQL = text(
     SELECT c.id,
            c.tenant_id,
            c.job_candidate_link_id,
-           c.started_at
+           c.started_at,
+           j.role_classification
       FROM assessment_conversations c
+      LEFT JOIN job_candidate_links l ON l.id = c.job_candidate_link_id
+      LEFT JOIN jobs j ON j.id = l.job_id
      WHERE c.credit_reconciled_at IS NULL
        AND c.completed_at IS NULL
        AND c.invitation_sent_at IS NOT NULL
@@ -81,6 +84,36 @@ _SETTLED_SQL = text(
      LIMIT :batch
     """
 )
+
+_LINK_CLASSIFICATION_SQL = text(
+    """
+    SELECT j.id AS job_id, j.role_classification
+      FROM job_candidate_links l
+      JOIN jobs j ON j.id = l.job_id
+     WHERE l.id = :lid
+    """
+)
+
+
+async def _job_classification(
+    session: AsyncSession, job_candidate_link_id
+) -> tuple[str | None, str | None]:
+    """(job_id, role_classification) for one link, or (None, None).
+
+    Part 5 Rule 9: the deduction reads the STEM flag from the Job record and
+    nowhere else. A missing row bills at the non-STEM rate downstream, which
+    is the specified NULL fallback, and is logged there.
+    """
+    if job_candidate_link_id is None:
+        return None, None
+    row = (
+        await session.execute(
+            _LINK_CLASSIFICATION_SQL, {"lid": str(job_candidate_link_id)}
+        )
+    ).mappings().first()
+    if row is None:
+        return None, None
+    return str(row["job_id"]), row["role_classification"]
 
 _DUE_REMINDER_SQL = text(
     """
@@ -108,6 +141,9 @@ async def charge_completed(
     """
     from app.models.billing import EVENT_COMPLETED
 
+    job_id, role_classification = await _job_classification(
+        session, job_candidate_link_id
+    )
     charged = await credits.consume(
         session,
         tenant_id=tenant_id,
@@ -115,6 +151,7 @@ async def charge_completed(
         idempotency_key=ledger_key(conversation_id, EVENT_COMPLETED),
         job_candidate_link_id=job_candidate_link_id,
         metadata={"conversation_id": str(conversation_id)},
+        role_classification=role_classification,
     )
     await session.execute(
         text(
@@ -125,6 +162,17 @@ async def charge_completed(
         ),
         {"event": EVENT_COMPLETED, "cid": str(conversation_id)},
     )
+    if job_id is not None:
+        # Master Directive Part 3 Rule 5: the first COMPLETED assessment locks
+        # the classification for good. Support can only compensate with a
+        # credit adjustment after this point, never reclassify.
+        await session.execute(
+            text(
+                "UPDATE jobs SET classification_locked = TRUE "
+                "WHERE id = :jid AND classification_locked = FALSE"
+            ),
+            {"jid": job_id},
+        )
     return charged
 
 
@@ -192,6 +240,7 @@ async def reconcile(
             idempotency_key=ledger_key(row["id"], event),
             job_candidate_link_id=row["job_candidate_link_id"],
             metadata={"conversation_id": str(row["id"]), "settled_at": now.isoformat()},
+            role_classification=row["role_classification"],
         )
         await session.execute(
             text(

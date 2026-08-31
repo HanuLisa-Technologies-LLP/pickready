@@ -1,8 +1,10 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
-    Computed, DateTime, Enum, ForeignKey, Index, Integer, String, Text,
+    Boolean, Computed, DateTime, Enum, Float, ForeignKey, Index, Integer,
+    Numeric, String, Text,
 )
 from sqlalchemy import event, inspect, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -201,6 +203,80 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
     #: Bodha through Siddhi, so the whole flow is one query rather than a
     #: reconstruction from timestamps.
     correlation_id: Mapped[str | None] = mapped_column(String(64))
+
+    # ── STEM / Non-STEM classification (Master Directive Part 3 §5.1) ───────
+    # System-determined at JD generation, locked to the RAW AI-generated JD,
+    # never client-editable. `credit_cost_per_report` is stored explicitly —
+    # not derived at deduction time — so the ledger's audit trail matches what
+    # the job said when the report completed. Jobs that predate the feature
+    # carry the deployment default: NON_STEM, confidence 0.00 (Part 3 §11).
+    role_classification: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="NON_STEM", server_default="NON_STEM"
+    )
+    classification_confidence: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
+    classification_signals: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    #: True once any candidate has COMPLETED an assessment against this job.
+    #: A locked classification can never be changed, only compensated with a
+    #: credit adjustment (Part 3 §8).
+    classification_locked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    credit_cost_per_report: Mapped[Decimal] = mapped_column(
+        Numeric(3, 1), nullable=False, default=Decimal("1.0"), server_default="1.0"
+    )
+    #: True when the engine's stem-score fell in the §4.4 review band
+    #: (0.30–0.79) or the engine errored — the Provider Portal's
+    #: Classification Review Queue lists exactly these (Part 3 §9).
+    classification_tentative: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    classification_overridden: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    classification_override_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    #: The AI-generated JD text BEFORE recruiter editing — what the engine
+    #: classified. Stored separately from `jd_markdown` (the edited, canonical
+    #: document) purely for classification audit (Part 3 Rule 3).
+    raw_jd_text: Mapped[str | None] = mapped_column(Text)
+
+
+class JDDraft(Base, UUIDPKMixin, CreatedAtMixin):
+    """One AI-generated JD draft, classified the moment it was generated.
+
+    Part 3 Rule 3 requires classification to run on the RAW AI-generated JD
+    before the recruiter sees or edits it, and Rule 2 requires that the client
+    cannot influence the result. `/jobs/generate-jd` is stateless from the
+    client's point of view, so trusting the browser to hand the raw text back
+    unmodified at job creation would hand the client exactly the influence
+    Rule 2 forbids. Instead the draft is persisted server-side here at
+    generation time, and job creation references it by id: the classification
+    the job gets is the one this row already holds.
+    """
+    __tablename__ = "jd_drafts"
+    __table_args__ = (Index("ix_jd_drafts_tenant", "tenant_id"),)
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    raw_jd_text: Mapped[str] = mapped_column(Text, nullable=False)
+    role_classification: Mapped[str] = mapped_column(String(10), nullable=False)
+    classification_confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    stem_score: Mapped[float] = mapped_column(Float, nullable=False)
+    classification_signals: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    tentative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    engine_error: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class JobApproval(Base, UUIDPKMixin):
