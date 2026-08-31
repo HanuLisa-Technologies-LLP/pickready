@@ -36,7 +36,7 @@ export function Step1Login() {
         initial={{ opacity: 0, y: -28, scale: 0.97 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.6, ease: EASE }}
-        className="mx-auto mt-3 max-w-xs rounded-2xl border border-white/10 bg-white/[0.055] p-5 shadow-2xl backdrop-blur"
+        className="mx-auto mt-3 max-w-xs rounded-2xl border border-white/10 bg-white/[0.055] p-5 backdrop-blur"
       >
         <div className="mb-5">
           <span className="grid h-9 w-9 place-items-center rounded-xl bg-teal-600/20 font-black text-teal-400">

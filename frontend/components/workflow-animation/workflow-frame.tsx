@@ -19,7 +19,7 @@ export function DemoWindow({
   compact?: boolean;
 }) {
   return (
-    <div className="h-full overflow-hidden rounded-[1.35rem] border border-white/10 bg-[#090b16] text-white shadow-[0_30px_100px_-35px_rgba(50,26,130,.8)]">
+    <div className="h-full overflow-hidden rounded-none border border-white/10 bg-[#090b16] text-white">
       <div className="flex h-9 items-center gap-2 border-b border-white/10 bg-white/[0.035] px-4">
         <span className="h-2.5 w-2.5 rounded-full bg-rose-400/80" />
         <span className="h-2.5 w-2.5 rounded-full bg-amber-300/80" />
@@ -116,15 +116,10 @@ export function GlowButton({
 }) {
   return (
     <motion.div
+      // No glow, ever: directive Part 1 section 6 bans glowing buttons even
+      // inside an illustrative animation. The pulse is a scale breath alone.
       animate={{
-        scale: success ? [1, 0.96, 1.02, 1] : [1, 1.035, 1],
-        boxShadow: success
-          ? "0 0 30px rgba(52,211,153,.34)"
-          : [
-              "0 0 0 rgba(139,92,246,0)",
-              "0 0 28px rgba(139,92,246,.34)",
-              "0 0 0 rgba(139,92,246,0)",
-            ],
+        scale: success ? [1, 0.96, 1.02, 1] : [1, 1.02, 1],
       }}
       transition={{ duration: success ? 0.8 : 1.8, repeat: success ? 0 : Infinity }}
       className={cn(
@@ -152,7 +147,7 @@ export function TinyBadge({
   return (
     <span
       className={cn(
-        "inline-flex rounded-full border px-2 py-0.5 text-[8px] font-semibold",
+        "inline-flex rounded-none border px-2 py-0.5 text-[8px] font-semibold",
         tone === "brand" && "border-teal-400/25 bg-teal-400/10 text-teal-100",
         tone === "green" && "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
         tone === "amber" && "border-amber-300/25 bg-amber-300/10 text-amber-100"

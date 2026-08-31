@@ -22,18 +22,21 @@ export function Logo({
   className,
 }: LogoProps) {
   const mark = (
+    // A sharp square tile (directive Part 1 section 7: zero corner radius,
+    // brand mark included). The icon asset is the navy/teal R+P mark cropped
+    // tight from the source logo, so it renders contained, never zoomed.
     <span
       aria-hidden="true"
-      className="relative block aspect-square shrink-0 overflow-hidden rounded-[20%] bg-white shadow-sm ring-1 ring-black/5"
+      className="relative block aspect-square shrink-0 overflow-hidden rounded-none bg-white ring-1 ring-black/5"
       style={{ height, width: height }}
     >
       <Image
-        src="/icon.png"
+        src="/brand-mark-2026.png"
         alt=""
         fill
         priority={priority}
         sizes={`${height}px`}
-        className="scale-[1.45] object-cover"
+        className="object-contain"
       />
     </span>
   );

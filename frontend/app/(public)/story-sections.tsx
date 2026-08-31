@@ -155,7 +155,7 @@ export function PfiDifferentiator() {
           <Reveal delay={0.08} className="relative">
             <div className="mx-auto aspect-square max-w-sm rounded-full border border-brand-600/20 bg-canvas/70 p-8 shadow-card">
               <div className="grid h-full place-items-center rounded-full border border-dashed border-brand-600/30">
-                <div className="grid h-[72%] w-[72%] rotate-45 place-items-center rounded-[2rem] border border-brand-600/35 bg-brand-600/10">
+                <div className="grid h-[72%] w-[72%] rotate-45 place-items-center rounded-none border border-brand-600/35 bg-brand-600/10">
                   <div className="-rotate-45 text-center">
                     <p className="text-5xl font-black text-gradient-brand">
                       PPI
