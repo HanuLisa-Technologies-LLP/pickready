@@ -23,7 +23,7 @@
 // be able to see which customer is on which plan and who is out of credits;
 // it writes nothing, in keeping with read-only-by-absence.
 
-import { Building2, Briefcase, CreditCard, Settings } from "lucide-react";
+import { Building2, Briefcase, CreditCard, Settings, Tags } from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
 
@@ -46,6 +46,12 @@ export default function AdminLayout({
         // READ-ONLY, like the rest of the Provider's view of customer data, and
         // there is no route here that writes a subscription.
         { href: "/admin/billing", label: "Billing", icon: CreditCard },
+        // STEM classification admin (Master Directive Part 3 section 9): the
+        // review queue for tentative classifications, the pre-assessment
+        // reclassify function, and the commercial split. Provider-only by
+        // design; the customer's portal shows a read-only badge and nothing
+        // else.
+        { href: "/admin/classification", label: "Classification", icon: Tags },
         { href: "/admin/settings", label: "Settings", icon: Settings },
       ]}
     >

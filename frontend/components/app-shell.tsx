@@ -3,7 +3,14 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Building2, LogOut, Menu, type LucideIcon } from "lucide-react";
+import {
+  Building2,
+  LogOut,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
+  type LucideIcon,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
@@ -44,10 +51,14 @@ function NavLink({
   item,
   active,
   onNavigate,
+  collapsed = false,
 }: {
   item: NavItem;
   active: boolean;
   onNavigate?: () => void;
+  /** Icon-only rendering for the collapsed rail (directive Part 1 section 9).
+   * The label survives for assistive tech and as the hover tooltip. */
+  collapsed?: boolean;
 }) {
   const Icon = item.icon;
   return (
@@ -55,15 +66,17 @@ function NavLink({
       href={item.href}
       onClick={onNavigate}
       aria-current={active ? "page" : undefined}
+      title={collapsed ? item.label : undefined}
       className={cn(
-        "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        "flex items-center gap-3 rounded-lg text-sm transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        collapsed ? "justify-center px-0 py-2.5" : "px-3 py-2.5",
         active
           ? "bg-brand-600 font-semibold text-white shadow-brand"
           : "font-medium hover:bg-brand-100/70 hover:text-accent-foreground"
       )}
     >
       {Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null}
-      <span className="truncate">{item.label}</span>
+      <span className={cn("truncate", collapsed && "sr-only")}>{item.label}</span>
     </Link>
   );
 }
@@ -126,6 +139,35 @@ export function AppShell({
   const { user, loading, logout } = useAuth();
   const [open, setOpen] = React.useState(false);
 
+  // Expandable / collapsible desktop rail (directive Part 1 sections 9-10).
+  // The choice persists per browser; it is a personal convenience, not a
+  // customization system. Read inside an effect so server render and first
+  // client paint agree (expanded), then the stored preference applies.
+  const [collapsed, setCollapsed] = React.useState(false);
+  React.useEffect(() => {
+    try {
+      setCollapsed(
+        window.localStorage.getItem("pickready-sidebar-collapsed") === "1"
+      );
+    } catch {
+      // Storage unavailable (private mode): stay expanded.
+    }
+  }, []);
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(
+          "pickready-sidebar-collapsed",
+          next ? "1" : "0"
+        );
+      } catch {
+        // Non-persistent is fine; the toggle still works for the session.
+      }
+      return next;
+    });
+  };
+
   React.useEffect(() => {
     if (!loading && !user) {
       // Remember where they were. This used to be a bare `/login`, which is
@@ -148,14 +190,21 @@ export function AppShell({
     setOpen(false);
   }, [pathname]);
 
-  const railNav = (onNavigate?: () => void) => (
-    <nav className="flex-1 space-y-1 overflow-y-auto p-3" aria-label={title}>
+  const railNav = (onNavigate?: () => void, railCollapsed = false) => (
+    <nav
+      className={cn(
+        "flex-1 space-y-1 overflow-y-auto",
+        railCollapsed ? "p-2" : "p-3"
+      )}
+      aria-label={title}
+    >
       {nav.map((item) => (
         <NavLink
           key={item.href}
           item={item}
           active={isActive(pathname, item)}
           onNavigate={onNavigate}
+          collapsed={railCollapsed}
         />
       ))}
     </nav>
@@ -163,34 +212,86 @@ export function AppShell({
 
   return (
     <div className="flex min-h-screen bg-canvas text-foreground">
-      <aside className="fixed inset-y-0 left-0 hidden w-[264px] shrink-0 flex-col border-r border-border bg-surface md:flex">
-        <div className="px-5 py-6">
-          <Logo variant="full" height={34} href="/" />
-          <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em] opacity-70">
-            {title}
-          </p>
-          {user ? (
-            <div
-              className="mt-3 flex items-center gap-2 rounded-lg border border-brand-600/20 bg-brand-100/60 px-3 py-2"
-              data-active-workspace={user.workspace_name}
-            >
-              <Building2 className="h-4 w-4 shrink-0 text-brand-600" aria-hidden="true" />
-              <div className="min-w-0">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.12em]">
-                  Active workspace
-                </p>
-                <p className="truncate text-sm font-bold">{user.workspace_name}</p>
-              </div>
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 hidden shrink-0 flex-col border-r border-border bg-surface transition-[width] duration-150 md:flex",
+          collapsed ? "w-[72px]" : "w-[264px]"
+        )}
+      >
+        <div className={cn(collapsed ? "px-3 py-6" : "px-5 py-6")}>
+          {collapsed ? (
+            <div className="flex justify-center">
+              <Logo variant="mark" height={30} href="/" />
             </div>
-          ) : null}
+          ) : (
+            <>
+              <Logo variant="full" height={34} href="/" />
+              <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em] opacity-70">
+                {title}
+              </p>
+              {user ? (
+                <div
+                  className="mt-3 flex items-center gap-2 rounded-lg border border-brand-600/20 bg-brand-100/60 px-3 py-2"
+                  data-active-workspace={user.workspace_name}
+                >
+                  <Building2 className="h-4 w-4 shrink-0 text-brand-600" aria-hidden="true" />
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.12em]">
+                      Active workspace
+                    </p>
+                    <p className="truncate text-sm font-bold">{user.workspace_name}</p>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          )}
         </div>
         <Separator />
-        {railNav()}
+        {railNav(undefined, collapsed)}
         <Separator />
-        <AccountBlock />
+        <div className={cn("flex", collapsed ? "justify-center p-2" : "px-3 pt-3")}>
+          <Button
+            variant="ghost"
+            size={collapsed ? "icon" : "sm"}
+            className={cn(!collapsed && "w-full justify-start gap-2")}
+            aria-pressed={collapsed}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={toggleCollapsed}
+          >
+            {collapsed ? (
+              <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
+            ) : (
+              <>
+                <PanelLeftClose className="h-4 w-4" aria-hidden="true" />
+                Collapse
+              </>
+            )}
+          </Button>
+        </div>
+        {collapsed ? (
+          <div className="flex justify-center p-2 pb-4">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Sign out"
+              title="Sign out"
+              onClick={() => void logout()}
+            >
+              <LogOut className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          </div>
+        ) : (
+          <AccountBlock />
+        )}
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col md:pl-[264px]">
+      <div
+        className={cn(
+          "flex min-w-0 flex-1 flex-col transition-[padding] duration-150",
+          collapsed ? "md:pl-[72px]" : "md:pl-[264px]"
+        )}
+      >
         <header className="glass sticky top-0 z-40 flex h-16 items-center gap-3 border-b border-border px-4 md:hidden">
           <Sheet open={open} onOpenChange={setOpen}>
             <SheetTrigger asChild>
