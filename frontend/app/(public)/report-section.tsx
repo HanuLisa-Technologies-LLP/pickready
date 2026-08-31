@@ -1,6 +1,5 @@
 import { Check } from "lucide-react";
 
-import { BorderBeam } from "@/components/magicui";
 import { Reveal } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 
@@ -64,15 +63,7 @@ export function ReportSection() {
         </Reveal>
 
         <Reveal delay={0.06} className="relative">
-          <div className="relative overflow-hidden rounded-2xl border border-border bg-surface p-6 shadow-pop sm:p-8">
-            <BorderBeam
-              size={120}
-              duration={11}
-              borderWidth={1.5}
-              colorFrom="hsl(253 76% 61%)"
-              colorTo="hsl(258 76% 52%)"
-            />
-
+          <div className="relative overflow-hidden border border-border bg-surface p-6 shadow-card sm:p-8">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold">

@@ -158,12 +158,20 @@ const config: Config = {
           "5-bg": "hsl(var(--rating-5-bg) / <alpha-value>)",
         },
       },
+      // ZERO CORNER RADIUS EVERYWHERE (Master directive Part 1 §7): every
+      // container, card, button and badge is a sharp rectangle. The whole
+      // scale is pinned to 0 so a `rounded-2xl` left in a call site renders
+      // square rather than reintroducing soft geometry. `rounded-full` keeps
+      // its default and is reserved for genuinely circular marks (avatars,
+      // typing dots) — never for pill containers.
       borderRadius: {
-        lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
-        xl: "calc(var(--radius) + 4px)",
-        "2xl": "calc(var(--radius) + 10px)",
+        sm: "0px",
+        DEFAULT: "0px",
+        md: "0px",
+        lg: "0px",
+        xl: "0px",
+        "2xl": "0px",
+        "3xl": "0px",
       },
       fontSize: {
         // The scale from the brief: 12 / 13 / 15 / 18 / 24 / 32 / 48 / 64.
@@ -179,12 +187,15 @@ const config: Config = {
         "5xl": ["4rem", { lineHeight: "4.25rem" }],
       },
       boxShadow: {
-        // Soft, low-contrast elevation. Cards get `shadow-card`.
+        // VERY MINIMAL shadows (Master directive Part 1 §7): structure comes
+        // from borders, not elevation. `pop` and `brand` are kept as names so
+        // existing call sites keep compiling, but both now resolve to the
+        // same restrained values — no deep drops, no coloured glow.
         card: "0 1px 2px hsl(var(--ink) / 0.04), 0 1px 3px hsl(var(--ink) / 0.03)",
         "card-hover":
-          "0 4px 12px hsl(var(--ink) / 0.07), 0 2px 4px hsl(var(--ink) / 0.04)",
-        pop: "0 12px 32px hsl(var(--ink) / 0.10), 0 2px 8px hsl(var(--ink) / 0.05)",
-        brand: "0 6px 20px hsl(var(--navy-600) / 0.28)",
+          "0 2px 6px hsl(var(--ink) / 0.06), 0 1px 3px hsl(var(--ink) / 0.04)",
+        pop: "0 2px 6px hsl(var(--ink) / 0.06), 0 1px 3px hsl(var(--ink) / 0.04)",
+        brand: "0 1px 2px hsl(var(--ink) / 0.06)",
       },
       keyframes: {
         "accordion-down": {
@@ -204,15 +215,6 @@ const config: Config = {
           from: { transform: "translateY(0)" },
           to: { transform: "translateY(calc(-100% - var(--gap)))" },
         },
-        "shimmer-slide": {
-          to: { transform: "translate(calc(100cqw - 100%), 0)" },
-        },
-        "spin-around": {
-          "0%": { transform: "translateZ(0) rotate(0)" },
-          "15%, 35%": { transform: "translateZ(0) rotate(90deg)" },
-          "65%, 85%": { transform: "translateZ(0) rotate(270deg)" },
-          "100%": { transform: "translateZ(0) rotate(360deg)" },
-        },
         "aurora-drift": {
           "0%, 100%": { transform: "translate3d(0,0,0) scale(1)" },
           "50%": { transform: "translate3d(4%, -3%, 0) scale(1.08)" },
@@ -223,9 +225,6 @@ const config: Config = {
         "accordion-up": "accordion-up 0.2s ease-out",
         marquee: "marquee var(--duration) infinite linear",
         "marquee-vertical": "marquee-vertical var(--duration) linear infinite",
-        "shimmer-slide":
-          "shimmer-slide var(--speed) ease-in-out infinite alternate",
-        "spin-around": "spin-around calc(var(--speed) * 2) infinite linear",
         "aurora-drift": "aurora-drift 18s ease-in-out infinite",
       },
     },

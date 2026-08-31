@@ -10,6 +10,4 @@
  */
 export { Marquee } from "./marquee";
 export { DotPattern } from "./dot-pattern";
-export { BorderBeam } from "./border-beam";
 export { BlurFade } from "./blur-fade";
-export { ShimmerButton, type ShimmerButtonProps } from "./shimmer-button";

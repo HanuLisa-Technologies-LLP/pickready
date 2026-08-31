@@ -3,7 +3,6 @@ import Link from "next/link";
 
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/brand";
-import { LogomarkHero } from "@/components/brand/logomark-hero";
 import { DotPattern } from "@/components/magicui";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -43,18 +42,8 @@ export function AuthShell({
       />
 
       <div className={cn("relative z-10 w-full max-w-md", className)}>
-        {/* THE SIGNATURE MOMENT. spec-doc5 §C.2 allows the Three.js logomark
-            on the landing and login surfaces and nowhere else, and
-            `tests/logomark-placement.test.ts` counts the call sites rather than
-            trusting this comment.
-
-            It degrades to the flat lockup on reduced motion, without WebGL, and
-            during server rendering -- so the wordmark below it is the thing
-            that always renders and the scene is the thing that sometimes
-            does. */}
-        <div className="mb-2 flex justify-center">
-          <LogomarkHero size={132} />
-        </div>
+        {/* Master directive §0 removed the Three.js logomark from every
+            surface. The flat lockup is the brand mark, full stop. */}
         <div className="mb-7 flex justify-center">
           <Logo variant="full" height={36} href="/" priority />
         </div>

@@ -50,14 +50,17 @@
 
        Stored as bare HSL triples so Tailwind can compose an alpha channel
        (`bg-navy-600/10`). */
-    --navy-50: 213 58% 96%; /* #EFF4FB  selected row, subtle fill */
-    --navy-100: 213 58% 90%; /* #D7E4F4  hover on a navy surface */
-    --navy-200: 213 58% 78%; /* #A7C3E7  border on a navy fill */
-    --navy-400: 213 98% 42%; /* #0360D4  link on white, 5.79:1 */
-    --navy-500: 213 98% 28%; /* #02408D  hover on primary */
-    --navy-600: 213 98% 17%; /* #012654  THE BRAND NAVY. 14.93:1 on white */
-    --navy-700: 213 98% 13%; /* #011E42  pressed */
-    --navy-900: 213 98% 6%; /* #000E1E  dark canvas */
+    /* Anchors per Master Implementation Directive Part 1 §3: navy #0A2540,
+       teal #0D9488. The ramp keeps its role structure; only the anchor hue
+       and saturation moved (213→210 / 98%→73% navy, 181→175 / 100%→84% teal). */
+    --navy-50: 210 58% 96%; /* #F0F4F9  selected row, subtle fill */
+    --navy-100: 210 58% 90%; /* #D6E1EF  hover on a navy surface */
+    --navy-200: 210 58% 78%; /* #A6C0DF  border on a navy fill */
+    --navy-400: 210 80% 38%; /* #1362AE  link on white */
+    --navy-500: 210 75% 26%; /* #114274  hover on primary */
+    --navy-600: 210 73% 15%; /* #0A2540  THE BRAND NAVY (directive §3) */
+    --navy-700: 210 73% 11%; /* #081B30  pressed */
+    --navy-900: 210 73% 5%; /* #030C16  dark canvas */
 
     /* THE BRAND TEAL FAILS AA FOR BODY TEXT ON WHITE. #00888A measures
        4.30:1, below the 4.5:1 WCAG AA requires for normal text. That is a
@@ -67,22 +70,22 @@
        So: teal-600 is a FILL, a RULE and an ICON colour. TEAL TEXT ON WHITE
        IS teal-700 (5.99:1). `scripts/check-contrast.mjs` computes both from
        these triples and fails the build rather than trusting memory. */
-    --teal-50: 181 60% 95%; /* #EBFAFA  evidence-supported fill */
-    --teal-100: 181 60% 88%; /* #CEF2F3  accent fill */
-    --teal-400: 181 100% 40%; /* #00C9CC  dark-theme accent, chart series 2 */
-    --teal-500: 181 100% 30%; /* #009799  large text only, >= 24px */
-    --teal-600: 181 100% 27%; /* #00888A  THE BRAND TEAL. Fills and rules */
-    --teal-700: 181 100% 22%; /* #006F70  teal TEXT on white, 5.99:1 */
-    --teal-900: 181 100% 11%; /* #003738  dark-theme teal text */
+    --teal-50: 175 60% 95%; /* #EAFAF8  evidence-supported fill */
+    --teal-100: 175 60% 88%; /* #CEF2EE  accent fill */
+    --teal-400: 175 84% 38%; /* #0FB2A4  dark-theme accent, chart series 2 */
+    --teal-500: 175 84% 34%; /* #0E9F93  large text only, >= 24px */
+    --teal-600: 175 84% 32%; /* #0D9688  THE BRAND TEAL (directive §3) */
+    --teal-700: 175 84% 23%; /* #096C62  teal TEXT on white */
+    --teal-900: 175 84% 11%; /* #04332E  dark-theme teal text */
 
     /* --- surfaces and ink ------------------------------------------------ */
     /* Ink carries a trace of the navy hue rather than being pure neutral, so
        black text on a navy-tinted canvas does not read as two unrelated
        greys. It is still functionally black: 19.6:1 on the canvas. */
-    --ink: 216 55% 7%; /* #080F1C  all text */
+    --ink: 212 55% 7%; /* #080F1C  all text */
     --surface: 0 0% 100%; /* #FFFFFF  cards */
-    --canvas: 213 43% 98%; /* #FBFCFE  page background */
-    --border-token: 214 33% 92%; /* #E2E8F2  borders, dividers */
+    --canvas: 210 43% 98%; /* #FBFCFE  page background */
+    --border-token: 212 33% 92%; /* #E2E8F2  borders, dividers */
 
     /* --- interactive field affordance (2026-08-11) ------------------------
        A dropdown, a text input and a toggle used to carry `--border-token`,
@@ -98,8 +101,8 @@
 
        Both are verified by `scripts/check-contrast.mjs`, which computes the
        ratio from these exact triples. Do not adjust either by eye. */
-    --field-border: 213 45% 55%; /* idle */
-    --field-border-hover: 213 98% 32%; /* hover and open, saturation steps up */
+    --field-border: 210 45% 55%; /* idle */
+    --field-border-hover: 210 80% 32%; /* hover and open, saturation steps up */
 
     /* --- shadcn semantic aliases ----------------------------------------- */
     --background: var(--canvas);
@@ -110,10 +113,10 @@
     --popover-foreground: var(--ink);
     --primary: var(--navy-600);
     --primary-foreground: 0 0% 100%;
-    --secondary: 214 40% 96%;
+    --secondary: 212 40% 96%;
     --secondary-foreground: var(--ink);
     /* --muted stays a light SURFACE; --muted-foreground is text, so it is ink. */
-    --muted: 214 40% 96%;
+    --muted: 212 40% 96%;
     --muted-foreground: var(--ink);
     /* Teal, because accent means EVIDENCE in this system. */
     --accent: var(--teal-50);
@@ -127,7 +130,9 @@
        a control and tinting it would make the affordance meaningless. */
     --input: var(--field-border);
     --ring: var(--navy-400);
-    --radius: 0.75rem;
+    /* ZERO. Master directive Part 1 §7: sharp rectangular geometry, no
+       rounded cards, no pills. The Tailwind radius scale reads this token. */
+    --radius: 0rem;
     /* Held for review. Not destructive: a flag is not a rejection. */
     --warning: 40 100% 27%;
     --warning-foreground: 0 0% 100%;
@@ -164,33 +169,33 @@
 
        Both ramps invert: the dark theme uses the light end of each, because a
        navy-600 button on a navy-900 canvas is a button nobody can find. */
-    --navy-50: 213 60% 12%;
-    --navy-100: 213 55% 18%;
-    --navy-200: 213 70% 72%; /* primary action in dark */
-    --navy-400: 213 90% 66%; /* link */
-    --navy-500: 213 80% 78%; /* hover on primary */
-    --navy-600: 213 70% 72%;
-    --navy-700: 213 98% 13%; /* #011E42  card surface */
-    --navy-900: 213 98% 6%; /* #000E1E  canvas */
+    --navy-50: 210 60% 12%;
+    --navy-100: 210 55% 18%;
+    --navy-200: 210 70% 72%; /* primary action in dark */
+    --navy-400: 210 90% 66%; /* link */
+    --navy-500: 210 80% 78%; /* hover on primary */
+    --navy-600: 210 70% 72%;
+    --navy-700: 210 73% 11%; /* #081B30  card surface */
+    --navy-900: 210 73% 5%; /* #030C16  canvas */
 
-    --teal-50: 181 55% 13%;
-    --teal-100: 181 50% 18%;
-    --teal-400: 181 100% 40%; /* #00C9CC  the dark-theme accent */
-    --teal-500: 181 85% 55%;
-    --teal-600: 181 85% 62%; /* teal TEXT in dark, on navy-700 */
-    --teal-700: 181 85% 68%;
-    --teal-900: 181 60% 88%;
+    --teal-50: 175 55% 13%;
+    --teal-100: 175 50% 18%;
+    --teal-400: 175 84% 40%; /* the dark-theme accent */
+    --teal-500: 175 70% 55%;
+    --teal-600: 175 70% 62%; /* teal TEXT in dark, on navy-700 */
+    --teal-700: 175 70% 68%;
+    --teal-900: 175 60% 88%;
 
     --ink: 0 0% 100%; /* #FFFFFF */
-    --surface: 213 98% 13%; /* #011E42  navy-700 */
-    --canvas: 213 98% 6%; /* #000E1E  navy-900 */
-    --border-token: 213 60% 22%; /* #0A2E5C */
+    --surface: 210 73% 11%; /* #081B30  navy-700 */
+    --canvas: 210 73% 5%; /* #030C16  navy-900 */
+    --border-token: 210 60% 22%; /* #16385A */
 
     /* Dark theme runs the affordance the other way: the field border is
        LIGHTER than the navy surface it sits on. Same 3:1 bar, same script
        checks it. */
-    --field-border: 213 45% 52%;
-    --field-border-hover: 213 70% 72%;
+    --field-border: 210 45% 52%;
+    --field-border-hover: 210 70% 72%;
 
     --background: var(--canvas);
     --foreground: var(--ink);
@@ -199,20 +204,20 @@
     --popover: var(--surface);
     --popover-foreground: var(--ink);
     --primary: var(--navy-200);
-    --primary-foreground: 213 98% 8%;
-    --secondary: 213 50% 16%;
+    --primary-foreground: 210 73% 8%;
+    --secondary: 210 50% 16%;
     --secondary-foreground: var(--ink);
-    --muted: 213 50% 16%;
+    --muted: 210 50% 16%;
     --muted-foreground: var(--ink);
     --accent: var(--teal-100);
     --accent-foreground: var(--teal-900);
     --destructive: 357 90% 77%;
-    --destructive-foreground: 213 98% 8%;
+    --destructive-foreground: 210 73% 8%;
     --border: var(--border-token);
     --input: var(--field-border);
     --ring: var(--navy-400);
     --warning: 40 82% 69%;
-    --warning-foreground: 213 98% 8%;
+    --warning-foreground: 210 73% 8%;
 
     /* The rating ramp keeps its hue in dark mode but swaps fg/bg roles so the
        chip stays legible on a near-black card. */
