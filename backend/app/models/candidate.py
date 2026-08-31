@@ -83,7 +83,7 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
     resume_text: Mapped[str | None] = mapped_column(Text)  # extracted; tsvector col in migration
     aspects_json: Mapped[dict | None] = mapped_column(JSONB)  # {"1": {...}, ..., "40": {...}}
     parsed_fields_json: Mapped[dict | None] = mapped_column(JSONB)  # skills, experience, education, employment_history
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))  # voyage-context-4, EMBEDDING_DIM
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))  # voyage-4, EMBEDDING_DIM
     # ── Embedding provenance (migration 0062) ────────────────────────────────
     # WHICH MODEL PRODUCED THE VECTOR ABOVE, answerable by query rather than by
     # inference. The column is `vector(1024)` and so was the BGE-M3 vector that

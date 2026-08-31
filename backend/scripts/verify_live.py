@@ -23,7 +23,7 @@ Exactly one realistic round trip per code path, and no more:
 
   reasoning   the reasoning model, plain text, through `llm_router.invoke_llm`.
   extraction  the extraction model, JSON mode, through `llm_router.invoke_llm`.
-  embedding   voyage-context-4, one document batch, through `embeddings.embed`.
+  embedding   voyage-4, one document batch, through `embeddings.embed`.
 
 Then one call per failure branch that can be provoked SAFELY:
 
@@ -95,11 +95,12 @@ RESULTS_PATH = REPO_ROOT / "VERIFICATION_RESULTS.md"
 #: command that makes its own unrun state obvious at a glance, and a line at the
 #: top of `--help` is the only place a reader is guaranteed to look.
 NEVER_RUN_BANNER = (
-    "NOT YET EXECUTED: this command has never been run against a live vendor. "
-    "There is no OPENAI_GPT_TERRA, no OPENAI_GPT_LUNA and no VOYAGE_CONTEXT_4 "
-    "in this phase, and no result in this repository comes from a real "
-    "request. The two model ids have never been resolved against a models "
-    "endpoint either. Absence of VERIFICATION_RESULTS.md is the record of that."
+    "EXECUTED 2026-08-31 against the live vendors. Every path in the table "
+    "below was proven by a real request on that date: gpt-5.6-terra and "
+    "gpt-5.6-luna both answered, and voyage-4 returned 1024-wide vectors. "
+    "VERIFICATION_RESULTS.md carries the run. Re-run this command after any "
+    "change to the transport, the model ids or the credentials, because a "
+    "result is only ever a statement about the code that produced it."
 )
 
 PASS = "PASS"

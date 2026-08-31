@@ -49,7 +49,7 @@ THE THREE ENDPOINTS, AND NOTHING ELSE
 --------------------------------------
     reasoning / writing / judgment  -> gpt-5.6-terra
     extraction / classification     -> gpt-5.6-luna
-    every embedding                 -> voyage-context-4
+    every embedding                 -> voyage-4
 
 The two-tier split is the point of the mapping and it survived the vendor
 change intact: every task that ran on the reasoning tier still runs on the
@@ -104,7 +104,7 @@ MODEL_LUNA = "gpt-5.6-luna"
 #: the swap needs no migration. Changing the width later is a re-embed of every
 #: row, not a config change, and `EMBEDDING_DIM` is asserted in tests for that
 #: reason.
-EMBEDDING_MODEL = "voyage-context-4"
+EMBEDDING_MODEL = "voyage-4"
 
 #: Every model id this platform may call. The acceptance criterion is unchanged
 #: by the vendor swap: "grep the codebase for any other model string and confirm

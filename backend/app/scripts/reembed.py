@@ -1,4 +1,4 @@
-"""Re-embed every vector onto voyage-context-4, through a shadow column.
+"""Re-embed every vector onto voyage-4, through a shadow column.
 
     python -m app.scripts.reembed --dry-run          # the work plan
     python -m app.scripts.reembed --status           # what each column holds
@@ -10,7 +10,7 @@ WHAT THIS EXISTS TO FIX
 `profiles.embedding`, `jobs.embedding`, `jobs.reach_embedding` and
 `context_chunks.embedding` are all `vector(1024)` and hold vectors from two
 different models. The platform ran a self-hosted BGE-M3 endpoint, then
-consolidated on voyage-context-4, and Voyage's 1024-dimension output meant the
+consolidated on voyage-4, and Voyage's 1024-dimension output meant the
 swap needed no migration to remain STORABLE. It does not follow that the
 vectors are COMPARABLE: a cosine distance between a BGE-M3 vector and a Voyage
 vector is a number with no meaning, and nothing about it looks wrong. Retrieval
@@ -37,7 +37,7 @@ shadow values and an untouched index, and re-running picks up where it stopped.
 
 THE PROVENANCE IS STAMPED AT THE SWAP, NEVER AT THE WRITE
 ------------------------------------------------------------
-Stamping `embedding_model = 'voyage-context-4'` while the live column still
+Stamping `embedding_model = 'voyage-4'` while the live column still
 holds the old vector would make the provenance column lie for the entire
 duration of the run, and a crash in the middle would leave it lying
 permanently. The stamp and the vector move in the same statement.
@@ -57,7 +57,7 @@ IT CANNOT RUN IN THIS PHASE, AND IT SAYS SO
 spec-doc6 decision D6: there is no Voyage key. `--confirm` refuses without one
 rather than falling through to `embeddings`' deterministic dev fallback, which
 would write pseudo-random unit vectors into every profile and stamp them
-`voyage-context-4`. That is the single worst outcome available here: retrieval
+`voyage-4`. That is the single worst outcome available here: retrieval
 would return confident nonsense and the provenance column, the one thing built
 to make this answerable, would assert that a real model produced it.
 """
@@ -885,7 +885,7 @@ async def _evaluate(_: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reembed",
-        description="Re-embed every vector onto voyage-context-4 through a shadow column.",
+        description="Re-embed every vector onto voyage-4 through a shadow column.",
     )
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--status", action="store_true", help="what each column holds")

@@ -1,4 +1,4 @@
-"""The platform's ONE embedding client: voyage-context-4 (spec-doc5 §B.2).
+"""The platform's ONE embedding client: voyage-4 (spec-doc5 §B.2).
 
 Every RAG surface in ReadyPick embeds through this module -- candidate profile
 vectors, job vectors, `context_chunks`, the department competency models, the
@@ -179,7 +179,7 @@ async def embed(
 ) -> list[list[float]]:
     """Embed a batch of texts into `EMBEDDING_DIM`-dim vectors.
 
-    Uses voyage-context-4 when `VOYAGE_CONTEXT_4` is set, otherwise the
+    Uses voyage-4 when `VOYAGE_CONTEXT_4` is set, otherwise the
     deterministic dev fallback (see the module docstring). Order is preserved:
     `embed(texts)[i]` is always the vector for `texts[i]`.
     """

@@ -16,7 +16,7 @@ calls "graph databases". A retrieval layer that scores these differently is not
 measuring capability, it is measuring which vocabulary somebody was trained in --
 which correlates with employer, with country, and with class.
 
-Embeddings help and do not solve it. `voyage-context-4` will place "graph
+Embeddings help and do not solve it. `voyage-4` will place "graph
 database" and "semantic technologies" closer than chance, and it will still put
 an exact lexical match above both, which is exactly the ranking that penalises
 the person who said it differently.

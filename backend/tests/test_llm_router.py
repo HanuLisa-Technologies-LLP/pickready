@@ -437,7 +437,21 @@ def test_an_unknown_role_is_treated_as_user_rather_than_dropped() -> None:
     assert turns == [{"role": "user", "content": "observation"}]
 
 
-def test_a_payload_carries_the_task_temperature_and_ceiling() -> None:
+def test_a_payload_carries_the_ceiling_and_the_seed_and_never_the_two_refused_names() -> None:
+    """The request shape the live API actually accepts, pinned in both directions.
+
+    VERIFIED LIVE 2026-08-31, and both halves of this were 400s before that run:
+
+        max_tokens  -> 400 unsupported_parameter: use max_completion_tokens
+        temperature -> 400 unsupported_value: only the default (1) is supported
+
+    The negative assertions matter more than the positive ones. Sending either
+    refused name fails EVERY request, so a regression is loud rather than
+    subtle, but only if something checks that they are absent. `temperature` in
+    particular is the one a future contributor is most likely to re-add, because
+    the standing rule that judging tasks sample at 0.0 is written down in three
+    places and this vendor cannot honour it.
+    """
     payload = llm_router.build_payload(
         model=llm_providers.MODEL_TERRA,
         messages=[{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
@@ -446,8 +460,13 @@ def test_a_payload_carries_the_task_temperature_and_ceiling() -> None:
         temperature=0.3,
     )
     assert payload["model"] == llm_providers.MODEL_TERRA
-    assert payload["max_tokens"] == 512
-    assert payload["temperature"] == 0.3
+    assert payload["max_completion_tokens"] == 512
+    assert "max_tokens" not in payload
+    assert "temperature" not in payload
+    # `seed` is what replaced temperature as the reproducibility lever. A
+    # CONSTANT, because two runs over the same evidence must send the same one
+    # or there is no reproducibility to have.
+    assert payload["seed"] == llm_router._SEED
     # The system prompt is a MESSAGE at the head of the array, not a top-level
     # field. That is the one shape difference the vendor change forced on the
     # request, and it is the one a reviewer would otherwise have to take on

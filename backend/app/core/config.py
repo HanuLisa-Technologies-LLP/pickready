@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     openai_gpt_luna: str = ""
 
     # THE EMBEDDING CREDENTIAL IS NAMED AFTER THE MODEL IT UNLOCKS:
-    # `VOYAGE_CONTEXT_4` for `voyage-context-4`. Same convention as the two
+    # `VOYAGE_CONTEXT_4` for `voyage-4`. Same convention as the two
     # model keys above, and it replaces `VOYAGE_API_KEY` outright rather than
     # sitting beside it as an alias. One name per thing.
     #

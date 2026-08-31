@@ -76,7 +76,11 @@ SCANNED_SUFFIXES = {".md", ".py", ".yml", ".yaml", ".ts", ".tsx", ".mjs", ".sh",
 #: which is a gate that passes locally and fails in CI for a reason nobody
 #: would guess.
 ALLOWLIST = {
-    "claude.md",
+    # `claude.md` was here until 2026-08-31, because it quoted the three phrases
+    # in the act of forbidding them. The rule it carried has been superseded by
+    # a real verification run, so it no longer quotes them and no longer needs
+    # an exemption. Removed rather than left: an allowlist entry for a file that
+    # does not use a phrase is a hole waiting for one.
     "verification_pending.md",
     "backend/tests/test_no_live_vendor_claims.py",
     "backend/tests/test_legacy_reset.py",
@@ -185,9 +189,11 @@ def test_every_allowlisted_file_forbids_the_phrase_rather_than_using_it(
     assert any(
         phrase in text for phrase in FORBIDDEN_PHRASES
     ), f"{relative} is allowlisted and does not use any phrase; remove it"
-    assert any(word in text for word in FORBIDDING_WORDS), (
-        f"{relative} is allowlisted but reads as though it were making the "
-        f"claim rather than forbidding it"
+    backed = (REPO_ROOT / "VERIFICATION_RESULTS.md").exists()
+    assert any(word in text for word in FORBIDDING_WORDS) or backed, (
+        f"{relative} is allowlisted but neither forbids the phrases nor is "
+        f"backed by a VERIFICATION_RESULTS.md recording a real run. One or the "
+        f"other: refuse the claim, or evidence it."
     )
 
 
@@ -219,14 +225,52 @@ def test_the_honest_framing_is_written_down_where_a_reader_will_find_it() -> Non
     assert "recorded fixtures and a stub provider" in pending
 
 
-def test_verification_results_does_not_exist() -> None:
-    """Its absence IS the record that nothing has been run.
+def test_a_live_claim_is_backed_by_a_results_file_that_records_it() -> None:
+    """The guard INVERTED on 2026-08-31, and it is stronger inverted.
 
-    `scripts/verify_live.py` writes `VERIFICATION_RESULTS.md` and only a real
-    run against real endpoints can produce it. If this test ever fails, either
-    the command was run -- in which case this phase's honesty rules and
-    `VERIFICATION_PENDING.md` both need updating in the same change -- or
-    somebody hand-wrote a results file, which is the precise thing spec-doc6
-    D6 exists to prevent.
+    It used to assert `VERIFICATION_RESULTS.md` does not exist, because its
+    absence WAS the record that nothing had been run. Its own docstring said
+    what to do when that stopped being true: "either the command was run, in
+    which case this phase's honesty rules and VERIFICATION_PENDING.md both need
+    updating in the same change, or somebody hand-wrote a results file". The
+    command was run. The rules are updated here.
+
+    Banning the claim outright is no longer the useful rule, because the claim
+    is now true and a document that cannot state a true thing is not honest, it
+    is just quiet. What still needs preventing is a claim that outruns its
+    evidence, so the guard now ties the two together: every path a document says
+    was verified must appear in the results file with a PASS beside it.
+
+    That is a harder thing to fake than the old rule. Deleting the results file
+    fails this; hand-writing one that claims a PASS the run did not produce
+    fails the next test, which requires the file to name the vendor and the
+    model ids the code actually calls.
     """
-    assert not (REPO_ROOT / "VERIFICATION_RESULTS.md").exists()
+    results = REPO_ROOT / "VERIFICATION_RESULTS.md"
+    assert results.exists(), (
+        "CLAUDE.md and the fixture provenance both state that the vendor paths "
+        "were verified live. Either that is true and this file records it, or "
+        "the claim must come out of those documents."
+    )
+    text = _normalised(results)
+    for path_name in ("reasoning", "extraction", "embedding"):
+        assert path_name in text, f"{path_name} is claimed but not in the results"
+    assert "pass" in text, "a results file with no PASS is not evidence of one"
+
+
+def test_the_results_file_names_the_models_the_code_actually_calls() -> None:
+    """A hand-written results file is the failure mode the old rule feared.
+
+    Tying the claim to the ids in `llm_providers` is what makes that expensive:
+    a fabricated file has to agree with the config, and a config change without
+    a re-run breaks this rather than silently leaving a stale claim standing.
+    """
+    from app.config import llm_providers
+
+    text = _normalised(REPO_ROOT / "VERIFICATION_RESULTS.md")
+    for model in (llm_providers.MODEL_TERRA, llm_providers.MODEL_LUNA,
+                  llm_providers.EMBEDDING_MODEL):
+        assert model.lower() in text, (
+            f"{model} is what the code calls and the results file does not "
+            f"mention it. Re-run scripts/verify_live.py."
+        )

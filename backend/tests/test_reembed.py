@@ -455,7 +455,7 @@ async def test_the_scorer_runs_over_the_real_evaluation_set() -> None:
     """Proves the harness is wired to the committed set and produces a figure.
 
     The NUMBER here is a property of a hashing test double, not of
-    voyage-context-4, and it is deliberately not asserted against a quality
+    voyage-4, and it is deliberately not asserted against a quality
     threshold. The real before and after figures need a Voyage credential and
     are listed in VERIFICATION_PENDING.md.
     """
@@ -478,7 +478,7 @@ def test_cosine_of_orthogonal_vectors_is_zero() -> None:
 @pytest.mark.asyncio
 async def test_running_without_a_voyage_key_refuses(monkeypatch) -> None:
     """The single worst outcome available here is writing the deterministic dev
-    fallback into every profile and stamping it voyage-context-4: retrieval
+    fallback into every profile and stamping it voyage-4: retrieval
     returns confident nonsense, and the provenance column built to make this
     answerable asserts that a real model produced it."""
     plan = reembed.Plan(statuses=[], keys_present=False)
@@ -503,7 +503,7 @@ async def test_running_without_a_voyage_key_refuses(monkeypatch) -> None:
     with pytest.raises(reembed.ReembedRefused) as raised:
         await reembed.run(_Factory(), apply=True)
     assert "VOYAGE_CONTEXT_4" in str(raised.value)
-    assert "voyage-context-4" in str(raised.value)
+    assert "voyage-4" in str(raised.value)
 
 
 async def _empty():
@@ -558,5 +558,5 @@ def test_only_the_permitted_model_strings_appear() -> None:
         assert match in {
             "claude-sonnet-5",
             "claude-haiku-4-5-20251001",
-            "voyage-context-4",
+            "voyage-4",
         }, match

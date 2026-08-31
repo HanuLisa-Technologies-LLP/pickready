@@ -1,14 +1,31 @@
 # Vendor contract fixtures
 
-Every file under this directory was **hand-authored from the vendor's published
-API schema and has never been checked against a live call.** There is no OpenAI
-key and no Voyage key in this phase, so nothing here is a recording of traffic.
+Every file under this directory is **hand-authored from the vendor's published
+API schema.** None is a recording of traffic, `observed` is `false` in every
+one, and the loader asserts it. That has not changed and should not: a fixture
+is a statement of what the code expects, and a recording would make the test
+agree with whatever the vendor happened to send the day it was captured.
 
-The OpenAI set additionally carries a second unproven claim that the previous
-set did not: `gpt-5.6-terra` and `gpt-5.6-luna` are the product owner's strings
-and have never been resolved against a models endpoint. "Does this id exist" is
-unverified here alongside "is this the shape it returns", and a wrong id would
-arrive as a 404 or a 403 rather than as a shape disagreement.
+**What DID change on 2026-08-31: the keys arrived and the paths were run.**
+`scripts/verify_live.py` made real requests and `VERIFICATION_RESULTS.md`
+carries the result. Be precise about which claims that settles, because it does
+not settle all of them:
+
+| Claim | Status after the live run |
+|---|---|
+| `gpt-5.6-terra` exists and answers | **CONFIRMED.** Returned prose; the id echoed back unchanged |
+| `gpt-5.6-luna` exists and answers | **CONFIRMED.** Returned a top-level JSON object with the expected keys |
+| The embedding model exists | **REFUTED, and corrected.** `voyage-context-4` does not exist; Voyage returned 400 naming the supported list. Now `voyage-4`, confirmed at 1024 dimensions |
+| Success-response shape | **CONFIRMED** for both chat paths and for embeddings |
+| 401 handling | **CONFIRMED.** Classified as credential, breaker trips on the first occurrence |
+| Timeout handling | **CONFIRMED.** Raised inside the budget |
+| 429 handling | **STILL UNPROVEN.** No rate limit was reached. The classifier and the retry-after reader remain proven against these fixtures only |
+| 400, 403, 500, 503 shapes | **STILL UNPROVEN.** Never provoked |
+
+Two request-level facts the run established, both of which had been recorded as
+unanswerable without a call: `max_tokens` is refused outright in favour of
+`max_completion_tokens`, and `temperature` accepts only its default of 1, so a
+scoring call cannot be pinned to 0.0 on these models.
 
 The honest framing for everything these fixtures support is:
 

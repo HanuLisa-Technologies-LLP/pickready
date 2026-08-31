@@ -3,7 +3,7 @@
 Raw PDF/DOCX -> text extraction (pypdf / python-docx) -> LLM extraction
 (`extraction` task type, the extraction tier -- narrow, mechanical, must not evaluate)
 into a fixed structured schema -> profiles.parsed_fields_json. Also sets
-profiles.resume_text and the voyage-context-4 embedding used by the semantic
+profiles.resume_text and the voyage-4 embedding used by the semantic
 matching stage.
 
 THIS IS ALSO WHERE YUKTI'S PRE-SCREEN GRADE IS PRODUCED (spec-doc6 §4.4).
@@ -271,7 +271,7 @@ async def extract_structured_fields(
 
 async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> None:
     """Extract text (if needed), run LLM extraction, store parsed fields,
-    resume_text, and the voyage-context-4 embedding on the profile."""
+    resume_text, and the voyage-4 embedding on the profile."""
     profile = await session.get(Profile, uuid.UUID(str(profile_id)))
     if profile is None:
         raise ValueError(f"Profile {profile_id} not found")

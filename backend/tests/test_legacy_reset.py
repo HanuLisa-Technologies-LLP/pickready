@@ -665,5 +665,5 @@ def test_only_the_three_permitted_model_strings_appear() -> None:
         assert match in {
             "claude-sonnet-5",
             "claude-haiku-4-5-20251001",
-            "voyage-context-4",
+            "voyage-4",
         }, match

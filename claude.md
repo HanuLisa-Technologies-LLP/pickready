@@ -205,20 +205,50 @@ No dual code paths for one product behaviour. No placeholder prose (`TODO`,
 "stub" outside test doubles). No dead code, delete rather than deprecate. No
 magic numbers, every one comes from `runbook_data/` with a citation. No new
 model strings beyond `gpt-5.6-terra`, `gpt-5.6-luna` and
-`voyage-context-4`. No wildcard IAM.
+`voyage-4`. No wildcard IAM.
 No em dashes in generated product copy. Docstrings state provenance. **A test
 whose only assertion is that a mock was called is not a test.** No commented-out
 code. **One implementation per concept**, which is the rule `tiers.py` broke.
 
 ### Verification honesty
 
-**There is no OpenAI or Voyage key in this phase.** No wording in code,
-comments, docs, commit messages or reports may imply a live vendor call has
-succeeded. The phrases "verified against the API", "confirmed working" and
-"tested live" are CI-checked in this phase's documentation. The honest framing
-is "built and tested against recorded fixtures and a stub provider; not executed
-against a live provider". `VERIFICATION_PENDING.md` lists every unproven claim
-with the exact command that would settle it.
+**Keys arrived on 2026-08-31 and every vendor path is now PROVEN by a real
+request.** `bash -c 'set -a; . .env; set +a; python scripts/verify_live.py'`
+returns reasoning PASS, extraction PASS, embedding PASS, credential-failure PASS
+and timeout PASS. `VERIFICATION_RESULTS.md` carries the run. This supersedes the
+rule that stood for the whole of spec-doc6, which was that no wording anywhere
+may imply a live call had succeeded.
+
+**What the run found is the reason the rule existed.** Three things had been
+carried as settled for an entire phase and all three were wrong:
+
+- **`voyage-context-4` is not a real model.** Voyage returns 400 naming the
+  supported list, which does not contain it. It had been enshrined in this file
+  as a hard rule, cited in nine modules and pinned by tests. It never failed
+  because `embeddings.embed` returns pseudo-random unit vectors of the right
+  width when the key is absent, with no exception and no log line, and there was
+  never a key. **The model is now `voyage-4`**, verified at 1024 dimensions,
+  which is what the schema already expects, so no migration was needed.
+- **`max_tokens` is refused outright** by both models: 400 `unsupported_parameter`,
+  use `max_completion_tokens`.
+- **`temperature` 0.0 is refused outright.** Only the default of 1 is accepted.
+
+**That last one cost this product a stated guarantee, and it is not recoverable.**
+The standing rule was that every task which JUDGES samples at 0.0, because a
+scoring call above zero makes a candidate's grade depend on WHEN they were
+scored. These models cannot do it. `seed` is sent instead and measured
+byte-identical over three runs, but the vendor documents it as BEST EFFORT and
+`system_fingerprint` came back null, so a backend change underneath is not
+observable. What still holds is the part that matters most: the AGGREGATOR makes
+zero model calls and is deterministic arithmetic, so the step that turns five
+bands into a delivered grade cannot vary. What can vary is the band one
+evaluator returns for identical evidence.
+
+**Re-run `verify_live.py` after any change to the transport, the model ids or
+the credentials.** A passing result is a statement about the code that produced
+it and nothing more. `VERIFICATION_PENDING.md` still lists what remains unproven:
+the 429 path has never been provoked, so the rate-limit classifier and the
+retry-after reader are still only proven against recorded fixtures.
 
 Likewise: no `terraform apply`. Running it against a real account this phase is
 a failure of scope, not an accomplishment. An offline `terraform plan` proves
@@ -289,18 +319,16 @@ exemptions. Anthropic is REMOVED, not kept as a fallback, and
 `ANTHROPIC_API_KEY` is deleted rather than deprecated.
 
 - **Every model call resolves to `gpt-5.6-terra` or `gpt-5.6-luna`, and every
-  embedding to `voyage-context-4`.** `MODEL_FOR_TASK` in
+  embedding to `voyage-4`.** `MODEL_FOR_TASK` in
   `config/llm_providers.py` is a closed mapping onto exactly two ids and
   `tests/test_llm_task_routing.py` greps the executable source for any other
   model string. No third model on implementation judgment.
-- **THE TWO MODEL IDS ARE UNVERIFIED AND CANNOT BE VERIFIED THIS PHASE.** There
-  is no OpenAI key, so neither has been resolved against a models endpoint.
-  They are the owner's strings, used verbatim, and they are named CONSTANTS
-  (`MODEL_TERRA`, `MODEL_LUNA`) so a wrong id is a one-line fix. A wrong id
-  arrives as a 404 or a 403, which classifies as our bug and is not retried, so
-  the symptom would be every caller degrading silently -- which is why the
-  first live response on each path is checked against a hand-authored fixture.
-  `VERIFICATION_PENDING.md` carries the row.
+- **ALL THREE IDS ARE VERIFIED LIVE (2026-08-31).** `gpt-5.6-terra` and
+  `gpt-5.6-luna` both answered; the embedding id did NOT, and that is the
+  finding: `voyage-context-4` does not exist and never did. It is `voyage-4`
+  now, at the 1024 dimensions the schema already expects. Re-run
+  `scripts/verify_live.py` after any change to the transport, the ids or the
+  credentials.
 - **The split is JUDGE-or-WRITE versus EXTRACT-or-CLASSIFY, and NO TASK MOVED
   TIER in the vendor change.** Every task on Sonnet went to Terra and every task
   on Haiku went to Luna, one for one. `claim_extraction` is Luna and MUST NOT

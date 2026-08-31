@@ -148,8 +148,14 @@ def test_the_provenance_note_states_what_the_fixtures_do_not_prove() -> None:
     directory's own note, and this test keeps both from being quietly softened.
     """
     note = " ".join((FIXTURE_DIR / "PROVENANCE.md").read_text(encoding="utf-8").split())
-    assert "never been checked against a live call" in note
-    assert "not executed against a live provider" in note
+    # The fixtures are still hand-authored and still not recordings, and the
+    # note must keep saying so. What changed on 2026-08-31 is that the paths
+    # were RUN, so the note now also has to say which claims that settled and
+    # which it did not. Both halves are asserted, because dropping either one
+    # is how a note stops being honest: without the first it reads as a
+    # recording, without the second it reads as fully proven.
+    assert "None is a recording of traffic" in note
+    assert "STILL UNPROVEN" in note
     assert __doc__ is not None
     assert "without proving the vendor's behaviour" in " ".join(__doc__.split())
 

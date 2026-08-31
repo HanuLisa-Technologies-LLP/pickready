@@ -580,6 +580,19 @@ def split_system(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, An
     return "\n\n".join(system_parts), turns
 
 
+#: The sampling seed sent on every request.
+#:
+#: A CONSTANT, not a per-call value, and that is the point: two runs over the
+#: same evidence must send the same seed or there is no reproducibility to have.
+#: It is not a secret and it is not tuned; any fixed integer would do, and it is
+#: fixed here so that a change to it is a reviewed line in a diff rather than a
+#: value drifting per environment.
+#:
+#: `temperature` cannot be used for this on the current models, which accept
+#: only their default of 1. See `build_payload` for the measurement and for what
+#: the product gave up.
+_SEED = 20260829
+
 def build_payload(
     *,
     model: str,
@@ -598,11 +611,44 @@ def build_payload(
     payload: dict[str, Any] = {
         "model": model,
         "messages": turns,
-        "max_tokens": max_tokens,
-        # From config/llm_providers.temperature_for(task_type), never a
-        # literal. A scoring call sampling above zero makes a candidate's grade
-        # depend on when they were scored.
-        "temperature": temperature,
+        # `max_completion_tokens`, NOT `max_tokens`. VERIFIED AGAINST THE LIVE
+        # ENDPOINT 2026-08-31: `max_tokens` returns
+        #     400 unsupported_parameter: "'max_tokens' is not supported with
+        #     this model. Use 'max_completion_tokens' instead."
+        # This was recorded as an open question that could not be settled
+        # without a call, and the call settled it. The two names are not
+        # interchangeable and the older one is refused outright rather than
+        # ignored, so there is no silent-truncation failure mode here: a
+        # regression fails every request loudly.
+        "max_completion_tokens": max_tokens,
+        # DETERMINISM, AND WHAT THIS PRODUCT LOST WHEN THE VENDOR CHANGED.
+        #
+        # `temperature` is NOT sent. VERIFIED AGAINST THE LIVE ENDPOINT
+        # 2026-08-31, on both models:
+        #     400 unsupported_value: "'temperature' does not support 0.0 with
+        #     this model. Only the default (1) value is supported."
+        #
+        # That is a real loss and it is worth naming rather than absorbing. The
+        # standing rule was that every task which JUDGES samples at 0.0, because
+        # a scoring call above zero makes a candidate's grade depend on WHEN
+        # they were scored, and a disagreeing rescore then reads as a broken
+        # rubric rather than as noise. These models cannot do that.
+        #
+        # `seed` is the closest substitute the API offers and it is what is sent
+        # instead. Measured here on 2026-08-31: three calls at one seed returned
+        # byte-identical text. Be exact about the strength of that: OpenAI
+        # documents `seed` as BEST EFFORT, not a guarantee, and the
+        # `system_fingerprint` that would let a caller detect a backend change
+        # came back null on these models, so a silent change of backend is not
+        # observable from the response.
+        #
+        # What still holds, and it is the part that matters most: the AGGREGATOR
+        # makes zero model calls and is deterministic arithmetic over the bands.
+        # So the step that turns five dimension bands into the grade a client
+        # reads cannot vary. What can now vary is the band a single evaluator
+        # returns for identical evidence, which is a narrower exposure than the
+        # old rule was defending, but it is not nothing.
+        "seed": _SEED,
     }
     if json_mode:
         # Two halves, and both are required. `response_format` is the guarantee;

@@ -4,7 +4,7 @@ WHY THIS MODULE STILL EXISTS AFTER THE CONSOLIDATION
 ------------------------------------------------------
 It used to be a genuinely separate embedding stack: `BAAI/bge-small-en-v1.5`
 running on CPU through `fastembed`, 384 dimensions, model weights baked into the
-container image. spec-doc5 §B.2 ends that -- voyage-context-4 is the "sole
+container image. spec-doc5 §B.2 ends that -- voyage-4 is the "sole
 embedding model for every RAG surface in the platform", and AI Reach's role
 search is a RAG surface like any other.
 

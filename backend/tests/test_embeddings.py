@@ -53,7 +53,7 @@ def test_the_embedding_credential_is_read_from_exactly_one_named_variable() -> N
     # environment.
     assert "VOYAGE_CONTEXT_4".lower() in Settings.model_fields
     assert "voyage_api_key" not in Settings.model_fields
-    assert embeddings.EMBEDDING_MODEL == "voyage-context-4"
+    assert embeddings.EMBEDDING_MODEL == "voyage-4"
 
 
 # ── Width ────────────────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ def test_no_migration_declares_a_vector_of_a_different_width() -> None:
 
 
 def test_ai_reach_shares_the_one_embedding_space() -> None:
-    """spec-doc5 §B.2: voyage-context-4 is the sole embedding model for EVERY
+    """spec-doc5 §B.2: voyage-4 is the sole embedding model for EVERY
     RAG surface. AI Reach's role search was the one that was not.
 
     The COLUMN stays separate -- role-to-role similarity and candidate-to-job
@@ -165,7 +165,7 @@ def test_ai_reach_keeps_its_own_error_class() -> None:
 
 def test_the_model_is_the_only_one_the_platform_permits() -> None:
     assert embeddings.EMBEDDING_MODEL == llm_providers.EMBEDDING_MODEL
-    assert embeddings.EMBEDDING_MODEL == "voyage-context-4"
+    assert embeddings.EMBEDDING_MODEL == "voyage-4"
 
 
 # ── The dev fallback ─────────────────────────────────────────────────────────
@@ -263,7 +263,7 @@ async def test_the_request_pins_the_model_and_the_width(monkeypatch) -> None:
 
     await embeddings.embed(["one"])
     body = calls[0]["json"]
-    assert body["model"] == "voyage-context-4"
+    assert body["model"] == "voyage-4"
     assert body["output_dimension"] == embeddings.EMBEDDING_DIM
     assert body["input_type"] == embeddings.INPUT_TYPE_DOCUMENT
 

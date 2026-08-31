@@ -4,7 +4,7 @@ This file is the single-vendor acceptance criterion executed rather than
 asserted in prose:
 
     "Every model call in the system resolves to exactly one of the reasoning
-     model, the extraction model, or voyage-context-4 -- grep the codebase for
+     model, the extraction model, or voyage-4 -- grep the codebase for
      any other model string and confirm zero results outside historical
      comments/docs."
     "The per-component assignment table matches what the code actually calls,
@@ -71,7 +71,7 @@ def test_the_two_permitted_ids_are_the_ones_the_owner_named() -> None:
     """
     assert llm_providers.MODEL_TERRA == "gpt-5.6-terra"
     assert llm_providers.MODEL_LUNA == "gpt-5.6-luna"
-    assert llm_providers.EMBEDDING_MODEL == "voyage-context-4"
+    assert llm_providers.EMBEDDING_MODEL == "voyage-4"
 
 
 def test_the_two_tiers_are_distinct_models() -> None:
@@ -163,7 +163,12 @@ _FORBIDDEN_MODEL_PATTERNS = [
     re.compile(r"\bgemini-[a-z0-9.\-]+", re.I),
     re.compile(r"\bmixtral|\bmistral-", re.I),
     re.compile(r"\bbge-m3\b", re.I),
-    re.compile(r"\bvoyage-(?!context-4\b)[a-z0-9.\-]+", re.I),
+    # `voyage-4`, not `voyage-context-4`. VERIFIED LIVE 2026-08-31: the old id
+    # does not exist and Voyage returns 400 naming its supported list, which
+    # does not contain it. It had been a hard rule in CLAUDE.md and pinned
+    # here, and it never failed because `embeddings.embed` returns
+    # pseudo-random vectors of the right width when the key is absent.
+    re.compile(r"\bvoyage-(?!4\b)[a-z0-9.\-]+", re.I),
 ]
 
 
