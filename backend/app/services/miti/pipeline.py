@@ -286,8 +286,16 @@ def parse_result(payload: Mapping[str, Any], dimension: str) -> DimensionResult:
     band = str(payload.get("band") or "").strip().lower()
     if band not in dict(dimensions.BANDS):
         return _degraded(dimension, f"unknown band {band!r}")
+    # `ref is not None` BEFORE the stringify, and it is not belt and braces:
+    # `str(None)` is "None", which survives the truthiness check and becomes a
+    # citation reading "None". That is worse than no citation, because the
+    # band then passes the uncitable check below and Siddhi renders a sentence
+    # against a ref that resolves to nothing -- a FABRICATED citation, which
+    # this codebase treats as a strictly worse failure than a missing one.
     refs = tuple(
-        str(ref) for ref in (payload.get("evidence_refs") or []) if str(ref).strip()
+        str(ref)
+        for ref in (payload.get("evidence_refs") or [])
+        if ref is not None and str(ref).strip()
     )
     insufficient = bool(payload.get("insufficient_evidence"))
     if not refs and not insufficient:
