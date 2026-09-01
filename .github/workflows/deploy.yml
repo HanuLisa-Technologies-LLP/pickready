@@ -226,6 +226,25 @@ jobs:
 
       - name: Build
         working-directory: frontend
+        # PLACEHOLDER FIREBASE CONFIG, and it never ships.
+        #
+        # `NEXT_PUBLIC_*` is inlined at build time, so with none set the client
+        # SDK throws `auth/invalid-api-key` while Next prerenders, and the gate
+        # died on /bd/ai-reach rather than on anything a reviewer wrote. The
+        # real values arrive as build ARGs in `frontend/Dockerfile` when the
+        # deployable image is built; this job builds no image and publishes no
+        # artifact -- its whole job is to fail on a compile, type or prerender
+        # error, and it cannot do that if it cannot reach prerendering.
+        #
+        # Deliberately obvious fakes. A real key here would be a secret in a
+        # public log for no benefit, since nothing consumes this output.
+        env:
+          NEXT_PUBLIC_FIREBASE_API_KEY: ci-placeholder-not-a-real-key
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ci-placeholder.firebaseapp.com
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ci-placeholder
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ci-placeholder.appspot.com
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "000000000000"
+          NEXT_PUBLIC_FIREBASE_APP_ID: "1:000000000000:web:0000000000000000000000"
         run: npm run build
 
   # ---------------------------------------------------------------------------

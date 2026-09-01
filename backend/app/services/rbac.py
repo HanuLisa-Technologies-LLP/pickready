@@ -19,9 +19,11 @@ Never branch on role in business logic — use `require_capability(...)`
 """
 import uuid
 from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy import or_, select, text
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import Role
@@ -42,7 +44,7 @@ async def _permission_rows(
     cached = await tenant_cache.get_json(key)
     if isinstance(cached, list):
         return [(row[0], row[1], bool(row[2])) for row in cached]
-    conditions = [RolePermission.tenant_id.is_(None)]
+    conditions: list[ColumnElement[bool]] = [RolePermission.tenant_id.is_(None)]
     if tenant_id is not None:
         conditions.append(RolePermission.tenant_id == tenant_id)
     rows = (
@@ -716,7 +718,7 @@ def require_authorized(
     capability: str,
     *,
     job_id_param: str = "job_id",
-):
+) -> Callable[..., Awaitable["CurrentUserProtocol"]]:
     """FastAPI dependency: the full RBAC 3 chain for a job-scoped route.
 
     Deliberately NOT a replacement for `require_capability`. That gate answers
@@ -732,7 +734,7 @@ def require_authorized(
         request: Request,
         user: "CurrentUserProtocol" = Depends(_current_user_dependency()),
         session: AsyncSession = Depends(_tenant_db_dependency()),
-    ):
+    ) -> "CurrentUserProtocol":
         raw = request.path_params.get(job_id_param)
         if raw is None:
             raise HTTPException(status_code=404, detail="Not found")
@@ -755,13 +757,13 @@ def require_authorized(
     return dependency
 
 
-def _current_user_dependency():
+def _current_user_dependency() -> Callable[..., Any]:
     from app.api.deps import get_current_user
 
     return get_current_user
 
 
-def _tenant_db_dependency():
+def _tenant_db_dependency() -> Callable[..., Any]:
     from app.api.deps import get_tenant_db
 
     return get_tenant_db

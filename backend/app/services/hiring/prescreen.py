@@ -695,7 +695,7 @@ def employment_gaps(spans: Sequence[EmploymentSpan]) -> tuple[int, ...]:
     """
     dated = sorted(
         (s for s in spans if s.start is not None and s.end is not None),
-        key=lambda s: (s.start, s.end),  # type: ignore[arg-type,return-value]
+        key=lambda s: (s.start, s.end),
     )
     gaps: list[int] = []
     for previous, current in zip(dated, dated[1:]):

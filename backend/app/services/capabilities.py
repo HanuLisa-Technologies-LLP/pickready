@@ -309,7 +309,7 @@ class Invariant(str, _Enum):
 
 
 #: Cells that permit the action. Everything else refuses.
-_PERMITTING: frozenset = frozenset(
+_PERMITTING: frozenset["Invariant"] = frozenset(
     {
         Invariant.ALLOW,
         Invariant.SCOPED,
@@ -322,7 +322,7 @@ _PERMITTING: frozenset = frozenset(
 #: Cells whose use must be recorded as a deviation from the canonical flow.
 #: Not a refusal: 7.5 explicitly grants the Super Admin override authority and
 #: then requires the override to appear in the audit trail.
-EXCEPTIONAL: frozenset = frozenset(
+EXCEPTIONAL: frozenset["Invariant"] = frozenset(
     {Invariant.ALLOW_AUDITED_EXCEPTION, Invariant.ALLOW_NON_CANONICAL}
 )
 

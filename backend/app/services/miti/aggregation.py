@@ -75,6 +75,11 @@ from app.services.miti import caps
 from app.services.miti.dimensions import DimensionResult, band_for
 
 __all__ = [
+    # Re-exported deliberately: `pipeline` reads the authenticity dimension
+    # through this module because that is where the multiplier it feeds
+    # lives. Declared so the re-export is intentional rather than a
+    # side effect of an import.
+    "DIM_AUTHENTICITY",
     "CATEGORY_MUST_HAVE",
     "CATEGORY_NICE_TO_HAVE",
     "CATEGORY_BEHAVIOURAL",

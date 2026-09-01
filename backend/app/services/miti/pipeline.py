@@ -54,6 +54,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
 from typing import Any, Mapping, Sequence
 
 from app.services.evidence import contradictions as detector
@@ -309,7 +310,9 @@ def parse_result(payload: Mapping[str, Any], dimension: str) -> DimensionResult:
     )
 
 
-async def _run_evaluator(payload: EvaluatorInput, invoke) -> DimensionResult:
+async def _run_evaluator(
+    payload: EvaluatorInput, invoke: Callable[..., Awaitable[str]]
+) -> DimensionResult:
     """One evaluator. Never raises.
 
     `invoke` is injected rather than imported so this module has no import of
@@ -334,7 +337,9 @@ async def _run_evaluator(payload: EvaluatorInput, invoke) -> DimensionResult:
     return parse_result(parsed, payload.dimension)
 
 
-async def evaluate(inputs: EvaluationInputs, *, invoke) -> EvaluationOutcome:
+async def evaluate(
+    inputs: EvaluationInputs, *, invoke: Callable[..., Awaitable[str]]
+) -> EvaluationOutcome:
     """Run stages 2-6 and every gate, in order.
 
     Returns an outcome even when a gate fails. A caller wanting "may I deliver
