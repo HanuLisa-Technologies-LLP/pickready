@@ -13,10 +13,19 @@ that can rank the brand rather than the work, and the candidate who learnt the
 craft at an unfamiliar employer pays for it -- which is the same directional
 failure section 58 names about vocabulary, arriving through provenance instead.
 
-What is dropped is the structured FIELD. An employer the candidate named inside
-their own resume prose is not removed, because the adapter anonymises against
-the `identities` it was given and holds no list of employer names. That gap is
-asserted below rather than assumed away.
+BOTH HALVES ARE CLOSED AS OF 2026-09-01. The structured `company` and
+`institution` keys are dropped by never being read, and the same names are now
+scrubbed out of the resume PROSE, which is where a candidate writes "Rebuilt
+the ingestion pipeline at <employer>" and carries the pedigree into a claim
+term the ontology then compares.
+
+THE SCRUB IS BOUNDED TWICE, AND BOTH BOUNDS ARE THE POINT. It matches on word
+boundaries, because an unbounded replace with an employer called "Ace" removes
+"namespace" and "tracer"; and it never removes a term the JOB IS ASKING ABOUT,
+because an employer called Oracle or Docker shares its name with a technology
+and losing that would be the section 58 vocabulary failure pointed the other
+way. The second bound is the load-bearing one: it makes the scrub structurally
+unable to remove a word that could have earned a match.
 
 THE DATE PARSER IS TOTAL, AND THAT IS LOAD BEARING. Resumes carry dates in
 every format a person has ever typed. An unparseable one becomes None, which
@@ -177,23 +186,152 @@ def test_the_structured_employer_field_never_becomes_a_claim() -> None:
     assert everything, "the role line itself must still be read"
 
 
-def test_an_employer_named_in_prose_survives_and_that_is_the_known_limit() -> None:
-    """The honest statement of what this adapter does NOT do.
+def test_an_employer_named_in_prose_is_scrubbed_too() -> None:
+    """The half that used to be open.
 
-    `anonymise` removes the identities it is given, and an employer name is not
-    one of them, so a resume that names its employers in prose carries that
-    pedigree into the claims. The structured field is closed; the free-text path
-    is not. Written down here so the next reader finds a stated limitation
-    rather than assuming a guarantee the module does not make.
+    "Rebuilt the ingestion pipeline at Goldman Sachs" carried "goldman" and
+    "sachs" into `Claim.terms`, which is the set the ontology COMPARES. Section
+    52.2's argument covers the prose exactly as it covers the field: a grade
+    that can see where somebody worked can rank the brand rather than the work.
     """
     built = _build(
         _Profile(
-            parsed={},
+            parsed={
+                "employment_history": [
+                    {"company": "Goldman Sachs", "title": "Staff Engineer"}
+                ]
+            },
             resume_text="Rebuilt the ingestion pipeline at Goldman Sachs end to end.",
         )
     )
     everything = " ".join(claim.text for claim in built.claims).casefold()
-    assert "goldman" in everything
+    terms = {term for claim in built.claims for term in claim.terms}
+    assert "goldman" not in everything
+    assert "sachs" not in everything
+    assert "goldman" not in terms and "sachs" not in terms
+    assert "ingestion" in terms, "the claim itself must survive the scrub"
+
+
+def test_an_institution_named_in_prose_is_scrubbed_too() -> None:
+    """Section 52.2 lists the institution beside the employer, and a degree
+    awarded by a recognisable name is the same pedigree signal."""
+    built = _build(
+        _Profile(
+            parsed={
+                "education": [
+                    {"institution": "Indian Institute of Technology Bombay"}
+                ]
+            },
+            resume_text=(
+                "Indian Institute of Technology Bombay. Built a compiler for a "
+                "teaching language and shipped it to two cohorts."
+            ),
+        )
+    )
+    everything = " ".join(claim.text for claim in built.claims).casefold()
+    assert "indian institute of technology" not in everything
+    assert "compiler" in everything
+
+
+def test_a_short_employer_name_cannot_mangle_ordinary_prose() -> None:
+    """The hazard that made the unbounded version unusable. A case-insensitive
+    substring replace with an employer called "Ace" turns "namespace tracer"
+    into "namesp tr r", which costs a candidate real terms and which nothing
+    downstream could detect."""
+    built = _build(
+        _Profile(
+            parsed={"employment_history": [{"company": "Ace"}]},
+            resume_text="Built a namespace tracer for the interface replacement.",
+        )
+    )
+    everything = " ".join(claim.text for claim in built.claims).casefold()
+    assert "namespace" in everything
+    assert "tracer" in everything
+    assert "interface" in everything
+
+
+def test_a_corporate_wrapper_word_is_never_scrubbed() -> None:
+    """"Systems" out of "distributed systems" costs a candidate a real term and
+    hides nobody's employer."""
+    built = _build(
+        _Profile(
+            parsed={"employment_history": [{"company": "Data Systems Solutions Ltd"}]},
+            resume_text=(
+                "Ran the Database migration and owned distributed systems work "
+                "across two regions."
+            ),
+        )
+    )
+    everything = " ".join(claim.text for claim in built.claims).casefold()
+    assert "database" in everything
+    assert "systems" in everything
+
+
+def test_a_term_the_job_asks_about_is_never_scrubbed() -> None:
+    """THE LOAD-BEARING GUARD. An employer called Oracle shares its name with a
+    technology, and the ontology cannot arbitrate: it is a curated set of
+    synonyms rather than a registry of product names, and it does not contain
+    "oracle". The requirement list can, and it makes the scrub unable to remove
+    a word that could have earned a match."""
+    built = _build(
+        _Profile(
+            parsed={"employment_history": [{"company": "Oracle"}]},
+            resume_text="Ran Oracle Database replication across three regions.",
+        ),
+        requirements=["Oracle Database"],
+    )
+    everything = " ".join(claim.text for claim in built.claims).casefold()
+    assert "oracle" in everything
+
+
+def test_the_same_employer_is_scrubbed_when_the_job_does_not_ask_about_it() -> None:
+    """The other side of the same guard, so the protection above is a rule
+    rather than a blanket exemption for anything that looks like a product."""
+    built = _build(
+        _Profile(
+            parsed={"employment_history": [{"company": "Oracle"}]},
+            resume_text="Ran Oracle Database replication across three regions.",
+        ),
+        requirements=["Stream processing"],
+    )
+    everything = " ".join(claim.text for claim in built.claims).casefold()
+    assert "oracle" not in everything
+    assert "database" in everything, "only the employer goes, not the sentence"
+
+
+def test_scrubbing_an_employer_never_lowers_a_grade() -> None:
+    """The property the requirement guard buys, asserted as a property rather
+    than as a word list.
+
+    `test_yukti_live` already pins the additive direction: appending brand names
+    to a resume moves the grade by nothing. This is the subtractive one --
+    removing them cannot move it either, so the anonymised pass is neutral in
+    both directions and section 52.2 costs the candidate nothing.
+    """
+    requirements = ["Stream processing", "Oracle Database", "distributed systems"]
+    prose = (
+        "Ran Oracle Database replication and owned distributed systems work, "
+        "rebuilding the stream processing pipeline across three regions."
+    )
+    with_employer = prescreen.grade(
+        _build(
+            _Profile(
+                parsed={
+                    "employment_history": [
+                        {"company": "Oracle"},
+                        {"company": "Goldman Sachs"},
+                    ]
+                },
+                resume_text=prose,
+            ),
+            requirements=requirements,
+        )
+    )
+    without = prescreen.grade(
+        _build(_Profile(parsed={}, resume_text=prose), requirements=requirements)
+    )
+    assert with_employer.internal.value == without.internal.value
+    assert with_employer.named.grade == without.named.grade
 
 
 def test_the_candidate_name_never_reaches_the_pre_screen_input() -> None:
@@ -328,3 +466,99 @@ def test_the_input_carries_no_field_that_could_hold_a_name() -> None:
         "gap_months",
         "resume_parsed",
     }
+
+
+# ── The scrub itself ─────────────────────────────────────────────────────────
+
+
+def test_a_multi_word_brand_is_removed_before_its_parts_are() -> None:
+    """LONGEST FIRST, the same ordering rule `_identities` follows for a
+    person's name: remove "Tata Consultancy Services" before "Tata", or the
+    shorter pattern is left matching the tail of the longer one."""
+    cleaned = prescreen.anonymise(
+        "Delivered the migration at Tata Consultancy Services over two years.",
+        organisations=["Tata Consultancy Services"],
+    )
+    assert "Tata" not in cleaned
+    assert "Consultancy" not in cleaned
+    assert "migration" in cleaned
+
+
+def test_an_org_name_is_matched_on_word_boundaries_not_as_a_substring() -> None:
+    """A boundary, not a substring. This is the difference between removing an
+    employer and removing "namespace"."""
+    cleaned = prescreen.anonymise(
+        "Built a namespace tracer at Sachsen Systems.", organisations=["Sachs"]
+    )
+    assert "namespace" in cleaned
+    assert "Sachsen" in cleaned, "a longer word that merely starts with it is not it"
+
+
+def test_a_hyphen_counts_as_a_boundary_and_that_is_the_point() -> None:
+    """"Ex-Infosys" is how a resume most often names a former employer, and it
+    is the common case in this product's own market. If a hyphen were not a
+    boundary the prefix form would survive every scrub, which is the one
+    spelling the rule most needs to catch."""
+    cleaned = prescreen.anonymise("Ex-Infosys, now leading the platform team.",
+                                  organisations=["Infosys"])
+    assert "Infosys" not in cleaned
+    assert "platform team" in cleaned
+
+
+def test_a_protected_term_survives_by_any_of_its_names() -> None:
+    """The guard expands through the ontology, so a job asking for one word for
+    a technology protects the resume that wrote the other word for it -- which
+    is the same equivalence section 58 relies on, used defensively."""
+    cleaned = prescreen.anonymise(
+        "Ran the Kubernetes rollout for the platform team.",
+        organisations=["Kubernetes"],
+        protected_terms=["k8s"],
+    )
+    assert "Kubernetes" in cleaned
+
+
+def test_an_org_name_too_short_to_be_distinctive_is_left_alone() -> None:
+    """Two and three letter names are initialisms that collide with
+    everything."""
+    for short in ("Ace", "IT", "AI"):
+        cleaned = prescreen.anonymise(
+            "Built a namespace tracer and an AI-assisted linter.",
+            organisations=[short],
+        )
+        assert "namespace" in cleaned
+        assert "tracer" in cleaned
+
+
+def test_no_organisations_leaves_the_text_exactly_as_it_was() -> None:
+    """Every existing caller passes none, so the scrub has to be a no-op for
+    them rather than a reformat."""
+    text = "Rebuilt the ingestion pipeline and cut nightly runtime."
+    assert prescreen.anonymise(text) == text
+
+
+def test_the_same_resume_under_two_letterheads_produces_one_term_set() -> None:
+    """The fairness property stated the way `anonymise`'s docstring states it.
+
+    The module already guaranteed that the same document under a different NAME
+    grades identically. This is the same guarantee for the employer, and it is
+    the one section 52.2 is actually about: the candidate who did identical
+    work at an unfamiliar firm must reach the ontology with identical terms.
+    """
+    prose = "Rebuilt the ingestion pipeline at {}, cutting nightly runtime by half."
+
+    def terms(company: str) -> list[str]:
+        built = _build(
+            _Profile(
+                parsed={
+                    "employment_history": [{"company": company, "title": "Engineer"}]
+                },
+                resume_text=prose.format(company),
+            ),
+            requirements=["Stream processing", "data pipeline"],
+        )
+        return sorted({term for claim in built.claims for term in claim.terms})
+
+    recognisable = terms("Goldman Sachs")
+    unfamiliar = terms("Sharma Logistics Private Limited")
+    assert recognisable == unfamiliar
+    assert "ingestion" in recognisable, "the work itself still reaches the ontology"
