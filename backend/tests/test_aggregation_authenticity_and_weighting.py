@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.miti import aggregation, caps
+from app.services.miti import aggregation, caps, dimensions
 from app.services.miti.dimensions import DimensionResult
 
 
@@ -131,26 +131,101 @@ def test_insufficient_evidence_is_neutral_and_says_so_differently() -> None:
     assert "insufficient evidence" in reason
 
 
-def test_the_weakest_band_is_suppressed_rather_than_held() -> None:
-    """WORTH READING TWICE, because it is not what the code reads like.
+def test_the_band_scale_cannot_reach_three_runbook_controls() -> None:
+    """THE MISMATCH, PINNED SO CLOSING IT IS DELIBERATE. See
+    RUNBOOK_OPEN_QUESTIONS.md Q24.
 
-    The HOLD floor sits below the score the WEAKEST band carries, so no
-    `DimensionResult` can reach it: `absent` is the bottom of the four-band
-    scale and it still scores above the floor. A D4 evaluator therefore always
-    produces a suppression and never a hold, and the `multiplier is None` arm
-    in `authenticity_multiplier` is defensive rather than live.
+    Sections 10.5 and 12.2 place their control points on a continuous 0-100
+    dimension score. Miti's evaluators return one of four BANDS, converted by a
+    code literal with no Runbook citation whose values were chosen against a
+    different axis -- `rating`'s product-grade cuts of 90/75/60. The two were
+    never reconciled, and three controls fall in the gap.
 
-    Asserted rather than assumed, because the alternative is a reader
-    concluding from the code that mandatory human review fires here, when today
-    it does not.
+    This test states the gap as it is TODAY. It fails if somebody lowers a band,
+    raises a floor, or otherwise closes the mismatch -- which is the point: any
+    of those re-grades the existing population or edits the Runbook, and both
+    are owner decisions rather than a side effect of tuning a number. A green
+    test here is not an endorsement, it is a record that the question is still
+    open.
     """
+    scores = [value for _band, value in dimensions.BANDS]
+    lowest = min(scores)
+
+    # 1 and 2. Two of section 12.2's four floors cannot be breached.
+    unreachable_floors = [
+        (row["dimension"], caps._floor_value(row))
+        for row in caps._floor_rows()
+        if not any(score < caps._floor_value(row) for score in scores)
+    ]
+    assert sorted(unreachable_floors) == [("D3", 40.0), ("D4", 25.0)], (
+        unreachable_floors
+    )
+    # The D3 one is missed by a single point, because the test is `<`.
+    assert lowest == 40.0
+
+    # 3 and 4. Two of section 10.5's five branches cannot be entered.
+    def entered(row):
+        low, high = row.get("d4_low"), row.get("d4_high_exclusive")
+        return [
+            score for score in scores
+            if (low is None or score >= low)
+            and (high is None or score < high)
+        ]
+
+    unreachable_branches = [
+        row["condition"] for row in aggregation._authenticity_branches()
+        if not entered(row)
+    ]
+    assert unreachable_branches == ["45 <= D4 < 60", "D4 < 25"], unreachable_branches
+
+
+def test_the_d4_hold_cannot_fire_from_any_band() -> None:
+    """The consequential half of Q24, stated on its own.
+
+    The HOLD is the only control in this product that stops a delivery on
+    integrity grounds. Both implementations of it are correct and both agree on
+    the floor; neither can be reached.
+    """
+    from app.services.hiring.department_models import DIM_AUTHENTICITY
+
+    for band, score in dimensions.BANDS:
+        assert caps.hold_reason({DIM_AUTHENTICITY: float(score)}) is None, band
+        multiplier, _reason = aggregation.authenticity_multiplier_for_score(
+            float(score)
+        )
+        assert multiplier is not None, band
+
+
+def test_the_two_implementations_of_the_hold_floor_agree() -> None:
+    """They are separate data entries reading separate Runbook sections, and a
+    change to one without the other would deliver a held candidate with nothing
+    on the record saying why: `authenticity_multiplier` returns 1.0 for a HOLD,
+    so `review_reasons` never picks the reason up, and only `Aggregate.hold`
+    from `caps.hold_reason` would carry it."""
+    from app.services.hiring.department_models import DIM_AUTHENTICITY
+
+    caps_floor = min(
+        caps._floor_value(row)
+        for row in caps._floor_rows()
+        if str(row.get("dimension")) == "D4"
+    )
+    held = [
+        score
+        for score in range(0, 101)
+        if aggregation.authenticity_multiplier_for_score(float(score))[0] is None
+    ]
+    assert held, "the multiplier has no hold branch at all"
+    assert max(held) + 1 == caps_floor
+    assert caps.hold_reason({DIM_AUTHENTICITY: float(max(held))}) is not None
+    assert caps.hold_reason({DIM_AUTHENTICITY: caps_floor}) is None
+
+
+def test_the_weakest_band_is_suppressed_rather_than_held() -> None:
+    """What an `absent` authenticity result actually does today: a 0.65
+    suppression, not a hold."""
     multiplier, reason = aggregation.authenticity_multiplier(_result("absent"))
     assert multiplier is not None and multiplier < 1.0
     assert "suppressed" in reason
-
-    # The branch itself still exists and is still reachable BY SCORE, which is
-    # what makes it defensive rather than dead.
-    assert aggregation.authenticity_multiplier_for_score(0.0)[0] is None
 
 
 def test_a_score_below_the_floor_is_carried_as_neutral_with_its_reason() -> None:
@@ -207,3 +282,24 @@ def test_nothing_to_average_is_zero_rather_than_an_error() -> None:
     """A category with no scored items reaches this. Raising would take down
     the whole aggregate for an empty section."""
     assert aggregation._weighted({}, {"a": 1.0}) == 0.0
+
+
+def test_the_hold_flag_reaches_the_client_projection() -> None:
+    """Half of Q24's second finding, pinned at the half that is testable here.
+
+    Even if the floor became reachable, the flag has to travel. It is rendered
+    as `held_for_integrity_review`, a WORD-free boolean, which is what a
+    recruiter needs without the arithmetic behind it.
+
+    The other half is not testable from inside this module and is recorded in
+    Q24 instead: nothing outside `aggregation.py` currently READS the
+    projection, so the control would fire into nothing. That is a wiring fact
+    about the callers, not a property of this function.
+    """
+    projected = aggregation.Aggregate().client_projection()
+    assert "held_for_integrity_review" in projected
+    assert projected["held_for_integrity_review"] is False
+    assert not any(
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        for value in projected.values()
+    ), projected

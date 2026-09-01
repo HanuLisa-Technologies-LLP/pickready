@@ -1210,6 +1210,96 @@ competency set comes from the department model and the anchors from section 9.x.
 That is an editorial repair of a cross-reference, of the same kind as the C5 and
 section 6.3 repairs already made in v1.1, and it should be logged the same way.
 
+---
+
+## Q24. The evaluator's four bands do not sample the axis the controls sit on
+
+**Sections:** 10.5, 12.2, 14.1
+
+**The mismatch.** Sections 10.5 and 12.2 place their control points on a
+continuous 0-100 dimension score: the authenticity multiplier is piecewise at
+25 / 45 / 60 / 75, and the dimension floors sit at 25, 40 and 45. Miti's
+evaluators do not return a continuous score. They return one of four BANDS, and
+`dimensions.BANDS` converts them to `strong` 92, `solid` 80, `partial` 66,
+`absent` 40.
+
+Those four numbers are a code literal with no Runbook citation. Their own
+comment says why they were chosen: they are representative points inside
+`services/rating`'s four product grades, whose cuts are 90 / 75 / 60, so that an
+internal dimension score and a product grade sit on one number line. That is a
+good reason for what it was solving. It is unrelated to where sections 10.5 and
+12.2 put their control points, and the two axes were never reconciled.
+
+**What it costs, measured.** Three Runbook controls cannot fire, and a fourth
+stops discriminating:
+
+| Control | Section | Reachable from a band score? |
+|---|---|---|
+| D4 < 25 -> HOLD, mandatory human review | 10.5, 12.2, 14.1 | **No.** Lowest band is 40 |
+| D3 < 40 -> not deliverable as Ready to Pick | 12.2 | **No,** by one point. Lowest band is 40 and the test is `<` |
+| 45 <= D4 < 60 -> multiplier 0.70 to 0.90 | 10.5 | **No.** No band lands between 45 and 60 |
+| D4 >= 75 -> multiplier 1.00 | 10.5 | Yes, but `strong` and `solid` are indistinguishable here |
+| D1 < 45, D4 < 45 -> cannot exceed reservations | 12.2 | Yes, at `absent` |
+
+The HOLD is the consequential one. Section 14.1 makes it a routing outcome --
+"not ranked pending human disposition" (section 10.8) -- and it is the only
+control in the product that stops a candidate being delivered on integrity
+grounds. Today no combination of evaluator output can produce it. Both
+implementations are correct and both are unreachable: `caps.hold_reason` reads
+section 12.2's floor rows, and `aggregation.authenticity_multiplier_for_score`
+returns `None` for section 10.5's bottom branch. They agree on 25, so there is
+no divergence to fix; the input simply never goes there.
+
+**And the flag has no consumer either, which is worth knowing before choosing.**
+`Aggregate.hold` is set from `caps.hold_reason` and rendered into
+`client_projection` as `held_for_integrity_review`. Nothing outside
+`aggregation.py` reads either: `grep -rn 'client_projection' backend/app` returns
+one non-test caller, `app/scripts/worked_example.py`, which is a script and not
+a route or a worker. So closing the reachability gap alone would make the
+control fire into nothing. Whichever option is chosen has to carry the flag to a
+surface a person sees, or it repeats the failure spec-doc6 section 4.3 already
+found once, where every Part A gate was real and every one of them guarded
+nothing.
+
+**Options.**
+
+1. **Lower `absent`.** Consequence: the HOLD becomes reachable, and so does the
+   D3 floor. It also moves every grade that involves an `absent` dimension,
+   because the band score feeds the weighted composite -- so this is not a
+   scoping change, it re-grades the existing population. It would also break the
+   property the literal was chosen for: `absent` would no longer sit inside
+   `rating`'s Not Matching band as a representative value.
+2. **Raise the floors in the Runbook.** Consequence: forbidden here. Section
+   2.1 does not permit changing a floor, and `test_runbook_parity` holds the
+   data to the document, so this is a Standards Board edit or nothing.
+3. **Give the authenticity evaluator a finer output than four bands.** D4 is
+   the dimension the controls are actually about, and it is the one asked a
+   quantitative question ("does the account hold together across the sources").
+   Consequence: a second internal scale, which is the mistake CLAUDE.md records
+   the product already paid for once -- unless it is confined to D4 and never
+   reaches a category score or a client-facing grade.
+4. **Accept that the HOLD is triangulation's job, not the evaluator's.** The
+   integrity finding that would justify holding a candidate is a contradiction,
+   and `triangulation` already produces one with a severity and a human-review
+   action. Consequence: sections 10.5 and 12.2's D4 floors are then dead by
+   design and should say so, and the HOLD routing hangs off
+   `TriangulationResult.needs_human_review` rather than off a D4 score.
+
+**Implemented:** none. Nothing was changed. The mismatch is recorded here, in
+`bands.yaml` at both affected tables, and at `dimensions.BANDS` where the four
+numbers are set, and it is pinned by
+`test_the_band_scale_cannot_reach_three_runbook_controls` so that closing it is
+a deliberate act rather than a side effect of somebody tuning a number.
+
+**Recommendation:** option 4 first, as an editorial question -- establish
+whether the Standards Board intends the D4 HOLD to be an evaluator-score
+control at all, given that triangulation already owns integrity escalation and
+does it with evidence attached. If the answer is that it does, option 3 confined
+to D4, because option 1 re-grades the existing population to fix a reachability
+problem and option 2 is not available to an implementer. This should be settled
+before Part A carries real candidates: it is the only control that stops a
+delivery on integrity grounds, and it currently cannot.
+
 ## Addendum summary
 
 | # | Sections | The question | Implemented |
@@ -1222,8 +1312,10 @@ section 6.3 repairs already made in v1.1, and it should be logged the same way.
 | Q21 | 58 | An ontology is required and not supplied | Keep the curated table, marked |
 | Q22 | 18.5, 20.3 | No share is stated for "every competency is must-have" | Refuse above two thirds |
 | Q23 | 9.1-9.5, 21.11, 57.3 | Anchors are per dimension; 57.3 says per department model | Read 57.3 as loose phrasing |
+| Q24 | 10.5, 12.2, 14.1 | The four evaluator bands do not sample the axis the controls sit on | Nothing changed; recorded and pinned |
 
-Eight questions, none applied to the document. Q17 and Q20 are the two that
-should be settled before Part A goes live: Q17 can lower the D4 floor that
-section 11.4 says no client may lower, and Q20 decides which section 11.1 row a
-real job is weighted against.
+Nine questions, none applied to the document. Q17, Q20 and Q24 are the three
+that should be settled before Part A goes live: Q17 can lower the D4 floor that
+section 11.4 says no client may lower, Q20 decides which section 11.1 row a real
+job is weighted against, and Q24 is the reason the D4 HOLD -- the only control
+that stops a delivery on integrity grounds -- cannot currently fire.

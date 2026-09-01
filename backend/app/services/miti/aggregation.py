@@ -233,6 +233,17 @@ def authenticity_multiplier_for_score(d4: float) -> tuple[float | None, str]:
     would deliver the candidate with a suppressed number, which is a quieter
     outcome than the document asks for and hides the one case it wants a person
     to look at.
+
+    THE None BRANCH IS CORRECT AND IS CURRENTLY UNREACHABLE FROM A REAL RESULT,
+    which is a fact about the INPUT and not about this function. The only
+    production caller is `authenticity_multiplier`, which passes
+    `DimensionResult.score`; that is one of `dimensions.BANDS`' four values and
+    the lowest is 40, while this floor is 25. Two of the five branches below can
+    therefore never be entered, and `caps.hold_reason` -- section 12.2's
+    implementation of the same floor, which agrees on 25 -- is unreachable for
+    exactly the same reason. Neither implementation is wrong and there is no
+    divergence between them; the scale simply never goes there. See
+    RUNBOOK_OPEN_QUESTIONS.md Q24, and do not close it by editing a number.
     """
     # Read the branches FIRST. `_authenticity_branches` carries the guard
     # that explains a missing or malformed section 10.5 table; a bare
@@ -281,6 +292,16 @@ def authenticity_multiplier(result: DimensionResult | None) -> tuple[float, str]
     A HELD candidate also yields 1.0 here, and the HOLD is carried separately
     on the aggregate. Folding it into the multiplier would turn a routing
     decision into a number and deliver the candidate anyway.
+
+    "Carried separately" means `Aggregate.hold`, which `aggregate` sets from
+    `caps.hold_reason` rather than from anything this function returns. Note
+    what follows if the floor ever becomes reachable: the reason returned here
+    does NOT reach `review_reasons`, because that list is appended to only when
+    `authenticity_factor < 1.0` and a HOLD leaves the factor at 1.0. That is
+    correct only while `caps.hold_reason` reads the same floor as this function
+    does. Both read 25 today. They are separate data entries, so a change to one
+    without the other would deliver a held candidate with nothing on the record
+    saying why.
     """
     if result is None:
         return 1.0, "authenticity was not evaluated"

@@ -122,6 +122,33 @@ DIMENSION_QUESTIONS: dict[str, str] = {
 # The values are the representative internal scores the existing scale already
 # uses (`rating` cuts at 90 / 75 / 60), so an internal dimension score and a
 # product grade are on one number line rather than two.
+#
+# THESE FOUR NUMBERS ARE A CODE LITERAL WITH NO RUNBOOK CITATION, AND THEY DO
+# NOT SAMPLE THE AXIS THE RUNBOOK'S CONTROLS SIT ON. Sections 10.5 and 12.2
+# place their control points on a continuous 0-100 dimension score, at 25 / 40 /
+# 45 / 60 / 75. The four values below were chosen against a different axis --
+# `rating`'s product-grade cuts -- and the two were never reconciled. The
+# measured consequence is that three Runbook controls cannot fire from any
+# evaluator output, and a fourth stops discriminating:
+#
+#   * D4 below 25 -> HOLD, mandatory human review (10.5, 12.2, 14.1). The
+#     lowest score this scale can produce is 40. This is the consequential one:
+#     it is the only control in the product that stops a delivery on integrity
+#     grounds, and nothing can currently trigger it.
+#   * D3 below 40 -> not deliverable as Ready to Pick (12.2). Missed by one
+#     point: `absent` is 40 and the floor test is strictly less-than.
+#   * 45 <= D4 < 60 -> multiplier 0.70 to 0.90 (10.5). No band lands in it.
+#   * D4 >= 75 -> multiplier 1.00. Reachable, but `strong` and `solid` are
+#     indistinguishable there.
+#
+# DO NOT CLOSE THIS BY EDITING A NUMBER HERE. Lowering `absent` would make the
+# HOLD reachable and would also re-grade every existing candidate carrying an
+# `absent` dimension, because this value feeds the weighted composite. Raising a
+# floor is a Runbook edit that spec-doc6 section 2.1 does not permit an
+# implementer to make. It is an owner decision, recorded as
+# RUNBOOK_OPEN_QUESTIONS.md Q24 with the options and their costs, and pinned by
+# `test_the_band_scale_cannot_reach_three_runbook_controls` so that closing it is
+# deliberate rather than a side effect of somebody tuning a band.
 BANDS: tuple[tuple[str, int], ...] = (
     ("strong", 92),
     ("solid", 80),

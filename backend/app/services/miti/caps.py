@@ -421,6 +421,16 @@ def hold_reason(dimension_scores: Mapping[str, float]) -> str | None:
     routing consequence rather than a band. Modelling it as a fifth grade would
     put an integrity outcome on the scale a client reads, and modelling it as a
     ceiling would deliver the candidate anyway with a lower number.
+
+    NOTHING CAN CURRENTLY BREACH THIS FLOOR, and it is worth knowing before
+    reading the rest of this module as though the control were live. The scores
+    handed in come from `dimensions.BANDS`, whose lowest value is 40 against
+    this floor of 25. The same is true of section 12.2's D3 floor of 40, missed
+    by one point because the test is strictly less-than. This function is
+    correct; its input never reaches it. That makes the D4 HOLD -- the only
+    control in the product that stops a delivery on integrity grounds -- dead in
+    practice. Recorded as RUNBOOK_OPEN_QUESTIONS.md Q24, which is an owner
+    decision and not a number to edit here.
     """
     from app.services.hiring.department_models import DIM_AUTHENTICITY
 
