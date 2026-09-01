@@ -178,12 +178,32 @@ def test_no_file_claims_a_live_vendor_call_has_succeeded() -> None:
     )
 
 
+#: lowercased relative path -> the REAL path, preserving case.
+#:
+#: `_relative` lowercases so the allowlist can be written in one case, and the
+#: test below used to rebuild a path by joining that lowercased string onto the
+#: repository root. That resolves on Windows, where the filesystem is
+#: case-insensitive, and NOT on Linux, where the file is
+#: `VERIFICATION_PENDING.md` and the lookup asks for `verification_pending.md`.
+#: The suite was green on a developer machine and red in CI for exactly that
+#: reason. Resolving against the files actually scanned keeps the
+#: case-insensitive comparison and never invents a path.
+REAL_PATH_FOR_RELATIVE: dict[str, pathlib.Path] = {
+    _relative(path): path for path in ALL_FILES
+}
+
+
 @pytest.mark.parametrize("relative", sorted(ALLOWLIST))
 def test_every_allowlisted_file_forbids_the_phrase_rather_than_using_it(
     relative: str,
 ) -> None:
     """The allowlist may only hold files whose job is to refuse the phrases."""
-    path = REPO_ROOT / relative
+    path = REAL_PATH_FOR_RELATIVE.get(relative)
+    assert path is not None, (
+        f"{relative} is allowlisted but the sweep did not scan it. Either the "
+        f"path is wrong (check the case and the directory) or its suffix is "
+        f"outside SCANNED_SUFFIXES, in which case the entry is dead."
+    )
     assert path.exists(), relative
     text = _normalised(path)
     assert any(
