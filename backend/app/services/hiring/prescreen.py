@@ -643,7 +643,17 @@ def claims_from_resume(
         )
 
     for line, age in role_lines:
-        body = str(line or "").strip()
+        # ANONYMISED LIKE THE RESUME TEXT, and for the same reason. This loop
+        # read the bullet verbatim until 2026-09-01, so a role line beginning
+        # with the candidate's name kept it: the name landed in `Claim.text`
+        # and, worse, `read_claim` turned it into one of the `terms` the
+        # ontology COMPARES. Two identical histories under two names then
+        # produced two different term sets, which is exactly the property
+        # section 52.2 exists to guarantee against, and this module's own
+        # docstrings already promised ("anonymised first"; "neither carries a
+        # name"). Cleaned BEFORE the length check and the dedup key so both
+        # measure the text that is actually kept.
+        body = anonymise(line, identities=identities).strip()
         if len(body) < _MIN_CLAIM_CHARS:
             continue
         key = f"role:{body.casefold()}"
