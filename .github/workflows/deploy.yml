@@ -332,7 +332,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Filesystem and dependency scan
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned to a tag that EXISTS. `0.28.0` never did: this action
+        # publishes `v`-prefixed tags, so the unprefixed reference could not
+        # resolve and the job died in "Set up job" before checkout, on every
+        # run since it was written.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
