@@ -184,3 +184,41 @@ def test_a_score_shaped_sentence_is_caught_in_a_bare_string() -> None:
     found = numbers.scan_text("You are in the top 12% of applicants.")
     assert found
     assert found[0].rule == numbers.RULE_SCORE_PROSE
+
+
+# ── Addressing a value by the path the scan reported ─────────────────────────
+
+
+def test_every_reported_path_can_be_read_back_from_the_payload() -> None:
+    """`known_paths` names where a value lives and `_at` resolves that name.
+
+    They are two halves of one contract: a violation is only actionable if the
+    path in the report leads back to the value that caused it. A path that
+    cannot be resolved sends somebody hunting through a nested payload for a
+    number the tool already found.
+    """
+    payload = {
+        "overall": {"remark": "Matching", "items": [{"name": "Kafka"}, {"name": "SQL"}]},
+        "note": "clear",
+    }
+    paths = numbers.known_paths(payload)
+    assert paths, "a nested payload must report addressable paths"
+    for path in paths:
+        # Raises if the path does not resolve, which is the assertion.
+        numbers._at(payload, path)
+
+
+def test_a_list_element_is_addressed_by_index() -> None:
+    payload = {"items": [{"name": "first"}, {"name": "second"}]}
+    paths = numbers.known_paths(payload)
+    indexed = [p for p in paths if "[1]" in p]
+    assert indexed, paths
+    assert numbers._at(payload, indexed[0]) == "second"
+
+
+def test_paths_reach_through_the_shapes_the_scan_opens() -> None:
+    """The same shapes `scan` opens have to be addressable, or a violation
+    found inside a model reports a path nothing can follow."""
+    payload = {"row": _Row(remark="Matching"), "ns": SimpleNamespace(note="clear")}
+    for path in numbers.known_paths(payload):
+        numbers._at(payload, path)
