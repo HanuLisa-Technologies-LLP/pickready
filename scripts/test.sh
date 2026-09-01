@@ -120,6 +120,16 @@ echo "==> Recreating ${DB_NAME}"
   -c "DROP DATABASE IF EXISTS ${DB_NAME} WITH (FORCE)" \
   -c "CREATE DATABASE ${DB_NAME}" >/dev/null
 
+# The same determinism argument, applied to Redis. The database is recreated
+# but a cache key carries no database identity, so anything a previous run
+# cached (rbac's role_permissions rows cache their payload for 120 seconds,
+# keyed by tenant and role) can answer for rows that no longer exist. The
+# 2026-09-01 dashboard-403 investigation ruled Redis OUT as that day's cause,
+# and the flush stays anyway: a cache that outlives the data it caches is a
+# reproducibility hole waiting for a fixed-identifier key to fall into it.
+echo "==> Flushing the test Redis"
+"${COMPOSE[@]}" exec -T redis redis-cli FLUSHALL >/dev/null
+
 echo "==> alembic upgrade head"
 ( cd "${REPO_ROOT}/backend" && python -m alembic upgrade head >/dev/null )
 

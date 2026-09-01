@@ -245,6 +245,18 @@ vocabularies and four cut-point sets now exist across the documents.
   not who is assigned, and it evaporates on user deletion.
 - **RBAC §5 says "four internal role categories" and lists five.** Five is
   correct, confirmed three independent ways.
+- **The §24 capabilities shipped in code with NO seeding migration, for a
+  whole phase (repaired 2026-09-01, migration 0075).** The grant engine reads
+  ROWS, and a migrations-only database had zero global rows for all fifteen
+  §24 capabilities and zero rows for the entire interview_manager role, so
+  every dashboard control answered 403 for every role. It stayed invisible
+  because `tests/test_seed.py` runs `seed_dev_data` (which reconciles the
+  full code matrix) against the shared test database AFTER the dashboard
+  files, so the first run on a fresh database failed 40 tests and every rerun
+  passed, which read as flakiness. The rule stands: a capability constant is
+  HALF a change; the seeding migration is the other half, and
+  `tests/test_capability_seed_parity.py` now fails a fresh database that is
+  missing one.
 - **Cross-tenant reads return 404, never 403.** The rule is right; its
   provenance is not §33, which never mentions a status code.
 - **§17's job lifecycle has EIGHT states**, not the six spec-doc6's ellipsis
