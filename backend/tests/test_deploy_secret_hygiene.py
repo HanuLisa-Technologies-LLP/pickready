@@ -67,8 +67,7 @@ import functools
 import json
 import pathlib
 import re
-import subprocess
-import sys
+from typing import Any
 
 import pytest
 
@@ -79,8 +78,6 @@ SECRETS_VARS = ROOT / "infra" / "modules" / "secrets" / "variables.tf"
 ECS_MAIN = ROOT / "infra" / "modules" / "ecs" / "main.tf"
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy.yml"
 INFRA = ROOT / "infra"
-#: The backend package root, the cwd a fresh `import app.main` needs.
-BACKEND = ROOT / "backend"
 ALB_MAIN = INFRA / "modules" / "alb" / "main.tf"
 ALB_VARS = INFRA / "modules" / "alb" / "variables.tf"
 ACM_MAIN = INFRA / "modules" / "acm" / "main.tf"
@@ -442,42 +439,70 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
 }
 
 
-#: Collect the route table in a FRESH INTERPRETER, printed as JSON.
-#:
-#: WHY A SUBPROCESS AND NOT `from app.main import app`.
-#: The application object is a module-level singleton, so importing it here
-#: measures whatever the session has already done to it rather than what the
-#: application serves. In CI this test asserted against a route table
-#: containing exactly one route, `/health`, the only one main.py registers
-#: inline rather than through a router -- so every `include_router` had
-#: contributed nothing to the object this test could see, while a clean import
-#: of the same commit yields 294 routes. It passed locally and failed in CI on
-#: every run, which reads as a defect in the routes and is a defect in the
-#: measurement.
-#:
-#: A fresh interpreter has no session to inherit. If the routes are genuinely
-#: missing this still fails, which is the half worth keeping.
-_ROUTE_DUMP = """
-import json
-from fastapi.routing import APIRoute
-from app.main import app
-
-def walk(dependant, seen):
+def _dependency_names(dependant: Any, seen: set[str]) -> set[str]:
     if dependant.call is not None:
         seen.add(getattr(dependant.call, "__name__", repr(dependant.call)))
     for sub in dependant.dependencies:
-        walk(sub, seen)
+        _dependency_names(sub, seen)
     return seen
 
-out = {}
-for route in app.routes:
-    if not isinstance(route, APIRoute):
-        continue
-    names = sorted(walk(route.dependant, set()))
-    out.setdefault(route.path, [])
-    out[route.path] = sorted(set(out[route.path]) | set(names))
-print(json.dumps(out))
-"""
+
+def _collect(
+    routes: Any, prefix: str, inherited: frozenset[str], out: dict[str, frozenset[str]]
+) -> None:
+    """Walk a route tree, DESCENDING into included routers.
+
+    WHY THIS RECURSES, which it did not have to before FastAPI 0.140.
+    `include_router` used to flatten: every route of the included router was
+    copied onto the application as an `APIRoute` with the prefix already
+    applied, so a flat scan of `app.routes` saw everything. Newer FastAPI keeps
+    the included router as one nested `_IncludedRouter` object instead, and a
+    flat scan sees 26 opaque objects plus the single route main.py registers
+    inline, `/health`.
+
+    That is exactly what CI reported: a one-entry route table on a commit whose
+    application serves 239 paths. The old scan did not fail loudly, either --
+    `test_the_rest_of_the_api_is_not_unauthenticated` iterates the table it is
+    given, so an empty table passes it vacuously. A security check that
+    silently stops checking is worse than one that breaks, which is why
+    `_api_routes` asserts the table is a plausible size below.
+
+    Both shapes are handled: an `APIRoute` is taken directly, an included
+    router is entered through its `include_context` (which carries the prefix
+    and the router-level dependencies), and anything else exposing `.routes` is
+    entered generically.
+    """
+    from fastapi.routing import APIRoute
+
+    for route in routes:
+        if isinstance(route, APIRoute):
+            names = frozenset(_dependency_names(route.dependant, set())) | inherited
+            path = prefix + route.path
+            out[path] = names | out.get(path, frozenset())
+            continue
+
+        context = getattr(route, "include_context", None)
+        if context is not None:
+            # Router-level dependencies apply to every route underneath and are
+            # not on the child's own dependant, so they are carried down.
+            extra = set()
+            for dependency in getattr(context, "dependencies", None) or []:
+                call = getattr(dependency, "dependency", None)
+                if call is not None:
+                    extra.add(getattr(call, "__name__", repr(call)))
+            _collect(
+                context.included_router.routes,
+                prefix + (getattr(context, "prefix", "") or ""),
+                inherited | frozenset(extra),
+                out,
+            )
+            continue
+
+        nested = getattr(route, "routes", None)
+        if nested:
+            _collect(
+                nested, prefix + (getattr(route, "prefix", "") or ""), inherited, out
+            )
 
 
 @functools.lru_cache(maxsize=1)
@@ -488,29 +513,18 @@ def _api_routes() -> dict[str, frozenset[str]]:
     hand. A route added without an auth dependency has to show up here, which
     is the whole point: a hand-maintained list is a list of the routes somebody
     remembered.
-
-    Built in a subprocess so the answer is a property of the application rather
-    than of whatever imported it first. See `_ROUTE_DUMP`.
     """
-    result = subprocess.run(
-        [sys.executable, "-c", _ROUTE_DUMP],
-        cwd=BACKEND,
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-    assert result.returncode == 0, (
-        "importing the application to read its route table failed: "
-        f"{result.stderr[-2000:]}"
-    )
-    # The same handler is mounted under /api/v1 and /api/v2, so the dump merges
-    # rather than overwrites: a path is authenticated only if every mount of it
-    # is.
-    loaded = json.loads(result.stdout)
-    routes = {path: frozenset(names) for path, names in loaded.items()}
+    from app.main import app
+
+    # The same handler is mounted under /api/v1 and /api/v2, so `_collect`
+    # merges rather than overwrites: a path is authenticated only if every
+    # mount of it is.
+    routes: dict[str, frozenset[str]] = {}
+    _collect(app.routes, "", frozenset(), routes)
     assert len(routes) > 100, (
         f"the application reported only {len(routes)} routes, which is not a "
-        f"working route table. Something failed during import."
+        f"working route table. Every assertion in this file iterates it, so an "
+        f"empty one passes them all without checking anything."
     )
     return routes
 
