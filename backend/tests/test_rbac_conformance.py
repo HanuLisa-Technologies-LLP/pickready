@@ -27,7 +27,7 @@ code produced by the real decision path.
 
 The route surface mirrors RBAC 32's list. It is mounted here rather than
 imported from `api/jobs.py` because those handlers are not yet wired to the
-decision layer (see docs/RBAC.md, "Not yet wired"); this suite is what the
+decision layer (see docs/reference/RBAC.md, "Not yet wired"); this suite is what the
 wiring has to satisfy, and it fails loudly the day a route is added without
 it.
 """

@@ -2,7 +2,7 @@
 
 // In-app resume viewer (FR-7.1). Reviewers must never be bounced out to a raw
 // storage URL to read a resume: this renders the document inside a modal.
-// PDFs (and images / extension-less Cloudinary raw uploads) are framed inline;
+// PDFs (and images / extension-less legacy raw uploads) are framed inline;
 // Word documents cannot be rendered by a browser, so they get an explicit,
 // styled fallback instead of a blank frame. Composed from the generated
 // shadcn Dialog primitive, which supplies role="dialog", aria-modal, the focus
@@ -46,7 +46,7 @@ export interface ResumeDescriptor {
 
 /**
  * Derive a display filename and a preview strategy from a storage URL.
- * Cloudinary `raw` uploads are frequently extension-less, those are optimistic
+ * Legacy `raw` uploads are frequently extension-less, those are optimistic
  * framing attempts, guarded by the load/timeout fallback below.
  */
 /**
@@ -103,8 +103,12 @@ export function describeResumeUrl(url: string): ResumeDescriptor {
 }
 
 /**
- * Cloudinary serves a real download (rather than an inline render) when the
- * `fl_attachment` delivery flag is present. Any other host gets the plain URL.
+ * LEGACY ROWS ONLY. Private documents live in S3 today and are served through
+ * an authenticated route, so this branch fires for nothing written since the
+ * storage migration. It is kept because a profile row written before it still
+ * carries a Cloudinary URL: that host serves a real download rather than an
+ * inline render only when the `fl_attachment` delivery flag is present. Any
+ * other host gets the plain URL.
  */
 export function toDownloadUrl(url: string): string {
   if (!url.includes("res.cloudinary.com")) return url;

@@ -105,7 +105,7 @@ const INCLUDED = [
   "Technical questions written per candidate",
   "ReadyPick Profile Intelligence",
   "One continuous candidate conversation",
-  "Full PPI Assessment Report",
+  "Full PRISM Report",
   "Four radar charts, no numbers on them",
   "Candidate databank",
   "Ten stage hiring pipeline",

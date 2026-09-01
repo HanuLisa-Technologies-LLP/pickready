@@ -29,7 +29,7 @@ export function WorkflowShowcase() {
             Watch the work move. Your team keeps the decision.
           </h2>
           <p className="mx-auto mt-5 max-w-2xl text-pretty text-base leading-7 text-white/65 sm:text-lg">
-            From a live role to AI matching, structured assessment, the PPI
+            From a live role to AI matching, structured assessment, the PRISM
             Assessment Report and a clear shortlist - one continuous evidence
             trail.
           </p>

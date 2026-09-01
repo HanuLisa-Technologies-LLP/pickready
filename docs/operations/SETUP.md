@@ -1,6 +1,6 @@
 # ReadyPick CI/CD, setup instructions
 
-**The full runbook is [docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md).** This file is
+**The full runbook is [docs/operations/DEPLOY_AWS.md](DEPLOY_AWS.md).** This file is
 the short version, plus the things that are not obvious.
 
 > **NO LIVE AWS DEPLOYMENT HAS BEEN EXECUTED**, and in this phase that is a
@@ -72,7 +72,7 @@ an AWS account.
 ## One-time setup
 
 Four steps, none of which can be Terraform. Full commands in
-[docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md).
+[docs/operations/DEPLOY_AWS.md](DEPLOY_AWS.md).
 
 1. **The state bucket**, versioned. Terraform cannot create the bucket that
    holds its own state.

@@ -62,8 +62,14 @@ Operational staff roles are:
 - HR Manager
 - Recruiter
 - Hiring Manager
+- Interview Manager
 
 These roles use the same core operating areas: Jobs, Company Profile, Dashboard, and Settings. Access to Staff, Compliance, Billing, and other protected actions is capability-controlled rather than inferred only from the role name.
+
+The **Interview Manager** is a read-plus-review seat: they read a candidate's
+report and rating and add Team Review remarks, and they hold none of the
+pipeline controls. Together with the company administrator that makes five
+client-side roles, which is what the RBAC specification enumerates.
 
 Company administrators can invite staff with a seven-day invitation token, resend invitations, disable or reactivate users, and add user-specific capability grants or revocations. A company can have at most five active Hiring Managers; HR Manager and Recruiter seats are not capped by this rule.
 
@@ -121,13 +127,35 @@ The company can upload, replace, download, and remove these seven records:
 6. Purchase order
 7. MSME document
 
-Provider users have read-only visibility. The current implementation stores compliance files through Cloudinary.
+Provider users have read-only visibility. Compliance files are stored in a private, content-addressed S3 bucket and served only through authenticated, tenant-scoped, capability-checked routes.
 
 ### 6.3 Dashboard
 
 The company dashboard provides operational summaries derived from job, candidate, assessment, and pipeline data. Dashboard materialized data is refreshed by a recurring background task approximately every five minutes.
 
 ## 7. Job creation and publishing
+
+### 7.0 Company DNA
+
+Before any job is graded well, the client tells the platform how it hires. The
+**Company DNA** intake is a one-time-per-client instrument of twelve sections.
+Two of its design rules are load-bearing:
+
+- Section 2 uses **forced trade-off scales**, not free text. Asked "what do you
+  value", every company answers "excellence and integrity", which modifies
+  nothing. A trade-off forces a real choice.
+- Section 3 accepts only **observable evidence** and rejects an adjective, then
+  asks again. "Ownership mindset" is refused; "has taken a project from an
+  unclear brief to a shipped outcome" is accepted.
+
+The intake is compiled DETERMINISTICALLY into a versioned artifact, with no
+model call, so it is reproducible, diffable between versions, and explainable
+without a provider. Job setup reads the COMPILED artifact and never the
+client's raw free text: an unbounded client-authored string in a prompt that
+decides what every candidate is graded on is both an injection surface and a
+way for a stray phrase to quietly become a hiring criterion.
+
+Each job records which Company DNA version its matrix was frozen against.
 
 ### 7.1 Required job information
 
@@ -451,6 +479,39 @@ reports are comparable. The questions probing it are generated individually from
 the JD, the saved framework, and that candidate's own resume, so each
 conversation is relevant to the person in it.
 
+### 11.2.2 The hiring intelligence framework
+
+Job setup and scoring run through five named stages, each with one job and a
+boundary it may not cross:
+
+| Stage | Responsibility |
+|---|---|
+| **Bodha** | The per-job SWOT session and the one-time Company DNA intake. Reads back its situation classification with the consequence and the most-confused-with alternative, and a human confirms it before the session closes |
+| **Sutra** | Turns the role into a scored matrix through seven stages: competency, observable evidence, evidence sources, assessment method, weight, threshold, and disqualifier where applicable. Nothing enters the matrix without completing all seven |
+| **Yukti** | Grades the resume before any conversation: the pre-screen grade and the AI Score snapshot |
+| **Miti** | Five dimension evaluators that score the completed conversation, structurally isolated from each other, plus triangulation of contradictions |
+| **Siddhi** | Composes the PRISM Report through a citation chokepoint |
+
+Four properties matter to the product rather than only to the code:
+
+1. **The five evaluators cannot see each other.** They run concurrently against
+   a frozen input that carries no candidate name, no other dimension's score and
+   no composite, so no ordering exists in which one could influence another.
+2. **The aggregator calls no model.** The step that turns five bands into the
+   grade a client reads is deterministic arithmetic, so two runs over identical
+   inputs cannot disagree.
+3. **Insufficient evidence is not negative evidence.** A dimension flagged
+   insufficient is EXCLUDED from the composite and paid for in confidence, never
+   scored low. A career changer gets a low-confidence report that goes to a
+   human, rather than a confidently poor grade that does not.
+4. **No integrity flag ever auto-rejects.** A contradiction is raised for a
+   person to look at; escalation above Minor requires two benign explanations to
+   have been considered first. The enforcement is the absence of the capability:
+   there is no reject field anywhere in the result.
+
+Weights are per-job, derived from declared layers, and never cross an API
+boundary. No candidate-facing or client-facing surface shows one.
+
 ### 11.3 Assessment processing
 
 Two independent scoring agents consume the relevant parts of the transcript in
@@ -495,7 +556,25 @@ prior report grades criteria the new job never used, and carrying it across
 would assert a result that was never assessed. The six-month classification
 still runs so the candidate is told why they are answering questions again.
 
-## 12. The PPI Assessment Report
+## 12. The PRISM Report
+
+**Two names, never used for each other.** The **Tatva Assessment** is the
+PROCESS: the evaluation framework whose three dimensions are Must-have,
+Nice-to-have and Behavioural. The **PRISM Report** is the DOCUMENT that process
+produces. Completing a Tatva Assessment produces a PRISM Report. The two names
+are never used as synonyms, in copy, in a heading, or in an email.
+
+The report header is exactly, and only, `PRISM Report` over *Predictive Role
+Intelligence & Suitability Mapping*. The expansion travels with the abbreviation
+everywhere the header is drawn, on screen and in the PDF, because the
+abbreviation alone does not tell a reader they are holding the document rather
+than the framework.
+
+The identifiers in the CODE still say `ppi` (the module, `job_competencies`,
+the `/framework` routes, the persisted trace fields). That is deliberate and
+must not be "fixed": a route is quoted in report links already in inboxes, and
+every report written before the rename was filed under those names. The rename
+is USER-VISIBLE COPY ONLY.
 
 The report is generated after assessment completion and is immutable through the
 public application API. A retake produces a new report alongside the old one.
@@ -654,6 +733,25 @@ The exemption is a property of the specific tenant records, not of anything a
 customer can acquire, and every other tenant continues to be metered, gated and
 billed unchanged.
 
+### 14.3 Credit packs
+
+Credits are also sold outright, as one-off packs rather than a subscription.
+A pack purchase is a Razorpay **Order** (not a Subscription), verified by
+signature, granted exactly once through the same idempotency key the webhook
+derives, and invoiced with GST. The purchase grants sub-units into the same
+append-only ledger as every other credit event, so one balance and one
+statement answer for both routes.
+
+Customers are warned before they run out, not after: a two-tier warning fires
+as the balance falls, and at zero the platform blocks new job creation and new
+assessment starts while allowing an active conversation to finish.
+
+### 14.4 Report Library
+
+The Report Library is the client-facing catalogue of what the platform can
+produce, with the live reports reachable from one place rather than scattered
+across the surfaces that happen to generate them.
+
 ## 15. Business-development workspace
 
 ### 15.1 Lead management
@@ -783,7 +881,7 @@ The following older concepts are not active product requirements:
 - feature gating by paid plan tier;
 - an unlimited Hiring Manager count;
 - a Mailtrap-based production email service; and
-- a claim that “Grok” is an implemented AI provider. The code uses **Groq**, Gemini, and OpenRouter.
+- a claim that any model vendor other than the current one is in use. The platform runs on ONE vendor and three endpoints: `gpt-5.6-terra` for judging and writing, `gpt-5.6-luna` for extraction and classification, and `voyage-4` for embeddings. Groq, Gemini and OpenRouter were removed in the single-vendor consolidation, not disabled.
 
 Compatibility tables, endpoints, or helpers may remain in the repository for migrated records. Their presence alone does not make these items current user workflows.
 

@@ -37,7 +37,7 @@
 # WHAT NEITHER SCRIPT PROVES: anything about a real AWS account. Not that the
 # account can create these resources, not that quotas suffice, not that IAM
 # behaves once something assumes a role. Neither has spoken to AWS.
-# `docs/DEPLOY_AWS.md` states this at length, and it is the thing not to let
+# `docs/operations/DEPLOY_AWS.md` states this at length, and it is the thing not to let
 # "the pipeline is green" quietly stand in for.
 #
 #   ./infra/validate.sh

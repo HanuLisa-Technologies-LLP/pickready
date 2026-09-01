@@ -49,7 +49,7 @@ The WAF is **not** flipped on here, and that is deliberate rather than an
 oversight in the derivation. spec-doc6 §13.2 asks for it built and disabled by
 variable, and enabling it in production first — without a week of count-mode
 metrics from staging — is exactly the move that blocks a real candidate's resume
-upload. `docs/DEPLOY_AWS.md` §6 carries the ordered procedure.
+upload. `docs/operations/DEPLOY_AWS.md` §6 carries the ordered procedure.
 
 ## Required variables
 
@@ -88,4 +88,4 @@ python infra/check-no-wildcard-iam.py
 A green offline plan proves the configuration is internally consistent and that
 the graph resolves. It proves nothing about a real account — not that the account
 can create these resources, not that quotas suffice, not that IAM behaves.
-`docs/DEPLOY_AWS.md` §1 states the boundary exactly.
+`docs/operations/DEPLOY_AWS.md` §1 states the boundary exactly.

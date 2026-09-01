@@ -316,7 +316,7 @@ def upgrade() -> None:
     # 35: a candidate's evaluation context should reference the version of the
     # criteria in force when they applied. The counter is here so a revision
     # increments something durable; the per-application reference is a
-    # separate piece of work and is recorded in docs/RBAC.md as not yet built.
+    # separate piece of work and is recorded in docs/reference/RBAC.md as not yet built.
     op.add_column(
         "jobs",
         sa.Column(

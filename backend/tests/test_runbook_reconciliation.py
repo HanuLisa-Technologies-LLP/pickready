@@ -44,7 +44,12 @@ from app.services.hiring import (
 )
 from app.services.miti import triangulation
 
-RUNBOOK_PATH = Path(__file__).resolve().parents[2] / "Readypick Hiring Philosophy.md"
+#: The Runbook moved from the repository root into `docs/product/` on
+#: 2026-09-01 with the rest of the documentation.
+RUNBOOK_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs" / "product" / "Readypick Hiring Philosophy.md"
+)
 
 
 @pytest.fixture(scope="module")

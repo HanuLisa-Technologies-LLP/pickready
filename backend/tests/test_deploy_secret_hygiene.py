@@ -826,7 +826,7 @@ def test_no_account_id_region_or_domain_is_hardcoded() -> None:
     variable with no default", and "Region assumption `ap-south-1` is removed as
     an assumption... Do not hardcode it anywhere."
 
-    Comments are exempt and code is not: `docs/DEPLOY_AWS.md` and several module
+    Comments are exempt and code is not: `docs/operations/DEPLOY_AWS.md` and several module
     docstrings DISCUSS ap-south-1 as the likely choice, which is the owner's
     decision to make. Naming it in an argument would make it already made.
     """
@@ -853,7 +853,7 @@ def test_no_account_id_region_or_domain_is_hardcoded() -> None:
     assert not offenders, (
         "an account id or a region literal appears in executable Terraform:\n  "
         + "\n  ".join(offenders)
-        + "\nBoth are variables with no default. See docs/DEPLOY_AWS.md."
+        + "\nBoth are variables with no default. See docs/operations/DEPLOY_AWS.md."
     )
 
 
@@ -960,8 +960,8 @@ def test_the_planning_profile_is_off_by_default() -> None:
 # DEPENDS ON Google Cloud.
 # ═════════════════════════════════════════════════════════════════════════════
 
-#: The deploy surface. Not the whole repository: `docs/ESD.md` predates the
-#: migration and `docs/DATABASE_CREDENTIAL_MIGRATION.md` is a historical incident
+#: The deploy surface. Not the whole repository: `docs/architecture/ESD.md` predates the
+#: migration and `docs/operations/DATABASE_CREDENTIAL_MIGRATION.md` is a historical incident
 #: record that opens by saying its commands will not work. Both are owned
 #: elsewhere and both are honest about what they are.
 _DEPLOY_SURFACE = (

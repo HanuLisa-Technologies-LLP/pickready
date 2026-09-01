@@ -2760,7 +2760,13 @@ async def _survey(args: argparse.Namespace) -> int:
     async with factory() as session:
         async with superadmin_scope(session):
             survey = await collect_survey(session)
-    target = Path(args.out) if args.out else _repo_root() / "LEGACY_RESET_SURVEY.md"
+    # Written into the documentation tree beside the other point-in-time
+    # survey artifacts (docs/history/), not to the repository root.
+    target = (
+        Path(args.out)
+        if args.out
+        else _repo_root() / "docs" / "history" / "LEGACY_RESET_SURVEY.md"
+    )
     target.write_text(render_survey(survey), encoding="utf-8")
     print(f"survey written to {target}")
     print(f"tenants={len(survey.tenants)} tables={len(survey.live_tables)}")

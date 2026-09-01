@@ -2,7 +2,7 @@
 
 WHAT THIS FILE IS FOR. `app/services/hiring/runbook_data/` is a YAML mirror of
 the mechanical content of the Ready Pick Now Hiring Philosophy & Intelligence
-Runbook, document RPN-PHIL-001, which lives at the repository root as
+Runbook, document RPN-PHIL-001, which lives at ``docs/product/`` as
 `Readypick Hiring Philosophy.md`. A mirror nobody checks is a second source of
 truth, which is worse than no mirror at all: two numbers that disagree and
 nothing that notices. This file is what notices.
@@ -92,6 +92,13 @@ STRUCTURAL_NUMBER_KEYS = frozenset({
 
 
 # --------------------------------------------------------------------- runbook
+#: WHERE THE RUNBOOK LIVES, relative to the repository root. It sat at the
+#: root until 2026-09-01 and now lives under `docs/product/` with the rest of
+#: the documentation. One constant, used by both the root walk and the lookup,
+#: so the two cannot disagree about where the document is.
+RUNBOOK_GLOB = "docs/product/Readypick*Hiring*Philosophy*.md"
+
+
 def repo_root() -> pathlib.Path:
     """Walk up from this file until the Runbook is in sight.
 
@@ -101,7 +108,7 @@ def repo_root() -> pathlib.Path:
     """
     here = pathlib.Path(__file__).resolve()
     for parent in here.parents:
-        if list(parent.glob("Readypick*Hiring*Philosophy*.md")):
+        if list(parent.glob(RUNBOOK_GLOB)):
             return parent
         if (parent / ".git").exists():
             return parent
@@ -111,12 +118,12 @@ def repo_root() -> pathlib.Path:
 
 def runbook_path() -> pathlib.Path:
     root = repo_root()
-    found = sorted(root.glob("Readypick*Hiring*Philosophy*.md"))
+    found = sorted(root.glob(RUNBOOK_GLOB))
     if not found:
         raise AssertionError(
-            "%s (RPN-PHIL-001) is not in %s. The data files in runbook_data/ "
+            "%s (RPN-PHIL-001) is not at %s. The data files in runbook_data/ "
             "cite it on every entry and cannot be checked without it."
-            % ("Readypick Hiring Philosophy.md", root))
+            % ("Readypick Hiring Philosophy.md", root / RUNBOOK_GLOB))
     return found[0]
 
 

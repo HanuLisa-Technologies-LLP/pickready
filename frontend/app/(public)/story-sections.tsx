@@ -25,7 +25,7 @@ const ROADMAP = [
   { icon: ScanSearch, label: "Source", detail: "Applied, uploaded, databank" },
   { icon: Fingerprint, label: "Match", detail: "Evidence against the job" },
   { icon: UserRoundCheck, label: "Assess", detail: "Role-shaped questions" },
-  { icon: FileSearch, label: "PPI", detail: "One complete profile" },
+  { icon: FileSearch, label: "PRISM", detail: "One complete profile" },
   { icon: Send, label: "Decide", detail: "Human call, clear trail" },
 ] as const;
 
@@ -124,7 +124,7 @@ export function PfiDifferentiator() {
               id="ppi-edge-title"
               className="mt-5 text-balance text-3xl font-bold"
             >
-              AI can rank. PPI helps your team understand.
+              AI can rank. A PRISM Report helps your team understand.
             </h2>
             <p className="mt-5 text-pretty text-lg leading-8">
               ReadyPick Profile Intelligence connects role match, behavioural
@@ -158,7 +158,7 @@ export function PfiDifferentiator() {
                 <div className="grid h-[72%] w-[72%] rotate-45 place-items-center rounded-none border border-brand-600/35 bg-brand-600/10">
                   <div className="-rotate-45 text-center">
                     <p className="text-5xl font-black text-gradient-brand">
-                      PPI
+                      PRISM
                     </p>
                     <p className="mt-2 text-xs font-semibold uppercase tracking-[.2em]">
                       Decision intelligence

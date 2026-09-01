@@ -149,14 +149,14 @@ const FLOW = [
     icon: BadgeCheck,
     step: "06",
     title: "Decide with a report",
-    body: "Technical and PPI evidence converge, alongside the application's own validation fields, into an immutable, qualitative report.",
+    body: "Technical and Tatva Assessment evidence converge, alongside the application's own validation fields, into an immutable, qualitative PRISM Report.",
   },
 ];
 
 const PRODUCT_METRICS = [
   { value: "30 + 5", label: "active posting + grace days" },
   { value: "22–45", label: "questions, based on job grade" },
-  { value: "4 + 15", label: "matching parameters + PPI framework entries" },
+  { value: "4 + 15", label: "matching parameters + Tatva matrix entries" },
   { value: "25", label: "resumes per databank batch" },
   { value: "200", label: "candidates per invitation batch" },
   { value: "5 min", label: "dashboard refresh cadence" },
@@ -186,23 +186,26 @@ const STACK = [
   {
     icon: Bot,
     title: "AI and research",
-    detail: "Groq · Gemini · OpenRouter · LangGraph workflows · Tavily",
+    detail: "gpt-5.6-terra · gpt-5.6-luna · voyage-4 embeddings · LangGraph retry state machine · Tavily",
   },
   {
     icon: Boxes,
     title: "Integrations",
-    detail: "Firebase · Razorpay · Gmail SMTP · MSG91 · Cloudinary",
+    detail: "Firebase · Razorpay · Gmail SMTP · MSG91 · private S3",
   },
 ] as const;
 
 const AI_ROUTES = [
-  ["Job descriptions", "OpenRouter", "Gemini", "Groq"],
-  ["Technical questions", "Gemini", "OpenRouter", "Groq"],
-  ["Behavioral content", "Gemini", "Groq", "OpenRouter"],
-  ["Report synthesis", "OpenRouter", "Gemini", "Groq"],
-  ["Email drafts", "Groq", "Gemini", "OpenRouter"],
-  ["Candidate reranking", "Groq", "Gemini", "OpenRouter"],
-  ["Structured extraction", "Gemini", "OpenRouter", "Groq"],
+  ["Candidate conversation", "gpt-5.6-terra", "Dialogue quality is a product bar"],
+  ["Job descriptions", "gpt-5.6-terra", "A document a person will publish"],
+  ["Competency transformation", "gpt-5.6-terra", "Judgment-heavy role analysis"],
+  ["Dimension evaluation", "gpt-5.6-terra", "This is the grade"],
+  ["Report synthesis", "gpt-5.6-terra", "States the grades a client reads"],
+  ["Project evidence", "gpt-5.6-terra", "Weighs claims against evidence"],
+  ["Claim extraction", "gpt-5.6-luna", "Mechanical, and must not evaluate"],
+  ["Candidate reranking", "gpt-5.6-luna", "Orders a list it does not grade"],
+  ["Resume extraction", "gpt-5.6-luna", "Narrow, high volume"],
+  ["Every embedding", "voyage-4", "One vector space, 1024 dimensions"],
 ] as const;
 
 const LIMITATIONS = [
@@ -213,13 +216,13 @@ const LIMITATIONS = [
   },
   {
     level: "High",
-    title: "Reproducible infrastructure",
-    body: "The repository has containers but no infrastructure as code or CI/CD definition. Add Terraform and immutable release pipelines.",
+    title: "Unexecuted deployment",
+    body: "Terraform and the release pipeline are complete and plan cleanly offline, but no apply has run against a real AWS account. Creatability, quotas and IAM behaviour remain unproven.",
   },
   {
-    level: "High",
-    title: "Private document hardening",
-    body: "Cloudinary currently stores resumes and compliance files. Move the system of record to private GCS with quarantine, malware scanning and retention controls.",
+    level: "Medium",
+    title: "Upload scanning",
+    body: "Private documents live in a content-addressed S3 bucket behind authenticated routes. Uploaded bytes are never executed, but malware scanning on upload is not yet deployed.",
   },
   {
     level: "High",
@@ -328,7 +331,7 @@ export default function DocsPage() {
                 {[
                   ["01", "Job", "Markdown JD + posting lifecycle"],
                   ["02", "Candidate", "Profile snapshot + resume"],
-                  ["03", "Evidence", "AI Score + PPI Assessment"],
+                  ["03", "Evidence", "AI Score + Tatva Assessment"],
                   ["04", "Decision", "Report + pipeline + history"],
                 ].map(([number, title, detail], index) => (
                   <div
@@ -408,7 +411,7 @@ export default function DocsPage() {
                   <h3 className="text-2xl font-bold">What makes it distinct</h3>
                   <p className="mt-3 leading-7">
                     The platform combines hybrid retrieval, grade-aware
-                    assessment, PPI behavioural evidence, qualitative reporting,
+                    assessment, behavioural evidence, qualitative reporting,
                     transparent fractional credits, reusable profile snapshots
                     and auditable workflow history. AI accelerates the work;
                     deterministic rules preserve the operation.
@@ -515,13 +518,13 @@ export default function DocsPage() {
             <SectionIntro
               eyebrow="Assessment and decision support"
               title="The assessment changes with grade; the report stays explainable"
-              body="Every assessment blends a grade-sized PPI question set with the job's technical bank. Validation facts are mandatory fields on the application form, never questions in the conversation."
+              body="Every assessment blends a grade-sized Tatva question set with the job's technical bank. Validation facts are mandatory fields on the application form, never questions in the conversation."
             />
             <div className="mt-10 overflow-hidden rounded-2xl border border-border bg-surface shadow-card">
               <div className="grid grid-cols-[1.35fr_repeat(3,.8fr)] border-b border-border bg-brand-100 px-5 py-4 text-sm font-semibold">
                 <span>Grade</span>
                 <span className="text-right">Technical</span>
-                <span className="text-right">PPI</span>
+                <span className="text-right">Tatva</span>
                 <span className="text-right">Total</span>
               </div>
               {[
@@ -549,7 +552,7 @@ export default function DocsPage() {
                 {
                   icon: Bot,
                   title: "Parallel analysis",
-                  body: "Technical rubric scoring and PPI framework scoring run as independent branches; the application's validation fields flow through unscored. Synthesis waits for both scorers.",
+                  body: "Technical rubric scoring and Tatva matrix scoring run as independent branches; the application's validation fields flow through unscored. Synthesis waits for both scorers.",
                 },
                 {
                   icon: FileCheck2,
@@ -754,17 +757,16 @@ export default function DocsPage() {
           <section id="ai" className="scroll-mt-24 pt-24">
             <SectionIntro
               eyebrow="AI architecture"
-              title="Task-aware routing with deterministic continuity"
-              body="Different tasks prefer different providers. Up to seven keys per provider, timeouts and circuit breaking improve development resilience; fallbacks preserve workflow state when generation fails."
+              title="One vendor, two tiers, deterministic continuity"
+              body="Every task resolves to exactly one model through a closed mapping. The split is judge-or-write against extract-or-classify, and it is a boundary rather than a preference: extraction must never form an opinion before the evaluators do. Per-task timeouts, a total wall-clock budget, bounded retries and a circuit breaker bound every call, and each generative path has a deterministic fallback so an outage costs quality and never workflow state."
             />
             <div className="mt-10 overflow-x-auto rounded-2xl border border-border bg-surface shadow-card">
-              <table className="w-full min-w-[620px] text-left text-sm">
+              <table className="w-full min-w-[640px] text-left text-sm">
                 <thead className="bg-brand-100">
                   <tr>
                     <th className="px-5 py-4 font-semibold">Task</th>
-                    <th className="px-5 py-4 font-semibold">First</th>
-                    <th className="px-5 py-4 font-semibold">Second</th>
-                    <th className="px-5 py-4 font-semibold">Third</th>
+                    <th className="px-5 py-4 font-semibold">Model</th>
+                    <th className="px-5 py-4 font-semibold">Why</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -792,7 +794,7 @@ export default function DocsPage() {
                   <h3 className="font-bold">Production provider direction</h3>
                   <p className="mt-2 text-sm leading-6">
                     Replace free-tier key rotation with a direct enterprise
-                    primary such as Vertex AI Gemini or the OpenAI API, retain a
+                    primary vendor under contract, retain a
                     tested direct secondary, pin model versions, add quality
                     evaluations and accept provider data terms before processing
                     candidate PII.
@@ -870,8 +872,8 @@ export default function DocsPage() {
                   </p>
                   <div className="mt-4 grid gap-3 sm:grid-cols-2">
                     {[
-                      "Cloud SQL HA + pgvector",
-                      "Memorystore Redis",
+                      "RDS PostgreSQL HA + pgvector",
+                      "ElastiCache Redis",
                       "Private Cloud Storage",
                       "Secret Manager",
                       "Artifact Registry",
@@ -913,7 +915,7 @@ export default function DocsPage() {
                   icon: Cloud,
                   stage: "01",
                   title: "Harden",
-                  body: "Secret Manager, private GCS, Cloud SQL HA, Memorystore, backups, SLOs and alerting.",
+                  body: "AWS Secrets Manager, private S3, RDS HA, ElastiCache, backups, SLOs and alerting.",
                 },
                 {
                   icon: Layers3,

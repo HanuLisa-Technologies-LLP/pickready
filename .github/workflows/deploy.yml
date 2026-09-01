@@ -62,7 +62,7 @@ env:
   #
   # spec-doc6 §D5: "Region assumption `ap-south-1` is removed as an assumption
   # and becomes a required variable. Do not hardcode it anywhere." It was
-  # hardcoded here. `docs/DEPLOY_AWS.md` records why ap-south-1 is the likely
+  # hardcoded here. `docs/operations/DEPLOY_AWS.md` records why ap-south-1 is the likely
   # answer for an India-billed tenant with Indian data-residency expectations,
   # and that the decision is the owner's.
   #

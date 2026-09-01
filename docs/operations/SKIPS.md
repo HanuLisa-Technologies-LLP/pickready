@@ -7,7 +7,7 @@ appeared or disappeared rather than reporting a count that moved.
 
 A skipped test is a guarantee that is not being enforced, and `SKIPPED` is one
 word from `PASSED` in a summary line. That is not a hypothetical here: see the
-baseline below, and `docs/TEST_BASELINE.md` for the numbers.
+baseline below, and `docs/operations/TEST_BASELINE.md` for the numbers.
 
 ## Categories
 
@@ -36,7 +36,7 @@ Nothing in the list below was fixed by relaxing an assertion.
 
 Two of those 71, in `test_db_enum_parity.py`, had no reachability guard and so
 **failed** rather than skipping. Closing the environment gap exposed two real
-defects behind them, both recorded in `docs/TEST_BASELINE.md`.
+defects behind them, both recorded in `docs/operations/TEST_BASELINE.md`.
 
 Three further skips appeared during this phase in `tests/test_rbac_conformance.py`
 (`assign_roles` / `manage_staff` have no job-scoped route). They were

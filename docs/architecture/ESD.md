@@ -1,13 +1,25 @@
-> **DEPLOYMENT SECTIONS SUPERSEDED (2026-08-28).** §26 and every other
-> reference to Google Cloud, Cloud Run, Cloud SQL, Memorystore and Cloud Storage
-> describe a platform that has been replaced. ReadyPick runs on AWS ECS Fargate,
-> RDS PostgreSQL, ElastiCache and S3, defined as Terraform in `infra/`. See
-> [DEPLOY_AWS.md](DEPLOY_AWS.md).
+> **CORRECTIONS IN FORCE (last updated 2026-09-01).** Read these before
+> trusting a section that contradicts them.
 >
-> §8.4's multi-provider LLM routing is also superseded: spec-doc5 Part B
-> consolidates the platform onto Claude Sonnet 5, Claude Haiku 4.5 and
-> voyage-context-4. The 21-key roster, the capacity registry and the dynamic
-> scheduler were removed, not disabled.
+> **Deployment.** Sections 25 and 26 were rewritten on 2026-09-01 and now
+> describe the AWS target. ReadyPick runs on AWS ECS Fargate, RDS PostgreSQL,
+> ElastiCache and S3, defined as Terraform in `infra/`. Any surviving mention
+> of Google Cloud elsewhere in this document is a leftover, not a plan. See
+> [operations/DEPLOY_AWS.md](../operations/DEPLOY_AWS.md). No live AWS deploy
+> has been executed; an offline plan succeeds and proves only internal
+> consistency.
+>
+> **Models.** Section 17 describes a three-provider router that no longer
+> exists. The platform runs on ONE vendor and three endpoints:
+> `gpt-5.6-terra` (judge and write), `gpt-5.6-luna` (extract and classify) and
+> `voyage-4` (embeddings). The 21-key roster, the capacity registry and the
+> dynamic scheduler were deleted, not disabled. Section 17 has been rewritten
+> below; the tables it used to carry are gone.
+>
+> **Storage.** Section 24 was rewritten and describes the implemented S3
+> layout. Private documents live in a content-addressed **S3** bucket, reached
+> only through authenticated, tenant-scoped, capability-checked routes.
+> Cloudinary is not in the request path.
 >
 > The rest of this document -- the data model, the RBAC engine, the approval
 > FSM, the matching pipeline -- is unchanged and still authoritative.
@@ -36,9 +48,9 @@ flowchart TB
     Worker["Celery workers and beat"]
     DB[("PostgreSQL 16 + pgvector")]
     Cache[("Redis 7")]
-    Cloudinary["Cloudinary document storage"]
+    S3[("Private S3 bucket")]
     Firebase["Firebase Identity"]
-    AI["Groq / Gemini / OpenRouter"]
+    AI["OpenAI (terra / luna) + Voyage embeddings"]
     Tavily["Tavily search"]
     Razorpay["Razorpay"]
     Mail["Gmail SMTP"]
@@ -49,7 +61,7 @@ flowchart TB
     API -->|verify identity| Firebase
     API --> DB
     API --> Cache
-    API --> Cloudinary
+    API --> S3
     API --> Razorpay
     API --> Worker
     Worker --> DB
@@ -73,9 +85,9 @@ The frontend exposes a public site (including `/docs`) plus Provider, Company, C
 | Persistence | SQLAlchemy async ORM, asyncpg, Alembic |
 | Database | PostgreSQL 16 with pgvector |
 | Queue/cache | Redis 7, Celery worker and beat |
-| AI orchestration | Provider router plus LangGraph-style parallel workflows |
+| AI orchestration | Single-vendor router (`services/llm_router`) with per-task timeouts, wall-clock budgets, bounded retries and a circuit breaker; LangGraph drives the retry state machine |
 | Identity | Firebase Authentication plus application-issued JWT sessions |
-| Files | Cloudinary |
+| Files | Private S3 bucket, content-addressed by sha256 |
 | Payments | Razorpay Subscriptions and webhooks |
 | Email/SMS | Gmail SMTP with STARTTLS, MSG91 |
 | Web research | Tavily |
@@ -83,7 +95,9 @@ The frontend exposes a public site (including `/docs`) plus Provider, Company, C
 | API serving | Gunicorn with Uvicorn workers |
 | Frontend serving | Next.js standalone production output |
 
-The code uses **Groq**, not Grok.
+Models: `gpt-5.6-terra` for judging and writing, `gpt-5.6-luna` for
+extraction and classification, `voyage-4` for every embedding. No other model
+id may appear in executable source, and a test greps for one.
 
 ## 4. Repository structure
 
@@ -169,6 +183,20 @@ Credit-ledger mutations, Razorpay webhooks, batch work, and task completion path
 - team reviews;
 - pipeline current state and append-only transition history;
 - interview-stage rows;
+- derived project evidence (`candidate_projects`), carrying evidence
+  dimensions, evidence units, the AI interpretation in its own column, and the
+  deletion ledger for temporary originals;
+- the compiled Company DNA artifact and the per-job binding recording which
+  version a scorecard was frozen against;
+- the shared evidence ledger (`evidence_items`, `evidence_claims`,
+  `evidence_claim_links`), which stores a REFERENCE to where a sentence lives
+  and never the sentence;
+- evaluations, review dispositions and calibration records;
+- retrieval chunks (`context_chunks`) with their own vectors, distinct from the
+  profile and job vectors that rank candidates;
+- agent execution traces, which carry identifiers, counts and timings and never
+  content;
+- append-only micro-event telemetry (`telemetry_events`);
 - email logs; and
 - employer-verification requests.
 
@@ -319,7 +347,7 @@ Resume storage:
 
 Bulk databank ingestion accepts up to 25 files and returns per-file success or error. Parsing and matching are queued once per accepted batch.
 
-Current production storage is Cloudinary. The migration target is described in Section 24.
+Private documents live in a content-addressed S3 bucket (Section 24). The object key is the sha256 of the bytes, so a retried upload resolves to the object already stored instead of creating a second one.
 
 Project Evidence Intelligence (`app/services/projects/`, migration 0074) processes optional candidate project submissions, files and public repository links, into a persisted `candidate_projects` row of derived evidence: deterministic parser-router extraction first, one bounded reasoning call second, on the standard router (`project_evidence` task type). Uploads are untrusted input: archives are inspected before extraction (traversal, symlinks, decompression bombs, nesting, entry floods), no candidate code is ever executed, and all limits are `PROJECT_*` settings. Originals are staged temporarily under the `project-intake/` object prefix and deleted with HEAD verification only after evidence persists; deletion failures are counted on the row and retried by the hourly `pickready.reconcile_project_intake` sweeper. **Original project artifacts are not retained in this product phase; only the derived, structured evidence is persisted.** See `docs/spec/PROJECT_EVIDENCE_INTELLIGENCE.md`.
 
@@ -549,7 +577,54 @@ would force the "Job Requirement" shape to invent a value for that spoke.
 
 Assessment completion deducts one credit synchronously and queues report generation. The report write path is guarded against duplicate completion.
 
-### 12.4 Report immutability and reuse
+### 12.4 The hiring intelligence layer
+
+Five stages, each a package under `app/services/`, wired into the live path
+through `api/assessments.py`, `api/jobs.py`, `api/dashboard.py`,
+`api/company_dna.py` and `workers/tasks.py`.
+
+| Stage | Package | Boundary it enforces |
+|---|---|---|
+| Bodha | `services/hiring` (SWOT, `company_dna`) | Situation classification is read back with its consequence and confirmed by a human before the session closes |
+| Sutra | `services/hiring/scorecard`, `transformation` | Seven stages per item; `Item.is_complete` refuses at build, not later |
+| Yukti | `services/hiring/prescreen`, `services/matching` | Resume-only grading; never sees conversation content |
+| Miti | `services/miti` | Five evaluators over a frozen input; the aggregator imports no router |
+| Siddhi | `services/siddhi` | `Section.render` is the only path to text and raises on an uncited statement |
+
+Four structural properties, each asserted by a test rather than documented and
+hoped for:
+
+1. **Evaluator isolation is a field set, not a convention.** `EvaluatorInput`
+   is a frozen dataclass with no candidate name, no other dimension's score, no
+   composite and no free-form context dict. The test asserts the exact field
+   set rather than the absence of specific names, because a future field called
+   `notes` would pass a narrower test and reopen the hole.
+2. **The aggregator calls no model**, asserted by an AST walk over its source.
+3. **Citation enforcement has no bypass.** There is no `force`, no
+   `strict=False`, no `allow_uncited`. A FABRICATED citation raises a different
+   error class than a missing one, because it is worse: it reads as provenance.
+4. **Weights are derived, stored in all four terms, and never crossed an API
+   boundary.** `matching.WEIGHTS` stays deleted and a test asserts the symbol's
+   absence.
+
+Gates G1 to G4 guard the path: G1 refuses evaluation without a frozen matrix,
+G2 (sufficiency) and G3 (integrity) fail loudly and block nothing, and G4
+requires a recorded human DECISION rather than an approval. There is no
+`auto_cleared` and a Postgres CHECK refuses one.
+
+### 12.5 Project Evidence Intelligence
+
+`services/projects/` turns optional candidate project submissions into
+structured evidence and then deletes the originals. Deterministic parsing runs
+first and one reasoning call runs second, over a reduced pack rather than raw
+files. The full design, including the security model and the deletion contract,
+is [spec/PROJECT_EVIDENCE_INTELLIGENCE.md](../spec/PROJECT_EVIDENCE_INTELLIGENCE.md).
+
+Four layers stay separate on the row: candidate claims (verbatim),
+deterministic extraction, derived evidence, and the AI interpretation, which
+lives in its own column so a model inference can never read as extracted fact.
+
+### 12.6 Report immutability and reuse
 
 Report endpoints reject update and delete methods with an explicit 403 from a
 registered handler, rather than an accidental 405.
@@ -661,111 +736,79 @@ AI Reach modes:
 
 The API reports `ok`, `unconfigured`, `timeout`, or `unavailable` rather than silently presenting failed research. Confidence is serialized as words.
 
-## 17. AI provider router
+## 17. AI model router
 
-### 17.1 Current providers and models
+One vendor, three endpoints, a closed mapping. `config/llm_providers.py` is
+DATA ONLY -- no I/O, no state -- so the policy can be reviewed and unit-tested
+without standing up the router.
 
-| Provider | Current model |
+| Endpoint | Used for |
 |---|---|
-| Groq | `llama-3.3-70b-versatile` |
-| Gemini / Google AI Studio | `gemini-2.0-flash` |
-| OpenRouter | `meta-llama/llama-3.3-70b-instruct` |
+| `gpt-5.6-terra` | Reasoning, writing, judgment: conversation turns, JD generation, competency transformation, the five dimension evaluators, triangulation, report synthesis, project-evidence interpretation |
+| `gpt-5.6-luna` | Extraction, classification, routing: claim extraction, evidence tiering, situation classification, resume parsing, candidate reranking |
+| `voyage-4` | Every embedding in the platform, pinned to 1024 dimensions |
 
-The router supports up to seven configured keys per provider, round-robin selection, task-specific provider order, timeouts, and circuit breaking. Database-configured keys take precedence over environment keys.
+`MODEL_FOR_TASK` maps every task type onto exactly one of the two chat models,
+and an unlisted task raises rather than defaulting. `tests/test_llm_task_routing.py`
+asserts the closure and greps executable source for any other model string.
 
-### 17.2 Task preference
+**The tier split is a boundary, not a preference.** `claim_extraction` runs on
+the extraction tier and MUST NOT EVALUATE: an opinion formed there would enter
+the pipeline before the dimension evaluators, without a rubric, without their
+isolation and without a citation, and downstream it would be indistinguishable
+from a finding.
 
-| Task | Provider order |
-|---|---|
-| JD generation | OpenRouter → Gemini → Groq |
-| Technical questions | Gemini → OpenRouter → Groq |
-| Behavioral content | Gemini → Groq → OpenRouter |
-| Report synthesis | OpenRouter → Gemini → Groq |
-| Email drafting | Groq → Gemini → OpenRouter |
-| Candidate reranking | Groq → Gemini → OpenRouter |
-| Structured extraction | Gemini → OpenRouter → Groq |
+### 17.1 What the router guarantees
 
-Interactive and background operations have separate budgets. Failed providers are skipped until their circuit recovers.
+- **Per-task timeout AND a total wall-clock budget.** The per-attempt cap alone
+  does not bound what a user experiences: four attempts at 15s is a 60-second
+  request with a 15-second timeout on it.
+- **A predicting deadline.** The check is `elapsed + longest_attempt_so_far >=
+  deadline`, so an attempt that cannot finish inside the budget is never
+  started.
+- **Two interactive tiers.** Short-output interactive tasks keep 15s/30s. JD
+  generation gets 25s/50s, because a multi-thousand-token document cannot
+  finish in 15 seconds on a reasoning-tier model and holding the cap would not
+  make the button faster, it would make every generation fall back to the
+  template permanently.
+- **Bounded retries with exponential backoff**, honouring a `retry-after`
+  header when the vendor sends one.
+- **A circuit breaker keyed by credential fingerprint.** The two model
+  credentials trip independently. A credential failure (401/403) trips it on
+  the FIRST occurrence, because no amount of waiting fixes a revoked key.
+- **Per-task temperature**, and the split is judge-versus-write. Everything
+  that judges is 0.0; only the candidate conversation is above 0.5.
+- **Native JSON mode** via `response_format`, plus a contract check that
+  refuses a JSON-mode response whose text does not open with an object brace.
 
-### 17.3 Sampling policy
+### 17.2 Two credentials for one vendor
 
-Temperature is data alongside the routing table, not a literal in the router. It
-was previously hard-coded in two places - the OpenAI-shaped payload and the
-Gemini generation config - which could drift apart and left no task able to
-differ from any other.
+`OPENAI_GPT_TERRA` and `OPENAI_GPT_LUNA`, one per model, with the embedding key
+separate. Which model uses which is DATA, never a branch. The router RAISES
+when the key for the called model is absent and never falls back to the other
+one: that would run a judging call on the extraction credential and leave
+nothing in the record saying so.
 
-The split is by whether a task **judges** or **writes**:
+### 17.3 Verified limits
 
-| Task | Temperature |
-|---|---:|
-| Behavioral/PPI scoring | 0.0 |
-| Report synthesis | 0.0 |
-| Candidate reranking | 0.0 |
-| Structured extraction | 0.0 |
-| Technical question generation | 0.4 |
-| JD generation, email drafting | 0.5 |
-| Conversation turn | 0.7 |
+Live verification (2026-08-31) established three constraints that are not
+negotiable and are worth stating because two of them were assumed wrong for a
+whole phase:
 
-Anything that judges is deterministic, so the same answer yields the same grade
-whenever it is scored; a grade that depends on *when* it was produced is
-indefensible in a hiring decision and unfalsifiable in review, because a
-disagreeing rescore reads as a broken rubric. Report synthesis is deterministic
-despite emitting prose, because it states grades. Unlisted tasks default to 0.0 -
-a new creative task merely reads flat, whereas a new scoring task sampling above
-zero would silently become irreproducible.
+- `voyage-context-4` **does not exist**. The embedding model is `voyage-4`, at
+  the 1024 dimensions the schema already expects.
+- `max_tokens` is refused; the parameter is `max_completion_tokens`.
+- **`temperature` 0.0 is refused.** Only the default is accepted. This cost the
+  product a stated guarantee: a scoring call cannot be pinned to zero, so the
+  band one evaluator returns for identical evidence can vary. `seed` is sent
+  and measured byte-identical over three runs, but the vendor documents it as
+  best effort. What still holds is the part that matters most: the AGGREGATOR
+  makes zero model calls, so the step that turns five bands into a delivered
+  grade cannot vary.
 
-### 17.4 Tracing and observability
-
-LangSmith tracing attaches inside the router's single entry point rather than at
-each agent. Every LLM call in the product already routes through that function,
-so one attachment covers the technical scorer, the PPI scorer, the interviewer
-and report synthesis, and cannot be forgotten when a fifth agent is added.
-
-Runs are named `llm:<task_type>` and tagged, so the dashboard separates agents
-with no per-agent wiring. A span covers the whole provider chain rather than one
-attempt: the operational question is whether a call eventually produced an
-answer and how long the fallback walk took.
-
-Three properties are deliberate:
-
-- **Off without a key.** Absent `LANGSMITH_API_KEY` the tracer allocates nothing
-  and makes no network call, so tests and local development cannot post into a
-  shared project. `LANGSMITH_TRACING=false` silences an environment that has the
-  key mounted.
-- **Never load-bearing.** A missing SDK, bad key, unknown project or unreachable
-  endpoint degrades to an untraced call, never a failed one. Observability is
-  not worth an outage.
-- **No candidate content by default.** Traces carry task type, message count,
-  prompt size, response length, provider and error - enough to identify a failing
-  or degrading agent. Prompt and completion text carry a real candidate's answers
-  and a real job description; exporting those to a third party requires
-  `LANGSMITH_TRACE_CONTENT=true`. Provider API keys are never recorded.
-
-### 17.5 Broker publication
-
-Publishing to Redis carries an explicit connect and socket timeout. The default
-is unbounded, which means an unreachable broker does not raise, it blocks - and
-a blocked publish silently defeats every `try/except` guarding an enqueue,
-because no exception ever reaches the handler. Observed as a management job that
-located its inputs and then died at the task ceiling having written nothing,
-because its first publish never returned.
-
-### 17.3 Production recommendation
-
-Free-tier keys and aggregator routing are useful for development but are not a production availability contract. At scale:
-
-1. Choose one enterprise, direct primary provider with contractual privacy, residency, throughput, support, and observability. Vertex AI Gemini is operationally aligned with a Google Cloud deployment; the OpenAI API is a viable direct alternative.
-2. Keep a second direct provider as tested failover for non-provider-specific prompts.
-3. Remove key rotation as a substitute for capacity planning. Use organization projects, service identities, budgets, quotas, and provisioned throughput where justified.
-4. Define per-task model versions and evaluation sets before upgrades.
-5. Redact/minimize candidate data, configure provider retention controls, and execute data-processing agreements.
-6. Do not send candidate PII through an aggregator unless contractual controls and subprocessor terms are accepted.
-
-Current reference material:
-
-- [Vertex AI zero-data-retention controls](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/vertex-ai-zero-data-retention)
-- [OpenAI business data privacy](https://openai.com/business-data/)
-- [OpenAI API data controls](https://platform.openai.com/docs/models/default-usage-policies-by-endpoint)
+Re-run `scripts/verify_live.py` after any change to the transport, the model
+ids or the credentials. A passing result is a statement about the code that
+produced it and nothing more.
 
 ## 18. API organization
 
@@ -851,7 +894,7 @@ Before production:
 1. rotate every exposed credential;
 2. remove secret files from version control and developer hand-offs;
 3. inspect and, if required, scrub Git history;
-4. place runtime secrets in Google Secret Manager;
+4. place runtime secrets in AWS Secrets Manager;
 5. grant secrets to service identities only;
 6. block secret patterns in pre-commit and CI; and
 7. maintain a documented rotation and incident procedure.
@@ -880,7 +923,7 @@ Current gaps:
 
 - no comprehensive browser end-to-end suite across all four workspaces;
 - no load-test baseline for matching/report bursts;
-- no chaos/failover tests for AI providers, Redis, email, or Cloudinary;
+- no chaos/failover tests for the model vendor, Redis, email, or object storage;
 - no automated accessibility audit in CI; and
 - no production SLO or synthetic monitoring suite.
 
@@ -900,107 +943,169 @@ Current gaps:
 
 ## 24. Storage strategy
 
-### 24.1 Current state
+### 24.1 Implemented
 
-Cloudinary stores resumes and compliance documents. PostgreSQL stores references, hashes, access metadata, and domain relationships.
+Private documents -- resumes, compliance records, and the temporary project
+intake -- live in one **private S3 bucket**. PostgreSQL stores references,
+hashes, access metadata and domain relationships. Cloudinary is not in the
+request path.
 
-### 24.2 Production target
+`services/object_storage` is the single transport. `services/resume_storage`
+and `services/document_storage` keep their own validation on top of it, and
+that separation is deliberate: a resume is a candidate artifact with a
+PDF/DOCX-only rule, a compliance record is a scan a finance team produces and a
+photographed PAN card is a JPEG. Accepting one must never widen what the other
+will take. The argument was always about VALIDATION and never about transport,
+so the transport is shared and the validation is not.
 
-Use private Google Cloud Storage buckets for candidate and compliance documents:
+Properties that are load-bearing:
 
-- separate buckets or prefixes by data class and environment;
-- uniform bucket-level access;
-- no public object ACLs;
-- short-lived signed URLs only where direct download is required, otherwise authenticated proxy access;
-- default encryption, with CMEK where customer or regulatory needs justify it;
-- object versioning/soft-delete policy appropriate to recovery needs;
-- lifecycle rules for temporary and retention-bound objects;
-- malware scanning on upload before a file becomes available;
-- immutable audit metadata in PostgreSQL;
-- regional placement aligned with the data-processing policy; and
-- tested export/deletion workflows.
+- **Content-addressed.** The object key is the sha256 of the bytes, so a retry
+  after a lost response resolves to the object already stored rather than
+  creating a second one. `put_if_absent` is a HEAD followed by a conditional
+  PUT; a `PreconditionFailed` means somebody stored identical bytes first,
+  which is a success.
+- **No raw bucket URL ever reaches a browser.** Durable database values are
+  `s3://` references and reads pass through an authenticated, tenant-scoped,
+  capability-checked endpoint. A presigned URL is a bearer token that leaves no
+  audit trail once copied out of a page, so the helper that mints one takes an
+  explicit TTL and is not how the product serves documents.
+- **No credentials in configuration.** boto3 resolves the ECS task role, scoped
+  by Terraform to exactly this bucket.
+- **Server-side encryption** is asserted on write and enforced by bucket
+  policy.
+- **An ETag is recorded** on every stored object, so a database row can be
+  confirmed against the bytes by digest rather than by trusting that the write
+  returned 200.
 
-Cloudinary can remain for public marketing imagery, where transformation and CDN delivery are its strength. It should not be the long-term system of record for private candidate and compliance documents.
+### 24.2 Prefixes and lifecycle
 
-See [Google Cloud Storage lifecycle management](https://docs.cloud.google.com/storage/docs/lifecycle).
+| Prefix | Contents | Lifetime |
+|---|---|---|
+| `resumes/` | Candidate resumes | Durable |
+| `compliance/` | Customer tax and commercial documents | Durable |
+| `project-intake/` | Candidate project submissions | **Temporary.** Deleted with HEAD verification once derived evidence is persisted |
 
-### 24.3 Migration approach
+The `project-intake/` prefix is transient by product contract, not by
+convention: the product stores intelligence derived from projects and never the
+projects themselves. A failed deletion is counted on the row and retried
+hourly; there is no fallback archive. A bucket lifecycle rule on that prefix is
+the recommended backstop for anything a crash orphans.
 
-1. Add a provider-neutral object-storage interface.
-2. Implement a GCS adapter and dual-write behind a feature flag.
-3. Backfill by content hash and verify byte size/checksum.
-4. Switch reads to GCS with Cloudinary fallback.
-5. observe, reconcile, and then disable document writes to Cloudinary;
-6. apply retention policy before deleting legacy objects.
+### 24.3 Still open
+
+- Malware scanning on upload is **not deployed**. Uploaded bytes are never
+  executed and never served back to another tenant, and the project pipeline
+  additionally bounds every parse, but this remains a stated gap rather than a
+  solved problem.
+- Object versioning and soft-delete are not configured; recovery today depends
+  on the durability of the store.
+- Tested export and deletion workflows for a data-subject request do not exist.
 
 ## 25. Current deployment reality
 
-The application is container-ready and is currently described as running against free Google Cloud credits. The repository itself contains:
+The repository contains, as committed source:
 
-- Dockerfiles;
-- local Docker Compose for PostgreSQL/pgvector, Redis, API, worker, beat, and frontend;
-- Railway configuration; and
-- Render configuration.
+- Dockerfiles for backend and frontend, one backend image running four roles
+  (`api`, `worker`, `beat`, `migrate`) selected at container start;
+- local Docker Compose for PostgreSQL/pgvector, Redis, API, worker, beat and
+  frontend;
+- a separate `docker-compose.test.yml` used by `scripts/test.sh`;
+- **Terraform in `infra/`**, as independently-plannable modules plus staging
+  and production environment roots; and
+- **GitHub Actions workflows** covering the test, build and deploy path.
 
-It does **not** contain:
+**No apply has been executed against a real AWS account, and that is a
+requirement of the current phase rather than an omission.** Two independent
+stops enforce it: every deploy job sits behind an unset repository variable,
+and the production apply additionally sits behind a required-reviewer
+environment that `scripts/verify-approval-gate.sh` checks is actually
+configured, because an environment with no reviewer runs the job silently while
+the workflow file still reads as gated.
 
-- Google Cloud infrastructure as code;
-- a checked-in Cloud Run or GKE deployment definition;
-- GitHub Actions or Cloud Build pipelines;
-- environment promotion policy;
-- automated migration/release jobs; or
-- disaster-recovery runbooks.
-
-Therefore the exact current Google Cloud topology is external/manual configuration and cannot be reconstructed from source alone.
+`bash infra/plan-offline.sh --artifact` runs `plan` for both environments
+against account `000000000000`, region `xx-plan-1` and an RFC 2606 `.invalid`
+domain, and succeeds. **Be exact about what that proves**: the configuration is
+internally consistent, the graph resolves, every module reference exists and
+every argument type-checks against the provider schema. It proves nothing about
+a real account -- not creatability, not quotas, not IAM behaviour, not that the
+chosen instance types exist in the chosen region. The gap over `validate` is
+not theoretical: the first offline run failed on an apply-time error that
+eleven modules of `terraform validate` had reported clean for a whole phase.
 
 ## 26. Production deployment architecture
 
-### 26.1 Recommended Google Cloud baseline
+### 26.1 The AWS baseline
 
 ```mermaid
 flowchart TB
-    Users["Users"] --> Edge["HTTPS Load Balancer + CDN + WAF"]
-    Edge --> Web["Next.js service"]
-    Edge --> API["Cloud Run FastAPI service"]
-    API --> SQL[("Cloud SQL PostgreSQL HA + pgvector")]
-    API --> Redis[("Memorystore Redis")]
-    API --> GCS[("Private Cloud Storage")]
-    API --> Secrets["Secret Manager"]
-    API --> Queue["Pub/Sub or task queue"]
-    Queue --> Workers["Cloud Run worker pool or GKE workers"]
-    Scheduler["Cloud Scheduler"] --> Queue
-    Build["CI/CD + Artifact Registry"] --> Web
+    Users["Users"] --> Edge["ALB + WAF"]
+    Edge --> Web["ECS Fargate: frontend service"]
+    Edge --> API["ECS Fargate: FastAPI service"]
+    Web --> API
+    API --> RDS[("RDS PostgreSQL HA + pgvector")]
+    API --> Redis[("ElastiCache Redis, noeviction")]
+    API --> S3[("Private S3 bucket")]
+    API --> Secrets["AWS Secrets Manager"]
+    API --> Broker["Redis broker"]
+    Broker --> Workers["ECS Fargate: Celery workers"]
+    Beat["ECS Fargate: beat, exactly 1 task"] --> Broker
+    Migrate["ECS one-shot task: alembic"] --> RDS
+    Build["GitHub Actions + ECR"] --> Web
     Build --> API
     Build --> Workers
-    API --> Observability["Cloud Logging, Monitoring, Trace, Error Reporting"]
-    Workers --> Observability
+    API --> Obs["CloudWatch logs, metrics, alarms"]
+    Workers --> Obs
 ```
 
-Recommended components:
+Decisions in that diagram that are not defaults:
 
-- Cloud Run for the FastAPI service;
-- Vercel or Cloud Run for the Next.js standalone frontend;
-- Cloud SQL for PostgreSQL with HA, backups, point-in-time recovery, pgvector, and connection pooling;
-- Memorystore for Redis;
-- Cloud Storage for private files;
-- Secret Manager;
-- Artifact Registry;
-- Cloud Logging, Monitoring, Trace, Error Reporting, dashboards, and alerts;
-- Cloud Armor/WAF and rate limiting at the edge; and
-- a managed DNS/certificate path.
+- **The data subnets have no route to the internet in either direction**, not
+  even outbound through NAT. An attacker does not need to reach the database
+  from the internet; they need the database host to reach them.
+- **Redis is `noeviction`, not `allkeys-lru`.** It is the Celery broker, not a
+  cache. The LRU default silently evicts queued TASKS under memory pressure,
+  and the symptom is work that was accepted and never happened, with nothing
+  recording the drop.
+- **Task role and execution role are separate.** The execution role pulls the
+  image and fetches secrets to inject before the container starts; the task
+  role is what the application's own SDK calls use. One role means the
+  application can read every secret the platform injects.
+- **IAM is scoped per service and enumerated, never a prefix.** `service_secrets`
+  maps a service to the exact secrets it may read: beat gets the broker and
+  nothing else, the worker gets no Firebase key, migrate gets one secret. A
+  wildcard looks identical whether it is over-broad or exactly right.
+- **ECR tags are immutable**, which is what makes a SHA tag a permanent name
+  for specific bytes and makes digest verification mean anything. Images are
+  retained by COUNT, never by age: an age rule deletes the image a
+  long-running service needs to restart from.
+- **Fargate does not scale to zero.** The one place it is not equivalent to the
+  previous platform, and there is a floor cost.
 
-Cloud SQL supports the vector extension required by the current design. See [Cloud SQL PostgreSQL extensions](https://docs.cloud.google.com/sql/docs/postgres/extensions).
+### 26.2 Workers
 
-### 26.2 Worker decision
+Celery is preserved rather than replaced. Workers run as an ECS service;
+**beat runs as its own service pinned to exactly one task**, because scheduled
+work must have one logical issuer. Delivery has its own queue: everything
+shared one queue against a two-slot worker until two long AI tasks wedged both
+slots and a staff invitation enqueued behind them was never delivered, while
+the API had already answered 201.
 
-Celery is a long-running pull-worker model. There are two viable production paths:
+A task must never own a pool slot indefinitely, so there is a soft time limit
+that raises inside the task and a hard limit as the backstop. A task that blew
+the soft limit is NOT retried: it will not finish in ten more minutes, and the
+retry costs the pool slot that delivery needs.
 
-- **Preserve Celery:** use Cloud Run worker pools where operationally suitable, or GKE Autopilot with queue-based autoscaling and a singleton beat deployment.
-- **Move to managed events:** replace Celery routing gradually with Pub/Sub/Cloud Tasks and Cloud Scheduler, using idempotent Cloud Run handlers.
+### 26.3 Verifying a deploy
 
-Do not run multiple uncontrolled beat replicas. Scheduled work must have one logical issuer or a distributed lease.
-
-Cloud Run supports autoscaled container services and worker workloads, but maximum instances must protect database connection capacity. See [Cloud Run overview](https://docs.cloud.google.com/run/docs/overview/what-is-cloud-run) and [Cloud Run autoscaling](https://docs.cloud.google.com/run/docs/about-instance-autoscaling).
+- **Verify by DIGEST, not by exit code**, and read the RUNNING TASKS rather
+  than the service definition. The gap between them is a circuit-breaker
+  rollback, which is exactly the case the service definition reports as
+  success.
+- **`aws ecs run-task` returning is not the migration finishing.**
+  `run-migration.sh` polls for STOPPED and reads the exit code. A job that was
+  accepted and then died is what a pipeline reports as success, and this
+  platform has had that exact failure.
 
 ## 27. CI/CD and release strategy
 
@@ -1024,7 +1129,7 @@ Use GitHub Actions or Cloud Build with workload identity federation; do not stor
 4. run migrations as a one-off job;
 5. run API, portal, webhook, and worker smoke tests;
 6. require approval for production;
-7. deploy with canary or Cloud Run traffic splitting;
+7. deploy with an ECS rolling update behind a deployment circuit breaker;
 8. monitor error, latency, queue, and business-integrity signals; and
 9. promote or roll back to the previous immutable revision.
 
@@ -1035,10 +1140,10 @@ Database changes must follow expand/migrate/contract so the old and new applicat
 ### Stage 1: Harden the current service
 
 - move secrets to Secret Manager;
-- move documents to private GCS;
-- use managed Cloud SQL and Memorystore;
+- keep documents in the private S3 bucket;
+- use managed RDS and ElastiCache;
 - add CI/CD, tracing, metrics, SLOs, backups, and alerting;
-- cap Cloud Run instances against the connection pool; and
+- cap ECS task count against the database connection pool; and
 - run provider and queue failure drills.
 
 ### Stage 2: Scale asynchronous throughput
@@ -1081,10 +1186,10 @@ Initial SLOs should be established from measured baselines, not invented in docu
 | Priority | Limitation | Recommendation |
 |---|---|---|
 | Critical | Plaintext local secret files exist | Rotate, remove, scan history, and adopt Secret Manager plus CI secret scanning |
-| High | No reproducible GCP infrastructure | Add Terraform for networks, services, identities, Cloud SQL, Redis, GCS, and monitoring |
+| High | Infrastructure is defined but never applied | Terraform covers networks, services, identities, RDS, Redis, S3 and monitoring, and plans cleanly offline; a real apply remains unproven |
 | High | No CI/CD definitions | Implement the pipeline in Section 27 |
 | High | No upload malware scanner | Quarantine, scan, release, and audit every private upload |
-| High | Cloudinary is the private-document store | Migrate through the provider-neutral path in Section 24 |
+| Medium | No malware scanning on upload | Uploads are never executed and never served cross-tenant; scanning remains unimplemented (Section 24.3) |
 | High | No production SLO/APM/synthetics | Add OpenTelemetry/cloud observability and business-integrity alerts |
 | Medium | Inbound verification email is not operationally connected | Add a supported inbound-mail service and signature validation |
 | Medium | Legacy OTP, approval, and question-bank paths remain | Inventory migrated data, deprecate routes, then remove code/schema safely |

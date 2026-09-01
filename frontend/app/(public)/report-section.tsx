@@ -4,7 +4,7 @@ import { Reveal } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 
 const POINTS = [
-  "An AI Score from the resume, then a PPI Assessment from the conversation. Shown side by side, never merged.",
+  "An AI Score from the resume, then a Tatva Assessment from the conversation. Shown side by side, never merged.",
   "Primary Skills, Secondary Skills and Behavioural Competencies, each with a 45 to 50 word remark.",
   "Four radar charts, each plotting what the job needs against what the candidate showed.",
   "Reports are immutable. A retake creates a new report beside the old one.",
@@ -29,7 +29,7 @@ export function ReportSection() {
       <div className="grid items-center gap-14 lg:grid-cols-2">
         <Reveal>
           <p className="text-sm font-semibold uppercase tracking-[0.16em] text-brand-600">
-            The PPI Assessment Report
+            The PRISM Report
           </p>
           <h2
             id="report-title"
@@ -67,7 +67,7 @@ export function ReportSection() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-base font-semibold">
-                  PPI Assessment Report
+                  PRISM Report
                 </h3>
                 <p className="mt-1 text-xs opacity-70">
                   Senior Data Engineer, sample

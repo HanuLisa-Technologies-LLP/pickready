@@ -157,7 +157,7 @@ skip-check:
   # client-written job descriptions and interview answers. A candidate
   # describing an XSS finding in a security interview trips a rule written for a
   # form field. Enabling it is a week of count-mode metrics, not a checkbox, and
-  # `docs/DEPLOY_AWS.md` carries the procedure.
+  # `docs/operations/DEPLOY_AWS.md` carries the procedure.
   - CKV2_AWS_28
 
   # CKV_AWS_338 "CloudWatch log groups retains logs for at least 1 year"
@@ -171,7 +171,7 @@ skip-check:
   # CKV_AWS_144 "S3 bucket has cross-region replication enabled"
   # Deliberately absent, and this is the one where complying could be the
   # WORSE answer. The region is the owner's decision precisely because of data
-  # residency expectations (`docs/DEPLOY_AWS.md`), and replicating candidate
+  # residency expectations (`docs/operations/DEPLOY_AWS.md`), and replicating candidate
   # resumes into a second region would move personal data out of the
   # jurisdiction the region was chosen for. Durability is covered by S3's own
   # eleven nines within the region and by versioning.
@@ -184,7 +184,7 @@ skip-check:
   # question needs CloudTrail S3 data events, which are attributable to an IAM
   # principal and delivered promptly. Data events are an account-level
   # configuration rather than a bucket one and are listed as an owner step in
-  # `docs/DEPLOY_AWS.md`; they are not configured by this Terraform, and this
+  # `docs/operations/DEPLOY_AWS.md`; they are not configured by this Terraform, and this
   # skip is the honest record of that rather than a claim that logging exists.
   - CKV_AWS_18
 

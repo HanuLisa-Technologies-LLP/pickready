@@ -24,7 +24,7 @@ export const metadata: Metadata = {
   // repeat the site name).
   title: "Know Every Candidate Before You Meet Them",
   description:
-    "Rank every applicant against the role, run a structured AI assessment, and read one clear PPI Assessment Report per candidate. Rated in words, never in numbers.",
+    "Rank every applicant against the role, run a structured AI assessment, and read one clear PRISM Report per candidate. Rated in words, never in numbers.",
 };
 
 export default function LandingPage() {

@@ -332,7 +332,7 @@ def permits(cell: "Invariant") -> bool:
 
 
 #: The five internal client roles of RBAC 5, in authority order. `client` is
-#: this product's identifier for the Client Super Admin; docs/RBAC.md carries
+#: this product's identifier for the Client Super Admin; docs/reference/RBAC.md carries
 #: the full name mapping and why the identifiers were not renamed.
 #:
 #: RBAC 5 says "four internal role categories" and then lists five. spec-doc6
