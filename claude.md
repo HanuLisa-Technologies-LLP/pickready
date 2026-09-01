@@ -1,5 +1,61 @@
 # claude.md, ReadyPick Build Conventions
 
+## Current hard rules, Project Evidence Intelligence (2026-09-01)
+
+- **The product stores intelligence derived from projects, never the projects
+  themselves.** Candidate project uploads are staged TEMPORARILY under the
+  `project-intake/` object prefix and deleted, with a HEAD check confirming
+  each deletion, only AFTER the derived evidence is validated and persisted on
+  `candidate_projects` (migration 0074). There is no original-project archive,
+  no download route for an original, and no fallback archive when deletion
+  fails; a failed deletion is counted on the row and retried hourly by
+  `pickready.reconcile_project_intake`. Do not add any of those. Optional
+  original retention is a documented FUTURE capability only
+  (`docs/spec/PROJECT_EVIDENCE_INTELLIGENCE.md`).
+- **Candidate project submissions are hostile input and are never executed.**
+  No installs, no builds, no shells, ever, in any parser. Archives are
+  inspected against their declared directory BEFORE extraction
+  (`services/projects/archive_safety.py`): a traversal entry, symlink, or
+  implausible compression ratio poisons the whole archive as
+  `failed_security`. Every ceiling is a `project_*` setting, never a literal
+  in the pipeline.
+- **Projects are OPTIONAL and absence is never penalised.** No fixed
+  "no project = minus N" rule anywhere; a candidate with no projects is a
+  normal state everywhere it renders. Presence is not quality either: the
+  reasoning prompt and `ai_reasoning.validate_interpretation` both enforce
+  that strength reflects evidence quality, not file count.
+- **Four layers never blur: candidate claims (verbatim), deterministic
+  extraction, derived evidence, AI interpretation.** The interpretation lives
+  in its own column (`ai_interpretation_json`) and is never merged into
+  `evidence_json`; a model inference must never read as extracted fact. Claim
+  assessments come from a fixed careful-language vocabulary and
+  `evidence_strength` is a WORD (Strong / Moderate / Limited / Insufficient),
+  pinned by the prompt, a deterministic validator, and a database CHECK. The
+  no-numbers rule applies in full.
+- **Deterministic extraction first, ONE reasoning call second.** The parser
+  router (`services/projects/parsers.py`) is total: corrupt or unsupported
+  files become recorded limitations, never exceptions and never hallucinated
+  contents. The model receives only the reduced pack (capped by
+  `project_max_ai_context_chars`); raw files never reach a prompt. The task
+  type is `project_evidence`, Terra, temperature 0.0. An interpretation
+  failure is `partially_processed`, a real partial success: deterministic
+  evidence persists, the AI-only completion path reruns later WITHOUT the
+  originals (which are correctly gone by then).
+- **Public repositories only.** No private-repo OAuth, no token intake from
+  candidates, credentials embedded in a URL are refused at validation.
+  `GITHUB_API_TOKEN` exists solely for rate-limit headroom. Providers are a
+  host-keyed registry in `services/projects/repository.py`; the tree is
+  classified before any content is fetched and generated/dependency paths
+  never spend the fetch budget.
+- **"Versioned evidence" means DECOMPOSED dimensions, not V1/V2 history.** Do
+  not build a project-history versioning system against this feature.
+- **Consumption points**: candidate Projects card on My Profile
+  (`/portal/me/projects`), recruiter view behind `view_review_screen` with a
+  link-in-tenant 404 gate (`GET /candidates/{id}/project-evidence`), and the
+  AI context block joined into per-candidate PPI question generation
+  (`services/projects/context.py`). It moves no weight, no grade and no PRISM
+  section; the report's fixed section order is untouched, deliberately.
+
 ## Current hard rules, spec-doc6 (2026-08-29)
 
 Runbook reconciliation, Part A activation, legacy reset, dashboard and RBAC,

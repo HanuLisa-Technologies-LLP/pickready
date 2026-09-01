@@ -13,6 +13,7 @@
 import { SettingsPage } from "@/components/settings-page";
 import { CandidateProfileForm } from "@/components/candidate-profile-form";
 import { MainResumeCard } from "@/components/main-resume-card";
+import { ProjectsSection } from "@/components/projects-section";
 
 export const metadata = { title: "My Profile" };
 
@@ -24,6 +25,7 @@ export default function CandidateProfilePage() {
       showRole={false}
     >
       <MainResumeCard />
+      <ProjectsSection />
       <CandidateProfileForm />
     </SettingsPage>
   );

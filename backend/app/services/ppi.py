@@ -905,6 +905,17 @@ async def generate_candidate_questions(
         return []
 
     profile = await session.get(Profile, link.profile_id) if link.profile_id else None
+    # Project Evidence Intelligence: the derived evidence block (claims and
+    # observations labelled, validation areas named) joins the resume in the
+    # generation context, so a candidate's questions can probe what their
+    # projects actually show. Context only -- it moves no weight, no grade and
+    # no report section, and an empty string for a candidate with no projects
+    # changes nothing.
+    from app.services.projects import context as project_context  # noqa: PLC0415
+
+    project_evidence_block = await project_context.candidate_project_context(
+        session, link.candidate_id
+    )
     prompts: dict[int, str] = {}
     try:
         raw = await llm_router.chat_completion(
@@ -930,6 +941,7 @@ async def generate_candidate_questions(
                                 for index, row in enumerate(allocation)
                             ],
                             "candidate_resume": _resume_excerpt(profile),
+                            "project_evidence": project_evidence_block,
                         }
                     ),
                 },

@@ -321,6 +321,8 @@ Bulk databank ingestion accepts up to 25 files and returns per-file success or e
 
 Current production storage is Cloudinary. The migration target is described in Section 24.
 
+Project Evidence Intelligence (`app/services/projects/`, migration 0074) processes optional candidate project submissions, files and public repository links, into a persisted `candidate_projects` row of derived evidence: deterministic parser-router extraction first, one bounded reasoning call second, on the standard router (`project_evidence` task type). Uploads are untrusted input: archives are inspected before extraction (traversal, symlinks, decompression bombs, nesting, entry floods), no candidate code is ever executed, and all limits are `PROJECT_*` settings. Originals are staged temporarily under the `project-intake/` object prefix and deleted with HEAD verification only after evidence persists; deletion failures are counted on the row and retried by the hourly `pickready.reconcile_project_intake` sweeper. **Original project artifacts are not retained in this product phase; only the derived, structured evidence is persisted.** See `docs/spec/PROJECT_EVIDENCE_INTELLIGENCE.md`.
+
 ## 11. Matching architecture
 
 ### 11.1 Retrieval

@@ -160,5 +160,14 @@ celery_app.conf.update(
             "task": "pickready.reconcile_assessment_credits",
             "schedule": 3600.0,
         },
+        # Project Evidence intake hygiene: retry verified deletion of
+        # temporary originals whose delete failed, and re-enqueue projects
+        # whose processing task was lost. Hourly, idempotent, cheap when there
+        # is nothing to do. Deletion must be observable and retryable, never
+        # assumed (Project Evidence brief section 27).
+        "reconcile-project-intake": {
+            "task": "pickready.reconcile_project_intake",
+            "schedule": 3600.0,
+        },
     },
 )

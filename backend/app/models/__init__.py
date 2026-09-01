@@ -45,6 +45,7 @@ from app.models.agent import (
 )
 from app.models.context import ContextChunk
 from app.models.evidence import EvidenceClaim, EvidenceClaimLink, EvidenceItemRow
+from app.models.project import CandidateProject
 from app.models.candidate import (
     Candidate,
     CandidateTeamReview,
@@ -113,6 +114,7 @@ __all__ = [
     "AuditLog",
     "BillingTransaction",
     "Candidate",
+    "CandidateProject",
     "CandidateQuestion",
     "CandidateTeamReview",
     "CandidateTechnicalQuestion",

@@ -14,6 +14,7 @@ import {
   FunctionalSkillsReportView,
   type FunctionalReport,
 } from "@/components/functional-skills-report";
+import { ProjectEvidencePanel } from "@/components/project-evidence-panel";
 import { ResumeViewer, describeResumeUrl } from "@/components/resume-viewer";
 import { SendOutreachModal } from "@/components/send-outreach-modal";
 import { TierBadge } from "@/components/tier-badge";
@@ -268,6 +269,7 @@ export function ProfileReview({
                 <TabsList>
                   <TabsTrigger value="scores">AI assessment</TabsTrigger>
                   <TabsTrigger value="resume">Resume</TabsTrigger>
+                  <TabsTrigger value="projects">Projects</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="scores" className="mt-4">
@@ -352,6 +354,13 @@ export function ProfileReview({
                       </p>
                     )}
                   </div>
+                </TabsContent>
+
+                <TabsContent value="projects" className="mt-4">
+                  {/* Derived Project Evidence only: claims and observations
+                      labelled apart, strength as a word, no original files
+                      (none are retained). */}
+                  <ProjectEvidencePanel candidateId={selected.candidate.id} />
                 </TabsContent>
 
               </Tabs>

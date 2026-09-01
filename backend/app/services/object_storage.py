@@ -271,6 +271,17 @@ def get_bytes(key: str) -> bytes:
     return data
 
 
+def exists(key: str) -> bool:
+    """Whether an object is currently readable at `key`.
+
+    Added for the project-intake deletion contract (Project Evidence brief
+    section 27): a temporary original may only be recorded as deleted after a
+    HEAD confirms it is gone, because "the delete call returned" is the same
+    class of non-evidence as "the pipeline was green".
+    """
+    return _head(key) is not None
+
+
 def delete(key: str) -> None:
     """Best-effort removal, used to compensate a failed database write.
 

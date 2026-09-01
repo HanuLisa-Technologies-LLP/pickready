@@ -716,6 +716,330 @@ async def my_stored_resume(
     return _resume_summary(await _main_resume_profile(session, candidate))
 
 
+# ── Projects (Project Evidence Intelligence) ─────────────────────────────────
+#
+# OPTIONAL project submissions inside the candidate's validation profile.
+# The originals are staged temporarily, processed into derived evidence, and
+# deleted; nothing here ever offers an original file back, because the product
+# does not keep one (Project Evidence brief, 2026-09-01).
+
+
+class ProjectFileOut(BaseModel):
+    filename: str
+    size_bytes: int
+    family: str
+    label: str
+    supported: bool
+
+
+class ProjectOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str
+    repository_url: str | None = None
+    submission_kind: str
+    status: str
+    status_detail: str | None = None
+    failure_code: str | None = None
+    can_retry: bool = False
+    files: list[ProjectFileOut] = []
+    created_at: datetime
+    processed_at: datetime | None = None
+
+
+class ProjectLimitsOut(BaseModel):
+    max_projects: int
+    max_files: int
+    max_file_bytes: int
+    max_total_bytes: int
+    description_max_words: int
+    supported_repository_hosts: list[str]
+
+
+class ProjectsOut(BaseModel):
+    #: Candidate-facing storage promise, served from the backend so the UI
+    #: cannot drift from what the pipeline actually does.
+    retention_notice: str
+    limits: ProjectLimitsOut
+    projects: list[ProjectOut] = []
+
+
+_PROJECT_RETENTION_NOTICE = (
+    "Adding projects is optional. We analyse what you submit and keep a "
+    "structured summary of the evidence it shows; your original files are "
+    "not stored after processing."
+)
+
+
+def _project_out(project) -> ProjectOut:
+    from app.models.project import RETRYABLE_STATUSES
+
+    return ProjectOut(
+        id=project.id,
+        name=project.name,
+        description=project.description,
+        repository_url=project.repository_url,
+        submission_kind=project.submission_kind,
+        status=project.status,
+        status_detail=project.status_detail,
+        failure_code=project.failure_code,
+        can_retry=project.status in RETRYABLE_STATUSES,
+        files=[
+            ProjectFileOut(
+                filename=str(row.get("filename") or ""),
+                size_bytes=int(row.get("size_bytes") or 0),
+                family=str(row.get("family") or ""),
+                label=str(row.get("label") or ""),
+                supported=bool(row.get("supported")),
+            )
+            for row in (project.files_json or [])
+        ],
+        created_at=project.created_at,
+        processed_at=project.processed_at,
+    )
+
+
+def _project_limits_out() -> ProjectLimitsOut:
+    from app.services.projects import repository as project_repository
+    from app.services.projects.limits import from_settings as project_limits
+
+    limits = project_limits()
+    return ProjectLimitsOut(
+        max_projects=limits.max_projects_per_candidate,
+        max_files=limits.max_files,
+        max_file_bytes=limits.max_file_bytes,
+        max_total_bytes=limits.max_total_bytes,
+        description_max_words=limits.description_max_words,
+        supported_repository_hosts=sorted(
+            {
+                host
+                for host in project_repository.SUPPORTED_HOSTS
+                if not host.startswith("www.")
+            }
+        ),
+    )
+
+
+async def _own_project_or_404(session: AsyncSession, candidate, project_id: uuid.UUID):
+    from app.models.project import CandidateProject
+
+    project = await session.get(CandidateProject, project_id)
+    if project is None or project.candidate_id != candidate.id:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+@router.get("/me/projects", response_model=ProjectsOut)
+async def list_my_projects(
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> ProjectsOut:
+    """The candidate's projects with live processing status."""
+    from app.models.project import CandidateProject
+
+    candidate = await _candidate_for_user(session, user)
+    rows = (
+        await session.execute(
+            select(CandidateProject)
+            .where(CandidateProject.candidate_id == candidate.id)
+            .order_by(CandidateProject.created_at.desc())
+        )
+    ).scalars().all()
+    return ProjectsOut(
+        retention_notice=_PROJECT_RETENTION_NOTICE,
+        limits=_project_limits_out(),
+        projects=[_project_out(row) for row in rows],
+    )
+
+
+@router.post(
+    "/me/projects", response_model=ProjectOut, status_code=status.HTTP_201_CREATED
+)
+async def add_project(
+    name: str = Form(...),
+    description: str = Form(...),
+    repository_url: str | None = Form(default=None),
+    files: list[UploadFile] = File(default=[]),
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> ProjectOut:
+    """Add one project: name, a description of at most 100 words, and files
+    and/or a public repository link. Processing runs in the background; the
+    originals are deleted once the derived evidence is persisted."""
+    from sqlalchemy import func as sa_func
+
+    from app.models.project import CandidateProject
+    from app.services.projects import intake as project_intake
+    from app.services.projects import repository as project_repository
+    from app.services.projects.limits import from_settings as project_limits
+
+    candidate = await _candidate_for_user(session, user)
+    limits = project_limits()
+
+    existing = (
+        await session.execute(
+            select(sa_func.count(CandidateProject.id)).where(
+                CandidateProject.candidate_id == candidate.id
+            )
+        )
+    ).scalar_one()
+    if existing >= limits.max_projects_per_candidate:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "You have reached the maximum of "
+                f"{limits.max_projects_per_candidate} projects. Remove one to "
+                "add another."
+            ),
+        )
+
+    clean_name = project_intake.validate_name(name)
+    clean_description = project_intake.validate_description(description, limits)
+
+    repo_url: str | None = None
+    if repository_url and repository_url.strip():
+        try:
+            ref = project_repository.validate_repository_url(repository_url)
+        except project_repository.RepositoryRejected as exc:
+            raise HTTPException(status_code=422, detail=exc.reason) from exc
+        repo_url = ref.url
+
+    uploads = [f for f in files if f is not None and f.filename]
+    if not uploads and not repo_url:
+        raise HTTPException(
+            status_code=422,
+            detail="Add at least one file or a public repository link.",
+        )
+    validated = await project_intake.read_validated_files(uploads, limits)
+
+    if validated and repo_url:
+        kind = "mixed"
+    elif repo_url:
+        kind = "repository"
+    else:
+        kind = "files"
+
+    project = CandidateProject(
+        candidate_id=candidate.id,
+        name=clean_name,
+        description=clean_description,
+        repository_url=repo_url,
+        submission_kind=kind,
+        status="submitted",
+        status_detail="Received. Your project is queued for analysis.",
+        files_json=project_intake.file_metadata(validated),
+    )
+    session.add(project)
+    await session.flush()
+
+    if validated:
+        project.intake_objects_json = await project_intake.stage_intake(
+            str(project.id), validated
+        )
+        await session.flush()
+
+    # Never allowed to fail the submission: the row is durable and the hourly
+    # sweeper re-enqueues anything the broker dropped.
+    try:
+        celery_app.send_task(
+            "pickready.process_candidate_project", args=[str(project.id)]
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "portal.project_enqueue_failed project_id=%s error=%s",
+            project.id,
+            type(exc).__name__,
+        )
+    await audit(
+        session,
+        tenant_id=None,
+        actor_user_id=user.user_id,
+        action="candidate_project_added",
+        target_type="candidate_project",
+        target_id=project.id,
+        metadata={"kind": kind, "file_count": len(validated)},
+    )
+    return _project_out(project)
+
+
+@router.get("/me/projects/{project_id}", response_model=ProjectOut)
+async def get_my_project(
+    project_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> ProjectOut:
+    candidate = await _candidate_for_user(session, user)
+    project = await _own_project_or_404(session, candidate, project_id)
+    return _project_out(project)
+
+
+@router.post("/me/projects/{project_id}/reprocess", response_model=ProjectOut)
+async def reprocess_my_project(
+    project_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> ProjectOut:
+    """Retry a project in a retryable failure state. The pipeline is
+    idempotent, so this can never duplicate evidence."""
+    from app.models.project import RETRYABLE_STATUSES, STATUS_SUBMITTED
+
+    candidate = await _candidate_for_user(session, user)
+    project = await _own_project_or_404(session, candidate, project_id)
+    if project.status not in RETRYABLE_STATUSES:
+        raise HTTPException(
+            status_code=409, detail="This project is not awaiting a retry."
+        )
+    if (
+        not project.intake_objects_json
+        and not project.repository_url
+        and project.evidence_json is None
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The original files for this project are no longer held, so "
+                "it cannot be reprocessed. Remove it and submit again."
+            ),
+        )
+    project.status = STATUS_SUBMITTED
+    project.status_detail = "Queued for another analysis attempt."
+    await session.flush()
+    try:
+        celery_app.send_task(
+            "pickready.process_candidate_project", args=[str(project.id)]
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "portal.project_enqueue_failed project_id=%s error=%s",
+            project.id,
+            type(exc).__name__,
+        )
+    return _project_out(project)
+
+
+@router.delete("/me/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_my_project(
+    project_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> None:
+    """Remove a project: derived evidence and any staged originals both go."""
+    from app.services.projects import pipeline as project_pipeline
+
+    candidate = await _candidate_for_user(session, user)
+    project = await _own_project_or_404(session, candidate, project_id)
+    await project_pipeline.discard_project(session, project)
+    await audit(
+        session,
+        tenant_id=None,
+        actor_user_id=user.user_id,
+        action="candidate_project_removed",
+        target_type="candidate_project",
+        target_id=project_id,
+        metadata={},
+    )
+
+
 @router.get("/jobs/{job_id}/apply-context", response_model=ApplyContextOut)
 async def apply_context(
     job_id: uuid.UUID,

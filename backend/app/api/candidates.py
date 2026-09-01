@@ -283,6 +283,59 @@ async def get_profile(
     )
 
 
+@router.get("/{candidate_id}/project-evidence")
+async def get_project_evidence(
+    candidate_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Derived Project Evidence for the review screen.
+
+    Same access rules as the full profile (VIEW_REVIEW_SCREEN, with the
+    HM-grant gate for non-HR holders), plus one stricter check: the candidate
+    must be linked to a job in THIS tenant, and a candidate who is not answers
+    404 rather than 403 (RBAC: a cross-tenant read must not confirm
+    existence).
+
+    Everything returned is DERIVED intelligence: candidate claims labelled as
+    claims, observed evidence labelled as observed, strength as a WORD. There
+    is no original file to offer, because none is retained.
+    """
+    from app.services.projects import context as project_context
+
+    candidate = await session.get(Candidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    linked = (
+        await session.execute(
+            select(JobCandidateLink.id)
+            .where(
+                JobCandidateLink.candidate_id == candidate_id,
+                JobCandidateLink.tenant_id == user.tenant_id,
+            )
+            .limit(1)
+        )
+    ).scalars().first()
+    if linked is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    full_access = await rbac.has_capability(
+        session, user.tenant_id, user.role, caps.SEND_OUTREACH
+    )
+    if not full_access:
+        granted = (
+            await session.execute(
+                select(JobCandidateLink).where(
+                    JobCandidateLink.candidate_id == candidate_id,
+                    JobCandidateLink.tenant_id == user.tenant_id,
+                    JobCandidateLink.hm_access_granted.is_(True),
+                )
+            )
+        ).scalars().first()
+        if granted is None:
+            raise HTTPException(status_code=403, detail="Profile access not granted")
+    return {"projects": await project_context.recruiter_views(session, candidate_id)}
+
+
 @router.get("/profiles/{profile_id}/resume-preview", response_class=HTMLResponse)
 async def preview_resume(
     profile_id: uuid.UUID,

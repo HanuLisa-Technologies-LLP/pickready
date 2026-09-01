@@ -300,6 +300,14 @@ Candidates can upload or reuse their main resume. PDF and DOCX resumes are suppo
 
 Every application snapshots the candidate’s profile form and resume. Later edits to the reusable profile do not silently rewrite the historical application.
 
+### 9.4 Project Evidence Intelligence
+
+Candidates may optionally add projects to their profile: a name, a description of at most 100 words, project files and/or a public repository link. Multiple projects are supported. Submissions are processed into structured, decomposed Project Evidence (technology, architecture, implementation, testing, infrastructure, documentation, gaps, uncertainties, provenance), with candidate claims and system-observed evidence kept separate and evidence strength expressed only as a word.
+
+Project presence is never treated as automatic quality, absence carries no fixed penalty, and no-project candidates remain fully evaluable through resume, validation profile and assessment. Recruiters see the derived evidence on the review screen; the per-candidate assessment questions may probe it.
+
+**Current product phase: original project artifacts are not retained. Only derived, structured, versioned Project Evidence Intelligence is persisted. Original project retention is a future capability and is out of scope for the current implementation.** Full design: `docs/spec/PROJECT_EVIDENCE_INTELLIGENCE.md`.
+
 ## 10. Matching and candidate review
 
 ### 10.1 Candidate retrieval

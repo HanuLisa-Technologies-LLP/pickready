@@ -145,6 +145,42 @@ class Settings(BaseSettings):
     # unresolved, so production must keep this disabled.
     proctoring_enabled: bool = False
 
+    # ── Project Evidence Intelligence limits ────────────────────────────────
+    #
+    # Candidate project submissions are UNTRUSTED input processed into derived
+    # evidence; the original artifact is temporary by product decision (the
+    # 2026-09-01 Project Evidence master brief) and is deleted once evidence is
+    # persisted. These are the safe processing ceilings, DATA here rather than
+    # literals in the pipeline so an operator can widen them without a deploy
+    # of new code paths. Sized against the resume path's own ceilings (10 MB a
+    # file) and the worker's 600 s soft time limit: the whole pipeline for one
+    # project must finish comfortably inside one task slot.
+    project_max_projects_per_candidate: int = 10
+    project_max_files: int = 20
+    project_max_file_bytes: int = 25 * 1024 * 1024
+    project_max_total_bytes: int = 100 * 1024 * 1024
+    #: Archive extraction guards (zip bombs, nesting, entry floods).
+    project_max_archive_depth: int = 2
+    project_max_archive_entries: int = 2000
+    project_max_extracted_bytes: int = 200 * 1024 * 1024
+    #: A compressed entry claiming to inflate past this ratio is refused as a
+    #: decompression bomb before a single byte is extracted.
+    project_max_compression_ratio: int = 120
+    #: Per-file ceiling on text promoted into deterministic parsing.
+    project_max_text_chars_per_file: int = 60_000
+    #: Evidence reduction: the most units one project may persist, and the most
+    #: characters of evidence-pack context one AI reasoning call may receive.
+    project_max_evidence_units: int = 120
+    project_max_ai_context_chars: int = 24_000
+    #: Public-repository ingestion caps: how many meaningful files are fetched
+    #: after tree classification, and the largest single file fetched.
+    project_repo_max_files: int = 40
+    project_repo_max_file_bytes: int = 512_000
+    #: OPTIONAL. Raises the public GitHub API rate limit; grants no private
+    #: access and is never required. Public repositories only, by product
+    #: decision: no private-repository OAuth or token intake exists.
+    github_api_token: str = ""
+
     # Payments  -  Razorpay Subscriptions. The Key ID is public (Checkout needs it
     # in the browser and reads it from GET /billing/config); the Key Secret and
     # the webhook secret are server-side only and never reach a response body,

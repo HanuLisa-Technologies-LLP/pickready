@@ -1236,6 +1236,124 @@ def parse_resume(profile_id: str):
     _run(_task())
 
 
+# ── Project Evidence Intelligence ────────────────────────────────────────────
+
+@celery_app.task(
+    name="pickready.process_candidate_project",
+    autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
+    retry_backoff=True,
+    max_retries=5,
+)
+def process_candidate_project(project_id: str):
+    """Run the whole evidence pipeline for one submitted project.
+
+    Idempotent by construction: derived output lives in columns on the one
+    project row, a completed project returns immediately, and staging keys
+    are content-addressed, so a Celery redelivery reruns safely. Transient
+    failures (storage, a provider 429) raise and use the retry budget;
+    deterministic refusals (a hostile archive, a rejected repository URL) are
+    recorded as terminal statuses inside the pipeline and do NOT raise.
+    """
+    from app.services.projects import pipeline as project_pipeline
+
+    async def _task():
+        async with _worker_session() as session:
+            project = await project_pipeline.process_project(
+                session, uuid.UUID(str(project_id))
+            )
+            await session.commit()
+            logger.info(
+                "project_evidence.processed project_id=%s status=%s "
+                "original_deleted=%s",
+                project_id,
+                project.status,
+                project.original_deleted_at is not None,
+            )
+    _run(_task())
+
+
+@celery_app.task(name="pickready.reconcile_project_intake")
+def reconcile_project_intake():
+    """Hourly sweeper for the two states that must not persist quietly.
+
+    1. Temporary originals whose deletion failed: evidence is durable, the
+       staged objects should be gone, so retry the verified deletion. This is
+       the observability half of the brief's deletion contract -- a failed
+       deletion is counted and retried, never assumed away.
+    2. Projects stuck in `submitted` or `processing` for over 30 minutes: the
+       task was lost (broker hiccup, worker restart mid-run), so re-enqueue.
+       The pipeline is idempotent, so a duplicate enqueue costs a rerun and
+       nothing else.
+    3. `partially_processed` projects (deterministic evidence persisted, the
+       AI interpretation missing): re-enqueue the AI-only completion, BOUNDED
+       by the run counter so a permanently failing interpretation cannot loop
+       forever on the platform's own budget.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import or_
+
+    from app.models.project import (
+        STATUS_PARTIALLY_PROCESSED,
+        STATUS_PROCESSING,
+        STATUS_SUBMITTED,
+        CandidateProject,
+    )
+    from app.services.projects import pipeline as project_pipeline
+
+    MAX_AUTOMATIC_RUNS = 5
+
+    async def _task():
+        async with _worker_session() as session:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+            rows = (
+                await session.execute(
+                    select(CandidateProject).where(
+                        or_(
+                            CandidateProject.processed_at.isnot(None)
+                            & (CandidateProject.original_deleted_at.is_(None)),
+                            CandidateProject.status.in_(
+                                [STATUS_SUBMITTED, STATUS_PROCESSING]
+                            )
+                            & (CandidateProject.created_at < cutoff),
+                            CandidateProject.status == STATUS_PARTIALLY_PROCESSED,
+                        )
+                    )
+                )
+            ).scalars().all()
+            retried_deletion = 0
+            requeued = 0
+            for project in rows:
+                if project.processed_at is not None and (
+                    project.original_deleted_at is None
+                ):
+                    await project_pipeline.delete_intake_objects(session, project)
+                    retried_deletion += 1
+                elif project.status in (STATUS_SUBMITTED, STATUS_PROCESSING):
+                    celery_app.send_task(
+                        "pickready.process_candidate_project",
+                        args=[str(project.id)],
+                    )
+                    requeued += 1
+                elif project.status == STATUS_PARTIALLY_PROCESSED:
+                    runs = int((project.telemetry_json or {}).get("runs", 0))
+                    if runs < MAX_AUTOMATIC_RUNS:
+                        celery_app.send_task(
+                            "pickready.process_candidate_project",
+                            args=[str(project.id)],
+                        )
+                        requeued += 1
+            await session.commit()
+            if retried_deletion or requeued:
+                logger.info(
+                    "project_evidence.reconcile deletions_retried=%d requeued=%d",
+                    retried_deletion,
+                    requeued,
+                )
+    _run(_task())
+
+
 # ── Employer verification (ESD §10) ─────────────────────────────────────────
 
 @celery_app.task(

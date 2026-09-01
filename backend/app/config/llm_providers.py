@@ -175,6 +175,8 @@ TaskType = Literal[
     # ── Output ──
     "report_synthesis",
     "email_composition",
+    # ── Project Evidence Intelligence ──
+    "project_evidence",
     # ── Legacy role hints (ESD §8.4), retained verbatim so every pre-existing
     #    caller keeps its established behaviour ──
     "rerank",
@@ -219,6 +221,11 @@ MODEL_FOR_TASK: dict[str, str] = {
     "triangulation": MODEL_TERRA,
     # Siddhi: writing quality and evidence-citation enforcement.
     "report_synthesis": MODEL_TERRA,
+    # Project Evidence Intelligence: assesses how strongly deterministic
+    # evidence supports a candidate's claims. It JUDGES, so it is Terra; the
+    # deterministic extraction feeding it has no task type at all, exactly like
+    # the Miti aggregator.
+    "project_evidence": MODEL_TERRA,
     # ASSUMPTION: §B.3's table does not list email composition. Assigned Terra
     # rather than Luna because a lifecycle email is prose a candidate reads
     # over the client's name, which is the "writing" side of §B.2's split, and
@@ -340,6 +347,8 @@ TASK_TIMEOUTS: dict[str, float] = {
     "triangulation": 60.0,
     "report_synthesis": 120.0,
     "extraction": 60.0,
+    # Background. One reasoning pass over a reduced evidence pack.
+    "project_evidence": 60.0,
 }
 
 #: Total wall-clock budget for one logical call, across every retry.
@@ -370,6 +379,7 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "triangulation": 140.0,
     "report_synthesis": 280.0,
     "extraction": 140.0,
+    "project_evidence": 140.0,
 }
 
 DEFAULT_TIMEOUT = 45.0
@@ -412,6 +422,7 @@ TASK_MAX_TOKENS: dict[str, int] = {
     # Seven report sections in one response -- the largest thing we ask for.
     "report_synthesis": 8192,
     "extraction": 8192,
+    "project_evidence": 4096,
 }
 
 DEFAULT_MAX_TOKENS = 4096
@@ -446,6 +457,8 @@ TASK_TEMPERATURE: dict[str, float] = {
     "dimension_evaluation": 0.0,    # THE grade. Never above zero.
     "triangulation": 0.0,
     "situation_classification": 0.0,
+    "project_evidence": 0.0,        # judges claims against evidence
+
     # ── Generative: these write. ────────────────────────────────────────────
     "competency_transformation": 0.2,
     "technical_questions": 0.4,
@@ -497,6 +510,7 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "triangulation": 3,
     "report_synthesis": 3,
     "extraction": 3,
+    "project_evidence": 3,
 }
 
 DEFAULT_RETRY_BUDGET = 3
