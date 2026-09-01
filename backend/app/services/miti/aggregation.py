@@ -234,8 +234,14 @@ def authenticity_multiplier_for_score(d4: float) -> tuple[float | None, str]:
     outcome than the document asks for and hides the one case it wants a person
     to look at.
     """
-    cap_value = float(caps.bands_data()["authenticity_multiplier"].get("caps_at", 1.0))
-    for row in _authenticity_branches():
+    # Read the branches FIRST. `_authenticity_branches` carries the guard
+    # that explains a missing or malformed section 10.5 table; a bare
+    # subscript here fired ahead of it and turned that explanation into a
+    # KeyError, so the careful message could never reach anyone.
+    branches = _authenticity_branches()
+    table = caps.bands_data().get("authenticity_multiplier") or {}
+    cap_value = float(table.get("caps_at", 1.0))
+    for row in branches:
         low = row.get("d4_low")
         high = row.get("d4_high_exclusive")
         if low is not None and high is None:
