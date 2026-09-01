@@ -374,14 +374,6 @@ def _collect(value: Any, path: str, out: list[str]) -> None:
     out.append(path)
 
 
-def iter_strings(payload: Any) -> Iterable[tuple[str, str]]:
-    """Every string leaf and its path. For a banned-phrase corpus test."""
-    for path in known_paths(payload):
-        value = _at(payload, path)
-        if isinstance(value, str):
-            yield path, value
-
-
 def _at(payload: Any, path: str) -> Any:
     current = _dump(payload)
     for part in re.findall(r"\.([^.\[\]]+)|\[(\d+)\]", path[len("payload"):]):

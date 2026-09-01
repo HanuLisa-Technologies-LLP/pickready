@@ -54,10 +54,6 @@ def begin_request(*, collect: bool = False) -> QueryStats:
     return stats
 
 
-def current_stats() -> QueryStats:
-    return _stats.get()
-
-
 def install_query_counter() -> None:
     """Attach the counting listeners to every SQLAlchemy engine. Idempotent."""
     global _installed

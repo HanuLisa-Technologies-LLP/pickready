@@ -930,19 +930,6 @@ def agent_capabilities(agent: str) -> frozenset[str]:
     return AGENT_CAPABILITIES.get(agent, frozenset())
 
 
-def agent_may_request(agent: str, capability: str) -> bool:
-    """Whether this agent is DECLARED for this capability.
-
-    Necessary and not sufficient. The principal must hold it too, and the
-    resource rules still run. Both halves are checked by
-    `authorize_agent_action`; this one is exported so a test can assert the
-    declaration independently of a principal.
-    """
-    if capability in AGENT_FORBIDDEN_CAPABILITIES:
-        return False
-    return capability in agent_capabilities(agent)
-
-
 def authorize_agent_action(
     principal: Principal,
     agent: str,

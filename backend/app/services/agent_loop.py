@@ -467,19 +467,6 @@ async def run_loop(
 # task-specific rules is how prompt logic ends up somewhere nobody looks.
 
 
-def require_keys(payload: Any, *keys: str) -> Critique:
-    """`payload` is a dict carrying every named key with a non-empty value."""
-    if not isinstance(payload, dict):
-        return reject("return a JSON object")
-    missing = [key for key in keys if not str(payload.get(key) or "").strip()]
-    if missing:
-        return reject(
-            "include a non-empty value for every one of these fields: "
-            + ", ".join(missing)
-        )
-    return ok()
-
-
 def require_length(text: str, *, maximum: int, what: str = "the text") -> Critique:
     """Bound the length of a generated string.
 

@@ -1,5 +1,6 @@
 """Candidate sourcing, review-screen, decisions, pipeline status and
 interview scheduling (FR-4.3/4.4, FR-7.x, FR-8.x)."""
+import base64
 import html
 import io
 import uuid
@@ -61,6 +62,7 @@ from app.schemas.candidates import (
     VerificationRequestSummary,
 )
 from app.services import capabilities as caps
+from app.services import email_render
 from app.services import rbac
 from app.services import team_review
 from app.services.audit import audit
@@ -863,6 +865,26 @@ async def schedule_interview(
     session.add(interview)
     await session.flush()
 
+    # THE .ICS IS BUILT AND ATTACHED HERE, which it was not until 2026-09-01.
+    #
+    # This route minted an `ics_uid`, passed it inside the template context and
+    # stopped there. The docstring above, ESD section 12 and the PRD all say an
+    # interview invite carries a calendar attachment; `email_render.build_ics`
+    # has existed the whole time and nothing called it, so every invitation
+    # went out with no way to accept it into a calendar. The dead-code gate is
+    # what surfaced the function, and the function is what surfaced the gap.
+    #
+    # `pickready.send_email` takes `attachments` as
+    # [{"filename": str, "content": <base64 str>}] and `smtp_service` decodes
+    # the base64 back to bytes for the MIME part.
+    ics = email_render.build_ics(
+        uid=ics_uid,
+        summary=f"{job_title} interview with {tenant.name}",
+        starts_at=body.scheduled_at,
+        organizer_email=sent_from,
+        attendee_emails=[candidate.email] if candidate.email else [],
+        description=body.notes or "",
+    )
     celery_app.send_task(
         "pickready.send_email",
         args=[
@@ -879,6 +901,12 @@ async def schedule_interview(
                 "ics_uid": ics_uid,
                 "interview_id": str(interview.id),
             },
+            [
+                {
+                    "filename": "interview.ics",
+                    "content": base64.b64encode(ics).decode("ascii"),
+                }
+            ],
         ],
     )
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,

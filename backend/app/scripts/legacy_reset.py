@@ -819,10 +819,6 @@ def count_sql(rule: TableRule) -> str:
     return f"SELECT COUNT(*) FROM {rule.table} WHERE {_scope_clause(rule)}"
 
 
-def select_sql(rule: TableRule) -> str:
-    return f"SELECT * FROM {rule.table} WHERE {_scope_clause(rule)}"
-
-
 def delete_sql(rule: TableRule) -> str:
     if rule.bucket != PURGE:
         raise ValueError(f"{rule.table} is not a purge table")
