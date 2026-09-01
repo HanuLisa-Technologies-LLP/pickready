@@ -118,6 +118,21 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@localhost:5432/pickready
       REDIS_URL: redis://localhost:6379/0
+      # THE SCRATCH-DATABASE TESTS NEED THEIR OWN POINTER, and without it they
+      # do not fail, they SKIP.
+      #
+      # `test_company_dna_api` and friends create and drop a scratch database
+      # rather than touching the one being developed on, so they read
+      # TEST_DATABASE_URL and default it to port 55432 -- the stack
+      # `scripts/test.sh` brings up locally. CI serves Postgres on 5432, so the
+      # default pointed at nothing here and 45 tests skipped silently on every
+      # run, among them the Company DNA cross-tenant isolation cases that
+      # assert a foreign read is 404 and never 403. The suite reported 46 skips
+      # and a green pytest, which is what a coverage hole looks like from the
+      # outside.
+      #
+      # `pickready` owns this service instance, so it may CREATE DATABASE.
+      TEST_DATABASE_URL: postgresql+asyncpg://pickready:pickready@localhost:5432/pickready
       JWT_SECRET: ci-only-not-a-real-secret-value
       # DELIBERATELY UNSET: ANTHROPIC_API_KEY and VOYAGE_API_KEY.
       #
