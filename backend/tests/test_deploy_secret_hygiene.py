@@ -63,9 +63,12 @@ written into the plan file and the state file.
 """
 from __future__ import annotations
 
+import functools
 import json
 import pathlib
 import re
+import subprocess
+import sys
 
 import pytest
 
@@ -76,6 +79,8 @@ SECRETS_VARS = ROOT / "infra" / "modules" / "secrets" / "variables.tf"
 ECS_MAIN = ROOT / "infra" / "modules" / "ecs" / "main.tf"
 WORKFLOW = ROOT / ".github" / "workflows" / "deploy.yml"
 INFRA = ROOT / "infra"
+#: The backend package root, the cwd a fresh `import app.main` needs.
+BACKEND = ROOT / "backend"
 ALB_MAIN = INFRA / "modules" / "alb" / "main.tf"
 ALB_VARS = INFRA / "modules" / "alb" / "variables.tf"
 ACM_MAIN = INFRA / "modules" / "acm" / "main.tf"
@@ -437,33 +442,76 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
 }
 
 
+#: Collect the route table in a FRESH INTERPRETER, printed as JSON.
+#:
+#: WHY A SUBPROCESS AND NOT `from app.main import app`.
+#: The application object is a module-level singleton, so importing it here
+#: measures whatever the session has already done to it rather than what the
+#: application serves. In CI this test asserted against a route table
+#: containing exactly one route, `/health`, the only one main.py registers
+#: inline rather than through a router -- so every `include_router` had
+#: contributed nothing to the object this test could see, while a clean import
+#: of the same commit yields 294 routes. It passed locally and failed in CI on
+#: every run, which reads as a defect in the routes and is a defect in the
+#: measurement.
+#:
+#: A fresh interpreter has no session to inherit. If the routes are genuinely
+#: missing this still fails, which is the half worth keeping.
+_ROUTE_DUMP = """
+import json
+from fastapi.routing import APIRoute
+from app.main import app
+
+def walk(dependant, seen):
+    if dependant.call is not None:
+        seen.add(getattr(dependant.call, "__name__", repr(dependant.call)))
+    for sub in dependant.dependencies:
+        walk(sub, seen)
+    return seen
+
+out = {}
+for route in app.routes:
+    if not isinstance(route, APIRoute):
+        continue
+    names = sorted(walk(route.dependant, set()))
+    out.setdefault(route.path, [])
+    out[route.path] = sorted(set(out[route.path]) | set(names))
+print(json.dumps(out))
+"""
+
+
+@functools.lru_cache(maxsize=1)
 def _api_routes() -> dict[str, frozenset[str]]:
     """{route path -> every callable in its resolved dependency tree}.
 
-    The REAL application object, not a list of paths someone maintained by hand.
-    A route added without an auth dependency has to show up here, which is the
-    whole point: a hand-maintained list is a list of the routes somebody
+    The REAL application object, not a list of paths someone maintained by
+    hand. A route added without an auth dependency has to show up here, which
+    is the whole point: a hand-maintained list is a list of the routes somebody
     remembered.
+
+    Built in a subprocess so the answer is a property of the application rather
+    than of whatever imported it first. See `_ROUTE_DUMP`.
     """
-    from fastapi.routing import APIRoute
-
-    from app.main import app
-
-    def walk(dependant, seen: set[str]) -> set[str]:
-        if dependant.call is not None:
-            seen.add(getattr(dependant.call, "__name__", repr(dependant.call)))
-        for sub in dependant.dependencies:
-            walk(sub, seen)
-        return seen
-
-    routes: dict[str, frozenset[str]] = {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
-        names = walk(route.dependant, set())
-        # The same handler is mounted under /api/v1 and /api/v2, so merge rather
-        # than overwrite: a path is authenticated only if every mount of it is.
-        routes[route.path] = frozenset(names) | routes.get(route.path, frozenset())
+    result = subprocess.run(
+        [sys.executable, "-c", _ROUTE_DUMP],
+        cwd=BACKEND,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    assert result.returncode == 0, (
+        "importing the application to read its route table failed: "
+        f"{result.stderr[-2000:]}"
+    )
+    # The same handler is mounted under /api/v1 and /api/v2, so the dump merges
+    # rather than overwrites: a path is authenticated only if every mount of it
+    # is.
+    loaded = json.loads(result.stdout)
+    routes = {path: frozenset(names) for path, names in loaded.items()}
+    assert len(routes) > 100, (
+        f"the application reported only {len(routes)} routes, which is not a "
+        f"working route table. Something failed during import."
+    )
     return routes
 
 
