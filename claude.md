@@ -1430,7 +1430,7 @@ exemptions. Anthropic is REMOVED, not kept as a fallback, and
 - **The Key Secret is server-side only and never reaches the frontend.** The
   browser gets the Key ID from `GET /billing/config` at runtime, not from a
   build-time `NEXT_PUBLIC_` variable, so the frontend container never needs the
-  `.env` at all. `api-keys.txt` is gitignored and was never committed.
+  `.env` at all. `secrets/api-keys.txt` is gitignored and was never committed.
 - **`checkout_ready` is about the SERVER's credentials, not the plan row.**
   Razorpay Plans are minted lazily on first subscribe, so keying it off
   `razorpay_plan_id` disables every Subscribe button on a fresh install and the

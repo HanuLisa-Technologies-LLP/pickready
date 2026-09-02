@@ -1212,11 +1212,11 @@ section 6.3 repairs already made in v1.1, and it should be logged the same way.
 
 ---
 
-## Q24. The evaluator's four bands do not sample the axis the controls sit on
+## Q24. Two rows of the section 9.x rubric had no band word  [RESOLVED]
 
 **Sections:** 10.5, 12.2, 14.1
 
-**The mismatch.** Sections 10.5 and 12.2 place their control points on a
+**The mismatch, as found.** Sections 10.5 and 12.2 place their control points on a
 continuous 0-100 dimension score: the authenticity multiplier is piecewise at
 25 / 45 / 60 / 75, and the dimension floors sit at 25, 40 and 45. Miti's
 evaluators do not return a continuous score. They return one of four BANDS, and
@@ -1263,42 +1263,54 @@ nothing.
 
 **Options.**
 
-1. **Lower `absent`.** Consequence: the HOLD becomes reachable, and so does the
-   D3 floor. It also moves every grade that involves an `absent` dimension,
-   because the band score feeds the weighted composite -- so this is not a
-   scoping change, it re-grades the existing population. It would also break the
-   property the literal was chosen for: `absent` would no longer sit inside
-   `rating`'s Not Matching band as a representative value.
-2. **Raise the floors in the Runbook.** Consequence: forbidden here. Section
-   2.1 does not permit changing a floor, and `test_runbook_parity` holds the
-   data to the document, so this is a Standards Board edit or nothing.
-3. **Give the authenticity evaluator a finer output than four bands.** D4 is
-   the dimension the controls are actually about, and it is the one asked a
-   quantitative question ("does the account hold together across the sources").
-   Consequence: a second internal scale, which is the mistake CLAUDE.md records
-   the product already paid for once -- unless it is confined to D4 and never
-   reaches a category score or a client-facing grade.
-4. **Accept that the HOLD is triangulation's job, not the evaluator's.** The
-   integrity finding that would justify holding a candidate is a contradiction,
-   and `triangulation` already produces one with a severity and a human-review
-   action. Consequence: sections 10.5 and 12.2's D4 floors are then dead by
-   design and should say so, and the HOLD routing hangs off
-   `TriangulationResult.needs_human_review` rather than off a D4 score.
+1. **Lower `absent`.** Consequence: re-grades every existing candidate carrying
+   an absent dimension, because the band score feeds the weighted composite.
+2. **Raise the floors in the Runbook.** Consequence: not available to an
+   implementer. Section 2.1 does not permit changing a floor.
+3. **Give the evaluator the rows the Runbook already states.** Sections 9.1 to
+   9.5 state a SIX-row rubric over 0 to 100, and `rubric_anchor_text` already
+   puts that exact table in the prompt. The scale had four words. Two rows had
+   none, and one of them was the HOLD row.
+4. **Accept that the HOLD is triangulation's job.** Consequence: sections 10.5,
+   12.2 and 14.1's D4 controls are dead by design.
 
-**Implemented:** none. Nothing was changed. The mismatch is recorded here, in
-`bands.yaml` at both affected tables, and at `dimensions.BANDS` where the four
-numbers are set, and it is pinned by
-`test_the_band_scale_cannot_reach_three_runbook_controls` so that closing it is
-a deliberate act rather than a side effect of somebody tuning a number.
+**Implemented: option 3, on 2026-09-02, and it turned out not to need an owner
+decision at all.** The four words were never a competing scale; each already sat
+inside a real section 9.x row. What was missing was a word for the 45-59 row and
+a word for the 0-24 row, so the prompt showed the evaluator a six-row table and
+then told it to answer on four. `weak` (52) and `contradicted` (12) name the two
+rows that had none.
 
-**Recommendation:** option 4 first, as an editorial question -- establish
-whether the Standards Board intends the D4 HOLD to be an evaluator-score
-control at all, given that triangulation already owns integrity escalation and
-does it with evidence attached. If the answer is that it does, option 3 confined
-to D4, because option 1 re-grades the existing population to fix a reachability
-problem and option 2 is not available to an implementer. This should be settled
-before Part A carries real candidates: it is the only control that stops a
-delivery on integrity grounds, and it currently cannot.
+The fix is ADDITIVE and re-grades nobody: strong, solid, partial and absent keep
+their exact scores of 92, 80, 66 and 40, so every outcome that could be produced
+before is produced identically now. No Runbook number moved. All four section
+12.2 floors and all five section 10.5 branches are now reachable, and
+`test_every_band_sits_inside_its_runbook_row` holds each score to the range its
+row states, so these are checked against a citation rather than being the
+uncited literals they replace.
+
+**Two things the fix surfaced, both closed with it.**
+
+Making the HOLD reachable made a latent trap live. Below section 10.5's floor
+the multiplier is None rather than a suppression, so the composite passes
+through UNSUPPRESSED and a `contradicted` account graded ABOVE an `absent` one.
+Nothing downstream could have caught that: a grade is a plausible word whatever
+produced it. `Aggregate.client_projection` now withholds the grade entirely for
+a held candidate, which is section 10.8's "not ranked pending human disposition"
+taken literally.
+
+And an earlier note in `authenticity_multiplier` claimed the hold reason never
+reaches `review_reasons`. That was wrong. `aggregate` appends it directly from
+`caps.hold_reason`, so a held candidate always carries a reason and always sets
+`needs_human_review`. The note has been corrected.
+
+**Still open, and it is the part that needs an owner.** Nothing outside
+`aggregation.py` reads `held_for_integrity_review`: `grep -rn client_projection
+backend/app` returns one non-test caller, `app/scripts/worked_example.py`. The
+control now fires correctly and reaches the projection, and no surface renders
+it yet. Whoever wires the report or the recruiter view has to carry it, or this
+repeats the failure spec-doc6 section 4.3 already found once, where every Part A
+gate was real and every one of them guarded nothing.
 
 ## Addendum summary
 
@@ -1312,10 +1324,10 @@ delivery on integrity grounds, and it currently cannot.
 | Q21 | 58 | An ontology is required and not supplied | Keep the curated table, marked |
 | Q22 | 18.5, 20.3 | No share is stated for "every competency is must-have" | Refuse above two thirds |
 | Q23 | 9.1-9.5, 21.11, 57.3 | Anchors are per dimension; 57.3 says per department model | Read 57.3 as loose phrasing |
-| Q24 | 10.5, 12.2, 14.1 | The four evaluator bands do not sample the axis the controls sit on | Nothing changed; recorded and pinned |
+| Q24 | 10.5, 12.2, 14.1 | Two rows of the section 9.x rubric had no band word | Added the two section 9.x rows that had no word |
 
-Nine questions, none applied to the document. Q17, Q20 and Q24 are the three
-that should be settled before Part A goes live: Q17 can lower the D4 floor that
-section 11.4 says no client may lower, Q20 decides which section 11.1 row a real
-job is weighted against, and Q24 is the reason the D4 HOLD -- the only control
-that stops a delivery on integrity grounds -- cannot currently fire.
+Nine questions, none applied to the document. Q17 and Q20 are the two that
+should be settled before Part A goes live: Q17 can lower the D4 floor that
+section 11.4 says no client may lower, and Q20 decides which section 11.1 row a
+real job is weighted against. Q24 is resolved in code -- the D4 HOLD fires now
+-- with one piece left for an owner: no surface reads the flag yet.

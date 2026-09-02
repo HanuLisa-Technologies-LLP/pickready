@@ -85,7 +85,7 @@ authenticity_multiplier:
   # A SECOND, SEPARATE AMBIGUITY from the rounded-slope one below. That one is
   # about what this table computes; this one is about which of its branches can
   # ever be entered.
-  reachability_note: "Only three of the five branches can be entered. A D4 score arrives as one of dimensions.BANDS' four values (92/80/66/40), so nothing lands in 45 <= D4 < 60, nothing lands in D4 < 25 (the HOLD), and 'strong' and 'solid' both resolve to the D4 >= 75 branch and are indistinguishable here. See RUNBOOK_OPEN_QUESTIONS.md Q24."
+  reachability_note: "All five branches are reachable as of 2026-09-02. Until then dimensions.BANDS carried four words against the section 9.x rubric's six rows, so nothing landed in 45 <= D4 < 60 or in D4 < 25 (the HOLD). The two missing rows were given words and every branch can now be entered. See RUNBOOK_OPEN_QUESTIONS.md Q24."
   runbook_ambiguity: "The 60-75 branch uses a rounded slope of 0.0067, which evaluates to 1.0005 at D4=75 and therefore breaches the stated 1.00 cap. See RUNBOOK_OPEN_QUESTIONS.md Q3."
 
 uncertainty_band:
@@ -147,10 +147,10 @@ dimension_floors:
     - dimension: "D3"
       floor: 40
       effect_if_breached: "Cannot be delivered as Ready to Pick for this role; may be flagged for a different role"
-  # UNCHANGED VALUES. The note records that two of these four floors cannot be
-  # reached by anything the product produces, which is a property of the INPUT
-  # scale and not of these numbers.
-  runbook_ambiguity: "Miti's evaluators return four bands, scored 92/80/66/40 by dimensions.BANDS, so the D4 floor of 25 and the D3 floor of 40 can never be breached: the lowest score the scale can produce is 40 and the test is strictly less-than. The D4 HOLD is therefore unreachable, and it is the only control that stops a delivery on integrity grounds. See RUNBOOK_OPEN_QUESTIONS.md Q24."
+  # UNCHANGED VALUES. The note records that two of these four floors were once
+  # unreachable, which was a property of the INPUT scale and never of these
+  # numbers.
+  reachability_note: "All four floors are reachable as of 2026-09-02. Until then Miti's evaluators returned four bands scored 92/80/66/40, so the D4 floor of 25 and the D3 floor of 40 could not be breached: the lowest score the scale could produce was 40. dimensions.BANDS now carries one word per row of the section 9.x rubric, and the bottom row scores 12. See RUNBOOK_OPEN_QUESTIONS.md Q24."
 
 control_types:
   source: "RPN-PHIL-001 §12.1"

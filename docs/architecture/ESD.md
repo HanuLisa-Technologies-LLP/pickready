@@ -887,7 +887,7 @@ Not every list endpoint uses identical pagination. This should be standardized b
 
 ### Critical repository hygiene issue
 
-The working repository contains local plaintext secret material in `.env`, `api-keys.txt`, and `deployment-keys.txt`. No secret value should be copied into documentation or logs.
+The working repository contains local plaintext secret material in `.env` and under `secrets/` (`api-keys.txt`, `deployment-keys.txt`, `.github-secrets-setup.txt`). All are gitignored by pattern, which matches them at any depth. No secret value should be copied into documentation or logs.
 
 Before production:
 

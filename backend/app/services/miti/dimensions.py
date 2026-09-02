@@ -114,46 +114,49 @@ DIMENSION_QUESTIONS: dict[str, str] = {
 
 # ── Bands ────────────────────────────────────────────────────────────────────
 #
-# FOUR BANDS, matching `services/rating.GRADES`. Not a fifth internal scale:
-# this product has already paid for having two parallel five-label scales kept
-# in step by hand, and a five-band internal scale mapping onto a four-grade
-# product scale would be that mistake with an extra step.
+# SIX BANDS, ONE PER ROW OF THE RUNBOOK'S OWN SECTION 9.x RUBRIC. Sections 9.1
+# to 9.5 each state the same six-band table over 0 to 100 -- 90-100, 75-89,
+# 60-74, 45-59, 25-44, 0-24 -- and `rubric_anchor_text` puts that exact table in
+# front of the evaluator. Every word below names one of those rows, so the
+# prompt asks for an answer on the scale it just showed.
 #
-# The values are the representative internal scores the existing scale already
-# uses (`rating` cuts at 90 / 75 / 60), so an internal dimension score and a
-# product grade are on one number line rather than two.
+# IT ASKED FOR A DIFFERENT ONE UNTIL 2026-09-02, AND THAT WAS THE DEFECT. There
+# were four words, chosen as representative points inside `services/rating`'s
+# product-grade cuts (90 / 75 / 60) rather than against section 9.x, and two
+# rows of the Runbook's table had no word at all. The consequence was not a
+# rounding error, it was three controls that could never fire:
 #
-# THESE FOUR NUMBERS ARE A CODE LITERAL WITH NO RUNBOOK CITATION, AND THEY DO
-# NOT SAMPLE THE AXIS THE RUNBOOK'S CONTROLS SIT ON. Sections 10.5 and 12.2
-# place their control points on a continuous 0-100 dimension score, at 25 / 40 /
-# 45 / 60 / 75. The four values below were chosen against a different axis --
-# `rating`'s product-grade cuts -- and the two were never reconciled. The
-# measured consequence is that three Runbook controls cannot fire from any
-# evaluator output, and a fourth stops discriminating:
+#   * 0-24 is the HOLD row. Its own section 9.4 text reads "severe
+#     contradiction or verified misrepresentation -> integrity flag, mandatory
+#     human review, candidate not delivered without HR Manager decision", and
+#     section 10.5, section 12.2 and section 14.1 all key the HOLD to it. With
+#     no word for the row, no evaluator could ever report it, so the only
+#     control in the product that stops a delivery on integrity grounds was
+#     unreachable.
+#   * 45-59 is section 10.5's 0.70-to-0.90 multiplier branch. No word, so no
+#     candidate ever landed in it.
+#   * Section 12.2's D3 floor of 40 sat below the lowest score the scale could
+#     produce, so it could not be breached either.
 #
-#   * D4 below 25 -> HOLD, mandatory human review (10.5, 12.2, 14.1). The
-#     lowest score this scale can produce is 40. This is the consequential one:
-#     it is the only control in the product that stops a delivery on integrity
-#     grounds, and nothing can currently trigger it.
-#   * D3 below 40 -> not deliverable as Ready to Pick (12.2). Missed by one
-#     point: `absent` is 40 and the floor test is strictly less-than.
-#   * 45 <= D4 < 60 -> multiplier 0.70 to 0.90 (10.5). No band lands in it.
-#   * D4 >= 75 -> multiplier 1.00. Reachable, but `strong` and `solid` are
-#     indistinguishable there.
+# THE FOUR ORIGINAL WORDS KEEP THEIR EXACT SCORES. Each already sat inside a
+# real section 9.x row, so nothing that could be graded before is graded
+# differently now: this is additive. `weak` and `contradicted` are the two rows
+# that had no word, scored at the midpoint of the range the Runbook states for
+# them. `test_every_band_sits_inside_its_runbook_row` holds all six to
+# `runbook_data/dimensions.yaml`, so these are checked against a citation
+# rather than being the uncited literals they replace.
 #
-# DO NOT CLOSE THIS BY EDITING A NUMBER HERE. Lowering `absent` would make the
-# HOLD reachable and would also re-grade every existing candidate carrying an
-# `absent` dimension, because this value feeds the weighted composite. Raising a
-# floor is a Runbook edit that spec-doc6 section 2.1 does not permit an
-# implementer to make. It is an owner decision, recorded as
-# RUNBOOK_OPEN_QUESTIONS.md Q24 with the options and their costs, and pinned by
-# `test_the_band_scale_cannot_reach_three_runbook_controls` so that closing it is
-# deliberate rather than a side effect of somebody tuning a band.
+# `band_for` still accepts every one of the four original words, and must keep
+# doing so: `Evaluation.dimension_bands` persists the word, and
+# `calibration.py` reads historical rows back through it. A vocabulary change
+# that dropped a word would raise on a row written last month.
 BANDS: tuple[tuple[str, int], ...] = (
-    ("strong", 92),
-    ("solid", 80),
-    ("partial", 66),
-    ("absent", 40),
+    ("strong", 92),         # section 9.x row 90-100
+    ("solid", 80),          # section 9.x row 75-89
+    ("partial", 66),        # section 9.x row 60-74
+    ("weak", 52),           # section 9.x row 45-59
+    ("absent", 40),         # section 9.x row 25-44
+    ("contradicted", 12),   # section 9.x row 0-24, the HOLD row
 )
 
 _BAND_SCORES: dict[str, int] = dict(BANDS)
@@ -419,7 +422,15 @@ RULES
 4. A claim is not a fact. A statement on a resume is what someone asserts; treat it as such.
 5. Never infer or reason about age, gender, religion, caste, marital status, nationality, race, disability or sexual orientation. If a piece of evidence implies one, ignore that aspect entirely.
 
-BANDS: strong, solid, partial, absent.
+BANDS, one per row of the rubric above, best first:
+  strong        the top row (90-100)
+  solid         the second row (75-89)
+  partial       the third row (60-74)
+  weak          the fourth row (45-59)
+  absent        the fifth row (25-44)
+  contradicted  the bottom row (0-24)
+
+6. Pick the row the evidence actually matches, including the bottom two. `contradicted` is not a harsher way of saying `absent`: it is the row reserved for a severe contradiction or a verified misrepresentation, it routes the candidate to a person rather than to a lower score, and reporting it is how that review gets asked for. Rule 1 still governs: if you cannot tell, set insufficient_evidence rather than reaching for a low row.
 
 Return one JSON object:
 {{"band": "...", "rationale": "25-30 words", "insufficient_evidence": false, "evidence_refs": ["..."], "per_competency": {{"competency name": "band"}}}}"""

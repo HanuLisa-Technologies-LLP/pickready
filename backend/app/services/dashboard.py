@@ -949,8 +949,9 @@ def profile_panel(
     "Dimension breakdown (D1 to D5 scores)"; D8 outranks it and rules that the
     panel shows NAMED per-dimension ratings. The named rating is what the
     evaluators actually produce (`miti.dimensions.BANDS`: strong / solid /
-    partial / absent), so this is not a lossy projection of a number, it is the
-    number's own source.
+    partial / weak / absent / contradicted, one per row of the section 9.x
+    rubric), so this is not a lossy projection of a number, it is the number's
+    own source.
 
     Raw numbers, evaluator outputs and aggregation internals reach nobody
     through this function. They are `services/calibration.py`'s business, behind

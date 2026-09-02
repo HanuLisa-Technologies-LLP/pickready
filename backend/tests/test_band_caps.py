@@ -223,15 +223,19 @@ def test_the_d4_hold_is_a_routing_decision_and_not_a_ceiling() -> None:
     assert caps.hold_reason({DIM_AUTHENTICITY: 20.0}) is not None
     assert caps.hold_reason({DIM_AUTHENTICITY: 25.0}) is None
 
-    # HONESTY NOTE, and it is the reason this assertion is here. The four
-    # internal bands an evaluator may return floor D4 at 40 ("absent"), so
-    # nothing the current evaluators can say reaches the HOLD threshold of 25.
-    # The branch is implemented because the Runbook states it and because the
-    # day a numeric D4 arrives from a richer evaluator it must already be
-    # honoured -- not because it fires today. The D4 floor of 45 DOES fire on
-    # "absent", which is the control doing work in the meantime.
-    assert min(score for _band, score in BANDS) == 40
+    # THAT DAY ARRIVED ON 2026-09-02, and this assertion is the record of it.
+    # The note that stood here said the four internal bands floored D4 at 40, so
+    # nothing an evaluator could say reached the HOLD threshold of 25, and that
+    # the branch was implemented against "the day a numeric D4 arrives from a
+    # richer evaluator". What actually arrived was simpler: the section 9.x
+    # rubric the evaluator is already shown has SIX rows, the scale had four
+    # words, and the two rows with no word were the 45-59 band and the 0-24 HOLD
+    # band. Adding them made the control reachable without moving a number. See
+    # RUNBOOK_OPEN_QUESTIONS.md Q24.
+    assert min(score for _band, score in BANDS) < 25
     assert caps.hold_reason({DIM_AUTHENTICITY: 40.0}) is None
+    # The D4 floor of 45 still fires on "absent", which is the control that was
+    # doing the work in the meantime and still does.
     assert [cap.subject for cap in caps.dimension_floor_caps({DIM_AUTHENTICITY: 40.0})] == [
         DIM_AUTHENTICITY
     ]

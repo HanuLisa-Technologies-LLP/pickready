@@ -131,93 +131,84 @@ def test_insufficient_evidence_is_neutral_and_says_so_differently() -> None:
     assert "insufficient evidence" in reason
 
 
-def test_the_band_scale_cannot_reach_three_runbook_controls() -> None:
-    """THE MISMATCH, PINNED SO CLOSING IT IS DELIBERATE. See
-    RUNBOOK_OPEN_QUESTIONS.md Q24.
+def test_every_band_sits_inside_its_runbook_row() -> None:
+    """The six band scores are checked against a citation, not typed by feel.
 
-    Sections 10.5 and 12.2 place their control points on a continuous 0-100
-    dimension score. Miti's evaluators return one of four BANDS, converted by a
-    code literal with no Runbook citation whose values were chosen against a
-    different axis -- `rating`'s product-grade cuts of 90/75/60. The two were
-    never reconciled, and three controls fall in the gap.
+    Sections 9.1 to 9.5 state one six-row rubric over 0 to 100, and
+    `rubric_anchor_text` puts that exact table in front of the evaluator. Each
+    word must therefore name one row and score inside it, or the prompt shows
+    one scale and the arithmetic uses another -- which is precisely the defect
+    Q24 records.
+    """
+    from app.services.hiring import runbook_data
 
-    This test states the gap as it is TODAY. It fails if somebody lowers a band,
-    raises a floor, or otherwise closes the mismatch -- which is the point: any
-    of those re-grades the existing population or edits the Runbook, and both
-    are owner decisions rather than a side effect of tuning a number. A green
-    test here is not an endorsement, it is a record that the question is still
-    open.
+    rows = runbook_data.load("dimensions")["dimensions"]["D4"]["rubric_anchors"]
+    assert len(rows) == len(dimensions.BANDS), (
+        "a Runbook row with no word is a row no evaluator can ever report"
+    )
+    ranges = sorted(((r["low"], r["high"]) for r in rows), reverse=True)
+    scores = [value for _band, value in dimensions.BANDS]
+    assert scores == sorted(scores, reverse=True), "bands must run best first"
+    for (low, high), (band, score) in zip(ranges, dimensions.BANDS):
+        assert low <= score <= high, (band, score, low, high)
+
+
+def test_every_runbook_control_can_now_be_reached() -> None:
+    """The inverse of what this file asserted until 2026-09-02. See Q24.
+
+    Three controls could not fire, because two rows of the section 9.x rubric
+    had no word: the 0-24 HOLD row, and the 45-59 row section 10.5 prices at
+    0.70 to 0.90. Adding the words made all of them reachable. This test fails
+    if a word is removed again.
     """
     scores = [value for _band, value in dimensions.BANDS]
-    lowest = min(scores)
 
-    # 1 and 2. Two of section 12.2's four floors cannot be breached.
-    unreachable_floors = [
-        (row["dimension"], caps._floor_value(row))
-        for row in caps._floor_rows()
-        if not any(score < caps._floor_value(row) for score in scores)
-    ]
-    assert sorted(unreachable_floors) == [("D3", 40.0), ("D4", 25.0)], (
-        unreachable_floors
-    )
-    # The D3 one is missed by a single point, because the test is `<`.
-    assert lowest == 40.0
-
-    # 3 and 4. Two of section 10.5's five branches cannot be entered.
-    def entered(row):
-        low, high = row.get("d4_low"), row.get("d4_high_exclusive")
-        return [
-            score for score in scores
-            if (low is None or score >= low)
-            and (high is None or score < high)
-        ]
-
-    unreachable_branches = [
-        row["condition"] for row in aggregation._authenticity_branches()
-        if not entered(row)
-    ]
-    assert unreachable_branches == ["45 <= D4 < 60", "D4 < 25"], unreachable_branches
-
-
-def test_the_d4_hold_cannot_fire_from_any_band() -> None:
-    """The consequential half of Q24, stated on its own.
-
-    The HOLD is the only control in this product that stops a delivery on
-    integrity grounds. Both implementations of it are correct and both agree on
-    the floor; neither can be reached.
-    """
-    from app.services.hiring.department_models import DIM_AUTHENTICITY
-
-    for band, score in dimensions.BANDS:
-        assert caps.hold_reason({DIM_AUTHENTICITY: float(score)}) is None, band
-        multiplier, _reason = aggregation.authenticity_multiplier_for_score(
-            float(score)
+    for row in caps._floor_rows():
+        floor = caps._floor_value(row)
+        assert any(score < floor for score in scores), (
+            row["dimension"], floor, row["effect_if_breached"]
         )
-        assert multiplier is not None, band
+
+    for row in aggregation._authenticity_branches():
+        low, high = row.get("d4_low"), row.get("d4_high_exclusive")
+        assert any(
+            (low is None or score >= low) and (high is None or score < high)
+            for score in scores
+        ), row["condition"]
 
 
-def test_the_two_implementations_of_the_hold_floor_agree() -> None:
-    """They are separate data entries reading separate Runbook sections, and a
-    change to one without the other would deliver a held candidate with nothing
-    on the record saying why: `authenticity_multiplier` returns 1.0 for a HOLD,
-    so `review_reasons` never picks the reason up, and only `Aggregate.hold`
-    from `caps.hold_reason` would carry it."""
+def test_the_bottom_row_is_the_hold_and_it_fires() -> None:
+    """Section 9.4's own text for the 0-24 row: "severe contradiction or
+    verified misrepresentation -> integrity flag, mandatory human review,
+    candidate not delivered without HR Manager decision". It is the only control
+    in the product that stops a delivery on integrity grounds."""
     from app.services.hiring.department_models import DIM_AUTHENTICITY
 
-    caps_floor = min(
-        caps._floor_value(row)
-        for row in caps._floor_rows()
-        if str(row.get("dimension")) == "D4"
-    )
-    held = [
-        score
-        for score in range(0, 101)
-        if aggregation.authenticity_multiplier_for_score(float(score))[0] is None
-    ]
-    assert held, "the multiplier has no hold branch at all"
-    assert max(held) + 1 == caps_floor
-    assert caps.hold_reason({DIM_AUTHENTICITY: float(max(held))}) is not None
-    assert caps.hold_reason({DIM_AUTHENTICITY: caps_floor}) is None
+    bottom = dimensions.BANDS[-1][0]
+    score = float(dimensions.band_for(bottom))
+    assert caps.hold_reason({DIM_AUTHENTICITY: score}) is not None
+    assert aggregation.authenticity_multiplier_for_score(score)[0] is None
+
+    for band, value in dimensions.BANDS[:-1]:
+        assert caps.hold_reason({DIM_AUTHENTICITY: float(value)}) is None, band
+
+
+def test_the_four_original_words_kept_their_exact_scores() -> None:
+    """The fix is ADDITIVE. Every band that could be reported before scores
+    identically now, so nothing already graded is graded differently -- which
+    is what made this fixable without an owner decision about re-grading."""
+    assert dict(dimensions.BANDS)["strong"] == 92
+    assert dict(dimensions.BANDS)["solid"] == 80
+    assert dict(dimensions.BANDS)["partial"] == 66
+    assert dict(dimensions.BANDS)["absent"] == 40
+
+
+def test_a_band_written_before_the_two_rows_were_added_still_reads() -> None:
+    """`Evaluation.dimension_bands` persists the WORD and `calibration` reads
+    historical rows back through `band_for`. Dropping a word would raise on a
+    row written last month."""
+    for band in ("strong", "solid", "partial", "absent"):
+        assert dimensions.band_for(band) > 0, band
 
 
 def test_the_weakest_band_is_suppressed_rather_than_held() -> None:
@@ -303,3 +294,70 @@ def test_the_hold_flag_reaches_the_client_projection() -> None:
         isinstance(value, (int, float)) and not isinstance(value, bool)
         for value in projected.values()
     ), projected
+
+
+def test_a_held_candidate_is_not_ranked() -> None:
+    """Section 10.8: a hold is "not ranked pending human disposition".
+
+    THE TRAP THIS CLOSES. Below section 10.5's floor the multiplier is None, not
+    a suppression, so the composite passes through UNSUPPRESSED -- and a
+    `contradicted` account would otherwise grade ABOVE an `absent` one, which is
+    the worst possible reading of a worse result. Nothing downstream could catch
+    it, because a grade is a plausible word whatever produced it.
+    """
+    from app.services.hiring.department_models import DIM_AUTHENTICITY
+    from app.services.miti.dimensions import DimensionResult
+
+    def run(band: str):
+        results = [
+            DimensionResult(
+                dimension=dimension,
+                band="strong" if dimension != DIM_AUTHENTICITY else band,
+                evidence_refs=("ref:1",),
+                rationale="",
+            )
+            for dimension in dimensions.DIMENSIONS
+        ]
+        return aggregation.aggregate(results, competency_categories={})
+
+    held = run("contradicted")
+    assert held.hold is True
+    assert held.needs_human_review is True
+    assert held.review_reasons, "a hold must always say why"
+
+    projection = held.client_projection()
+    assert projection["held_for_integrity_review"] is True
+    assert projection["overall_grade"] == ""
+    assert projection["category_grades"] == {}
+
+    # And the ordinary paths still rank normally.
+    graded = run("absent")
+    assert graded.hold is False
+    assert graded.client_projection()["overall_grade"]
+
+
+def test_the_client_projection_still_carries_no_number() -> None:
+    """Both branches of it, because the held one is a second construction site
+    and a number added there would reach a client just as fast."""
+    from app.services.hiring.department_models import DIM_AUTHENTICITY
+    from app.services.miti.dimensions import DimensionResult
+
+    for band in ("strong", "contradicted"):
+        results = [
+            DimensionResult(
+                dimension=dimension,
+                band="strong" if dimension != DIM_AUTHENTICITY else band,
+                evidence_refs=("ref:1",),
+                rationale="",
+            )
+            for dimension in dimensions.DIMENSIONS
+        ]
+        projection = aggregation.aggregate(
+            results, competency_categories={}
+        ).client_projection()
+        for key, value in projection.items():
+            assert not isinstance(value, (int, float)) or isinstance(value, bool), (
+                band,
+                key,
+                value,
+            )
