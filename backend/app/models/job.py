@@ -245,6 +245,19 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
     #: document) purely for classification audit (Part 3 Rule 3).
     raw_jd_text: Mapped[str | None] = mapped_column(Text)
 
+    # ── Proctoring (migration 0076, proctoring-spec-doc section 6) ───────────
+    # The ONE recruiter setting: what happens when a candidate crosses the
+    # warning limit during their assessment. `terminate` stops it;
+    # `continue_and_note` lets them finish and says so in the report. The
+    # default is continue-and-note: the product never terminates by default
+    # without an explicit choice. Vocabulary in `models/proctoring.py`, pinned
+    # by a database CHECK. It is read for every candidate on the job and moves
+    # no score, no grade and no ranking.
+    proctoring_warning_policy: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="continue_and_note",
+        server_default="continue_and_note",
+    )
+
 
 class JDDraft(Base, UUIDPKMixin, CreatedAtMixin):
     """One AI-generated JD draft, classified the moment it was generated.
