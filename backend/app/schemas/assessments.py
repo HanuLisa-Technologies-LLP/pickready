@@ -349,6 +349,39 @@ class FunctionalReportOut(NumberFreeDelivery):
     immutable: bool = True
 
 
+class AnswerBehaviourIn(BaseModel):
+    """Keystroke and mouse TIMINGS for the answer being submitted (proctoring
+    spec 4.5). Offsets in milliseconds from when the field was first focused.
+    Never characters: what was typed is the answer, stored separately.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    keydown_offsets_ms: list[int] = Field(default_factory=list, max_length=20_000)
+    backspace_offsets_ms: list[int] = Field(default_factory=list, max_length=20_000)
+    #: Blocked paste, drop and clipboard attempts on this field.
+    blocked_action_count: int = Field(default=0, ge=0, le=10_000)
+    #: Total milliseconds the field held focus.
+    focus_ms: int = Field(default=0, ge=0, le=24 * 3600 * 1000)
+    #: Pointer path, aggregated on the client at the sample rate the server
+    #: configured. Never raw coordinates.
+    mouse_samples: int = Field(default=0, ge=0, le=1_000_000)
+    mouse_path_px: int = Field(default=0, ge=0, le=100_000_000)
+    mouse_idle_ms: int = Field(default=0, ge=0, le=24 * 3600 * 1000)
+    mouse_clicks: int = Field(default=0, ge=0, le=100_000)
+    #: Offsets of clicks on MCQ options, for rapid-fire versus considered
+    #: selection.
+    option_click_offsets_ms: list[int] = Field(default_factory=list, max_length=1_000)
+    #: Scroll events while the question was being read.
+    scroll_events: int = Field(default=0, ge=0, le=100_000)
+
+
+# ── The recruiter's view of what was actually asked and answered ─────────────
+# A report states a grade; this is the evidence behind it. A recruiter deciding
+# whether to interview someone, and a candidate disputing a grade, both need the
+# transcript, and until 2026-08-06 the only way to read one was a psql session.
+
+
 class ConversationMessageIn(BaseModel):
     """One turn. Prose for a text question; a structure for the others.
 
@@ -414,39 +447,6 @@ class ConversationOut(BaseModel):
     #: The proctoring termination notice, in plain language, when `status` is
     #: terminated. Never a reason code.
     termination_message: str | None = None
-
-
-class AnswerBehaviourIn(BaseModel):
-    """Keystroke and mouse TIMINGS for the answer being submitted (proctoring
-    spec 4.5). Offsets in milliseconds from when the field was first focused.
-    Never characters: what was typed is the answer, stored separately.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    keydown_offsets_ms: list[int] = Field(default_factory=list, max_length=20_000)
-    backspace_offsets_ms: list[int] = Field(default_factory=list, max_length=20_000)
-    #: Blocked paste, drop and clipboard attempts on this field.
-    blocked_action_count: int = Field(default=0, ge=0, le=10_000)
-    #: Total milliseconds the field held focus.
-    focus_ms: int = Field(default=0, ge=0, le=24 * 3600 * 1000)
-    #: Pointer path, aggregated on the client at the sample rate the server
-    #: configured. Never raw coordinates.
-    mouse_samples: int = Field(default=0, ge=0, le=1_000_000)
-    mouse_path_px: int = Field(default=0, ge=0, le=100_000_000)
-    mouse_idle_ms: int = Field(default=0, ge=0, le=24 * 3600 * 1000)
-    mouse_clicks: int = Field(default=0, ge=0, le=100_000)
-    #: Offsets of clicks on MCQ options, for rapid-fire versus considered
-    #: selection.
-    option_click_offsets_ms: list[int] = Field(default_factory=list, max_length=1_000)
-    #: Scroll events while the question was being read.
-    scroll_events: int = Field(default=0, ge=0, le=100_000)
-
-
-# ── The recruiter's view of what was actually asked and answered ─────────────
-# A report states a grade; this is the evidence behind it. A recruiter deciding
-# whether to interview someone, and a candidate disputing a grade, both need the
-# transcript, and until 2026-08-06 the only way to read one was a psql session.
 
 
 class TranscriptAnswerDetailOut(BaseModel):
