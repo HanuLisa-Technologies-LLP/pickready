@@ -154,11 +154,25 @@ resource "aws_internet_gateway" "this" {
 # ── Public ───────────────────────────────────────────────────────────────────
 
 resource "aws_subnet" "public" {
-  count                   = local.az_count
-  vpc_id                  = aws_vpc.this.id
-  availability_zone       = var.availability_zones[count.index]
-  cidr_block              = cidrsubnet(var.cidr_block, 8, count.index)
-  map_public_ip_on_launch = true
+  count             = local.az_count
+  vpc_id            = aws_vpc.this.id
+  availability_zone = var.availability_zones[count.index]
+  cidr_block        = cidrsubnet(var.cidr_block, 8, count.index)
+
+  # NOTHING IN THESE SUBNETS WANTS AN AUTO-ASSIGNED PUBLIC IP, so the default
+  # that hands one out is turned off rather than left inert.
+  #
+  # Exactly three things sit here and none of them is affected: the route table
+  # association, the NAT gateways (which carry an explicitly allocated
+  # `aws_eip`), and the load balancer (which is addressed by the ELB service).
+  # Every task runs in the PRIVATE subnets and every database in the DATA ones.
+  #
+  # It was `true`, which changed nothing today and quietly decided the future:
+  # the next thing launched into a public subnet, by a console click or by a
+  # module somebody adds, would have reached the internet directly and been
+  # reachable from it, with no line in any diff saying so. Turning it off makes
+  # that a deliberate per-resource `associate_public_ip_address` instead.
+  map_public_ip_on_launch = false
 
   tags = merge(var.tags, { Name = "${local.name}-public-${count.index}", Tier = "public" })
 }

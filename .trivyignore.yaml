@@ -1,0 +1,176 @@
+# Trivy exceptions for the ReadyPick tree.
+#
+# THE RULE FOR THIS FILE IS THE ONE `infra/.checkov.yml` AND
+# `.impeccable-exceptions.md` ALREADY FOLLOW: an exception exists only WITH A
+# REASON, written here, and the CI step stays blocking. The only way past it is
+# an entry somebody had to write and somebody had to review.
+#
+# WHY THIS FILE APPEARED ON 2026-09-03 AND NOT EARLIER. The Trivy job was pinned
+# to an action tag that does not exist, so it died in "Set up job" on every run
+# since it was written and never produced a finding. Fixing the tag surfaced 21
+# alerts at once, none of them introduced by the change that fixed it. Two were
+# genuinely new and were fixed rather than listed (a build argument whose NAME
+# read as a credential, and a `node-fetch` pulled in by face-api.js). The rest
+# are below, triaged one at a time.
+#
+# EVERY ENTRY IS SCOPED WITH `paths`. A bare id would hide the same finding
+# everywhere, including on the next resource that genuinely has the problem, and
+# an allowlist that silently grows to cover new code is the failure mode this
+# repository has written about before. An entry here excuses ONE file.
+#
+# The four kinds are `infra/.checkov.yml`'s, deliberately, because the two
+# scanners look at the same Terraform and a reader should not have to hold two
+# taxonomies:
+#
+#   FALSE POSITIVE   The scanner is reading the configuration wrongly, usually
+#                    because the fact that resolves it is a conditional it
+#                    cannot evaluate or lives in another module.
+#   IMPOSSIBLE       AWS does not permit what the check asks for in this
+#                    combination. Complying would break the feature.
+#   STAGING DIFFERS  Both environment roots are scanned together, so a
+#                    production-only setting fails on the staging value.
+#   DELIBERATE       A decision this project made, argued where it was made.
+#
+# Where checkov already carries the same argument its check id is named, so the
+# two files cannot drift into disagreeing about one resource.
+
+misconfigurations:
+  # ── FALSE POSITIVE ─────────────────────────────────────────────────────────
+
+  # AWS-0133 "Instance does not have performance insights enabled"
+  # It does, in production: `performance_insights_enabled = var.environment ==
+  # "production"`, with a CMK and a 7 day retention beside it. Trivy evaluates
+  # the module statically and cannot resolve the conditional, so it reports the
+  # false arm. Staging is off on cost, which is the same trade
+  # `environments/staging/main.tf` states everywhere else.
+  - id: AWS-0133
+    paths:
+      - "infra/modules/rds/main.tf"
+    statement: >-
+      Enabled in production through a conditional Trivy cannot evaluate.
+      Off in staging as a stated cost decision.
+
+  # AWS-0177 "Instance does not have Deletion Protection enabled"
+  # Same conditional, and this one has a second guard behind it:
+  # `deletion_protection = var.environment == "production"` AND
+  # `skip_final_snapshot = var.environment != "production"`. Two independent
+  # mechanisms, because they fail differently. Checkov reports the analogous
+  # finding on the ALB and is skipped for the same reason (CKV_AWS_150).
+  - id: AWS-0177
+    paths:
+      - "infra/modules/rds/main.tf"
+    statement: >-
+      Enabled in production through a conditional Trivy cannot evaluate, with a
+      mandatory final snapshot as a second guard. Staging is meant to be
+      destroyable.
+
+  # ── STAGING DIFFERS FROM PRODUCTION ────────────────────────────────────────
+
+  # AWS-0034 "Cluster does not have container insights enabled"
+  # `value = var.environment == "production" ? "enhanced" : "disabled"`. On, at
+  # the enhanced tier, in production. It is billed per metric and "is the worker
+  # saturated" is a production question. Checkov: CKV_AWS_65.
+  - id: AWS-0034
+    paths:
+      - "infra/modules/ecs/main.tf"
+    statement: >-
+      Enhanced in production, disabled in staging on cost. Mirrors the checkov
+      skip CKV_AWS_65.
+
+  # ── IMPOSSIBLE ─────────────────────────────────────────────────────────────
+
+  # AWS-0132 "Bucket does not encrypt data with a customer managed key"
+  # The ALB ACCESS LOG bucket only. The Elastic Load Balancing log delivery
+  # service writes with the bucket's default encryption and supports SSE-S3 and
+  # SSE-KMS with an AWS-managed key only; a customer-managed key makes every
+  # PutObject fail, and it fails SILENTLY, so logging stops while the load
+  # balancer stays healthy and nobody finds out until an investigation needs the
+  # logs. The APPLICATION bucket, which holds resumes, IS CMK-encrypted. They
+  # are two buckets precisely because they have different requirements.
+  # Checkov: CKV_AWS_145.
+  - id: AWS-0132
+    paths:
+      - "infra/modules/alb/main.tf"
+    statement: >-
+      The ALB log delivery service supports only SSE-S3 or an AWS-managed key.
+      A CMK makes every write fail silently. The resume bucket is CMK-encrypted.
+
+  # AWS-0090 "Bucket does not have versioning enabled"
+  # Same bucket, and versioning is explicitly Suspended rather than merely
+  # absent. An access log object is written once and never rewritten, so a
+  # version history would hold nothing but delete markers and the lifecycle rule
+  # would have two things to expire instead of one. Checkov: CKV_AWS_21.
+  - id: AWS-0090
+    paths:
+      - "infra/modules/alb/main.tf"
+    statement: >-
+      Access log objects are written once. A version history would hold only
+      delete markers and would double what the lifecycle rule has to expire.
+
+  # ── DELIBERATE ─────────────────────────────────────────────────────────────
+
+  # AWS-0053 "Load balancer is exposed publicly"
+  # It is a public web application. An internal load balancer would serve no
+  # candidate and no client. What is actually constrained is stated one tier
+  # down and is asserted separately: `0.0.0.0/0` ingress exists nowhere except
+  # this load balancer's 80 and 443, the port 80 listener only returns a 301,
+  # and the data subnets have no route to the internet in either direction.
+  - id: AWS-0053
+    paths:
+      - "infra/modules/alb/main.tf"
+    statement: >-
+      A public product needs a public load balancer. Ingress from 0.0.0.0/0
+      exists nowhere else, and port 80 only redirects.
+
+  # AWS-0104 "Security group rule allows unrestricted egress to any IP address"
+  # The ECS task security group, and the reason is written on the rule itself:
+  # the tasks must reach the model provider, the vendor APIs and SMTP, none of
+  # which publishes a stable address range worth pinning. The control that
+  # matters is one tier down and is real: the DATA subnets have no route to the
+  # internet in either direction, not even outbound through NAT, so the database
+  # host cannot reach an attacker even if a task is compromised.
+  # Checkov: CKV_AWS_382.
+  - id: AWS-0104
+    paths:
+      - "infra/modules/network/main.tf"
+    statement: >-
+      Tasks must reach the model provider, the vendor APIs and SMTP. The data
+      subnets have no route to the internet in either direction, which is the
+      control that carries the weight here.
+
+  # AWS-0089 "Bucket has logging disabled"
+  # Both buckets, and this is the honest record of a gap rather than a claim
+  # that logging exists. S3 server access logging is best-effort and delivered
+  # on a delay measured in hours, which makes it the wrong instrument for the
+  # question actually being asked, "who read which resume". That needs
+  # CloudTrail S3 data events, which are attributable to an IAM principal and
+  # delivered promptly. Data events are an ACCOUNT-level configuration rather
+  # than a bucket one, so this Terraform does not create them; the step is
+  # written out in `docs/operations/DEPLOY_AWS.md` Step 7 as an owner decision.
+  # Logging the log bucket into itself would also be circular.
+  # Checkov: CKV_AWS_18.
+  - id: AWS-0089
+    paths:
+      - "infra/modules/s3/main.tf"
+      - "infra/modules/alb/main.tf"
+    statement: >-
+      CloudTrail S3 data events are the right instrument for "who read which
+      resume" and are an account-level owner step recorded in DEPLOY_AWS.md.
+      This is the honest record of that gap, not a claim that logging exists.
+
+  # DS-0026 "Add HEALTHCHECK instruction in your Dockerfile"
+  # All three images. This platform health-checks containers where the platform
+  # can act on the answer: the ECS task definition declares the check and
+  # replaces a task that fails it, and `infra/docker-compose.yml` does the same
+  # locally. A HEALTHCHECK baked into the image would be a second definition of
+  # the same thing, in a place ECS ignores, and two mechanisms for one behaviour
+  # is the rule this codebase spent a phase removing from `services/tiers.py`.
+  - id: DS-0026
+    paths:
+      - "backend/Dockerfile"
+      - "frontend/Dockerfile"
+      - "analysis-service/Dockerfile"
+    statement: >-
+      Health checks are declared in the ECS task definition and the compose
+      file, where the platform can act on them. A second copy in the image
+      would be one behaviour with two definitions.

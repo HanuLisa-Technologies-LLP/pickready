@@ -52,11 +52,13 @@ including the two that predate this work: this platform health-checks
 containers in the ECS task definition and the compose file rather than in the
 image.
 
-**Twenty-one findings on the infrastructure modules are now visible for the
-first time and none of them has been triaged.** Some are deliberate and
-documented in the Terraform itself, such as the egress rule whose comment names
-the model provider, the vendor APIs and SMTP. Triaging the set is real work and
-it is not part of this change.
+**Triaged on 2026-09-03**, in the change that follows this one. All twenty-one
+were resolved: two fixed, and the rest accepted with a written reason in
+`.trivyignore.yaml`, which mirrors `infra/.checkov.yml`'s four-kind taxonomy and
+cross-references its check ids so the two scanners cannot drift into
+disagreeing about one resource. Every entry is scoped with `paths` to the file
+it excuses, so a bare rule id can never quietly cover the next resource that
+genuinely has the problem. See that file for the argument on each.
 
 ## Manual verification performed
 

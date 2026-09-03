@@ -152,7 +152,13 @@ describe("the client and the server share one vocabulary", () => {
   });
 
   it("reads exactly the config fields the backend projects to the client", () => {
-    const block = configSource.match(/CLIENT_FIELDS: tuple\[str, \.\.\.\] = \(([\s\S]*?)\)\n/);
+    // `\r?\n` rather than `\n`. The closing paren has to sit at the end of a
+    // line so an inner `)` cannot end the match early, but `.gitattributes`
+    // pins LF for shell and YAML only, so a Windows checkout hands this test
+    // CRLF Python and `\)\n` matches nothing. It failed for that reason and
+    // for no other, which reads as a broken contract rather than a broken
+    // regex. Line endings are not part of what this test checks.
+    const block = configSource.match(/CLIENT_FIELDS: tuple\[str, \.\.\.\] = \(([\s\S]*?)\)\r?\n/);
     expect(block, "CLIENT_FIELDS is no longer a plain tuple literal").toBeTruthy();
     const fields = [...(block as RegExpMatchArray)[1].matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]);
     expect(fields.length).toBeGreaterThan(0);
