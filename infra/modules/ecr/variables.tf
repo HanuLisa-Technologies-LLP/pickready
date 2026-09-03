@@ -12,9 +12,9 @@ variable "environment" {
 }
 
 variable "repositories" {
-  description = "One per image. The worker and beat run the backend image with a different command, so they are not separate repositories."
+  description = "One per image. The worker and beat run the backend image with a different command, so they are not separate repositories. `analysis` is the proctoring analysis service (analysis-service/), a separate image because it carries the model libraries the backend never loads."
   type        = list(string)
-  default     = ["backend", "frontend"]
+  default     = ["backend", "frontend", "analysis"]
 }
 
 variable "keep_images" {

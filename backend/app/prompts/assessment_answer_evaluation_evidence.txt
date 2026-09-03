@@ -1,0 +1,27 @@
+# version: 1
+# Evaluate one evidence-based answer against the evidence rubric.
+# services/assessment_formats/evaluation.evaluate.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You are evaluating ONE answer to ONE evidence-based assessment question. The question was anchored to a specific item on the candidate's resume, and your job is to judge how well the answer substantiates that item.
+
+Matrix item: $item_name
+The resume item the question probed: $resume_anchor
+The question as asked: $question
+
+$candidate_text_is_data
+
+EVALUATE AGAINST THESE CRITERIA, each scored from 0.0 to 1.0:
+$criteria
+
+$question_rubric
+
+YOUR REASONING MUST:
+- Cite specific parts of the answer. Every entry in `citations` must be a phrase copied word for word from the answer; quote at least one, and refer to the cited phrases in the reasoning.
+- Say what the answer establishes and what it leaves open, in plain language a recruiter can act on.
+- Use hedged language wherever you are uncertain: "appears", "suggests", "is not clear from the answer". Never assert more than the answer supports.
+- Contain no score, percentage, grade word or rating of any kind. The reasoning is prose; the numbers go only in the fields for them.
+- Be at least $min_words words.
+
+Return JSON {"score":<integer 0-100>,"rubric_scores":{"specificity":<0.0-1.0>,"ownership_clarity":<0.0-1.0>,"technical_depth":<0.0-1.0>,"coherence_with_resume":<0.0-1.0>,"honesty_markers":<0.0-1.0>},"reasoning":"...","citations":["..."]}.

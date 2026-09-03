@@ -145,6 +145,117 @@ def _pdf_text(payload: bytes) -> str:
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
+# ── The Proctoring Report travels inside the payload ─────────────────────────
+
+
+def _proctoring_section() -> dict:
+    """A populated Proctoring Report, composed by the real composer.
+
+    Built rather than hand-written, because a hand-written fixture would only
+    prove that a dict somebody typed carries no number. What has to hold is
+    that the SENTENCES the product generates carry none, including their
+    spelled-out counts and approximate durations.
+    """
+    import uuid as _uuid
+    from datetime import timedelta
+
+    from app.models.proctoring import OUTCOME_COMPLETED, QUALITY_GOOD
+    from app.services.proctoring import catalog as proctoring_catalog
+    from app.services.proctoring import report as proctoring_report
+
+    start = datetime(2026, 8, 29, 10, 0, tzinfo=timezone.utc)
+
+    class _Session:
+        id = _uuid.uuid4()
+        consented_at = start
+        started_at = start
+        ended_at = start + timedelta(minutes=38)
+        outcome = OUTCOME_COMPLETED
+        warnings_used = 2
+        termination_reason = None
+        session_quality = QUALITY_GOOD
+
+    def _view(event_type: str, minute: int, duration_ms=None, warning_number=None):
+        return proctoring_report.EventView(
+            event_type=event_type,
+            occurred_at=start + timedelta(minutes=minute),
+            duration_ms=duration_ms,
+            path=proctoring_catalog.spec_for(event_type).path,
+            warning_issued=warning_number is not None,
+            warning_number=warning_number,
+            metadata={},
+        )
+
+    content = proctoring_report.compose(
+        candidate_name="Fixture Candidate",
+        assessment_name="Tatva Assessment for Platform Engineer",
+        ps=_Session(),
+        events=[
+            _view("WINDOW_FOCUS_LOST", 3, 9_000, warning_number=1),
+            _view("DEVICE_DETECTED_PHONE", 11, 30_000, warning_number=2),
+            _view("FACE_ABSENT_BRIEF", 19, 7_000),
+            _view("BLOCKED_ACTION_ATTEMPTED", 22),
+            _view("FAST_TEXT_ENTRY", 26, 40_000),
+        ],
+        audio_available=True,
+    )
+    return {**content, "generated_at": GENERATED_AT}
+
+
+def test_a_report_carrying_a_proctoring_section_still_serialises() -> None:
+    """The Proctoring Report is the final section of the delivered PRISM
+    payload, so it passes through the same serialiser-level ban as everything
+    else. A count rendered as a digit anywhere in it would refuse the whole
+    document, which is the correct failure and a loud one."""
+    payload = _payload()
+    payload["proctoring"] = _proctoring_section()
+    report = FunctionalReportOut(**payload)
+    assert report.proctoring is not None
+    assert not numbers.scan(report, path="prism.json")
+
+
+def test_the_proctoring_section_reaches_every_export_format() -> None:
+    """Section 7: appended to the Executive Profile. The PDF renderer walks
+    its own SECTION_ORDER, so a section present in the payload and absent
+    from that tuple would vanish silently from the copy that gets forwarded."""
+    payload = _payload()
+    payload["proctoring"] = _proctoring_section()
+    report = FunctionalReportOut(**payload)
+
+    assert delivery.prism_json(report)["proctoring"]["candidate"] == "Fixture Candidate"
+    pdf = delivery.prism_pdf(
+        report,
+        candidate_name="Fixture Candidate",
+        job_title="Platform Engineer",
+        tenant_name="Fixture Tenant",
+        generated_at=GENERATED_AT,
+    )
+    text = _pdf_text(pdf)
+    assert report_pdf.PROCTORING_TITLE in text
+    assert "Left the assessment screen" in text
+    # ...and it is LAST, after the section that used to end the document.
+    assert text.index("Validation") < text.index(report_pdf.PROCTORING_TITLE)
+
+
+def test_a_report_with_no_proctoring_section_still_renders_the_heading() -> None:
+    """A report written before proctoring existed, or one whose session never
+    produced a report. The heading is still drawn with a one-line statement,
+    so a reader knows the section was looked for rather than wondering whether
+    the document was cut short."""
+    report = FunctionalReportOut(**_payload())
+    assert report.proctoring is None
+    pdf = delivery.prism_pdf(
+        report,
+        candidate_name="Fixture Candidate",
+        job_title="Platform Engineer",
+        tenant_name="Fixture Tenant",
+        generated_at=GENERATED_AT,
+    )
+    text = _pdf_text(pdf)
+    assert report_pdf.PROCTORING_TITLE in text
+    assert report_pdf.PROCTORING_ABSENT in text
+
+
 # ── The clean report survives every format ───────────────────────────────────
 
 
@@ -379,6 +490,33 @@ def test_score_shaped_prose_is_refused_wherever_it_appears(remark: str) -> None:
     """A number does not have to be a field. The remark is written by a model
     that has just been asked to assess somebody, which is precisely where
     "demonstrates strong 8/10 capability" comes from."""
+    payload = _payload()
+    payload["must_have"][0]["remark"] = remark
+    violations = numbers.scan(payload)
+    assert violations, remark
+    assert all(v.rule == numbers.RULE_SCORE_PROSE for v in violations)
+
+
+@pytest.mark.parametrize(
+    "remark",
+    [
+        "Rates 8 out of 10 on the rubric written for this competency.",
+        "Sits at 8 out of 10 for depth against what the role asks.",
+        "Scored 7 out of 12 across the questions probing this item.",
+    ],
+)
+def test_a_score_stated_out_of_a_total_is_refused_in_a_report(remark: str) -> None:
+    """The gap this closes, measured on 2026-09-03: every one of these passed
+    the whole ban.
+
+    `conversation_guardrails.contains_forbidden_number` carries an out-of-N
+    pattern, and it deliberately restricts the denominator and refuses to fire
+    when a word follows, because it guards INTERVIEWER SPEECH where
+    "7 out of 10 services" is ordinary technical content. In a delivered report
+    a trailing word is just what a sentence looks like, so that restriction
+    left the most natural way a model states a score wide open. The rule is
+    report-specific and lives with the other two report-specific rules.
+    """
     payload = _payload()
     payload["must_have"][0]["remark"] = remark
     violations = numbers.scan(payload)

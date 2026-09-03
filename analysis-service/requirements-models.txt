@@ -1,0 +1,22 @@
+# The inference half. Pinned exactly, and installed in the image with
+#   --extra-index-url https://download.pytorch.org/whl/cpu
+# so torch resolves to the CPU build (~200 MB) rather than the CUDA build
+# (several GB) on x86_64. On aarch64 the CPU index and PyPI carry the same
+# CPU-only wheels, which is what lets one requirements file build the ARM64
+# image the ECS cluster runs.
+#
+# torch, torchaudio and torchcodec move in lock step: torchaudio pins the
+# exact torch it was built against and torchcodec 0.12 is the release paired
+# with torch 2.11. Bump all three together or the resolver refuses.
+torch==2.11.0
+torchaudio==2.11.0
+torchcodec==0.12.0
+# pyannote.audio 4 loads the pinned 3.1 pipeline through the same
+# from_pretrained(revision=...) path it uses for its own models, and its
+# inner segmentation and embedding models are pinned per repository by
+# app/diarization.py rather than left to whatever "main" points at.
+pyannote.audio==4.0.7
+# transformers 5 loads the RoBERTa detector from its safetensors file. The
+# hub client is pinned because both libraries above import it.
+transformers==5.5.4
+huggingface_hub==1.11.0

@@ -156,6 +156,16 @@ EDITS = [
       max_count     = 10
       needs_s3      = true'''),
     ('"--loglevel=info", "--concurrency=2",', '"--loglevel=info", "--concurrency=4",'),
+    ('''      cpu           = 2048
+      memory        = 8192
+      desired_count = 1
+      max_count     = 2
+      port          = 8100''',
+     '''      cpu           = 2048
+      memory        = 8192
+      desired_count = 2
+      max_count     = 4
+      port          = 8100'''),
     ('''      cpu              = 512
       memory           = 1024
       desired_count    = 1

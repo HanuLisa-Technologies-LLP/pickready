@@ -125,6 +125,18 @@ SPEC_B3_ASSIGNMENT = {
     "triangulation": llm_providers.MODEL_TERRA,
     # Siddhi -- dossier / PRISM generation -> the reasoning tier
     "report_synthesis": llm_providers.MODEL_TERRA,
+    # ── Assessment question formats (assessment-spec-doc.md) ────────────────
+    # Writing a structured question's payload and anchoring an evidence
+    # question to a quotable resume item is evidence-grounded WRITING, and
+    # evaluating an evidence or coding answer against its rubric is JUDGING.
+    # Both are the reasoning tier by section B.2's own split.
+    "format_composition": llm_providers.MODEL_TERRA,
+    "answer_evaluation": llm_providers.MODEL_TERRA,
+    # A fill-in-the-blank near miss ("Postgres" against "PostgreSQL") is a
+    # yes-or-no equivalence classification over two short strings, on the
+    # candidate's own request path. Narrow, mechanical, must be fast: the
+    # extraction tier, for the same reason `rerank` is.
+    "fill_blank_equivalence": llm_providers.MODEL_LUNA,
 }
 
 

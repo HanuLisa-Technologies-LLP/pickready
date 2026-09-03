@@ -1,0 +1,5 @@
+# The HTTP half of the service. Pinned exactly; requirements-test.txt reuses
+# this file so the tests run against the versions the image ships.
+fastapi==0.136.0
+uvicorn==0.45.0
+python-multipart==0.0.26

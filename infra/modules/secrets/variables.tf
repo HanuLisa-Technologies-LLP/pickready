@@ -41,6 +41,7 @@ variable "secret_names" {
     "RAZORPAY_WEBHOOK_SECRET",
     "TAVILY_API_KEY",
     "MSG91_API_KEY",
+    "HUGGINGFACE_TOKEN",
   ]
 }
 
@@ -58,6 +59,11 @@ variable "service_secrets" {
                 that could read a model credential is a scheduler that could
                 spend money.
       migrate   a one-shot job. The DSN, and nothing else at all.
+      analysis  the proctoring analysis service. The Hugging Face token that
+                unlocks the gated diarization models, and nothing else: it
+                holds no DSN, no broker and no model-provider key, because
+                the only thing it is handed is fifteen seconds of audio and
+                the only thing it answers is a speaker count.
 
     The GCP-phase finding was one runtime identity holding all of these. Nothing
     was misconfigured; the grant was simply wider than the need, and a wildcard
@@ -96,6 +102,9 @@ variable "service_secrets" {
     webhook = [
       "DATABASE_URL",
       "RAZORPAY_WEBHOOK_SECRET",
+    ]
+    analysis = [
+      "HUGGINGFACE_TOKEN",
     ]
   }
 }

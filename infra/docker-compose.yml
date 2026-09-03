@@ -45,6 +45,10 @@ services:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
       REDIS_URL: redis://redis:6379/0
       FRONTEND_URL: http://localhost:3000
+      # Where the proctoring pipeline posts audio chunks. Empty in .env means
+      # audio analysis is UNAVAILABLE, which the report states plainly; inside
+      # the compose network the service is reachable by its own name.
+      PROCTORING_ANALYSIS_SERVICE_URL: http://analysis:8100
     ports:
       - "8000:8000"
     depends_on:
@@ -75,6 +79,9 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
       REDIS_URL: redis://redis:6379/0
+      # The worker runs the reconciliation sweeps that re-read a session, so it
+      # needs the same address the API posts chunks to.
+      PROCTORING_ANALYSIS_SERVICE_URL: http://analysis:8100
     depends_on:
       postgres:
         condition: service_healthy
@@ -104,6 +111,48 @@ services:
     # while the bind-mounted source tree is not (and should not be). The path
     # is the entrypoint's default (CELERY_BEAT_SCHEDULE).
     command: beat
+
+  # The proctoring analysis service (../analysis-service): speaker counting on
+  # a fifteen-second audio chunk, and an AI-text estimate that ships disabled.
+  #
+  # ITS OWN IMAGE, not a role of the backend one, because it carries torch,
+  # pyannote.audio and transformers -- several hundred megabytes the API and
+  # the worker never load -- and because the one media type that leaves a
+  # candidate's browser is handled here and nowhere else. It writes no audio
+  # anywhere: the chunk is decoded from an in-memory buffer and destroyed.
+  #
+  # NO BIND MOUNT and no reload. The image bakes its model weights at build
+  # time, so a mounted source tree would run new code against a cache the
+  # container cannot see, and an editable model service is not a thing anybody
+  # wants to debug.
+  analysis:
+    build:
+      context: ../analysis-service
+      args:
+        # A local build has no Hugging Face token, so the gated diarization
+        # models are skipped and /health reports diarization unavailable. To
+        # bake them in, accept the two model licences (see
+        # ../analysis-service/README.md), export HUGGINGFACE_TOKEN and run
+        #   DOCKER_BUILDKIT=1 docker compose -f infra/docker-compose.yml build analysis
+        # with `--build-arg ALLOW_MISSING_HUGGINGFACE_TOKEN=false`. CI never
+        # passes true, so a deployed image is never missing them silently.
+        ALLOW_MISSING_HUGGINGFACE_TOKEN: "true"
+    # env_file carries HUGGINGFACE_TOKEN from ../.env. It is a RUNTIME
+    # requirement as well as a build one: the model licence is accepted per
+    # account, so the service refuses to load the gated pipeline without a
+    # token even though its weights are already on disk.
+    env_file: ../.env
+    ports:
+      - "8100:8100"
+    healthcheck:
+      # /health answers 200 while the process serves and reports each component
+      # in the body, so a container with no token is up and honest rather than
+      # restarting forever over a configuration decision.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
 
   frontend:
     build:

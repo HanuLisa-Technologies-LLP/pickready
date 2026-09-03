@@ -374,6 +374,22 @@ resource "aws_vpc_security_group_ingress_rule" "ecs_from_alb" {
   referenced_security_group_id = aws_security_group.alb.id
 }
 
+# TASK TO TASK, on the enumerated internal ports only. The analysis service
+# has no target group and no public path; the api and worker reach it by its
+# Cloud Map name inside the VPC, and this rule is the only thing that lets that
+# packet through. A group referencing ITSELF is deliberately narrow: it admits
+# the tasks that carry this group and nothing else in the address range.
+resource "aws_vpc_security_group_ingress_rule" "ecs_internal" {
+  for_each = toset([for port in var.internal_service_ports : tostring(port)])
+
+  security_group_id            = aws_security_group.ecs.id
+  description                  = "Internal port ${each.value}, from other tasks in this group only"
+  from_port                    = tonumber(each.value)
+  to_port                      = tonumber(each.value)
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.ecs.id
+}
+
 resource "aws_security_group" "rds" {
   name        = "${local.name}-rds"
   description = "PostgreSQL"

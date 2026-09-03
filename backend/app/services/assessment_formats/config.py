@@ -29,6 +29,9 @@ class FormatConfig:
     time_seconds_by_type: dict[str, int]
     weight_by_type: dict[str, float]
     composition_attempts: int
+    evaluation_min_reasoning_words: int
+    anchor_min_chars: int
+    misconception_min_words: int
 
     def duration_for(self, grade: str) -> int:
         return self.duration_seconds_by_grade[grade]
@@ -67,4 +70,7 @@ def get_config() -> FormatConfig:
             types.CODING: settings.assessment_weight_coding,
         },
         composition_attempts=settings.assessment_composition_attempts,
+        evaluation_min_reasoning_words=settings.assessment_evaluation_min_reasoning_words,
+        anchor_min_chars=settings.assessment_anchor_min_chars,
+        misconception_min_words=settings.assessment_misconception_min_words,
     )

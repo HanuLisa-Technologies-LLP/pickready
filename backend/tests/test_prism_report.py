@@ -36,6 +36,9 @@ SPEC_ORDER = (
     "behavioural",
     "gap_analysis",
     "validation",
+    # The Proctoring Report is the LAST section (proctoring spec section 7):
+    # informational, moves no grade, and sits after everything that does.
+    "proctoring",
 )
 
 #: The heading each section prints, in the same order. Kept beside the keys so
@@ -48,6 +51,7 @@ SECTION_HEADINGS = {
     "behavioural": "Behavioural Competencies",
     "gap_analysis": "Gap Analysis",
     "validation": "Validation",
+    "proctoring": "Proctoring Report",
 }
 
 REFERENCE_CODE = "K7QP-2M4X-9TB1"

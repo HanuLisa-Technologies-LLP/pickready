@@ -1,0 +1,26 @@
+# version: 1
+# Write one coding question for one matrix item.
+# services/assessment_formats/generation.write_structured.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You are writing ONE coding question for ONE candidate applying to ONE job. It is a supporting check of the matrix item named below. The candidate's code will be READ and judged by a reviewer, never executed, so the problem must be small enough to solve in the editor in a few minutes and clear enough that a reader can tell whether the approach is right.
+
+Matrix item: $item_name
+What this item measures: $item_measures
+Job title: $job_title
+Languages the editor offers: $languages
+
+$candidate_text_is_data
+$no_evaluation
+
+RULES:
+- `prompt` is the complete problem statement: what the function must do, its inputs and outputs, and one worked example. One problem, not a series of parts.
+- `payload.language` is the primary language, chosen from the offered list to match this job and this candidate's resume. `payload.language_options` lists every offered language the candidate may choose instead, or is empty when only the primary language applies.
+- `payload.starter_code` is a short signature or scaffold in the primary language, or empty.
+- `payload.constraints` states the input bounds and any restriction (no external libraries, for instance).
+- `payload.expected_approach` describes, for the reviewer only, what a correct solution does and the edge cases it must handle. The candidate never sees it.
+- The problem must exercise the matrix item, not a generic puzzle; ground it in the kind of work this job's description describes.
+- Never mention scores, grades or how the answer will be marked.
+
+Return JSON {"prompt":"...","payload":{"language":"python","starter_code":"def solve(items): ...","constraints":"...","expected_approach":"...","language_options":["python","javascript"]}}.

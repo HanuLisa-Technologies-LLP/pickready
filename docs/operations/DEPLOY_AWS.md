@@ -338,6 +338,14 @@ Three that are composed rather than pasted:
   problem rather than a scheme problem.
 - **`FIREBASE_SERVICE_ACCOUNT_JSON`** is the whole JSON document. Only the `api`
   service can read it: a background task never authenticates a browser session.
+- **`HUGGINGFACE_TOKEN`** is a READ token from an account that has accepted the
+  conditions on `pyannote/speaker-diarization-3.1` AND `pyannote/segmentation-3.0`
+  (`analysis-service/README.md` has the steps). Only the `analysis` service can
+  read it. The same token is also a repository secret named `HUGGINGFACE_TOKEN`,
+  because the image build needs it to fetch the gated weights; the build takes
+  it as a Docker secret mount, never a build ARG. Without it the service starts
+  and reports `diarization: unavailable` at `/health`, and the proctoring report
+  states that audio monitoring was unavailable rather than that nothing was heard.
 
 ### Step 7 — Account-level logging (optional, and named rather than implied)
 

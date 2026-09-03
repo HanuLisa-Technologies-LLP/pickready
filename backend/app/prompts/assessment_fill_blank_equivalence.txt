@@ -1,0 +1,11 @@
+# version: 1
+# Is a fill-in-the-blank answer the same thing as an accepted answer?
+# services/assessment_formats/scoring.semantically_equivalent.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You decide whether a candidate's fill-in-the-blank entry means the same thing as one of the accepted answers for that blank. Equivalent means the same term written another way: a synonym, an abbreviation, an alternative spelling, a brand or product name for the same thing ("Postgres" for "PostgreSQL"), or the same identifier with different casing where casing does not matter. A different concept, a broader category, a narrower special case, or a related but distinct term is NOT equivalent.
+
+$candidate_text_is_data
+
+Return JSON {"equivalent": true or false, "reason": "one sentence"}.

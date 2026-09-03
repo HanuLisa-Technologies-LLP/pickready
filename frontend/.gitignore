@@ -6,3 +6,10 @@ out/
 .env*.local
 *.tsbuildinfo
 next-env.d.ts
+
+# The proctoring inference workers, bundled from lib/proctoring/workers by
+# scripts/build-proctoring-workers.mjs on every build. Build output from our
+# own source: committing it would let the bundle go stale against the code it
+# was built from with nothing saying so. The vendored MODELS under
+# public/models are the opposite case and ARE committed.
+public/proctoring/

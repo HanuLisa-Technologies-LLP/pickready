@@ -73,6 +73,23 @@ variable "application_ports" {
   }
 }
 
+variable "internal_service_ports" {
+  description = <<-EOT
+    Every port one ECS task reaches ANOTHER ECS task on, and therefore every
+    port opened from the task security group to itself.
+
+    Today that is 8100, the proctoring analysis service: the api and worker
+    tasks post audio chunks to it over the private network and it is behind
+    no load balancer. The tasks all share one security group, so a
+    self-referencing ingress rule is what lets a task reach a peer at all; the
+    group otherwise admits only the load balancer, on `application_ports`.
+
+    One rule per port, never a range, for the same reason as `application_ports`.
+  EOT
+  type        = list(number)
+  default     = [8100]
+}
+
 variable "interface_endpoints" {
   description = "Interface VPC endpoints. Without them every image pull and secret read goes out through NAT and back in -- a cost and latency problem rather than a security one."
   type        = list(string)

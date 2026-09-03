@@ -1,0 +1,6 @@
+# The image installs both halves. Tests install requirements-test.txt, which
+# carries the web half and no model library: every test injects a fake
+# pipeline, so torch is never needed to prove the HTTP contract or the
+# in-memory guarantee.
+-r requirements-web.txt
+-r requirements-models.txt

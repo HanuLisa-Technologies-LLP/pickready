@@ -28,11 +28,14 @@ __all__ = [
     "SystemCheckIn",
     "SessionCreateIn",
     "SessionOut",
+    "ProctoringConfigOut",
     "EventIn",
     "EventBatchIn",
     "WarningOut",
     "TerminationOut",
     "IngestOut",
+    "MonitoringStateIn",
+    "HeartbeatIn",
     "HeartbeatOut",
     "AudioChunkOut",
     "ProctoringFindingsOut",
@@ -130,6 +133,14 @@ class SessionOut(BaseModel):
     audio_analysis_available: bool
 
 
+class ProctoringConfigOut(BaseModel):
+    """GET /proctoring/config."""
+
+    config: dict[str, Any]
+    max_warnings: int
+    audio_analysis_available: bool
+
+
 class EventIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -192,6 +203,33 @@ class IngestOut(BaseModel):
     status: str
     warning: WarningOut | None = None
     termination: TerminationOut | None = None
+
+
+class MonitoringStateIn(BaseModel):
+    """The browser's own self-check (section 9): is each monitoring component
+    still live. A False is recorded once per session as a Path C note; the
+    browser's own integrity module escalates on its own clock."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    camera: bool = True
+    microphone: bool = True
+    models: bool = True
+    handlers: bool = True
+
+
+class HeartbeatIn(BaseModel):
+    """POST /proctoring/sessions/{id}/heartbeat.
+
+    `identity_matched` true resets the server's consecutive-mismatch run: a
+    mismatch is only confirmed by two IN A ROW, and the browser reports its
+    matches here rather than as events, because a match is not an event.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    identity_matched: bool | None = None
+    monitoring: MonitoringStateIn = Field(default_factory=MonitoringStateIn)
 
 
 class HeartbeatOut(BaseModel):

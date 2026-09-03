@@ -110,6 +110,13 @@ export interface ConversationTurn {
   answer_message_id?: string | null;
   question?: QuestionOut | null;
   termination_message?: string | null;
+  /** The readable transcript line the server wrote for the answer just
+   *  submitted, when it renders one (a structured answer's chosen option
+   *  text, its filled blanks, its code summary). The player shows its own
+   *  description of the submission optimistically and replaces it with this
+   *  the moment the response arrives, so the bubble a candidate reads after
+   *  the round trip is the line the recruiter's transcript will show. */
+  answer_line?: string | null;
 }
 
 /** The body of POST /conversations/{id}/respond. */

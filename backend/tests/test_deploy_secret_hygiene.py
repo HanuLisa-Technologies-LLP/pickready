@@ -110,6 +110,11 @@ CREDENTIAL_NAMES = (
     "LLM_KEY_ENCRYPTION_SECRET",
     "MSG91_API_KEY",
     "TAVILY_API_KEY",
+    # The proctoring analysis service's Hugging Face read token. It is a
+    # credential like any other and it is swept for the same reason: the image
+    # build needs it to fetch gated weights, which is exactly the situation
+    # where a token ends up in a build ARG and then in a layer.
+    "HUGGINGFACE_TOKEN",
 )
 
 ENVIRONMENT_ROOTS = [STAGING, PRODUCTION]

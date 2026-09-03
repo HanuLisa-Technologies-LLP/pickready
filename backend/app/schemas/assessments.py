@@ -449,6 +449,34 @@ class AnswerBehaviourIn(BaseModel):
 # transcript, and until 2026-08-06 the only way to read one was a psql session.
 
 
+class TranscriptAnswerDetailOut(BaseModel):
+    """The recruiter's view of one structured answer (formats spec 7).
+
+    Correctness is a WORD (`correct`, `partially_correct`, `incorrect`,
+    `not_answered`, or None for a format that has none), never a score. The
+    AI evaluation is its reasoning, never its number. `not_executed_note` is
+    present on every coding answer so a reader cannot mistake a read-only
+    judgement for a verified run.
+    """
+
+    #: The candidate view of the payload, so the recruiter sees the options
+    #: in the order the candidate saw them.
+    payload: dict[str, Any] = {}
+    #: The answer as submitted, in its type's shape.
+    answer: dict[str, Any] = {}
+    #: For an MCQ: the correct option ids. For a fill-blank: accepted answers
+    #: per blank. Shown BESIDE the candidate's choice, marked clearly.
+    answer_key: dict[str, Any] = {}
+    correctness: str | None = None
+    #: Per blank, for a fill-blank: `exact`, `equivalent`, `incorrect`,
+    #: `not_answered`.
+    blank_results: list[str] = []
+    evaluation_reasoning: str | None = None
+    evaluation_citations: list[str] = []
+    not_executed_note: str | None = None
+    time_spent: str | None = None
+
+
 class TranscriptExchangeOut(BaseModel):
     """One question and the answer it received.
 
@@ -481,34 +509,20 @@ class TranscriptExchangeOut(BaseModel):
     #: the planned questions. It shares its predecessor's criterion by design.
     follow_up: bool = False
     asked_at: datetime | None = None
-
-
-class TranscriptAnswerDetailOut(BaseModel):
-    """The recruiter's view of one structured answer (formats spec 7).
-
-    Correctness is a WORD (`correct`, `partially_correct`, `incorrect`,
-    `not_answered`, or None for a format that has none), never a score. The
-    AI evaluation is its reasoning, never its number. `not_executed_note` is
-    present on every coding answer so a reader cannot mistake a read-only
-    judgement for a verified run.
-    """
-
-    #: The candidate view of the payload, so the recruiter sees the options
-    #: in the order the candidate saw them.
-    payload: dict[str, Any] = {}
-    #: The answer as submitted, in its type's shape.
-    answer: dict[str, Any] = {}
-    #: For an MCQ: the correct option ids. For a fill-blank: accepted answers
-    #: per blank. Shown BESIDE the candidate's choice, marked clearly.
-    answer_key: dict[str, Any] = {}
-    correctness: str | None = None
-    #: Per blank, for a fill-blank: `exact`, `equivalent`, `incorrect`,
-    #: `not_answered`.
-    blank_results: list[str] = []
-    evaluation_reasoning: str | None = None
-    evaluation_citations: list[str] = []
-    not_executed_note: str | None = None
-    time_spent: str | None = None
+    # ── The question's format (assessment-spec-doc section 7) ────────────────
+    #: One of `assessment_formats.types.QUESTION_TYPES`, or None for an
+    #: exchange whose question predates the formats or whose key belongs to a
+    #: retired question table. The recruiter's view dispatches on it.
+    question_type: str | None = None
+    #: The specific, quotable resume item an evidence-based question was
+    #: anchored to. "the most valuable thing in the view" (section 7): it is
+    #: what tells a recruiter what was being probed.
+    resume_anchor: str | None = None
+    #: The per-format view of the answer: the option chosen beside the correct
+    #: one, the entry beside the accepted answers, the evaluation's reasoning.
+    #: Present on a BASE exchange only; a follow-up is more evidence for the
+    #: same question and would otherwise render the detail twice.
+    detail: TranscriptAnswerDetailOut | None = None
 
 
 class TranscriptOut(BaseModel):

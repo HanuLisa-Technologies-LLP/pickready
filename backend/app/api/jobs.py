@@ -34,6 +34,7 @@ from app.models.billing import (
 from app.models.company import Company
 from app.models.enums import ApprovalDecision, JobStatus, LinkSource
 from app.models.job import REPORTING_TO_OPTIONS, Job, JobApproval
+from app.models.proctoring import DEFAULT_WARNING_POLICY
 from app.models.tenant import Tenant
 from app.schemas.jobs import (
     ApprovalOut,
@@ -433,6 +434,9 @@ async def create_job(
         # is no manual approval gate (user decision, 2026-07-25).
         assessment_grade=body.grade,
         assessment_status="questions_pending_review",
+        # The recruiter's third-warning choice (proctoring spec 6). Omitted
+        # means continue-and-note: never terminate by default.
+        proctoring_warning_policy=body.proctoring_warning_policy or DEFAULT_WARNING_POLICY,
         # RBAC 17's first state, written rather than left to the column default.
         # A row whose lifecycle_state is NULL is refused every state-gated
         # capability by `rbac._state_rules`, which is the safe direction and
@@ -976,6 +980,11 @@ async def patch_job(
     for key in _JD_SECTIONS:
         if key in sent:
             setattr(job, key, getattr(body, key))
+    if "proctoring_warning_policy" in sent and body.proctoring_warning_policy is not None:
+        # Applies to every candidate assessed on this job from now on. It
+        # moves no score and no grade, so it needs no freeze: a policy is
+        # about what happens DURING a session, not about how it is graded.
+        job.proctoring_warning_policy = body.proctoring_warning_policy
 
     await session.flush()
     await audit(

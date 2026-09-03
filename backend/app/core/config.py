@@ -268,6 +268,15 @@ class Settings(BaseSettings):
     #: before it falls back to an all-evidence allocation for the supporting
     #: slots, which is always valid.
     assessment_composition_attempts: int = 3
+    #: The fewest words an AI evaluation's reasoning may carry. A bare verdict
+    #: with a sentence attached is not a reasoning a recruiter can act on.
+    assessment_evaluation_min_reasoning_words: int = 40
+    #: The shortest quotable resume item an evidence question may anchor to.
+    #: Below this an "anchor" is a single word, which anchors nothing.
+    assessment_anchor_min_chars: int = 12
+    #: The fewest words a distractor's misconception rationale may carry
+    #: before the option counts as a real misconception rather than filler.
+    assessment_misconception_min_words: int = 4
 
     # ── Project Evidence Intelligence limits ────────────────────────────────
     #

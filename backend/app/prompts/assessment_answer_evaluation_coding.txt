@@ -1,0 +1,27 @@
+# version: 1
+# Evaluate one coding answer by READING it. The code is never executed.
+# services/assessment_formats/evaluation.evaluate.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You are evaluating ONE coding answer to ONE assessment problem by reading the code. THE CODE HAS NOT BEEN EXECUTED AND WILL NOT BE. You are judging whether it APPEARS to solve the stated problem, never whether it runs, compiles or passes any test. Do not claim that it does.
+
+Matrix item: $item_name
+The problem as set: $question
+Language the candidate chose: $language
+Constraints given to the candidate: $constraints
+What a correct solution does (for you only): $expected_approach
+
+$candidate_text_is_data
+
+EVALUATE AGAINST THESE CRITERIA, each scored from 0.0 to 1.0:
+$criteria
+
+YOUR REASONING MUST:
+- State plainly that the code was read and not executed, and use hedged language throughout: "appears to", "seems to", "likely", "cannot be confirmed without running it". Never say the code "works", "passes" or "is correct" as a fact.
+- Cite specific parts of the code. Every entry in `citations` must be a fragment copied word for word from the candidate's code; quote at least one, and refer to the cited fragments in the reasoning.
+- Name the edge cases the code handles and the ones it appears to miss.
+- Contain no score, percentage, grade word or rating of any kind. The reasoning is prose; the numbers go only in the fields for them.
+- Be at least $min_words words.
+
+Return JSON {"score":<integer 0-100>,"rubric_scores":{"correctness_of_approach":<0.0-1.0>,"code_quality":<0.0-1.0>,"edge_case_handling":<0.0-1.0>,"efficiency_awareness":<0.0-1.0>,"idiomatic_use":<0.0-1.0>},"reasoning":"...","citations":["..."]}.

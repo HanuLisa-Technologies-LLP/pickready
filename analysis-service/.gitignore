@@ -1,0 +1,7 @@
+# Model weights are downloaded, never committed. scripts/download_models.py
+# fills this directory locally and /models inside the image; the pinned
+# revisions in app/config.py are the record of what was downloaded.
+models/
+__pycache__/
+*.pyc
+.pytest_cache/

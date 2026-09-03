@@ -69,6 +69,9 @@ from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
 from app.models.job_setup import SWOT_AREAS, JobSwotIntake
 from app.services import agent_loop, llm_router, swot_intake
+from app.services.assessment_formats import composition, generation
+from app.services.assessment_formats import config as format_config
+from app.services.assessment_formats import types as question_types
 from app.prompts import registry
 from app.services.rating import (
     GRADE_HIGHLY,
@@ -965,7 +968,7 @@ async def generate_candidate_questions(
             link.id,
         )
 
-    rows: list[CandidateQuestion] = []
+    base_prompts: list[str] = []
     seen_prompts: set[str] = set()
     for index, competency in enumerate(allocation):
         prompt = prompts.get(index) or _GENERIC_ANGLES[index % len(_GENERIC_ANGLES)].format(
@@ -983,22 +986,177 @@ async def generate_candidate_questions(
                     prompt = alternative
                     break
         seen_prompts.add(prompt.casefold())
-        rows.append(
-            CandidateQuestion(
-                tenant_id=job.tenant_id,
-                job_id=job.id,
-                job_candidate_link_id=link.id,
-                competency_id=competency.id,
-                ordinal=index + 1,
-                prompt=prompt,
-            )
+        base_prompts.append(prompt)
+
+    # The format of every slot, and the content of the ones that are not
+    # plain text. The text question written above is what every slot falls
+    # back to, so nothing below can leave a slot with nothing to ask.
+    slots = await _compose_formats(
+        session,
+        job,
+        allocation,
+        grade=grade,
+        base_prompts=base_prompts,
+        profile=profile,
+        project_evidence_block=project_evidence_block,
+    )
+    rows: list[CandidateQuestion] = [
+        CandidateQuestion(
+            tenant_id=job.tenant_id,
+            job_id=job.id,
+            job_candidate_link_id=link.id,
+            competency_id=slot.competency_id,
+            ordinal=slot.index + 1,
+            prompt=slot.prompt,
+            rubric_json=slot.rubric,
+            question_type=slot.question_type,
+            payload_json=dict(slot.payload),
+            resume_anchor=slot.resume_anchor,
+            time_allocation_seconds=slot.time_allocation_seconds,
+            weight=slot.weight,
         )
+        for slot in slots
+    ]
     session.add_all(rows)
     await session.flush()
+    by_type = {
+        question_type: sum(1 for row in rows if row.question_type == question_type)
+        for question_type in question_types.QUESTION_TYPES
+    }
     logger.info(
-        "ppi.questions.generated link_id=%s grade=%s count=%d", link.id, grade, len(rows)
+        "ppi.questions.generated link_id=%s grade=%s count=%d formats=%s",
+        link.id, grade, len(rows), by_type,
     )
     return rows
+
+
+async def _hiring_context(session: AsyncSession, job: Job) -> str:
+    """The hiring requirement and the SWOT session's captured points, for the
+    evidence-question writer (spec section 2.1 lists both among its inputs).
+
+    The CAPTURED points, in the reporting authority's own terms, never the
+    raw intake prose: the same rule Sutra follows when it reads the compiled
+    artifact rather than the free text, because this string reaches a prompt
+    that decides what a candidate is asked.
+    """
+    intake = (
+        await session.execute(
+            select(JobSwotIntake).where(JobSwotIntake.job_id == job.id)
+        )
+    ).scalars().first()
+    captured = intake.captured() if intake is not None else {}
+    return json.dumps(
+        {
+            "hiring_requirement": job.jd_json or {},
+            "swot": {area: captured.get(area, []) for area in SWOT_AREAS},
+        }
+    )
+
+
+async def _compose_formats(
+    session: AsyncSession,
+    job: Job,
+    allocation: list[JobCompetency],
+    *,
+    grade: str,
+    base_prompts: list[str],
+    profile: Profile | None,
+    project_evidence_block: str,
+) -> list[composition.Slot]:
+    """Decide each slot's format, fill it, validate the mix, and never serve
+    an invalid one (spec section 3.2).
+
+    The FORMAT mix is deterministic per job (`composition.compose`); the
+    CONTENT is written per candidate by the model, inside the bounded loop.
+    A composition that fails validation is regenerated up to
+    `composition_attempts` times with the failures fed to the writer, then
+    `composition.fall_back` turns every slot the model could not fill into
+    the text question already written for its item, which validates by
+    construction. Nothing is cached and no template is shared between
+    candidates: two candidates on one job get the same formats in the same
+    positions and different content in every one of them.
+    """
+    conf = format_config.get_config()
+    role_classification = job.role_classification
+    competencies = {row.id: row for row in allocation}
+    resume_text = (profile.resume_text or "") if profile is not None else ""
+    resume_excerpt = _resume_excerpt(profile)
+    hiring_context = await _hiring_context(session, job)
+    slots = composition.compose(allocation, grade=grade, role_classification=role_classification)
+    for slot in slots:
+        slot.prompt = base_prompts[slot.index]
+
+    failures: list[str] = []
+    for attempt in range(1, conf.composition_attempts + 1):
+        anchored, anchor_result = await generation.anchor_evidence(
+            session,
+            job=job,
+            slots=slots,
+            competencies=competencies,
+            resume_text=resume_text,
+            resume_excerpt=resume_excerpt,
+            project_evidence=project_evidence_block,
+            hiring_context=hiring_context,
+            prior_failures=failures,
+        )
+        for slot in slots:
+            if slot.question_type != question_types.EVIDENCE_BASED:
+                continue
+            written = anchored.get(slot.index)
+            if written is None:
+                slot.resume_anchor = None
+                slot.payload = {}
+                continue
+            slot.prompt = written.prompt
+            slot.resume_anchor = written.resume_anchor
+            slot.payload = dict(written.payload)
+        for slot in slots:
+            if slot.question_type not in question_types.SUPPORTING_TYPES or slot.payload:
+                continue
+            result = await generation.write_structured(
+                session,
+                job=job,
+                competency=competencies[slot.competency_id],
+                slot=slot,
+                resume_excerpt=resume_excerpt,
+            )
+            if result.value is None:
+                # The slot keeps the text question already written for its
+                # item. Reverted here, not left empty: a structured row with
+                # no payload would be a question with no answer key.
+                composition.revert_to_text(slot)
+                slot.prompt = base_prompts[slot.index]
+                continue
+            slot.prompt = result.value.prompt
+            slot.payload = dict(result.value.payload)
+            slot.rubric = result.value.rubric
+        failures = composition.validate(slots, grade, role_classification)
+        logger.info(
+            "ppi.composition.validated attempt=%d anchored=%d anchoring_degraded=%s failures=%s",
+            attempt, len(anchored), anchor_result.degraded, failures,
+        )
+        if not failures:
+            return slots
+
+    # Deterministic, and always valid: every slot the model could not fill
+    # soundly becomes the plain text question already written for its item.
+    composition.fall_back(slots, grade)
+    for slot in slots:
+        if slot.question_type == question_types.SHORT_ANSWER:
+            slot.prompt = base_prompts[slot.index]
+    remaining = composition.validate(slots, grade, role_classification)
+    if remaining:
+        # Unreachable by construction of `fall_back`, and a loud failure is
+        # the right answer if that construction is ever broken: a candidate
+        # must never be served an assessment the validator rejected.
+        raise RuntimeError(
+            "assessment composition is still invalid after the deterministic "
+            f"fallback: {remaining}"
+        )
+    logger.warning(
+        "ppi.composition.fell_back link_grade=%s failures=%s", grade, failures
+    )
+    return slots
 
 
 # Import-time integrity checks -- these ranges are a product contract

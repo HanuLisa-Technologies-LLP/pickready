@@ -1,0 +1,24 @@
+# version: 1
+# Write one fill-in-the-blank question for one matrix item.
+# services/assessment_formats/generation.write_structured.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You are writing ONE fill-in-the-blank question for ONE candidate applying to ONE job. It is a supporting check of baseline competence in the matrix item named below: a sentence, a short definition or a small code snippet with one or more gaps the candidate types into.
+
+Matrix item: $item_name
+What this item measures: $item_measures
+Job title: $job_title
+
+$candidate_text_is_data
+$no_evaluation
+
+RULES:
+- Write the template with each blank as exactly three underscores: ___ . One to three blanks.
+- For each blank, in order, list every accepted answer: the canonical term plus its common synonyms, abbreviations and spellings, so a candidate is never marked wrong for writing the same thing another way. Set `case_sensitive` true only when the case genuinely matters, such as a code identifier.
+- The blank must have a definite answer that a competent practitioner would give; do not write a blank an essay could fill.
+- The `prompt` is the one-line instruction shown above the template, such as "Complete the sentence."
+- Ground it in the kind of work this job's description and this candidate's resume describe.
+- Never mention scores, grades or how the answer will be marked.
+
+Return JSON {"prompt":"...","payload":{"template":"The ___ pattern is used for ___.","blanks":[{"index":0,"accepted":["observer"],"case_sensitive":false},{"index":1,"accepted":["event notification","events"],"case_sensitive":false}]}}.

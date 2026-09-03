@@ -10,6 +10,7 @@ from pydantic import (
 
 from app.models.enums import ApprovalDecision, JobStatus
 from app.models.job import REPORTING_TO_OPTIONS
+from app.models.proctoring import DEFAULT_WARNING_POLICY, WARNING_POLICIES
 
 # Job grade (spec §5/§6) — REQUIRED on the Create Job form, stored on the
 # existing jobs.assessment_grade column (additive: no duplicate column).
@@ -121,6 +122,16 @@ class JobCreateIn(ExperienceBandMixin):
     #: opaque reference — the classification itself never travels through the
     #: client (Rule 2).
     jd_draft_id: uuid.UUID | None = None
+    #: The one proctoring setting (proctoring spec section 6): what happens
+    #: at the third warning. Omitted means the column default, which is to
+    #: continue and note it; the product never terminates without an
+    #: explicit choice.
+    proctoring_warning_policy: str | None = None
+
+    @field_validator("proctoring_warning_policy")
+    @classmethod
+    def _policy_in_vocabulary(cls, value: str | None) -> str | None:
+        return _valid_warning_policy(value)
 
 
 class JobOut(BaseModel):
@@ -182,6 +193,8 @@ class JobOut(BaseModel):
     # signals are Provider Portal material and are not emitted here.
     role_classification: str = "NON_STEM"
     credit_cost_per_report: float = 1.0
+    #: What happens at the third proctoring warning (proctoring spec 6).
+    proctoring_warning_policy: str = DEFAULT_WARNING_POLICY
 
     @field_validator("role_classification", mode="before")
     @classmethod
@@ -190,6 +203,13 @@ class JobOut(BaseModel):
         # its column default applied yet; Part 3 §11's deployment default is
         # the same answer.
         return value or "NON_STEM"
+
+    @field_validator("proctoring_warning_policy", mode="before")
+    @classmethod
+    def _policy_never_null(cls, value: object) -> object:
+        # Same reason as the classification above: an unflushed row reads
+        # None, and the column default is the answer.
+        return value or DEFAULT_WARNING_POLICY
 
     @field_validator("credit_cost_per_report", mode="before")
     @classmethod
@@ -510,6 +530,27 @@ class JobPatchIn(ExperienceBandMixin):
     about_company: str | None = Field(default=None, max_length=4000)
     work_life: str | None = Field(default=None, max_length=4000)
     benefits: str | None = Field(default=None, max_length=4000)
+    #: The recruiter's third-warning choice (proctoring spec 6). Applied only
+    #: when SENT and non-null; a PATCH that omits it leaves the job's setting.
+    proctoring_warning_policy: str | None = None
+
+    @field_validator("proctoring_warning_policy")
+    @classmethod
+    def _policy_in_vocabulary(cls, value: str | None) -> str | None:
+        return _valid_warning_policy(value)
+
+
+def _valid_warning_policy(value: str | None) -> str | None:
+    """One of `models.proctoring.WARNING_POLICIES`, or None. Refused with the
+    vocabulary named, because a typo here would silently keep the default and
+    the recruiter who chose to stop assessments would never know."""
+    if value is None:
+        return None
+    if value not in WARNING_POLICIES:
+        raise ValueError(
+            f"proctoring_warning_policy must be one of {', '.join(WARNING_POLICIES)}"
+        )
+    return value
 
 
 # ── Inline candidate ranking table (spec §2) ─────────────────────────────────

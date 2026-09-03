@@ -60,6 +60,8 @@ document.
 | [RBAC_SPECIFICATION.md](spec/RBAC_SPECIFICATION.md) | Precedence rank 1. Roles, capabilities, isolation, lifecycle |
 | [CANDIDATE_DASHBOARD_SPECIFICATION.md](spec/CANDIDATE_DASHBOARD_SPECIFICATION.md) | The candidate list surface |
 | [PROJECT_EVIDENCE_INTELLIGENCE.md](spec/PROJECT_EVIDENCE_INTELLIGENCE.md) | Project evidence: pipeline, security, retention |
+| [PROCTORING.md](spec/PROCTORING.md) | Mandatory assessment monitoring: principles, paths, the report, retention |
+| [ASSESSMENT_QUESTION_FORMATS.md](spec/ASSESSMENT_QUESTION_FORMATS.md) | The six question formats and the evidence-dominance rule |
 | [ARCHITECTURE_DIRECTION_2026-08-28.md](spec/ARCHITECTURE_DIRECTION_2026-08-28.md) | Advisory direction, not a requirement |
 
 ### `operations/` — running it
@@ -81,6 +83,7 @@ document.
 |---|---|
 | [VERIFICATION_RESULTS.md](verification/VERIFICATION_RESULTS.md) | Live vendor runs that succeeded, with dates |
 | [VERIFICATION_PENDING.md](verification/VERIFICATION_PENDING.md) | What remains unproven, stated plainly |
+| [PROCTORING_AND_FORMATS_VERIFICATION.md](verification/PROCTORING_AND_FORMATS_VERIFICATION.md) | What was executed for proctoring and question formats, and what was not |
 
 These two are load-bearing: `backend/tests/test_no_live_vendor_claims.py`
 reads them, so a claim about a live call must be evidenced in

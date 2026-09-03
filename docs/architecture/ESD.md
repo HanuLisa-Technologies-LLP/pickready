@@ -639,6 +639,49 @@ than deleted, so `copy_report` refuses loudly instead of a future caller
 rediscovering reuse by accident. The six-month classification still runs, so the
 candidate is told why they are answering questions again.
 
+### 12.7 Question formats
+
+The conversation carries six question formats
+([spec/ASSESSMENT_QUESTION_FORMATS.md](../spec/ASSESSMENT_QUESTION_FORMATS.md)).
+`candidate_questions` is the per-candidate question row and holds the format,
+the type-specific payload with its answer key, the resume anchor, a time
+allocation and an internal weight; `assessment_answers` is the structured
+answer record beside the unchanged transcript.
+
+Evidence-based questions are the primary instrument and the composer in
+`services/assessment_formats/composition.py` enforces that in code: the
+majority of weight and time, supporting formats bounded to a minority, coding
+only on STEM roles, every evidence question anchored, no duplicate anchors,
+total time within the role's duration. A failed mix is regenerated and then
+falls back deterministically to evidence questions. Text formats keep the
+adaptive conversational machinery; structured formats are delivered verbatim
+and scored deterministically on submission, with fill-in-the-blank escalating
+an exact miss to an AI equivalence check. Subjective formats are evaluated
+against the stored rubric with reasoning that cites the answer; coding is
+judged by reading, never execution, and says so everywhere it is shown.
+
+`assessment_formats.types.candidate_view` is the one projection from a stored
+payload to what a candidate may see, written as an allowlist per type.
+
+### 12.8 Proctoring
+
+Every assessment conversation is monitored
+([spec/PROCTORING.md](../spec/PROCTORING.md)). Inference runs in a Web Worker
+in the candidate's browser (object detection, face count, identity descriptor)
+and the worker posts detections only; no frame, image or audio buffer is ever
+stored. The server is the authority: `services/proctoring/ingestion.py`
+classifies each event by the catalog's consequence path, holds the shared
+three-warning counter in Redis, applies cooldowns, and terminates on an
+integrity failure or, at the third warning, according to
+`jobs.proctoring_warning_policy`. The 15-second audio chunks are the one
+medium that leaves the browser: they are handed in memory to a separate
+analysis service (`analysis-service/`, pyannote speaker diarization) for a
+speaker count and destroyed.
+
+Proctoring reads nothing a scorer reads and is read by nothing that scores:
+its output is a words-only report generated once after the session ends and
+appended to the PRISM Report as its last section.
+
 ## 13. Hiring pipeline
 
 The domain transition graph is server-enforced:

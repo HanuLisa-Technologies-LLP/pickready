@@ -86,6 +86,23 @@ provider "aws" {
 locals {
   environment = "production"
 
+  # THE INTERNAL SERVICE NAMESPACE, OWNED HERE AND NOWHERE ELSE.
+  #
+  # The analysis service sits behind no load balancer and has no public path,
+  # so a Cloud Map name is the only way the api and the worker can address it.
+  # The namespace is built here rather than inside the ecs module because both
+  # sides of the arrangement need the same string: the module registers the
+  # service under it, and the two callers get the URL below in their
+  # environment. Two places deriving one hostname from the same parts is two
+  # places that can drift.
+  internal_namespace = "${var.project}-${local.environment}.internal"
+
+  # 8100 matches the analysis service's container port and the internal port
+  # the network module opens from the task security group to itself. Plain
+  # http: the hop is task to task inside a private subnet, the same reasoning
+  # the load balancer's target groups already follow.
+  analysis_service_url = "http://analysis.${local.internal_namespace}:8100"
+
   tags = {
     Project     = var.project
     Environment = local.environment
@@ -448,6 +465,10 @@ module "ecs" {
   private_subnet_ids    = module.network.private_subnet_ids
   ecs_security_group_id = module.network.ecs_security_group_id
 
+  # The Cloud Map namespace resolves inside this VPC and nowhere else.
+  vpc_id              = module.network.vpc_id
+  discovery_namespace = local.internal_namespace
+
   secret_policy_arns  = module.secrets.policy_arns
   s3_policy_arn       = module.s3.access_policy_arn
   ecr_repository_arns = values(module.ecr.repository_arns)
@@ -487,6 +508,14 @@ module "ecs" {
       # every dashboard reports it healthy.
       target_group_arn = module.alb.target_group_arns["api"]
       needs_s3         = true
+      # Where the proctoring pipeline posts a fifteen-second audio chunk for a
+      # speaker count. NOT a credential, so it is a plain environment entry:
+      # it is an internal hostname that resolves in this VPC only. An empty
+      # value would mean audio analysis is unavailable, which the report states
+      # plainly rather than reading as "no second voice was heard".
+      environment = {
+        PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
+      }
       # The backend writes nothing to disk by design -- resume bytes never
       # persist on the application filesystem -- so this enforces an invariant
       # the code already claims.
@@ -517,6 +546,12 @@ module "ecs" {
       needs_s3      = true
       # NOT read-only: resume parsing writes a temp file for pypdf.
       readonly_root = false
+      # The worker runs the proctoring reconciliation sweeps, which re-read a
+      # session, so it reaches the analysis service on the same name the api
+      # does.
+      environment = {
+        PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
+      }
       # NO FIREBASE KEY. A background task never authenticates a browser
       # session, so it has no business being able to read the service account.
       secrets = {
@@ -568,6 +603,56 @@ module "ecs" {
       # and is fetched at runtime from GET /billing/config, which is why it was
       # never a NEXT_PUBLIC_ build variable.
       secrets = {}
+    }
+
+    # THE PROCTORING ANALYSIS SERVICE (analysis-service/).
+    #
+    # Speaker counting over a fifteen-second audio chunk, and an AI-text
+    # estimate that ships disabled. Its own image and its own service, for
+    # three reasons worth keeping separate:
+    #
+    #   IT CARRIES THE MODEL LIBRARIES. torch, pyannote.audio and transformers
+    #   are several hundred megabytes the api and the worker never load, and
+    #   an inference call that pinned a request worker would cost a candidate
+    #   mid-assessment their next question.
+    #
+    #   IT HANDLES THE ONE MEDIA TYPE THAT LEAVES THE BROWSER. The chunk is
+    #   decoded from an in-memory buffer and destroyed; nothing in the image
+    #   writes audio anywhere, and the service is deliberately not next to code
+    #   that persists files.
+    #
+    #   IT IS NOT PUBLIC. No target group, no listener rule, no path through
+    #   the load balancer. It is reachable at its Cloud Map name from tasks in
+    #   the ECS security group and from nothing else.
+    analysis = {
+      image = "${module.ecr.repository_urls["analysis"]}:${var.image_tag}"
+      # CPU inference on a fifteen-second chunk. The memory figure is the
+      # binding one: the diarization pipeline holds three models resident.
+      cpu           = 2048
+      memory        = 8192
+      desired_count = 2
+      max_count     = 4
+      port          = 8100
+      # The body says which component loaded. A container with no token is up
+      # and honest rather than restarting forever over a decision nobody made
+      # by mistake, so the check asks whether the process serves.
+      health_path = "/health"
+      # NO TARGET GROUP. Reached by name, inside the VPC, on 8100.
+      discoverable = true
+      # READ-ONLY ROOT. The service writes nothing to disk by design, and the
+      # one exception is the import-time caches torch and matplotlib insist on:
+      # the image points MPLCONFIGDIR, TORCH_HOME and XDG_CACHE_HOME at /tmp,
+      # and the mount below is the only writable path in the container.
+      readonly_root  = true
+      writable_paths = ["/tmp"]
+      # The Hugging Face token, and nothing else. The diarization models are
+      # gated: the licence is accepted per account, so the service refuses to
+      # load them without a token even though the weights are baked into the
+      # image. It holds no DSN, no broker and no model-provider key, because
+      # all it is handed is audio and all it answers is a speaker count.
+      secrets = {
+        HUGGINGFACE_TOKEN = module.secrets.secret_arns["HUGGINGFACE_TOKEN"]
+      }
     }
   }
 

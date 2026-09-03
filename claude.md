@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| Proctoring + question formats (2026-09-02) | Mandatory monitoring, the shared warning counter, the six question formats, evidence dominance |
 | Project Evidence Intelligence (2026-09-01) | Candidate projects, derived evidence, temporary originals |
 | spec-doc6 (2026-08-29) | Runbook reconciliation, Part A activation, RBAC, dashboard, AWS close-out |
 | spec-doc5 (2026-08-28) | The three-layer hiring framework, single-vendor models, navy/teal UI, AWS-ready |
@@ -53,6 +54,83 @@ phase sections above them are where the sharp edges are.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
+
+## Current hard rules, proctoring and question formats (2026-09-02)
+
+Two specifications, `docs/spec/PROCTORING.md` and
+`docs/spec/ASSESSMENT_QUESTION_FORMATS.md`, built together because the
+behavioural capture of one attaches to the answer fields of the other.
+
+- **Proctoring is MANDATORY and there is no flag.** `services/proctoring/gate.require_active`
+  runs FIRST in `start_conversation` and `respond`. A candidate who declines
+  the consent screen does not take the assessment. The old optional
+  screen-capture consent component is deleted, not flagged off: it captured
+  the screen and was optional, which contradicts both P1 and P4.
+- **No frame, image, snapshot or audio buffer is ever stored, anywhere.**
+  Inference happens in a Web Worker in the candidate's browser, which posts
+  detections only. The one medium that leaves the browser is a 15-second audio
+  chunk, read into memory, handed to the analysis service, and deleted.
+  `tests/test_proctoring_no_media.py` fails the build on a write path. A face
+  descriptor is a 128-float vector, not an image, and the database CHECK
+  refuses any other width.
+- **Proctoring touches NO score, grade, ranking or matrix.** Nothing under
+  `services/proctoring/` is imported by a scorer, by Miti, by Siddhi, by the
+  dashboard or by ranking, and `tests/test_proctoring_scoring_isolation.py`
+  asserts the import graph. The evidence tier of the assessment conversation
+  stays E3: monitoring an assessment must not silently promote its evidence,
+  because that would let proctoring move a grade.
+- **The server decides.** The warning counter is one shared Redis counter per
+  session, across EVERY Path B event type, mirrored to the row. The client
+  requests; the server debounces, applies cooldowns, counts and terminates.
+  Redis being down answers 503 rather than silently not warning.
+- **Every threshold is a `proctoring_*` setting**, read once by
+  `services/proctoring/config.py` and served to the browser on the session
+  response, so the client and the server never disagree about a number. No
+  literal in the pipeline.
+- **The report is WORDS ONLY** so it travels inside the delivered PRISM payload
+  under the number ban: counts spelled out, durations approximate, no
+  internal identifier, no forbidden word (strike, tier, violation, flag,
+  anomaly, signal, confidence, threshold, severity). Ordering carries the
+  weight; there are no icons and no colour codes. It is the EIGHTH and last
+  PRISM section, `proctoring`, written once per renderer as before.
+- **The third warning consults `jobs.proctoring_warning_policy`** and the
+  default is `continue_and_note`. The product never terminates by default.
+- **Retention follows the platform's cascade policy.** There is no time-based
+  purge in the product and `proctoring_event_retention_days` defaults to 0,
+  which means exactly that; a positive value enables the hourly purge. The
+  number is an owner decision, not something this code invents.
+- **Be honest about the limits, in the code.** Browser-level blocking stops an
+  ordinary candidate, not a determined one; a monitoring gap is reported as a
+  gap; unconfigured audio analysis is reported as unavailable; the AI-text
+  detector ships DISABLED and informational because it is unreliable.
+- **Evidence-based questions are the majority of weight AND time, in code.**
+  `services/assessment_formats/composition.py` validates every generated
+  assessment against six rules and regenerates, then falls back
+  deterministically to evidence questions, so what is served is always valid.
+  A 70% MCQ assessment cannot be served. `CandidateQuestion.weight` makes
+  the dominance structural inside the item score.
+- **`candidate_questions` IS the specification's `assessment_questions`.**
+  Migration 0076 added the format columns to the existing per-candidate row
+  rather than a second table; rows from before read as `short_answer`,
+  because relabelling them evidence-based would claim an anchor they do not
+  have. `assessment_answers` is the structured answer record; the transcript
+  is unchanged and still what every scorer reads.
+- **The answer key never crosses the candidate boundary unprojected.**
+  `assessment_formats.types.candidate_view` is an allowlist per type.
+- **Structured formats are delivered verbatim and scored deterministically;
+  text formats keep the whole conversational machinery.** Multi-answer MCQ
+  partial credit floors at zero so "select everything" scores zero;
+  fill-in-the-blank escalates an exact-match miss to an AI equivalence check
+  before marking it wrong; coding is judged by READING and every evaluation
+  and every recruiter view says the code was not executed.
+- **Per-question time is measured by the server** from
+  `assessment_conversations.prompt_shown_at`, less the bounded time a
+  blocking warning held the screen. A client-reported duration is a number
+  the client chose.
+- **The analysis service is a separate ECS service** with its own image, its
+  own task role and exactly one secret, `HUGGINGFACE_TOKEN`. The pyannote
+  models are gated on Hugging Face: their download needs an accepted licence
+  and the token, which this repository never contains.
 
 ## Current hard rules, documentation layout (2026-09-01)
 
@@ -1808,6 +1886,9 @@ ReadyPick is a multi-tenant recruitment/ATS platform for Hanulisa Technologies L
   /components              shared UI; shadcn primitives in /components/ui
   /lib                     api client, auth helpers, types, theme provider
   /scripts                 impeccable-gate.mjs, contrast checks
+/analysis-service          the proctoring analysis service (speaker
+                           diarization, the flagged AI-text detector): its own
+                           image, its own tests, one secret
 /backend
   /app
     /api                   FastAPI routers, one module per PRD section
@@ -1819,7 +1900,7 @@ ReadyPick is a multi-tenant recruitment/ATS platform for Hanulisa Technologies L
     /workers               celery_app.py (schedule) and tasks.py
     /core                  config, security, db session with the RLS setter
     /scripts               seeds, evals, legacy_reset, verify_live
-  /alembic/versions        migrations, 0001 to 0075
+  /alembic/versions        migrations, 0001 to 0076
   /tests                   151 test modules
 /infra                     Terraform modules + docker-compose.yml (local dev)
 /scripts                   test.sh, deploy helpers, smoke tests
@@ -1837,6 +1918,11 @@ services/projects/   Project Evidence Intelligence, end to end
 services/evidence/   the shared evidence ledger, tiers, contradictions
 services/rag/        retrieval: chunking, fusion, rerank
 services/agents/     tools, permissions, the agent loop
+services/proctoring/ the event catalog, the server-side warning machine,
+                     behavioural evaluation, the report; imported by no scorer
+services/assessment_formats/
+                     the six question formats, composition, objective scoring,
+                     AI evaluation with reasoning
 ```
 
 ---
@@ -1924,6 +2010,9 @@ change actually needs.
 | A client-facing string | The renderer | No number, no em dash, correct Tatva/PRISM naming |
 | A candidate-facing upload | The relevant storage service | Validate, never execute, bound every ceiling in config |
 | A frontend surface | `frontend/app/(group)/` | `DESIGN.md` tokens; navy is structure, teal is evidence |
+| A proctoring threshold | `core/config.py` (`proctoring_*`) | It is served to the browser from `services/proctoring/config.py`; no literal in the pipeline |
+| A proctoring event type | `services/proctoring/catalog.py` | Its path (A, B, C), its group, its phrasing in `phrasing.py`; internal identifiers never reach a recruiter |
+| A question format | `services/assessment_formats/types.py` | The payload model, the answer model, `candidate_view`, the migration CHECK, the frontend component behind the one dispatcher |
 
 ### Before you claim it works
 

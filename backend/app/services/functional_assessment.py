@@ -59,6 +59,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import (
+    AssessmentAnswer,
     AssessmentConversation,
     AssessmentMessage,
     CandidateQuestion,
@@ -79,6 +80,9 @@ from app.services import (
     ppi_interview,
 )
 from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELDS
+from app.services.assessment_formats import evaluation as format_evaluation
+from app.services.assessment_formats import rendering as format_rendering
+from app.services.assessment_formats import types as question_types
 from app.prompts import registry
 from app.services.rating import (
     GRADES,
@@ -244,6 +248,35 @@ OVERALL_AXES: tuple[tuple[str, str], ...] = tuple(
 
 def _mean(values: list[int]) -> int:
     return round(sum(values) / len(values)) if values else UNANSWERED_SCORE
+
+
+#: The weight of a question row written before migration 0076, which is the
+#: column's own default: every question on an item counted the same.
+_NEUTRAL_WEIGHT = 1.0
+
+
+def _weighted_mean(pairs: list[tuple[int, float]]) -> int:
+    """The item score from (score, weight) pairs (assessment-spec-doc 4).
+
+    This is what makes evidence dominance STRUCTURAL inside a matrix item: a
+    supporting-format question carries less of the item than an evidence
+    question does, by the weight the composer stored on the row. A weight of
+    zero is refused by the database CHECK, so the denominator is never zero
+    for a non-empty list.
+    """
+    if not pairs:
+        return UNANSWERED_SCORE
+    total = sum(weight for _score, weight in pairs)
+    return round(sum(score * weight for score, weight in pairs) / total)
+
+
+def _question_type(question: Any) -> str:
+    """Rows written before 0076 carry no format column and were text."""
+    return str(getattr(question, "question_type", None) or question_types.SHORT_ANSWER)
+
+
+def _question_weight(question: Any) -> float:
+    return float(getattr(question, "weight", None) or _NEUTRAL_WEIGHT)
 
 
 def _axis(name: str, candidate_score: int, required: int | None) -> dict[str, Any]:
@@ -685,6 +718,68 @@ def _rubric_text(rubric: dict | None) -> str:
     if not rubric:
         rubric = ppi_interview.DEFAULT_RUBRIC
     return "; ".join(f"{band.replace('_', '-')}: {text}" for band, text in rubric.items())
+
+
+async def _structured_answers(
+    session: AsyncSession | None, link: JobCandidateLink | None
+) -> dict[str, AssessmentAnswer]:
+    """Every `assessment_answers` row on this application, keyed exactly as
+    the scorer keys answers: by the question's own id.
+
+    This is where an objective format's deterministic score and a subjective
+    format's evaluation record live. Read once per assessment, like the
+    locators, because the answer to "what did this candidate submit for
+    question N" cannot change mid-pass.
+    """
+    if session is None or link is None:
+        return {}
+    rows = (
+        await session.execute(
+            select(AssessmentAnswer)
+            .join(
+                AssessmentConversation,
+                AssessmentConversation.id == AssessmentAnswer.conversation_id,
+            )
+            .where(AssessmentConversation.job_candidate_link_id == link.id)
+        )
+    ).scalars().all()
+    return {str(row.question_id): row for row in rows}
+
+
+async def _evaluate_subjective(
+    state: "AssessmentState",
+    competency: JobCompetency,
+    question: CandidateQuestion,
+    answer: str,
+    record: AssessmentAnswer | None,
+) -> int | None:
+    """The AI evaluation with reasoning for an evidence or coding answer
+    (assessment-spec-doc 6.2), persisted on the answer row.
+
+    Returns the score, or None when the evaluation degraded so the caller
+    can score the answer the way every rubric-scored answer was scored before
+    this format existed. A degraded evaluation is never stored: a record with
+    no reasoning would read as an evaluation that found nothing to say.
+    """
+    question_type = _question_type(question)
+    payload = dict(getattr(question, "payload_json", None) or {})
+    submitted = dict(getattr(record, "answer_json", None) or {})
+    result = await format_evaluation.evaluate(
+        state.get("session"),
+        question_type=question_type,
+        prompt=question.prompt,
+        answer_text=answer,
+        item_name=competency.name,
+        resume_anchor=getattr(question, "resume_anchor", None),
+        question_rubric=question.rubric_json if question_type == question_types.EVIDENCE_BASED else None,
+        payload=payload,
+        language=submitted.get("language"),
+    )
+    if result.degraded or result.value is None:
+        return None
+    if record is not None:
+        record.ai_evaluation_json = result.value
+    return int(result.value["score"])
 
 
 async def _llm_score(session: AsyncSession | None, question: str, rubric: dict | None, answer: str) -> int | None:
@@ -1154,6 +1249,10 @@ class AssessmentState(TypedDict, total=False):
     ppi_mode: str
     #: {question_key: [AnswerRef]}. Where each answer LIVES, never what it says.
     answer_refs: dict[str, list[AnswerRef]]
+    #: {question id: AssessmentAnswer}. The structured record behind each
+    #: answer: the objective score written on submission, the evaluation
+    #: written here.
+    structured_answers: dict[str, AssessmentAnswer]
     #: Set when the evidence ledger holds a MATERIAL or CRITICAL contradiction.
     #: It flags the report for a person; it never moves a grade.
     evidence_review: bool
@@ -1229,8 +1328,17 @@ async def _score_item(
     questions: list[CandidateQuestion],
     answers: dict[str, list[str]],
     locators: dict[str, list[AnswerRef]] | None = None,
+    structured: dict[str, AssessmentAnswer] | None = None,
 ) -> tuple[int, list[str], bool]:
     """Score one matrix item. Returns (score, the answers used, degraded).
+
+    THE FORMAT DECIDES WHERE THE SCORE COMES FROM (assessment-spec-doc 6):
+    an objective question's score is its deterministic `auto_score`, written
+    on submission; an evidence or coding question's is the AI evaluation with
+    reasoning, written here; a short-answer question's is the existing rubric
+    path. The item's score is the WEIGHTED mean by each row's stored weight,
+    which is what makes a supporting question carry less of the item than an
+    evidence question does.
 
     THE DUAL METHOD, AND IT IS THE WHOLE POINT OF THIS FUNCTION
     -----------------------------------------------------------
@@ -1258,12 +1366,49 @@ async def _score_item(
     # the scoring path below reads it for nothing else -- recording evidence is
     # a side effect of scoring and never an input to it.
     located = locators or {}
+    recorded = structured or {}
 
     if rubric_scored:
-        scores: list[int] = []
+        scores: list[tuple[int, float]] = []
         used: list[str] = []
         for question in questions:
             answer = " ".join(answers.get(str(question.id), []))
+            question_type = _question_type(question)
+            weight = _question_weight(question)
+            record = recorded.get(str(question.id))
+            if question_type in question_types.OBJECTIVE_TYPES:
+                # Scored deterministically on submission (spec 6.1). No row,
+                # or a row with no score, is an unanswered question; the
+                # transcript line is kept as the evidence the remark reads.
+                if record is None or record.auto_score is None:
+                    scores.append((UNANSWERED_SCORE, weight))
+                    continue
+                line = answer or format_rendering.transcript_line(
+                    question_type, dict(getattr(question, "payload_json", None) or {}), dict(record.answer_json or {})
+                )
+                used.append(line)
+                scores.append((int(round(float(record.auto_score) * 100)), weight))
+                continue
+            if question_type == question_types.CODING:
+                code = str((record.answer_json or {}).get("code") or "") if record is not None else ""
+                if not code.strip():
+                    scores.append((UNANSWERED_SCORE, weight))
+                    continue
+                used.append(answer or code)
+                await _record_answer_evidence(
+                    state, competency, question, located.get(str(question.id), [])
+                )
+                score = await _evaluate_subjective(state, competency, question, answer or code, record)
+                if score is None:
+                    score = await _llm_score(
+                        state["session"], question.prompt,
+                        question.rubric_json or _BEHAVIOURAL_STANDARD, answer or code,
+                    )
+                if score is None:
+                    degraded = True
+                    score = _stable_score(f"{state['link'].id}:{question.id}:{answer or code}")
+                scores.append((score, weight))
+                continue
             # An answer with nothing in it to grade is treated exactly as an
             # unanswered one, and deliberately never reaches `_llm_score`.
             # Letting it through is what produced a passing grade for
@@ -1278,7 +1423,7 @@ async def _score_item(
                         "link_id=%s question_id=%s reason=%s",
                         state["link"].id, question.id, verdict.reason,
                     )
-                scores.append(UNANSWERED_SCORE)
+                scores.append((UNANSWERED_SCORE, weight))
                 continue
             used.append(answer)
             # Recorded BEFORE the grade is asked for, and deliberately not
@@ -1289,19 +1434,26 @@ async def _score_item(
             await _record_answer_evidence(
                 state, competency, question, located.get(str(question.id), [])
             )
-            score = await _llm_score(
-                state["session"],
-                question.prompt,
-                question.rubric_json or _BEHAVIOURAL_STANDARD,
-                answer,
-            )
+            score: int | None = None
+            if question_type == question_types.EVIDENCE_BASED:
+                # The evaluation with reasoning (spec 6.2). None means it
+                # degraded, and the rubric path below is the product's
+                # previous scorer for exactly this answer.
+                score = await _evaluate_subjective(state, competency, question, answer, record)
+            if score is None:
+                score = await _llm_score(
+                    state["session"],
+                    question.prompt,
+                    question.rubric_json or _BEHAVIOURAL_STANDARD,
+                    answer,
+                )
             if score is None:
                 degraded = True
                 score = _stable_score(f"{state['link'].id}:{question.id}:{answer}")
-            scores.append(score)
+            scores.append((score, weight))
         if not used:
             return UNANSWERED_SCORE, [], degraded
-        return _mean(scores), used, degraded
+        return _weighted_mean(scores), used, degraded
 
     # Behavioural: one judgement across everything said about the competency.
     collected: list[str] = []
@@ -1370,6 +1522,21 @@ async def ppi_scoring_node(state: AssessmentState) -> dict:
             )
             locators = {}
 
+    # The structured answer rows, read once for the same reason as the
+    # locators. An unreadable table is logged and scores every structured
+    # question as unanswered, which is visible in the report; it never fails
+    # the pass for work a candidate has already done.
+    structured = state.get("structured_answers")
+    if structured is None:
+        try:
+            structured = await _structured_answers(state.get("session"), state.get("link"))
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "functional_assessment.structured_answers_unavailable link_id=%s",
+                state["link"].id, exc_info=True,
+            )
+            structured = {}
+
     questions_by_item: dict[str, list[CandidateQuestion]] = {}
     for question in state.get("candidate_questions") or []:
         questions_by_item.setdefault(str(question.competency_id), []).append(question)
@@ -1382,7 +1549,7 @@ async def ppi_scoring_node(state: AssessmentState) -> dict:
         )
         questions = questions_by_item.get(str(competency.id), [])
         score, used, degraded = await _score_item(
-            state, competency, questions, answers, locators
+            state, competency, questions, answers, locators, structured
         )
         if degraded:
             mode = "deterministic_fallback"

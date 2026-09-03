@@ -1,0 +1,119 @@
+{
+  "recorded_at": "2026-09-02T18:33:04.838Z",
+  "sources": {
+    "coco_ssd": "https://storage.googleapis.com/tfjs-models/savedmodel/ssdlite_mobilenet_v2/model.json",
+    "mediapipe_face_landmarker": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+    "mediapipe_wasm": "@mediapipe/tasks-vision@0.10.35",
+    "face_api_weights": "https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/"
+  },
+  "files": [
+    {
+      "path": "coco-ssd/model.json",
+      "source": "https://storage.googleapis.com/tfjs-models/savedmodel/ssdlite_mobilenet_v2/model.json",
+      "sha256": "3770b2528339b1e3340cb74360e1e40401816b009779aeb8d0cce3a4353ea3a9",
+      "bytes": 527315
+    },
+    {
+      "path": "coco-ssd/group1-shard1of5",
+      "source": "https://storage.googleapis.com/tfjs-models/savedmodel/ssdlite_mobilenet_v2/group1-shard1of5",
+      "sha256": "0e7af0f713e98521252321f7f84892c31cefccccec3ac64c84e5065b75ed5646",
+      "bytes": 4194304
+    },
+    {
+      "path": "coco-ssd/group1-shard2of5",
+      "source": "https://storage.googleapis.com/tfjs-models/savedmodel/ssdlite_mobilenet_v2/group1-shard2of5",
+      "sha256": "74cc6cfc2c4510c9cd81b8ad4cebf6f6a8f305119bb365ce0eb96276da38519a",
+      "bytes": 4194304
+    },
+    {
+      "path": "coco-ssd/group1-shard3of5",
+      "source": "https://storage.googleapis.com/tfjs-models/savedmodel/ssdlite_mobilenet_v2/group1-shard3of5",
+      "sha256": "50383033f893eae136392a403e8f70ade5efd90867df5695c4ca5ac640e14f38",
+      "bytes": 4194304
+    },
+    {
+      "path": "coco-ssd/group1-shard4of5",
+      "source": "https://storage.googleapis.com/tfjs-models/savedmodel/ssdlite_mobilenet_v2/group1-shard4of5",
+      "sha256": "d856dc534c780068bbf6c666ce1516df2c8433d87578aa31fcdf197de7058cc2",
+      "bytes": 4194304
+    },
+    {
+      "path": "coco-ssd/group1-shard5of5",
+      "source": "https://storage.googleapis.com/tfjs-models/savedmodel/ssdlite_mobilenet_v2/group1-shard5of5",
+      "sha256": "3d356f1fb6dfca6af78c56db34d9326706d0196e303f9de6b04f236ca79ed309",
+      "bytes": 1257312
+    },
+    {
+      "path": "mediapipe/face_landmarker.task",
+      "source": "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+      "sha256": "64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff",
+      "bytes": 3758596
+    },
+    {
+      "path": "mediapipe/wasm/vision_wasm_internal.js",
+      "source": "npm:@mediapipe/tasks-vision@0.10.35/wasm/vision_wasm_internal.js",
+      "sha256": "e7fd9858e8e8f221d9b96eddc11f8e077f263e0b7bbd79d3cbe882b134274f8c",
+      "bytes": 322044
+    },
+    {
+      "path": "mediapipe/wasm/vision_wasm_internal.wasm",
+      "source": "npm:@mediapipe/tasks-vision@0.10.35/wasm/vision_wasm_internal.wasm",
+      "sha256": "6a5c64584c2ab61c763b6e204afbdbc7ce1caf7f5216187322bca8df94f646bc",
+      "bytes": 11153617
+    },
+    {
+      "path": "mediapipe/wasm/vision_wasm_nosimd_internal.js",
+      "source": "npm:@mediapipe/tasks-vision@0.10.35/wasm/vision_wasm_nosimd_internal.js",
+      "sha256": "438d1fe8ff7f4d946025bc211c291543c037d8a3785ed4eee60f1f521b236296",
+      "bytes": 321847
+    },
+    {
+      "path": "mediapipe/wasm/vision_wasm_nosimd_internal.wasm",
+      "source": "npm:@mediapipe/tasks-vision@0.10.35/wasm/vision_wasm_nosimd_internal.wasm",
+      "sha256": "8a3092d34c79d3f57e6ba8592105e8a90f6b07c27891ffecd14cca428bfd3e31",
+      "bytes": 10481398
+    },
+    {
+      "path": "face-api/tiny_face_detector_model-weights_manifest.json",
+      "source": "https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/tiny_face_detector_model-weights_manifest.json",
+      "sha256": "14c60659a31b6b7b1320077171b8f8adcb24ef0e62dde62ce603bcb49a1b49b5",
+      "bytes": 2953
+    },
+    {
+      "path": "face-api/tiny_face_detector_model-shard1",
+      "source": "https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/tiny_face_detector_model-shard1",
+      "sha256": "b7503ce7df31039b1c43316a9b865cab6a70dd748cc602d3fa28b551503c3871",
+      "bytes": 193321
+    },
+    {
+      "path": "face-api/face_landmark_68_model-weights_manifest.json",
+      "source": "https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/face_landmark_68_model-weights_manifest.json",
+      "sha256": "d30f6cc341009ea4f8223876959289b96576fc54a2615f92da9741ab9c5f0bbc",
+      "bytes": 7889
+    },
+    {
+      "path": "face-api/face_landmark_68_model-shard1",
+      "source": "https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/face_landmark_68_model-shard1",
+      "sha256": "4611ef65c87d836d03d684b30eec4d195d8b219fa1dd58fc58945831c6b9299b",
+      "bytes": 356840
+    },
+    {
+      "path": "face-api/face_recognition_model-weights_manifest.json",
+      "source": "https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/face_recognition_model-weights_manifest.json",
+      "sha256": "6619f4126f845c1f7857f39cbd79565f375734f46e0dd25d9602f8dc21cda9f5",
+      "bytes": 18303
+    },
+    {
+      "path": "face-api/face_recognition_model-shard1",
+      "source": "https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/face_recognition_model-shard1",
+      "sha256": "412566a2b8d814d84c60b8055ec5d3b3b2328ef7cd7853384e03ec3db7b053d8",
+      "bytes": 4194304
+    },
+    {
+      "path": "face-api/face_recognition_model-shard2",
+      "source": "https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights/face_recognition_model-shard2",
+      "sha256": "69350fdecd845c532e44dd8f7d0521c773505ef46b87cc34f46640a0cc334ecc",
+      "bytes": 2249728
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+# version: 1
+# Write one multi-correct multiple-choice question for one matrix item.
+# services/assessment_formats/generation.write_structured.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You are writing ONE multiple-choice question with TWO OR MORE correct options, for ONE candidate applying to ONE job. It is a supporting check of baseline competence in the matrix item named below; it establishes understanding, never the candidate's own track record.
+
+Matrix item: $item_name
+What this item measures: $item_measures
+Job title: $job_title
+Number of options to write: $option_count
+
+$candidate_text_is_data
+$no_evaluation
+
+RULES:
+- Write $option_count options with short ids "a", "b", "c" and so on. At least two are correct and at least one is wrong; never make every option correct.
+- The prompt must tell the candidate to select all that apply; do not tell them how many are correct.
+- Every wrong option must be a REAL MISCONCEPTION: something a practitioner who half understands this item would genuinely believe. For each wrong option, write in `misconceptions` one or two sentences naming the misunderstanding it represents. Filler options ("all of the above", "none of the above", an obviously absurd choice) are not allowed.
+- Options must be similar in length and register so the correct ones cannot be picked by their shape.
+- Ground the question in the kind of work this job's description and this candidate's resume describe, so it reads as part of this assessment rather than a quiz bank.
+- Never mention scores, grades or how the answer will be marked.
+
+Return JSON {"prompt":"...","payload":{"options":[{"id":"a","text":"..."}],"correct_option_ids":["a","c"],"scoring":"partial"},"misconceptions":{"b":"...","d":"..."}}.
