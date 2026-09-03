@@ -496,6 +496,20 @@ jobs:
 
       - name: tflint
         working-directory: infra
+        env:
+          # AUTHENTICATE THE PLUGIN DOWNLOAD. `tflint --init` fetches the AWS
+          # ruleset from the GitHub releases API, and unauthenticated requests
+          # are rate limited PER RUNNER IP, which is shared across every
+          # repository on that machine. It failed exactly that way on
+          # `main` at bd14d9c, minutes after the identical commit passed on its
+          # pull request: "403 API rate limit exceeded ... rate reset in 1m06s".
+          #
+          # Nothing about the Terraform was wrong, which is the problem with
+          # leaving it: a gate that goes red for somebody else's traffic is a
+          # gate people learn to re-run rather than read. The token raises the
+          # limit to a per-repository budget and costs nothing else; it is the
+          # default `GITHUB_TOKEN`, which is read-only contents here.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           tflint --init --config="$PWD/.tflint.hcl"
           tflint --recursive --config="$PWD/.tflint.hcl" --minimum-failure-severity=error
