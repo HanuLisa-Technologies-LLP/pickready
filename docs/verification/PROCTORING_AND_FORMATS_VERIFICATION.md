@@ -23,6 +23,41 @@ The single skip is the one declared in `docs/operations/SKIPS.md`
 (`VOYAGE_CONTEXT_4` unset). No new skip was introduced. The backend count rose
 from the 3247 recorded in `TEST_BASELINE.md` to 5188.
 
+## The security scan, and why its check is red
+
+The `Security scan` job passes. The `Trivy` check that consumes its results
+fails, and the reason is worth writing down rather than leaving for the next
+reader to rediscover.
+
+**The scanner had never successfully run before.** The workflow comment records
+that the action was pinned to a tag that does not exist, so the job died in
+setup on every run since it was written. This pull request is the first time it
+has produced results, so GitHub has no baseline on `main` and reports every
+finding on a touched file as new.
+
+Two alerts were genuinely introduced by this work and both are fixed:
+
+| Alert | What it was | Resolution |
+|---|---|---|
+| `DS-0031`, critical | A build argument named `ALLOW_MISSING_HUGGINGFACE_TOKEN` read as an exposed credential. It never held one: the token arrives on a BuildKit secret mount. | Renamed to `SKIP_GATED_MODEL_DOWNLOAD`, which is also what it does. |
+| `CVE-2022-0235`, high, and `CVE-2020-15168` | `node-fetch` 2.1.2, pulled in by face-api.js through a 2019 tfjs-core. Verified it reaches neither worker bundle nor the Next client output, because tfjs-core uses native fetch in a browser build. | An npm override to `^2.6.7`, the mechanism this package.json already uses. Every copy now resolves to 2.7.0. |
+
+The remaining seven "new" findings are **pre-existing**, verified individually:
+`infra/modules/alb/main.tf` carries two of them and is not changed by this work
+at all, and the unrestricted egress rule and public-subnet finding in
+`infra/modules/network/main.tf` are both present on `main`. They are reported
+here only because the scanner started working and those files sit near a
+change. `DS-0026`, no HEALTHCHECK, is raised against all three Dockerfiles
+including the two that predate this work: this platform health-checks
+containers in the ECS task definition and the compose file rather than in the
+image.
+
+**Twenty-one findings on the infrastructure modules are now visible for the
+first time and none of them has been triaged.** Some are deliberate and
+documented in the Terraform itself, such as the egress rule whose comment names
+the model provider, the vendor APIs and SMTP. Triaging the set is real work and
+it is not part of this change.
+
 ## Manual verification performed
 
 ### Composition is evidence-dominant across roles
