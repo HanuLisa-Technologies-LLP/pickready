@@ -634,7 +634,7 @@ jobs:
           # secret mount exists only for the one RUN that reads it.
           secrets: |
             huggingface_token=${{ secrets.HUGGINGFACE_TOKEN }}
-          # ALLOW_MISSING_HUGGINGFACE_TOKEN is left at its default of false, so
+          # SKIP_GATED_MODEL_DOWNLOAD is left at its default of false, so
           # a build with no token FAILS here rather than pushing an image whose
           # diarization is quietly unavailable. The local compose stack is the
           # only place that passes true.

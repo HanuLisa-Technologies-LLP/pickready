@@ -134,9 +134,9 @@ services:
         # bake them in, accept the two model licences (see
         # ../analysis-service/README.md), export HUGGINGFACE_TOKEN and run
         #   DOCKER_BUILDKIT=1 docker compose -f infra/docker-compose.yml build analysis
-        # with `--build-arg ALLOW_MISSING_HUGGINGFACE_TOKEN=false`. CI never
+        # with `--build-arg SKIP_GATED_MODEL_DOWNLOAD=false`. CI never
         # passes true, so a deployed image is never missing them silently.
-        ALLOW_MISSING_HUGGINGFACE_TOKEN: "true"
+        SKIP_GATED_MODEL_DOWNLOAD: "true"
     # env_file carries HUGGINGFACE_TOKEN from ../.env. It is a RUNTIME
     # requirement as well as a build one: the model licence is accepted per
     # account, so the service refuses to load the gated pipeline without a

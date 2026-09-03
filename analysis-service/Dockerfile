@@ -55,15 +55,24 @@ COPY scripts ./scripts
 
 # ── Model download, with the token mounted and never stored ──────────────────
 #
-# ALLOW_MISSING_HUGGINGFACE_TOKEN is for a local compose build with no token,
-# which produces an image whose /health says diarization is unavailable. CI
-# leaves it false, so an image missing the gated models cannot be pushed.
-ARG ALLOW_MISSING_HUGGINGFACE_TOKEN=false
+# SKIP_GATED_MODEL_DOWNLOAD is for a local compose build with no Hugging Face
+# credential, which produces an image whose /health says diarization is
+# unavailable. CI leaves it false, so an image missing the gated models cannot
+# be pushed.
+#
+# NAMED WITHOUT THE WORD TOKEN, DELIBERATELY. It is a boolean switch and has
+# never held a credential: the credential arrives on the secret mount below and
+# is never an ARG, which is the whole point of the mount. Under its previous
+# name a Dockerfile secret scanner read it as an exposed token in a build
+# argument and reported a critical finding, and a scanner that cries wolf on
+# the one file where a real leak would matter is worse than no scanner. The
+# name now says what the flag does.
+ARG SKIP_GATED_MODEL_DOWNLOAD=false
 ENV MODEL_CACHE_DIR=/models \
     HF_HOME=/models \
     HF_HUB_DISABLE_TELEMETRY=1
 RUN --mount=type=secret,id=huggingface_token,required=false \
-    if [ "$ALLOW_MISSING_HUGGINGFACE_TOKEN" = "true" ]; then \
+    if [ "$SKIP_GATED_MODEL_DOWNLOAD" = "true" ]; then \
       python scripts/download_models.py --cache-dir /models --allow-missing-token; \
     else \
       python scripts/download_models.py --cache-dir /models; \

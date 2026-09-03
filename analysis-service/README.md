@@ -117,7 +117,7 @@ docker run --rm -p 8100:8100 -e HUGGINGFACE_TOKEN readypick-analysis
 ```
 
 Without a token the build refuses. `--build-arg
-ALLOW_MISSING_HUGGINGFACE_TOKEN=true` builds a detector-only image that
+SKIP_GATED_MODEL_DOWNLOAD=true` builds a detector-only image that
 reports diarization unavailable; the compose stack sets it so the rest of the
 platform comes up on a machine with no token, and CI does not.
 
