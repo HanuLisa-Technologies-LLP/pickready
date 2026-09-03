@@ -1,5 +1,159 @@
 # claude.md, ReadyPick Build Conventions
 
+Standing context for any session working on this repository.
+[docs/README.md](docs/README.md) is the documentation index; **read `PRD.md`
+for what to build and `ESD.md` for the architecture. This file is HOW to
+build** -- the rules a change must not break.
+
+## How to read this file
+
+Sections are **reverse-chronological**, newest first, and that ordering is
+load-bearing: a later section supersedes an earlier one wherever they touch the
+same thing, and supersessions are marked in place rather than by deleting the
+history that explains them. When two sections disagree, the higher one wins.
+
+The general conventions (repository layout, coding standards, environment,
+local dev) live in the numbered sections at the BOTTOM. They change rarely. The
+phase sections above them are where the sharp edges are.
+
+### Jump to a phase
+
+| Section | What it governs |
+|---|---|
+| Proctoring + question formats (2026-09-02) | Mandatory monitoring, the shared warning counter, the six question formats, evidence dominance |
+| Project Evidence Intelligence (2026-09-01) | Candidate projects, derived evidence, temporary originals |
+| spec-doc6 (2026-08-29) | Runbook reconciliation, Part A activation, RBAC, dashboard, AWS close-out |
+| spec-doc5 (2026-08-28) | The three-layer hiring framework, single-vendor models, navy/teal UI, AWS-ready |
+| Tatva + PRISM (2026-08-23) | The naming split, report section order, three radar charts |
+| Ten-system agent framework (2026-08-18) | Tools, agent loop, retrieval, traces, budgets |
+| Product spec v4 (2026-08-14) | Role hierarchy, two job-setup outputs, validation, credit gates |
+| Per-candidate questions (2026-08-06) | No preset bank, rubric-with-question, loop engineering |
+| Conversational agent (2026-08-05) | Adaptive interview, non-answers, guardrails, telemetry |
+| Adaptive interview + demo (2026-08-05) | Follow-up bounds, temperature policy, demo tenants |
+| PPI + four-grade scale (2026-07-30) | One rating scale, per-job framework, frozen matrix |
+| Subscriptions + credit ledger (2026-07-28) | Sub-units, idempotency, Razorpay |
+| BD Portal + unified JD (2026-07-28) | Fourth portal, one markdown JD, procurement types |
+| Provider Portal (2026-07-27) | Read-only-by-absence, compliance slots, archive |
+| Job posting lifecycle (2026-07-27) | 30+5 day window, 10-stage pipeline |
+| Job detail + router (2026-07-27) | No numbers to a client, inline candidates, immutable reports |
+| Unified candidate profile (2026-07-27) | Main resume, profile form |
+| Grade-driven assessment (2026-07-26) | Grade drives counts, scoring reads real answers |
+
+### The rules that break the most builds
+
+1. **No number ever reaches a client.** Scores are internal; conversion to one
+   of four words happens server-side at the serializer.
+2. **Permissions are data, never a role branch.** `require_capability(...)`,
+   and a new capability constant is only HALF a change -- the seeding migration
+   is the other half.
+3. **Every tenant-scoped query goes through the RLS-aware session.**
+4. **All slow work is a Celery task**, never inline in a request handler.
+5. **One implementation per concept.** No dual code paths for one behaviour.
+6. **No silent fallbacks.** No bare `except`, no default substituted for a
+   failed retrieval, no template output presented as generation.
+7. **No em dash anywhere**, including in seeded and generated content.
+8. **A timestamp is not evidence that work happened.** Check the table.
+
+
+## Current hard rules, proctoring and question formats (2026-09-02)
+
+Two specifications, `docs/spec/PROCTORING.md` and
+`docs/spec/ASSESSMENT_QUESTION_FORMATS.md`, built together because the
+behavioural capture of one attaches to the answer fields of the other.
+
+- **Proctoring is MANDATORY and there is no flag.** `services/proctoring/gate.require_active`
+  runs FIRST in `start_conversation` and `respond`. A candidate who declines
+  the consent screen does not take the assessment. The old optional
+  screen-capture consent component is deleted, not flagged off: it captured
+  the screen and was optional, which contradicts both P1 and P4.
+- **No frame, image, snapshot or audio buffer is ever stored, anywhere.**
+  Inference happens in a Web Worker in the candidate's browser, which posts
+  detections only. The one medium that leaves the browser is a 15-second audio
+  chunk, read into memory, handed to the analysis service, and deleted.
+  `tests/test_proctoring_no_media.py` fails the build on a write path. A face
+  descriptor is a 128-float vector, not an image, and the database CHECK
+  refuses any other width.
+- **Proctoring touches NO score, grade, ranking or matrix.** Nothing under
+  `services/proctoring/` is imported by a scorer, by Miti, by Siddhi, by the
+  dashboard or by ranking, and `tests/test_proctoring_scoring_isolation.py`
+  asserts the import graph. The evidence tier of the assessment conversation
+  stays E3: monitoring an assessment must not silently promote its evidence,
+  because that would let proctoring move a grade.
+- **The server decides.** The warning counter is one shared Redis counter per
+  session, across EVERY Path B event type, mirrored to the row. The client
+  requests; the server debounces, applies cooldowns, counts and terminates.
+  Redis being down answers 503 rather than silently not warning.
+- **Every threshold is a `proctoring_*` setting**, read once by
+  `services/proctoring/config.py` and served to the browser on the session
+  response, so the client and the server never disagree about a number. No
+  literal in the pipeline.
+- **The report is WORDS ONLY** so it travels inside the delivered PRISM payload
+  under the number ban: counts spelled out, durations approximate, no
+  internal identifier, no forbidden word (strike, tier, violation, flag,
+  anomaly, signal, confidence, threshold, severity). Ordering carries the
+  weight; there are no icons and no colour codes. It is the EIGHTH and last
+  PRISM section, `proctoring`, written once per renderer as before.
+- **The third warning consults `jobs.proctoring_warning_policy`** and the
+  default is `continue_and_note`. The product never terminates by default.
+- **Retention follows the platform's cascade policy.** There is no time-based
+  purge in the product and `proctoring_event_retention_days` defaults to 0,
+  which means exactly that; a positive value enables the hourly purge. The
+  number is an owner decision, not something this code invents.
+- **Be honest about the limits, in the code.** Browser-level blocking stops an
+  ordinary candidate, not a determined one; a monitoring gap is reported as a
+  gap; unconfigured audio analysis is reported as unavailable; the AI-text
+  detector ships DISABLED and informational because it is unreliable.
+- **Evidence-based questions are the majority of weight AND time, in code.**
+  `services/assessment_formats/composition.py` validates every generated
+  assessment against six rules and regenerates, then falls back
+  deterministically to evidence questions, so what is served is always valid.
+  A 70% MCQ assessment cannot be served. `CandidateQuestion.weight` makes
+  the dominance structural inside the item score.
+- **`candidate_questions` IS the specification's `assessment_questions`.**
+  Migration 0076 added the format columns to the existing per-candidate row
+  rather than a second table; rows from before read as `short_answer`,
+  because relabelling them evidence-based would claim an anchor they do not
+  have. `assessment_answers` is the structured answer record; the transcript
+  is unchanged and still what every scorer reads.
+- **The answer key never crosses the candidate boundary unprojected.**
+  `assessment_formats.types.candidate_view` is an allowlist per type.
+- **Structured formats are delivered verbatim and scored deterministically;
+  text formats keep the whole conversational machinery.** Multi-answer MCQ
+  partial credit floors at zero so "select everything" scores zero;
+  fill-in-the-blank escalates an exact-match miss to an AI equivalence check
+  before marking it wrong; coding is judged by READING and every evaluation
+  and every recruiter view says the code was not executed.
+- **Per-question time is measured by the server** from
+  `assessment_conversations.prompt_shown_at`, less the bounded time a
+  blocking warning held the screen. A client-reported duration is a number
+  the client chose.
+- **The analysis service is a separate ECS service** with its own image, its
+  own task role and exactly one secret, `HUGGINGFACE_TOKEN`. The pyannote
+  models are gated on Hugging Face: their download needs an accepted licence
+  and the token, which this repository never contains.
+
+## Current hard rules, documentation layout (2026-09-01)
+
+- **ALL documentation lives under `docs/`, indexed by
+  [docs/README.md](docs/README.md).** Five markdown files stay at the
+  repository root and only these five: `README.md`, `claude.md`,
+  `CONTRIBUTING.md`, and `PRODUCT.md` + `DESIGN.md` (the Impeccable tooling
+  resolves those two at the project root, so moving them breaks the design
+  agents). `.impeccable-exceptions.md` also stays, because
+  `frontend/scripts/impeccable-gate.mjs` reads it there.
+- **`docs/history/` is provenance, not truth.** Phase logs, gap matrices,
+  contradiction surveys and diagnostics live there. Do not read one as a
+  description of how the product works today, and do not update one to match
+  current behaviour: they record what was true when they were written.
+- **Five documents are resolved on disk by code**, so their paths are part of
+  the contract: the Runbook (`docs/product/`), `docs/operations/SKIPS.md`,
+  both `docs/verification/VERIFICATION_*.md`, and
+  `docs/history/LEGACY_RESET_SURVEY.md`. `docs/README.md` carries the table of
+  which module reads which.
+- **The public site is user-visible copy and follows the naming rule**: Tatva
+  Assessment is the process, PRISM Report is the document, and neither is
+  called PPI. The `ppi` identifiers in CODE stay exactly as they are.
+
 ## Current hard rules, Project Evidence Intelligence (2026-09-01)
 
 - **The product stores intelligence derived from projects, never the projects
@@ -64,10 +218,15 @@ items 9 to 20 and its seven-module Terraform list.
 
 ### THE THREE MISSING DOCUMENTS ALL EXIST NOW. Read them, do not re-derive them.
 
-- **`Readypick Hiring Philosophy.md`** (RPN-PHIL-001, now **v1.1**) is at the
-  repository root. Note the filename uses SPACES; every document writes it with
-  underscores. It was absent for the whole of spec-doc5, which is why nine sites
-  carried guesses. It is authoritative for evaluation mechanics.
+- **`docs/product/Readypick Hiring Philosophy.md`** (RPN-PHIL-001, now **v1.1**).
+  It sat at the repository root until the 2026-09-01 documentation
+  consolidation. Note the filename uses SPACES; every document writes it with
+  underscores. Three call sites resolve this path on disk, so moving it again
+  means changing them: `services/hiring/dna_compilation.RUNBOOK_MARKDOWN`,
+  `tests/test_runbook_parity.RUNBOOK_GLOB` and
+  `tests/test_runbook_reconciliation.RUNBOOK_PATH`. It was absent for the whole
+  of spec-doc5, which is why nine sites carried guesses. It is authoritative
+  for evaluation mechanics.
 - **`docs/spec/RBAC_SPECIFICATION.md`** is **precedence rank 1**, above the
   Runbook and above spec-doc6 itself, for authorization, tenant isolation, role
   ownership, job lifecycle and audit.
@@ -1349,7 +1508,7 @@ exemptions. Anthropic is REMOVED, not kept as a fallback, and
 - **The Key Secret is server-side only and never reaches the frontend.** The
   browser gets the Key ID from `GET /billing/config` at runtime, not from a
   build-time `NEXT_PUBLIC_` variable, so the frontend container never needs the
-  `.env` at all. `api-keys.txt` is gitignored and was never committed.
+  `.env` at all. `secrets/api-keys.txt` is gitignored and was never committed.
 - **`checkout_ready` is about the SERVER's credentials, not the plan row.**
   Razorpay Plans are minted lazily on first subscribe, so keying it off
   `razorpay_plan_id` disables every Subscribe button on a fresh install and the
@@ -1716,27 +1875,54 @@ ReadyPick is a multi-tenant recruitment/ATS platform for Hanulisa Technologies L
 ## 2. Repository Layout
 
 ```
-/frontend                Next.js 14 (App Router), TypeScript, shadcn/ui
-  /app                   routes, grouped by role: (super-admin) (client) (hr) (recruiter) (hiring-manager) (candidate)
-  /components            shared UI, shadcn primitives in /components/ui
-  /lib                    api client, auth helpers, theme provider
+/frontend                  Next.js 16 (App Router), TypeScript, shadcn/ui
+  /app                     routes grouped by audience:
+                             (public)      landing, docs, about, legal
+                             (auth)        login, register, join
+                             (org)         Customer Portal
+                             (candidate)   Candidate Portal
+                             (super-admin) Provider Portal
+                             (bd)          Business Development Portal
+  /components              shared UI; shadcn primitives in /components/ui
+  /lib                     api client, auth helpers, types, theme provider
+  /scripts                 impeccable-gate.mjs, contrast checks
+/analysis-service          the proctoring analysis service (speaker
+                           diarization, the flagged AI-text detector): its own
+                           image, its own tests, one secret
 /backend
   /app
-    /api                 FastAPI routers, one module per PRD section (auth, jobs, candidates, matching, verification, dashboard, admin)
-    /models              SQLAlchemy models, mirroring ESD §4 tables
-    /schemas             Pydantic request/response models
-    /services            business logic — approval FSM, RBAC engine, LLM router, matching pipeline
-    /workers             Celery tasks (send_email, send_sms, run_matching, poll_verification, refresh_dashboard_views)
-    /core                config, security (OTP hashing, JWT), db session with RLS tenant-var setter
-  /alembic                migrations
-  Dockerfile
-/infra
-  docker-compose.yml      local dev: postgres+pgvector, redis, backend, worker, beat, frontend
-  railway.json / render.yaml   production service definitions
-/docs
-  PRD.md
-  ESD.md
-  claude.md
+    /api                   FastAPI routers, one module per PRD section
+    /config                llm_providers.py, the model policy as DATA
+    /models                SQLAlchemy models mirroring ESD section 4
+    /schemas               Pydantic request/response models
+    /services              domain logic; see the package map below
+    /prompts               versioned prompt files + registry.py
+    /workers               celery_app.py (schedule) and tasks.py
+    /core                  config, security, db session with the RLS setter
+    /scripts               seeds, evals, legacy_reset, verify_live
+  /alembic/versions        migrations, 0001 to 0076
+  /tests                   151 test modules
+/infra                     Terraform modules + docker-compose.yml (local dev)
+/scripts                   test.sh, deploy helpers, smoke tests
+/docs                      ALL documentation. Start at docs/README.md
+```
+
+The `services/` packages worth knowing before adding one:
+
+```
+services/hiring/     Bodha + Sutra: SWOT, Company DNA, scorecard, layers,
+                     transformation, gates, prescreen, runbook_data/
+services/miti/       the five isolated dimension evaluators + triangulation
+services/siddhi/     PRISM composition behind the citation chokepoint
+services/projects/   Project Evidence Intelligence, end to end
+services/evidence/   the shared evidence ledger, tiers, contradictions
+services/rag/        retrieval: chunking, fusion, rerank
+services/agents/     tools, permissions, the agent loop
+services/proctoring/ the event catalog, the server-side warning machine,
+                     behavioural evaluation, the report; imported by no scorer
+services/assessment_formats/
+                     the six question formats, composition, objective scoring,
+                     AI evaluation with reasoning
 ```
 
 ---
@@ -1804,19 +1990,41 @@ docker compose exec backend python -m app.scripts.seed_dev_data
 
 ---
 
-## 7. Build Order (matches PRD §9 phasing — build and ship in this order, don't jump ahead)
+## 7. Where to make a change
 
-1. Tenant model + RLS policies + Super Admin console + RBAC engine
-2. OTP auth for every role + Candidate Portal auth scope
-3. Company onboarding + Hiring Manager account creation (max-5 enforced)
-4. Job creation + configurable approval FSM
-5. Resume upload + BGE-M3 embeddings + pgvector + Databank
-6. Hybrid ranking pipeline (semantic → keyword → LLM re-rank → tiers)
-7. Candidate outreach + 40-aspect flow + employer verification (form + fallback parsing)
-8. HR Review Screen + Hiring Manager shortlist actions
-9. Interview scheduling (client-domain email, .ics) + mandatory status tracking
-10. HR/Recruiter dashboard (materialized views)
-11. Observability, audit log UI, load/security hardening
+The build order that used to sit here described a product that has been built,
+and every one of its eleven steps had been superseded (OTP auth became
+Firebase, BGE-M3 became `voyage-4`, the 40-aspect flow became the profile form
+and then the application's validation fields). Replaced with the lookup a
+change actually needs.
+
+| Adding or changing... | Touch | And do not forget |
+|---|---|---|
+| An API route | `app/api/<section>.py` | `require_capability(...)`, never a role branch |
+| A capability | `services/capabilities.py` | **A seeding migration too**, plus `tests/test_capability_seed_parity.py` |
+| A table | `app/models/`, `alembic/versions/` | RLS policy + grant; export it from `models/__init__.py` |
+| A Celery task | `workers/tasks.py`, `celery_app.py` | Name contract, idempotency, and the worker does not autoreload |
+| An LLM call | `config/llm_providers.py` first | Task type, timeout, budget, temperature, max tokens, retry budget |
+| A prompt | `app/prompts/*.txt` | Bump `# version:`; the registry digests the body |
+| A scoring rule | `services/hiring/runbook_data/*.yaml` | Cite the Runbook section; parity test enforces it |
+| A client-facing string | The renderer | No number, no em dash, correct Tatva/PRISM naming |
+| A candidate-facing upload | The relevant storage service | Validate, never execute, bound every ceiling in config |
+| A frontend surface | `frontend/app/(group)/` | `DESIGN.md` tokens; navy is structure, teal is evidence |
+| A proctoring threshold | `core/config.py` (`proctoring_*`) | It is served to the browser from `services/proctoring/config.py`; no literal in the pipeline |
+| A proctoring event type | `services/proctoring/catalog.py` | Its path (A, B, C), its group, its phrasing in `phrasing.py`; internal identifiers never reach a recruiter |
+| A question format | `services/assessment_formats/types.py` | The payload model, the answer model, `candidate_view`, the migration CHECK, the frontend component behind the one dispatcher |
+
+### Before you claim it works
+
+- A green pipeline means the service answers HTTP. Verify against the thing a
+  user touches: a row count, an actual API response, a grep of the DEPLOYED
+  image. Never against the source tree.
+- `grep -rn "hiring\.\|miti\.\|siddhi\." backend/app/api backend/app/workers`
+  is the cheapest honest answer to "is the framework actually reachable". It
+  returned nothing for a whole phase while every module was green in isolation.
+- Run `./scripts/test.sh` (fresh database, flushed cache) rather than pytest
+  against a reused one. A suite that only passes on a warm database is telling
+  you something.
 
 ---
 

@@ -2,7 +2,7 @@
 
 PROVENANCE. Every value under this package is extracted from the Ready Pick Now
 Hiring Philosophy & Intelligence Runbook, document ``RPN-PHIL-001`` v1.1, which
-lives at the repository root as ``Readypick Hiring Philosophy.md``. These files
+lives at ``docs/product/Readypick Hiring Philosophy.md``. These files
 are DATA EXTRACTED FROM THE RUNBOOK, NOT AN INDEPENDENT SOURCE OF TRUTH. When
 the two disagree the Runbook is right and this package is wrong, and
 ``backend/tests/test_runbook_parity.py`` fails until one of them is corrected.

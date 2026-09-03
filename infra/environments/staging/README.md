@@ -54,7 +54,7 @@ opening anything.
 
 ### `region`
 
-**The owner's decision.** `docs/DEPLOY_AWS.md` §2 records why `ap-south-1` is the
+**The owner's decision.** `docs/operations/DEPLOY_AWS.md` §2 records why `ap-south-1` is the
 likely answer for an India-billed tenant with Indian data-residency expectations,
 and why it is no longer written into the code as an assumption.
 
@@ -136,4 +136,4 @@ offline plan cannot catch that, because it supplies its own from
 `../offline-plan.tfvars` — every value in which is deliberately impossible.
 
 The full ordered runbook, with a verification command and an expected output for
-each step, is `docs/DEPLOY_AWS.md`.
+each step, is `docs/operations/DEPLOY_AWS.md`.

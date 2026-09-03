@@ -49,7 +49,12 @@ from app.prompts import registry
 from app.services import agent_loop, interviewer, llm_router, ppi_interview
 from app.services.hiring import evidence_graph
 
-RUNBOOK_PATH = Path(__file__).resolve().parents[2] / "Readypick Hiring Philosophy.md"
+#: The Runbook moved from the repository root into `docs/product/` on
+#: 2026-09-01 with the rest of the documentation.
+RUNBOOK_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs" / "product" / "Readypick Hiring Philosophy.md"
+)
 
 #: U+2014, built from its code point so a repo-wide em dash sweep cannot rewrite
 #: the code that normalises it. The Runbook uses it and the data files may not.

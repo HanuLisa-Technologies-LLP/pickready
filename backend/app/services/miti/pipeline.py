@@ -54,6 +54,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable
 from typing import Any, Mapping, Sequence
 
 from app.services.evidence import contradictions as detector
@@ -285,8 +286,16 @@ def parse_result(payload: Mapping[str, Any], dimension: str) -> DimensionResult:
     band = str(payload.get("band") or "").strip().lower()
     if band not in dict(dimensions.BANDS):
         return _degraded(dimension, f"unknown band {band!r}")
+    # `ref is not None` BEFORE the stringify, and it is not belt and braces:
+    # `str(None)` is "None", which survives the truthiness check and becomes a
+    # citation reading "None". That is worse than no citation, because the
+    # band then passes the uncitable check below and Siddhi renders a sentence
+    # against a ref that resolves to nothing -- a FABRICATED citation, which
+    # this codebase treats as a strictly worse failure than a missing one.
     refs = tuple(
-        str(ref) for ref in (payload.get("evidence_refs") or []) if str(ref).strip()
+        str(ref)
+        for ref in (payload.get("evidence_refs") or [])
+        if ref is not None and str(ref).strip()
     )
     insufficient = bool(payload.get("insufficient_evidence"))
     if not refs and not insufficient:
@@ -309,7 +318,9 @@ def parse_result(payload: Mapping[str, Any], dimension: str) -> DimensionResult:
     )
 
 
-async def _run_evaluator(payload: EvaluatorInput, invoke) -> DimensionResult:
+async def _run_evaluator(
+    payload: EvaluatorInput, invoke: Callable[..., Awaitable[str]]
+) -> DimensionResult:
     """One evaluator. Never raises.
 
     `invoke` is injected rather than imported so this module has no import of
@@ -334,7 +345,9 @@ async def _run_evaluator(payload: EvaluatorInput, invoke) -> DimensionResult:
     return parse_result(parsed, payload.dimension)
 
 
-async def evaluate(inputs: EvaluationInputs, *, invoke) -> EvaluationOutcome:
+async def evaluate(
+    inputs: EvaluationInputs, *, invoke: Callable[..., Awaitable[str]]
+) -> EvaluationOutcome:
     """Run stages 2-6 and every gate, in order.
 
     Returns an outcome even when a gate fails. A caller wanting "may I deliver

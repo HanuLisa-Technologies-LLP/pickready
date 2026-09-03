@@ -28,3 +28,8 @@ output "execution_role_arns" {
 output "log_group_names" {
   value = { for name, group in aws_cloudwatch_log_group.this : name => group.name }
 }
+
+output "discovery_service_names" {
+  description = "{service -> the internal hostname other tasks reach it on}. Empty when nothing is discoverable."
+  value       = { for name, service in aws_service_discovery_service.this : name => "${service.name}.${var.discovery_namespace}" }
+}

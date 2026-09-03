@@ -141,9 +141,142 @@ class Settings(BaseSettings):
     s3_endpoint_url: str = ""
     resume_signed_url_ttl_seconds: int = 300
 
-    # Scaffolding only. Legal retention, data-request workflow and review remain
-    # unresolved, so production must keep this disabled.
-    proctoring_enabled: bool = False
+    # ── Proctoring (proctoring-spec-doc.md) ─────────────────────────────────
+    #
+    # EVERY THRESHOLD THE PROCTORING SYSTEM USES IS HERE, AND NOWHERE ELSE.
+    # The specification's "defaults" are starting configuration, not
+    # constants, so each one is a setting an operator can move without a code
+    # change. `services/proctoring/config.py` reads them into one frozen
+    # object and serves the browser-side subset to the client at session
+    # start, which is what keeps the client and the server working from the
+    # same numbers. No module in the proctoring pipeline may carry a literal.
+    #
+    # Proctoring is MANDATORY (principle P4). There is no enable flag: a
+    # candidate who declines the consent screen does not take the assessment.
+    # The one feature flag below governs the AI-text detector only, because
+    # that signal is documented as unreliable and ships disabled.
+    proctoring_max_warnings: int = 3
+    # Object detection (section 3.1, 4.2).
+    proctoring_object_confidence_threshold: float = 0.65
+    proctoring_object_consecutive_frames: int = 3
+    proctoring_object_cooldown_seconds: int = 30
+    proctoring_second_person_cooldown_seconds: int = 30
+    # Face identity (section 3.3, 4.1).
+    proctoring_face_distance_threshold: float = 0.6
+    proctoring_identity_check_interval_seconds: int = 30
+    proctoring_identity_consecutive_mismatches: int = 2
+    # Camera obstruction versus face absence (section 4.1, 4.2, 4.6).
+    proctoring_obstruction_seconds: int = 60
+    #: Per-frame greyscale standard deviation below which a frame with no face
+    #: is an obstruction (covered lens, tape, closed shutter) rather than an
+    #: absence. Computed in the browser from the frame it then discards.
+    proctoring_obstruction_variance_threshold: float = 12.0
+    proctoring_face_absent_moderate_seconds: int = 20
+    proctoring_face_absent_moderate_cooldown_seconds: int = 60
+    proctoring_face_absent_extended_seconds: int = 90
+    # Browser lockdown and focus (section 4.2).
+    proctoring_focus_loss_ignore_under_seconds: float = 2.0
+    proctoring_display_check_interval_seconds: int = 60
+    # Audio (section 3.4, 4.2).
+    proctoring_audio_chunk_seconds: int = 15
+    proctoring_audio_max_chunk_bytes: int = 2 * 1024 * 1024
+    proctoring_second_voice_consecutive_chunks: int = 2
+    #: The analysis service (speaker diarization, AI-text detection). Empty
+    #: means audio analysis is UNAVAILABLE, which the report states plainly;
+    #: it is never silently treated as "no second voice".
+    proctoring_analysis_service_url: str = ""
+    proctoring_analysis_timeout_seconds: float = 20.0
+    # Anti-tamper (section 9).
+    proctoring_heartbeat_interval_seconds: int = 10
+    proctoring_heartbeat_gap_seconds: int = 30
+    proctoring_integrity_failure_termination_seconds: int = 60
+    proctoring_camera_recovery_seconds: int = 60
+    # In-browser inference performance (section 3.6).
+    proctoring_sampling_fps_normal: int = 2
+    proctoring_sampling_fps_confirming: int = 6
+    proctoring_confirming_window_seconds: int = 5
+    proctoring_sampling_fps_degraded: int = 1
+    proctoring_low_light_luminance_threshold: float = 40.0
+    proctoring_low_light_cooldown_seconds: int = 300
+    # Behavioural capture (section 4.5). Thresholds compare the candidate
+    # against THEIR OWN baseline from their first answers, never a population.
+    proctoring_baseline_answers: int = 2
+    proctoring_fast_entry_multiplier: float = 3.5
+    proctoring_fast_entry_sustained_seconds: int = 10
+    proctoring_uniform_span_chars: int = 200
+    proctoring_uniform_max_corrections: int = 5
+    proctoring_uniform_max_pause_seconds: float = 1.0
+    proctoring_low_ratio_min_length: int = 150
+    proctoring_low_ratio_threshold: float = 0.85
+    proctoring_pause_gap_seconds: float = 2.0
+    proctoring_burst_window_seconds: int = 5
+    proctoring_mouse_sample_hz: int = 10
+    proctoring_max_keystroke_samples: int = 20_000
+    proctoring_event_batch_max: int = 200
+    # AI-generated-text detection (section 3.5). INFORMATIONAL ONLY and
+    # disabled by default: the detectors are unreliable against current
+    # models, and the signal never contributes to a warning, a termination, a
+    # score or a ranking whatever this flag says.
+    proctoring_ai_text_detection_enabled: bool = False
+    proctoring_ai_text_threshold: float = 0.9
+    proctoring_ai_text_min_chars: int = 200
+    #: Event retention (section 5). ZERO means "the platform's existing
+    #: candidate-data policy", which is deletion by cascade when the candidate
+    #: or application is deleted; the platform has no time-based purge and
+    #: this setting does not invent one. A positive value enables the hourly
+    #: purge of events older than that many days. Owner decision.
+    proctoring_event_retention_days: int = 0
+
+    # ── Assessment question formats (assessment-spec-doc.md) ────────────────
+    #
+    # Composition is enforced in code, not suggested in a prompt: evidence
+    # questions must be the majority of the assessment's time and weight, the
+    # supporting formats the minority, and the whole thing must fit the
+    # role's duration. These are the bounds. `services/assessment_formats/
+    # config.py` reads them into one object; nothing else carries a literal.
+    #: Evidence-based questions' minimum share of total weight AND of total
+    #: time allocation. Above one half by definition of "majority", with a
+    #: margin so a rounding effect cannot tip a valid assessment over.
+    assessment_evidence_min_share: float = 0.55
+    #: The supporting formats' (MCQ, fill-blank, coding) maximum share of the
+    #: QUESTION COUNT, by seniority. Senior roles skew further toward
+    #: evidence and away from recall-style questions.
+    assessment_supporting_max_share: float = 0.25
+    assessment_supporting_max_share_senior: float = 0.15
+    #: The assessment's total suggested duration per grade, in minutes. The
+    #: sum of every question's time allocation must fit inside it.
+    assessment_duration_minutes_non_managerial: int = 100
+    assessment_duration_minutes_managerial: int = 85
+    assessment_duration_minutes_leadership: int = 70
+    assessment_duration_minutes_cxo: int = 50
+    #: Suggested time per question, by format, in seconds.
+    assessment_time_evidence_seconds: int = 240
+    assessment_time_short_answer_seconds: int = 180
+    assessment_time_mcq_single_seconds: int = 60
+    assessment_time_mcq_multi_seconds: int = 90
+    assessment_time_fill_blank_seconds: int = 60
+    assessment_time_coding_seconds: int = 600
+    #: INTERNAL weight per format, within a matrix item. What makes evidence
+    #: dominance structural rather than stated.
+    assessment_weight_evidence: float = 1.0
+    assessment_weight_short_answer: float = 1.0
+    assessment_weight_mcq_single: float = 0.4
+    assessment_weight_mcq_multi: float = 0.5
+    assessment_weight_fill_blank: float = 0.4
+    assessment_weight_coding: float = 0.8
+    #: How many times the composer may regenerate a mix that fails validation
+    #: before it falls back to an all-evidence allocation for the supporting
+    #: slots, which is always valid.
+    assessment_composition_attempts: int = 3
+    #: The fewest words an AI evaluation's reasoning may carry. A bare verdict
+    #: with a sentence attached is not a reasoning a recruiter can act on.
+    assessment_evaluation_min_reasoning_words: int = 40
+    #: The shortest quotable resume item an evidence question may anchor to.
+    #: Below this an "anchor" is a single word, which anchors nothing.
+    assessment_anchor_min_chars: int = 12
+    #: The fewest words a distractor's misconception rationale may carry
+    #: before the option counts as a real misconception rather than filler.
+    assessment_misconception_min_words: int = 4
 
     # ── Project Evidence Intelligence limits ────────────────────────────────
     #

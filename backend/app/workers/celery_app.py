@@ -169,5 +169,23 @@ celery_app.conf.update(
             "task": "pickready.reconcile_project_intake",
             "schedule": 3600.0,
         },
+        # Proctoring sessions that never ended cleanly (proctoring spec
+        # sections 5 and 9): a browser that closed mid-assessment leaves the
+        # session active with no heartbeat, and a report that was enqueued
+        # from a completion but never ran leaves a completed conversation
+        # with no proctoring report. Hourly, idempotent, and it settles a
+        # session as abandoned on the SAME clock the credit reconciler uses,
+        # so the two never disagree about whether an assessment is over.
+        "reconcile-proctoring-sessions": {
+            "task": "pickready.reconcile_proctoring_sessions",
+            "schedule": 3600.0,
+        },
+        # Event retention (proctoring spec section 5). Deletes nothing while
+        # `proctoring_event_retention_days` is zero, which is the platform's
+        # current posture: candidate data leaves with the tenant cascade.
+        "purge-proctoring-events": {
+            "task": "pickready.purge_proctoring_events",
+            "schedule": 3600.0,
+        },
     },
 )

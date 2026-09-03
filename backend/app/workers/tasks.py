@@ -1063,6 +1063,185 @@ def run_functional_assessment(link_id: str):
                 )
             await run_assessment(session, job, link, transcript)
             await session.commit()
+        # The proctoring report is written AFTER the PRISM Report and by a
+        # separate task, so the two never race on the same rows and a
+        # proctoring failure can never take the assessment report with it.
+        # It is informational and moves no grade (proctoring spec P3).
+        celery_app.send_task("pickready.generate_proctoring_report", args=[str(link_id)])
+    _run(_task())
+
+
+@celery_app.task(
+    name="pickready.generate_proctoring_report",
+    autoretry_for=(Exception,),
+    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
+    retry_backoff=True,
+    max_retries=3,
+)
+def generate_proctoring_report(link_id: str):
+    """Write the Proctoring Report for one application (proctoring spec 7).
+
+    Idempotent: `report.generate` returns the existing row. A session still
+    active whose conversation has completed is closed as completed here, on
+    the conversation's own timestamp, because completion is decided by the
+    assessment and the proctoring row merely records it. A session still
+    active whose conversation has NOT completed is left alone and logged:
+    the reconciler settles it later as abandoned, on the credit reconciler's
+    clock, and reporting it now would date the report before the session
+    ended.
+
+    The AI-text observation runs here, post-submission, never in a request.
+    """
+    from app.models.assessment import AssessmentConversation
+    from app.models.proctoring import (
+        OUTCOME_ACTIVE,
+        OUTCOME_COMPLETED,
+        ProctoringSession,
+    )
+    from app.services.proctoring import ai_text
+    from app.services.proctoring import report as proctoring_report
+
+    async def _task():
+        async with _worker_session() as session:
+            ps = (
+                await session.execute(
+                    select(ProctoringSession).where(
+                        ProctoringSession.job_candidate_link_id == uuid.UUID(str(link_id))
+                    )
+                )
+            ).scalars().first()
+            if ps is None:
+                logger.info("proctoring.report_skipped no_session link_id=%s", link_id)
+                return
+            conversation = await session.get(AssessmentConversation, ps.conversation_id)
+            if conversation is None:
+                raise ValueError(f"proctoring session {ps.id} has no conversation")
+            now = datetime.now(timezone.utc)
+            if ps.outcome == OUTCOME_ACTIVE:
+                if conversation.completed_at is None:
+                    logger.warning(
+                        "proctoring.report_deferred session_still_active session_id=%s",
+                        ps.id,
+                    )
+                    return
+                ps.outcome = OUTCOME_COMPLETED
+                ps.ended_at = conversation.completed_at
+                ps.updated_at = now
+                await session.flush()
+            await ai_text.scan_conversation(session, ps, conversation, now=now)
+            await proctoring_report.generate(session, ps)
+            await session.commit()
+    _run(_task())
+
+
+@celery_app.task(name="pickready.reconcile_proctoring_sessions")
+def reconcile_proctoring_sessions():
+    """Hourly: close the sessions nothing else will close, and report them.
+
+    Two states, and only two:
+
+    1. The conversation completed but the session is still active. The report
+       task was enqueued and lost (broker hiccup, worker restart). Re-enqueue
+       it; it closes the session itself.
+    2. The conversation never completed and the session has heard nothing for
+       `credit_reconciliation.SETTLE_AFTER_HOURS`. The candidate closed the
+       tab and did not return. The session is ended as `abandoned` and its
+       report is enqueued. The clock is deliberately the credit reconciler's,
+       so an assessment is never "abandoned" for proctoring while still
+       "open" for billing, or the reverse.
+
+    A technical failure is NOT decided here. It is decided at termination
+    time by `ingestion.outcome_for_termination`, which has the reason in
+    hand; re-reading it from a row later would be a second implementation.
+    """
+    from datetime import timedelta
+
+    from app.models.assessment import AssessmentConversation
+    from app.models.proctoring import (
+        OUTCOME_ABANDONED,
+        OUTCOME_ACTIVE,
+        ProctoringSession,
+    )
+    from app.services import credit_reconciliation
+    from app.services.proctoring import ingestion as proctoring_ingestion
+
+    async def _task():
+        async with _worker_session() as session:
+            now = datetime.now(timezone.utc)
+            cutoff = now - timedelta(hours=credit_reconciliation.SETTLE_AFTER_HOURS)
+            rows = (
+                await session.execute(
+                    select(ProctoringSession).where(
+                        ProctoringSession.outcome == OUTCOME_ACTIVE
+                    )
+                )
+            ).scalars().all()
+            completed = 0
+            abandoned = 0
+            for ps in rows:
+                conversation = await session.get(AssessmentConversation, ps.conversation_id)
+                if conversation is None:
+                    continue
+                if conversation.completed_at is not None:
+                    celery_app.send_task(
+                        "pickready.generate_proctoring_report",
+                        args=[str(ps.job_candidate_link_id)],
+                    )
+                    completed += 1
+                    continue
+                last_heard = ps.last_heartbeat_at or ps.started_at or ps.consented_at
+                if last_heard >= cutoff:
+                    continue
+                await proctoring_ingestion.end_session(
+                    session, ps, outcome=OUTCOME_ABANDONED, reason_code=None, now=now
+                )
+                celery_app.send_task(
+                    "pickready.generate_proctoring_report",
+                    args=[str(ps.job_candidate_link_id)],
+                )
+                abandoned += 1
+            await session.commit()
+            if completed or abandoned:
+                logger.info(
+                    "proctoring.reconciled completed_requeued=%d abandoned=%d",
+                    completed, abandoned,
+                )
+    _run(_task())
+
+
+@celery_app.task(name="pickready.purge_proctoring_events")
+def purge_proctoring_events():
+    """Hourly retention sweep over `proctoring_events` (proctoring spec 5).
+
+    `proctoring_event_retention_days` is zero by default, and zero means the
+    platform's existing candidate-data policy applies: events leave with the
+    tenant cascade and nothing is deleted early. The task then logs that and
+    does nothing, so an operator reading the worker log can see the policy
+    that is in force rather than inferring it from silence.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import delete
+
+    from app.models.proctoring import ProctoringEvent
+    from app.services.proctoring.config import get_config
+
+    async def _task():
+        days = get_config().event_retention_days
+        if days <= 0:
+            logger.info(
+                "proctoring.purge_noop retention follows the platform cascade policy"
+            )
+            return
+        async with _worker_session() as session:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            result = await session.execute(
+                delete(ProctoringEvent).where(ProctoringEvent.occurred_at < cutoff)
+            )
+            await session.commit()
+            logger.info(
+                "proctoring.purged events=%d older_than_days=%d", result.rowcount, days
+            )
     _run(_task())
 
 

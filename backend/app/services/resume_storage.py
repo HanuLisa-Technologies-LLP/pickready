@@ -274,10 +274,5 @@ async def fetch_resume_bytes(profile: Any) -> bytes:
     return await run_in_threadpool(_fetch_object_bytes, profile.resume_public_id)
 
 
-async def delete_resume_asset(asset: ResumeAsset) -> None:
-    """Best-effort compensation after a database write failure."""
-    await run_in_threadpool(object_storage.delete, asset.public_id)
-
-
 class ResumeStorageError(RuntimeError):
     pass

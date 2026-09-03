@@ -58,9 +58,12 @@ field, no email field, no institution field and no employer-brand field, and
 there is no free-form context dict a name could travel in. `claims_from_resume`
 strips identity out of the resume text before a claim is built, and the profile
 adapter drops `company` from employment history and `institution` from education
-on the way in. This is the same shape as Miti's `EvaluatorInput`, and for the
-same reason: a test that asserts the ABSENCE of specific field names passes
-happily once somebody adds a field called `notes`.
+on the way in -- both by never reading the field AND by scrubbing the same names
+out of the prose, which is where a candidate writes "Rebuilt the pipeline at
+<employer>" and would otherwise carry the brand into a claim term.
+This is the same shape as Miti's `EvaluatorInput`, and for the same reason: a
+test that asserts the ABSENCE of specific field names passes happily once
+somebody adds a field called `notes`.
 
 THE PEDIGREE CAP IS SET TO ZERO HERE
 --------------------------------------
@@ -449,19 +452,99 @@ def _terms(value: str | None) -> set[str]:
     }
 
 
-def anonymise(text: str | None, *, identities: Iterable[str] = ()) -> str:
+#: Words that name a corporate wrapper rather than a brand. Scrubbing these
+#: would remove ordinary nouns from technical prose while removing no pedigree
+#: at all: "Systems" out of "distributed systems" costs a candidate a real term
+#: and hides nobody's employer.
+_ORG_SUFFIXES = frozenset(
+    """
+    inc llc llp ltd limited plc gmbh bv nv ag sa pvt pte co corp
+    corporation company companies group holdings holding partners partnership
+    associates ventures capital technologies technology tech systems system
+    solutions services service consultancy consulting labs lab laboratories
+    software digital global international worldwide industries enterprises
+    enterprise studios studio works media networks network data analytics
+    """.split()
+)
+
+#: The shortest org token worth scrubbing. Two-letter and three-letter tokens
+#: are initialisms that collide with everything ("IT", "AI", "SAP", "ACE").
+_MIN_ORG_TOKEN_CHARS = 4
+
+
+def _org_patterns(
+    organisations: Iterable[str], protected: frozenset[str]
+) -> list[str]:
+    """The org names safe to remove, longest first.
+
+    LONGEST FIRST so "Tata Consultancy Services" is removed before "Tata" would
+    be, and the shorter pattern is not left matching the tail of the longer one.
+    Same ordering rule `_identities` already follows for a person's name.
+    """
+    patterns: list[str] = []
+    for raw in organisations:
+        name = " ".join(str(raw or "").split())
+        if len(name) < _MIN_ORG_TOKEN_CHARS:
+            continue
+        if name.casefold() in protected:
+            continue
+        # The whole name first. A multi-word brand is the thing that carries
+        # pedigree, and it is also the safest thing to remove: "Goldman Sachs"
+        # collides with nothing.
+        patterns.append(name)
+        words = [w for w in re.split(r"[^\w&]+", name) if w]
+        if len(words) < 2:
+            continue
+        for word in words:
+            key = word.casefold()
+            if len(word) < _MIN_ORG_TOKEN_CHARS:
+                continue
+            if key in _ORG_SUFFIXES or key in _STOPWORDS or key in protected:
+                continue
+            patterns.append(word)
+    return sorted(set(patterns), key=len, reverse=True)
+
+
+def anonymise(
+    text: str | None,
+    *,
+    identities: Iterable[str] = (),
+    organisations: Iterable[str] = (),
+    protected_terms: Iterable[str] = (),
+) -> str:
     """Section 52.2's anonymised first pass, applied to resume text.
 
-    Removes the named identities (the candidate's own name and its parts), plus
-    the shapes that carry identity whatever the name is: email addresses, phone
-    numbers and personal social profile links. It is deliberately NOT a general
-    PII scrubber. What it guarantees is the property the fairness test asserts,
-    that the same document under a different name grades identically, and a
-    guarantee that is exactly stated is worth more than one that is broadly
-    implied.
+    Removes the named identities (the candidate's own name and its parts), the
+    employer and institution names the parser found, and the shapes that carry
+    identity whatever the name is: email addresses, phone numbers and personal
+    social profile links. It is deliberately NOT a general PII scrubber. What it
+    guarantees is the property the fairness test asserts, that the same document
+    under a different name and a different letterhead grades identically.
 
-    Employer brands and institution names are handled a layer up, by not being
-    read into the input at all (section 8.9's pedigree cap, set to zero here).
+    ORGANISATIONS ARE REMOVED ON WORD BOUNDARIES AND IDENTITIES ARE NOT, AND THE
+    DIFFERENCE IS DELIBERATE. A person's name is supplied by us from the
+    candidate row and is a handful of tokens; a company name is whatever a
+    parser pulled off a letterhead, and this scrub is a case-insensitive
+    replace. Unbounded, an employer called "Ace" removes "namespace" and
+    "tracer", and one called "Data" removes "Database" -- mangling technical
+    prose in a way that costs a candidate real terms and that nothing
+    downstream could detect. That is the failure this codebase's standing rule
+    names: a guard that mangles a real answer fails invisibly.
+
+    `protected_terms` IS THE SECOND HALF OF THAT GUARD AND IT IS THE LOAD
+    BEARING ONE. It carries the requirements this resume is about to be graded
+    against, so a word the JOB IS ASKING ABOUT is never removed. An employer
+    called Oracle, Docker or Elastic shares its name with a technology, and
+    those are not in the ontology's equivalence table -- it is a curated set of
+    synonyms, not a registry of every product name, so it cannot be the guard
+    here. The requirement list can: it makes scrubbing UNABLE to remove a term
+    that could have earned a match -- a property
+    `test_scrubbing_an_employer_never_lowers_a_grade` asserts directly, rather
+    than a promise resting on how good a word list is.
+
+    So the two directions are both closed. Adding a brand to a resume moves the
+    grade by nothing (section 8.9's pedigree ceiling, set to zero here, pinned
+    by `test_yukti_live`), and removing one cannot move it either.
     """
     out = str(text or "")
     for identity in identities:
@@ -469,6 +552,23 @@ def anonymise(text: str | None, *, identities: Iterable[str] = ()) -> str:
         if len(token) < 2:
             continue
         out = re.sub(re.escape(token), " ", out, flags=re.IGNORECASE)
+    protected = frozenset(
+        term
+        for raw in protected_terms
+        for term in (
+            {" ".join(str(raw or "").split()).casefold()}
+            | {w for w in _terms(raw)}
+            | {s for w in _terms(raw) for s in ontology.equivalent(w)}
+        )
+        if term
+    )
+    for pattern in _org_patterns(organisations, protected):
+        out = re.sub(
+            r"(?<![\w&])%s(?![\w&])" % re.escape(pattern),
+            " ",
+            out,
+            flags=re.IGNORECASE,
+        )
     out = _EMAIL.sub(" ", out)
     out = _URL_HOST.sub(" ", out)
     out = _PHONE.sub(" ", out)
@@ -592,6 +692,8 @@ def claims_from_resume(
     skills: Sequence[str] = (),
     identities: Iterable[str] = (),
     role_lines: Sequence[tuple[str, float | None]] = (),
+    organisations: Iterable[str] = (),
+    protected_terms: Iterable[str] = (),
 ) -> tuple[Claim, ...]:
     """Every claim this resume makes, anonymised first.
 
@@ -606,7 +708,14 @@ def claims_from_resume(
         belong to, so section 6.3's decay has an event date to work from.
       * the rest of the resume text, undated and therefore undecayed.
     """
-    cleaned = anonymise(resume_text, identities=identities)
+    organisations = tuple(organisations)
+    protected_terms = tuple(protected_terms)
+    cleaned = anonymise(
+        resume_text,
+        identities=identities,
+        organisations=organisations,
+        protected_terms=protected_terms,
+    )
     claims: list[Claim] = []
     seen: set[str] = set()
 
@@ -643,7 +752,22 @@ def claims_from_resume(
         )
 
     for line, age in role_lines:
-        body = str(line or "").strip()
+        # ANONYMISED LIKE THE RESUME TEXT, and for the same reason. This loop
+        # read the bullet verbatim until 2026-09-01, so a role line beginning
+        # with the candidate's name kept it: the name landed in `Claim.text`
+        # and, worse, `read_claim` turned it into one of the `terms` the
+        # ontology COMPARES. Two identical histories under two names then
+        # produced two different term sets, which is exactly the property
+        # section 52.2 exists to guarantee against, and this module's own
+        # docstrings already promised ("anonymised first"; "neither carries a
+        # name"). Cleaned BEFORE the length check and the dedup key so both
+        # measure the text that is actually kept.
+        body = anonymise(
+            line,
+            identities=identities,
+            organisations=organisations,
+            protected_terms=protected_terms,
+        ).strip()
         if len(body) < _MIN_CLAIM_CHARS:
             continue
         key = f"role:{body.casefold()}"
@@ -695,7 +819,7 @@ def employment_gaps(spans: Sequence[EmploymentSpan]) -> tuple[int, ...]:
     """
     dated = sorted(
         (s for s in spans if s.start is not None and s.end is not None),
-        key=lambda s: (s.start, s.end),  # type: ignore[arg-type,return-value]
+        key=lambda s: (s.start, s.end),
     )
     gaps: list[int] = []
     for previous, current in zip(dated, dated[1:]):
@@ -1216,6 +1340,32 @@ def _as_date(value: Any) -> date | None:
     return None
 
 
+def _organisations_from(parsed: Mapping[str, Any] | Any) -> tuple[str, ...]:
+    """Every employer and institution name the parser found, for the scrub.
+
+    READ HERE AND USED ONLY TO DELETE TEXT, exactly like `_identities`. Neither
+    name reaches `PreScreenInput`, which has no field either could sit in: the
+    structured fields are dropped by not being read (`_spans_from_history` never
+    looks at `company`), and this is what removes the same names from the PROSE,
+    which is where a candidate writes "Rebuilt the ingestion pipeline at
+    <employer>" and carries the pedigree into a claim.
+    """
+    names: list[str] = []
+    if not isinstance(parsed, dict):
+        return ()
+    for key, field in (("employment_history", "company"), ("education", "institution")):
+        entries = parsed.get(key)
+        if not isinstance(entries, (list, tuple)):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            name = " ".join(str(entry.get(field) or "").split())
+            if name:
+                names.append(name)
+    return tuple(dict.fromkeys(names))
+
+
 def _spans_from_history(history: Any) -> tuple[EmploymentSpan, ...]:
     """Employment history as dates and titles. The company name is DROPPED."""
     if not isinstance(history, (list, tuple)):
@@ -1257,6 +1407,15 @@ def input_from_profile(
     else: `company` off every employment entry, `institution` off every
     education entry, and the candidate's own name out of the resume text. There
     is no flag that re-admits them.
+
+    DROPPING THE FIELD IS ONLY HALF OF IT, and the other half was open until
+    2026-09-01. `_spans_from_history` never reads `company`, so no structured
+    employer could reach a claim -- but the resume PROSE names employers too,
+    and "Rebuilt the ingestion pipeline at Goldman Sachs" put "goldman" and
+    "sachs" into `Claim.terms`, which is the set the ontology compares. So the
+    names collected here are also passed to `anonymise`, bounded on word
+    boundaries and against this job's own requirements. See `anonymise` for why
+    both bounds are needed.
     """
     parsed = profile.parsed_fields_json if isinstance(profile.parsed_fields_json, dict) else {}
     skills = [s for s in (parsed.get("skills") or []) if isinstance(s, str)]
@@ -1286,6 +1445,12 @@ def input_from_profile(
         skills=skills,
         identities=identities,
         role_lines=role_lines,
+        organisations=_organisations_from(parsed),
+        # THE REQUIREMENTS ARE WHAT MAKES THE SCRUB SAFE. A word the job is
+        # asking about is never removed, so an employer called Oracle or Docker
+        # cannot cost the candidate the technology of the same name. See
+        # `anonymise`.
+        protected_terms=tuple(requirements),
     )
     has_academic = any(_ACADEMIC.search(claim.text) for claim in claims)
     years = parsed.get("total_experience_years")

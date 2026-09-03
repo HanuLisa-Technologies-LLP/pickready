@@ -56,6 +56,7 @@ from app.models.assessment import CandidateQuestion, JobCompetency
 from app.models.job import Job
 from app.prompts import fragments, registry
 from app.services import agent_loop, llm_router, ppi
+from app.services.assessment_formats import types as question_types
 from app.services.hiring import evidence_graph
 
 logger = logging.getLogger(__name__)
@@ -299,11 +300,19 @@ def _evaluate(
     rubric_required: bool,
     weak_probes: Sequence[str] = (),
     field_probes: Sequence[str] = (),
+    resume_anchor: str | None = None,
 ) -> Any:
     """Build the deterministic criteria for one question.
 
     Returned as a closure so the criteria carry this item and the questions
     already asked, and so they stay pure functions of their input.
+
+    `resume_anchor` is set for an evidence-based question (assessment-spec-doc
+    2.1). The rewrite must keep probing the resume item the question was
+    anchored to, or the recruiter's view would show an anchor beside a
+    question that asks about something else. Checked with `_mentions`, the
+    same tolerant word test the item name gets: an anchor is a sentence and
+    a good question says part of it, never all of it.
     """
 
     def evaluate(candidate: dict[str, Any]) -> agent_loop.Critique:
@@ -336,6 +345,12 @@ def _evaluate(
             reasons.append(
                 f"the question must actually probe {competency.name!r}; the "
                 "previous attempt did not refer to it at all"
+            )
+        if resume_anchor and not _mentions(question, resume_anchor):
+            reasons.append(
+                "this is an evidence-based question anchored to a specific item "
+                f"on the resume, {resume_anchor!r}; the previous attempt did not "
+                "refer to that item at all. Name it and ask about it."
             )
         if _STACKED.search(question):
             reasons.append(
@@ -757,6 +772,33 @@ _RUBRIC_SHAPE = '{"question":"...","rubric":{"0_39":"...","40_59":"...","60_74":
 _PLAIN_SHAPE = '{"question":"..."}'
 
 
+def _evidence_anchor(row: CandidateQuestion) -> str | None:
+    """The quotable resume item an evidence-based row was anchored to, or
+    None for every other row. Read with `getattr` because the scorer's unit
+    tests hand this module rows that predate the format columns."""
+    if getattr(row, "question_type", None) != question_types.EVIDENCE_BASED:
+        return None
+    anchor = " ".join(str(getattr(row, "resume_anchor", "") or "").split())
+    return anchor or None
+
+
+def _anchor_block(anchor: str | None) -> str:
+    """The prompt block that keeps a rewrite on its anchored resume item.
+
+    Empty for a short-answer question, so `ppi_write_question.txt` renders for
+    both formats from one template rather than two that would drift.
+    """
+    if not anchor:
+        return ""
+    return (
+        "THIS IS AN EVIDENCE-BASED QUESTION. It was anchored to this item from "
+        f"the candidate's own resume, quoted exactly: \"{anchor}\". The question "
+        "you write must keep probing that item: name it, and ask what the "
+        "candidate personally did, why, and what happened. Do not move to a "
+        "different part of the resume."
+    )
+
+
 def _recent_turns(transcript: list[dict[str, Any]] | None, turns: int = 6) -> list[dict[str, str]]:
     """The last few turns as plain speaker/text pairs.
 
@@ -798,6 +840,7 @@ async def write_question(
     """
     rubric_required = is_rubric_scored(competency.category)
     recent = _recent_turns(transcript)
+    anchor = _evidence_anchor(row)
     # THE DEPARTMENT EVIDENCE GRAPH ENTERS HERE, on the live path, for every
     # base question every candidate reads. None means no Part VI department
     # covers this role; the prompt then falls back to the item's own
@@ -825,6 +868,7 @@ async def write_question(
         specificity=_specificity_block(brief),
         corroboration=_corroboration_block(brief),
         hollow_tells=_hollow_block(brief),
+        evidence_anchor=_anchor_block(anchor),
         rubric_instruction=_RUBRIC_INSTRUCTION if rubric_required else _NO_RUBRIC_INSTRUCTION,
         return_shape=_RUBRIC_SHAPE if rubric_required else _PLAIN_SHAPE,
     )
@@ -864,6 +908,7 @@ async def write_question(
             rubric_required=rubric_required,
             weak_probes=brief.weak_probes if brief is not None else (),
             field_probes=brief.field_probes if brief is not None else (),
+            resume_anchor=anchor,
         ),
         fallback={
             "question": row.prompt,

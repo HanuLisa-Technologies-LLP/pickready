@@ -139,6 +139,23 @@ _GRADE_THEN_NUMBER = re.compile(
 #: never legitimate in a rated line of a delivered report, which states words.
 _BARE_PERCENT = re.compile(r"\d{1,3}(?:\.\d+)?\s*(?:%|per\s?cent\b|percent\b)")
 
+#: "8 out of 10", in a delivered report, with ANY denominator and whatever
+#: follows it.
+#:
+#: `contains_forbidden_number` carries an out-of-N pattern already, and it
+#: deliberately does not catch this. It guards INTERVIEWER SPEECH, where
+#: "we migrated 7 out of 10 services" is ordinary technical content, so it
+#: restricts the denominator to 5, 10 and 100 and refuses to fire when a word
+#: follows. Both restrictions are right there and wrong here: measured on
+#: 2026-09-03, "rates 8 out of 10 on the rubric" and "8 out of 10 for depth"
+#: passed the whole ban, and those are the shapes a model actually writes when
+#: it states a score in prose. A trailing word is what a REPORT sentence looks
+#: like, not what distinguishes a count from a score.
+#:
+#: This is the third report-specific rule, added for the same reason as the two
+#: above: a delivered report states WORDS, so any out-of-N in one is a score.
+_OUT_OF_N = re.compile(r"\b\d{1,3}(?:\.\d+)?\s+out\s+of\s+\d{1,3}\b", re.IGNORECASE)
+
 
 @dataclass(frozen=True)
 class NumberViolation:
@@ -206,6 +223,15 @@ def scan_text(text: str, *, path: str = "text") -> list[NumberViolation]:
                 path,
                 RULE_SCORE_PROSE,
                 f"a percentage appears in a rated document: {percent.group(0)!r}",
+            )
+        )
+    out_of = _OUT_OF_N.search(text)
+    if out_of:
+        found.append(
+            NumberViolation(
+                path,
+                RULE_SCORE_PROSE,
+                f"a score is stated out of a total: {out_of.group(0)!r}",
             )
         )
     return found
@@ -372,14 +398,6 @@ def _collect(value: Any, path: str, out: list[str]) -> None:
             _collect(_dump(child), f"{path}[{index}]", out)
         return
     out.append(path)
-
-
-def iter_strings(payload: Any) -> Iterable[tuple[str, str]]:
-    """Every string leaf and its path. For a banned-phrase corpus test."""
-    for path in known_paths(payload):
-        value = _at(payload, path)
-        if isinstance(value, str):
-            yield path, value
 
 
 def _at(payload: Any, path: str) -> Any:

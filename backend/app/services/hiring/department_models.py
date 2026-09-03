@@ -907,27 +907,6 @@ def match_competency(
     return best[1] if best else None
 
 
-def all_competency_keys() -> frozenset[str]:
-    return frozenset(
-        competency.key
-        for model in DEPARTMENTS.values()
-        for competency in model.competencies
-    )
-
-
-def evidence_sources_for(keys: Iterable[str]) -> tuple[EvidenceSource, ...]:
-    """Resolve source keys, dropping unknown ones rather than raising.
-
-    A competency naming a source that does not exist is a data error in this
-    file, and it should not take down a matrix generation at request time. The
-    absence is caught by `test_department_models.py` instead, which is where a
-    data error in a constant belongs.
-    """
-    return tuple(
-        EVIDENCE_SOURCES[key] for key in keys if key in EVIDENCE_SOURCES
-    )
-
-
 # ── RPN-PHIL-001 Part VI and §11.1, read from the extracted data ─────────────
 #
 # The Runbook's own content, reachable without being restated here. Sutra's

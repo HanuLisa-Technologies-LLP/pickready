@@ -552,7 +552,7 @@ async def download_compliance_document(
 # "Super Admin" means the CLIENT Super Admin, which is `Role.client` in this
 # codebase and works in the Customer Portal (`api/companies.py`). That is where
 # the client-facing version of this view belongs, and it does not exist yet;
-# `docs/RBAC.md` records it under "Not yet wired".
+# `docs/reference/RBAC.md` records it under "Not yet wired".
 #
 # What is here is the PLATFORM owner's view of the same rows, for one customer
 # at a time. It is not a substitute: it answers the same seven questions 31

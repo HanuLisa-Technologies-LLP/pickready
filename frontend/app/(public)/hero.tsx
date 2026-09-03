@@ -11,7 +11,7 @@ const CAPABILITIES = [
   "Resume parsing",
   "Semantic matching",
   "Structured assessment",
-  "PPI Assessment Report",
+  "PRISM Report",
   "Ten stage pipeline",
   "Interview probes",
   "Candidate databank",

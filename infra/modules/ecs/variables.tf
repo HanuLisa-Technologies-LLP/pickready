@@ -24,6 +24,30 @@ variable "ecs_security_group_id" {
   type = string
 }
 
+variable "vpc_id" {
+  description = "The VPC the Cloud Map private DNS namespace is attached to. A namespace resolves inside exactly one VPC, which is what makes an internal service name unreachable from anywhere else."
+  type        = string
+}
+
+variable "discovery_namespace" {
+  description = <<-EOT
+    The private DNS namespace internal services are registered in, for example
+    `readypick-staging.internal`. A service with `discoverable = true` answers
+    at `<service>.<namespace>`.
+
+    PASSED IN RATHER THAN DERIVED HERE, because the environment root also has
+    to build the URL it puts in another service's environment
+    (`PROCTORING_ANALYSIS_SERVICE_URL`), and two places computing the same
+    hostname from the same parts is two places that can drift. One string,
+    owned by the caller.
+
+    Empty creates no namespace at all, which is correct for an environment
+    where nothing is discoverable.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "services" {
   description = <<-EOT
     One entry per service, and EACH ENTRY GETS ITS OWN TASK ROLE, EXECUTION
@@ -38,6 +62,17 @@ variable "services" {
 
     `secrets` is {ENV_NAME -> secret ARN}. ECS fetches and injects, so the value
     never passes through a shell, a startup script or a log line.
+
+    `writable_paths` mounts an empty ephemeral volume at each path, which is
+    what makes `readonly_root = true` usable by a container that has to write
+    somewhere small: a library's import-time cache, a scratch directory. It is
+    the narrow answer to a workload that would otherwise need a writable root
+    filesystem for the sake of one directory. Fargate has no tmpfs, so this is
+    a task volume rather than a memory one.
+
+    `discoverable = true` registers the service in the Cloud Map namespace, so
+    another task reaches it at `<service>.<namespace>`. For a service with no
+    load balancer that is the only way it is addressable at all.
   EOT
   type = map(object({
     image               = string
@@ -53,6 +88,8 @@ variable "services" {
     secrets             = optional(map(string), {})
     needs_s3            = optional(bool, false)
     readonly_root       = optional(bool, false)
+    writable_paths      = optional(list(string), [])
+    discoverable        = optional(bool, false)
     min_healthy_percent = optional(number, 100)
     max_percent         = optional(number, 200)
   }))
@@ -65,6 +102,16 @@ variable "services" {
       service.target_group_arn == null || service.port != null
     ])
     error_message = "A service behind a load balancer must declare a port."
+  }
+
+  validation {
+    # A path that is not absolute produces a container definition AWS rejects,
+    # with an error naming the mount rather than the path.
+    condition = alltrue([
+      for name, service in var.services :
+      alltrue([for path in service.writable_paths : startswith(path, "/")])
+    ])
+    error_message = "Every writable_paths entry must be an absolute path."
   }
 
   validation {

@@ -84,19 +84,3 @@ async def health(session: AsyncSession, *, agent_type: str, days: int = 7) -> di
     }
 
 
-async def failure_breakdown(session: AsyncSession, *, days: int = 7) -> dict[str, int]:
-    """Failures grouped by root cause, which is how "70% of failures are
-    retrieval quality" stops being a guess."""
-    rows = await session.execute(
-        text(
-            """
-            SELECT COALESCE(failure_category, 'unknown') AS category, COUNT(*) AS n
-              FROM agent_execution_traces
-             WHERE status <> 'success'
-               AND created_at > now() - CAST(:days || ' days' AS interval)
-             GROUP BY 1 ORDER BY 2 DESC
-            """
-        ),
-        {"days": days},
-    )
-    return {row.category: int(row.n) for row in rows}

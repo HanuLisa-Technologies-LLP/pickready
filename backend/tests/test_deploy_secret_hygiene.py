@@ -63,9 +63,11 @@ written into the plan file and the state file.
 """
 from __future__ import annotations
 
+import functools
 import json
 import pathlib
 import re
+from typing import Any
 
 import pytest
 
@@ -108,6 +110,11 @@ CREDENTIAL_NAMES = (
     "LLM_KEY_ENCRYPTION_SECRET",
     "MSG91_API_KEY",
     "TAVILY_API_KEY",
+    # The proctoring analysis service's Hugging Face read token. It is a
+    # credential like any other and it is swept for the same reason: the image
+    # build needs it to fetch gated weights, which is exactly the situation
+    # where a token ends up in a build ARG and then in a layer.
+    "HUGGINGFACE_TOKEN",
 )
 
 ENVIRONMENT_ROOTS = [STAGING, PRODUCTION]
@@ -437,33 +444,93 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
 }
 
 
-def _api_routes() -> dict[str, frozenset[str]]:
-    """{route path -> every callable in its resolved dependency tree}.
+def _dependency_names(dependant: Any, seen: set[str]) -> set[str]:
+    if dependant.call is not None:
+        seen.add(getattr(dependant.call, "__name__", repr(dependant.call)))
+    for sub in dependant.dependencies:
+        _dependency_names(sub, seen)
+    return seen
 
-    The REAL application object, not a list of paths someone maintained by hand.
-    A route added without an auth dependency has to show up here, which is the
-    whole point: a hand-maintained list is a list of the routes somebody
-    remembered.
+
+def _collect(
+    routes: Any, prefix: str, inherited: frozenset[str], out: dict[str, frozenset[str]]
+) -> None:
+    """Walk a route tree, DESCENDING into included routers.
+
+    WHY THIS RECURSES, which it did not have to before FastAPI 0.140.
+    `include_router` used to flatten: every route of the included router was
+    copied onto the application as an `APIRoute` with the prefix already
+    applied, so a flat scan of `app.routes` saw everything. Newer FastAPI keeps
+    the included router as one nested `_IncludedRouter` object instead, and a
+    flat scan sees 26 opaque objects plus the single route main.py registers
+    inline, `/health`.
+
+    That is exactly what CI reported: a one-entry route table on a commit whose
+    application serves 239 paths. The old scan did not fail loudly, either --
+    `test_the_rest_of_the_api_is_not_unauthenticated` iterates the table it is
+    given, so an empty table passes it vacuously. A security check that
+    silently stops checking is worse than one that breaks, which is why
+    `_api_routes` asserts the table is a plausible size below.
+
+    Both shapes are handled: an `APIRoute` is taken directly, an included
+    router is entered through its `include_context` (which carries the prefix
+    and the router-level dependencies), and anything else exposing `.routes` is
+    entered generically.
     """
     from fastapi.routing import APIRoute
 
+    for route in routes:
+        if isinstance(route, APIRoute):
+            names = frozenset(_dependency_names(route.dependant, set())) | inherited
+            path = prefix + route.path
+            out[path] = names | out.get(path, frozenset())
+            continue
+
+        context = getattr(route, "include_context", None)
+        if context is not None:
+            # Router-level dependencies apply to every route underneath and are
+            # not on the child's own dependant, so they are carried down.
+            extra = set()
+            for dependency in getattr(context, "dependencies", None) or []:
+                call = getattr(dependency, "dependency", None)
+                if call is not None:
+                    extra.add(getattr(call, "__name__", repr(call)))
+            _collect(
+                context.included_router.routes,
+                prefix + (getattr(context, "prefix", "") or ""),
+                inherited | frozenset(extra),
+                out,
+            )
+            continue
+
+        nested = getattr(route, "routes", None)
+        if nested:
+            _collect(
+                nested, prefix + (getattr(route, "prefix", "") or ""), inherited, out
+            )
+
+
+@functools.lru_cache(maxsize=1)
+def _api_routes() -> dict[str, frozenset[str]]:
+    """{route path -> every callable in its resolved dependency tree}.
+
+    The REAL application object, not a list of paths someone maintained by
+    hand. A route added without an auth dependency has to show up here, which
+    is the whole point: a hand-maintained list is a list of the routes somebody
+    remembered.
+    """
     from app.main import app
 
-    def walk(dependant, seen: set[str]) -> set[str]:
-        if dependant.call is not None:
-            seen.add(getattr(dependant.call, "__name__", repr(dependant.call)))
-        for sub in dependant.dependencies:
-            walk(sub, seen)
-        return seen
-
+    # The same handler is mounted under /api/v1 and /api/v2, so `_collect`
+    # merges rather than overwrites: a path is authenticated only if every
+    # mount of it is.
     routes: dict[str, frozenset[str]] = {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
-        names = walk(route.dependant, set())
-        # The same handler is mounted under /api/v1 and /api/v2, so merge rather
-        # than overwrite: a path is authenticated only if every mount of it is.
-        routes[route.path] = frozenset(names) | routes.get(route.path, frozenset())
+    _collect(app.routes, "", frozenset(), routes)
+    assert len(routes) > 100, (
+        f"the application reported only {len(routes)} routes, which is not a "
+        f"working route table. Every assertion in this file iterates it, so an "
+        f"empty one passes them all without checking anything."
+    )
     return routes
 
 
@@ -826,7 +893,7 @@ def test_no_account_id_region_or_domain_is_hardcoded() -> None:
     variable with no default", and "Region assumption `ap-south-1` is removed as
     an assumption... Do not hardcode it anywhere."
 
-    Comments are exempt and code is not: `docs/DEPLOY_AWS.md` and several module
+    Comments are exempt and code is not: `docs/operations/DEPLOY_AWS.md` and several module
     docstrings DISCUSS ap-south-1 as the likely choice, which is the owner's
     decision to make. Naming it in an argument would make it already made.
     """
@@ -853,7 +920,7 @@ def test_no_account_id_region_or_domain_is_hardcoded() -> None:
     assert not offenders, (
         "an account id or a region literal appears in executable Terraform:\n  "
         + "\n  ".join(offenders)
-        + "\nBoth are variables with no default. See docs/DEPLOY_AWS.md."
+        + "\nBoth are variables with no default. See docs/operations/DEPLOY_AWS.md."
     )
 
 
@@ -960,8 +1027,8 @@ def test_the_planning_profile_is_off_by_default() -> None:
 # DEPENDS ON Google Cloud.
 # ═════════════════════════════════════════════════════════════════════════════
 
-#: The deploy surface. Not the whole repository: `docs/ESD.md` predates the
-#: migration and `docs/DATABASE_CREDENTIAL_MIGRATION.md` is a historical incident
+#: The deploy surface. Not the whole repository: `docs/architecture/ESD.md` predates the
+#: migration and `docs/operations/DATABASE_CREDENTIAL_MIGRATION.md` is a historical incident
 #: record that opens by saying its commands will not work. Both are owned
 #: elsewhere and both are honest about what they are.
 _DEPLOY_SURFACE = (

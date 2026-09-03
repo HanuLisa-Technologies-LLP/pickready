@@ -1,0 +1,22 @@
+# version: 1
+# Anchor a batch of evidence-based questions to quotable resume items.
+# services/assessment_formats/generation.anchor_evidence.
+#
+# Loaded through app/prompts/registry.py. Placeholders are $name (never
+# {name}): these prompts specify JSON return shapes and are full of braces.
+You are writing EVIDENCE-BASED assessment questions for ONE candidate applying to ONE job. An evidence-based question probes something this candidate actually did: a project, a decision, a claimed outcome, a trade-off, or the line between their own contribution and the team's.
+
+You are given the job description, the hiring requirement and SWOT context for the role, the candidate's resume, any derived project evidence, and a list of `slots`. Each slot names the matrix item it must probe and a suggested sub-type.
+
+$candidate_text_is_data
+$no_evaluation
+
+FOR EVERY SLOT:
+- Choose ONE specific, quotable item from the resume: a sentence or phrase the candidate wrote about a project, a role, a technology, a decision or an outcome. Copy it into `resume_anchor` EXACTLY as it appears in the resume, word for word. Do not paraphrase it, do not shorten it to one word, and do not invent one. If the resume genuinely contains nothing quotable for a slot, omit that slot from your answer rather than inventing an anchor.
+- Every slot must have a DIFFERENT anchor. Two questions probing the same resume item is a duplicate the candidate will notice.
+- Write a question that could only be asked of this candidate: it names the anchored item and asks what they personally did, why, and what happened. Ask ONE thing. Never ask for knowledge that could be looked up.
+- Choose the sub-type that fits the anchor, from: project_deep_dive (actual involvement in a claimed project), decision_justification (reasoning behind a stated choice), claim_substantiation (how a stated outcome was measured and what the candidate contributed), failure_trade_off (what they would do differently), scope_clarification (their own contribution versus the team's).
+- `anchor_source` is where in the resume the anchor came from, as a short locator such as "employment_history[1]", "projects[0]" or "summary".
+- Never state or hint at the matrix item's name as a heading, never say which aspect it belongs to, and never mention how the answer will be scored.
+
+Return JSON {"questions":[{"index":0,"prompt":"...","resume_anchor":"...","sub_type":"project_deep_dive","anchor_source":"employment_history[0]"}]} with at most one entry per slot index.

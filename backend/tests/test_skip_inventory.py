@@ -17,7 +17,7 @@ number was what it was. This file asks, on every run.
 
 HOW IT WORKS
 -------------
-`docs/SKIPS.md` is the DECLARED inventory: one row per skip, with its category
+`docs/operations/SKIPS.md` is the DECLARED inventory: one row per skip, with its category
 and its reason. This module compares that declaration against what the session
 actually skipped and fails the run on any difference, naming the specific test
 that appeared or disappeared rather than a count that moved.
@@ -30,7 +30,7 @@ Regenerate the observed set with:
 
     RPN_SKIP_DUMP=/tmp/skips.md python -m pytest -q
 
-which writes the table body in the exact format `docs/SKIPS.md` expects.
+which writes the table body in the exact format `docs/operations/SKIPS.md` expects.
 """
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ CATEGORIES = frozenset(
 )
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-SKIPS_DOC = _REPO_ROOT / "docs" / "SKIPS.md"
+SKIPS_DOC = _REPO_ROOT / "docs" / "operations" / "SKIPS.md"
 
 #: Only rows under this heading are the inventory. Everything else in the file
 #: is prose, baseline tables and the latent-skip register, none of which
@@ -229,19 +229,19 @@ def pytest_sessionfinish(session, exitstatus) -> None:
     if not appeared and not disappeared:
         return
 
-    lines = ["", "SKIP INVENTORY DRIFT (docs/SKIPS.md)", ""]
+    lines = ["", "SKIP INVENTORY DRIFT (docs/operations/SKIPS.md)", ""]
     for nodeid in appeared:
         lines.append(f"  NEW SKIP, not declared: {nodeid}")
         lines.append(f"      reason given: {_observed[nodeid]}")
         lines.append(
             "      Either make it run, delete it, or add a row to "
-            "docs/SKIPS.md with a category and a reason."
+            "docs/operations/SKIPS.md with a category and a reason."
         )
     for nodeid in disappeared:
         lines.append(f"  DECLARED SKIP THAT DID NOT HAPPEN: {nodeid}")
         lines.append(
             "      It now runs, or it was deleted or renamed. Remove its row "
-            "from docs/SKIPS.md."
+            "from docs/operations/SKIPS.md."
         )
     lines.append("")
     lines.append("Rows for the observed set, in the format the table expects:")

@@ -182,7 +182,3 @@ def names() -> list[str]:
     return sorted(path.stem for path in PROMPT_DIR.glob("*.txt"))
 
 
-def reset_cache() -> None:
-    """Test-only. Nothing in the application should call this."""
-    with _LOCK:
-        _CACHE.clear()

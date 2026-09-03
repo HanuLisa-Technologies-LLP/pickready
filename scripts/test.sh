@@ -74,7 +74,7 @@ export AWS_DEFAULT_REGION="ap-south-1"
 # with no model credential at all (spec-doc6 D6), every generative path has a
 # deterministic fallback, and a key here would let a vendor outage fail the
 # build. `tests/test_ai_reach_semantic.py` skips one test for this reason and
-# `docs/SKIPS.md` records it as the one legitimate skip in the inventory.
+# `docs/operations/SKIPS.md` records it as the one legitimate skip in the inventory.
 unset OPENAI_GPT_TERRA OPENAI_GPT_LUNA VOYAGE_CONTEXT_4 || true
 
 teardown() {

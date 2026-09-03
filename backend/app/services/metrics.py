@@ -91,10 +91,6 @@ STAGE_STALE_THRESHOLD_DAYS: dict[str, int] = {
 }
 DEFAULT_STALE_THRESHOLD_DAYS = 3
 
-#: Statuses that mean the pipeline is DONE with this candidate; everyone else
-#: is "active pipeline" for CSR purposes.
-_TERMINAL_STATUSES = ("rejected", "joined")
-
 #: For AISP: a link at any of these has been moved FORWARD past the initial
 #: review, which is the accept signal available today.
 _FORWARD_STATUSES = (

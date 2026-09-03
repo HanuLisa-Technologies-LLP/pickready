@@ -30,5 +30,12 @@ export default defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored third-party model assets, committed so an assessment never
+    // depends on somebody else's CDN (public/models/README.md). They are
+    // other people's build output, not this project's source: the emscripten
+    // glue calls `GLctx.useProgram`, which the React hooks rule reads as a
+    // hook in a non-component. Linting them says nothing about our code and
+    // the only way to satisfy it would be to edit a pinned file.
+    "public/models/**",
   ]),
 ]);

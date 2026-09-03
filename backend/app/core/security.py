@@ -4,9 +4,7 @@
   never logged (ESD §16).
 - Access JWT: 15 min, embeds user_id / tenant_id / role / audience.
   Candidate-portal sessions use a distinct audience claim (ESD §13).
-- LLM provider keys are Fernet-encrypted at rest via LLM_KEY_ENCRYPTION_SECRET.
 """
-import base64
 import hashlib
 import hmac
 import secrets
@@ -15,7 +13,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
-from cryptography.fernet import Fernet
 
 from app.core.config import get_settings
 
@@ -148,19 +145,4 @@ def decode_token(token: str, audience: str = AUDIENCE_INTERNAL) -> dict[str, Any
     )
 
 
-# ── Secret encryption (LLM provider keys at rest, ESD §8.4) ─────────────────
 
-def _fernet() -> Fernet:
-    secret = get_settings().llm_key_encryption_secret
-    if not secret:
-        raise RuntimeError("LLM_KEY_ENCRYPTION_SECRET is not configured")
-    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
-    return Fernet(key)
-
-
-def encrypt_secret(plaintext: str) -> str:
-    return _fernet().encrypt(plaintext.encode()).decode()
-
-
-def decrypt_secret(ciphertext: str) -> str:
-    return _fernet().decrypt(ciphertext.encode()).decode()

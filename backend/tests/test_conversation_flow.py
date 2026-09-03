@@ -113,6 +113,7 @@ async def _seed(factory, fx: _Fx, question_count: int) -> None:
         JobCompetency,
     )
     from app.models.candidate import JobCandidateLink
+    from app.models.proctoring import OUTCOME_ACTIVE, ProctoringSession
 
     now = datetime.now(timezone.utc)
     async with factory() as s:
@@ -177,6 +178,18 @@ async def _seed(factory, fx: _Fx, question_count: int) -> None:
                     id=fx.conv_id, tenant_id=fx.tenant_id, job_id=fx.job_id,
                     job_candidate_link_id=fx.link_id, grade="non_managerial",
                     status="active", next_question_index=0, started_at=now,
+                ))
+                await s.flush()
+                # PROCTORING IS MANDATORY. `respond` refuses a conversation
+                # with no consented, still-running proctoring session, so the
+                # fixture seeds the row the consent screen would have created.
+                # Stubbing the gate instead would make these flow tests pass
+                # on a path no candidate can take.
+                s.add(ProctoringSession(
+                    tenant_id=fx.tenant_id, conversation_id=fx.conv_id,
+                    job_candidate_link_id=fx.link_id, candidate_id=fx.cand_id,
+                    job_id=fx.job_id, consented_at=now, started_at=now,
+                    outcome=OUTCOME_ACTIVE,
                 ))
 
 

@@ -39,8 +39,6 @@ from app.prompts import registry
 
 logger = logging.getLogger(__name__)
 
-_DOWNLOAD_TIMEOUT = 60.0
-
 #: An empty parsed-fields document in the fixed schema (used when a resume has
 #: no extractable text or the LLM extraction can't be parsed  -  the profile is
 #: still stored so nothing crashes the Celery task).

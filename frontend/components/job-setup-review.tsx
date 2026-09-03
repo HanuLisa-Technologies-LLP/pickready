@@ -48,6 +48,7 @@ import { Badge } from "@/components/ui/badge";
 import { RatingLabel } from "@/components/rating-label";
 import { SwotIntakePanel } from "@/components/swot-intake";
 import { MatchingCategoriesCard } from "@/components/matching-categories";
+import { MonitoringPolicyCard } from "@/components/proctoring/monitoring-policy-card";
 import {
   Card,
   CardContent,
@@ -606,6 +607,14 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
 
       {/* The other half of the one setup session (spec 3.2). */}
       <MatchingCategoriesCard jobId={jobId} />
+
+      {/* One question about monitoring, set once per job (proctoring spec 6).
+          It sits here rather than on the Create Job form because it is a
+          decision about how candidates are assessed, which is what this
+          screen is for, and because it can be changed after the job is live
+          without reopening the matrix. It gates NOTHING: a job with the
+          default answer is ready for candidates like any other. */}
+      <MonitoringPolicyCard jobId={jobId} />
 
       {/* ── The Tatva Assessment matrix ─────────────────────────────────────── */}
       <Card>

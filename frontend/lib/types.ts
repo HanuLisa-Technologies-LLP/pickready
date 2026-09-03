@@ -384,6 +384,9 @@ export interface Job {
   days_until_posting_ends?: number | null;
   days_until_grace_ends?: number | null;
   posting_summary?: string | null;
+  /** What happens at the third monitoring warning (proctoring spec 6).
+   *  Absent on responses from a backend without proctoring. */
+  proctoring_warning_policy?: ProctoringWarningPolicy;
 }
 
 /** Where a job sits in its fixed 30-day lifecycle. */
@@ -1188,4 +1191,55 @@ export interface MatchingTaskStatus {
   /** Counts of candidate ROWS being processed. Never a score or a rank. */
   candidate_count: number;
   scored_count: number;
+}
+
+// ---- Proctoring (proctoring spec sections 6 and 7) ----
+
+/**
+ * The recruiter's one monitoring setting, per job. `terminate` stops the
+ * assessment at the third warning; `continue_and_note` lets it finish and
+ * says so in the report. The default is never to terminate without an
+ * explicit choice.
+ */
+export type ProctoringWarningPolicy = "terminate" | "continue_and_note";
+
+export const PROCTORING_WARNING_POLICIES: ProctoringWarningPolicy[] = [
+  "terminate",
+  "continue_and_note",
+];
+
+export interface ProctoringReportFindings {
+  screen_browser: string[];
+  camera: string[];
+  audio: string[];
+  answer_patterns: string[];
+}
+
+export interface ProctoringActivityRow {
+  time: string;
+  what_happened: string;
+  how_long: string;
+  what_the_system_did: string;
+}
+
+/**
+ * Mirrors `schemas/proctoring.ProctoringReportOut`. Words only: counts are
+ * spelled out and durations are approximate, because this travels inside
+ * the PRISM payload under the serialiser's number ban and because the
+ * specification forbids counts, timings and internal terms in the
+ * recruiter's view. The only digits are clock times.
+ */
+export interface ProctoringReport {
+  candidate: string;
+  assessment: string;
+  date_line: string;
+  outcome: string;
+  summary: string;
+  findings: ProctoringReportFindings;
+  activity_log: ProctoringActivityRow[];
+  closing: string;
+  /** True when a monitoring gap, a degraded device or an unavailable audio
+   *  analysis means the report describes less than the whole session. */
+  monitoring_was_incomplete: boolean;
+  generated_at: string;
 }

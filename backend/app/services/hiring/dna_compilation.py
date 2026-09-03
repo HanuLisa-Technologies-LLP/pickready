@@ -143,11 +143,17 @@ SUTRA_KEYS: tuple[str, ...] = (
 #: path somebody can go and look at.
 RUNBOOK_DATA_FILE = "app/services/hiring/runbook_data/company_dna_instrument.yaml"
 
-#: The Runbook itself, at the repository root. This module is
-#: backend/app/services/hiring/dna_compilation.py, so the root is four parents
-#: above the `hiring` package directory.
+#: The Runbook itself. It lives under `docs/product/` (moved there from the
+#: repository root on 2026-09-01, when the documentation was consolidated);
+#: this module is backend/app/services/hiring/dna_compilation.py, so the root
+#: is four parents above the `hiring` package directory.
+#:
+#: THE FILENAME USES SPACES and every document writes it with underscores.
+#: Kept verbatim rather than renamed: the parity test greps the Runbook's own
+#: section numbers, and a rename would change 103 citations to buy nothing.
 RUNBOOK_MARKDOWN = (
-    pathlib.Path(__file__).resolve().parents[4] / "Readypick Hiring Philosophy.md"
+    pathlib.Path(__file__).resolve().parents[4]
+    / "docs" / "product" / "Readypick Hiring Philosophy.md"
 )
 
 _EXAMPLE_LINE = re.compile(r'^>\s*(Rejected|Accepted):\s*"?(.+?)"?\s*$')

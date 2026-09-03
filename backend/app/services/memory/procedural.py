@@ -37,15 +37,3 @@ def fingerprint(name: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
-def variant_for(name: str, key: str, arms: tuple[str, ...]) -> str:
-    """Pick an A/B arm DETERMINISTICALLY from a stable key.
-
-    Deterministic on the key -- a job id, a link id -- rather than random, so the
-    same candidate never gets arm A on one turn and arm B on the next. An
-    interview that switches prompt mid-conversation is not an experiment, it is
-    two half-experiments and an inconsistent candidate experience.
-    """
-    if not arms:
-        return name
-    digest = hashlib.sha256(f"{name}:{key}".encode("utf-8")).digest()
-    return arms[digest[0] % len(arms)]

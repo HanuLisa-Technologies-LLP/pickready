@@ -164,17 +164,6 @@ def grantable_capabilities(actor_capabilities: set[str]) -> set[str]:
     return set(actor_capabilities)
 
 
-async def load_role(session: AsyncSession, user_id: Any) -> Role | None:
-    row = (
-        await session.execute(
-            select(User.role).where(User.id == uuid.UUID(str(user_id)))
-        )
-    ).scalar_one_or_none()
-    if row is None:
-        return None
-    return row if isinstance(row, Role) else Role(str(row))
-
-
 # The hierarchy must place every manageable role, or a role would exist that
 # nobody can be above and nobody can be below.
 assert MANAGEABLE_ROLES <= set(ROLE_RANK)

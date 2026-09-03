@@ -20,6 +20,7 @@ from app.api.deps import (
     require_capability,
 )
 from app.models.assessment import (
+    AssessmentAnswer,
     AssessmentConversation,
     AssessmentMessage,
     CandidateQuestion,
@@ -50,9 +51,11 @@ from app.schemas.assessments import (
     InvitationResolveOut,
     JobSetupOut,
     MatrixReorderIn,
+    QuestionOut,
     RadarChartOut,
     SwotAnswerIn,
     SwotIntakeOut,
+    TranscriptAnswerDetailOut,
     TranscriptExchangeOut,
     TranscriptOut,
 )
@@ -76,7 +79,16 @@ from app.services import (
     telemetry_events,
     tenant_cache,
 )
+from app.services.assessment_formats import rendering as format_rendering
+from app.services.assessment_formats import scoring as format_scoring
+from app.services.assessment_formats import types as question_types
 from app.services.audit import audit
+# PROCTORING IS MANDATORY (proctoring-spec-doc.md, principle P4). The gate is
+# this module's only import-time dependency on the proctoring package; the
+# behaviour recorder and the report loader are reached inside the handlers
+# that need them, so the scoring isolation the package promises stays
+# visible in the import graph as gate-plus-report-join and nothing else.
+from app.services.proctoring import gate as proctoring_gate
 from app.services.functional_assessment import (
     CATEGORY_MATCHING,
     CATEGORY_TECHNICAL,
@@ -898,6 +910,12 @@ async def get_report(
         assessed = [row.score for row in rows if row.category != CATEGORY_MATCHING]
         overall = round(sum(assessed) / len(assessed)) if assessed else 0
 
+    # The Proctoring Report, appended as the final, informational section.
+    # It moves nothing above it: no grade in this payload is read from it.
+    from app.services.proctoring import report as proctoring_report  # noqa: PLC0415
+
+    proctoring = await proctoring_report.load_report_out(session, link.id)
+
     return FunctionalReportOut(
         id=report.id,
         job_candidate_link_id=link.id,
@@ -919,6 +937,7 @@ async def get_report(
         # before it still carries rows here and still renders them.
         technical=grouped.get(CATEGORY_TECHNICAL, []),
         validation=report.validation_json,
+        proctoring=proctoring,
         gap_analysis=GapAnalysisOut.model_validate(report.gap_analysis_json or {}),
         # Populated only where Gap Analysis is not: a pre-Draft-v4 report shows
         # what it was actually written with rather than an empty section.
@@ -1044,7 +1063,7 @@ TRANSCRIPT_DEFAULT_LIMIT = 100
 
 
 async def _criterion_labels(
-    session: AsyncSession, link: JobCandidateLink
+    session: AsyncSession, link: JobCandidateLink, questions: list[CandidateQuestion]
 ) -> dict[str, str]:
     """{question_key: human label} for every key this candidate could produce.
 
@@ -1077,7 +1096,7 @@ async def _criterion_labels(
     for competency_id, name in by_competency.items():
         labels[str(competency_id)] = name
 
-    for question in await ppi_interview.load_for_link(session, link.id):
+    for question in questions:
         name = by_competency.get(question.competency_id)
         if name:
             labels[str(question.id)] = name
@@ -1092,6 +1111,61 @@ async def _criterion_labels(
     for question_id, skill in legacy:
         labels[str(question_id)] = skill
     return labels
+
+
+def _answer_key(row: CandidateQuestion) -> dict[str, Any]:
+    """What the recruiter sees BESIDE the candidate's choice: the correct
+    option ids, the accepted answers per blank, the approach a coding answer
+    was read against. Prose and identifiers; never a score."""
+    payload = dict(row.payload_json or {})
+    if row.question_type == question_types.MCQ_SINGLE:
+        return {"correct_option_id": payload.get("correct_option_id")}
+    if row.question_type == question_types.MCQ_MULTI:
+        return {"correct_option_ids": list(payload.get("correct_option_ids") or [])}
+    if row.question_type == question_types.FILL_BLANK:
+        return {
+            "accepted": [
+                list(blank.get("accepted") or [])
+                for blank in sorted(payload.get("blanks") or [], key=lambda item: item.get("index", 0))
+            ]
+        }
+    if row.question_type == question_types.CODING:
+        return {"expected_approach": payload.get("expected_approach")}
+    return {}
+
+
+def _answer_detail(
+    row: CandidateQuestion, record: AssessmentAnswer | None
+) -> TranscriptAnswerDetailOut | None:
+    """The per-format view of one answer (assessment-spec-doc 7).
+
+    Correctness is a WORD, time spent is a PHRASE, and the AI evaluation is
+    its reasoning and citations. `auto_score`, the per-criterion numbers and
+    the seconds all stay on the row. None for a pre-format short-answer row
+    with no structured record, which is every exchange written before 0076.
+    """
+    if record is None and row.question_type == question_types.SHORT_ANSWER:
+        return None
+    evaluation = dict(getattr(record, "ai_evaluation_json", None) or {})
+    detail = TranscriptAnswerDetailOut(
+        time_spent=format_rendering.time_spent_phrase(
+            record.time_spent_seconds if record is not None else None
+        ),
+    )
+    if question_types.is_structured(row.question_type):
+        detail.payload = question_types.candidate_view(row.id, row.question_type, row.payload_json)
+        detail.answer = dict(record.answer_json or {}) if record is not None else {}
+        detail.answer_key = _answer_key(row)
+    if row.question_type in question_types.OBJECTIVE_TYPES:
+        detail.correctness = format_scoring.correctness_word(
+            record.auto_score if record is not None else None
+        )
+        detail.blank_results = [str(item) for item in evaluation.get("blank_results") or []]
+    if row.question_type in (question_types.EVIDENCE_BASED, question_types.CODING):
+        detail.evaluation_reasoning = evaluation.get("reasoning") or None
+        detail.evaluation_citations = [str(item) for item in evaluation.get("citations") or []]
+        detail.not_executed_note = evaluation.get("not_executed_note") or None
+    return detail
 
 
 @router.get("/transcripts/links/{link_id}", response_model=TranscriptOut)
@@ -1151,7 +1225,19 @@ async def get_transcript(
             .order_by(AssessmentMessage.ordinal)
         )
     ).scalars().all()
-    labels = await _criterion_labels(session, link)
+    questions = await ppi_interview.load_for_link(session, link.id)
+    labels = await _criterion_labels(session, link, questions)
+    rows_by_key = {str(question.id): question for question in questions}
+    records = {
+        str(record.question_id): record
+        for record in (
+            await session.execute(
+                select(AssessmentAnswer).where(
+                    AssessmentAnswer.conversation_id == conversation.id
+                )
+            )
+        ).scalars().all()
+    }
 
     # Pair each agent line with the candidate line that answered it. Walking the
     # ordinals rather than zipping alternate rows: the last question of an
@@ -1173,6 +1259,7 @@ async def get_transcript(
         follow_up = key in seen_keys
         if key:
             seen_keys.add(key)
+        row = rows_by_key.get(key)
         exchanges.append(
             TranscriptExchangeOut(
                 ordinal=len(exchanges) + 1,
@@ -1182,6 +1269,16 @@ async def get_transcript(
                 criterion=labels.get(key),
                 follow_up=follow_up,
                 asked_at=pending.created_at,
+                question_type=row.question_type if row is not None else None,
+                resume_anchor=row.resume_anchor if row is not None else None,
+                # The structured record belongs to the BASE exchange; a
+                # follow-up is more evidence for the same question and shows
+                # the anchor, never a second copy of the detail.
+                detail=(
+                    _answer_detail(row, records.get(key))
+                    if row is not None and not follow_up
+                    else None
+                ),
             )
         )
         pending = None
@@ -1622,7 +1719,7 @@ async def _conversation_state(
 
 async def _conversation_prompts(
     session: AsyncSession, job: Job, link: JobCandidateLink
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str, CandidateQuestion]]:
     """This candidate's questions, in one sequence (spec §7).
 
     ONE LIST, from ONE table. Until Draft v4 this function round-robin
@@ -1641,6 +1738,11 @@ async def _conversation_prompts(
     files an answer under. The DOMAIN carries the aspect, so the recruiter's
     transcript view can say which part of the matrix an exchange belonged to
     without the candidate ever having been told.
+
+    The fourth element is the ROW, because since the question formats landed
+    a slot's format, payload and time allocation decide how the turn is
+    handled, and a second query per turn to fetch what this one already
+    loaded would be the N+1 this function exists to avoid.
     """
     rows = (
         await session.execute(
@@ -1657,9 +1759,138 @@ async def _conversation_prompts(
     # would be prepended before the candidate has said anything for it to
     # respond to.
     return [
-        (competency.category, str(question.id), question.prompt)
+        (competency.category, str(question.id), question.prompt, question)
         for question, competency in rows
     ]
+
+
+def _question_out(row: CandidateQuestion) -> QuestionOut:
+    """The prompt on screen as the candidate may see it: the format, the
+    CANDIDATE VIEW of the payload, the suggested time. The answer key never
+    crosses here; `candidate_view` is an allowlist per type."""
+    return QuestionOut(
+        id=row.id,
+        question_type=row.question_type,
+        payload=question_types.candidate_view(row.id, row.question_type, row.payload_json),
+        time_allocation_seconds=row.time_allocation_seconds,
+    )
+
+
+def _time_spent(conversation: AssessmentConversation, now: datetime, paused_ms: int) -> int | None:
+    """Seconds between the prompt being shown and this answer, less any time
+    a blocking proctoring warning held the screen, bounded by the elapsed
+    time so a client cannot pause its way to zero. None when the prompt's
+    display was never stamped."""
+    shown = conversation.prompt_shown_at
+    if shown is None:
+        return None
+    elapsed = max(0.0, (now - shown).total_seconds())
+    paused = min(max(0, int(paused_ms)) / 1000.0, elapsed)
+    return int(elapsed - paused)
+
+
+def _question_uuid(key: str | None) -> uuid.UUID | None:
+    """The question row a message key names, or None for a legacy key."""
+    try:
+        return uuid.UUID(str(key))
+    except (ValueError, TypeError):
+        return None
+
+
+async def _write_answer_record(
+    session: AsyncSession,
+    job: Job,
+    conversation: AssessmentConversation,
+    question_id: uuid.UUID,
+    message: AssessmentMessage,
+    *,
+    answer_json: dict[str, Any],
+    auto_score: float | None,
+    evaluation: dict[str, Any] | None,
+    now: datetime,
+    paused_ms: int,
+    question_type: str,
+) -> None:
+    """One `assessment_answers` row per (conversation, question).
+
+    A follow-up or a re-ask lands under its parent's key, and the transcript
+    already holds it; here it is a revision of the base answer, so the row's
+    count goes up and its time accumulates rather than a second row being
+    written. The unique constraint is what makes that the only choice.
+    """
+    record = (
+        await session.execute(
+            select(AssessmentAnswer).where(
+                AssessmentAnswer.conversation_id == conversation.id,
+                AssessmentAnswer.question_id == question_id,
+            )
+        )
+    ).scalars().first()
+    spent = _time_spent(conversation, now, paused_ms)
+    if record is None:
+        session.add(
+            AssessmentAnswer(
+                tenant_id=job.tenant_id,
+                conversation_id=conversation.id,
+                question_id=question_id,
+                message_id=message.id,
+                question_type=question_type,
+                answer_json=answer_json,
+                started_at=conversation.prompt_shown_at,
+                submitted_at=now,
+                time_spent_seconds=spent,
+                auto_score=auto_score,
+                ai_evaluation_json=evaluation,
+            )
+        )
+    else:
+        record.revision_count += 1
+        record.submitted_at = now
+        if spent is not None:
+            record.time_spent_seconds = (record.time_spent_seconds or 0) + spent
+        if auto_score is not None:
+            record.answer_json = answer_json
+            record.auto_score = auto_score
+            record.ai_evaluation_json = evaluation
+            record.message_id = message.id
+    await session.flush()
+
+
+async def _record_behaviour(
+    session: AsyncSession,
+    proctoring_session: Any,
+    conversation: AssessmentConversation,
+    question_id: uuid.UUID | None,
+    behaviour: Any,
+    *,
+    final_length: int,
+) -> None:
+    """Hand the answer field's keystroke and pointer timings to proctoring.
+
+    Nothing here reads the result: behaviour aggregates go to the proctoring
+    tables and nowhere near a score. A refusal from the recorder is logged
+    and the turn continues, because a candidate's answer has already been
+    saved by the time this runs and losing the turn over telemetry about it
+    would be the wrong trade.
+    """
+    if behaviour is None or question_id is None:
+        return
+    from app.services.proctoring import behaviour as proctoring_behaviour  # noqa: PLC0415
+
+    try:
+        await proctoring_behaviour.record_answer_behaviour(
+            session,
+            proctoring_session,
+            conversation,
+            question_id,
+            behaviour,
+            final_length=final_length,
+        )
+    except (HTTPException, ValueError) as exc:
+        logger.warning(
+            "assessments.behaviour_not_recorded conversation_id=%s question_id=%s error=%s",
+            conversation.id, question_id, type(exc).__name__,
+        )
 
 
 async def _ensure_conversation_ready(
@@ -1715,6 +1946,9 @@ async def start_conversation(
                 "candidates individually, and you will be emailed if they invite you."
             ),
         )
+    # PROCTORING GATE, before any work. A conversation cannot be opened
+    # without a consented, still-running proctoring session (principle P4).
+    await proctoring_gate.require_active(session, conversation)
     await _ensure_conversation_ready(session, job, link)
     # First open of an invited assessment moves it along the pipeline.
     if conversation.started_at is None:
@@ -1764,6 +1998,12 @@ async def start_conversation(
         if index < len(prompts)
         else None
     )
+    if prompt is not None:
+        # The prompt is on screen from now. Re-stamped on every open, including
+        # a reload, because the time the recruiter reads is time the candidate
+        # spent looking at THIS display of the question.
+        conversation.prompt_shown_at = datetime.now(timezone.utc)
+        await session.flush()
     return ConversationOut(
         conversation_id=conversation.id,
         status=conversation.status,
@@ -1772,6 +2012,11 @@ async def start_conversation(
         answered_questions=index,
         total_questions=len(prompts),
         is_reask=conversation.pending_kind == "reask",
+        question=(
+            _question_out(prompts[index][3])
+            if conversation.pending_prompt is None and index < len(prompts)
+            else None
+        ),
     )
 
 
@@ -1797,11 +2042,16 @@ async def _write_next_question(
     job: Job,
     link: JobCandidateLink,
     conversation: AssessmentConversation,
-    prompts: list[tuple[str, str, str]],
+    prompts: list[tuple[str, str, str, CandidateQuestion]],
     index: int,
 ) -> None:
     """Write the base question at `index` for THIS candidate at THIS point, and
     stash it on `conversation.delivered_prompt`.
+
+    TEXT QUESTIONS ONLY. A structured question (an MCQ, a fill-in-the-blank,
+    a coding problem) is delivered VERBATIM: its answer key was written with
+    it, and a rewritten stem graded against the original key is the exact
+    defect the per-question rubric rule exists to prevent.
 
     BOTH HALVES ARE NOW GENERATED, BY DIFFERENT AGENTS, FOR DIFFERENT REASONS
     -------------------------------------------------------------------------
@@ -1825,6 +2075,8 @@ async def _write_next_question(
     from the job's own skill plan.
     """
     if index >= len(prompts):
+        return
+    if question_types.is_structured(prompts[index][3].question_type):
         return
     try:
         await _write_next_question_inner(session, job, link, conversation, prompts, index)
@@ -1854,7 +2106,7 @@ async def _write_next_question_inner(
     job: Job,
     link: JobCandidateLink,
     conversation: AssessmentConversation,
-    prompts: list[tuple[str, str, str]],
+    prompts: list[tuple[str, str, str, CandidateQuestion]],
     index: int,
 ) -> None:
     """Write the question at `index` for THIS candidate at THIS point.
@@ -1869,7 +2121,7 @@ async def _write_next_question_inner(
     the question `ppi.generate_candidate_questions` already wrote for this item
     from this candidate's own resume.
     """
-    _aspect, key, stored = prompts[index]
+    _aspect, key, stored, _row = prompts[index]
     # Read AFTER the caller's flush so the turn just written is part of the
     # memory this question is conditioned on. Reading a stale transcript would
     # have the interviewer talk as though the last answer had not been given.
@@ -1963,9 +2215,20 @@ async def respond(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     link, job = await _candidate_link(session, user, conversation.job_candidate_link_id)
+    # A terminated conversation takes no further answer. The proctoring gate
+    # below refuses too, through the session's outcome; this is the status the
+    # ingestion pipeline wrote on the conversation itself, checked first
+    # because it is the cheaper and the more direct of the two.
+    if conversation.status == "terminated":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=proctoring_gate.SESSION_ENDED_DETAIL,
+        )
+    proctoring_session = await proctoring_gate.require_active(session, conversation)
     prompts = await _conversation_prompts(session, job, link)
     index = conversation.next_question_index
     pending = conversation.pending_prompt
+    now = datetime.now(timezone.utc)
     # Rows created before 0045 have NULL here; every historical pending prompt
     # was a probe, so that is the safe compatibility meaning.
     pending_kind = (conversation.pending_kind or "probe") if pending else None
@@ -1979,6 +2242,7 @@ async def respond(
     if index >= len(prompts) and not pending:
         raise HTTPException(status_code=409, detail="Conversation is already complete")
 
+    question_row: CandidateQuestion | None = None
     if pending:
         # Answered under the key of the question that PRODUCED the follow-up,
         # so `answers_by_key` files it with that question's other answers and
@@ -1993,7 +2257,7 @@ async def respond(
         conversation.pending_domain = None
         conversation.pending_kind = None
     else:
-        domain, key, prompt = prompts[index]
+        domain, key, prompt, question_row = prompts[index]
         # Log what the candidate actually READ, not what was stored for them.
         # `delivered_prompt` is the wording composed on the previous turn; when
         # it is NULL (first question, or the rewrite was unavailable) the two
@@ -2006,168 +2270,270 @@ async def respond(
     ordinal = (
         await session.execute(select(func.coalesce(func.max(AssessmentMessage.ordinal), 0)).where(AssessmentMessage.conversation_id == conversation.id))
     ).scalar_one()
-    # INBOUND GUARD, before this text is stored or reaches any prompt.
+
+    # ── A STRUCTURED QUESTION: delivered verbatim, answered as a structure ──
     #
-    # A candidate's answer is DATA, never instructions to the interviewer, and
-    # it goes straight into a model prompt. `sanitized` keeps their real content
-    # and defangs attack framing, so an answer that legitimately DISCUSSES
-    # prompt injection is still an answer. It also redacts anything shaped like
-    # a pasted credential, which protects the candidate rather than us: prompts
-    # are traced, and a key pasted by mistake must not be persisted or sent on.
-    #
-    # Note the contract: `violation is not None` does NOT mean refused. Only
-    # `allowed` decides, and it goes False only when the framing was a directive
-    # AND nothing resembling an answer is left underneath it.
-    guard = conversation_guardrails.inspect_answer(body.answer)
-    answer_text = guard.sanitized.strip()
-    candidate_message = AssessmentMessage(
-        tenant_id=job.tenant_id,
-        conversation_id=conversation.id,
-        ordinal=ordinal + 2,
-        speaker="candidate",
-        domain=domain,
-        question_key=key,
-        content=answer_text,
-    )
-    session.add_all([
-        AssessmentMessage(tenant_id=job.tenant_id, conversation_id=conversation.id, ordinal=ordinal + 1, speaker="agent", domain=domain, question_key=key, content=prompt),
-        candidate_message,
-    ])
-    await session.flush()
-
-    # A probe is supplemental evidence for an already accepted base answer, so
-    # it never advances the base counter. A base answer and a relevance re-ask
-    # are classified: only an accepted one advances the counter.
-    if not answering_probe:
-        transcript = await _transcript_rows(session, conversation.id)
-        reaction = None
-        action = "advanced"
-        answer_label = "substantive"
-        degraded = False
-        needs_rechallenge = False
-
-        if not guard.allowed:
-            # A refused turn is still transcribed above: the record of what was
-            # said is what a dispute is settled from. Classifying it would spend
-            # a model call grading an attack, so this short-circuits to the same
-            # re-ask mechanism a non-answer uses -- same question_key, no
-            # follow-up budget, bounded to one per question.
-            answer_label = f"guarded_{guard.violation}"
-            needs_rechallenge = True
-        else:
-            # ONE classification decides what happens next. Gibberish and empty
-            # are settled deterministically (no model call, because the model
-            # being down is exactly when the guard matters); off_topic and
-            # evasive need the model, because they are well-formed prose that
-            # simply does not answer the question, and nothing deterministic
-            # can see that.
-            #
-            # Observed live on 2026-08-05: four consecutive keyboard-mash
-            # answers were each met with the next scripted question, because
-            # the follow-up path deliberately refuses to spend a probe on
-            # gibberish. Sound for probing, and the worst behaviour overall --
-            # the one case a human interviewer certainly reacts to became the
-            # one case this agent never did.
-            verdict = await answer_classification.classify(
-                session=session,
-                question=prompt,
-                answer=answer_text,
-                transcript=transcript,
+    # An MCQ, a fill-in-the-blank or a coding problem is validated against the
+    # question it answers, scored deterministically on the server where the
+    # format is objective, rendered into the transcript line the scorers and
+    # the recruiter read, and recorded on `assessment_answers`. None of the
+    # conversational machinery applies: no classification, no re-ask, no
+    # follow-up, because the answer key was written with the question and a
+    # probe would be graded against nothing.
+    if question_row is not None and question_types.is_structured(question_row.question_type):
+        if body.answer_payload is None:
+            raise HTTPException(
+                status_code=422,
+                detail="This question is answered by choosing or typing into the "
+                "form shown, not with a written reply.",
             )
-            answer_label = verdict.label
-            degraded = verdict.confidence == "low"
-            needs_rechallenge = verdict.needs_rechallenge
-
-        candidate_message.answer_label = answer_label
-
-        # Re-asks are bounded per base question. The counter stays still while
-        # one is outstanding. Once the cap is exhausted the answer remains in
-        # the transcript with evidence_gap=true and the interview moves on, so
-        # a candidate cannot be trapped in an infinite loop.
-        if (
-            needs_rechallenge
-            and conversation.reasks_used < MAX_REASKS_PER_QUESTION
-        ):
-            if not guard.allowed:
-                reaction = guard.candidate_message
-            else:
-                reaction = await interviewer.challenge_non_answer(
-                    session=session,
-                    question=prompt,
-                    answer=answer_text,
-                    transcript=transcript,
-                    label=answer_label,
-                )
-            if reaction:
-                conversation.reasks_used += 1
-                action = "rechallenged"
-
-        if reaction is None:
-            # Either the answer was relevant, the re-ask cap was reached, or a
-            # challenge could not be composed. Every one of those outcomes
-            # closes exactly one base slot. Invalid outcomes are explicit gaps.
-            conversation.next_question_index += 1
-            conversation.reasks_used = 0
-            if needs_rechallenge:
-                candidate_message.evidence_gap = True
-                action = "advanced_with_gap"
-            elif not answering_reask:
-                reaction = await interviewer.next_follow_up(
-                    session=session,
-                    question=prompt,
-                    answer=answer_text,
-                    transcript=transcript,
-                    follow_ups_used=conversation.follow_ups_used,
-                    already_followed_up=False,
-                    # Scaled to this interview's length. A flat five probes
-                    # across 45 questions left 89% of the conversation unable
-                    # to react to anything the candidate said.
-                    budget=interviewer.follow_up_budget(len(prompts)),
-                    # Every interviewer line so far, so a probe that merely
-                    # re-asks something already asked is dropped rather than
-                    # spending a scarce budget to prove nobody was listening.
-                    # The check inside is deterministic: it matters most during
-                    # an outage, which is when a model cannot answer it.
-                    asked_before=[
-                        row["content"]
-                        for row in transcript
-                        if row.get("speaker") == "agent"
-                    ],
-                )
-                # Only a real probe draws down the budget. A re-ask does not:
-                # asking someone to actually answer is not a probe, and
-                # spending the budget on it would starve the thin-but-real
-                # answers later in the interview that a probe is worth more on.
-                if reaction:
-                    conversation.follow_ups_used += 1
-                    action = "followed_up"
-
-        if reaction:
-            # OUTBOUND GUARD. Last thing before any interviewer line is stored
-            # as what the candidate will read.
-            conversation.pending_prompt = conversation_guardrails.inspect_agent_output(reaction)
-            conversation.pending_question_key = key
-            conversation.pending_domain = domain
-            conversation.pending_kind = (
-                "reask" if action == "rechallenged" else "probe"
+        try:
+            parsed = question_types.parse_answer(
+                question_row.question_type, question_row.payload_json, body.answer_payload
             )
-
-        # One structured line per turn. Labels, keys and timings only, never
-        # answer or question text: an ordinary log is far more widely readable
-        # than a LangSmith trace, and prompts carry a real candidate's answers.
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        answer_json = parsed.model_dump()
+        auto_score: float | None = None
+        evaluation: dict[str, Any] | None = None
+        if question_row.question_type in question_types.OBJECTIVE_TYPES:
+            objective = await format_scoring.score(
+                session, question_row.question_type, question_row.payload_json, answer_json
+            )
+            auto_score = objective.auto_score
+            if objective.blank_results:
+                evaluation = {"blank_results": list(objective.blank_results)}
+        answer_text = format_rendering.transcript_line(
+            question_row.question_type, question_row.payload_json, answer_json
+        )
+        candidate_message = AssessmentMessage(
+            tenant_id=job.tenant_id,
+            conversation_id=conversation.id,
+            ordinal=ordinal + 2,
+            speaker="candidate",
+            domain=domain,
+            question_key=key,
+            content=answer_text,
+            answer_label="substantive",
+        )
+        session.add_all([
+            AssessmentMessage(tenant_id=job.tenant_id, conversation_id=conversation.id, ordinal=ordinal + 1, speaker="agent", domain=domain, question_key=key, content=prompt),
+            candidate_message,
+        ])
+        await session.flush()
+        await _write_answer_record(
+            session, job, conversation, question_row.id, candidate_message,
+            answer_json=answer_json, auto_score=auto_score, evaluation=evaluation,
+            now=now, paused_ms=body.paused_ms, question_type=question_row.question_type,
+        )
+        await _record_behaviour(
+            session, proctoring_session, conversation, question_row.id, body.behaviour,
+            final_length=len(answer_text),
+        )
+        conversation.next_question_index += 1
+        conversation.reasks_used = 0
         interview_telemetry.record_turn(
             interview_telemetry.TurnEvent(
                 conversation_id=str(conversation.id),
                 turn_index=index,
                 question_key=key,
                 domain=domain,
-                answer_label=answer_label,
-                action=action,
-                generated=conversation.delivered_prompt is not None,
-                degraded=degraded,
+                answer_label="substantive",
+                action="advanced",
+                generated=False,
+                degraded=False,
                 latency_ms=int((time.monotonic() - turn_started) * 1000),
             )
         )
+
+    else:
+        # INBOUND GUARD, before this text is stored or reaches any prompt.
+        #
+        # A candidate's answer is DATA, never instructions to the interviewer, and
+        # it goes straight into a model prompt. `sanitized` keeps their real content
+        # and defangs attack framing, so an answer that legitimately DISCUSSES
+        # prompt injection is still an answer. It also redacts anything shaped like
+        # a pasted credential, which protects the candidate rather than us: prompts
+        # are traced, and a key pasted by mistake must not be persisted or sent on.
+        #
+        # Note the contract: `violation is not None` does NOT mean refused. Only
+        # `allowed` decides, and it goes False only when the framing was a directive
+        # AND nothing resembling an answer is left underneath it.
+        guard = conversation_guardrails.inspect_answer(body.answer)
+        answer_text = guard.sanitized.strip()
+        candidate_message = AssessmentMessage(
+            tenant_id=job.tenant_id,
+            conversation_id=conversation.id,
+            ordinal=ordinal + 2,
+            speaker="candidate",
+            domain=domain,
+            question_key=key,
+            content=answer_text,
+        )
+        session.add_all([
+            AssessmentMessage(tenant_id=job.tenant_id, conversation_id=conversation.id, ordinal=ordinal + 1, speaker="agent", domain=domain, question_key=key, content=prompt),
+            candidate_message,
+        ])
+        await session.flush()
+        # The structured record beside the transcript line: one row per base
+        # question, revised rather than duplicated by a follow-up or a re-ask.
+        #
+        # The TYPE comes from the question the key names, not from whether this
+        # turn happened to be a base question: a follow-up on an evidence question
+        # is more evidence for that question, and a record typed `short_answer`
+        # because a probe wrote it first would send the scorer down the wrong
+        # branch for the whole item.
+        question_id = _question_uuid(key)
+        if question_id is not None:
+            answered_row = question_row or next(
+                (row for _aspect, row_key, _prompt, row in prompts if row_key == key), None
+            )
+            await _write_answer_record(
+                session, job, conversation, question_id, candidate_message,
+                answer_json={"text": answer_text}, auto_score=None, evaluation=None,
+                now=now, paused_ms=body.paused_ms,
+                question_type=(
+                    answered_row.question_type if answered_row is not None else question_types.SHORT_ANSWER
+                ),
+            )
+        await _record_behaviour(
+            session, proctoring_session, conversation, question_id, body.behaviour,
+            final_length=len(answer_text),
+        )
+
+        # A probe is supplemental evidence for an already accepted base answer, so
+        # it never advances the base counter. A base answer and a relevance re-ask
+        # are classified: only an accepted one advances the counter.
+        if not answering_probe:
+            transcript = await _transcript_rows(session, conversation.id)
+            reaction = None
+            action = "advanced"
+            answer_label = "substantive"
+            degraded = False
+            needs_rechallenge = False
+
+            if not guard.allowed:
+                # A refused turn is still transcribed above: the record of what was
+                # said is what a dispute is settled from. Classifying it would spend
+                # a model call grading an attack, so this short-circuits to the same
+                # re-ask mechanism a non-answer uses -- same question_key, no
+                # follow-up budget, bounded to one per question.
+                answer_label = f"guarded_{guard.violation}"
+                needs_rechallenge = True
+            else:
+                # ONE classification decides what happens next. Gibberish and empty
+                # are settled deterministically (no model call, because the model
+                # being down is exactly when the guard matters); off_topic and
+                # evasive need the model, because they are well-formed prose that
+                # simply does not answer the question, and nothing deterministic
+                # can see that.
+                #
+                # Observed live on 2026-08-05: four consecutive keyboard-mash
+                # answers were each met with the next scripted question, because
+                # the follow-up path deliberately refuses to spend a probe on
+                # gibberish. Sound for probing, and the worst behaviour overall --
+                # the one case a human interviewer certainly reacts to became the
+                # one case this agent never did.
+                verdict = await answer_classification.classify(
+                    session=session,
+                    question=prompt,
+                    answer=answer_text,
+                    transcript=transcript,
+                )
+                answer_label = verdict.label
+                degraded = verdict.confidence == "low"
+                needs_rechallenge = verdict.needs_rechallenge
+
+            candidate_message.answer_label = answer_label
+
+            # Re-asks are bounded per base question. The counter stays still while
+            # one is outstanding. Once the cap is exhausted the answer remains in
+            # the transcript with evidence_gap=true and the interview moves on, so
+            # a candidate cannot be trapped in an infinite loop.
+            if (
+                needs_rechallenge
+                and conversation.reasks_used < MAX_REASKS_PER_QUESTION
+            ):
+                if not guard.allowed:
+                    reaction = guard.candidate_message
+                else:
+                    reaction = await interviewer.challenge_non_answer(
+                        session=session,
+                        question=prompt,
+                        answer=answer_text,
+                        transcript=transcript,
+                        label=answer_label,
+                    )
+                if reaction:
+                    conversation.reasks_used += 1
+                    action = "rechallenged"
+
+            if reaction is None:
+                # Either the answer was relevant, the re-ask cap was reached, or a
+                # challenge could not be composed. Every one of those outcomes
+                # closes exactly one base slot. Invalid outcomes are explicit gaps.
+                conversation.next_question_index += 1
+                conversation.reasks_used = 0
+                if needs_rechallenge:
+                    candidate_message.evidence_gap = True
+                    action = "advanced_with_gap"
+                elif not answering_reask:
+                    reaction = await interviewer.next_follow_up(
+                        session=session,
+                        question=prompt,
+                        answer=answer_text,
+                        transcript=transcript,
+                        follow_ups_used=conversation.follow_ups_used,
+                        already_followed_up=False,
+                        # Scaled to this interview's length. A flat five probes
+                        # across 45 questions left 89% of the conversation unable
+                        # to react to anything the candidate said.
+                        budget=interviewer.follow_up_budget(len(prompts)),
+                        # Every interviewer line so far, so a probe that merely
+                        # re-asks something already asked is dropped rather than
+                        # spending a scarce budget to prove nobody was listening.
+                        # The check inside is deterministic: it matters most during
+                        # an outage, which is when a model cannot answer it.
+                        asked_before=[
+                            row["content"]
+                            for row in transcript
+                            if row.get("speaker") == "agent"
+                        ],
+                    )
+                    # Only a real probe draws down the budget. A re-ask does not:
+                    # asking someone to actually answer is not a probe, and
+                    # spending the budget on it would starve the thin-but-real
+                    # answers later in the interview that a probe is worth more on.
+                    if reaction:
+                        conversation.follow_ups_used += 1
+                        action = "followed_up"
+
+            if reaction:
+                # OUTBOUND GUARD. Last thing before any interviewer line is stored
+                # as what the candidate will read.
+                conversation.pending_prompt = conversation_guardrails.inspect_agent_output(reaction)
+                conversation.pending_question_key = key
+                conversation.pending_domain = domain
+                conversation.pending_kind = (
+                    "reask" if action == "rechallenged" else "probe"
+                )
+
+            # One structured line per turn. Labels, keys and timings only, never
+            # answer or question text: an ordinary log is far more widely readable
+            # than a LangSmith trace, and prompts carry a real candidate's answers.
+            interview_telemetry.record_turn(
+                interview_telemetry.TurnEvent(
+                    conversation_id=str(conversation.id),
+                    turn_index=index,
+                    question_key=key,
+                    domain=domain,
+                    answer_label=answer_label,
+                    action=action,
+                    generated=conversation.delivered_prompt is not None,
+                    degraded=degraded,
+                    latency_ms=int((time.monotonic() - turn_started) * 1000),
+                )
+            )
 
     # Vaada decides WHERE IN SUTRA'S RANGE this conversation ends.
     #
@@ -2284,6 +2650,11 @@ async def respond(
         if next_index < len(prompts)
         else None
     )
+    if next_prompt is not None:
+        # The next prompt is on screen from the moment this response lands;
+        # the next answer's time is measured from here, on the server.
+        conversation.prompt_shown_at = datetime.now(timezone.utc)
+        await session.flush()
     return ConversationOut(
         conversation_id=conversation.id,
         status=conversation.status,
@@ -2293,6 +2664,13 @@ async def respond(
         total_questions=len(prompts),
         is_reask=conversation.pending_kind == "reask",
         answer_message_id=candidate_message.id,
+        question=(
+            _question_out(prompts[next_index][3])
+            if conversation.pending_prompt is None
+            and next_index < len(prompts)
+            and conversation.completed_at is None
+            else None
+        ),
     )
 
 
@@ -2379,5 +2757,15 @@ async def edit_latest_answer(
     message.content = edited
     message.answer_label = verdict.label
     message.evidence_gap = False
+    # The structured record counts the change (assessment-spec-doc 4,
+    # `revision_count`); the text itself is the transcript's.
+    record = (
+        await session.execute(
+            select(AssessmentAnswer).where(AssessmentAnswer.message_id == message.id)
+        )
+    ).scalars().first()
+    if record is not None:
+        record.answer_json = {"text": edited}
+        record.revision_count += 1
     await session.flush()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

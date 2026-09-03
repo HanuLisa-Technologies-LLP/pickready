@@ -247,6 +247,72 @@ resource "aws_iam_role_policy" "exec" {
   policy = data.aws_iam_policy_document.exec.json
 }
 
+# ── Service discovery ────────────────────────────────────────────────────────
+#
+# HOW ONE TASK FINDS ANOTHER WHEN NEITHER IS BEHIND THE LOAD BALANCER.
+#
+# The api and the worker post audio chunks to the analysis service, which has
+# no target group and no public path on purpose: it is reachable only from
+# inside the VPC, on the enumerated internal port the network module opens from
+# the task security group to itself. A Fargate task's IP changes on every
+# deploy, so "reachable" needs a NAME, and Cloud Map is what supplies one.
+#
+# A PRIVATE DNS namespace, attached to one VPC. It resolves nowhere else, so an
+# internal service name is not a name anybody outside can even look up. ECS
+# registers and deregisters the task IPs itself as tasks come and go, which is
+# why `health_check_custom_config` is the right choice here: the ECS health
+# check is already the authority on whether a task should receive traffic, and
+# a second Route53 health check would be a different opinion about the same
+# question.
+
+resource "aws_service_discovery_private_dns_namespace" "this" {
+  count = var.discovery_namespace == "" ? 0 : 1
+
+  name        = var.discovery_namespace
+  vpc         = var.vpc_id
+  description = "Internal service names for ${local.name}. Resolves in this VPC and nowhere else."
+
+  tags = merge(var.tags, { Name = var.discovery_namespace })
+}
+
+resource "aws_service_discovery_service" "this" {
+  for_each = { for name, service in var.services : name => service if service.discoverable }
+
+  name        = each.key
+  description = "${each.key}.${var.discovery_namespace}, resolved to this service's running task IPs."
+
+  dns_config {
+    namespace_id = one(aws_service_discovery_private_dns_namespace.this[*].id)
+
+    dns_records {
+      type = "A"
+      # SHORT, because the answer is a set of task IPs and a deploy replaces
+      # them. A long TTL is a caller holding the address of a task that has
+      # already been drained.
+      ttl = 15
+    }
+
+    # Every healthy task, not one. The callers are the api and the worker,
+    # which balance across whatever the resolver returns.
+    routing_policy = "MULTIVALUE"
+  }
+
+  # ECS owns registration and deregistration. A Route53 health check here would
+  # be a second opinion about a question the ECS health check already answers.
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.discovery_namespace != ""
+      error_message = "A service is marked `discoverable` but no `discovery_namespace` was passed, so there is no namespace to register it in and nothing could resolve its name."
+    }
+  }
+
+  tags = merge(var.tags, { Service = each.key })
+}
+
 # ── Task definitions ─────────────────────────────────────────────────────────
 
 resource "aws_ecs_task_definition" "this" {
@@ -263,6 +329,17 @@ resource "aws_ecs_task_definition" "this" {
   runtime_platform {
     operating_system_family = "LINUX"
     cpu_architecture        = var.cpu_architecture
+  }
+
+  # An empty ephemeral volume per writable path. This is what lets a container
+  # that only needs to write a library cache keep `readonly_root = true`:
+  # everything except the named path stays immutable for the life of the task.
+  # Fargate has no tmpfs, so these are task volumes rather than memory ones.
+  dynamic "volume" {
+    for_each = { for path in each.value.writable_paths : path => replace(trim(path, "/"), "/", "-") }
+    content {
+      name = volume.value
+    }
   }
 
   container_definitions = jsonencode([
@@ -318,6 +395,14 @@ resource "aws_ecs_task_definition" "this" {
         startPeriod = 60
       }
 
+      mountPoints = [
+        for path in each.value.writable_paths : {
+          sourceVolume  = replace(trim(path, "/"), "/", "-")
+          containerPath = path
+          readOnly      = false
+        }
+      ]
+
       # Root filesystem read-only where the workload allows it. The backend
       # writes nothing to disk by design -- resume bytes never persist on the
       # application filesystem -- so this is enforcing an invariant the code
@@ -351,6 +436,14 @@ resource "aws_ecs_service" "this" {
     # PRIVATE SUBNETS, so no public IP. Egress is through NAT, which is why the
     # network module has one.
     assign_public_ip = false
+  }
+
+  # The Cloud Map registration, for a service nothing routes to from outside.
+  dynamic "service_registries" {
+    for_each = each.value.discoverable ? [aws_service_discovery_service.this[each.key].arn] : []
+    content {
+      registry_arn = service_registries.value
+    }
   }
 
   dynamic "load_balancer" {

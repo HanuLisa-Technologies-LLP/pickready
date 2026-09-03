@@ -329,14 +329,6 @@ def granted_tools(agent_id: str) -> frozenset[str]:
     return permissions.granted_tools(runtime_id(agent_id))
 
 
-def declared_modules() -> dict[str, tuple[str, ...]]:
-    """Every module any agent claims, live or targeted, by dotted name."""
-    out: dict[str, tuple[str, ...]] = {}
-    for agent_id, agent in AGENTS.items():
-        out[agent_id] = tuple(dict.fromkeys(agent.implemented_by + agent.activates_to))
-    return out
-
-
 def activation_status(reachable: frozenset[str]) -> dict[str, dict[str, object]]:
     """Per agent: what runs, what should, and what has not landed yet.
 

@@ -2,6 +2,7 @@
 sees every table (Alembic autogenerate, tests)."""
 from app.models.base import Base
 from app.models.assessment import (
+    AssessmentAnswer,
     AssessmentConversation,
     AssessmentMessage,
     CandidateQuestion,
@@ -88,6 +89,11 @@ from app.models.job_setup import (
     JobMatchingCategory,
     JobSwotIntake,
 )
+from app.models.proctoring import (
+    ProctoringEvent,
+    ProctoringReport,
+    ProctoringSession,
+)
 from app.models.telemetry import TelemetryEvent
 from app.models.tenant import AuditLog, LLMProviderKey, RolePermission, Tenant
 from app.models.hiring import (
@@ -109,6 +115,7 @@ __all__ = [
     "ApprovalDecision",
     "BDLead",
     "CHANNELS",
+    "AssessmentAnswer",
     "AssessmentConversation",
     "AssessmentMessage",
     "AuditLog",
@@ -186,6 +193,9 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_PARTIAL",
     "STATUS_SUCCESS",
+    "ProctoringEvent",
+    "ProctoringReport",
+    "ProctoringSession",
     "TelemetryEvent",
     "Tenant",
     "TechnicalQuestion",

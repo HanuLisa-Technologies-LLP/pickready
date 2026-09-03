@@ -190,6 +190,86 @@ class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
     rubric_json: Mapped[dict | None] = mapped_column(JSONB)
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # ── Question formats (migration 0076, assessment-spec-doc section 4) ─────
+    #
+    # This row IS the specification's `assessment_questions` row: `ordinal` is
+    # its `sequence`, `competency_id` its `competency` and `rubric_json` its
+    # `rubric`. The format vocabulary lives in
+    # `services/assessment_formats/types.py` and is pinned by a database CHECK.
+    #
+    # `payload_json` is the type-specific structure (options and the correct
+    # option ids for an MCQ, the template and accepted answers for a
+    # fill-in-the-blank, the language and starter code for a coding question,
+    # the sub-type and anchor source for an evidence question). It holds the
+    # ANSWER KEY where one exists, so it never crosses the candidate boundary
+    # unprojected: `assessment_formats.types.candidate_view` strips it.
+    #
+    # `resume_anchor` is the specific, quotable resume item an evidence
+    # question probes. Stored so the recruiter's Q&A view can show what was
+    # being probed, which is the most valuable thing on that screen.
+    #
+    # Rows written before 0076 read as `short_answer`: they were text
+    # questions with no stored anchor and no evidence rubric, and relabelling
+    # them as evidence-based would claim a provenance they do not have.
+    question_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="short_answer", server_default="short_answer"
+    )
+    payload_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    resume_anchor: Mapped[str | None] = mapped_column(Text)
+    #: Suggested time, in seconds. Bounds the assessment's total length per
+    #: role (composition rule 6); shown to the candidate as guidance only.
+    time_allocation_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=180, server_default="180"
+    )
+    #: INTERNAL. This question's contribution within its matrix item. It is
+    #: what makes evidence dominance structural: a supporting-format question
+    #: carries less of the item than an evidence question does.
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0, server_default="1.0")
+
+
+class AssessmentAnswer(Base, UUIDPKMixin, CreatedAtMixin):
+    """The structured answer record, one per (conversation, question).
+
+    The transcript (`assessment_messages`) is unchanged and remains the
+    conversational record every scorer already reads by `question_key`. This
+    row is what the OBJECTIVE scorer and the recruiter's Q&A view read: the
+    type-specific answer as submitted, when the question was opened and
+    answered, the deterministic auto-score for an objective type, the AI
+    evaluation with its reasoning for a subjective one, and how many times the
+    answer changed.
+
+    `auto_score` and the score inside `ai_evaluation_json` are INTERNAL. They
+    fold into the matrix item's score through `functional_assessment` and are
+    projected to words at the boundary; neither is ever serialised as a number.
+    The recruiter sees correctness as a word and the evaluation as prose.
+
+    `time_spent_seconds` is measured by the SERVER from
+    `assessment_conversations.prompt_shown_at`, less any time a blocking
+    proctoring warning held the screen. A client-reported duration would be a
+    number the client chose.
+    """
+
+    __tablename__ = "assessment_answers"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "question_id", name="uq_assessment_answer_question"),
+        Index("ix_assessment_answers_conversation", "conversation_id"),
+    )
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("assessment_conversations.id", ondelete="CASCADE"), nullable=False)
+    question_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("candidate_questions.id", ondelete="CASCADE"), nullable=False)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("assessment_messages.id", ondelete="SET NULL"))
+    question_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    answer_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    time_spent_seconds: Mapped[int | None] = mapped_column(Integer)
+    auto_score: Mapped[float | None] = mapped_column(Float)
+    ai_evaluation_json: Mapped[dict | None] = mapped_column(JSONB)
+    revision_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
 
 class CandidateTechnicalQuestion(Base, UUIDPKMixin, CreatedAtMixin):
     """One technical question written for ONE candidate (2026-08-06).
@@ -310,6 +390,13 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     # key are untouched by delivery, and `_substance_preserved` refuses a
     # rewrite that dropped a specific term.
     delivered_prompt: Mapped[str | None] = mapped_column(Text)
+
+    # ── When the prompt on screen was delivered (migration 0076) ─────────────
+    # Stamped by `start` and by every `respond` that hands the candidate a new
+    # prompt. `assessment_answers.time_spent_seconds` is measured from it on
+    # the server, so the per-question timing the recruiter reads is not a
+    # figure the client reported.
+    prompt_shown_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # ── Invitation + progress tracking (migration 0018) ──────────────────────
     # These three columns existed in the database but not on this model, so

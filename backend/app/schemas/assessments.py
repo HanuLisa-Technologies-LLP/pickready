@@ -1,9 +1,13 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.proctoring import ProctoringReportOut
 from app.schemas.reports import NumberFreeDelivery
+from app.services.assessment_formats import types as question_types
 from app.services.ppi import CATEGORIES
 
 
@@ -322,6 +326,11 @@ class FunctionalReportOut(NumberFreeDelivery):
     technical: list[DimensionOut] = []
     #: The application's mandatory fields, as submitted. Never rated (6).
     validation: dict
+    #: The Proctoring Report (proctoring spec 7), appended as the final section
+    #: of the delivered document. INFORMATIONAL ONLY: it moves no grade, no
+    #: score and no ranking, and it is words only so this model's number ban
+    #: holds over it unchanged. None when no proctoring report exists yet.
+    proctoring: ProctoringReportOut | None = None
     #: Gap Analysis & Action Plan (9.6).
     gap_analysis: GapAnalysisOut = GapAnalysisOut()
     #: RETIRED, replaced by `gap_analysis`. Non-empty only on a report written
@@ -340,16 +349,91 @@ class FunctionalReportOut(NumberFreeDelivery):
     immutable: bool = True
 
 
+class AnswerBehaviourIn(BaseModel):
+    """Keystroke and mouse TIMINGS for the answer being submitted (proctoring
+    spec 4.5). Offsets in milliseconds from when the field was first focused.
+    Never characters: what was typed is the answer, stored separately.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    keydown_offsets_ms: list[int] = Field(default_factory=list, max_length=20_000)
+    backspace_offsets_ms: list[int] = Field(default_factory=list, max_length=20_000)
+    #: Blocked paste, drop and clipboard attempts on this field.
+    blocked_action_count: int = Field(default=0, ge=0, le=10_000)
+    #: Total milliseconds the field held focus.
+    focus_ms: int = Field(default=0, ge=0, le=24 * 3600 * 1000)
+    #: Pointer path, aggregated on the client at the sample rate the server
+    #: configured. Never raw coordinates.
+    mouse_samples: int = Field(default=0, ge=0, le=1_000_000)
+    mouse_path_px: int = Field(default=0, ge=0, le=100_000_000)
+    mouse_idle_ms: int = Field(default=0, ge=0, le=24 * 3600 * 1000)
+    mouse_clicks: int = Field(default=0, ge=0, le=100_000)
+    #: Offsets of clicks on MCQ options, for rapid-fire versus considered
+    #: selection.
+    option_click_offsets_ms: list[int] = Field(default_factory=list, max_length=1_000)
+    #: Scroll events while the question was being read.
+    scroll_events: int = Field(default=0, ge=0, le=100_000)
+
+
+# ── The recruiter's view of what was actually asked and answered ─────────────
+# A report states a grade; this is the evidence behind it. A recruiter deciding
+# whether to interview someone, and a candidate disputing a grade, both need the
+# transcript, and until 2026-08-06 the only way to read one was a psql session.
+
+
 class ConversationMessageIn(BaseModel):
-    answer: str = Field(min_length=1, max_length=10000)
+    """One turn. Prose for a text question; a structure for the others.
+
+    `answer` stays the transcript line for the two text formats. For a
+    structured format the client sends `answer_payload` in the shape
+    `assessment_formats.types.ANSWER_MODELS` names and the SERVER renders the
+    transcript line from it; an `answer` string sent alongside is ignored so a
+    client can never disagree with its own structured submission.
+
+    `paused_ms` is how long a blocking proctoring warning held the screen
+    during this question, subtracted from the server-measured time spent and
+    bounded by it. `behaviour` is the answer field's keystroke and pointer
+    timings, evaluated server-side against the candidate's own baseline.
+    """
+
+    answer: str = Field(default="", max_length=10000)
+    answer_payload: dict[str, Any] | None = None
+    paused_ms: int = Field(default=0, ge=0, le=24 * 3600 * 1000)
+    behaviour: AnswerBehaviourIn | None = None
 
 
 class ConversationAnswerEditIn(BaseModel):
     answer: str = Field(min_length=1, max_length=10000)
 
 
+class QuestionOut(BaseModel):
+    """The question on screen, as the candidate may see it (formats spec 5).
+
+    `payload` is the CANDIDATE VIEW (`assessment_formats.types.candidate_view`):
+    an MCQ's options in this candidate's order and no correct id, a
+    fill-blank's template and blank sizes and no accepted answers, a coding
+    question's language and starter code and no expected approach. The answer
+    key never crosses this boundary.
+    """
+
+    id: uuid.UUID
+    question_type: str
+    payload: dict[str, Any] = {}
+    #: Suggested time, shown as guidance. Navigation, not a score.
+    time_allocation_seconds: int
+
+    @field_validator("question_type")
+    @classmethod
+    def _known_type(cls, value: str) -> str:
+        if value not in question_types.QUESTION_TYPES:
+            raise ValueError(f"unknown question type {value!r}")
+        return value
+
+
 class ConversationOut(BaseModel):
     conversation_id: uuid.UUID
+    #: active | completed | terminated
     status: str
     prompt: str | None
     progress_label: str
@@ -357,12 +441,40 @@ class ConversationOut(BaseModel):
     total_questions: int
     is_reask: bool = False
     answer_message_id: uuid.UUID | None = None
+    #: The format of the prompt on screen. None once the conversation is over
+    #: and on a follow-up or re-ask, which is always answered in prose.
+    question: QuestionOut | None = None
+    #: The proctoring termination notice, in plain language, when `status` is
+    #: terminated. Never a reason code.
+    termination_message: str | None = None
 
 
-# ── The recruiter's view of what was actually asked and answered ─────────────
-# A report states a grade; this is the evidence behind it. A recruiter deciding
-# whether to interview someone, and a candidate disputing a grade, both need the
-# transcript, and until 2026-08-06 the only way to read one was a psql session.
+class TranscriptAnswerDetailOut(BaseModel):
+    """The recruiter's view of one structured answer (formats spec 7).
+
+    Correctness is a WORD (`correct`, `partially_correct`, `incorrect`,
+    `not_answered`, or None for a format that has none), never a score. The
+    AI evaluation is its reasoning, never its number. `not_executed_note` is
+    present on every coding answer so a reader cannot mistake a read-only
+    judgement for a verified run.
+    """
+
+    #: The candidate view of the payload, so the recruiter sees the options
+    #: in the order the candidate saw them.
+    payload: dict[str, Any] = {}
+    #: The answer as submitted, in its type's shape.
+    answer: dict[str, Any] = {}
+    #: For an MCQ: the correct option ids. For a fill-blank: accepted answers
+    #: per blank. Shown BESIDE the candidate's choice, marked clearly.
+    answer_key: dict[str, Any] = {}
+    correctness: str | None = None
+    #: Per blank, for a fill-blank: `exact`, `equivalent`, `incorrect`,
+    #: `not_answered`.
+    blank_results: list[str] = []
+    evaluation_reasoning: str | None = None
+    evaluation_citations: list[str] = []
+    not_executed_note: str | None = None
+    time_spent: str | None = None
 
 
 class TranscriptExchangeOut(BaseModel):
@@ -397,6 +509,20 @@ class TranscriptExchangeOut(BaseModel):
     #: the planned questions. It shares its predecessor's criterion by design.
     follow_up: bool = False
     asked_at: datetime | None = None
+    # ── The question's format (assessment-spec-doc section 7) ────────────────
+    #: One of `assessment_formats.types.QUESTION_TYPES`, or None for an
+    #: exchange whose question predates the formats or whose key belongs to a
+    #: retired question table. The recruiter's view dispatches on it.
+    question_type: str | None = None
+    #: The specific, quotable resume item an evidence-based question was
+    #: anchored to. "the most valuable thing in the view" (section 7): it is
+    #: what tells a recruiter what was being probed.
+    resume_anchor: str | None = None
+    #: The per-format view of the answer: the option chosen beside the correct
+    #: one, the entry beside the accepted answers, the evaluation's reasoning.
+    #: Present on a BASE exchange only; a follow-up is more evidence for the
+    #: same question and would otherwise render the detail twice.
+    detail: TranscriptAnswerDetailOut | None = None
 
 
 class TranscriptOut(BaseModel):

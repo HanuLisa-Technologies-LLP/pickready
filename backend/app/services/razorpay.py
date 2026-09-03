@@ -136,16 +136,6 @@ async def create_plan(*, name: str, price_inr: int, notes: dict[str, str] | None
 
 # ── Customers ────────────────────────────────────────────────────────────────
 
-async def create_customer(*, name: str, email: str | None, contact: str | None) -> str:
-    payload: dict[str, Any] = {"name": name, "fail_existing": 0}
-    if email:
-        payload["email"] = email
-    if contact:
-        payload["contact"] = contact
-    body = await _request("POST", "/customers", payload)
-    return body["id"]
-
-
 # ── Orders (one-time credit-pack purchases, Master Directive Part 5) ─────────
 
 async def create_order(
@@ -191,10 +181,6 @@ async def create_subscription(
     if customer_id:
         payload["customer_id"] = customer_id
     return await _request("POST", "/subscriptions", payload)
-
-
-async def fetch_subscription(subscription_id: str) -> dict:
-    return await _request("GET", f"/subscriptions/{subscription_id}")
 
 
 async def update_subscription(

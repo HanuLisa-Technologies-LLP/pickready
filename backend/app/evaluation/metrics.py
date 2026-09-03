@@ -29,17 +29,6 @@ from app.services.verification import generic_language
 # ── Ranking quality (needs ground truth) ─────────────────────────────────────
 
 
-def precision_at_k(predicted: Sequence[Any], truth: Sequence[Any], k: int = 5) -> float:
-    """Share of the predicted top-k that belongs in the true top-k."""
-    if not truth or k <= 0:
-        return 0.0
-    top = list(predicted)[:k]
-    if not top:
-        return 0.0
-    relevant = set(list(truth)[:k])
-    return round(sum(1 for item in top if item in relevant) / len(top), 4)
-
-
 def ndcg(predicted: Sequence[Any], relevance: dict[Any, float], k: int = 5) -> float:
     """Normalised discounted cumulative gain over expert star ratings.
 
@@ -109,30 +98,6 @@ def diversity(profiles: Sequence[Sequence[str]]) -> float:
 # ── Output quality (no ground truth needed) ──────────────────────────────────
 
 
-def word_range_compliance(texts: Sequence[str], minimum: int, maximum: int) -> float:
-    if not texts:
-        return 0.0
-    inside = sum(1 for text in texts if minimum <= len(str(text).split()) <= maximum)
-    return round(inside / len(texts), 4)
-
-
-def generic_language_rate(texts: Sequence[str]) -> float:
-    return generic_language.rate(list(texts))
-
-
-def evidence_sourcing_rate(items: Sequence[dict[str, Any]], key: str = "evidence") -> float:
-    """Share of claims that carry a source.
-
-    An unsourced claim in a report is an assertion about a person that nobody
-    can check, which is the single defect this whole framework was commissioned
-    to reduce.
-    """
-    if not items:
-        return 0.0
-    sourced = sum(1 for item in items if str(item.get(key) or "").strip())
-    return round(sourced / len(items), 4)
-
-
 #: A behavioural question asks what someone DID. A hypothetical asks what they
 #: WOULD do, and the answer to a hypothetical is imagination, not evidence.
 _HYPOTHETICAL = ("would you", "what would", "if you were", "imagine", "hypothetically")
@@ -149,12 +114,3 @@ def behavioural_rate(probes: Sequence[str]) -> float:
     return round(behavioural / len(probes), 4)
 
 
-def personalisation_rate(bodies: Sequence[str], tokens: Sequence[str]) -> float:
-    """Share of messages that name the specific person or role they are about."""
-    if not bodies:
-        return 0.0
-    hits = 0
-    for body, token in zip(bodies, tokens):
-        if token and str(token).casefold() in str(body).casefold():
-            hits += 1
-    return round(hits / len(bodies), 4)

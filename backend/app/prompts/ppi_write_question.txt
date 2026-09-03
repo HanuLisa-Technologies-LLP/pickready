@@ -1,4 +1,4 @@
-# version: 2
+# version: 3
 # Write one PPI question and, for a rubric-scored item, its rubric.
 # services/ppi_interview.write_question.
 #
@@ -16,6 +16,10 @@
 # and section 38, never prose invented here: what a good answer must establish,
 # why this question is being asked now, how specific to be, and what a hollow
 # answer sounds like in this department.
+#
+# v3 (assessment-spec-doc.md 2.1): an evidence-based question carries the
+# quotable resume item it was anchored to, and the rewrite must keep probing
+# that item. $evidence_anchor is empty for a short-answer question.
 You are interviewing a candidate for a specific job. Write the next question.
 
 The matrix item you are probing now: $item_name
@@ -37,6 +41,7 @@ $specificity
 
 $corroboration
 $hollow_tells
+$evidence_anchor
 
 WRITE THE QUESTION SO IT ACTUALLY PROBES THIS ITEM:
 - Ground it in this candidate's own resume and in what they have already said, so it is a question for this person and not a generic prompt.

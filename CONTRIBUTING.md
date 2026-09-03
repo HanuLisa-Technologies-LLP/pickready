@@ -1,5 +1,10 @@
 # Contributing to ReadyPick
 
+All documentation is indexed at [docs/README.md](docs/README.md). Before
+changing code, read [claude.md](claude.md): it carries the rules a change must
+not break, and its "Where to make a change" table is the fastest route to the
+right file.
+
 ## One command, from a clean clone, to a green suite
 
 ```
@@ -56,7 +61,7 @@ it and lost, so every host-side connection reached PostgreSQL 13 with a password
 nobody had, and 71 integration tests answered `no database reachable` and
 reported SKIPPED. The suite was green while `POST /jobs/{id}/apply` was refused
 by a CHECK constraint for every candidate on every tenant. See
-`docs/TEST_BASELINE.md`.
+`docs/operations/TEST_BASELINE.md`.
 
 6380 is the local dev stack's Redis (`infra/docker-compose.yml`), so the test
 stack takes 6381. The two stacks can run side by side.
@@ -106,7 +111,7 @@ code path nobody ran.
 
 ## Skips
 
-`docs/SKIPS.md` is the declared inventory: one row per skip, with a category and
+`docs/operations/SKIPS.md` is the declared inventory: one row per skip, with a category and
 a reason. `backend/tests/test_skip_inventory.py` compares it against what the
 session actually skipped and fails the build on any difference, naming the
 specific test that appeared or disappeared.

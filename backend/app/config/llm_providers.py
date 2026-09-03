@@ -177,6 +177,10 @@ TaskType = Literal[
     "email_composition",
     # ── Project Evidence Intelligence ──
     "project_evidence",
+    # ── Assessment question formats (assessment-spec-doc.md) ──
+    "format_composition",
+    "answer_evaluation",
+    "fill_blank_equivalence",
     # ── Legacy role hints (ESD §8.4), retained verbatim so every pre-existing
     #    caller keeps its established behaviour ──
     "rerank",
@@ -233,7 +237,20 @@ MODEL_FOR_TASK: dict[str, str] = {
     # person will not want to rewrite is worth the better model. Surfaced here
     # rather than left as a silent judgment call.
     "email_composition": MODEL_TERRA,
+    # Assessment question formats. `format_composition` WRITES a structured
+    # question's payload (an MCQ with distractors that are real misconceptions,
+    # a fill-blank's accepted answers, a coding problem's expected approach)
+    # and anchors an evidence question to a quotable resume item; both are
+    # evidence-grounded writing. `answer_evaluation` JUDGES an evidence or
+    # coding answer against its rubric and must state its reasoning, which is
+    # the reasoning tier's job by definition.
+    "format_composition": MODEL_TERRA,
+    "answer_evaluation": MODEL_TERRA,
     # ── Luna: extraction, classification, routing ───────────────────────────
+    # A fill-in-the-blank near miss ("Postgres" against "PostgreSQL") is a
+    # yes-or-no equivalence classification over two short strings, on the
+    # candidate's own request path. Narrow, mechanical, must be fast.
+    "fill_blank_equivalence": MODEL_LUNA,
     # Bodha's situation-type call is a six-way classification over a completed
     # SWOT, and the Hiring Manager confirms it explicitly before the session
     # closes, so a wrong label is caught by a human rather than by a rescore.
@@ -349,6 +366,16 @@ TASK_TIMEOUTS: dict[str, float] = {
     "extraction": 60.0,
     # Background. One reasoning pass over a reduced evidence pack.
     "project_evidence": 60.0,
+    # Background: one structured payload, or one batch of evidence anchors,
+    # written inside the question-generation Celery task.
+    "format_composition": 60.0,
+    # Background: one evaluation with reasoning, inside the scoring task.
+    "answer_evaluation": 60.0,
+    # IMMEDIATE interactive. A candidate has just submitted a fill-blank
+    # answer and is waiting for the next question; the equivalence check runs
+    # only when the exact match failed. Same cap as `conversation_turn`, for
+    # the same reason.
+    "fill_blank_equivalence": 12.0,
 }
 
 #: Total wall-clock budget for one logical call, across every retry.
@@ -380,6 +407,9 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "report_synthesis": 280.0,
     "extraction": 140.0,
     "project_evidence": 140.0,
+    "format_composition": 140.0,
+    "answer_evaluation": 140.0,
+    "fill_blank_equivalence": 24.0,
 }
 
 DEFAULT_TIMEOUT = 45.0
@@ -423,6 +453,10 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "report_synthesis": 8192,
     "extraction": 8192,
     "project_evidence": 4096,
+    "format_composition": 4096,
+    "answer_evaluation": 4096,
+    # A boolean and one sentence of reason.
+    "fill_blank_equivalence": 256,
 }
 
 DEFAULT_MAX_TOKENS = 4096
@@ -458,10 +492,16 @@ TASK_TEMPERATURE: dict[str, float] = {
     "triangulation": 0.0,
     "situation_classification": 0.0,
     "project_evidence": 0.0,        # judges claims against evidence
+    "answer_evaluation": 0.0,       # judges an answer against its rubric
+    "fill_blank_equivalence": 0.0,  # classifies two strings as equivalent or not
 
     # ── Generative: these write. ────────────────────────────────────────────
     "competency_transformation": 0.2,
     "technical_questions": 0.4,
+    # Writes the payload of a structured question and the wording of an
+    # anchored evidence question. Same tier of creativity as the question
+    # bank writer it sits beside; what is asked is fixed by the matrix.
+    "format_composition": 0.4,
     "jd_generation": 0.5,
     "email_composition": 0.5,
     "swot_intake": 0.5,
@@ -511,6 +551,9 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "report_synthesis": 3,
     "extraction": 3,
     "project_evidence": 3,
+    "format_composition": 3,
+    "answer_evaluation": 3,
+    "fill_blank_equivalence": 2,
 }
 
 DEFAULT_RETRY_BUDGET = 3

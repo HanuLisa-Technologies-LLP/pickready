@@ -421,6 +421,14 @@ def hold_reason(dimension_scores: Mapping[str, float]) -> str | None:
     routing consequence rather than a band. Modelling it as a fifth grade would
     put an integrity outcome on the scale a client reads, and modelling it as a
     ceiling would deliver the candidate anyway with a lower number.
+
+    THIS FLOOR WAS UNREACHABLE UNTIL 2026-09-02, which is worth knowing when
+    reading anything written against it before then. The scores handed in come
+    from `dimensions.BANDS`, which carried four words against the section 9.x
+    rubric's six rows and bottomed out at 40 -- above this floor of 25, and
+    above section 12.2's D3 floor of 40 as well. The two missing rows were
+    added, the bottom one scores 12, and all four floors in this table can now
+    be breached. See RUNBOOK_OPEN_QUESTIONS.md Q24.
     """
     from app.services.hiring.department_models import DIM_AUTHENTICITY
 

@@ -75,6 +75,11 @@ from app.services.miti import caps
 from app.services.miti.dimensions import DimensionResult, band_for
 
 __all__ = [
+    # Re-exported deliberately: `pipeline` reads the authenticity dimension
+    # through this module because that is where the multiplier it feeds
+    # lives. Declared so the re-export is intentional rather than a
+    # side effect of an import.
+    "DIM_AUTHENTICITY",
     "CATEGORY_MUST_HAVE",
     "CATEGORY_NICE_TO_HAVE",
     "CATEGORY_BEHAVIOURAL",
@@ -228,9 +233,23 @@ def authenticity_multiplier_for_score(d4: float) -> tuple[float | None, str]:
     would deliver the candidate with a suppressed number, which is a quieter
     outcome than the document asks for and hides the one case it wants a person
     to look at.
+
+    THE None BRANCH BECAME REACHABLE ON 2026-09-02, and every one of the five
+    branches below now is. Until then the band scale bottomed out at 40 against
+    this floor of 25, so no evaluator output could enter it; `dimensions.BANDS`
+    now carries a word for each of the six rows of the section 9.x rubric the
+    evaluator is actually shown, and the bottom row scores 12. See Q24 in
+    RUNBOOK_OPEN_QUESTIONS.md for what was wrong and why it was fixed by adding
+    the missing rows rather than by moving a number.
     """
-    cap_value = float(caps.bands_data()["authenticity_multiplier"].get("caps_at", 1.0))
-    for row in _authenticity_branches():
+    # Read the branches FIRST. `_authenticity_branches` carries the guard
+    # that explains a missing or malformed section 10.5 table; a bare
+    # subscript here fired ahead of it and turned that explanation into a
+    # KeyError, so the careful message could never reach anyone.
+    branches = _authenticity_branches()
+    table = caps.bands_data().get("authenticity_multiplier") or {}
+    cap_value = float(table.get("caps_at", 1.0))
+    for row in branches:
         low = row.get("d4_low")
         high = row.get("d4_high_exclusive")
         if low is not None and high is None:
@@ -270,6 +289,19 @@ def authenticity_multiplier(result: DimensionResult | None) -> tuple[float, str]
     A HELD candidate also yields 1.0 here, and the HOLD is carried separately
     on the aggregate. Folding it into the multiplier would turn a routing
     decision into a number and deliver the candidate anyway.
+
+    "Carried separately" means `Aggregate.hold`, which `aggregate` sets from
+    `caps.hold_reason` and appends to `review_reasons` in its own right, so a
+    held candidate always carries a reason and always needs a human. That is
+    correct only while `caps.hold_reason` reads the same floor as this function
+    does. Both read 25 today, from two separate data entries reading two
+    separate Runbook sections, so a change to one without the other would leave
+    a candidate suppressed by one rule and held by neither.
+
+    AND A HELD CANDIDATE MUST NOT BE RANKED. Returning 1.0 here means the
+    composite passes through unsuppressed, so a `contradicted` account would
+    otherwise grade ABOVE an `absent` one. `client_projection` withholds the
+    grade entirely for a held candidate, which is where that is resolved.
     """
     if result is None:
         return 1.0, "authenticity was not evaluated"
@@ -587,7 +619,31 @@ class Aggregate:
         Built by CONSTRUCTION rather than by filtering `as_dict`, because a
         filter is a list somebody has to remember to extend when a field is
         added, and the failure mode is a number reaching a client.
+
+        A HELD CANDIDATE CARRIES NO GRADE, and this is section 10.8 taken
+        literally: a hold is "not ranked pending human disposition", and a
+        projection that ranked them anyway would be delivering the ranking the
+        hold exists to withhold.
+
+        It also closes a trap the hold created the moment it became reachable.
+        Below section 10.5's floor the multiplier is not a suppression, it is
+        None, because the Runbook does not score that row -- so the composite
+        passes through UNSUPPRESSED and a `contradicted` account grades ABOVE an
+        `absent` one, which is the worst possible reading of a worse result.
+        Nothing downstream would have caught it: a grade is a plausible word
+        whatever produced it. Withholding the grade removes the contradiction
+        rather than papering over it with a number the Runbook declines to
+        state.
         """
+        if self.hold:
+            return {
+                "category_grades": {},
+                "overall_grade": "",
+                "capped_by_must_have": self.must_have_cap_applied,
+                "unassessed_must_haves": list(self.unassessed_must_haves),
+                "held_for_integrity_review": True,
+                "confidence": self.confidence,
+            }
         return {
             "category_grades": dict(self.category_grades),
             "overall_grade": self.overall_grade,

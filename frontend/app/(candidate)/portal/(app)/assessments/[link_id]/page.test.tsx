@@ -1,49 +1,65 @@
 // @vitest-environment jsdom
 
 import * as React from "react";
-import {
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AssessmentProgress,
   AssessmentSteps,
 } from "@/components/assessment-progress";
+import { ProctoringProvider } from "@/components/proctoring/proctoring-context";
+import type { ProctoringBridge } from "@/lib/assessment/contracts";
 import UnifiedAssessmentPage from "./page";
-
-const mocks = vi.hoisted(() => ({
-  apiPost: vi.fn(),
-  toast: vi.fn(),
-}));
 
 vi.mock("next/navigation", () => ({
   useParams: () => ({ link_id: "link-1" }),
 }));
 
-vi.mock("@/lib/api", () => ({
-  apiPost: (...args: unknown[]) => mocks.apiPost(...args),
-  apiPatch: vi.fn(),
+/**
+ * The shell, stubbed to its ONE structural promise: it renders the assessment
+ * inside a `ProctoringProvider` and never beside it.
+ *
+ * Stubbed because the real shell opens a camera, a microphone and two
+ * inference workers before it will mount anything, none of which exists in
+ * jsdom. Its own screens and gates are covered directly in
+ * `components/proctoring/proctoring-shell.test.tsx`; what is left for a
+ * page-level test is the wiring, which is exactly what the page is.
+ */
+vi.mock("@/components/proctoring/proctoring-shell", () => ({
+  ProctoringShell: ({ linkId, children }: { linkId: string; children: React.ReactNode }) => (
+    <div data-testid="proctoring-shell" data-link-id={linkId}>
+      <ProctoringProvider value={STUB_BRIDGE}>{children}</ProctoringProvider>
+    </div>
+  ),
 }));
 
-vi.mock("@/lib/auth-context", () => ({
-  useAuth: () => ({ user: { full_name: "Karthik Kumar" } }),
+vi.mock("@/components/assessment/assessment-conversation", () => ({
+  AssessmentConversation: ({ linkId }: { linkId: string }) => (
+    <p data-testid="assessment-conversation">Conversation for {linkId}</p>
+  ),
 }));
 
-vi.mock("@/components/ui/toast", () => ({
-  useToast: () => ({ toast: mocks.toast }),
-}));
+const STUB_BRIDGE: ProctoringBridge = {
+  status: "active",
+  sessionId: "ps-1",
+  warningsUsed: 0,
+  maxWarnings: 3,
+  endedMessage: null,
+  fieldHooksFor: () => ({
+    onFieldFocus: vi.fn(),
+    onFieldBlur: vi.fn(),
+    onKeyDown: vi.fn(),
+    onBlockedAction: vi.fn(),
+    onOptionClick: vi.fn(),
+    onScroll: vi.fn(),
+  }),
+  collectAnswerBehaviour: () => null,
+  consumePausedMs: () => 0,
+  onConversationEnded: vi.fn(),
+};
 
-afterEach(() => {
-  cleanup();
-  mocks.apiPost.mockReset();
-  mocks.toast.mockReset();
-  window.localStorage.clear();
-});
+afterEach(cleanup);
 
 describe("candidate assessment progress", () => {
   it("renders the exact answered count and circular percentage", () => {
@@ -68,54 +84,21 @@ describe("candidate assessment progress", () => {
   });
 });
 
-describe("candidate assessment conversation controls", () => {
-  it("renders the assessor controls and exposes Edit after a saved answer", async () => {
-    Element.prototype.scrollIntoView = vi.fn();
-    mocks.apiPost.mockImplementation((url: string) => {
-      if (url.endsWith("/start")) {
-        return Promise.resolve({
-          conversation_id: "conversation-1",
-          status: "active",
-          prompt: "Tell me about a production incident you owned.",
-          progress_label: "Question 1 of 45",
-          answered_questions: 0,
-          total_questions: 45,
-          is_reask: false,
-        });
-      }
-      return Promise.resolve({
-        conversation_id: "conversation-1",
-        status: "active",
-        prompt: "What did you change afterward?",
-        progress_label: "Question 2 of 45",
-        answered_questions: 1,
-        total_questions: 45,
-        is_reask: false,
-        answer_message_id: "message-1",
-      });
-    });
-
+describe("the assessment page", () => {
+  it("mounts the conversation INSIDE the proctoring shell, never beside it", () => {
+    // Proctoring is mandatory (spec principle P4). A page that rendered the
+    // conversation outside the shell would be an unmonitored assessment, and
+    // it would look identical on screen, so containment is what is asserted
+    // rather than mere presence.
     render(<UnifiedAssessmentPage />);
+    const shell = screen.getByTestId("proctoring-shell");
+    const conversation = screen.getByTestId("assessment-conversation");
+    expect(shell.contains(conversation)).toBe(true);
+  });
 
-    expect(
-      await screen.findByText("Tell me about a production incident you owned.")
-    ).toBeTruthy();
-    expect(screen.getByText("AI Assessor")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
-    const send = screen.getByRole("button", { name: "Send" });
-    expect(send.hasAttribute("disabled")).toBe(true);
-
-    fireEvent.change(screen.getByLabelText("Your answer"), {
-      target: {
-        value:
-          "I owned the rollback, restored service in twelve minutes, and added a release canary.",
-      },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
-    });
-    expect(screen.getByText("1 / 45 Questions Answered")).toBeTruthy();
+  it("hands both halves the same application", () => {
+    render(<UnifiedAssessmentPage />);
+    expect(screen.getByTestId("proctoring-shell").getAttribute("data-link-id")).toBe("link-1");
+    expect(screen.getByText("Conversation for link-1")).toBeTruthy();
   });
 });

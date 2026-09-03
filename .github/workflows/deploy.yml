@@ -62,7 +62,7 @@ env:
   #
   # spec-doc6 §D5: "Region assumption `ap-south-1` is removed as an assumption
   # and becomes a required variable. Do not hardcode it anywhere." It was
-  # hardcoded here. `docs/DEPLOY_AWS.md` records why ap-south-1 is the likely
+  # hardcoded here. `docs/operations/DEPLOY_AWS.md` records why ap-south-1 is the likely
   # answer for an India-billed tenant with Indian data-residency expectations,
   # and that the decision is the owner's.
   #
@@ -118,6 +118,21 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@localhost:5432/pickready
       REDIS_URL: redis://localhost:6379/0
+      # THE SCRATCH-DATABASE TESTS NEED THEIR OWN POINTER, and without it they
+      # do not fail, they SKIP.
+      #
+      # `test_company_dna_api` and friends create and drop a scratch database
+      # rather than touching the one being developed on, so they read
+      # TEST_DATABASE_URL and default it to port 55432 -- the stack
+      # `scripts/test.sh` brings up locally. CI serves Postgres on 5432, so the
+      # default pointed at nothing here and 45 tests skipped silently on every
+      # run, among them the Company DNA cross-tenant isolation cases that
+      # assert a foreign read is 404 and never 403. The suite reported 46 skips
+      # and a green pytest, which is what a coverage hole looks like from the
+      # outside.
+      #
+      # `pickready` owns this service instance, so it may CREATE DATABASE.
+      TEST_DATABASE_URL: postgresql+asyncpg://pickready:pickready@localhost:5432/pickready
       JWT_SECRET: ci-only-not-a-real-secret-value
       # DELIBERATELY UNSET: ANTHROPIC_API_KEY and VOYAGE_API_KEY.
       #
@@ -226,7 +241,69 @@ jobs:
 
       - name: Build
         working-directory: frontend
+        # PLACEHOLDER FIREBASE CONFIG, and it never ships.
+        #
+        # `NEXT_PUBLIC_*` is inlined at build time, so with none set the client
+        # SDK throws `auth/invalid-api-key` while Next prerenders, and the gate
+        # died on /bd/ai-reach rather than on anything a reviewer wrote. The
+        # real values arrive as build ARGs in `frontend/Dockerfile` when the
+        # deployable image is built; this job builds no image and publishes no
+        # artifact -- its whole job is to fail on a compile, type or prerender
+        # error, and it cannot do that if it cannot reach prerendering.
+        #
+        # Deliberately obvious fakes. A real key here would be a secret in a
+        # public log for no benefit, since nothing consumes this output.
+        env:
+          NEXT_PUBLIC_FIREBASE_API_KEY: ci-placeholder-not-a-real-key
+          NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: ci-placeholder.firebaseapp.com
+          NEXT_PUBLIC_FIREBASE_PROJECT_ID: ci-placeholder
+          NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: ci-placeholder.appspot.com
+          NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: "000000000000"
+          NEXT_PUBLIC_FIREBASE_APP_ID: "1:000000000000:web:0000000000000000000000"
         run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # The analysis service is a separate image with a separate suite, and it runs
+  # in about a minute because it installs NEITHER torch NOR a model weight.
+  #
+  # That is the deliberate part. Every test injects a fake pipeline and a fake
+  # decoder, so what is under test is the HTTP contract, the speaker-count
+  # mapping, the settings parsing and the in-memory guarantee, none of which
+  # needs an inference library. A job that pulled several gigabytes of wheels to
+  # prove that a 415 is returned for a PDF would be a job people learn to
+  # ignore when it is slow, and it would also make this gate able to fail
+  # because an index was down.
+  #
+  # THE GUARANTEE THIS JOB EXISTS FOR is `tests/test_no_disk.py`: audio never
+  # touches a filesystem. It proves it twice, by making every write path raise
+  # during a real request and by reading the service source for the names.
+  analysis-service-tests:
+    name: Analysis service tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: analysis-service/requirements-test.txt
+
+      - name: Install
+        working-directory: analysis-service
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-test.txt
+
+      - name: Suite
+        working-directory: analysis-service
+        # DELIBERATELY UNSET: HUGGINGFACE_TOKEN. The suite must pass with no
+        # credential at all, and it must keep the no-token path covered: a job
+        # that had a token would stop exercising the branch every deployment
+        # without one actually takes.
+        run: python -m pytest -q --no-header
 
   # ---------------------------------------------------------------------------
   # STATIC GATES: typing, structure and vendor honesty (spec-doc6 §10.3, §11.3,
@@ -332,7 +409,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Filesystem and dependency scan
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned to a tag that EXISTS. `0.28.0` never did: this action
+        # publishes `v`-prefixed tags, so the unprefixed reference could not
+        # resolve and the job died in "Set up job" before checkout, on every
+        # run since it was written.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -473,7 +554,7 @@ jobs:
 
   build-and-push:
     name: Build and push to ECR
-    needs: [backend-tests, code-quality, frontend-checks, security-scan, terraform]
+    needs: [backend-tests, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
     if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -484,6 +565,7 @@ jobs:
     outputs:
       backend_digest: ${{ steps.backend.outputs.digest }}
       frontend_digest: ${{ steps.frontend.outputs.digest }}
+      analysis_digest: ${{ steps.analysis.outputs.digest }}
       image_tag: ${{ steps.tag.outputs.tag }}
 
     steps:
@@ -531,6 +613,31 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true
+
+      - name: Analysis service image
+        id: analysis
+        uses: docker/build-push-action@v6
+        with:
+          context: analysis-service
+          push: true
+          platforms: linux/arm64
+          tags: ${{ steps.ecr.outputs.registry }}/readypick-staging/analysis:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          # THE TOKEN IS A BUILD SECRET, NOT A BUILD ARG.
+          #
+          # The two pyannote repositories are gated, so the weights cannot be
+          # fetched without it, and the models are baked in at build so the
+          # running container needs no internet at all. A build ARG or an ENV
+          # would be written into a layer and printed by `docker history`; a
+          # secret mount exists only for the one RUN that reads it.
+          secrets: |
+            huggingface_token=${{ secrets.HUGGINGFACE_TOKEN }}
+          # SKIP_GATED_MODEL_DOWNLOAD is left at its default of false, so
+          # a build with no token FAILS here rather than pushing an image whose
+          # diarization is quietly unavailable. The local compose stack is the
+          # only place that passes true.
 
   plan-staging:
     name: terraform plan (staging)
@@ -632,6 +739,7 @@ jobs:
         env:
           EXPECTED_BACKEND_DIGEST: ${{ needs.build-and-push.outputs.backend_digest }}
           EXPECTED_FRONTEND_DIGEST: ${{ needs.build-and-push.outputs.frontend_digest }}
+          EXPECTED_ANALYSIS_DIGEST: ${{ needs.build-and-push.outputs.analysis_digest }}
         run: ./scripts/verify-deployment.sh staging
 
   plan-production:
@@ -726,6 +834,7 @@ jobs:
         env:
           EXPECTED_BACKEND_DIGEST: ${{ needs.build-and-push.outputs.backend_digest }}
           EXPECTED_FRONTEND_DIGEST: ${{ needs.build-and-push.outputs.frontend_digest }}
+          EXPECTED_ANALYSIS_DIGEST: ${{ needs.build-and-push.outputs.analysis_digest }}
         run: ./scripts/verify-deployment.sh production
 
       - name: Smoke test production

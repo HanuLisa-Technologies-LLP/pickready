@@ -28,6 +28,7 @@ from app.api import (
     outreach,
     pipeline,
     portal,
+    proctoring,
     provider,
     reports,
     telemetry,
@@ -131,6 +132,9 @@ app.include_router(bd.router, prefix=f"{API_PREFIX}/bd", tags=["bd"])
 app.include_router(billing.router, prefix=f"{API_PREFIX}/billing", tags=["billing"])
 app.include_router(reports.router, prefix=f"{API_PREFIX}/reports", tags=["reports"])
 app.include_router(assessments.router, prefix="/api/v2/assessments", tags=["assessments-v2"])
+# Proctoring (proctoring-spec-doc.md). Mounted beside the assessment it
+# monitors, under v2 only: it is new in this release and has no v1 client.
+app.include_router(proctoring.router, prefix="/api/v2/proctoring", tags=["proctoring-v2"])
 
 # ── /api/v2 aliases (2026-07-27 build spec) ──────────────────────────────────
 # The spec names its new routes under /api/v2 (e.g. GET /api/v2/jobs/{job_id},

@@ -41,7 +41,7 @@
 #   `xx-plan-1` does not exist, and whose domain is under the RFC 2606
 #   `.invalid` TLD reserved so that it can never resolve.
 #
-#   "Plan succeeds" does not read as "ready to run". `docs/DEPLOY_AWS.md` §
+#   "Plan succeeds" does not read as "ready to run". `docs/operations/DEPLOY_AWS.md` §
 #   "What the offline plan proves" says the same thing at more length, and the
 #   ordered runbook there is what a real deployment follows.
 # ══════════════════════════════════════════════════════════════════════════════

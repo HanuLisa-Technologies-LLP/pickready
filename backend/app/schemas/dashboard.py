@@ -206,7 +206,8 @@ class ProfileDimensionOut(BaseModel):
     """One of Miti's five dimensions, as a NAMED rating (D8, spec-doc6 C2).
 
     There is no score field here and there must never be one. `rating` is the
-    band the evaluator itself produced (strong / solid / partial / absent), so
+    band the evaluator itself produced (strong / solid / partial / weak /
+    absent / contradicted, one per row of the section 9.x rubric), so
     this is not a number rounded into a word: it is the word the number was
     derived from.
     """

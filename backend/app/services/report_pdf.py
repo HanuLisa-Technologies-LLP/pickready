@@ -64,6 +64,10 @@ REPORT_SUBTITLE = "Predictive Role Intelligence & Suitability Mapping"
 #: is the candidate's own unrated submission; the action plan belongs beside the
 #: grades it was derived from rather than after a block of uninterpreted form
 #: answers.
+#:
+#: The Proctoring Report is LAST (proctoring spec section 7: "Appended as the
+#: final section"). It is informational, moves no grade, and sits after every
+#: section that does, so a reader reaches the assessment before the monitoring.
 SECTION_ORDER: tuple[str, ...] = (
     "ai_score",
     "overall",
@@ -72,7 +76,16 @@ SECTION_ORDER: tuple[str, ...] = (
     "behavioural",
     "gap_analysis",
     "validation",
+    "proctoring",
 )
+
+#: The proctoring section's heading and its note, verbatim in both renderers.
+PROCTORING_TITLE = "Proctoring Report"
+PROCTORING_NOTE = (
+    "Informational only. This section does not affect this candidate's score "
+    "or ranking."
+)
+PROCTORING_ABSENT = "No proctoring report exists for this assessment."
 
 #: THREE radar charts, not four (spec doc 4, part 3), which lists a chart for
 #: Overall Assessment, Must-have and Nice-to-have and lists only a grade and a
@@ -318,6 +331,89 @@ def _validation(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
     return story
 
 
+def _proctoring(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
+    """The Proctoring Report (proctoring spec section 7.2), words only.
+
+    Rendered with its heading even when no report exists, so a reader knows
+    the section was looked for rather than wondering whether the page was
+    cut short. No icon, no colour code and no severity column: the order of
+    the findings is what carries their weight.
+    """
+    story: list[Any] = [
+        Paragraph(PROCTORING_TITLE, styles["Section"]),
+        Paragraph(_text(PROCTORING_NOTE), styles["Body"]),
+        Spacer(1, 2 * mm),
+    ]
+    proctoring = _value(report, "proctoring", None)
+    if not proctoring:
+        story.append(Paragraph(PROCTORING_ABSENT, styles["Body"]))
+        return story
+    for label, key in (
+        ("Candidate", "candidate"),
+        ("Assessment", "assessment"),
+        ("Date", "date_line"),
+        ("Outcome", "outcome"),
+    ):
+        story.append(
+            Paragraph(f"<b>{label}:</b> {_text(_value(proctoring, key, ''))}", styles["Body"])
+        )
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("<b>Summary</b>", styles["Body"]))
+    story.append(Paragraph(_text(_value(proctoring, "summary", "")), styles["Body"]))
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("<b>Findings</b>", styles["Body"]))
+    findings = _value(proctoring, "findings", {}) or {}
+    for label, key in (
+        ("Screen and Browser Activity", "screen_browser"),
+        ("Camera Monitoring", "camera"),
+        ("Audio Monitoring", "audio"),
+        ("Answer Pattern Analysis", "answer_patterns"),
+    ):
+        story.append(Paragraph(f"<i>{label}</i>", styles["Body"]))
+        for sentence in _value(findings, key, []) or []:
+            story.append(Paragraph(f"&bull; {_text(sentence)}", styles["Body"]))
+    rows = _value(proctoring, "activity_log", []) or []
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph("<b>Activity log</b>", styles["Body"]))
+    if rows:
+        table = [
+            [
+                Paragraph("Time", styles["Body"]),
+                Paragraph("What happened", styles["Body"]),
+                Paragraph("How long", styles["Body"]),
+                Paragraph("What the system did", styles["Body"]),
+            ]
+        ]
+        for row in rows:
+            table.append(
+                [
+                    Paragraph(_text(_value(row, "time", "")), styles["Body"]),
+                    Paragraph(_text(_value(row, "what_happened", "")), styles["Body"]),
+                    Paragraph(_text(_value(row, "how_long", "")), styles["Body"]),
+                    Paragraph(_text(_value(row, "what_the_system_did", "")), styles["Body"]),
+                ]
+            )
+        story.append(
+            Table(
+                table,
+                colWidths=[18 * mm, 66 * mm, 34 * mm, 50 * mm],
+                style=TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), PAPER),
+                        ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#DDDCEB")),
+                        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDCEB")),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ]
+                ),
+            )
+        )
+    else:
+        story.append(Paragraph("Nothing was recorded during this assessment.", styles["Body"]))
+    story.append(Spacer(1, 2 * mm))
+    story.append(Paragraph(_text(_value(proctoring, "closing", "")), styles["Body"]))
+    return story
+
+
 def _dimension_cards(
     title: str,
     rows: Iterable[Any],
@@ -480,6 +576,7 @@ def render_report_pdf(
         ),
         "gap_analysis": lambda: _gap_analysis(report, styles),
         "validation": lambda: _validation(report, styles),
+        "proctoring": lambda: _proctoring(report, styles),
     }
     for key in SECTION_ORDER:
         story.extend(builders[key]())

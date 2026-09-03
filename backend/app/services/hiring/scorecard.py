@@ -718,7 +718,10 @@ async def _name_unanchored(
         raw = await llm_router.chat_completion(
             "jd_generation", messages, response_format_json=True, session=session
         )
-        return json.loads(raw)
+        # `json.loads` is typed Any; name the shape once here rather than
+        # returning Any out of a function that declares a dict.
+        parsed: dict[str, Any] = json.loads(raw)
+        return parsed
 
     def _evaluate(candidate: dict[str, Any]) -> agent_loop.Critique:
         """Deterministic, and it checks the two things that matter.
@@ -754,7 +757,7 @@ async def _name_unanchored(
                 )
         return agent_loop.ok()
 
-    result = await agent_loop.run_loop(
+    result: agent_loop.LoopResult[dict[str, Any]] = await agent_loop.run_loop(
         name="sutra_competency_naming",
         execute=_execute,
         evaluate=_evaluate,

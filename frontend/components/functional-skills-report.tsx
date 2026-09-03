@@ -11,7 +11,7 @@ import {
 
 import { RatingLabel } from "@/components/rating-label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { RATING_GRADES, type RatingGrade } from "@/lib/types";
+import { RATING_GRADES, type ProctoringReport, type RatingGrade } from "@/lib/types";
 
 export type { RatingGrade };
 
@@ -98,6 +98,9 @@ export const REPORT_SECTION_ORDER = [
   "behavioural",
   "gap_analysis",
   "validation",
+  // The Proctoring Report is LAST (proctoring spec section 7). It is
+  // informational, it moves no grade, and it sits after everything that does.
+  "proctoring",
 ] as const;
 
 /**
@@ -139,6 +142,10 @@ export interface FunctionalReport {
   radar_charts?: RadarChartSpec[];
   radar_bands?: string[];
   radar_series?: string[];
+  /** The Proctoring Report, when one has been generated for this assessment.
+   *  Null while the session is still running or its report is still being
+   *  written. Words only: it carries no number at any path. */
+  proctoring?: ProctoringReport | null;
   synthesized_at: string;
   immutable?: boolean;
 }
@@ -402,6 +409,7 @@ export function FunctionalSkillsReportView({ report }: { report: FunctionalRepor
     ),
     gap_analysis: <GapAnalysisSection key="gap_analysis" report={report} />,
     validation: <ValidationSection key="validation" validation={report.validation} />,
+    proctoring: <ProctoringSection key="proctoring" report={report.proctoring ?? null} />,
   };
 
   return (
@@ -553,6 +561,98 @@ function GapAnalysisSection({ report }: { report: FunctionalReport }) {
         Advisory input for the interviewer, grounded in what the candidate actually said. It
         identifies what to probe, never whether to advance or reject.
       </p>
+    </section>
+  );
+}
+
+/**
+ * The Proctoring Report (proctoring spec section 7), the final section.
+ *
+ * NO ICONS, NO COLOUR CODES, NO SEVERITY COLUMN (spec 7.1). The reader is
+ * meant to understand importance from what is said and where it sits: the
+ * most significant finding is first because the server ordered it that way,
+ * and nothing on this page ranks it again. A tinted chip or a warning icon
+ * beside a finding would state a judgement the system is not entitled to
+ * make, which is the same reason the sentences never say the candidate
+ * cheated.
+ *
+ * Every string here comes from the server's phrasing library. This component
+ * writes only the two constants below, which are the same words the PDF
+ * prints, because a recruiter reads one and forwards the other.
+ */
+export const PROCTORING_TITLE = "Proctoring Report";
+export const PROCTORING_NOTE =
+  "Informational only. This section does not affect this candidate's score or ranking.";
+export const PROCTORING_ABSENT = "No proctoring report exists for this assessment.";
+
+const FINDING_GROUPS: Array<{ key: keyof ProctoringReport["findings"]; label: string }> = [
+  { key: "screen_browser", label: "Screen & Browser Activity" },
+  { key: "camera", label: "Camera Monitoring" },
+  { key: "audio", label: "Audio Monitoring" },
+  { key: "answer_patterns", label: "Answer Pattern Analysis" },
+];
+
+function ProctoringSection({ report }: { report: ProctoringReport | null }) {
+  return (
+    <section aria-label="Proctoring Report">
+      <h3 className="mb-1 text-lg font-semibold">{PROCTORING_TITLE}</h3>
+      <p className="mb-3 text-xs">{PROCTORING_NOTE}</p>
+      {report === null ? (
+        <p className="rounded-md border p-3 text-sm">{PROCTORING_ABSENT}</p>
+      ) : (
+        <div className="space-y-5">
+          <div className="rounded-md border p-4">
+            <p className="text-xs">{report.date_line}</p>
+            <p className="mt-2 font-medium leading-7">{report.outcome}</p>
+            <p className="mt-2 text-sm leading-7">{report.summary}</p>
+          </div>
+
+          <div className="space-y-4">
+            {FINDING_GROUPS.map((group) => (
+              <div key={group.key}>
+                <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide">{group.label}</h4>
+                <ul className="space-y-2">
+                  {report.findings[group.key].map((sentence, index) => (
+                    <li key={`${group.key}-${index}`} className="text-sm leading-7">
+                      {sentence}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+
+          {report.activity_log.length > 0 ? (
+            <div>
+              <h4 className="mb-2 text-sm font-semibold uppercase tracking-wide">Activity Log</h4>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[36rem] border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left">
+                      <th className="py-2 pr-4 font-medium">Time</th>
+                      <th className="py-2 pr-4 font-medium">What happened</th>
+                      <th className="py-2 pr-4 font-medium">How long</th>
+                      <th className="py-2 font-medium">What the system did</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.activity_log.map((row, index) => (
+                      <tr key={`log-${index}`} className="border-b border-border align-top">
+                        <td className="py-2 pr-4 font-mono text-xs">{row.time}</td>
+                        <td className="py-2 pr-4">{row.what_happened}</td>
+                        <td className="py-2 pr-4">{row.how_long}</td>
+                        <td className="py-2">{row.what_the_system_did}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
+
+          <p className="text-xs leading-6">{report.closing}</p>
+        </div>
+      )}
     </section>
   );
 }

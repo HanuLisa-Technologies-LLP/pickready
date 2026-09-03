@@ -57,19 +57,21 @@ declare -A EXPECTED=(
   ["worker"]="${EXPECTED_BACKEND_DIGEST:-}"
   ["beat"]="${EXPECTED_BACKEND_DIGEST:-}"
   ["frontend"]="${EXPECTED_FRONTEND_DIGEST:-}"
+  ["analysis"]="${EXPECTED_ANALYSIS_DIGEST:-}"
 )
 
 echo "Verifying ${CLUSTER} in ${REGION} by image digest."
 echo
 
-for service in api worker beat frontend; do
+for service in api worker beat frontend analysis; do
   expected="${EXPECTED[$service]}"
   full_name="${CLUSTER}-${service}"
 
   if [ -z "$expected" ]; then
     echo "  ${service}: SKIPPED, no expected digest supplied"
-    echo "    A skipped check is not a passed check. Set EXPECTED_BACKEND_DIGEST"
-    echo "    and EXPECTED_FRONTEND_DIGEST, or this proves nothing about ${service}."
+    echo "    A skipped check is not a passed check. Set EXPECTED_BACKEND_DIGEST,"
+    echo "    EXPECTED_FRONTEND_DIGEST and EXPECTED_ANALYSIS_DIGEST, or this"
+    echo "    proves nothing about ${service}."
     fail=1
     continue
   fi

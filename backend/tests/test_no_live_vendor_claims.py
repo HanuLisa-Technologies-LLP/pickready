@@ -81,7 +81,7 @@ ALLOWLIST = {
     # a real verification run, so it no longer quotes them and no longer needs
     # an exemption. Removed rather than left: an allowlist entry for a file that
     # does not use a phrase is a hole waiting for one.
-    "verification_pending.md",
+    "docs/verification/verification_pending.md",
     "backend/tests/test_no_live_vendor_claims.py",
     "backend/tests/test_legacy_reset.py",
 }
@@ -154,7 +154,7 @@ def test_the_sweep_has_something_to_sweep() -> None:
     assert len(ALL_FILES) > 300, len(ALL_FILES)
     names = {_relative(p) for p in ALL_FILES}
     assert "claude.md" in names
-    assert "verification_pending.md" in names
+    assert "docs/verification/verification_pending.md" in names
     assert "backend/app/services/llm_router.py" in names
     assert "backend/scripts/verify_live.py" in names
     assert any(n.startswith(".github/workflows/") for n in names)
@@ -178,18 +178,38 @@ def test_no_file_claims_a_live_vendor_call_has_succeeded() -> None:
     )
 
 
+#: lowercased relative path -> the REAL path, preserving case.
+#:
+#: `_relative` lowercases so the allowlist can be written in one case, and the
+#: test below used to rebuild a path by joining that lowercased string onto the
+#: repository root. That resolves on Windows, where the filesystem is
+#: case-insensitive, and NOT on Linux, where the file is
+#: `VERIFICATION_PENDING.md` and the lookup asks for `verification_pending.md`.
+#: The suite was green on a developer machine and red in CI for exactly that
+#: reason. Resolving against the files actually scanned keeps the
+#: case-insensitive comparison and never invents a path.
+REAL_PATH_FOR_RELATIVE: dict[str, pathlib.Path] = {
+    _relative(path): path for path in ALL_FILES
+}
+
+
 @pytest.mark.parametrize("relative", sorted(ALLOWLIST))
 def test_every_allowlisted_file_forbids_the_phrase_rather_than_using_it(
     relative: str,
 ) -> None:
     """The allowlist may only hold files whose job is to refuse the phrases."""
-    path = REPO_ROOT / relative
+    path = REAL_PATH_FOR_RELATIVE.get(relative)
+    assert path is not None, (
+        f"{relative} is allowlisted but the sweep did not scan it. Either the "
+        f"path is wrong (check the case and the directory) or its suffix is "
+        f"outside SCANNED_SUFFIXES, in which case the entry is dead."
+    )
     assert path.exists(), relative
     text = _normalised(path)
     assert any(
         phrase in text for phrase in FORBIDDEN_PHRASES
     ), f"{relative} is allowlisted and does not use any phrase; remove it"
-    backed = (REPO_ROOT / "VERIFICATION_RESULTS.md").exists()
+    backed = (REPO_ROOT / "docs" / "verification" / "VERIFICATION_RESULTS.md").exists()
     assert any(word in text for word in FORBIDDING_WORDS) or backed, (
         f"{relative} is allowlisted but neither forbids the phrases nor is "
         f"backed by a VERIFICATION_RESULTS.md recording a real run. One or the "
@@ -220,7 +240,7 @@ def test_the_honest_framing_is_written_down_where_a_reader_will_find_it() -> Non
     A check that says "do not write that" and nowhere says what to write
     instead gets satisfied by a synonym.
     """
-    pending = _normalised(REPO_ROOT / "VERIFICATION_PENDING.md")
+    pending = _normalised(REPO_ROOT / "docs" / "verification" / "VERIFICATION_PENDING.md")
     assert "not executed against a live provider" in pending
     assert "recorded fixtures and a stub provider" in pending
 
@@ -246,7 +266,7 @@ def test_a_live_claim_is_backed_by_a_results_file_that_records_it() -> None:
     fails the next test, which requires the file to name the vendor and the
     model ids the code actually calls.
     """
-    results = REPO_ROOT / "VERIFICATION_RESULTS.md"
+    results = REPO_ROOT / "docs" / "verification" / "VERIFICATION_RESULTS.md"
     assert results.exists(), (
         "CLAUDE.md and the fixture provenance both state that the vendor paths "
         "were verified live. Either that is true and this file records it, or "
@@ -267,7 +287,7 @@ def test_the_results_file_names_the_models_the_code_actually_calls() -> None:
     """
     from app.config import llm_providers
 
-    text = _normalised(REPO_ROOT / "VERIFICATION_RESULTS.md")
+    text = _normalised(REPO_ROOT / "docs" / "verification" / "VERIFICATION_RESULTS.md")
     for model in (llm_providers.MODEL_TERRA, llm_providers.MODEL_LUNA,
                   llm_providers.EMBEDDING_MODEL):
         assert model.lower() in text, (
