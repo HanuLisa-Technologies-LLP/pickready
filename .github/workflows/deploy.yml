@@ -425,6 +425,14 @@ jobs:
           # this is what catches the day somebody removes a line from
           # `.gitignore` and does not notice.
           scanners: vuln,secret,misconfig
+          # NAMED EXPLICITLY, because the YAML form is NOT auto-discovered.
+          # Trivy's `--ignorefile` defaults to `.trivyignore`, the plain list;
+          # `.trivyignore.yaml` is the structured form that carries a
+          # `statement` per entry and a `paths` scope, and it is only read when
+          # it is passed. Left to the default it sits in the tree looking
+          # authoritative while every finding it excuses is still reported,
+          # which is exactly what happened on the first attempt at this file.
+          trivyignores: .trivyignore.yaml
 
       - name: Upload
         uses: github/codeql-action/upload-sarif@v3
