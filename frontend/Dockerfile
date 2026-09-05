@@ -85,4 +85,12 @@ COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
 USER nextjs
 EXPOSE 8080
-CMD ["node", "server.js"]
+# Shell form ON PURPOSE, to re-assert HOSTNAME at exec time. The ENV above is
+# not enough on ECS: the container runtime injects HOSTNAME=<task hostname>
+# (ip-10-0-x-x under awsvpc), which overrides the Dockerfile value, so Next's
+# standalone server binds the ENI address only and `curl localhost:3000`
+# (the ECS container health check) is refused. The 2026-09-06 pilot rollout
+# failed exactly that way: every task logged "Ready", listening on
+# ip-10-0-*, and was killed unhealthy. Exec-time assignment wins over any
+# injected environment.
+CMD HOSTNAME=0.0.0.0 exec node server.js
