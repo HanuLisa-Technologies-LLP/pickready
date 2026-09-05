@@ -58,6 +58,15 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 
+# The ECS container health check is `curl -fsS http://localhost:3000/`
+# (modules/ecs via each environment root), and node:20-alpine does not ship
+# curl -- busybox wget only. Without this line the container starts, serves,
+# and is killed unhealthy three checks later; the 2026-09-06 pilot deploy
+# failed exactly that way, with "Ready in 0ms" in the logs of every task ECS
+# then stopped. The image and the health check are two halves of one
+# contract, so the dependency is installed where the contract is consumed.
+RUN apk add --no-cache curl
+
 # Cloud Run injects PORT (8080) and routes to it. Next's standalone server
 # reads PORT, but it also defaults HOSTNAME to localhost, which would accept
 # only loopback traffic: the container would pass no health check and every
