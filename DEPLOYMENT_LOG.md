@@ -661,3 +661,50 @@ no static AWS key exists in the repository.
 
 The analysis service sits beside the API on Cloud Map at
 `analysis.readypick.local:8100`, with no load balancer and no internet egress.
+
+---
+
+## 8. The add-features release (2026-09-06)
+
+Deployed to the pilot the same way section 1's deployment was made: images
+built locally, terraform applied from `infra/environments/pilot`, the
+migration task run and read for its exit code, services rolled and verified BY
+DIGEST. Commit `93ebfcb` is what serves; `1a05128` (a verification-script fix)
+followed with no runtime change.
+
+What shipped: migrations 0080 to 0085 (corporate email senders, dual-mode
+assessment + video pipeline, intelligence dashboards capability, retention
+consents, employer pages, BGV), the matching frontend surfaces, and the
+production Google sign-in fix. `claude.md`'s 2026-09-06 section carries the
+standing rules.
+
+### Deployment lessons this run added
+
+- **The account's Fargate On-Demand vCPU quota is 4**, which is why the
+  analysis service had never run (its one task wants 2 vCPU) and why rolling
+  api and frontend together trips the ceiling. A quota case for 64 vCPU is
+  OPEN with AWS support (created 2026-09-05, still CASE_OPENED). Until it is
+  granted: roll ONE service at a time, and park analysis at desired 0 while
+  the frontend rolls. One analysis task is now running (first time ever);
+  the second stays unplaceable at this quota.
+- **Two image defects hid behind the previously deployed frontend image**,
+  which had been built from an uncommitted variant: the committed Dockerfile
+  had no curl (the ECS health check's probe) and relied on `ENV
+  HOSTNAME=0.0.0.0`, which the ECS runtime overrides with the task hostname,
+  so Next's standalone server bound the ENI address and refused localhost.
+  Both are fixed IN the Dockerfile (`1de867b`, `93ebfcb`); tasks that log
+  "Ready" and then die unhealthy are this signature.
+- **Lambda refuses buildx's default OCI+provenance manifests.** The
+  image-backed functions run the same bytes under the `<tag>-fn` sibling tag,
+  pushed with `--provenance=false --sbom=false --output
+  type=image,oci-mediatypes=false,push=true`.
+- **Sign-in works now.** The apex `readypick.ai` was missing from Firebase's
+  authorized domains (only www was listed) and
+  `readypick-pilot/FIREBASE_SERVICE_ACCOUNT_JSON` still held the placeholder;
+  both fixed live on 2026-09-06. The probe that tells the two failure modes
+  apart: POST a bogus token at `/api/v1/auth/firebase/session`; 503 means
+  unconfigured, 401 means verification ran.
+- `scripts/smoke-test.sh` body-content checks read an empty temp file under
+  Git Bash on Windows (curl.exe and MSYS disagree about `/tmp`); run it from
+  Linux/CI, or verify the openapi and `/auth/me` shapes directly as this
+  release's verification did.
