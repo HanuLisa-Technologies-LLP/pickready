@@ -52,10 +52,14 @@ fail=0
 # outputs; a service with no expected digest is REPORTED AND SKIPPED rather
 # than silently passing, because "we did not check" and "we checked and it was
 # fine" must not look the same.
+# worker and beat are DELIBERATELY absent. They were the Celery services, and
+# Celery was removed on 2026-09-05 (docs/spec/BACKGROUND_WORK.md): background
+# work runs in Lambda and on-demand Fargate tasks now, neither of which is a
+# standing ECS service this loop could find. Leaving them here made every
+# verification fail forever on "NO RUNNING TASKS" for services that no longer
+# exist in any environment.
 declare -A EXPECTED=(
   ["api"]="${EXPECTED_BACKEND_DIGEST:-}"
-  ["worker"]="${EXPECTED_BACKEND_DIGEST:-}"
-  ["beat"]="${EXPECTED_BACKEND_DIGEST:-}"
   ["frontend"]="${EXPECTED_FRONTEND_DIGEST:-}"
   ["analysis"]="${EXPECTED_ANALYSIS_DIGEST:-}"
 )
@@ -63,7 +67,7 @@ declare -A EXPECTED=(
 echo "Verifying ${CLUSTER} in ${REGION} by image digest."
 echo
 
-for service in api worker beat frontend analysis; do
+for service in api frontend analysis; do
   expected="${EXPECTED[$service]}"
   full_name="${CLUSTER}-${service}"
 
