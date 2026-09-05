@@ -69,7 +69,15 @@ env:
   # Every job that would touch AWS is already behind `vars.AWS_DEPLOY_ENABLED`,
   # which is unset, so an empty value here cannot silently deploy anywhere. The
   # offline gates below need no region at all.
-  AWS_REGION: ${{ vars.AWS_REGION }}
+  #
+  # The `|| 'ap-south-2'` matters to the TEST job, not to deployment: with the
+  # repository variable unset, `vars.AWS_REGION` exports the empty STRING into
+  # every job's environment, and an empty AWS_REGION overrides
+  # `settings.aws_region`'s default, so the dispatch client builds the endpoint
+  # `https://lambda..amazonaws.com` and its unit test fails on endpoint
+  # construction instead of asserting timeouts. Deployment gating reads the
+  # VARIABLE (`vars.AWS_REGION != ''`), never this env default.
+  AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-2' }}
   TF_VERSION: "1.9.8"
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "20"

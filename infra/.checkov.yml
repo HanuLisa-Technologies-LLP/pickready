@@ -188,6 +188,39 @@ skip-check:
   # skip is the honest record of that rather than a claim that logging exists.
   - CKV_AWS_18
 
+  # CKV_AWS_116 "Lambda function is configured for a Dead Letter Queue"
+  # The failure path is `aws_lambda_function_event_invoke_config` with
+  # `maximum_retry_attempts = 0` and an `on_failure` destination
+  # (modules/lambda/main.tf): a final failure is re-raised, the error metric
+  # moves, the alarm fires and the destination publishes. A DLQ beside that is
+  # a second copy of the same mechanism, and two failure stores means two
+  # places to forget to drain. docs/spec/BACKGROUND_WORK.md states the design.
+  - CKV_AWS_116
+
+  # CKV_AWS_173 "encryption settings for Lambda environmental variable"
+  # The env vars these functions carry are addresses and switches (the handler
+  # name, the dispatch backend, the region), never credentials: every secret is
+  # fetched from Secrets Manager at cold start by app/workers/secrets_bootstrap.
+  # Lambda already encrypts env vars at rest with the service-managed key; a
+  # CMK here would protect values that are not secret at the cost of one more
+  # key policy to keep scoped.
+  - CKV_AWS_173
+
+  # CKV_AWS_272 "Lambda function is configured to validate code-signing"
+  # Code signing applies to zip packages only, and three of the four functions
+  # run the BACKEND IMAGE from ECR, where the integrity control is the digest:
+  # tags are immutable and the deploy verifies by digest, not by exit code.
+  # The one zip (assessment-trigger) is thirty lines of boto3 built in CI;
+  # a signing profile for it would sign whatever the same pipeline produced.
+  - CKV_AWS_272
+
+  # CKV_AWS_297 "EventBridge Scheduler Schedule uses Customer Managed Key"
+  # A schedule's payload here is a task name and an empty argument list, the
+  # same strings committed in app/workers/schedule.py. Encrypting public
+  # repository content with a CMK adds a key to rotate and scope for data that
+  # is not confidential.
+  - CKV_AWS_297
+
   # CKV_AWS_118 "enhanced monitoring is enabled for Amazon RDS instances"
   # Enhanced Monitoring is billed per instance per metric and needs its own
   # monitoring IAM role. The metrics it adds over the standard CloudWatch set
