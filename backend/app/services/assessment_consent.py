@@ -72,10 +72,6 @@ def terms_for(mode: str) -> ConsentTerms:
     )
 
 
-def all_terms() -> list[ConsentTerms]:
-    return [terms_for(mode) for mode in ASSESSMENT_MODES]
-
-
 async def find_consent(
     session: AsyncSession, conversation_id: uuid.UUID, mode: str
 ) -> AssessmentConsent | None:

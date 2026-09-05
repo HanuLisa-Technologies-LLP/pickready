@@ -111,6 +111,22 @@ def s3(monkeypatch):
     monkeypatch.setattr(object_storage, "get_settings", lambda: _Settings())
     monkeypatch.setenv("AWS_DEFAULT_REGION", REGION)
 
+    # THE FULL-SUITE-ONLY 403, and why this line exists. `boto3.client(...)`
+    # (used by the probe below AND by `object_storage.client()`) goes through
+    # the process-wide `boto3.DEFAULT_SESSION`, whose credentials are resolved
+    # ONCE, the first time any test in the process creates a client. The
+    # dispatch/worker tests run earlier in alphabetical order and create that
+    # session against whatever the developer machine's ambient credentials
+    # are, so by the time this fixture monkeypatches the MinIO keys into the
+    # environment the session no longer consults the environment at all: it
+    # signs the probe with the machine's real AWS key and MinIO answers 403
+    # Forbidden. Targeted runs pass because no earlier test has minted the
+    # session. Dropping the cached session here makes the next client build a
+    # fresh one from the monkeypatched environment; monkeypatch puts the old
+    # session object back on teardown, so the rest of the suite sees exactly
+    # the ambient state it had before.
+    monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+
     if LIVE_ENDPOINT:
         monkeypatch.setenv(
             "AWS_ACCESS_KEY_ID", os.environ.get("S3_TEST_ACCESS_KEY", "readypick_test")

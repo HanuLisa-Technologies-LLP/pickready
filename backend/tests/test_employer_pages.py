@@ -83,10 +83,35 @@ def test_both_routes_are_rate_limited() -> None:
         assert limited, f"{route.path} is not rate limited"
 
 
+def _all_route_paths(routes: object, prefix: str = "") -> set[str]:
+    """Every served path, DESCENDING into included routers.
+
+    A flat scan of `app.routes` works only on FastAPI versions that flatten
+    `include_router`; newer ones keep the included router as one nested
+    object with no `.path`, and a flat scan either crashes or sees almost
+    nothing (the same trap `test_deploy_secret_hygiene._collect` documents).
+    """
+    out: set[str] = set()
+    for route in routes:  # type: ignore[attr-defined]
+        context = getattr(route, "include_context", None)
+        if context is not None:
+            out |= _all_route_paths(
+                context.included_router.routes,
+                prefix + (getattr(context, "prefix", "") or ""),
+            )
+            continue
+        path = getattr(route, "path", None)
+        if path is not None:
+            out.add(prefix + path)
+        elif hasattr(route, "routes"):
+            out |= _all_route_paths(route.routes, prefix)
+    return out
+
+
 def test_router_is_mounted_publicly_in_main() -> None:
     from app.main import app
 
-    paths = {route.path for route in app.routes}
+    paths = _all_route_paths(app.routes)
     assert "/api/v1/employers" in paths
     assert "/api/v1/employers/{slug}" in paths
 
