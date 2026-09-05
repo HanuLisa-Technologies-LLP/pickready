@@ -10,7 +10,7 @@ A general dead-code detector on this codebase would be wrong far more often
 than right, and a check that cries wolf gets an allowlist, and an allowlist gets
 long, and then nothing is checked. Almost everything here is referenced by a
 framework rather than by a caller: FastAPI resolves route handlers by
-decorator, Celery by task name, SQLAlchemy by class, Alembic by the `upgrade`
+decorator, background tasks by registry name, SQLAlchemy by class, Alembic by the `upgrade`
 and `downgrade` names, pytest by fixture. None of those references exist in any
 source file this script could read.
 

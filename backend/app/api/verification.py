@@ -42,7 +42,7 @@ from app.schemas.verification import (
 )
 from app.services import capabilities as caps
 from app.services.audit import audit
-from app.workers.celery_app import celery_app
+from app.workers.dispatch import dispatch
 
 router = APIRouter()
 
@@ -113,7 +113,7 @@ async def send_outreach(
         # /outreach/{token} this used to build has no route, so every emailed
         # link 404'd even once the mail itself was delivered.
         outreach_url = f"{get_settings().frontend_url}/portal/outreach/{token}"
-        celery_app.send_task(
+        dispatch(
             "pickready.send_email",
             args=[
                 str(user.tenant_id), candidate.email, "candidate_outreach",
@@ -264,7 +264,7 @@ async def inbound_email_webhook(
     if vr is None or vr.status != VerificationStatus.pending:
         return InboundEmailOut(matched=False)
 
-    celery_app.send_task(
+    dispatch(
         "pickready.parse_verification_reply", args=[str(vr.id), body.text or ""]
     )
     return InboundEmailOut(matched=True)

@@ -32,6 +32,12 @@ export interface NavItem {
   label: string;
   icon?: LucideIcon;
   exact?: boolean;
+  /**
+   * A count rendered beside the label, e.g. unread Updates. Omit or pass 0 to
+   * render nothing: a badge showing zero is furniture, and the whole value of
+   * a badge is that its presence means something.
+   */
+  badge?: number;
 }
 
 function isActive(pathname: string, item: NavItem) {
@@ -77,6 +83,20 @@ function NavLink({
     >
       {Icon ? <Icon className="h-4 w-4 shrink-0" aria-hidden="true" /> : null}
       <span className={cn("truncate", collapsed && "sr-only")}>{item.label}</span>
+      {item.badge ? (
+        <span
+          className={cn(
+            "ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[0.6875rem] font-semibold leading-none",
+            active ? "bg-white text-brand-700" : "bg-brand-600 text-white",
+            // In the collapsed rail there is no label to sit beside, so the
+            // count rides the icon rather than disappearing with the text.
+            collapsed && "ml-0",
+          )}
+        >
+          {item.badge > 9 ? "9+" : item.badge}
+          <span className="sr-only"> unread</span>
+        </span>
+      ) : null}
     </Link>
   );
 }

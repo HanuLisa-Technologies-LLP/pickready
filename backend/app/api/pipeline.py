@@ -24,7 +24,7 @@ from app.services import credits
 from app.services import hiring_pipeline as pipeline
 from app.services import telemetry_events
 from app.services.audit import audit
-from app.workers.celery_app import celery_app
+from app.workers.dispatch import dispatch
 
 router = APIRouter()
 
@@ -197,7 +197,7 @@ async def _queue_transition_email(
     )
     session.add(log)
     await session.flush()
-    celery_app.send_task("pickready.send_lifecycle_email", args=[str(log.id)])
+    dispatch("pickready.send_lifecycle_email", args=[str(log.id)])
     return True
 
 
@@ -375,7 +375,7 @@ async def select_candidates_for_assessment(
         # against the job's saved framework (spec §6.4). Enqueued at invitation
         # rather than at first open, so the questions are waiting when they
         # arrive instead of making them retry while an LLM call runs.
-        celery_app.send_task(
+        dispatch(
             "pickready.generate_candidate_questions", args=[str(link_id)]
         )
         invited += 1

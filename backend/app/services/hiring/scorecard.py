@@ -930,7 +930,7 @@ async def compile_matrix(
     ).scalars().all()
     active = [row for row in existing if row.is_active]
     if active and not replace:
-        # Idempotent by default, so a Celery redelivery cannot discard a matrix
+        # Idempotent by default, so a redelivery cannot discard a matrix
         # a human has already edited.
         binding = await _latest_binding(session, job.id)
         intake = await swot_intake.load(session, job.id)

@@ -174,6 +174,14 @@ export function CandidateRankingTable({
   // been renewed; the tabs render regardless so the distinction is discoverable
   // rather than appearing out of nowhere the day a posting is renewed.
   const [profileAge, setProfileAge] = React.useState<ProfileAge | "all">("all");
+  // New Candidates (workflow section 32). Somebody who applies the morning
+  // after a selection round lands wherever their score puts them, which is
+  // usually a page nobody opens again. This is how the team finds out they are
+  // there: the count comes back on every page and is never narrowed by the
+  // filter, so it still reads correctly while the supplement is filtered out.
+  const [arrival, setArrival] = React.useState<"all" | "new" | "considered">(
+    "all",
+  );
   const [data, setData] = React.useState<RankedCandidatesResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
@@ -187,6 +195,7 @@ export function CandidateRankingTable({
     try {
       const query = new URLSearchParams({ page: String(page) });
       if (profileAge !== "all") query.set("profile_age", profileAge);
+      if (arrival !== "all") query.set("arrival", arrival);
       const res = await apiGet<RankedCandidatesResponse>(
         `/jobs/${jobId}/candidates?${query.toString()}`
       );
@@ -201,7 +210,7 @@ export function CandidateRankingTable({
     } finally {
       setLoading(false);
     }
-  }, [jobId, page, profileAge, toast]);
+  }, [jobId, page, profileAge, arrival, toast]);
 
   React.useEffect(() => {
     void load();
@@ -209,11 +218,15 @@ export function CandidateRankingTable({
 
   // Selection is per-page on purpose: "select all" across pages you have not
   // read would let a recruiter email people they never looked at.
-  React.useEffect(() => setSelected(new Set()), [page, profileAge, reloadKey]);
+  React.useEffect(
+    () => setSelected(new Set()),
+    [page, profileAge, arrival, reloadKey],
+  );
   // Changing the filter changes what page 1 even means, so go back to it.
-  React.useEffect(() => setPage(1), [profileAge]);
+  React.useEffect(() => setPage(1), [profileAge, arrival]);
 
   const rows = data?.results ?? [];
+  const newCandidateCount = data?.new_candidate_count ?? 0;
   const toggle = (linkId: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -279,6 +292,40 @@ export function CandidateRankingTable({
           )}
         </p>
         <div className="flex flex-wrap items-center gap-2">
+          {/* New Candidates (workflow section 32). Rendered only once there
+              ARE some, so the control appearing is itself the notification:
+              before the first assessment round the whole pool is one list and
+              a permanently-empty tab would be furniture. */}
+          {newCandidateCount > 0 || arrival !== "all" ? (
+            <div
+              role="group"
+              aria-label="Filter by whether the candidate has been considered"
+              className="inline-flex rounded-lg border border-border p-0.5"
+            >
+              {(
+                [
+                  ["all", "Everyone"],
+                  ["new", `New candidates (${newCandidateCount})`],
+                  ["considered", "Already considered"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={arrival === value}
+                  onClick={() => setArrival(value)}
+                  className={
+                    "rounded-md px-3 py-1.5 text-xs font-medium transition-colors " +
+                    (arrival === value
+                      ? "bg-brand-100 text-accent-foreground"
+                      : "hover:bg-brand-100/60")
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          ) : null}
           {/* Old Profiles / New Profiles. Filtering only: an Old Profile is
               ranked, opened and assessed exactly like a new one, so this
               narrows the view and never restricts what can be done with a row. */}
@@ -435,6 +482,11 @@ export function CandidateRankingTable({
                     {row.profile_age === "old" ? (
                       <span className="mt-1 block text-xs">
                         {row.profile_age_label}
+                      </span>
+                    ) : null}
+                    {row.is_new_candidate ? (
+                      <span className="mt-1 block text-xs font-medium">
+                        New candidate
                       </span>
                     ) : null}
                     {row.tier ? (

@@ -49,7 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.models import Candidate, Profile
 from app.services.resume_storage import apply_resume_asset, profile_has_resume, store_resume
-from app.workers.celery_app import celery_app
+from app.workers.dispatch import dispatch
 
 log = logging.getLogger(__name__)
 
@@ -250,8 +250,8 @@ async def seed_resume_corpus(
         apply_resume_asset(profile, asset)
         await session.flush()
 
-        # Heavy work is always the Celery task (claude.md rule 4).
-        celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
+        # Heavy work is always dispatched (claude.md rule 4).
+        dispatch("pickready.parse_resume", args=[str(profile.id)])
         action = "repaired" if existing is not None else "added"
         print(f"  + {action} resume candidate {ident['full_name']} <{ident['email']}> "
               f"(gcs_object={asset.public_id})")

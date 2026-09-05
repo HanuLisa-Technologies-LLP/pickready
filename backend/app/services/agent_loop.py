@@ -52,7 +52,7 @@ Two independent ceilings, and both are needed. `max_attempts` bounds the number
 of model calls; `deadline_seconds` bounds the wall clock, because N attempts at
 the per-task timeout is a multiple of what the user experiences. An interactive
 loop (a candidate watching a text box) gets 2 attempts and a short deadline; a
-background loop (a Celery task nobody is watching) can afford more. The defaults
+background loop (a dispatched task nobody is watching) can afford more. The defaults
 below are the interactive ones, because that is the dangerous direction: a
 background task that retries too little is slow, an interactive one that retries
 too much is a timeout.

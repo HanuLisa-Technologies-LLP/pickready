@@ -4,7 +4,7 @@ This module owns ONLY the SMTP transport + SMTP-specific failure
 classification. The resilience taxonomy itself is shared with the SMS path and
 is imported from ``app.services.sms_service`` — we do not re-implement
 PermanentDeliveryError / TransientDeliveryError here, we reuse them so the
-Celery task's ``autoretry_for`` and audit logic behave identically for email
+task's retry policy and audit logic behave identically for email
 and SMS.
 
 Configured entirely by ``SMTP_*`` environment variables and permanently
@@ -16,7 +16,7 @@ Failure taxonomy (same permanent/transient split as SMS):
     every recipient with a 5xx. Retrying is pure waste; fail fast with an
     ACTION hint.
   * TransientDeliveryError — may succeed later: connect/DNS/timeout errors and
-    4xx greylisting / temporary mailbox-busy responses. Celery retries with
+    4xx greylisting / temporary mailbox-busy responses. The runtime retries with
     exponential backoff.
 
 SECURITY (ESD §16): the SMTP password, OTP codes and message bodies are NEVER
@@ -122,7 +122,7 @@ async def send_email_async(
 ) -> str | None:
     """Send one email over SMTP. Returns the Message-ID on success.
 
-    Raises PermanentDeliveryError (no retry) or TransientDeliveryError (Celery
+    Raises PermanentDeliveryError (no retry) or TransientDeliveryError (the runtime
     backoff) from the shared taxonomy. Never logs the SMTP password, the OTP or
     the message body — only the secret-free SMTP response text on failure.
 

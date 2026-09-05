@@ -56,6 +56,14 @@ class JDIn(BaseModel):
 #: and stops a typo ("50" for "5") from producing a nonsense JD sentence.
 MAX_EXPERIENCE_YEARS = 60
 
+#: The widest band a recruiter may advertise (workflow Gate 2). A 0-to-12-year
+#: posting is not one role: it collects freshers and architects into a single
+#: candidate pool that no scorecard can rank coherently, because the rubric
+#: level a Must-have needs at 1 year and at 12 is not the same level. The
+#: ceiling is on the SPAN, never on the values, so 15-to-20 is as valid as
+#: 0-to-5.
+MAX_EXPERIENCE_SPAN_YEARS = 5
+
 
 class ExperienceBandMixin(BaseModel):
     """The `experience_min_years` / `experience_max_years` pair, validated once.
@@ -86,6 +94,43 @@ class ExperienceBandMixin(BaseModel):
                 "Minimum years of experience cannot be greater than the maximum."
             )
         return self
+
+    @model_validator(mode="after")
+    def _span_within_ceiling(self):
+        """Gate 2: the band may not be wider than MAX_EXPERIENCE_SPAN_YEARS.
+
+        Refused rather than clamped. Clamping would have to choose which end of
+        the recruiter's band to discard, and either choice publishes a JD
+        advertising a range nobody agreed to. The message names the span it
+        measured and the ceiling, because "invalid experience range" sends a
+        recruiter back to the form to guess.
+
+        Runs AFTER `_min_not_above_max` so an inverted pair is reported as the
+        data-entry mistake it is rather than as an enormous span.
+        """
+        low, high = self.experience_min_years, self.experience_max_years
+        if low is None or high is None or low > high:
+            return self
+        span = high - low
+        if span > MAX_EXPERIENCE_SPAN_YEARS:
+            raise ValueError(
+                f"The experience range spans {span} years. A job may span at "
+                f"most {MAX_EXPERIENCE_SPAN_YEARS} years, so raise the minimum "
+                f"or lower the maximum."
+            )
+        return self
+
+
+class JobCloseIn(BaseModel):
+    """Closing a job because the hiring requirement was met (workflow Gate 8).
+
+    The reason is OPTIONAL and free text. It is the client's own words about
+    their own requisition: nothing reads it back, no model is shown it, and it
+    never reaches a candidate. Bounded only so a paste of an entire email
+    thread does not become a column value nobody can render.
+    """
+
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class JobCreateIn(ExperienceBandMixin):
@@ -178,14 +223,20 @@ class JobOut(BaseModel):
     posting_start_date: datetime | None = None
     posting_end_date: datetime | None = None
     grace_period_end_date: datetime | None = None
-    #: scheduled | active | grace_period | expired. Computed at READ time — it
-    #: depends on `now()`, so it cannot be a stored column and must never be
-    #: cached (see services/job_posting).
+    #: closed | scheduled | active | grace_period | expired. Computed at READ
+    #: time — it depends on `now()`, so it cannot be a stored column and must
+    #: never be cached (see services/job_posting). `closed` is the client's own
+    #: early stop and outranks the other four.
     posting_status: str | None = None
     days_until_posting_ends: int | None = None
     days_until_grace_ends: int | None = None
     #: The one-line description shown on the recruiter's job page.
     posting_summary: str | None = None
+    #: When the client closed this job because the requirement was met, and
+    #: what they said about it. Team-facing only: no candidate surface renders
+    #: either, because why a requisition closed is the client's business.
+    closed_at: datetime | None = None
+    closed_reason: str | None = None
 
     # ── STEM / Non-STEM classification (Master Directive Part 3 §7) ─────────
     # Visible to the client on the job card and detail page, READ-ONLY (Rule
@@ -464,6 +515,38 @@ class DatabankUploadOut(BaseModel):
     results: list[DatabankUploadResultOut] = []
 
 
+# ── The databank invitation (workflow sections 12 and 13) ────────────────────
+
+class DatabankInviteIn(BaseModel):
+    """Which sourced candidates to invite to apply.
+
+    Explicit link ids rather than "everybody sourced on this job". Mailing a
+    batch nobody enumerated is how a recruiter contacts people they never
+    looked at, which is the same argument the candidate table already makes for
+    keeping tick-box selection per page.
+    """
+
+    link_ids: list[uuid.UUID] = Field(min_length=1, max_length=50)
+
+
+class DatabankInviteResultOut(BaseModel):
+    """One invitation attempt. A skip is reported, never swallowed."""
+
+    link_id: uuid.UUID
+    invited: bool
+    candidate_name: str | None = None
+    #: Why this one was skipped. Present exactly when `invited` is false.
+    reason: str | None = None
+
+
+class DatabankInviteOut(BaseModel):
+    job_id: uuid.UUID
+    requested: int
+    invited: int
+    skipped: int
+    results: list[DatabankInviteResultOut] = []
+
+
 class PublishJobOut(JobOut):
     """The publish response. Carries the link the copy popup shows."""
 
@@ -616,6 +699,14 @@ class RankedCandidateOut(BaseModel):
     #: this profile, so the UI can say the reopen is free.
     review_charged: bool = False
 
+    # ── New Candidates (workflow section 32) ─────────────────────────────────
+    #: This application arrived AFTER the last assessment round on this job, so
+    #: nobody has considered it yet. Presentation only, exactly like
+    #: `profile_age`: it changes no score, no ranking and no access. False
+    #: before the first round, when there is one pool rather than a pool plus a
+    #: supplement.
+    is_new_candidate: bool = False
+
     # ── Hiring pipeline (spec §3.3) ──────────────────────────────────────────
     #: direct | sourced — where this applicant came from.
     application_source: str | None = None
@@ -688,6 +779,11 @@ class RankedCandidatesOut(BaseModel):
     #: 1-indexed inclusive bounds for the "Showing X-Y of Z" header (0 when empty).
     range_start: int
     range_end: int
+    #: How many candidates on this JOB arrived after the last assessment round.
+    #: Counted over the whole job and never narrowed by the page's filters,
+    #: because the question it answers is "how many people are waiting outside
+    #: the list you are looking at".
+    new_candidate_count: int = 0
 
 
 class ReviewProfileOut(BaseModel):

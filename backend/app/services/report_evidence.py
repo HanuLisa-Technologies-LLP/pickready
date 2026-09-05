@@ -1,6 +1,6 @@
 """Deterministic evidence extraction for completed PPI conversations.
 
-This runs in the assessment Celery task. It does not ask a model to invent a
+This runs in the assessment task. It does not ask a model to invent a
 summary: it groups the stored Q&A by the exact skill/competency key and records
 observable signals and explicit absences. The original messages remain the
 source of truth.

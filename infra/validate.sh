@@ -17,7 +17,7 @@
 #   ./infra/validate.sh        fmt + validate. Resolves every module, variable
 #                              type, output reference and expression.
 #
-#   ./infra/plan-offline.sh    plan, both environments, no credentials. Also
+#   ./infra/plan-offline.sh    plan, every environment, no credentials. Also
 #                              resolves the resource GRAPH and type-checks every
 #                              argument against the provider schema, which
 #                              `validate` cannot: it has no way to evaluate a
@@ -105,7 +105,7 @@ if [ "$failures" -gt 0 ]; then
 fi
 
 cat <<'NOTE'
-All modules and both environments are formatted and valid.
+All modules and every environment are formatted and valid.
 
 NOT PROVEN BY THIS RUN: the resource graph. Run `./infra/plan-offline.sh` for
 that; it needs no credentials either. `validate` cannot evaluate a `for_each`

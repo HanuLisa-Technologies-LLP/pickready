@@ -41,6 +41,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import config
 from app.models.candidate import Candidate, JobCandidateLink
 from app.models.job import Job
 from app.models.proctoring import (
@@ -67,12 +68,12 @@ __all__ = [
     "ReportNotReady",
 ]
 
-#: Clock times in the report are rendered in the platform's timezone, the
-#: same one `workers/celery_app` schedules in. A recruiter reading "10:32"
-#: should read the time on their own wall clock, and the product is sold in
-#: India. Pinned by `tests/test_proctoring_report.py` against the beat
-#: timezone so the two cannot drift apart.
-REPORT_TIMEZONE = "Asia/Kolkata"
+#: Clock times in the report are rendered in the platform's timezone, the same
+#: one the scheduled sweeps run against. A recruiter reading "10:32" should read
+#: the time on their own wall clock, and the product is sold in India. Pinned by
+#: `tests/test_proctoring_report.py` against `config.PLATFORM_TIMEZONE` so a
+#: report and a schedule cannot drift into two different days.
+REPORT_TIMEZONE = config.PLATFORM_TIMEZONE
 
 #: Event types that read the same to a recruiter fold into one sentence.
 _FAMILY: dict[str, str] = {

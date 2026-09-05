@@ -6,8 +6,8 @@ variable "project" {
 variable "environment" {
   type = string
   validation {
-    condition     = contains(["staging", "production"], var.environment)
-    error_message = "environment must be staging or production."
+    condition     = contains(["pilot", "staging", "production"], var.environment)
+    error_message = "environment must be pilot, staging or production."
   }
 }
 
@@ -49,21 +49,33 @@ variable "service_secrets" {
   description = <<-EOT
     {service -> the exact secrets it may read}. THE POINT OF THIS MODULE.
 
-    Note what each service does NOT get, because that is where the value is:
+    Note what each consumer does NOT get, because that is where the value is:
 
-      api       reads everything user-facing. It does not read the Razorpay
-                webhook secret, which only the webhook path verifies against.
-      worker    runs the agents and sends email. NO Firebase key: a background
-                task never authenticates a browser session.
-      beat      schedules. It reads the broker and nothing else -- a scheduler
-                that could read a model credential is a scheduler that could
-                spend money.
-      migrate   a one-shot job. The DSN, and nothing else at all.
-      analysis  the proctoring analysis service. The Hugging Face token that
-                unlocks the gated diarization models, and nothing else: it
-                holds no DSN, no broker and no model-provider key, because
-                the only thing it is handed is fifteen seconds of audio and
-                the only thing it answers is a speaker count.
+      api          reads everything a request handler needs. It does not read
+                   the Razorpay webhook secret, which only the webhook path
+                   verifies against, and it does not read the Hugging Face
+                   token.
+      task-worker  the generic short-work Lambda: delivery, resume parsing and
+                   the reconciliation sweeps. NO Firebase key, because a
+                   background task never authenticates a browser session.
+      agent        the on-demand Fargate task that runs the long AI work.
+      jd-gen       the two request/response agent functions. Each reads the two
+      company-     model credentials and the embedding key. Neither reads the
+      profile      SMTP password, the payment secrets or the Firebase key: they
+                   write a draft and send nothing.
+      trigger      the function that calls ecs:RunTask reads NO SECRET AT ALL
+                   and so has NO ENTRY HERE. An empty list would be worse than
+                   an absence: this module emits one IAM policy per entry, and
+                   a policy whose statement has an empty resource list is one
+                   AWS refuses. It is the only thing in the account holding
+                   iam:PassRole, which is why its blast radius is kept at
+                   exactly that one permission and nothing else.
+      migrate      a one-shot task. The DSN, and nothing else at all.
+      analysis     the proctoring analysis service. The Hugging Face token that
+                   unlocks the gated diarization models, and nothing else: it
+                   holds no DSN, no cache endpoint and no model-provider key,
+                   because the only thing it is handed is fifteen seconds of
+                   audio and the only thing it answers is a speaker count.
 
     The GCP-phase finding was one runtime identity holding all of these. Nothing
     was misconfigured; the grant was simply wider than the need, and a wildcard
@@ -71,7 +83,7 @@ variable "service_secrets" {
   EOT
   type        = map(list(string))
   default = {
-    api = [
+    "api" = [
       "DATABASE_URL",
       "REDIS_URL",
       "JWT_SECRET",
@@ -82,7 +94,7 @@ variable "service_secrets" {
       "RAZORPAY_KEY_SECRET",
       "LLM_KEY_ENCRYPTION_SECRET",
     ]
-    worker = [
+    "task-worker" = [
       "DATABASE_URL",
       "REDIS_URL",
       "OPENAI_GPT_TERRA",
@@ -93,20 +105,55 @@ variable "service_secrets" {
       "MSG91_API_KEY",
       "LLM_KEY_ENCRYPTION_SECRET",
     ]
-    beat = [
+    "agent" = [
+      "DATABASE_URL",
       "REDIS_URL",
+      "OPENAI_GPT_TERRA",
+      "OPENAI_GPT_LUNA",
+      "VOYAGE_CONTEXT_4",
+      "LLM_KEY_ENCRYPTION_SECRET",
     ]
-    migrate = [
+    "jd-gen" = [
+      "DATABASE_URL",
+      "OPENAI_GPT_TERRA",
+      "OPENAI_GPT_LUNA",
+      "LLM_KEY_ENCRYPTION_SECRET",
+    ]
+    "company-profile" = [
+      "DATABASE_URL",
+      "OPENAI_GPT_TERRA",
+      "OPENAI_GPT_LUNA",
+      "TAVILY_API_KEY",
+      "LLM_KEY_ENCRYPTION_SECRET",
+    ]
+    "migrate" = [
       "DATABASE_URL",
     ]
-    webhook = [
+    "webhook" = [
       "DATABASE_URL",
       "RAZORPAY_WEBHOOK_SECRET",
     ]
-    analysis = [
+    "analysis" = [
       "HUGGINGFACE_TOKEN",
     ]
   }
+}
+
+variable "placeholder_value" {
+  description = <<-EOT
+    What every secret holds until a human puts the real value in.
+
+    It exists because Secrets Manager refuses an empty `SecretString` and ECS
+    refuses to start a task whose secret has no version at all. It is not a
+    credential and cannot authenticate to anything.
+
+    `app.core.config` normalises this exact string back to "" before any code
+    reads it, so the paths that run are the ones that run when the variable is
+    unset. Changing it here means changing `config.PLACEHOLDER_SECRET` with it,
+    and `backend/tests/test_placeholder_secret.py` fails if they disagree.
+  EOT
+  type        = string
+  default     = "PLACEHOLDER_NOT_CONFIGURED"
 }
 
 variable "kms_key_id" {

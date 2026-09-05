@@ -62,6 +62,10 @@ def _row(**overrides) -> dict:
         "report_id": None,
         "report_ready_at": None,
         "profile_age": "new",
+        # New Candidate (workflow section 32). False is the default state and
+        # the common one: it is only true after an assessment round has run on
+        # the job and somebody applied afterwards.
+        "is_new_candidate": False,
         "review_charged": False,
     }
     base.update(overrides)

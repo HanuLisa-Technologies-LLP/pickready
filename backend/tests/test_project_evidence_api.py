@@ -114,7 +114,7 @@ def _fake_staging(monkeypatch: pytest.MonkeyPatch) -> None:
         ]
 
     monkeypatch.setattr(project_intake, "stage_intake", fake_stage)
-    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
 
 async def test_add_list_and_delete_a_project(monkeypatch) -> None:

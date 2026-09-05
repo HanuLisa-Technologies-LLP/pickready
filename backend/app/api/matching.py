@@ -1,5 +1,5 @@
 """AI matching pipeline endpoints (FR-4.2/4.5). Matching itself always runs
-as the `pickready.run_matching` Celery task — never inline (ESD §17)."""
+as the dispatched `pickready.run_matching` task — never inline (ESD §17)."""
 import uuid
 from datetime import datetime, timezone
 
@@ -26,7 +26,8 @@ from app.services import capabilities as caps
 from app.services import matching_categories, matching_progress
 from app.services.audit import audit
 from app.services.matching import client_breakdown, ranking_payload
-from app.workers.celery_app import celery_app
+from app.workers import status as task_status
+from app.workers.dispatch import dispatch
 
 router = APIRouter()
 
@@ -68,7 +69,7 @@ async def run_matching(
             )
         )
     ).scalar_one()
-    task = celery_app.send_task("pickready.run_matching", args=[str(job.id)])
+    task = dispatch("pickready.run_matching", args=[str(job.id)])
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
                 action="matching_triggered", target_type="job", target_id=job.id)
     return RunMatchingOut(
@@ -138,7 +139,7 @@ async def list_matching_categories(
     # reason: a generation that never landed would otherwise render as a
     # finished, empty list and nothing anywhere would retry it.
     if not await matching_categories.list_categories(session, job.id):
-        celery_app.send_task(
+        dispatch(
             "pickready.generate_matching_categories", args=[str(job.id)]
         )
     return await _categories_out(session, job)
@@ -269,16 +270,19 @@ async def matching_task_status(
     task_id: str,
     _user: CurrentUser = Depends(require_capability(caps.TRIGGER_MATCHING)),
 ) -> MatchingTaskStatusOut:
-    result = celery_app.AsyncResult(task_id)
+    result = await task_status.read(task_id)
     # The stage list the job page renders inline while the run is under way.
     #
-    # `result.info` is the meta the worker last published. It is only a stage
-    # payload while the task is in the PROGRESS state -- on SUCCESS it is the
-    # return value and on FAILURE it is the exception, and rendering either of
-    # those as stages would put a traceback on a recruiter's screen. A queued
-    # task returns the full list in `pending`, so the page draws the plan
+    # `result.payload` is what the run last published. It is only a stage
+    # payload while the run is in the PROGRESS state -- on SUCCESS it is the
+    # return value, and on FAILURE it is empty with the exception CLASS NAME
+    # recorded beside it, because rendering an exception as stages would put a
+    # traceback on a recruiter's screen. A run nothing has picked up yet
+    # returns the full list in `pending`, so the page draws the plan
     # immediately rather than discovering it one row at a time.
-    info = result.info if result.state == matching_progress.STATE_PROGRESS else None
+    info = (
+        result.payload if result.state == matching_progress.STATE_PROGRESS else None
+    )
     payload = (
         info
         if isinstance(info, dict) and isinstance(info.get("stages"), list)
@@ -287,7 +291,7 @@ async def matching_task_status(
     return MatchingTaskStatusOut(
         task_id=task_id,
         state=result.state,
-        done=result.ready(),
+        done=result.done,
         stages=[MatchingStageOut(**stage) for stage in payload["stages"]],
         candidate_count=int(payload.get("candidate_count") or 0),
         scored_count=int(payload.get("scored_count") or 0),

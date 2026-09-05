@@ -13,7 +13,7 @@ Two entry points:
 
 * `record_auth_event(...)` — hardened wrapper for the AUTH request/worker
   path. It writes inside its own SAVEPOINT and NEVER raises into the caller:
-  an audit failure must not break a login (or a Celery task). It tolerates
+  an audit failure must not break a login (or a background task). It tolerates
   `tenant_id=None` (Owner / candidate — a past bug crashed on exactly this)
   and `actor_user_id=None` (a failed login where no user resolved).
 """
@@ -133,14 +133,14 @@ async def record_auth_event(
 ) -> bool:
     """Record an auth event WITHOUT ever raising into the caller.
 
-    Designed for the login path and Celery workers: an audit failure must not
+    Designed for the login path and background tasks: an audit failure must not
     break a login or a task. The write happens inside a SAVEPOINT so that a
     failure rolls back only the audit insert and leaves the caller's
     transaction intact and usable. Returns True if the row was written, False
     if it was swallowed (the failure is logged, never propagated).
 
     Works identically whether called from a request handler (session opened via
-    `get_session`) or a Celery worker (session-level `app.bypass_rls`): the
+    `get_session`) or a background task (session-level `app.bypass_rls`): the
     audit_log table has no RLS policy, so no tenant var is required.
 
     `tenant_id=None` and `actor_user_id=None` are fully supported.

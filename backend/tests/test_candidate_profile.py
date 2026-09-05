@@ -230,7 +230,7 @@ async def test_apply_snapshots_the_profile_form_onto_the_application(monkeypatch
         return _asset("https://res.cloudinary.com/x/raw/upload/snapshot.pdf")
 
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -288,7 +288,7 @@ async def test_main_resume_replaces_without_rewriting_past_applications(monkeypa
         return _asset(next(urls))
 
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()

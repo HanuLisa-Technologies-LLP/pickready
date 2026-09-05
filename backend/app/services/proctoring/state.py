@@ -22,7 +22,7 @@ browser retries the batch and nothing is silently forgiven.
 WHY THE CLIENT IS PER EVENT LOOP
 --------------------------------
 An `asyncio` Redis connection belongs to the loop that opened it. The API
-process runs one loop for its lifetime; a Celery task runs `asyncio.run` per
+process runs one loop for its lifetime; a background task runs `asyncio.run` per
 task and so opens a new loop every time, and pytest-asyncio does the same per
 test. A module-level client shared across those loops fails on the second one
 with a closed-loop error that reads as a Redis outage. The client is therefore

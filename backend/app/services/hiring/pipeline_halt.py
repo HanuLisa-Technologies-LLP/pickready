@@ -27,7 +27,7 @@ tell which they were reading.
 WHY THE AUDIT ROW GOES IN ITS OWN SESSION
 ------------------------------------------
 The caller's transaction is about to be rolled back -- an HTTP handler answers
-5xx, a Celery task raises and retries -- so a row written into it disappears
+5xx, a background task raises and retries -- so a row written into it disappears
 along with the refusal it was recording. The record of a halt is the only thing
 that distinguishes "the platform refused, deliberately" from "the platform
 broke", and it is worth its own connection.

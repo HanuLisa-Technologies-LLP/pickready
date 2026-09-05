@@ -10,8 +10,8 @@ variable "environment" {
 
   validation {
     # A typo here would silently build a THIRD environment rather than failing.
-    condition     = contains(["staging", "production"], var.environment)
-    error_message = "environment must be staging or production."
+    condition     = contains(["pilot", "staging", "production"], var.environment)
+    error_message = "environment must be pilot, staging or production."
   }
 }
 

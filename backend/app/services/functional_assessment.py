@@ -1224,7 +1224,7 @@ async def bounded_remark(
         execute=execute,
         evaluate=evaluate,
         fallback=fallback,
-        # Background: this runs inside the scoring Celery task, nobody is
+        # Background: this runs inside the scoring task, nobody is
         # watching, and the alternative to one more attempt is a canned string
         # in a report a client reads.
         max_attempts=agent_loop.BACKGROUND_ATTEMPTS,
@@ -1661,7 +1661,7 @@ def _dedupe_dimensions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     re-numbering ordinals within each category.
 
     `report_dimensions` is UNIQUE on (report_id, category, name). A duplicate
-    used to surface as an IntegrityError that failed the whole Celery task
+    used to surface as an IntegrityError that failed the whole task
     *after* matching had already committed, so a run looked failed when it had
     largely succeeded. The scoring nodes are the real fix; this is the belt-and-
     braces guarantee that no future framework shape can ever 500 synthesis.

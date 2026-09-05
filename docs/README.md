@@ -17,6 +17,8 @@ design tooling reads them from the project root).
 | Deploy it | [operations/DEPLOY_AWS.md](operations/DEPLOY_AWS.md) |
 | Know who may do what | [spec/RBAC_SPECIFICATION.md](spec/RBAC_SPECIFICATION.md) |
 | Know how candidates are evaluated | [product/Readypick Hiring Philosophy.md](product/Readypick%20Hiring%20Philosophy.md) |
+| Follow a candidate or a job end to end | [spec/HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) |
+| Add, route or debug a background task | [spec/BACKGROUND_WORK.md](spec/BACKGROUND_WORK.md) |
 | Change code without breaking a rule | [../claude.md](../claude.md) |
 
 ## Precedence, when two documents disagree
@@ -29,7 +31,10 @@ Settled 2026-08-29 and unchanged. Higher wins:
    — the Runbook (RPN-PHIL-001 v1.1). Authoritative for evaluation mechanics.
 3. The phase specification in force (spec-doc6, recorded in [../claude.md](../claude.md)).
 4. [spec/CANDIDATE_DASHBOARD_SPECIFICATION.md](spec/CANDIDATE_DASHBOARD_SPECIFICATION.md)
-   — the candidate list surface only.
+   — the candidate list surface only, and
+   [spec/HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) — the end-to-end journeys
+   and their eight gates. The two do not overlap: one governs a table, the
+   other governs a sequence.
 5. [product/PRD.md](product/PRD.md), then [architecture/ESD.md](architecture/ESD.md).
 
 [spec/ARCHITECTURE_DIRECTION_2026-08-28.md](spec/ARCHITECTURE_DIRECTION_2026-08-28.md)
@@ -58,10 +63,12 @@ document.
 | File | What it holds |
 |---|---|
 | [RBAC_SPECIFICATION.md](spec/RBAC_SPECIFICATION.md) | Precedence rank 1. Roles, capabilities, isolation, lifecycle |
+| [HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) | The end-to-end candidate and client journeys, and the eight gates that hold them together |
 | [CANDIDATE_DASHBOARD_SPECIFICATION.md](spec/CANDIDATE_DASHBOARD_SPECIFICATION.md) | The candidate list surface |
 | [PROJECT_EVIDENCE_INTELLIGENCE.md](spec/PROJECT_EVIDENCE_INTELLIGENCE.md) | Project evidence: pipeline, security, retention |
 | [PROCTORING.md](spec/PROCTORING.md) | Mandatory assessment monitoring: principles, paths, the report, retention |
 | [ASSESSMENT_QUESTION_FORMATS.md](spec/ASSESSMENT_QUESTION_FORMATS.md) | The six question formats and the evidence-dominance rule |
+| [BACKGROUND_WORK.md](spec/BACKGROUND_WORK.md) | How background work is dispatched, routed, retried and scheduled after Celery |
 | [ARCHITECTURE_DIRECTION_2026-08-28.md](spec/ARCHITECTURE_DIRECTION_2026-08-28.md) | Advisory direction, not a requirement |
 
 ### `operations/` — running it

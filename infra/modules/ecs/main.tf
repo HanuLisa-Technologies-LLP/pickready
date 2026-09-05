@@ -354,6 +354,14 @@ resource "aws_ecs_task_definition" "this" {
       command   = each.value.command
       essential = true
 
+      # SIGTERM to SIGKILL, and NOT a runtime ceiling: an on-demand task runs
+      # until its process exits and ECS imposes no limit on that. This is the
+      # window a task gets when something else stops it, and Fargate caps it at
+      # 120 seconds. Raising it from the 30-second default is what gives an
+      # interrupted assessment a chance to finish the piece it is on rather
+      # than leaving a conversation scored with no report written.
+      stopTimeout = each.value.stop_timeout
+
       portMappings = each.value.port == null ? [] : [
         {
           containerPort = each.value.port
@@ -364,8 +372,28 @@ resource "aws_ecs_task_definition" "this" {
       # Plain values only. Anything sensitive is in `secrets` below, which ECS
       # fetches and injects -- so the value never passes through a shell, a
       # startup script or a log line.
+      # `PORT` IS DERIVED FROM THE DECLARED PORT, NOT LEFT TO THE IMAGE.
+      #
+      # Both images read PORT and both default it to something: the backend's
+      # entrypoint to 8000, the frontend's Dockerfile to 8080, which is a Cloud
+      # Run convention left over from the previous platform. Nothing on ECS
+      # injects it, so the container listened on 8080 while the task definition,
+      # the target group and the health check all said 3000.
+      #
+      # The symptom was as unhelpful as it sounds: the task RUNS, the log says
+      # `Ready`, and the load balancer reports "Health checks failed" with no
+      # error anywhere, because nothing was listening where anybody looked.
+      #
+      # Setting it here makes the task definition's `port` the single source of
+      # truth, so a container cannot listen anywhere else. An explicit `PORT` in
+      # a service's own `environment` still wins, because `merge` puts it last:
+      # that is an override, and an override should be possible.
       environment = [
-        for key, value in merge(var.common_environment, each.value.environment) :
+        for key, value in merge(
+          var.common_environment,
+          each.value.port == null ? {} : { PORT = tostring(each.value.port) },
+          each.value.environment,
+        ) :
         { name = key, value = tostring(value) }
       ]
 
@@ -382,11 +410,10 @@ resource "aws_ecs_task_definition" "this" {
         }
       }
 
-      # A HEALTH CHECK ONLY WHERE THERE IS SOMETHING TO CHECK. A worker has no
-      # HTTP endpoint, and a health check that shells out to `celery inspect
-      # ping` would report unhealthy during a long task -- restarting the
-      # worker mid-assessment, which is the opposite of what a health check is
-      # for.
+      # A HEALTH CHECK ONLY WHERE THERE IS SOMETHING TO CHECK. The on-demand
+      # agent has no HTTP endpoint and is not meant to stay alive: it runs one
+      # dispatched task and exits, so a health check on it would report
+      # unhealthy at exactly the moment it succeeded.
       healthCheck = each.value.health_path == null ? null : {
         command     = ["CMD-SHELL", "curl -fsS http://localhost:${each.value.port}${each.value.health_path} || exit 1"]
         interval    = 30
@@ -409,7 +436,11 @@ resource "aws_ecs_task_definition" "this" {
       # already claims rather than adding a constraint.
       readonlyRootFilesystem = each.value.readonly_root
       linuxParameters = {
-        initProcessEnabled = true # reaps zombies; Celery forks
+        # An init process to reap zombies. Still wanted: the resume and project
+        # parsers shell out to nothing, but the Python runtime and the AWS SDK
+        # both spawn helper threads and processes, and a container running as
+        # PID 1 without an init leaves anything they orphan behind.
+        initProcessEnabled = true
       }
     }
   ])
@@ -419,8 +450,13 @@ resource "aws_ecs_task_definition" "this" {
 
 # ── Services ─────────────────────────────────────────────────────────────────
 
+# An `on_demand` entry is DELIBERATELY ABSENT from here. It has a task
+# definition, a task role and a log group, and nothing that keeps a container
+# running: `readypick-assessment-trigger` calls RunTask against the family when
+# work arrives, and the task stops when the process exits. That is what makes
+# the long AI work cost only what it uses.
 resource "aws_ecs_service" "this" {
-  for_each = var.services
+  for_each = { for name, service in var.services : name => service if !service.on_demand }
 
   name            = "${local.name}-${each.key}"
   cluster         = aws_ecs_cluster.this.id
@@ -466,8 +502,6 @@ resource "aws_ecs_service" "this" {
 
   # 100/200 gives a genuine zero-downtime rolling deploy: the new tasks come up
   # alongside the old ones and nothing is drained until they are healthy.
-  # `beat` overrides this to 0/100, because two schedulers running at once
-  # would double every scheduled task.
   deployment_minimum_healthy_percent = each.value.min_healthy_percent
   deployment_maximum_percent         = each.value.max_percent
 
@@ -495,7 +529,7 @@ resource "aws_ecs_service" "this" {
 # scheduled task, not on a Fargate service with a min of 0 that cannot exist.
 
 resource "aws_appautoscaling_target" "this" {
-  for_each = { for name, service in var.services : name => service if service.max_count > service.desired_count }
+  for_each = { for name, service in var.services : name => service if !service.on_demand && service.max_count > service.desired_count }
 
   service_namespace  = "ecs"
   resource_id        = "service/${aws_ecs_cluster.this.name}/${aws_ecs_service.this[each.key].name}"

@@ -211,26 +211,35 @@ def test_direct_template_is_a_faithful_pass_through() -> None:
 
 @pytest.mark.asyncio
 async def test_delivery_status_waits_for_all_tasks(monkeypatch) -> None:
-    from types import SimpleNamespace
+    from app.workers import status as task_status
 
     results = {
-        "pending": SimpleNamespace(
-            ready=lambda: False,
-            result=None,
-            successful=lambda: False,
+        "pending": task_status.RunStatus(
+            run_id="pending", state=task_status.STATE_PENDING, payload={}
         ),
-        "sent": SimpleNamespace(
-            ready=lambda: True,
-            result={"status": "sent"},
-            successful=lambda: True,
+        "sent": task_status.RunStatus(
+            run_id="sent",
+            state=task_status.STATE_SUCCESS,
+            payload={"status": "sent"},
+        ),
+        # A run that SUCCEEDED and did not deliver. `send_email` returns this
+        # for a permanent failure it deliberately did not retry, so reading the
+        # run state alone would count a dead address as delivered.
+        "bounced": task_status.RunStatus(
+            run_id="bounced",
+            state=task_status.STATE_SUCCESS,
+            payload={"status": "failed", "error": "InvalidRecipient"},
         ),
     }
-    monkeypatch.setattr(
-        outreach_api.celery_app, "AsyncResult", lambda task_id: results[task_id]
-    )
+
+    async def _read(task_id):
+        return results[task_id]
+
+    monkeypatch.setattr(outreach_api.task_status, "read", _read)
     out = await outreach_api.outreach_delivery_status(
-        OutreachDeliveryStatusIn(task_ids=["pending", "sent"]), _user=None
+        OutreachDeliveryStatusIn(task_ids=["pending", "sent", "bounced"]), _user=None
     )
     assert out.pending == 1
     assert out.sent == 1
+    assert out.failed == 1
     assert out.done is False

@@ -488,7 +488,7 @@ def client(world: World, sessions, monkeypatch) -> Iterator[Caller]:
 
 
 @pytest.fixture(autouse=True)
-def _no_celery(monkeypatch):
+def _no_dispatch(monkeypatch):
     """Capture enqueues instead of publishing them, and RUN the compile inline.
 
     Two things at once, and both are deliberate. The enqueue is CAPTURED so a
@@ -506,16 +506,16 @@ def _no_celery(monkeypatch):
         sent.append((name, tuple(args), dict(kwargs or {})))
         return None
 
-    monkeypatch.setattr(assessments_router.celery_app, "send_task", _send_task)
+    monkeypatch.setattr(assessments_router, "dispatch", _send_task)
     from app.api import jobs as jobs_router
 
-    monkeypatch.setattr(jobs_router.celery_app, "send_task", _send_task)
+    monkeypatch.setattr(jobs_router, "dispatch", _send_task)
     return sent
 
 
 @pytest.fixture
-def enqueued(_no_celery):
-    return _no_celery
+def enqueued(_no_dispatch):
+    return _no_dispatch
 
 
 # ── Driving the flow through HTTP ────────────────────────────────────────────

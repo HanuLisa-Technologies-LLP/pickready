@@ -11,7 +11,7 @@ specification names before it has happened.
     stage produced, not the moment it finished: a record with no artifact id is
     a record of nothing, and `Ledger.problems` says so.
   * A trace that looks complete because each agent recorded itself under its own
-    id. Bodha through Siddhi is one flow across six agents and several Celery
+    id. Bodha through Siddhi is one flow across six agents and several background
     tasks; without one id shared by all of them, "what happened to this
     candidate" is six unrelated queries whose answers cannot be joined.
   * An AI-initiated mutation attributable to nobody. RBAC 34 requires BOTH the
@@ -22,7 +22,7 @@ specification names before it has happened.
 
 THE CORRELATION ID IS ISSUED ONCE, AT JOB CREATION, AND IS NEVER INVENTED
 ---------------------------------------------------------------------------
-spec-doc6 4.1. Not per agent, not per task, not per Celery message: one id for
+spec-doc6 4.1. Not per agent, not per task, not per dispatch: one id for
 the whole flow. `Envelope.child` copies it rather than re-minting, which is what
 makes a sub-task joinable to its parent's flow instead of merely adjacent to it.
 

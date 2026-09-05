@@ -887,7 +887,10 @@ def assemble_row(row: Mapping[str, Any]) -> DashboardRow:
 
     status = str(row.get("status") or hiring_pipeline.APPLIED)
     stage = hiring_pipeline.dashboard_stage(status)
-    on_hold = stage is None
+    # NOT `stage is None`: a sourced candidate has no stage either, and reading
+    # the absence as a pause would mark a resume nobody has contacted as an
+    # application somebody deliberately paused.
+    on_hold = hiring_pipeline.is_on_hold(status)
 
     return DashboardRow(
         link_id=uuid.UUID(str(row["link_id"])),
@@ -918,11 +921,10 @@ def assemble_row(row: Mapping[str, Any]) -> DashboardRow:
         profile=profile,
         profile_pending_reason=profile_pending_reason,
         stage=None if stage is None else stage.value,
-        stage_label=(
-            f"On hold, paused at {status.replace('_', ' ')}"
-            if on_hold
-            else stage.value
-        ),
+        # From the FSM, not inferred here: `stage is None` has two causes, and
+        # `stage.value` on the second one is an AttributeError rather than a
+        # wrong label. See `hiring_pipeline.dashboard_stage_label`.
+        stage_label=hiring_pipeline.dashboard_stage_label(status),
         stage_on_hold=on_hold,
         stored_status=status,
         under_integrity_review=under_review,

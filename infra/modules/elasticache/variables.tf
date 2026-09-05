@@ -6,8 +6,8 @@ variable "project" {
 variable "environment" {
   type = string
   validation {
-    condition     = contains(["staging", "production"], var.environment)
-    error_message = "environment must be staging or production."
+    condition     = contains(["pilot", "staging", "production"], var.environment)
+    error_message = "environment must be pilot, staging or production."
   }
 }
 
@@ -30,7 +30,7 @@ variable "engine_version" {
 }
 
 variable "replica_count" {
-  description = "Replicas per shard. Zero in staging; at least one in production, because a Redis failure there is not a cache miss -- it is every Celery task and every working-memory read."
+  description = "Replicas per shard. Zero in the pilot and in staging; at least one in production, because a Redis failure there is not a cache miss: the proctoring gate answers 503 rather than silently not warning, so it is every assessment turn."
   type        = number
   default     = 0
 }

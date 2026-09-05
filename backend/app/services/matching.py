@@ -497,7 +497,7 @@ async def _backfill_missing_embeddings(
     unparsed = [p for p in rows if not (p.resume_text or "").strip()]
     if not unparsed:
         return
-    from app.workers.celery_app import celery_app
+    from app.workers.dispatch import dispatch
 
     for profile in unparsed:
         if not profile_has_resume(profile):
@@ -508,7 +508,7 @@ async def _backfill_missing_embeddings(
             )
             continue
         try:
-            celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
+            dispatch("pickready.parse_resume", args=[str(profile.id)])
             logger.info("matching.parse_resume_requeued profile_id=%s", profile.id)
         except Exception as exc:  # noqa: BLE001 -- broker down must not abort a run
             logger.warning(
@@ -1540,7 +1540,7 @@ def _publish_one_ai_score(
     whole reason the function has this shape. Matching is a live path that
     worked before artifacts existed and that a recruiter watches run. By the
     time this is called the rows are committed, so an exception escaping here
-    would report a finished run as a failure and hand the Celery retry policy a
+    would report a finished run as a failure and hand the retry policy a
     job it would redo from the top -- re-embedding the JD and re-spending the
     model calls -- to produce identical rows.
 
@@ -1759,7 +1759,7 @@ async def run_matching(
     profiles = [profiles_by_id[pid] for pid in profile_ids if pid in profiles_by_id]
 
     # ── Stage 3: LLM scoring against THIS JOB'S matching categories (raises
-    #    LLMUnavailableError only if the whole chain is exhausted -- the Celery
+    #    LLMUnavailableError only if the whole chain is exhausted -- the task's
     #    task's retry policy handles that; individual malformed profiles are
     #    skipped with a warning) ──
     #

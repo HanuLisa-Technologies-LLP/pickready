@@ -239,7 +239,7 @@ def wired(monkeypatch):
     from app.services.assessment_formats import scoring as format_scoring
 
     dispatched: list[str] = []
-    monkeypatch.setattr(mod.celery_app, "send_task",
+    monkeypatch.setattr(mod, "dispatch",
                         lambda name, *a, **k: dispatched.append(name))
 
     async def _substantive(**kwargs):

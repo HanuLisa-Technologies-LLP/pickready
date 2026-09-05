@@ -8,16 +8,16 @@ SQLAlchemy[asyncio]>=2.0.30
 asyncpg>=0.29
 alembic>=1.13
 pgvector>=0.3
+# Cache, rate limiting, the proctoring warning counter and the background
+# run-status record. NOT a message broker: Celery and Flower were removed on
+# 2026-09-04 when background work moved to Lambda and on-demand Fargate, and
+# nothing publishes to or consumes from a Redis queue any more.
 redis>=5.0
-# >=5.6.3, not >=5.4: workers/tasks.py passes `dont_autoretry_for` to keep a
-# SoftTimeLimitExceeded from being handed straight back to autoretry_for (which
-# catches it, since it derives from Exception). Celery IGNORES an unknown task
-# option silently, so on a resolver that picked 5.4 the hung-task guard would
-# read as present and do nothing -- the exact failure it exists to prevent.
-# Verified in celery/app/autoretry.py at 5.6.3: `except dont_autoretry_for`
-# precedes `except autoretry_for`.
-celery>=5.6.3
-flower>=2.0
+# The Lambda runtime interface client. It is what makes a plain container image
+# invocable as a Lambda function, and it is a REQUIREMENT rather than a base
+# image because the worker and the two agent functions run the backend image
+# and could not otherwise share it with the API.
+awslambdaric>=3.0
 PyJWT>=2.9
 cryptography>=43.0
 httpx>=0.27

@@ -186,12 +186,34 @@ def test_hold_is_not_a_stage() -> None:
     its own. Mapping it to Screening would claim the candidate had moved
     backwards; mapping it to Closed would say the process had ended.
     """
-    assert hp.NO_DASHBOARD_STAGE == frozenset({hp.HOLD})
+    assert hp.HOLD in hp.NO_DASHBOARD_STAGE
     assert hp.HOLD not in hp.DASHBOARD_STAGE
     assert hp.dashboard_stage(hp.HOLD) is None
     # And it is still a real stored status with a real place in the FSM.
     assert hp.HOLD in hp.ALL_STATUSES
     assert hp.HOLD in hp.ALWAYS_AVAILABLE
+
+
+def test_sourced_is_not_a_stage_either_and_for_a_different_reason() -> None:
+    """The second member of NO_DASHBOARD_STAGE, and the two are not alike.
+
+    `hold` is a PAUSE on a stage. `sourced` is BEFORE the funnel: a resume the
+    recruiter uploaded from their own databank, belonging to somebody who has
+    not applied. Both return None from `dashboard_stage`, which is why
+    `is_on_hold` exists -- reading the absence of a stage as a pause was
+    correct while `hold` was alone in that set and became wrong the moment it
+    was not.
+    """
+    assert hp.SOURCED in hp.NO_DASHBOARD_STAGE
+    assert hp.SOURCED not in hp.DASHBOARD_STAGE
+    assert hp.dashboard_stage(hp.SOURCED) is None
+    assert hp.is_on_hold(hp.SOURCED) is False
+    assert hp.is_on_hold(hp.HOLD) is True
+    # It is a real stored status, and its one forward edge is what Gate 5 is.
+    assert hp.SOURCED in hp.ALL_STATUSES
+    assert hp.allowed_transitions(hp.SOURCED) >= {hp.APPLIED}
+    assert hp.ASSESSMENT_INVITED not in hp.allowed_transitions(hp.SOURCED)
+    assert hp.SHORTLISTED not in hp.allowed_transitions(hp.SOURCED)
 
 
 def test_the_dashboard_stage_is_derived_not_stored() -> None:

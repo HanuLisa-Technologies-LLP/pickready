@@ -47,6 +47,18 @@ celerybeat-schedule*
 *.tfplan
 *.tfstate
 *.tfstate.*
+# Saved binary plans (`terraform plan -out=tfplan*`) and locally-built Lambda
+# zips. Both are reproducible build artifacts, and a saved plan can embed
+# resolved secret values.
+infra/environments/*/tfplan*
+**/.terraform-build/
+# REAL VALUES. Every account-specific input lives here and none of it is
+# committed: the account id, the globally-unique bucket names, the domain.
+# `infra/environments/offline-plan.tfvars` is the exception and IS committed,
+# because every value in it is deliberately impossible.
+*.tfvars
+!infra/environments/offline-plan.tfvars
+*.tfvars.json
 
 # ---------------------------------------------------------------------------
 # Vendored third-party design skills (spec-doc6 RPN-SPEC-006 §D4).
@@ -85,3 +97,7 @@ backend/coverage-full.json
 backend/.coverage
 backend/.coverage.*
 backend/htmlcov/
+
+# Offline-plan scratch copies (infra/plan-offline.sh). Siblings of the real
+# environment roots because the module paths are relative; removed on exit.
+infra/environments/.*-offline-plan/

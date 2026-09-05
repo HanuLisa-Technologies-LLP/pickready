@@ -36,7 +36,7 @@ from app.services.tools import permissions, registry
 # caller was `miti/pipeline.py`, which no route and no worker imports.
 #
 # The check that would have caught it is not a unit test of any module. It is
-# this: does a request handler or a Celery task have any import path to the code
+# this: does a request handler or a background task have any import path to the code
 # a name claims. So the graph is computed statically, from `app/api/**`,
 # `app/workers/**` and `app/main.py`, and the answer is DATA that both the test
 # and `eval_agents.py` read.

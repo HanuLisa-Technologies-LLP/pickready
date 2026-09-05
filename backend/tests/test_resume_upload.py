@@ -187,7 +187,7 @@ async def test_apply_creates_a_fresh_profile_each_time(monkeypatch) -> None:
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()

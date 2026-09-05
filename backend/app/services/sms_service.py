@@ -17,7 +17,7 @@ now carries the provider's status + parsed body, and is classified as either:
       line, write an audit row.
 
   TransientDeliveryError — may succeed later (429 rate-limit, 5xx, timeouts,
-      connection errors). Retried by Celery with EXPONENTIAL backoff,
+      connection errors). Retried by the task runtime with EXPONENTIAL backoff,
       max 3 attempts.
 
 SECURITY (ESD §16): API keys, OTP codes and message bodies are never logged.
@@ -39,7 +39,7 @@ MSG91_URL = "https://control.msg91.com/api/v2/sendsms"
 HTTP_TIMEOUT = 30.0
 
 #: Retry policy for transient delivery failures (claude.md rule 4 — all of
-#: this runs inside Celery tasks, never inline in a request handler).
+#: this runs inside background tasks, never inline in a request handler).
 MAX_DELIVERY_ATTEMPTS = 3          # 1 initial attempt + 2 retries
 RETRY_BACKOFF_BASE_SECONDS = 5     # 5s, 10s, 20s … (exponential, jittered)
 RETRY_BACKOFF_MAX_SECONDS = 300
@@ -91,7 +91,7 @@ class PermanentDeliveryError(DeliveryError):
 
 
 class TransientDeliveryError(DeliveryError):
-    """May succeed later — Celery retries with exponential backoff."""
+    """May succeed later — the task runtime retries with exponential backoff."""
 
     permanent = False
 

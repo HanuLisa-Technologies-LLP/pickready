@@ -49,6 +49,14 @@ import { AssessmentTranscriptModal } from "@/components/assessment-transcript";
 import { ResumeViewer } from "@/components/resume-viewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { FormField } from "@/components/ui/form";
 import { Badge } from "@/components/ui/badge";
@@ -210,6 +218,9 @@ export default function OrgJobDetailPage() {
   const [selectedRows, setSelectedRows] = React.useState<RankedCandidate[]>([]);
   const [inviting, setInviting] = React.useState(false);
   const [renewing, setRenewing] = React.useState(false);
+  const [closing, setClosing] = React.useState(false);
+  const [closeOpen, setCloseOpen] = React.useState(false);
+  const [closeReason, setCloseReason] = React.useState("");
 
 
   /**
@@ -241,6 +252,41 @@ export default function OrgJobDetailPage() {
       setRenewing(false);
     }
   }, [jobId, toast]);
+
+  /**
+   * Close the posting because the requirement is met (workflow Gate 8).
+   *
+   * Confirmed in a dialog rather than fired from the banner button, because
+   * there is no reopen: RBAC 22 asks for a controlled revision mechanism, and
+   * a misclick here takes a live posting off every candidate's board. The
+   * dialog is also where the reason is typed -- the client's own words, stored
+   * verbatim, read by nobody but their team.
+   */
+  const closePosting = React.useCallback(async () => {
+    setClosing(true);
+    try {
+      const updated = await apiPost<Job>(`/jobs/${jobId}/close`, {
+        reason: closeReason.trim() || null,
+      });
+      setJob(updated);
+      setDraft(draftFromJob(updated));
+      setCloseOpen(false);
+      setCloseReason("");
+      toast({
+        title: "Job closed",
+        description:
+          "New applications have stopped. Your candidate pipeline is unchanged.",
+      });
+    } catch (e) {
+      toast({
+        title: "Could not close this job",
+        description: e instanceof Error ? e.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setClosing(false);
+    }
+  }, [jobId, closeReason, toast]);
 
   const loadJob = React.useCallback(async () => {
     setJobError(null);
@@ -320,6 +366,45 @@ export default function OrgJobDetailPage() {
   // rest and reports them, but filtering here keeps the button honest about
   // how many it will actually send.
   const invitable = selectedRows.filter((r) => r.status === "applied");
+
+  // Gate 5: a sourced candidate has not applied, so there is nothing to
+  // assess. What they get is an invitation to APPLY, which is a different
+  // action to a different endpoint. Keeping the two buttons separate is
+  // deliberate: one merged control would have to guess which the recruiter
+  // meant from the selection, and guessing wrong emails the wrong copy to a
+  // real person.
+  const sourcedSelected = selectedRows.filter((r) => r.status === "sourced");
+  const [invitingToApply, setInvitingToApply] = React.useState(false);
+
+  const inviteToApply = async () => {
+    setInvitingToApply(true);
+    try {
+      const res = await apiPost<{
+        invited: number;
+        skipped: number;
+        results: { invited: boolean; reason?: string | null }[];
+      }>(`/jobs/${jobId}/candidates/databank/invite`, {
+        link_ids: sourcedSelected.map((r) => r.link_id),
+      });
+      const firstReason = res.results.find((r) => !r.invited)?.reason;
+      toast({
+        title: `${res.invited} invitation${res.invited === 1 ? "" : "s"} sent`,
+        description:
+          res.skipped > 0
+            ? `${res.skipped} skipped. ${firstReason ?? ""}`.trim()
+            : "They stay out of your pipeline until they apply themselves.",
+      });
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      toast({
+        title: "Couldn't send the invitations",
+        description: e instanceof Error ? e.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setInvitingToApply(false);
+    }
+  };
 
   const sendInvitations = async () => {
     setInviting(true);
@@ -462,8 +547,46 @@ export default function OrgJobDetailPage() {
           className="mb-6"
           onRenew={canRenew ? () => void renewPosting() : undefined}
           renewing={renewing}
+          onClose={canRenew ? () => setCloseOpen(true) : undefined}
+          closing={closing}
         />
       ) : null}
+
+      <Dialog open={closeOpen} onOpenChange={setCloseOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Close this job?</DialogTitle>
+            <DialogDescription>
+              New applications stop immediately and the public link stops
+              working. Every candidate already in your pipeline stays, including
+              anyone part-way through an assessment. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <label htmlFor="close_reason" className="text-sm font-medium">
+              Why are you closing it? Optional.
+            </label>
+            <Textarea
+              id="close_reason"
+              value={closeReason}
+              onChange={(e) => setCloseReason(e.target.value)}
+              maxLength={1000}
+              placeholder="Two offers accepted."
+            />
+            <p className="text-xs">
+              Your team sees this on the job page. No candidate ever does.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCloseOpen(false)}>
+              Keep it open
+            </Button>
+            <Button onClick={() => void closePosting()} disabled={closing}>
+              {closing ? "Closing" : "Close the job"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Two buttons at the top of the page (client change, 2026-07-28): the
           job description and the candidate list are separate screens now
@@ -790,6 +913,27 @@ export default function OrgJobDetailPage() {
               {selectedRows.length === 0
                 ? "Tick candidates below, then return here to send their assessment invitations."
                 : `${invitable.length} of ${selectedRows.length} selected can be invited; the rest are already past this stage.`}
+            </p>
+          </div>
+        ) : null}
+        {canEmail && sourcedSelected.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <Button
+              variant="outline"
+              disabled={invitingToApply}
+              onClick={() => void inviteToApply()}
+            >
+              {invitingToApply ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <Send className="h-4 w-4" aria-hidden="true" />
+              )}
+              Invite to apply ({sourcedSelected.length})
+            </Button>
+            <p className="text-xs leading-5">
+              These candidates came from your databank and have not applied.
+              This asks them to sign in and apply; nothing enters your pipeline
+              until they do.
             </p>
           </div>
         ) : null}

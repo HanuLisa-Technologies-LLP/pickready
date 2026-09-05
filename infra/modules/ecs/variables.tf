@@ -6,8 +6,8 @@ variable "project" {
 variable "environment" {
   type = string
   validation {
-    condition     = contains(["staging", "production"], var.environment)
-    error_message = "environment must be staging or production."
+    condition     = contains(["pilot", "staging", "production"], var.environment)
+    error_message = "environment must be pilot, staging or production."
   }
 }
 
@@ -73,6 +73,24 @@ variable "services" {
     `discoverable = true` registers the service in the Cloud Map namespace, so
     another task reaches it at `<service>.<namespace>`. For a service with no
     load balancer that is the only way it is addressable at all.
+
+    `on_demand = true` produces the TASK DEFINITION AND ITS ROLES AND NOTHING
+    ELSE: no `aws_ecs_service`, no autoscaling target, no desired count. It is
+    how the assessment agent is deployed. A Lambda calls `RunTask` against the
+    family when work arrives, the container does that one piece of work and
+    exits, and the task stops. That is the whole cost argument for this
+    architecture: Fargate does not scale to zero, so long AI work that runs a
+    few times an hour must not be a standing service.
+
+    `stop_timeout` is the container's grace period between SIGTERM and SIGKILL,
+    in seconds. It is NOT a runtime ceiling and there is no such thing here: an
+    on-demand task runs for as long as its process runs and stops when the
+    process exits. This only applies when something else stops it -- a StopTask,
+    a deployment, a capacity event.
+
+    FARGATE REFUSES ANYTHING OVER 120, with a 400 at RegisterTaskDefinition. It
+    is validated below rather than discovered at apply, because the error names
+    the launch type rather than the entry that asked for it.
   EOT
   type = map(object({
     image               = string
@@ -90,6 +108,8 @@ variable "services" {
     readonly_root       = optional(bool, false)
     writable_paths      = optional(list(string), [])
     discoverable        = optional(bool, false)
+    on_demand           = optional(bool, false)
+    stop_timeout        = optional(number, null)
     min_healthy_percent = optional(number, 100)
     max_percent         = optional(number, 200)
   }))
@@ -115,14 +135,51 @@ variable "services" {
   }
 
   validation {
-    # `beat` must be exactly one. Two schedulers double every scheduled task,
-    # which for this platform means two reconciliation sweeps and two sets of
-    # reminder emails.
+    # Fargate's own hard limit. A 3600 here (which is what the infrastructure
+    # brief asked for) is refused at RegisterTaskDefinition with a message that
+    # names the launch type, not the service that set it.
+    #
+    # `coalesce` rather than a null guard on the left of an `||`: HCL evaluates
+    # BOTH sides of a boolean operator, so `x == null || x >= 2` still compares
+    # a null and fails the whole plan with "argument must not be null".
     condition = alltrue([
       for name, service in var.services :
-      !can(regex("beat", name)) || (service.desired_count == 1 && service.max_count <= 1)
+      coalesce(service.stop_timeout, 30) >= 2 &&
+      coalesce(service.stop_timeout, 30) <= 120
     ])
-    error_message = "A beat service must be exactly one task. Two schedulers double every scheduled task."
+    error_message = "Fargate refuses a container stop timeout outside 2..120 seconds. It is a SIGTERM grace period, not a runtime ceiling: an on-demand task has no ceiling and runs until its process exits."
+  }
+
+  validation {
+    # An on-demand entry has no service, so a desired count on it is a number
+    # nothing reads. Refused rather than ignored: a reader who set it would
+    # reasonably believe tasks were running, and they would not be.
+    condition = alltrue([
+      for name, service in var.services :
+      !service.on_demand || (service.desired_count == 0 && service.max_count == 0)
+    ])
+    error_message = "An on_demand entry has no service, so desired_count and max_count must both be 0."
+  }
+
+  validation {
+    # An on-demand task is started by RunTask, which passes no load balancer
+    # and registers nothing in Cloud Map. Both would be silently inert.
+    condition = alltrue([
+      for name, service in var.services :
+      !service.on_demand || (service.target_group_arn == null && !service.discoverable)
+    ])
+    error_message = "An on_demand entry cannot have a target group or service discovery: nothing routes to a task that has already been given its work."
+  }
+
+  validation {
+    # Fargate's own floor. A standing service with a desired count of zero
+    # cannot exist, and asking for one produces an error at apply time that
+    # names the count rather than the reason.
+    condition = alltrue([
+      for name, service in var.services :
+      service.on_demand || service.desired_count >= 1
+    ])
+    error_message = "Fargate does not scale to zero. A service with no tasks belongs on Lambda or as an on_demand task definition."
   }
 }
 

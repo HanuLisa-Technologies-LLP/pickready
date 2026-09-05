@@ -109,14 +109,54 @@ resource "aws_s3_bucket_lifecycle_configuration" "private" {
     }
   }
 
-  rule {
-    id     = "cool-old-objects"
-    status = "Enabled"
-    filter {}
+  # ONE RULE PER DURABLE PREFIX, rather than one bucket-wide rule.
+  #
+  # S3 lifecycle filters have no negation: `Filter` takes a prefix, tags, a
+  # size, or an `And` of those, and there is no `Not`. So `project-intake/` is
+  # excluded by ENUMERATING what is included instead, which is more explicit
+  # anyway and matches how `application_prefixes` grants access.
+  #
+  # It has to be excluded: a transition to STANDARD_IA carries a 30-day
+  # minimum-duration charge, and a temporary project original that lives for
+  # minutes would pay it in full for nothing.
+  dynamic "rule" {
+    for_each = toset([for prefix in var.application_prefixes : prefix if prefix != "project-intake"])
+    content {
+      id     = "cool-old-objects-${rule.value}"
+      status = "Enabled"
 
-    transition {
-      days          = 90
-      storage_class = "STANDARD_IA"
+      filter {
+        prefix = "${rule.value}/"
+      }
+
+      transition {
+        days          = 90
+        storage_class = "STANDARD_IA"
+      }
+    }
+  }
+
+  # THE BACKSTOP FOR TEMPORARY PROJECT ORIGINALS. See
+  # `project_intake_backstop_days`: it deletes, it does not archive, and it
+  # exists for the case where the verified deletion failed and the hourly
+  # reconciler never ran.
+  rule {
+    id     = "expire-project-intake"
+    status = "Enabled"
+
+    filter {
+      prefix = "project-intake/"
+    }
+
+    expiration {
+      days = var.project_intake_backstop_days
+    }
+
+    # The noncurrent version too. Versioning is on for this bucket, so a plain
+    # delete leaves a version behind, and a deleted original that is still
+    # readable at a version id is an original that was not deleted.
+    noncurrent_version_expiration {
+      noncurrent_days = 1
     }
   }
 

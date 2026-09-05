@@ -8,9 +8,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import Query, APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -33,6 +33,7 @@ from app.models.assessment import AssessmentConversation, FunctionalSkillsReport
 from app.models.company import Company
 from app.models.enums import LinkSource, PipelineStatus, VerificationStatus
 from app.models.job import Job
+from app.models.candidate_update import CandidateUpdate
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.portal import (
@@ -40,6 +41,7 @@ from app.schemas.portal import (
     ApplicationsOut,
     ApplyOut,
     AspectOut,
+    MarkUpdatesReadIn,
     MeOut,
     MeUpdateIn,
     OutreachInfoOut,
@@ -47,8 +49,12 @@ from app.schemas.portal import (
     PortalJobOut,
     PortalJobsOut,
     StatusEventOut,
+    UpdateOut,
+    UpdatesOut,
+    UpdatesSummaryOut,
 )
 from app.services import application_validation
+from app.services import candidate_updates
 from app.services import candidate_profile_form as profile_form
 from app.services import hiring_pipeline
 from app.services import job_posting
@@ -56,7 +62,7 @@ from app.services import job_relevance
 from app.services import retake
 from app.services import telemetry_events
 from app.services.audit import audit
-from app.workers.celery_app import celery_app
+from app.workers.dispatch import dispatch
 from app.services.resume_storage import apply_resume_asset, copy_resume_metadata, store_resume
 
 logger = logging.getLogger(__name__)
@@ -229,9 +235,9 @@ async def outreach_submit(
         created += 1
     await session.flush()
 
-    celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
+    dispatch("pickready.parse_resume", args=[str(profile.id)])
     if created:
-        celery_app.send_task(
+        dispatch(
             "pickready.send_verification_requests", args=[str(profile.id)]
         )
     return OutreachSubmitOut(
@@ -338,6 +344,7 @@ async def _visible_job_or_404(
         grace_period_end_date=job.grace_period_end_date,
         candidate_created_at=candidate.created_at,
         has_applied=has_applied,
+        closed_at=job.closed_at,
     ):
         raise HTTPException(status_code=404, detail=_EXPIRED_DETAIL)
     return job
@@ -439,6 +446,7 @@ async def portal_jobs(
             grace_period_end_date=job.grace_period_end_date,
             candidate_created_at=candidate.created_at,
             has_applied=job.id in applied_job_ids,
+            closed_at=job.closed_at,
         )
     ]
 
@@ -691,7 +699,7 @@ async def replace_main_resume(
     await session.flush()
     candidate.main_profile_id = main.id
     await session.flush()
-    celery_app.send_task("pickready.parse_resume", args=[str(main.id)])
+    dispatch("pickready.parse_resume", args=[str(main.id)])
     return _resume_summary(main)
 
 
@@ -941,7 +949,7 @@ async def add_project(
     # Never allowed to fail the submission: the row is durable and the hourly
     # sweeper re-enqueues anything the broker dropped.
     try:
-        celery_app.send_task(
+        dispatch(
             "pickready.process_candidate_project", args=[str(project.id)]
         )
     except Exception as exc:  # noqa: BLE001
@@ -1005,7 +1013,7 @@ async def reprocess_my_project(
     project.status_detail = "Queued for another analysis attempt."
     await session.flush()
     try:
-        celery_app.send_task(
+        dispatch(
             "pickready.process_candidate_project", args=[str(project.id)]
         )
     except Exception as exc:  # noqa: BLE001
@@ -1060,6 +1068,14 @@ async def apply_context(
             )
         )
     ).scalars().first()
+    # Gate 5: a SOURCED row is a recruiter's databank entry, not an
+    # application. Reporting it as `already_applied` would show "you already
+    # applied" to somebody who arrived through our own invitation, with no way
+    # forward and nothing explaining it.
+    if existing is not None and (
+        hiring_pipeline.normalize(existing.status) == hiring_pipeline.SOURCED
+    ):
+        existing = None
     answers = candidate.profile_form_json or {}
     # The mandatory fields are answered once and reused. Sourced from the most
     # recent application rather than a profile column so each application keeps
@@ -1145,6 +1161,7 @@ async def apply_to_job(
         posting_end_date=job.posting_end_date,
         grace_period_end_date=job.grace_period_end_date,
         candidate_created_at=candidate.created_at,
+        closed_at=job.closed_at,
     ):
         raise HTTPException(
             status_code=409,
@@ -1162,7 +1179,22 @@ async def apply_to_job(
             )
         )
     ).scalars().first()
-    if dup is not None:
+    # Gate 5: a SOURCED row is not an application, so this is not a duplicate.
+    #
+    # The recruiter put this person's resume into the job from their databank
+    # and invited them to apply. Refusing here would tell somebody acting on
+    # our own invitation that they had already applied, which is both false and
+    # a dead end -- they would have no way to proceed and no reason to believe
+    # the message was wrong. The existing row is CONVERTED below rather than
+    # duplicated, so the recruiter keeps one candidate on the job and its
+    # provenance (`source_type = databank`) survives the conversion.
+    sourced_link = (
+        dup
+        if dup is not None
+        and hiring_pipeline.normalize(dup.status) == hiring_pipeline.SOURCED
+        else None
+    )
+    if dup is not None and sourced_link is None:
         raise HTTPException(status_code=409, detail="You have already applied to this job")
 
     try:
@@ -1245,23 +1277,62 @@ async def apply_to_job(
     # their My Profile page would show none straight after applying.
     if not resume_reused and candidate.main_profile_id is None:
         candidate.main_profile_id = profile.id
-    link = JobCandidateLink(
-        tenant_id=job.tenant_id, job_id=job.id, candidate_id=candidate.id,
-        profile_id=profile.id, source=LinkSource.fresh,
-        # Anything other than the one known alternative reads as "direct" — a
-        # crafted value must not end up in the column the CHECK constraint
-        # guards, and mis-attributing a source is not worth a 422 to the
-        # candidate mid-application.
-        application_source=(
+    if sourced_link is not None:
+        # Convert in place. The application's own facts are written here -- the
+        # resume this person chose, the answers they typed -- and the stage
+        # moves through the FSM so the history records a real `sourced ->
+        # applied` edge rather than a row that silently changed shape.
+        link = sourced_link
+        link.profile_id = profile.id
+        link.validation_json = validation_data
+        link.application_source = (
             "sourced" if application_source == "sourced" else "direct"
-        ),
-        status=hiring_pipeline.APPLIED,
-        status_updated_at=datetime.now(timezone.utc),
-        current_stage=hiring_pipeline.STAGE_LABELS[hiring_pipeline.APPLIED],
-        validation_json=validation_data,
-    )
-    session.add(link)
-    await session.flush()
+        )
+        await hiring_pipeline.apply_transition(
+            session,
+            link_id=link.id,
+            tenant_id=job.tenant_id,
+            target=hiring_pipeline.APPLIED,
+        )
+        await session.flush()
+        await session.refresh(link)
+    else:
+        link = JobCandidateLink(
+            tenant_id=job.tenant_id, job_id=job.id, candidate_id=candidate.id,
+            profile_id=profile.id, source=LinkSource.fresh,
+            # Anything other than the one known alternative reads as "direct" —
+            # a crafted value must not end up in the column the CHECK
+            # constraint guards, and mis-attributing a source is not worth a
+            # 422 to the candidate mid-application.
+            application_source=(
+                "sourced" if application_source == "sourced" else "direct"
+            ),
+            status=hiring_pipeline.APPLIED,
+            status_updated_at=datetime.now(timezone.utc),
+            current_stage=hiring_pipeline.STAGE_LABELS[hiring_pipeline.APPLIED],
+            validation_json=validation_data,
+        )
+        session.add(link)
+        await session.flush()
+        # The Updates feed (workflow section 14). A brand-new link is created
+        # directly rather than through `apply_transition`, so the feed row that
+        # the FSM writes for every other stage has to be written here. The
+        # CONVERSION path above needs nothing: it goes through the FSM, which
+        # already recorded it.
+        tenant_name = (
+            await session.execute(select(Tenant.name).where(Tenant.id == job.tenant_id))
+        ).scalar_one_or_none()
+        await candidate_updates.record(
+            session,
+            kind=candidate_updates.APPLICATION_SUBMITTED,
+            candidate_id=candidate.id,
+            tenant_id=job.tenant_id,
+            job_id=job.id,
+            link_id=link.id,
+            job_title=job.title,
+            company_name=tenant_name,
+            emailed=True,
+        )
 
     # Master Directive Part 2 section 5.1: EV_PROFILE_SUBMIT, the profile
     # entering this job's pipeline. `source_type` was derived by the link's
@@ -1319,7 +1390,7 @@ async def apply_to_job(
         # confirmation email below: a broker hiccup must not cost the candidate
         # their submission, and the lazy path will still cover it.
         try:
-            celery_app.send_task(
+            dispatch(
                 "pickready.generate_candidate_questions", args=[str(link.id)]
             )
         except Exception as exc:  # noqa: BLE001
@@ -1328,12 +1399,12 @@ async def apply_to_job(
                 link.id, type(exc).__name__,
             )
 
-    celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
+    dispatch("pickready.parse_resume", args=[str(profile.id)])
     # Email 1 of 6: confirm receipt (spec §6.1). Enqueued, never inline
     # (claude.md rule 4), and never allowed to fail the application — a broker
     # hiccup must not cost the candidate their submission.
     try:
-        celery_app.send_task(
+        dispatch(
             "pickready.send_application_confirmation", args=[str(link.id)]
         )
     except Exception as exc:  # noqa: BLE001
@@ -1347,6 +1418,165 @@ async def apply_to_job(
         assessment_required=decision.requires_new_assessment,
         assessment_notice=decision.message(),
     )
+
+
+# ── The Updates feed (workflow sections 14 and 15) ───────────────────────────
+#
+# The candidate's in-portal record of everything that has happened to them.
+# It exists because email is the product's only other channel to a candidate,
+# and email silently fails: a spam filter, a full inbox, or a typo in an
+# address a recruiter uploaded, and somebody misses an assessment invitation
+# with neither side finding out.
+#
+# Every route here is scoped by `candidate_id` from the token, which is the
+# real boundary (candidates have no tenant and RLS-by-tenant cannot apply).
+
+#: How many updates one page carries. Generous, because this is a read-only
+#: reverse-chronological list and a candidate scrolling their own history
+#: should not paginate every ten rows.
+UPDATES_PAGE_SIZE = 30
+
+
+@router.get("/updates", response_model=UpdatesOut)
+async def my_updates(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=UPDATES_PAGE_SIZE, ge=1, le=100),
+    unread_only: bool = Query(default=False),
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> UpdatesOut:
+    """The candidate's own feed, newest first.
+
+    `unread_count` is over the WHOLE feed rather than this page, because it
+    drives the nav badge and a badge that reads zero on page two is worse than
+    no badge at all.
+
+    The job title and company name are JOINED rather than stored on the row.
+    They are already denormalised into the body text at write time, so a client
+    that renders the body needs neither; they exist so the UI can group by role
+    without parsing prose, and joining keeps a renamed job from leaving a stale
+    heading in a feed the candidate will read for months.
+    """
+    candidate = await _candidate_for_user(session, user)
+    offset = (page - 1) * page_size
+
+    conditions = [CandidateUpdate.candidate_id == candidate.id]
+    if unread_only:
+        conditions.append(CandidateUpdate.read_at.is_(None))
+
+    total = (
+        await session.execute(
+            select(func.count()).select_from(CandidateUpdate).where(*conditions)
+        )
+    ).scalar_one()
+    unread = (
+        await session.execute(
+            select(func.count())
+            .select_from(CandidateUpdate)
+            .where(
+                CandidateUpdate.candidate_id == candidate.id,
+                CandidateUpdate.read_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    rows = (
+        await session.execute(
+            select(CandidateUpdate, Job.title, Tenant.name)
+            .outerjoin(Job, Job.id == CandidateUpdate.job_id)
+            .outerjoin(Tenant, Tenant.id == CandidateUpdate.tenant_id)
+            .where(*conditions)
+            # `id` after `created_at` for the same reason the candidate table
+            # carries one: without it two rows written in the same transaction
+            # can swap places between pages and one of them disappears.
+            .order_by(CandidateUpdate.created_at.desc(), CandidateUpdate.id.desc())
+            .limit(page_size)
+            .offset(offset)
+        )
+    ).all()
+
+    updates = []
+    for row, job_title, company_name in rows:
+        out = UpdateOut.model_validate(row)
+        out.job_title = job_title
+        out.company_name = company_name
+        updates.append(out)
+
+    return UpdatesOut(
+        updates=updates,
+        unread_count=int(unread),
+        total=int(total),
+        page=page,
+        page_size=page_size,
+        has_next=offset + len(rows) < int(total),
+    )
+
+
+@router.get("/updates/summary", response_model=UpdatesSummaryOut)
+async def my_updates_summary(
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> UpdatesSummaryOut:
+    """Just the badge count, for the nav.
+
+    A separate route rather than reading the list endpoint with `page_size=1`:
+    the nav renders on every candidate page, and fetching rows it will not show
+    on every navigation is a cost with no reader.
+    """
+    candidate = await _candidate_for_user(session, user)
+    unread = (
+        await session.execute(
+            select(func.count())
+            .select_from(CandidateUpdate)
+            .where(
+                CandidateUpdate.candidate_id == candidate.id,
+                CandidateUpdate.read_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    return UpdatesSummaryOut(unread_count=int(unread))
+
+
+@router.post("/updates/read", response_model=UpdatesSummaryOut)
+async def mark_updates_read(
+    body: MarkUpdatesReadIn,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> UpdatesSummaryOut:
+    """Mark the feed, or specific rows, as read.
+
+    Scoped by `candidate_id` as well as by id, so a guessed identifier marks
+    nothing: without that clause this would be a write another candidate's row
+    could be reached through, which is the one thing a per-person feed must not
+    allow.
+
+    Already-read rows keep their ORIGINAL timestamp. Re-stamping would lose the
+    only fact this column carries beyond a boolean: WHEN somebody saw their
+    interview invitation.
+    """
+    candidate = await _candidate_for_user(session, user)
+    conditions = [
+        CandidateUpdate.candidate_id == candidate.id,
+        CandidateUpdate.read_at.is_(None),
+    ]
+    if body.ids:
+        conditions.append(CandidateUpdate.id.in_(body.ids))
+    await session.execute(
+        update(CandidateUpdate)
+        .where(*conditions)
+        .values(read_at=datetime.now(timezone.utc))
+    )
+    await session.flush()
+    unread = (
+        await session.execute(
+            select(func.count())
+            .select_from(CandidateUpdate)
+            .where(
+                CandidateUpdate.candidate_id == candidate.id,
+                CandidateUpdate.read_at.is_(None),
+            )
+        )
+    ).scalar_one()
+    return UpdatesSummaryOut(unread_count=int(unread))
 
 
 @router.get("/applications", response_model=ApplicationsOut)
@@ -1549,8 +1779,8 @@ async def edit_application(
     if resume_replaced:
         # Re-parse and re-embed, then re-score: the recruiter's ranking must
         # reflect the resume actually on file.
-        celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
-        celery_app.send_task("pickready.run_matching", args=[str(link.job_id)])
+        dispatch("pickready.parse_resume", args=[str(profile.id)])
+        dispatch("pickready.run_matching", args=[str(link.job_id)])
 
     return ApplyOut(
         link_id=link.id,

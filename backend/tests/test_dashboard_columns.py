@@ -412,10 +412,36 @@ def test_hold_is_rendered_as_a_modifier_and_not_as_a_stage():
 
 def test_every_stored_status_reaches_a_stage_or_is_a_named_modifier():
     """A status added to the FSM with no dashboard home renders blank, which is
-    a cell nobody notices is wrong."""
+    a cell nobody notices is wrong.
+
+    The property is that the CELL IS NEVER BLANK, and the assertion says that
+    directly. It used to say `stage is not None or stage_on_hold`, which was a
+    proxy that held only while `hold` was the single status outside the six
+    coarse stages. `sourced` is the second (workflow Gate 5) and it is
+    deliberately neither a stage nor a pause: it is before the funnel. Under
+    the old proxy it would have failed while rendering a perfectly good label.
+    """
     for status in hiring_pipeline.ALL_STATUSES:
         assembled = dashboard.assemble_row(row(status=status))
-        assert assembled.stage is not None or assembled.stage_on_hold
+        assert assembled.stage is not None or assembled.stage_label.strip(), status
+
+
+def test_a_sourced_candidate_is_outside_the_funnel_and_not_paused():
+    """Gate 5, at the one surface that counts applicants.
+
+    Mapping `sourced` to Applied would have the Dashboard's funnel report a
+    recruiter's own filing cabinet as inbound applications, which is exactly
+    the confusion the stage exists to end. Marking it `stage_on_hold` would be
+    just as wrong in the other direction: nobody paused this candidate, nobody
+    has contacted them at all.
+    """
+    assembled = dashboard.assemble_row(row(status=hiring_pipeline.SOURCED))
+    assert assembled.stage is None
+    assert assembled.stage_on_hold is False
+    assert assembled.stage_label == hiring_pipeline.STAGE_LABELS[
+        hiring_pipeline.SOURCED
+    ]
+    assert "hold" not in assembled.stage_label.lower()
 
 
 # ── Row states ───────────────────────────────────────────────────────────────

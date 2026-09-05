@@ -24,7 +24,10 @@ import * as React from "react";
 import { useRouter } from "next/navigation";
 import { Check, Copy, ExternalLink, Sparkles } from "lucide-react";
 
+import Link from "next/link";
+
 import { apiGet, apiPost } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import { buildJobCreatePayload, type JobFormValues, skillsToArray } from "@/lib/job-payload";
 import { apiErrorMessage } from "@/lib/validation-errors";
 import { JOB_GRADES, type JobGrade } from "@/lib/types";
@@ -56,6 +59,14 @@ import {
 
 /** The sentinel the server uses for "not in the list, type it yourself". */
 const OTHERS = "Others";
+
+/**
+ * Gate 2: the widest experience band a job may advertise. Mirrors
+ * `schemas/jobs.MAX_EXPERIENCE_SPAN_YEARS`, which is the real gate. This copy
+ * exists so the recruiter is told before they submit, never so the rule is
+ * enforced here.
+ */
+const MAX_EXPERIENCE_SPAN_YEARS = 5;
 
 interface ReportingToOptions {
   options: string[];
@@ -119,6 +130,16 @@ export default function CreateJobPage() {
     credit_cost_per_report: number;
   } | null>(null);
 
+  // Gate 1 (workflow section 18): a client cannot create a job until its
+  // Company Hiring Requirements exist. The SERVER refuses the create call; this
+  // reads the same status so the recruiter is told before they write a JD
+  // rather than after. `null` means "not answered yet" and blocks nothing --
+  // an unreadable status must not lock the form, because the server is the
+  // gate and it will refuse honestly on submit.
+  const { user } = useAuth();
+  const [requirementsComplete, setRequirementsComplete] =
+    React.useState<boolean | null>(null);
+
   const [reportingOptions, setReportingOptions] = React.useState<string[]>([]);
   const [reportingChoice, setReportingChoice] = React.useState("");
   const [gradeError, setGradeError] = React.useState<string | null>(null);
@@ -149,7 +170,28 @@ export default function CreateJobPage() {
     };
   }, []);
 
-  /** min must not exceed max. The database enforces this too. */
+  React.useEffect(() => {
+    const tenantId = user?.tenant_id;
+    if (!tenantId) return;
+    let cancelled = false;
+    apiGet<{ status: string }>(
+      `/clients/${tenantId}/company-dna/status`,
+    )
+      .then((res) => {
+        if (!cancelled) setRequirementsComplete(res.status === "complete");
+      })
+      .catch(() => {
+        if (!cancelled) setRequirementsComplete(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.tenant_id]);
+
+  /**
+   * Both ends present, min not above max, and the span within the ceiling.
+   * The backend enforces all three; this reports them beside the field.
+   */
   const validateExperience = (): boolean => {
     const min = Number(form.experience_min_years);
     const max = Number(form.experience_max_years);
@@ -159,6 +201,18 @@ export default function CreateJobPage() {
     }
     if (Number.isFinite(min) && Number.isFinite(max) && min > max) {
       setExperienceError("The minimum cannot be more than the maximum.");
+      return false;
+    }
+    if (
+      Number.isFinite(min) &&
+      Number.isFinite(max) &&
+      max - min > MAX_EXPERIENCE_SPAN_YEARS
+    ) {
+      setExperienceError(
+        `This range spans ${max - min} years. A job may span at most ` +
+          `${MAX_EXPERIENCE_SPAN_YEARS} years, so raise the minimum or lower ` +
+          `the maximum.`,
+      );
       return false;
     }
     setExperienceError(null);
@@ -282,6 +336,25 @@ export default function CreateJobPage() {
         description="Draft the description, edit it, then publish to get the public application link."
       />
 
+      {requirementsComplete === false ? (
+        <Card className="mb-6 border-navy-200 bg-navy-50">
+          <CardContent className="space-y-3 pt-6">
+            <h2 className="text-base font-semibold">
+              Complete your Company Hiring Requirements first
+            </h2>
+            <p className="text-sm">
+              Every job this organisation posts is evaluated against what your
+              company considers a strong hire. Until that is on record there is
+              nothing for this role to be assessed against, so job creation
+              waits for it.
+            </p>
+            <Button asChild>
+              <Link href="/org/company-dna">Open Company Hiring Requirements</Link>
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
         <CardContent className="space-y-8 pt-6">
           <FormSection title="Position">
@@ -344,7 +417,7 @@ export default function CreateJobPage() {
               htmlFor="experience_min_years"
               required
               error={experienceError}
-              hint="The range of experience this role expects, in years."
+              hint={`The range of experience this role expects, in years. A job may span at most ${MAX_EXPERIENCE_SPAN_YEARS} years.`}
             >
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="flex items-center gap-2">

@@ -137,7 +137,7 @@ async def test_open_apply_with_no_prior_contact_succeeds(monkeypatch) -> None:
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -189,7 +189,7 @@ async def test_reuse_previous_copies_last_resume(monkeypatch) -> None:
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -242,7 +242,7 @@ async def test_fresh_upload_creates_a_new_profile(monkeypatch) -> None:
 
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -278,7 +278,7 @@ async def test_reuse_without_any_previous_resume_is_422(monkeypatch) -> None:
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
 
-    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -304,7 +304,7 @@ async def test_apply_rejects_bad_resume_file(monkeypatch) -> None:
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
 
-    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -336,7 +336,7 @@ async def test_apply_context_reports_stored_resume_and_duplicate(monkeypatch) ->
         return _asset("https://res.cloudinary.test/ctx.pdf")
 
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -395,7 +395,7 @@ async def test_apply_persists_personal_details_on_the_candidate(monkeypatch) -> 
         return _asset("https://res.cloudinary.test/personal.pdf")
 
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
-    monkeypatch.setattr(portal_mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(portal_mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
@@ -518,7 +518,7 @@ async def test_applying_enqueues_question_generation_immediately(monkeypatch) ->
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
     monkeypatch.setattr(
-        portal_mod.celery_app, "send_task",
+        portal_mod, "dispatch",
         lambda name, *a, **k: enqueued.append(name),
     )
 
@@ -570,7 +570,7 @@ async def test_applying_to_an_unapproved_job_does_not_enqueue_generation(
     monkeypatch.setattr(cand_mod, "store_resume", fake_store)
     monkeypatch.setattr(portal_mod, "store_resume", fake_store)
     monkeypatch.setattr(
-        portal_mod.celery_app, "send_task",
+        portal_mod, "dispatch",
         lambda name, *a, **k: enqueued.append(name),
     )
 

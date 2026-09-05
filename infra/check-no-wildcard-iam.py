@@ -61,6 +61,18 @@ RESOURCELESS_ACTIONS = {
     "ssmmessages:CreateDataChannel": "opens an SSM Session Manager channel; the AWS API defines no resource type for it.",
     "ssmmessages:OpenControlChannel": "opens an SSM Session Manager channel; the AWS API defines no resource type for it.",
     "ssmmessages:OpenDataChannel": "opens an SSM Session Manager channel; the AWS API defines no resource type for it.",
+    # The five a VPC-attached Lambda needs to attach and detach its own elastic
+    # network interface. They cannot be scoped to the interface: it does not
+    # exist when the permission is evaluated, and its id is not knowable in
+    # advance. This is exactly the set AWS's own managed
+    # AWSLambdaVPCAccessExecutionRole grants on "*", and the narrowing that
+    # matters is elsewhere -- the function is in named subnets with a named
+    # security group, both of which the module fixes.
+    "ec2:CreateNetworkInterface": "attaches a VPC-attached Lambda's own ENI; the interface does not exist when the permission is evaluated, so there is no ARN to name.",
+    "ec2:DescribeNetworkInterfaces": "an EC2 Describe call; the AWS API defines no resource-level permission for it.",
+    "ec2:DeleteNetworkInterface": "detaches the ENI created above, whose id is not knowable in advance.",
+    "ec2:AssignPrivateIpAddresses": "addresses the ENI created above.",
+    "ec2:UnassignPrivateIpAddresses": "addresses the ENI created above.",
 }
 
 #: RESOURCE POLICIES, where `resources = ["*"]` does not mean "every resource".

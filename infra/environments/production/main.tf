@@ -12,9 +12,9 @@
  *   NAT per AZ            a single NAT is one AZ failure from every task
  *                         losing egress, which means losing the model provider
  *   RDS Multi-AZ          a failover instead of a restore
- *   Redis replica         Redis here is the Celery broker and the working
- *                         memory layer, not a cache: losing it is a queue
- *                         nobody is draining
+ *   Redis replica         Redis carries the proctoring warning counter and
+ *                         the run-status record, so losing it refuses every
+ *                         assessment turn rather than costing a cache miss
  *   deletion protection   on, in the rds module, keyed off `environment`
  *   ECS Exec OFF          a shell in a container holding real candidate data
  *                         is a different thing from one holding seed data
@@ -288,10 +288,10 @@ module "elasticache" {
   security_group_id = module.network.redis_security_group_id
 
   node_type = "cache.t4g.small"
-  # ONE REPLICA, WHICH IS ALSO WHAT ENABLES AUTOMATIC FAILOVER. Redis here is
-  # the Celery broker and specdoc4's working-memory layer, not a cache: losing
-  # it is a queue nobody is draining and a candidate mid-assessment whose next
-  # question never arrives.
+  # ONE REPLICA, WHICH IS ALSO WHAT ENABLES AUTOMATIC FAILOVER. Redis carries
+  # the proctoring warning counter and the run-status record, not just a cache.
+  # The proctoring gate answers 503 rather than silently not warning, so losing
+  # Redis is a candidate mid-assessment whose next question never arrives.
   replica_count = 1
 
   kms_key_arn = aws_kms_key.this.arn
@@ -482,7 +482,12 @@ module "ecs" {
   enable_execute_command = false
 
   common_environment = {
-    APP_ENV                       = local.environment
+    # `ENVIRONMENT`, NOT `APP_ENV`. `Settings.environment` reads this name,
+    # and `APP_ENV` is a Cloud Run convention from the previous platform that
+    # nothing has ever read. With it set, every deployed service believed it
+    # was in `development` -- the default -- which is what the pilot's first
+    # agent run reported in its own log.
+    ENVIRONMENT                   = local.environment
     AWS_REGION                    = var.region
     S3_BUCKET                     = module.s3.bucket_name
     EMBEDDING_DIMENSIONS          = "1024"
@@ -533,20 +538,35 @@ module "ecs" {
       }
     }
 
-    worker = {
+    # THE ASSESSMENT AGENT, replacing the Celery worker and beat services.
+    #
+    # A task definition and NOTHING ELSE: no service, no desired count, no
+    # autoscaling. `readypick-assessment-trigger` calls RunTask against this
+    # family when an assessment, a matrix compilation or a matching pass is
+    # dispatched; the container runs that one piece of work and exits.
+    #
+    # Fargate does not scale to zero, which is precisely why long AI work that
+    # runs a few times an hour is a task definition rather than a service.
+    agent = {
       image = "${module.ecr.repository_urls["backend"]}:${var.image_tag}"
-      command = [
-        "celery", "-A", "app.workers.celery_app", "worker",
-        "--loglevel=info", "--concurrency=4",
-      ]
+      # The entry point role in docker-entrypoint.sh: read one dispatched task
+      # from the environment, run it, exit.
+      command       = ["agent"]
       cpu           = 2048
       memory        = 4096
-      desired_count = 2
-      max_count     = 10
-      needs_s3      = true
-      # NOT read-only: resume parsing writes a temp file for pypdf.
+      on_demand     = true
+      desired_count = 0
+      max_count     = 0
+      # FARGATE'S MAXIMUM, and it is a SIGTERM grace period rather than a
+      # ceiling: this task runs for as long as its work takes and stops when the
+      # process exits. Two minutes is what an interrupted run gets to finish the
+      # piece it is on, instead of the 30-second default that would leave a
+      # conversation scored with no report written.
+      stop_timeout = 120
+      needs_s3     = true
+      # NOT read-only: resume and project parsing write temp files.
       readonly_root = false
-      # The worker runs the proctoring reconciliation sweeps, which re-read a
+      # The agent runs the proctoring reconciliation work, which re-reads a
       # session, so it reaches the analysis service on the same name the api
       # does.
       environment = {
@@ -560,32 +580,38 @@ module "ecs" {
         OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
-        SMTP_PASSWORD             = module.secrets.secret_arns["SMTP_PASSWORD"]
-        TAVILY_API_KEY            = module.secrets.secret_arns["TAVILY_API_KEY"]
-        MSG91_API_KEY             = module.secrets.secret_arns["MSG91_API_KEY"]
         LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
       }
     }
 
-    beat = {
+    # THE MIGRATION JOB. A task definition with no service, run as a one-shot
+    # task by `scripts/run-migration.sh` BEFORE the services are updated.
+    #
+    # Never a step in the API's startup: several tasks boot at once during a
+    # rollout and would race each other through the same migration. Alembic
+    # takes a lock, so the losers crash-loop.
+    #
+    # ONE SECRET, the DSN, and nothing else at all. It connects, applies DDL and
+    # exits; anything else it could read is reach its work does not need, and
+    # `tests/test_deploy_secret_hygiene.py` asserts exactly that.
+    migrate = {
       image = "${module.ecr.repository_urls["backend"]}:${var.image_tag}"
-      command = [
-        "celery", "-A", "app.workers.celery_app", "beat", "--loglevel=info",
-      ]
-      cpu           = 256
-      memory        = 512
-      desired_count = 1
-      max_count     = 1
-      readonly_root = false
-      # EXACTLY ONE, AND ZERO DURING A DEPLOY. Two schedulers double every
-      # scheduled task, which here means two reconciliation sweeps and two sets
-      # of reminder emails. 0/100 stops the old one before the new one starts.
-      min_healthy_percent = 0
-      max_percent         = 100
-      # The broker and nothing else. A scheduler that could read a model
-      # credential is a scheduler that could spend money.
+      # The entry point role that runs `alembic upgrade head` and exits.
+      command       = ["migrate"]
+      cpu           = 512
+      memory        = 1024
+      on_demand     = true
+      desired_count = 0
+      max_count     = 0
+      # Fargate's maximum, and only a SIGTERM grace period: the migration's real
+      # bound is `run-migration.sh`'s own 900-second wait, which polls for
+      # STOPPED and reads the exit code. That script deliberately does NOT treat
+      # a timeout as success, because a half-applied schema is the one state a
+      # deploy must never be layered on top of.
+      stop_timeout  = 120
+      readonly_root = true
       secrets = {
-        REDIS_URL = module.secrets.secret_arns["REDIS_URL"]
+        DATABASE_URL = module.secrets.secret_arns["DATABASE_URL"]
       }
     }
 
@@ -657,4 +683,304 @@ module "ecs" {
   }
 
   tags = local.tags
+}
+
+# ── Background work ──────────────────────────────────────────────────────────
+#
+# The Lambda half of what the Celery worker and beat services used to do. See
+# `infra/environments/pilot/main.tf` for the full argument; the short version is
+# that short work is billed per invocation, long work is one on-demand Fargate
+# task per dispatch, and the schedule is a managed scheduler with no singleton
+# process to lose.
+
+module "lambda" {
+  source = "../../modules/lambda"
+
+  project     = var.project
+  environment = local.environment
+  region      = var.region
+
+  vpc_subnet_ids     = module.network.private_subnet_ids
+  security_group_ids = [module.network.ecs_security_group_id]
+
+  # ARM64, matching the `ecs` module's default. The same backend image backs the
+  # API service, the on-demand agent and three of these four functions, so one
+  # architecture is not a preference here, it is a correctness requirement.
+  architecture = "arm64"
+
+  secret_policy_arns = module.secrets.policy_arns
+
+  kms_key_arn        = aws_kms_key.this.arn
+  log_retention_days = 90
+  failure_topic_arn  = aws_sns_topic.alarms.arn
+
+  functions = {
+    "task-worker" = {
+      package              = "image"
+      description          = "Every short background task: delivery, resume parsing, the reconciliation sweeps."
+      image_uri            = "${module.ecr.repository_urls["backend"]}:${var.image_tag}"
+      handler              = "app.workers.entrypoints.lambda_worker.lambda_handler"
+      memory_mb            = 1024
+      timeout_seconds      = 600
+      reserved_concurrency = var.reserve_lambda_concurrency ? 40 : null
+      secret_policy_key    = "task-worker"
+      # The SAME map the ECS services use. ECS injects these; Lambda has no
+      # equivalent, so the function fetches them at cold start with the
+      # policy below. Only the ARNs are here.
+      secrets = {
+        DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
+        REDIS_URL                 = module.secrets.secret_arns["REDIS_URL"]
+        OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
+        OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
+        VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        SMTP_PASSWORD             = module.secrets.secret_arns["SMTP_PASSWORD"]
+        TAVILY_API_KEY            = module.secrets.secret_arns["TAVILY_API_KEY"]
+        MSG91_API_KEY             = module.secrets.secret_arns["MSG91_API_KEY"]
+        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+      }
+      environment = {
+        # AWS_REGION IS NOT SET HERE. It is one of Lambda's RESERVED keys: the
+        # runtime injects it with the function's own region, and CreateFunction
+        # answers 400 for any request that also supplies it. Nothing is lost --
+        # `Settings.aws_region` reads that same variable, so boto3 and the
+        # application agree with the platform rather than with a literal.
+        ENVIRONMENT                     = local.environment
+        S3_BUCKET                       = module.s3.bucket_name
+        FRONTEND_URL                    = "https://${var.domain_name}"
+        EMBEDDING_DIMENSIONS            = "1024"
+        RESUME_SIGNED_URL_TTL_SECONDS   = "300"
+        TASK_DISPATCH_BACKEND           = "aws"
+        PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
+      }
+    }
+
+    "jd-gen" = {
+      package              = "image"
+      description          = "Writes one job description draft. Invoked synchronously by the request handler that is already waiting for it."
+      image_uri            = "${module.ecr.repository_urls["backend"]}:${var.image_tag}"
+      handler              = "app.workers.entrypoints.agents.jd_generation_handler"
+      memory_mb            = 512
+      timeout_seconds      = 600
+      reserved_concurrency = var.reserve_lambda_concurrency ? 10 : null
+      secret_policy_key    = "jd-gen"
+      # The SAME map the ECS services use. ECS injects these; Lambda has no
+      # equivalent, so the function fetches them at cold start with the
+      # policy below. Only the ARNs are here.
+      secrets = {
+        DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
+        OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
+        OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
+        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+      }
+      environment = {
+        # AWS_REGION IS NOT SET HERE. It is one of Lambda's RESERVED keys: the
+        # runtime injects it with the function's own region, and CreateFunction
+        # answers 400 for any request that also supplies it. Nothing is lost --
+        # `Settings.aws_region` reads that same variable, so boto3 and the
+        # application agree with the platform rather than with a literal.
+        ENVIRONMENT           = local.environment
+        TASK_DISPATCH_BACKEND = "aws"
+      }
+    }
+
+    "company-profile" = {
+      package              = "image"
+      description          = "Drafts one company's three profile sections from public sources."
+      image_uri            = "${module.ecr.repository_urls["backend"]}:${var.image_tag}"
+      handler              = "app.workers.entrypoints.agents.company_profile_handler"
+      memory_mb            = 512
+      timeout_seconds      = 300
+      reserved_concurrency = var.reserve_lambda_concurrency ? 5 : null
+      secret_policy_key    = "company-profile"
+      # The SAME map the ECS services use. ECS injects these; Lambda has no
+      # equivalent, so the function fetches them at cold start with the
+      # policy below. Only the ARNs are here.
+      secrets = {
+        DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
+        OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
+        OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
+        TAVILY_API_KEY            = module.secrets.secret_arns["TAVILY_API_KEY"]
+        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+      }
+      environment = {
+        # AWS_REGION IS NOT SET HERE. It is one of Lambda's RESERVED keys: the
+        # runtime injects it with the function's own region, and CreateFunction
+        # answers 400 for any request that also supplies it. Nothing is lost --
+        # `Settings.aws_region` reads that same variable, so boto3 and the
+        # application agree with the platform rather than with a literal.
+        ENVIRONMENT           = local.environment
+        TASK_DISPATCH_BACKEND = "aws"
+      }
+    }
+
+    # THE ONLY ZIP, AND THE ONLY THING HOLDING iam:PassRole. Thirty lines and
+    # boto3, and it must stay that way: passing a role is a privilege-escalation
+    # primitive, and the mitigation is that this function's whole source fits on
+    # a screen.
+    "assessment-trigger" = {
+      package                       = "zip"
+      description                   = "Starts one on-demand assessment-agent task and returns. Reads no secret."
+      source_dir                    = "${path.root}/../../../lambda/assessment_trigger"
+      handler                       = "handler.lambda_handler"
+      memory_mb                     = 128
+      timeout_seconds               = 30
+      run_task_cluster_arn          = module.ecs.cluster_arn
+      run_task_task_definition_arns = [module.ecs.on_demand_task_definition_arns["agent"]]
+      # Both roles: RunTask passes the task role the container runs as AND the
+      # execution role the ECS agent uses to pull the image and fetch secrets
+      # before it starts, so a grant naming only the first fails at RunTask.
+      run_task_role_arns = [
+        module.ecs.task_role_arns["agent"],
+        module.ecs.execution_role_arns["agent"],
+      ]
+      environment = {
+        # AWS_REGION IS NOT SET HERE. It is one of Lambda's RESERVED keys: the
+        # runtime injects it with the function's own region, and CreateFunction
+        # answers 400 for any request that also supplies it. Nothing is lost --
+        # `Settings.aws_region` reads that same variable, so boto3 and the
+        # application agree with the platform rather than with a literal.
+        ECS_CLUSTER            = module.ecs.cluster_name
+        ECS_TASK_DEFINITION    = module.ecs.on_demand_task_families["agent"]
+        ECS_CONTAINER_NAME     = "agent"
+        PRIVATE_SUBNET_IDS     = join(",", module.network.private_subnet_ids)
+        ECS_SECURITY_GROUP_IDS = module.network.ecs_security_group_id
+      }
+    }
+  }
+
+  tags = local.tags
+}
+
+# ── The schedule ─────────────────────────────────────────────────────────────
+#
+# MIRRORS `backend/app/workers/schedule.py`, and
+# `backend/tests/test_schedule_parity.py` reads both and fails if they drift.
+
+module "scheduler" {
+  source = "../../modules/scheduler"
+
+  project     = var.project
+  environment = local.environment
+  account_id  = var.account_id
+
+  target_function_arn = module.lambda.function_arns["task-worker"]
+  timezone            = "Asia/Kolkata"
+
+  schedules = {
+    "readypick-refresh-dashboard-views" = {
+      task            = "pickready.refresh_dashboard_views"
+      rate_expression = "rate(5 minutes)"
+    }
+    "readypick-remind-unapproved-framework" = {
+      task            = "pickready.remind_unapproved_technical_questions"
+      rate_expression = "rate(60 minutes)"
+    }
+    "readypick-reconcile-job-setup" = {
+      task            = "pickready.reconcile_job_setup"
+      rate_expression = "rate(15 minutes)"
+    }
+    "readypick-reconcile-assessment-credits" = {
+      task            = "pickready.reconcile_assessment_credits"
+      rate_expression = "rate(60 minutes)"
+    }
+    "readypick-reconcile-project-intake" = {
+      task            = "pickready.reconcile_project_intake"
+      rate_expression = "rate(60 minutes)"
+    }
+    "readypick-reconcile-proctoring-sessions" = {
+      task            = "pickready.reconcile_proctoring_sessions"
+      rate_expression = "rate(60 minutes)"
+    }
+    "readypick-purge-proctoring-events" = {
+      task            = "pickready.purge_proctoring_events"
+      rate_expression = "rate(60 minutes)"
+    }
+  }
+
+  tags = local.tags
+}
+
+# ── Observability ────────────────────────────────────────────────────────────
+
+resource "aws_sns_topic" "alarms" {
+  name              = "${var.project}-${local.environment}-alarms"
+  kms_master_key_id = aws_kms_key.this.arn
+  tags              = local.tags
+}
+
+data "aws_iam_policy_document" "alarm_topic" {
+  statement {
+    sid     = "AllowCloudWatchAlarms"
+    effect  = "Allow"
+    actions = ["SNS:Publish"]
+    principals {
+      type        = "Service"
+      identifiers = ["cloudwatch.amazonaws.com"]
+    }
+    resources = [aws_sns_topic.alarms.arn]
+    # Without an account condition a named service principal is the
+    # confused-deputy shape: it reads as narrow and is reachable from any
+    # account using that service.
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceAccount"
+      values   = [var.account_id]
+    }
+  }
+
+  statement {
+    sid     = "AllowLambdaFailureDestinations"
+    effect  = "Allow"
+    actions = ["SNS:Publish"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+    resources = [aws_sns_topic.alarms.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceAccount"
+      values   = [var.account_id]
+    }
+  }
+}
+
+resource "aws_sns_topic_policy" "alarms" {
+  arn    = aws_sns_topic.alarms.arn
+  policy = data.aws_iam_policy_document.alarm_topic.json
+}
+
+# AN EMAIL SUBSCRIPTION IS PENDING until its recipient clicks the confirmation
+# link, and Terraform reports it as created either way.
+resource "aws_sns_topic_subscription" "alarm_email" {
+  for_each = toset(var.alarm_emails)
+
+  topic_arn = aws_sns_topic.alarms.arn
+  protocol  = "email"
+  endpoint  = each.value
+}
+
+module "observability" {
+  source = "../../modules/observability"
+
+  project     = var.project
+  environment = local.environment
+  region      = var.region
+
+  alarm_topic_arn = aws_sns_topic.alarms.arn
+
+  enable_alb_alarms        = true
+  load_balancer_arn_suffix = module.alb.arn_suffix
+  target_group_arn_suffix  = module.alb.target_group_arn_suffixes["api"]
+
+  db_instance_id = module.rds.instance_id
+  function_names = module.lambda.function_names
+
+  # There is no ECS metric for "a task exited non-zero", and the Lambda that
+  # started it returned as soon as RunTask was accepted, so a metric filter over
+  # the agent's own `ecs_task.failed` line is the only report of the failure.
+  agent_log_group_name = module.ecs.log_group_names["agent"]
+
+  kms_key_arn = aws_kms_key.this.arn
+  tags        = local.tags
 }

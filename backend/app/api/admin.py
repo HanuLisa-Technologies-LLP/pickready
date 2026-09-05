@@ -9,7 +9,7 @@ remain the client organization's own flow — this module reuses the same
 `staff_invites` row and token helpers rather than inventing a parallel one.
 
 Auth is Firebase (claude.md rule 2): no OTP is ever generated here. Email is
-SMTP via the `pickready.send_email` Celery task (rules 4 and 5).
+SMTP via the dispatched `pickready.send_email` task (rules 4 and 5).
 
 """
 import uuid
@@ -63,7 +63,7 @@ from app.services import rbac
 from app.services.audit import audit, record_action
 from app.services.capabilities import DEFAULT_PERMISSION_MATRIX
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
-from app.workers.celery_app import celery_app
+from app.workers.dispatch import dispatch
 from app.services import llm_router
 from app.services import role_hierarchy
 
@@ -241,7 +241,7 @@ async def create_tenant(
         metadata={"name": name, "domain": domain, "industry": body.industry},
     )
     # Firebase owns credentials: the invite is an onboarding pointer, never a
-    # code. Sending is a Celery task (rule 4) over SMTP (rule 5).
+    # code. Sending is a dispatched task (rule 4) over SMTP (rule 5).
     #
     # The email used to carry only the tenant's name and NO acceptance link,
     # because no StaffInvite row was ever minted for the client owner — so the
@@ -260,7 +260,7 @@ async def create_tenant(
         )
     )
     await session.flush()
-    celery_app.send_task(
+    dispatch(
         "pickready.send_email",
         args=[str(tenant.id), str(body.client_email), "client_invite",
               {"tenant_name": name,
@@ -640,7 +640,7 @@ async def invite_staff(
     # to  on ReadyPick", " has invited you to join  as a ", "This link expires
     # on ." An unknown placeholder resolves to '' rather than raising
     # (email_render.substitute), so the email sent and looked delivered.
-    celery_app.send_task(
+    dispatch(
         "pickready.send_email",
         args=[str(tenant.id), email, "staff_invite",
               {"full_name": body.full_name or email,

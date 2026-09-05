@@ -12,7 +12,7 @@ identical for all three (services/capabilities.py) and gating stays
 INVITE LIFECYCLE — there is no password anywhere (claude.md rule 2):
   create staff row (status=invited)
     -> mint a single-use, 7-day, SHA-256-hashed token
-    -> enqueue `pickready.send_email` (Celery, never inline — rule 4) with a
+    -> dispatch `pickready.send_email` (never inline — rule 4) with a
        /join?invite=<token> link, and ALSO return the link so an admin can
        copy it when SMTP is not yet configured
     -> invitee opens /join, signs in with Firebase (Google / email+password)
@@ -81,14 +81,14 @@ from app.schemas.provider import (
     document_slots,
 )
 from app.services import capabilities as caps
-from app.services import company_research
 from app.services import document_storage
 from app.services import rbac
 from app.services import role_hierarchy
 from app.services import tenant_cache
 from app.services.audit import audit
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
-from app.workers.celery_app import celery_app
+from app.workers import agent_client
+from app.workers.dispatch import dispatch
 
 router = APIRouter()
 
@@ -222,12 +222,22 @@ async def research_company_profile(
             status_code=422,
             detail="This account has no company name to research.",
         )
-    draft = await company_research.research_company(
-        session,
-        company=name,
-        website=(tenant.website_domain if tenant else None),
-        industry=(tenant.industry if tenant else None),
-    )
+    try:
+        draft = await agent_client.research_company(
+            session,
+            company=name,
+            website=(tenant.website_domain if tenant else None),
+            industry=(tenant.industry if tenant else None),
+        )
+    except agent_client.AgentInvokeError as exc:
+        # The research agent DEGRADES on its own when it finds nothing usable,
+        # returning `degraded=True` with a reason. This is the other case: the
+        # agent was never reached, so there is no draft and no reason, and an
+        # empty form would read as a finished one.
+        raise HTTPException(
+            status_code=503,
+            detail="The company research agent could not be reached. Try again in a moment.",
+        ) from exc
     await audit(
         session,
         tenant_id=user.tenant_id,
@@ -329,7 +339,7 @@ def _staff_out(
 def _email_dispatch_state() -> str:
     """Honest reporting for the UI: is the SMTP sender actually configured?
 
-    The Celery task is enqueued either way (rule 4/5 — the worker owns the
+    The task is dispatched either way (rule 4/5 — the worker owns the
     delivery taxonomy), but the admin is told up front when nothing can leave
     the building, so the copyable invite link is understood as THE delivery
     mechanism rather than a fallback nobody notices.
@@ -434,8 +444,8 @@ async def _issue_invite(
     link = build_invite_link(get_settings().frontend_url, token)
     await _ensure_invite_template(session, actor.tenant_id)
     dispatch = _email_dispatch_state()
-    # Rule 4: delivery is ALWAYS a Celery task, never inline in the handler.
-    celery_app.send_task(
+    # Rule 4: delivery is ALWAYS a dispatched task, never inline in the handler.
+    dispatch(
         "pickready.send_email",
         args=[
             str(actor.tenant_id),

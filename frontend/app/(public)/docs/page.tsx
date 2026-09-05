@@ -181,7 +181,7 @@ const STACK = [
   {
     icon: Workflow,
     title: "Asynchronous work",
-    detail: "Celery workers · Celery beat · durable state · idempotent retries",
+    detail: "On-demand compute · managed schedules · durable state · idempotent retries",
   },
   {
     icon: Bot,
@@ -624,8 +624,9 @@ export default function DocsPage() {
               <p className="mt-5 max-w-3xl text-pretty leading-7 text-white/70">
                 Next.js serves the public and portal experiences. FastAPI owns
                 contracts and authorization. PostgreSQL stores domain state and
-                enforces tenant isolation. Celery performs long-running work,
-                while Redis coordinates queues and hot data.
+                enforces tenant isolation. Long-running work runs on compute
+                that starts when the work arrives and stops when it finishes,
+                while Redis coordinates shared counters and hot data.
               </p>
               <div className="mt-8 grid gap-3 sm:grid-cols-2">
                 {[
@@ -702,7 +703,7 @@ export default function DocsPage() {
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
                 {[
                   [Database, "PostgreSQL + pgvector", "State, RLS, vectors"],
-                  [Workflow, "Celery + Redis", "Queues, schedules, cache"],
+                  [Workflow, "On-demand compute", "Dispatch, schedules, cache"],
                   [Bot, "AI providers", "Generate, score, synthesize"],
                   [Boxes, "External services", "Files, pay, mail, SMS"],
                 ].map(([Icon, title, body]) => {

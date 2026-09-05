@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import (
     APIRouter, Depends, File, HTTPException, Query, UploadFile, status,
 )
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -40,12 +40,16 @@ from app.schemas.jobs import (
     ApprovalOut,
     ApproveIn,
     CompensationIn,
+    DatabankInviteIn,
+    DatabankInviteOut,
+    DatabankInviteResultOut,
     DatabankUploadOut,
     DatabankUploadResultOut,
     JDGenerateIn,
     JDGenerateOut,
     JDMarkdownIn,
     JDUpdateIn,
+    JobCloseIn,
     JobCreateIn,
     JobDetailOut,
     JobOut,
@@ -65,11 +69,13 @@ from app.services import capabilities as caps
 from app.services import credits
 from app.services import job_candidates
 from app.services import job_posting
+from app.services import candidate_updates
 from app.services import hiring_pipeline
 from app.services import rbac
 from app.services import telemetry_events
 from app.services.audit import audit
-from app.workers.celery_app import celery_app
+from app.workers import agent_client
+from app.workers.dispatch import dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +132,8 @@ def _apply_posting_window(out: JobOut, job: Job) -> JobOut:
     out.days_until_posting_ends = window.days_until_posting_ends
     out.days_until_grace_ends = window.days_until_grace_ends
     out.posting_summary = window.summary()
+    out.closed_at = window.closed_at
+    out.closed_reason = window.closed_reason
     return out
 
 
@@ -349,6 +357,16 @@ async def create_job(
             ),
         )
 
+    # ── Gate 1: Company Hiring Requirements must exist (workflow §18) ───────
+    # The company-level artifact every job on this tenant is derived against.
+    # Asked of the TABLE, and only at the moment of creation: a job created
+    # before the client completed theirs stays created.
+    from app.services.hiring import company_requirements  # noqa: PLC0415
+
+    blocked = await company_requirements.creation_blocked(session, user.tenant_id)
+    if blocked:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=blocked)
+
     # Snapshot the company's narrative sections onto the job (spec §3.2). An
     # explicit value in the create body wins; otherwise the company profile
     # seeds it. Snapshotting — rather than always reading through — is what
@@ -478,7 +496,7 @@ async def create_job(
                           "public_url": public_job_url(job.id) if body.publish else None})
     if body.publish:
         # Databank matching runs the moment a job is published (FR-4.2), async.
-        celery_app.send_task("pickready.run_matching", args=[str(job.id)])
+        dispatch("pickready.run_matching", args=[str(job.id)])
     # The PPI framework is generated from the JD as soon as the JD exists; it
     # does not wait for publish, so an unpublished draft is never the thing
     # holding up the assessment.
@@ -501,7 +519,7 @@ async def create_job(
     # single task that generated both would take the gating half down with any
     # failure in the other, which is the exact coupling that left nineteen live
     # jobs with a stamped timestamp and no framework.
-    celery_app.send_task("pickready.generate_matching_categories", args=[str(job.id)])
+    dispatch("pickready.generate_matching_categories", args=[str(job.id)])
     # Load the GENERATED posting-window columns before serialising. The mapper
     # asks for them via RETURNING (models/job.eager_defaults), but a direct
     # publish re-stamps `posting_start_date` after the INSERT, which expires
@@ -656,7 +674,7 @@ async def publish_job(
             "job_identifier": str(job.id),
         },
     )
-    celery_app.send_task("pickready.run_matching", args=[str(job.id)])
+    dispatch("pickready.run_matching", args=[str(job.id)])
 
     out = PublishJobOut.model_validate(job)
     out.jd_markdown = jd_markdown_for(job) or None
@@ -819,6 +837,131 @@ async def renew_job(
     _apply_posting_window(out, job)
     out.public_application_url = out.public_application_url or public_job_url(job.id)
     return out
+
+
+@router.post("/{job_id}/close", response_model=JobOut)
+async def close_job(
+    job_id: uuid.UUID,
+    body: JobCloseIn,
+    user: CurrentUser = Depends(require_capability(caps.PUBLISH_JOB)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> JobOut:
+    """Workflow Gate 8: stop the posting because the requirement was met.
+
+    The 30 days are the LONGEST a posting runs, never the shortest. A client
+    who fills the role on day 18 says so here, and from that instant the public
+    link 404s, the job leaves every candidate's board and no new application is
+    accepted. Everything the hiring team already has is untouched: the ranked
+    list, the reports, the pipeline stages and the candidates mid-assessment
+    all continue exactly as before, which is why this is not `archive`.
+
+    WHY IT IS `publish_job` AND NOT A NEW CAPABILITY. Opening a posting to the
+    public and closing it again are the same authority over the same thing, and
+    a capability with no seeding migration is half a change (the product has
+    shipped that mistake once and every dashboard control answered 403 for a
+    whole phase). Whoever may publish this job may close it.
+
+    THERE IS NO REOPEN. RBAC 22 asks for a controlled revision mechanism rather
+    than a reopen, and reopening would restart a window candidates have already
+    been told is over. A client who needs the role again renews or creates one.
+    """
+    job = await _get_visible_job(session, user, job_id)
+    if job.closed_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This job is already closed. Closing it again would restamp "
+                "the moment it stopped taking applications."
+            ),
+        )
+    if job.ratified_at is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This job has never been published, so there is no posting to "
+                "close. Archive the draft instead."
+            ),
+        )
+    reason = (body.reason or "").strip() or None
+    job.closed_at = datetime.now(timezone.utc)
+    job.closed_reason = reason
+    # RBAC 17's terminal state. Written here rather than inferred, for the same
+    # reason publication writes PUBLISHED: a derived state records no actor.
+    job.lifecycle_state = hiring_pipeline.JobLifecycleState.CLOSED_ARCHIVED.value
+    await session.flush()
+    await _invalidate_public_job(job.id)
+    await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="job_closed",
+        target_type="job",
+        target_id=job.id,
+        metadata={
+            "title": job.title,
+            "closed_at": job.closed_at.isoformat(),
+            # Recorded because "why did this requisition stop" is the question
+            # the audit log exists to answer, and the client typed the answer.
+            "reason": reason,
+        },
+    )
+    await _notify_applicants_of_closure(session, job)
+    logger.info("jobs.closed job_id=%s by=%s", job.id, user.user_id)
+    return _with_public_url(job)
+
+
+async def _notify_applicants_of_closure(session: AsyncSession, job: Job) -> None:
+    """Tell everyone with a live application that the role has closed.
+
+    They applied and are now waiting for an answer that is not coming through
+    the usual route. Leaving them to work it out from a link that stopped
+    working is the exact silence the Updates feed exists to end.
+
+    THREE EXCLUSIONS, ALL DELIBERATE. Archived links are not live applications.
+    Terminal ones (`rejected`, `joined`) have already had their outcome, and a
+    closure notice after a rejection reads as a second rejection. `sourced`
+    rows never applied, so there is nothing for them to be told the end of --
+    and telling somebody a role closed when they did not know it was open is
+    only confusing.
+
+    One statement rather than a row-by-row loop: a popular posting has hundreds
+    of applicants and this runs inside the request that closed the job.
+    """
+    from app.services import candidate_updates  # noqa: PLC0415
+
+    template = candidate_updates.TEMPLATES[candidate_updates.JOB_CLOSED]
+    tenant_name = (
+        await session.execute(select(Tenant.name).where(Tenant.id == job.tenant_id))
+    ).scalar_one_or_none()
+    body = template.body.format(
+        job=job.title or "this role",
+        company=tenant_name or "the hiring team",
+        link_id="",
+        job_id="",
+    )
+    await session.execute(
+        text(
+            """
+            INSERT INTO candidate_updates
+                (id, candidate_id, tenant_id, job_id, job_candidate_link_id,
+                 kind, title, body, link_path, emailed)
+            SELECT gen_random_uuid(), l.candidate_id, l.tenant_id, l.job_id,
+                   l.id, :kind, :title, :body,
+                   '/portal/applications?application=' || l.id::text,
+                   FALSE
+              FROM job_candidate_links l
+             WHERE l.job_id = :job_id
+               AND l.archived_at IS NULL
+               AND l.status NOT IN ('sourced', 'rejected', 'joined')
+            """
+        ),
+        {
+            "kind": template.kind,
+            "title": template.title,
+            "body": body,
+            "job_id": str(job.id),
+        },
+    )
 
 
 @router.post("/{job_id}/archive", response_model=JobOut)
@@ -1011,6 +1154,14 @@ async def list_job_candidates(
         pattern="^(old|new)$",
         description="Narrow to Old Profiles (applied before the current posting window) or New Profiles.",
     ),
+    arrival: str | None = Query(
+        default=None,
+        pattern="^(new|considered)$",
+        description=(
+            "Narrow to the New Candidates section (people who applied after "
+            "the last assessment round on this job) or to everyone else."
+        ),
+    ),
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> RankedCandidatesOut:
@@ -1024,6 +1175,13 @@ async def list_job_candidates(
     Every row carries `profile_age`. After a renewal, applicants from the
     previous window read as Old Profiles — still listed, still ranked, still
     openable; the distinction is provenance and billing, never access.
+
+    Every row also carries `is_new_candidate`, and the page carries
+    `new_candidate_count` (workflow section 32). Somebody who applies the
+    morning after a selection round lands wherever their score puts them, which
+    is usually a page nobody opens again; the count is how the team finds out
+    they are there at all, so it is computed over the WHOLE job rather than
+    over the rows on this page.
     """
     job = await _get_visible_job(session, user, job_id)
     grade = job.assessment_grade or "non_managerial"
@@ -1035,6 +1193,7 @@ async def list_job_candidates(
         page_size=page_size,
         include_archived=include_archived,
         profile_age_filter=profile_age,
+        arrival_filter=arrival,
     )
     return RankedCandidatesOut(
         job_id=job.id,
@@ -1049,6 +1208,7 @@ async def list_job_candidates(
         has_previous=result.has_previous,
         range_start=result.range_start,
         range_end=result.range_end,
+        new_candidate_count=result.new_candidate_count,
     )
 
 
@@ -1171,7 +1331,7 @@ async def submit_job(
                 action="job_submitted", target_type="job", target_id=job.id,
                 metadata={"new_status": result.new_status.value})
     if result.ratified:
-        celery_app.send_task("pickready.run_matching", args=[str(job.id)])  # FR-4.2
+        dispatch("pickready.run_matching", args=[str(job.id)])  # FR-4.2
     return JobOut.model_validate(job)
 
 
@@ -1209,7 +1369,7 @@ async def approve_job(
     if result.ratified:
         # The moment a job reaches HR, Databank matching runs (FR-4.2) —
         # asynchronously, never inline.
-        celery_app.send_task("pickready.run_matching", args=[str(job.id)])
+        dispatch("pickready.run_matching", args=[str(job.id)])
     return JobOut.model_validate(job)
 
 
@@ -1298,16 +1458,12 @@ async def generate_jd(
     The pre-2026-07-28 top-level section keys are still emitted (see
     JDGenerateOut), so a client that has not been rebuilt keeps working.
 
-    Coded defensively: if the jd_generation service is not wired up at runtime,
-    this returns 503 rather than 500.
+    The generator itself degrades rather than failing: an outage produces a
+    template document the recruiter can edit. What CANNOT be degraded here is
+    not reaching the generator at all, which is answered 503, because an empty
+    draft returned for an unreachable agent would present "we could not ask"
+    as "this is what it wrote".
     """
-    try:
-        from app.services import jd_generation
-    except ImportError as exc:  # module not present yet at runtime
-        raise HTTPException(status_code=503, detail="JD generation unavailable") from exc
-    if not hasattr(jd_generation, "generate_jd_document"):
-        raise HTTPException(status_code=503, detail="JD generation unavailable")
-
     brief = {
         "title": body.title,
         # The renamed "Skills" box, with the deprecated key_requirements folded
@@ -1319,7 +1475,13 @@ async def generate_jd(
         "reporting_to": body.reporting_to,
         "department": body.department,
     }
-    generated = await jd_generation.generate_jd_document(brief)
+    try:
+        generated = await agent_client.generate_jd_document(brief)
+    except agent_client.AgentInvokeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The job description writer could not be reached. Try again in a moment.",
+        ) from exc
 
     # ── STEM classification, at THIS moment (Master Directive Part 3 §3) ────
     # Runs on the raw AI draft before the recruiter sees it, is persisted
@@ -1381,7 +1543,21 @@ def _placeholder_email(job_id: uuid.UUID, sha_or_name: str) -> str:
     candidate instead of creating a duplicate every time.
     """
     token = "".join(ch for ch in sha_or_name.lower() if ch.isalnum())[:24] or "unknown"
-    return f"databank+{job_id.hex[:8]}.{token}@placeholder.invalid"
+    return f"{_PLACEHOLDER_LOCAL_PREFIX}{job_id.hex[:8]}.{token}{PLACEHOLDER_EMAIL_DOMAIN}"
+
+
+#: The two halves of a placeholder address, as constants, because the
+#: invitation route has to RECOGNISE one. Mailing `@placeholder.invalid` sends
+#: nothing, bounces nowhere, and writes an `email_log` row claiming a candidate
+#: was contacted -- so the recruiter would be told the invitation went out and
+#: would never hear back, with nothing anywhere explaining why.
+_PLACEHOLDER_LOCAL_PREFIX = "databank+"
+PLACEHOLDER_EMAIL_DOMAIN = "@placeholder.invalid"
+
+
+def is_placeholder_email(email: str | None) -> bool:
+    """True when this address was invented for a resume that carried none."""
+    return bool(email) and str(email).endswith(PLACEHOLDER_EMAIL_DOMAIN)
 
 
 async def _store_one_databank_resume(
@@ -1404,7 +1580,7 @@ async def _store_one_databank_resume(
         )
 
     # Cheap, local identity read so a candidate row can exist NOW. The real
-    # parse (LLM extraction + embedding) is still a Celery task and still runs
+    # parse (LLM extraction + embedding) is still a background task and still runs
     # afterwards; nothing slow happens in this request (claude.md rule 4).
     identity = await run_in_threadpool(
         resume_parsing.extract_contact_identity, data, safe_name
@@ -1471,6 +1647,15 @@ async def _store_one_databank_resume(
         # procurement tag the job page renders. Both say databank here.
         source=LinkSource.databank,
         source_type=SOURCE_TYPE_DATABANK,
+        # Gate 5. NOT `applied`: the recruiter moved a file out of their own
+        # databank, and the person has not read this job, wanted it, or
+        # answered a single question about their notice period. `sourced` has
+        # exactly one forward edge, `applied`, which the candidate takes
+        # themselves in the portal -- so nothing here can invite them to an
+        # assessment or shortlist them by mistake.
+        status=hiring_pipeline.SOURCED,
+        status_updated_at=datetime.now(timezone.utc),
+        current_stage=hiring_pipeline.STAGE_LABELS[hiring_pipeline.SOURCED],
     )
     session.add(link)
     await session.flush()
@@ -1570,12 +1755,12 @@ async def upload_databank_candidates(
 
     created = [r for r in results if r.ok]
     for result in created:
-        celery_app.send_task("pickready.parse_resume", args=[str(result.profile_id)])
+        dispatch("pickready.parse_resume", args=[str(result.profile_id)])
     if created:
         # One matching run for the batch. Twenty-five is the same job scored
         # twenty-five times otherwise, and matching already scores every
         # non-archived link on the job.
-        celery_app.send_task("pickready.run_matching", args=[str(job.id)])
+        dispatch("pickready.run_matching", args=[str(job.id)])
 
     await audit(
         session,
@@ -1597,6 +1782,215 @@ async def upload_databank_candidates(
         failed=len(results) - len(created),
         results=results,
     )
+
+
+@router.post(
+    "/{job_id}/candidates/databank/invite",
+    response_model=DatabankInviteOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def invite_databank_candidates(
+    job_id: uuid.UUID,
+    body: DatabankInviteIn,
+    user: CurrentUser = Depends(require_capability(caps.SEND_OUTREACH)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> DatabankInviteOut:
+    """Workflow section 12: ask sourced candidates to sign in and apply.
+
+    WHAT THIS DOES NOT DO, AND THAT IS THE POINT. It does not move anybody into
+    the pipeline, create an application, or start an assessment. Gate 5 says a
+    databank candidate is not an applicant until they complete the flow
+    themselves, so all this does is send an email. The link goes to the public
+    application page for this job; the candidate signs in, finishes their
+    profile, answers the mandatory fields and applies, exactly like anybody who
+    found the role on their own.
+
+    That is also why there is no invitation STATE. The candidate's stage stays
+    `sourced` until they apply, and `email_log` already records who was written
+    to, when, and with what copy -- a second stage meaning "we emailed them"
+    would be a stage nothing can leave except by the same edge, and it would
+    let a recruiter mistake having sent an email for having got a reply.
+
+    Every skip is REPORTED. A batch that silently drops the unreachable rows
+    tells the recruiter twenty invitations went out when eleven did.
+    """
+    job = await _get_visible_job(session, user, job_id)
+    window = job_posting.describe(job)
+    if not window.is_active:
+        # The link in the mail would 404. Sending it anyway is worse than
+        # refusing: the candidate acts on it, fails, and blames themselves.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This job is not open to applications right now, so an "
+                "invitation would link to a page the candidate cannot use."
+            ),
+        )
+
+    rows = (
+        await session.execute(
+            select(JobCandidateLink, Candidate)
+            .join(Candidate, Candidate.id == JobCandidateLink.candidate_id)
+            .where(
+                JobCandidateLink.job_id == job.id,
+                JobCandidateLink.id.in_(body.link_ids),
+            )
+        )
+    ).all()
+    by_id = {link.id: (link, candidate) for link, candidate in rows}
+
+    tenant = await session.get(Tenant, job.tenant_id)
+    company_name = tenant.name if tenant else "our team"
+    application_link = public_job_url(job.id)
+
+    results: list[DatabankInviteResultOut] = []
+    queued: list[uuid.UUID] = []
+    for link_id in body.link_ids:
+        found = by_id.get(link_id)
+        if found is None:
+            results.append(
+                DatabankInviteResultOut(
+                    link_id=link_id,
+                    invited=False,
+                    reason="This candidate is not on this job.",
+                )
+            )
+            continue
+        link, candidate = found
+        if link.status != hiring_pipeline.SOURCED:
+            results.append(
+                DatabankInviteResultOut(
+                    link_id=link_id,
+                    invited=False,
+                    candidate_name=candidate.full_name,
+                    reason=(
+                        "This candidate has already applied, so there is "
+                        "nothing to invite them to."
+                    ),
+                )
+            )
+            continue
+        if is_placeholder_email(candidate.email) or not candidate.email:
+            results.append(
+                DatabankInviteResultOut(
+                    link_id=link_id,
+                    invited=False,
+                    candidate_name=candidate.full_name,
+                    reason=(
+                        "No email address was found on this resume, so there "
+                        "is nowhere to send the invitation. Add one on the "
+                        "candidate before inviting them."
+                    ),
+                )
+            )
+            continue
+
+        log_id = await _queue_databank_invitation(
+            session,
+            user,
+            job=job,
+            link=link,
+            candidate=candidate,
+            company_name=company_name,
+            application_link=application_link,
+        )
+        queued.append(log_id)
+        results.append(
+            DatabankInviteResultOut(
+                link_id=link_id,
+                invited=True,
+                candidate_name=candidate.full_name,
+            )
+        )
+
+    await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="databank_candidates_invited",
+        target_type="job",
+        target_id=job.id,
+        metadata={
+            "requested": len(body.link_ids),
+            "invited": len(queued),
+            "skipped": len(body.link_ids) - len(queued),
+        },
+    )
+    return DatabankInviteOut(
+        job_id=job.id,
+        requested=len(body.link_ids),
+        invited=len(queued),
+        skipped=len(body.link_ids) - len(queued),
+        results=results,
+    )
+
+
+async def _queue_databank_invitation(
+    session: AsyncSession,
+    user: CurrentUser,
+    *,
+    job: Job,
+    link: JobCandidateLink,
+    candidate: Candidate,
+    company_name: str,
+    application_link: str,
+) -> uuid.UUID:
+    """Draft one invitation, record it, and dispatch the send.
+
+    Mirrors `api/pipeline._queue_transition_email` deliberately: same drafting
+    service, same `email_log` row, same task. The difference is that this one
+    is NOT keyed to a status change, because no status changes.
+    """
+    from app.models.email_log import (  # noqa: PLC0415
+        EMAIL_TYPE_DATABANK_INVITATION,
+        STATUS_QUEUED,
+        EmailLog,
+    )
+    from app.services import lifecycle_email  # noqa: PLC0415
+
+    draft = await lifecycle_email.draft(
+        EMAIL_TYPE_DATABANK_INVITATION,
+        {
+            "candidate_name": candidate.full_name or "there",
+            "job_title": job.title,
+            "company_name": company_name,
+            "application_link": application_link,
+        },
+        session=session,
+    )
+    log = EmailLog(
+        tenant_id=job.tenant_id,
+        email_type=EMAIL_TYPE_DATABANK_INVITATION,
+        recipient_email=candidate.email,
+        candidate_id=candidate.id,
+        job_id=job.id,
+        job_candidate_link_id=link.id,
+        subject=draft["subject"],
+        body=draft["body"],
+        status=STATUS_QUEUED,
+        edited_by_human=False,
+        generated_by_ai=draft["generated_by_ai"],
+        sent_by=user.user_id,
+    )
+    session.add(log)
+    await session.flush()
+    dispatch("pickready.send_lifecycle_email", args=[str(log.id)])
+    # The Updates feed. This is the ONE kind that exists for a candidate with
+    # no application, which is exactly the person most likely to miss the
+    # email: they have never heard of us, so our address has no history in
+    # their inbox and every spam filter is against us.
+    await candidate_updates.record(
+        session,
+        kind=candidate_updates.INVITED_TO_APPLY,
+        candidate_id=candidate.id,
+        tenant_id=job.tenant_id,
+        job_id=job.id,
+        link_id=link.id,
+        job_title=job.title,
+        company_name=company_name,
+        emailed=True,
+    )
+    return log.id
 
 
 # ── Public (unauthenticated) published-job read (FR-3.4) ─────────────────────
@@ -1635,7 +2029,7 @@ async def get_public_job(
     # throughout the grace period, which is scoped to people who already
     # applied and grants nothing to an anonymous visitor.
     if not job_posting.public_link_active(
-        job.posting_start_date, job.posting_end_date
+        job.posting_start_date, job.posting_end_date, closed_at=job.closed_at
     ):
         raise HTTPException(
             status_code=404, detail="This job posting has expired"

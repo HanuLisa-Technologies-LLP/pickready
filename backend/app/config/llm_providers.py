@@ -313,7 +313,7 @@ def provider_order(task_type: str) -> list[str]:
 #   INTERACTIVE -- a request handler is blocked. Capped tight, so a slow call
 #   costs one visible pause and the caller's deterministic fallback takes over.
 #
-#   BACKGROUND -- a Celery task. Nobody is watching, and a truncated report is
+#   BACKGROUND -- a dispatched task. Nobody is watching, and a truncated report is
 #   worse than a slow one.
 #
 # The reasoning tier is slower per token than the free-tier flash models it
@@ -367,7 +367,7 @@ TASK_TIMEOUTS: dict[str, float] = {
     # Background. One reasoning pass over a reduced evidence pack.
     "project_evidence": 60.0,
     # Background: one structured payload, or one batch of evidence anchors,
-    # written inside the question-generation Celery task.
+    # written inside the question-generation task.
     "format_composition": 60.0,
     # Background: one evaluation with reasoning, inside the scoring task.
     "answer_evaluation": 60.0,

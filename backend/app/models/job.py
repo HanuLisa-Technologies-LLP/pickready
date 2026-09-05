@@ -143,6 +143,22 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
         nullable=True,
     )
 
+    # ── Early closure (migration 0077, workflow Gate 8) ──────────────────────
+    # The 30 days are the LONGEST a posting runs, never the shortest. A client
+    # whose requirement is filled on day 18 closes the job then, and
+    # `services/job_posting.posting_status` reports `closed` from that instant.
+    #
+    # Written rather than derived, and NOT expressed by back-dating
+    # `posting_start_date`: moving the start would rewrite which applications
+    # count as in-window and which profiles count as Old, and both are read as
+    # history. Nullable because closure is the exception, not the lifecycle.
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    #: The client's own words on why, shown to their team and to nobody else.
+    #: Never interpreted, never scored, never sent to a model.
+    closed_reason: Mapped[str | None] = mapped_column(Text)
+
     # ── Per-job JD sections (migration 0016) ─────────────────────────────────
     # Seeded from the company profile when the job is created. Editing them on
     # the job is a PER-JOB OVERRIDE that never writes back to the company, and

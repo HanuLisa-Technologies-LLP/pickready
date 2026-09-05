@@ -11,7 +11,7 @@ Checks
 ------
   1. DB reachable + Alembic migrations at head
   2. Redis reachable (ping)
-  3. Celery worker responsive (control.inspect().ping())
+  3. Task dispatch reachable (the worker and trigger functions are Active)
   4. Required env present in the backend process
        - FIREBASE_SERVICE_ACCOUNT_JSON  (hard)
        - CLOUDINARY_URL                 (hard)
@@ -392,15 +392,46 @@ def _redis_check():
         c.close()
 
 
-def _celery_check():
-    from app.workers.celery_app import celery_app
+def _task_dispatch_check():
+    """Can this process actually hand work off?
 
-    insp = celery_app.control.inspect(timeout=5.0)
-    pong = insp.ping()
-    if not pong:
-        return FAIL, "no worker replied to inspect ping (worker down?)"
-    workers = ", ".join(pong.keys())
-    return PASS, f"{len(pong)} worker(s) responded: {workers}"
+    The Celery version of this check pinged the worker pool. There is no pool
+    any more, so the equivalent question is whether the functions a dispatch
+    targets exist and are ready to be invoked. `lambda:GetFunction` answers
+    exactly that and starts nothing, which matters: a probe that dispatched a
+    real task to find out would run one every time somebody validated a stack.
+
+    A function that exists but is not Active is reported as a FAILURE rather
+    than a pass with a note. Pending is what a function looks like while its
+    image is still being provisioned, and an invoke during that window fails.
+    """
+    from app.workers import dispatch as dispatch_mod
+
+    mode = dispatch_mod.backend()
+    if mode != dispatch_mod.BACKEND_AWS:
+        return PASS, f"dispatch backend is {mode!r}; no remote functions to probe"
+
+    import boto3
+    from botocore.config import Config
+
+    client = boto3.client(
+        "lambda",
+        region_name=get_settings().aws_region,
+        config=Config(connect_timeout=5, read_timeout=10),
+    )
+    wanted = (dispatch_mod.WORKER_FUNCTION, dispatch_mod.TRIGGER_FUNCTION)
+    broken = []
+    for name in wanted:
+        try:
+            state = client.get_function(FunctionName=name)["Configuration"].get("State")
+        except Exception as exc:  # noqa: BLE001 -- reported, not swallowed
+            broken.append(f"{name}: {type(exc).__name__}")
+            continue
+        if state != "Active":
+            broken.append(f"{name}: state={state}")
+    if broken:
+        return FAIL, "; ".join(broken)
+    return PASS, f"{len(wanted)} dispatch function(s) Active: {', '.join(wanted)}"
 
 
 def _env_check():
@@ -496,7 +527,7 @@ def main() -> int:
 
     # Infra + env first (cheap, and they contextualize DB failures).
     report.check("redis_reachable", _redis_check)
-    report.check("celery_worker_responsive", _celery_check)
+    report.check("task_dispatch_reachable", _task_dispatch_check)
     report.check("required_env_present", _env_check)
     report.check("firebase_service_account_valid", _firebase_admin_initializes)
     report.check("smtp_credentials_present", _smtp_env_check)

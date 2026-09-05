@@ -1,4 +1,4 @@
-"""Live AI-outreach + Celery + Gmail SMTP validation.
+"""Live AI-outreach + task dispatch + Gmail SMTP validation.
 
 This is intentionally opt-in because it sends a real email. It never prints
 credentials or the recipient address.
@@ -18,7 +18,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
 from app.services.outreach_content import generate_outreach_email
-from app.workers.celery_app import celery_app
+from app.workers import status as task_status
+from app.workers.dispatch import dispatch
 
 
 async def _compose() -> dict:
@@ -52,6 +53,25 @@ async def _compose() -> dict:
         },
         kind="next_round",
     )
+
+
+async def _await_run(run_id: str, *, timeout: float) -> task_status.RunStatus:
+    """Poll the run until it settles, or give up loudly.
+
+    Celery's `AsyncResult.get()` blocked on the result backend and raised the
+    task's own exception. There is no result backend now, so this polls the run
+    status the same endpoints poll, and a run that never settles is reported as
+    still pending rather than waited on forever: this is a validation script,
+    and a script that hangs proves nothing.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        state = await task_status.read(run_id)
+        if state.done:
+            return state
+        if asyncio.get_running_loop().time() >= deadline:
+            return state
+        await asyncio.sleep(2.0)
 
 
 async def _latest_delivery(started_at: datetime, recipient: str) -> dict | None:
@@ -104,7 +124,7 @@ def main() -> int:
     content = asyncio.run(_compose())
     body = content["text"].split("\n\nContinue to the next round:", 1)[0]
     started_at = datetime.now(timezone.utc)
-    task = celery_app.send_task(
+    task = dispatch(
         "pickready.send_email",
         args=[
             None,
@@ -113,7 +133,7 @@ def main() -> int:
             {"subject": content["subject"], "body": content["text"]},
         ],
     )
-    task.get(timeout=120)
+    final = asyncio.run(_await_run(task.id, timeout=120))
     audit = asyncio.run(_latest_delivery(started_at, recipient))
 
     result = {
@@ -131,7 +151,7 @@ def main() -> int:
             "body_words": len(body.split()),
             "within_required_range": 150 <= len(body.split()) <= 200,
         },
-        "celery_task": {"id": task.id, "state": task.state},
+        "task_run": {"id": task.id, "state": final.state, "error": final.error},
         "audit": audit,
     }
     print(json.dumps(result, indent=2))

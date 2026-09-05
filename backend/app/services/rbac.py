@@ -787,7 +787,7 @@ class CurrentUserProtocol:
 # The helpers below exist so the API can answer with a readable 409 instead of
 # surfacing an IntegrityError, NOT so the check can be skipped: a check that
 # lives only in application code is one a second writer, a backfill script or
-# a Celery race walks straight past.
+# a background-task race walks straight past.
 
 CARDINALITY_ONE_ACTIVE_SUPER_ADMIN = "uq_users_one_active_super_admin_per_tenant"
 CARDINALITY_ONE_RECRUITER_PER_JOB = "uq_job_assignments_one_active_recruiter"

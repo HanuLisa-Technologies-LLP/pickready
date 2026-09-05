@@ -1,7 +1,7 @@
 """HR/Recruiter dashboard (FR-10.x).
 
 # ASSUMPTION: ESD §14 computes these metrics from materialized views refreshed
-# by Celery beat; the views live in Track B's migrations. Until they exist,
+# by a scheduled sweep; the views live in Track B's migrations. Until they exist,
 # this endpoint aggregates live over the base tables (data volumes are small
 # pre-launch); the query shape maps 1:1 onto the future views.
 # ASSUMPTION: "scoped to the logged-in HR/Recruiter's assignments" — staff are
@@ -763,11 +763,10 @@ def _stage_options(status: str, *, can_move: bool, reason: str | None) -> StageO
     stage = hiring_pipeline.dashboard_stage(status)
     return StageOptionsOut(
         stage=None if stage is None else stage.value,
-        stage_label=(
-            f"On hold, paused at {status.replace('_', ' ')}"
-            if stage is None
-            else stage.value
-        ),
+        # `stage is None` has two causes now -- paused, and not yet in the
+        # funnel -- so the label comes from the FSM rather than from an
+        # inference here. See `hiring_pipeline.is_on_hold`.
+        stage_label=hiring_pipeline.dashboard_stage_label(status),
         stored_status=status,
         # From the server, always. The UI hardcodes no stage list: the FSM is
         # the only thing that knows which moves are legal from here.

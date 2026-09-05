@@ -35,11 +35,12 @@ than showing a green tick over a stage that did not run.
 
 TRANSPORT
 ---------
-Celery's own task state. `update_state(state=PROGRESS, meta=...)` writes to the
-Redis result backend, which the status endpoint already reads through
-`AsyncResult`. No new table, no new schema, and no second thing to keep in
-step with the task's real lifecycle -- the progress and the terminal state come
-from one place, so a finished task cannot still be showing a stage as active.
+The task's own run status. `TaskContext.publish` writes the payload to the same
+Redis record that carries the terminal state, and `app/api/matching` reads it
+back through `workers.status.read`. No new table, no new schema, and no second
+thing to keep in step with the task's real lifecycle -- the progress and the
+outcome come from one place, so a finished task cannot still be showing a stage
+as active.
 """
 from __future__ import annotations
 
@@ -49,9 +50,11 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-#: The Celery state name for a run that is under way. Deliberately NOT one of
-#: Celery's built-in states: `AsyncResult.ready()` must keep answering False
-#: while this is set, or the client would stop polling at the first stage.
+#: The state name for a run that is under way. Deliberately NOT one of the two
+#: TERMINAL states: `RunStatus.done` must keep answering False while this is
+#: set, or the client would stop polling at the first stage. The name is
+#: unchanged from the Celery state it replaced, because the frontend's state
+#: union and the response schema were both written against it.
 STATE_PROGRESS = "PROGRESS"
 
 STATUS_PENDING = "pending"
@@ -151,8 +154,8 @@ class Progress:
     the endpoint already reports.
     """
 
-    #: Called with the whole payload each time it changes. In the worker this
-    #: is `task.update_state`; in a test it is a list append.
+    #: Called with the whole payload each time it changes. In a running task
+    #: this is `runtime.TaskContext.publish`; in a test it is a list append.
     publish: Callable[[dict[str, Any]], None] | None = None
     candidate_count: int = 0
     scored_count: int = 0

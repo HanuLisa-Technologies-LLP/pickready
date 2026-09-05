@@ -172,7 +172,7 @@ class CreditLedgerEntry(Base, UUIDPKMixin, CreatedAtMixin):
     mutable column: a disputed invoice needs the transactions, not a number.
 
     `idempotency_key` is UNIQUE and is what makes every writer safe to retry —
-    one completed assessment charges once no matter how many times the Celery
+    one completed assessment charges once no matter how many times the
     task is redelivered.
     """
 

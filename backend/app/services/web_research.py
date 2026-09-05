@@ -76,7 +76,7 @@ EVALUATE_TIMEOUT_SECONDS = 20.0
 
 #: Hard ceiling on the WHOLE internet segment, enforced by the caller with
 #: asyncio.wait_for. AI Reach is user-initiated and interactive so it may run
-#: in-request (rather than as a Celery task), but only because it is bounded:
+#: in-request (rather than as a background task), but only because it is bounded:
 #: at 30 seconds the request returns `status="timeout"` instead of hanging.
 SEARCH_BUDGET_SECONDS = 30.0
 

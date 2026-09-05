@@ -567,7 +567,7 @@ class ExportNotVerified(RuntimeError):
 
 
 class GateNotWired(RuntimeError):
-    """G1 is not reachable from any request handler or Celery task.
+    """G1 is not reachable from any request handler or background task.
 
     Raised by `--purge --confirm`, because the archive-and-mark step's entire
     safety argument is that gate G1 blocks evaluation against an unapproved
@@ -595,7 +595,7 @@ class GateNotWired(RuntimeError):
 #: step means anything.
 GATE_FUNCTION = "scorecard_gate"
 #: A module under one of these packages is on a live path: it is a FastAPI
-#: router or a Celery task, and therefore something a request or a queued
+#: router or a background task, and therefore something a request or a dispatched
 #: message can actually reach.
 LIVE_ENTRY_PACKAGES: tuple[str, ...] = ("app.api", "app.workers")
 
@@ -988,7 +988,7 @@ class Survey:
     #: them, and one of them is the same class of defect migration 0062 fixed.
     schema_findings: tuple[EdgeCase, ...]
     objects: ObjectStoreReconciliation
-    #: Whether gate G1 is reachable from any request handler or Celery task.
+    #: Whether gate G1 is reachable from any request handler or background task.
     #: The archive-and-mark step's whole safety argument rests on it.
     gate_wiring: GateWiring
 

@@ -1,6 +1,7 @@
-"""The 10-stage hiring pipeline (spec §3.3 / §4).
+"""The hiring pipeline (spec §3.3 / §4, extended by workflow Gate 5).
 
-    applied
+    sourced                    (recruiter uploaded a resume to the databank)
+      -> applied
       -> assessment_invited      (recruiter selects candidates)
       -> assessment_in_progress  (candidate opens the assessment)
       -> assessment_completed    (candidate finishes; PPI report generated)
@@ -21,6 +22,24 @@ map below is what stops that.
 recruiter can always stop a process, at any point, for reasons the system does
 not model.
 
+SOURCED IS NOT APPLIED, AND THAT DISTINCTION IS THE WHOLE POINT
+----------------------------------------------------------------
+A databank upload puts a resume the recruiter already had into a job. It does
+NOT mean the person knows the role exists, wants it, or has answered a single
+question about their notice period or their expected compensation. Writing that
+row as `applied` -- which is what this product did until Gate 5 -- makes a
+recruiter's own filing cabinet indistinguishable from an inbound application,
+and every count, every funnel and every "applicants" figure downstream inherits
+the lie.
+
+So `sourced` is the first stage, and its ONLY forward edge is `applied`. That
+single missing edge is the enforcement: a sourced candidate cannot be invited
+to an assessment and cannot be shortlisted, because the transition does not
+exist. It is not a flag somebody has to remember to check, and it cannot be
+routed around by a caller who did not read this docstring.
+
+The candidate leaves `sourced` by applying, in the portal, like anybody else.
+
 TWO WRITES, ONE TRUTH
 ---------------------
 `pipeline_status` is the append-only history and remains authoritative;
@@ -28,6 +47,21 @@ TWO WRITES, ONE TRUTH
 can sort and filter without a correlated subquery per row. `apply_transition`
 writes both in one transaction — they cannot drift because nothing else writes
 either one.
+
+A THIRD WRITE: THE CANDIDATE'S FEED
+-------------------------------------
+`candidate_updates` is written here too, for the same reason the mirror is: a
+stage change is the event, and recording it anywhere other than where the
+change happens means one of the six callers will eventually forget. The feed
+row is a plain INSERT of fixed copy with no external dependency, so it belongs
+beside the other two writes.
+
+The EMAIL is still not sent here, and that distinction is the point of the
+paragraph above: an email needs drafting, a provider, recruiter review and a
+dispatch, and every one of those is a reason for the transition to fail
+over something that is not the transition. A feed row has none of them. It is
+also the surface that exists BECAUSE the email may not arrive, so making it
+depend on the same machinery would defeat it.
 """
 from __future__ import annotations
 
@@ -39,6 +73,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+SOURCED = "sourced"
 APPLIED = "applied"
 ASSESSMENT_INVITED = "assessment_invited"
 ASSESSMENT_IN_PROGRESS = "assessment_in_progress"
@@ -56,6 +91,7 @@ OFFERED = "offered"
 
 #: Display order — the pipeline view groups candidates by this sequence.
 PIPELINE_ORDER: tuple[str, ...] = (
+    SOURCED,
     APPLIED,
     ASSESSMENT_INVITED,
     ASSESSMENT_IN_PROGRESS,
@@ -81,6 +117,10 @@ ALWAYS_AVAILABLE: frozenset[str] = frozenset({REJECTED, HOLD})
 #: The forward path. `hold` returns to the stage it paused, so it is handled
 #: separately rather than given outward edges here.
 _FORWARD: dict[str, frozenset[str]] = {
+    # ONE edge, deliberately. See "SOURCED IS NOT APPLIED" above: everything
+    # Gate 5 promises rests on `assessment_invited` and `shortlisted` being
+    # unreachable from here.
+    SOURCED: frozenset({APPLIED}),
     APPLIED: frozenset({ASSESSMENT_INVITED, SHORTLISTED}),
     ASSESSMENT_INVITED: frozenset({ASSESSMENT_IN_PROGRESS, ASSESSMENT_COMPLETED}),
     ASSESSMENT_IN_PROGRESS: frozenset({ASSESSMENT_COMPLETED}),
@@ -108,6 +148,7 @@ _FORWARD: dict[str, frozenset[str]] = {
 
 #: Human-readable stage, shown to the candidate beside the machine value.
 STAGE_LABELS: dict[str, str] = {
+    SOURCED: "Sourced, not yet applied",
     APPLIED: "Application received",
     ASSESSMENT_INVITED: "Assessment invitation sent",
     ASSESSMENT_IN_PROGRESS: "Assessment in progress",
@@ -126,6 +167,11 @@ STAGE_LABELS: dict[str, str] = {
 #: is a backend event the candidate caused themselves — mailing them about it
 #: would be noise (spec §4.1 marks it "none, backend event only").
 TRANSITION_EMAIL: dict[str, str | None] = {
+    # Nothing is sent on ENTERING sourced. A resume landing in a recruiter's
+    # databank is not an event the candidate caused or should be mailed about;
+    # the invitation is a separate, deliberate act with its own route and its
+    # own email type.
+    SOURCED: None,
     APPLIED: "application_confirmation",
     ASSESSMENT_INVITED: "assessment_invitation",
     # The candidate caused this one themselves by opening the assessment.
@@ -262,7 +308,7 @@ async def apply_transition(
     even though RLS is the real boundary (claude.md rule 1).
 
     This does NOT send the email. It returns the type to send, and the caller
-    (which owns drafting, recruiter review and the Celery enqueue) decides —
+    (which owns drafting, recruiter review and the dispatch) decides —
     keeping this service free of I/O beyond its own two writes.
     """
     now = now or datetime.now(timezone.utc)
@@ -305,6 +351,7 @@ async def apply_transition(
             "at": now,
         },
     )
+    await _record_candidate_update(session, link_id=link_id, status=status)
     return TransitionResult(
         link_id=link_id,
         previous=previous,
@@ -312,6 +359,54 @@ async def apply_transition(
         stage_label=label,
         email_type=TRANSITION_EMAIL.get(status),
         changed_at=now,
+    )
+
+
+async def _record_candidate_update(
+    session: AsyncSession, *, link_id: uuid.UUID, status: str
+) -> None:
+    """Write this stage change into the candidate's Updates feed.
+
+    Reads the names the copy needs in ONE query rather than asking the caller
+    for them: a caller that has to supply the job title is a caller that can
+    supply the wrong one, and two of the six pass through workers that hold
+    neither the job nor the tenant.
+
+    A stage with no feed entry (`sourced`) returns early. A link whose row has
+    vanished under us returns early too rather than raising -- the status write
+    above has already succeeded, and failing the transaction over the
+    notification would undo a real change for a cosmetic reason.
+    """
+    from app.services import candidate_updates  # noqa: PLC0415 -- cyclic at module scope
+
+    kind = candidate_updates.for_stage(status)
+    if kind is None:
+        return
+    row = (
+        await session.execute(
+            text(
+                "SELECT l.candidate_id, l.tenant_id, l.job_id, j.title, t.name "
+                "FROM job_candidate_links l "
+                "JOIN jobs j ON j.id = l.job_id "
+                "LEFT JOIN tenants t ON t.id = l.tenant_id "
+                "WHERE l.id = :lid"
+            ),
+            {"lid": str(link_id)},
+        )
+    ).first()
+    if row is None:
+        return
+    candidate_id, tenant_id, job_id, job_title, company_name = row
+    await candidate_updates.record(
+        session,
+        kind=kind,
+        candidate_id=uuid.UUID(str(candidate_id)),
+        tenant_id=uuid.UUID(str(tenant_id)) if tenant_id else None,
+        job_id=uuid.UUID(str(job_id)) if job_id else None,
+        link_id=link_id,
+        job_title=job_title,
+        company_name=company_name,
+        emailed=TRANSITION_EMAIL.get(status) is not None,
     )
 
 
@@ -557,7 +652,17 @@ DASHBOARD_STAGE: dict[str, CandidatePipelineStage] = {
 
 #: Statuses that are a MODIFIER on a stage rather than a stage. One entry,
 #: named rather than left implicit, so the absence above reads as a decision.
-NO_DASHBOARD_STAGE: frozenset[str] = frozenset({HOLD})
+#: Statuses with no coarse dashboard stage. `hold` is a pause on a stage rather
+#: than a stage; `sourced` is BEFORE the funnel rather than at the start of it.
+#:
+#: Mapping `sourced` to Applied was the obvious first move and it undoes Gate 5
+#: at the one surface that counts applicants: the Dashboard's funnel would then
+#: report a recruiter's own filing cabinet as inbound applications, which is
+#: exactly the confusion the stage exists to end. There is no fifth column to
+#: put it in, and inventing one would be this file overruling the Dashboard
+#: Specification, which is precedence rank 4 for that surface. None is the
+#: honest answer: this person has not entered the funnel.
+NO_DASHBOARD_STAGE: frozenset[str] = frozenset({HOLD, SOURCED})
 
 
 def dashboard_stage(status: str | None) -> CandidatePipelineStage | None:
@@ -571,6 +676,35 @@ def dashboard_stage(status: str | None) -> CandidatePipelineStage | None:
     if normalised in NO_DASHBOARD_STAGE:
         return None
     return DASHBOARD_STAGE.get(normalised, CandidatePipelineStage.APPLIED)
+
+
+def is_on_hold(status: str | None) -> bool:
+    """True only for a PAUSED application.
+
+    `dashboard_stage` returns None for two different reasons -- paused, and not
+    yet in the funnel -- and a caller reading `stage is None` as "on hold" would
+    label a sourced candidate as paused at a stage they have never reached.
+    That inference was correct while `hold` was the only member of
+    NO_DASHBOARD_STAGE, which is precisely why it needs a named function now
+    that it is not.
+    """
+    return normalize(status) == HOLD
+
+
+def dashboard_stage_label(status: str | None) -> str:
+    """What column 8 renders, for all three shapes of answer.
+
+    One function so the two dashboard call sites cannot drift: they render the
+    same column and had already written the same inference twice.
+    """
+    normalised = normalize(status)
+    stage = dashboard_stage(normalised)
+    if stage is not None:
+        return stage.value
+    if normalised == HOLD:
+        return f"On hold, paused at {normalised.replace('_', ' ')}"
+    # `sourced`, and anything else that is deliberately outside the funnel.
+    return STAGE_LABELS.get(normalised, normalised.replace("_", " "))
 
 
 #: The two vocabularies, for the separation test to compare. Kept as data so

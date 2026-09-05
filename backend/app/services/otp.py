@@ -3,7 +3,7 @@ login (API_CONTRACT.md rev 2).
 
 - Codes are generated via core.security.generate_otp and stored ONLY as an
   HMAC hash in `otp_challenges` (never logged, never plaintext at rest).
-- Sending is enqueued via Celery (`pickready.send_email` / `pickready.send_sms`)
+- Sending is dispatched (`pickready.send_email` / `pickready.send_sms`)
   — never inline (claude.md rule 4).
 - Attempt/rate-limit counters live in Redis for atomic increments, with an
   in-memory fallback when Redis is unavailable (dev/tests).
@@ -577,10 +577,10 @@ async def request_otp(
     session.add(challenge)
     await session.flush()
 
-    # Delivery is always a Celery task — never inline (claude.md rule 4). Both
+    # Delivery is always a dispatched task — never inline (claude.md rule 4). Both
     # sends are enqueued back-to-back and run in parallel on the workers; the
     # request handler never blocks on either.
-    from app.workers.celery_app import celery_app
+    from app.workers.dispatch import dispatch
 
     tenant_id = (
         str(single.tenant_id) if single is not None and single.tenant_id else None
@@ -588,7 +588,7 @@ async def request_otp(
     channels_sent: list[str] = []
     for target in dispatch_targets(identifier, users, channel):
         if target.channel == OTPChannel.email:
-            celery_app.send_task(
+            dispatch(
                 "pickready.send_email",
                 args=[
                     tenant_id,
@@ -598,7 +598,7 @@ async def request_otp(
                 ],
             )
         else:
-            celery_app.send_task(
+            dispatch(
                 "pickready.send_sms",
                 args=[target.destination,
                       f"Your ReadyPick OTP is {code}. Valid for "

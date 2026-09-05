@@ -20,7 +20,24 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# `%` IS DOUBLED, and this is not cosmetic.
+#
+# `set_main_option` writes into a ConfigParser, whose default interpolation
+# reads `%` as the start of a `%(name)s` reference. A DSN is a URL and a URL
+# percent-encodes, so any password containing a character that needs encoding
+# arrives here as `%2A` or `%7C` and ConfigParser raises
+#
+#   ValueError: invalid interpolation syntax ... at position 51
+#
+# before a single migration runs. RDS generates passwords from a character set
+# that includes several such characters, so this is the normal case rather than
+# an unlucky one: it took down the first migration of the pilot environment.
+#
+# Doubling is ConfigParser's own escape. SQLAlchemy receives the single `%`
+# back, so the DSN it connects with is unchanged.
+config.set_main_option(
+    "sqlalchemy.url", get_settings().database_url.replace("%", "%%")
+)
 
 target_metadata = Base.metadata
 

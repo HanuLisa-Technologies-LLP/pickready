@@ -236,7 +236,7 @@ async def generate_categories(
     """Propose this job's Matching categories and leave them AWAITING REVIEW.
 
     Idempotent by default: a job that already has categories keeps them, so a
-    Celery redelivery cannot discard a list a recruiter has already edited.
+    redelivery cannot discard a list a recruiter has already edited.
 
     Never approves anything. `jobs.matching_categories_finalized_at` is stamped
     only when the recruiter saves, which is the other half of the one setup

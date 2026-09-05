@@ -633,7 +633,7 @@ async def ai_reach_search(
     an LLM truthfulness and relevance pass that DROPS what it cannot support,
     then shaping into cards. It is bounded by a hard 30 second budget, so this
     interactive request returns a clean `status: "timeout"` rather than hanging
-    (all genuinely slow work in this platform is a Celery task; this one is
+    (all genuinely slow work in this platform is dispatched; this one is
     user-initiated, interactive, and time-boxed).
 
     Confidence is a WORD (High, Medium, Low). No score, percentage or rank ever

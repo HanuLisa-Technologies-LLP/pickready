@@ -173,7 +173,7 @@ async def process_project(
                 await session.flush()
                 return project
         # RepositoryUnavailable is deliberately NOT caught: it is transient,
-        # and the Celery retry policy is the right owner of that wait.
+        # and the task runtime's retry policy is the right owner of that wait.
 
     if not files:
         project.status = STATUS_FAILED_EXTRACTION

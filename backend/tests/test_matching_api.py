@@ -44,8 +44,8 @@ async def test_run_matching_returns_task_id_and_candidate_count(monkeypatch):
     monkeypatch.setattr(matching_api, "_get_job", _job)
     monkeypatch.setattr(matching_api, "audit", _audit)
     monkeypatch.setattr(
-        matching_api.celery_app,
-        "send_task",
+        matching_api,
+        "dispatch",
         lambda *_args, **_kwargs: SimpleNamespace(id="task-123"),
     )
 
@@ -58,14 +58,43 @@ async def test_run_matching_returns_task_id_and_candidate_count(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_matching_task_status_reports_completion(monkeypatch):
-    monkeypatch.setattr(
-        matching_api.celery_app,
-        "AsyncResult",
-        lambda _task_id: SimpleNamespace(state="SUCCESS", ready=lambda: True),
-    )
+    from app.workers import status as task_status
+
+    async def _read(run_id):
+        return task_status.RunStatus(
+            run_id=run_id, state=task_status.STATE_SUCCESS, payload={}
+        )
+
+    monkeypatch.setattr(matching_api.task_status, "read", _read)
     out = await matching_api.matching_task_status("task-123", _user=None)
     assert out.done is True
     assert out.state == "SUCCESS"
+
+
+@pytest.mark.asyncio
+async def test_matching_task_status_never_renders_a_failure_as_stages(monkeypatch):
+    """A failed run draws the empty plan, not whatever the failure left behind.
+
+    The Celery version of this endpoint read `result.info`, which is the stage
+    payload only while the task is in PROGRESS and is the EXCEPTION on failure.
+    The replacement records the class name in a separate field for the same
+    reason: the stage list is rendered on a recruiter's screen.
+    """
+    from app.workers import status as task_status
+
+    async def _read(run_id):
+        return task_status.RunStatus(
+            run_id=run_id,
+            state=task_status.STATE_FAILURE,
+            payload={},
+            error="ValueError",
+        )
+
+    monkeypatch.setattr(matching_api.task_status, "read", _read)
+    out = await matching_api.matching_task_status("task-123", _user=None)
+    assert out.done is True
+    assert out.state == "FAILURE"
+    assert [stage.status for stage in out.stages] == ["pending"] * len(out.stages)
 
 
 def test_client_matching_schemas_do_not_expose_numeric_scores():

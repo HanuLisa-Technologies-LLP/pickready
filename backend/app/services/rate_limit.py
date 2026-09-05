@@ -28,7 +28,7 @@ WHY REDIS AND NOT A PROCESS DICTIONARY
 ECS runs several tasks. A per-process counter divides the real limit
 by the instance count and, worse, moves with autoscaling -- so the limit a
 caller actually experiences depends on how busy the service is. Redis is
-already a hard dependency (the Celery broker), so a shared counter costs
+already a hard dependency (the cache and the proctoring warning counter), so a shared counter costs
 nothing new.
 
 THE ALGORITHM IS A FIXED WINDOW, ON PURPOSE

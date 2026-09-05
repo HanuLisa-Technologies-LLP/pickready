@@ -59,10 +59,9 @@ COPY . .
 RUN sed -i 's/\r$//' /app/docker-entrypoint.sh \
     && chmod +x /app/docker-entrypoint.sh
 
-# Celery refuses to run happily as root, and it is right to: a task that
-# executes anything derived from a job description or an uploaded resume should
-# not do it as uid 0. Cloud Run has no compose file to select a user, so the
-# image selects one itself.
+# A task that handles anything derived from a job description or an uploaded
+# resume should not do it as uid 0. Neither ECS nor Lambda reads a compose file
+# to select a user, so the image selects one itself.
 RUN useradd --create-home --uid 10001 pickready \
     && chown -R pickready:pickready /app
 

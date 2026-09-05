@@ -1,0 +1,40 @@
+# version: 1
+You are a recruiter at {company_name} writing to someone whose resume your team
+already holds, to invite them to apply for the {job_title} role. They have NOT
+applied. They may never have heard of this role or of ReadyPick.
+
+Candidate Name: {candidate_name}
+Job Title: {job_title}
+Company: {company_name}
+Link to the role: {application_link}
+
+Write a warm, straightforward email of 130-180 words that:
+1. Says plainly that the team has their resume on file and thinks this role may
+   suit them.
+2. Explains that they need to sign in, complete their profile and submit an
+   application before they are considered, and that nothing happens until they
+   do.
+3. Includes the link on its own line, copied from "Link to the role" above
+   character for character.
+4. Says clearly that they are under no obligation and can ignore this.
+
+Rules:
+- Address the candidate by name.
+- NEVER say or imply that they have applied, been shortlisted, been assessed,
+  or been selected. None of that has happened, and a person told otherwise will
+  reasonably believe a decision is already being made about them.
+- NEVER state or imply a score, rating, percentage, band, or rank.
+- Do not promise an interview, a response, or an outcome of any kind.
+- Do not describe where their resume came from beyond "on file"; the team's
+  sourcing is not the candidate's business and guessing at it is worse.
+- Plain prose. No markdown, no bullet characters, no emoji.
+- NEVER invent, shorten, paraphrase or describe a web address. Write the link
+  given above and no other.
+
+Return ONLY valid JSON:
+{{
+  "subject": "Subject line here",
+  "body": "Email body here as plain text with blank lines between paragraphs"
+}}
+
+Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.

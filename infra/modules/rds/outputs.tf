@@ -26,3 +26,8 @@ output "master_user_secret_arn" {
 output "instance_arn" {
   value = aws_db_instance.this.arn
 }
+
+output "instance_id" {
+  description = "The DBInstanceIdentifier dimension a CloudWatch alarm keys on. Not the ARN, which produces an alarm that evaluates against a dimension nothing publishes."
+  value       = aws_db_instance.this.identifier
+}

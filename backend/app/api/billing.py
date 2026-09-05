@@ -491,9 +491,9 @@ async def _grant_for_payment(
     # through, so a customer is released exactly once however their payment
     # arrives. The task re-checks the balance per tenant, so an extra call
     # costs a query and changes nothing.
-    from app.workers.celery_app import celery_app
+    from app.workers.dispatch import dispatch
 
-    celery_app.send_task(
+    dispatch(
         "pickready.release_held_assessments", args=[str(tenant.id)]
     )
     return True
@@ -983,9 +983,9 @@ async def razorpay_webhook(
                 notes=str(payment_entity.get("error_description") or "")[:500],
             )
         )
-        from app.workers.celery_app import celery_app
+        from app.workers.dispatch import dispatch
 
-        celery_app.send_task("pickready.send_payment_failed_email", args=[str(tenant.id)])
+        dispatch("pickready.send_payment_failed_email", args=[str(tenant.id)])
 
     elif event_type in {"subscription.cancelled", "subscription.completed"}:
         # Future grants stop. Unused credits stay in the pool — they were paid

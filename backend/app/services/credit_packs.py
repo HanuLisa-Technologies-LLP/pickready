@@ -308,15 +308,15 @@ async def settle_purchase(
     # payment into an error the customer sees. The invoice email is retried by
     # support if lost; the held-report release re-checks balances anyway.
     try:
-        from app.workers.celery_app import celery_app
+        from app.workers.dispatch import dispatch
 
-        celery_app.send_task(
+        dispatch(
             "pickready.send_credit_invoice_email", args=[str(purchase.id)]
         )
         # A top-up releases whatever finalisation was held for want of
         # credits — same task, same reasoning as the subscription grant path
         # (api/billing._grant_for_payment).
-        celery_app.send_task(
+        dispatch(
             "pickready.release_held_assessments", args=[str(purchase.tenant_id)]
         )
     except Exception:  # noqa: BLE001 - notification must never break settlement

@@ -5,7 +5,7 @@ Flow the UI drives:
   2. POST /emails/draft  -> one AI draft PER candidate, personalised.
   3. Recruiter reads and optionally edits each draft.
   4. POST /emails/send   -> each message is written to `email_log` first, then
-     a Celery task delivers it (claude.md rules 4 and 5).
+     a dispatched task delivers it (claude.md rules 4 and 5).
 
 The log row is created BEFORE the send is attempted, so a message that fails in
 transit still leaves a record of what was going to be said and why it did not
@@ -37,7 +37,7 @@ from app.services import capabilities as caps
 from app.services import assessment_invite, lifecycle_email
 from app.services.audit import audit
 from app.services.matching import RANKING_COMMENT_KEYS, ranking_payload
-from app.workers.celery_app import celery_app
+from app.workers.dispatch import dispatch
 
 router = APIRouter()
 
@@ -154,7 +154,7 @@ async def send_emails(
 ) -> EmailSendOut:
     """Record and queue the messages exactly as the recruiter left them.
 
-    The `email_log` row is written FIRST and the Celery task is enqueued after
+    The `email_log` row is written FIRST and the task is dispatched after
     the flush, so the worker can never pick up an id that is not yet visible.
     """
     by_link = {m.link_id: m for m in body.messages}
@@ -199,7 +199,7 @@ async def send_emails(
     )
     # Enqueue only after the flush, so every id below exists in the database.
     for log in logs:
-        celery_app.send_task("pickready.send_lifecycle_email", args=[str(log.id)])
+        dispatch("pickready.send_lifecycle_email", args=[str(log.id)])
 
     return EmailSendOut(
         queued=len(logs),

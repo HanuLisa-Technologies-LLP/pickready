@@ -11,6 +11,23 @@ database itself rejects an UPDATE against them.
                              existing applicants may still edit
     day 36+    expired       gone for candidates; recruiters keep read access
 
+CLOSURE CUTS THE WINDOW SHORT, AND IT IS A FIFTH STATE
+--------------------------------------------------------
+The 30 days are the LONGEST a posting runs, never the shortest. A client whose
+requirement is filled on day 18 closes the job then (`jobs.closed_at`), and
+`closed` dominates every date-derived state: the public link stops working, no
+new application is accepted, and the job leaves every candidate's board. It is
+a separate state rather than a back-dated `posting_start_date`, because moving
+the start would silently rewrite which candidates count as Old Profiles and
+which applications were made "in window", and both of those are read as
+history.
+
+Closure is terminal for CANDIDATES and changes nothing for the hiring TEAM:
+every application already in the pipeline stays visible, rankable and
+progressable. The five-day edit tail is not offered after a closure, because
+the tail exists so an applicant can improve a submission still under
+consideration, and a filled requirement is not.
+
 WHY EVERYTHING HERE IS A PURE FUNCTION
 --------------------------------------
 These rules decide whether a person can see a job at all, so getting one
@@ -47,6 +64,9 @@ STATUS_SCHEDULED = "scheduled"
 STATUS_ACTIVE = "active"
 STATUS_GRACE = "grace_period"
 STATUS_EXPIRED = "expired"
+#: Closed early by the client because the hiring requirement was met
+#: (`jobs.closed_at`). Dominates the four date-derived states.
+STATUS_CLOSED = "closed"
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -76,8 +96,9 @@ def posting_status(
     posting_end_date: datetime | None = None,
     grace_period_end_date: datetime | None = None,
     now: datetime | None = None,
+    closed_at: datetime | None = None,
 ) -> str:
-    """Which of the four lifecycle states this job is in right now.
+    """Which of the five lifecycle states this job is in right now.
 
     `posting_end_date` / `grace_period_end_date` are accepted so a caller that
     already loaded the generated columns does not recompute them; when omitted
@@ -85,8 +106,16 @@ def posting_status(
 
     A job with no `posting_start_date` at all reads as EXPIRED rather than
     active — an unknown window must fail closed, not grant access.
+
+    `closed_at` is checked FIRST and wins outright. A closure is a decision a
+    person made about this requisition, and no arithmetic over dates may
+    reinstate it: checking it after the window would leave a job closed on day
+    18 reading as `active` for twelve more days.
     """
     now = _aware(now) or datetime.now(timezone.utc)
+    closed = _aware(closed_at)
+    if closed is not None and now >= closed:
+        return STATUS_CLOSED
     start = _aware(posting_start)
     if start is None:
         return STATUS_EXPIRED
@@ -153,6 +182,7 @@ def can_view_job(
     candidate_created_at: datetime | None = None,
     has_applied: bool = False,
     now: datetime | None = None,
+    closed_at: datetime | None = None,
 ) -> bool:
     """Whether a signed-in candidate may see this job at all.
 
@@ -168,7 +198,7 @@ def can_view_job(
     the edit window; after it, the job disappears for everyone.
     """
     status = posting_status(
-        posting_start, posting_end_date, grace_period_end_date, now
+        posting_start, posting_end_date, grace_period_end_date, now, closed_at
     )
     end = _aware(posting_end_date) or (
         posting_end(posting_start) if posting_start else None
@@ -189,11 +219,13 @@ def can_apply(
     grace_period_end_date: datetime | None = None,
     candidate_created_at: datetime | None = None,
     now: datetime | None = None,
+    closed_at: datetime | None = None,
 ) -> bool:
     """Whether a NEW application may be submitted.
 
-    Strictly the 30-day active window. The grace period is for editing an
-    application that already exists, never for creating one.
+    Strictly the 30-day active window, and never after a closure. The grace
+    period is for editing an application that already exists, never for
+    creating one.
     """
     end = _aware(posting_end_date) or (
         posting_end(posting_start) if posting_start else None
@@ -201,7 +233,9 @@ def can_apply(
     if not candidate_registered_in_time(candidate_created_at, end):
         return False
     return (
-        posting_status(posting_start, posting_end_date, grace_period_end_date, now)
+        posting_status(
+            posting_start, posting_end_date, grace_period_end_date, now, closed_at
+        )
         == STATUS_ACTIVE
     )
 
@@ -210,12 +244,16 @@ def public_link_active(
     posting_start: datetime | None,
     posting_end_date: datetime | None = None,
     now: datetime | None = None,
+    closed_at: datetime | None = None,
 ) -> bool:
     """Spec Rule 2: an externally shared link works during the 30-day window
     and 404s afterwards — including throughout the grace period, which is for
-    existing applicants only and grants nothing to an anonymous visitor."""
+    existing applicants only and grants nothing to an anonymous visitor. A
+    closed job's link 404s from the moment it is closed, which is the whole
+    point of closing one early."""
     return (
-        posting_status(posting_start, posting_end_date, None, now) == STATUS_ACTIVE
+        posting_status(posting_start, posting_end_date, None, now, closed_at)
+        == STATUS_ACTIVE
     )
 
 
@@ -228,6 +266,14 @@ def can_edit_application(
     now: datetime | None = None,
 ) -> bool:
     """Spec Rule 4 / §5.1: the 5-day edit window.
+
+    THIS ONE DELIBERATELY DOES NOT TAKE `closed_at`, unlike every other rule in
+    this module. Closure stops INTAKE: no new applications, no public link, the
+    job off every board. It does not evict the candidates already in the
+    pipeline, and this predicate is what lets one of them finish an assessment
+    they were already invited to and correct an application the team is still
+    reading. Cutting that off would destroy work the client has already been
+    charged for, on the day they told us the requisition went well.
 
     Editable while the job is ACTIVE (the application is still open) and
     throughout the GRACE period, provided the application was actually made
@@ -256,10 +302,18 @@ class PostingWindow:
     posting_status: str
     days_until_posting_ends: int
     days_until_grace_ends: int
+    #: When the client closed this job early because the requirement was met.
+    closed_at: datetime | None = None
+    #: What they said about why, verbatim. Never interpreted, never scored.
+    closed_reason: str | None = None
 
     @property
     def is_active(self) -> bool:
         return self.posting_status == STATUS_ACTIVE
+
+    @property
+    def is_closed(self) -> bool:
+        return self.posting_status == STATUS_CLOSED
 
     @property
     def accepts_applications(self) -> bool:
@@ -267,6 +321,12 @@ class PostingWindow:
 
     def summary(self) -> str:
         """The one-line description shown on the recruiter's job page."""
+        if self.posting_status == STATUS_CLOSED:
+            return (
+                "Closed. The requirement was met, so no new applications are "
+                "accepted. Your team keeps every candidate already in the "
+                "pipeline."
+            )
         if self.posting_status == STATUS_ACTIVE:
             return (
                 f"Live for {self.days_until_posting_ends} more "
@@ -296,11 +356,14 @@ def describe(job: Any, now: datetime | None = None) -> PostingWindow:
     grace = _aware(field("grace_period_end_date")) or (
         grace_end(start) if start else None
     )
+    closed = _aware(field("closed_at"))
     return PostingWindow(
         posting_start_date=start,
         posting_end_date=end,
         grace_period_end_date=grace,
-        posting_status=posting_status(start, end, grace, now),
+        posting_status=posting_status(start, end, grace, now, closed),
         days_until_posting_ends=days_remaining(end, now),
         days_until_grace_ends=days_remaining(grace, now),
+        closed_at=closed,
+        closed_reason=field("closed_reason"),
     )

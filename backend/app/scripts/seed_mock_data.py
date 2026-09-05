@@ -2381,7 +2381,7 @@ async def run(dry_run: bool) -> bool:
     try:
         async with factory() as session:
             # Seeding legitimately spans tenants, so it runs with the same
-            # audited bypass the Celery workers use (see workers/tasks).
+            # audited bypass background tasks use (see workers/runtime).
             await session.execute(
                 text("SELECT set_config('app.bypass_rls', 'on', false)")
             )

@@ -10,7 +10,7 @@
  *
  * WHAT THAT FINDING ACTUALLY WAS, because the shape matters more than the
  * platform: a single runtime service account held read access across the whole
- * secret namespace. Every workload -- the API, the Celery worker, the beat
+ * secret namespace. Every workload -- the API, the background worker, the
  * scheduler, the one-shot migration job -- ran as it, so the DSN was readable
  * from four places when it needed to be readable from two. Nothing was
  * misconfigured; the permission was simply wider than the need, and nobody
@@ -88,6 +88,45 @@ resource "aws_secretsmanager_secret" "this" {
   recovery_window_in_days = var.environment == "production" ? 30 : 7
 
   tags = merge(var.tags, { Name = "${local.name}-${each.value}" })
+}
+
+# ── Every secret gets a VERSION, holding a sentinel ──────────────────────────
+#
+# NOT the value. The container is created here and the value is not, because a
+# value in Terraform is a value in the state file and the state file is JSON
+# behind a bucket policy rather than a vault. That rule is unchanged.
+#
+# What changed is that a secret with NO VERSION AT ALL is unusable in a way
+# nobody expects: ECS fetches every secret in a task definition before the
+# container starts, so ONE unpopulated secret stops the whole service with
+#
+#   ResourceNotFoundException: Secrets Manager can't find the specified secret
+#   value for staging label: AWSCURRENT
+#
+# and the service reports "unable to place a task". That is the wrong failure.
+# This product degrades when a credential is absent: the model router raises a
+# documented error and its caller runs a deterministic fallback, the delivery
+# preflight logs a warning rather than crashing, and the billing page reports
+# checkout as unavailable. A missing Tavily key should cost the internet
+# segment of AI Reach, not the entire API.
+#
+# The sentinel cannot authenticate to anything, and `app.core.config` maps it
+# back to "" before any code reads it, so what runs is exactly what runs when
+# the variable is unset. `backend/tests/test_placeholder_secret.py` pins that
+# the two strings agree.
+resource "aws_secretsmanager_secret_version" "placeholder" {
+  for_each = aws_secretsmanager_secret.this
+
+  secret_id     = each.value.id
+  secret_string = var.placeholder_value
+
+  lifecycle {
+    # THE REAL VALUE MUST SURVIVE. `aws secretsmanager put-secret-value` creates
+    # a new version, and a Terraform resource that owned the string would revert
+    # it on the next apply -- silently, because the plan would read as a
+    # one-line change to a sensitive attribute.
+    ignore_changes = [secret_string]
+  }
 }
 
 # ── One policy per service, over an enumerated list of ARNs ──────────────────

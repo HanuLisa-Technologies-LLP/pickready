@@ -1,24 +1,32 @@
 #!/bin/sh
-# One image, four roles (ESD 15). Cloud Run passes the role as the container
-# args, so the same digest backs the API service, the worker pool, beat and the
-# migration job, and dependency drift between them is impossible.
+# One image, five roles. The same digest backs the API service, the on-demand
+# assessment agent, the Lambda functions that run the backend code, the local
+# in-process task runner and the migration job, so dependency drift between
+# them is impossible.
 #
-# Usage: docker-entrypoint.sh [api|worker|beat|migrate] [extra args...]
+# Usage: docker-entrypoint.sh [api|agent|lambda|migrate] [extra args...]
+#
+# The Celery `worker`, `mail-worker` and `beat` roles were removed on
+# 2026-09-04. Short work now runs in the `readypick-task-worker` Lambda, long
+# work as one on-demand Fargate task per dispatch (the `agent` role below), and
+# the periodic sweeps are EventBridge Scheduler rules invoking the worker with
+# the same payload a dispatch sends. What the mail-worker split existed to
+# guarantee -- that a staff invitation can never wait behind an LLM chain --
+# now holds structurally: the two kinds of work do not share a pool, because
+# neither of them has a pool.
 set -eu
 
 ROLE="${1:-api}"
 [ $# -gt 0 ] && shift
 
-# Cloud Run injects PORT and routes only to it. Falling back to 8000 keeps the
-# local compose stack and the published port unchanged.
+# The platform injects PORT and routes only to it. Falling back to 8000 keeps
+# the local compose stack and the published port unchanged.
 PORT="${PORT:-8000}"
 
-# One uvicorn process by default: the app is async, and Cloud Run scales by
-# adding INSTANCES rather than processes, so extra workers here just multiply
-# the database pool (DB_POOL_SIZE) against a fixed Cloud SQL connection limit.
+# One uvicorn process by default: the app is async, and the service scales by
+# adding TASKS rather than processes, so extra workers here just multiply the
+# database pool (DB_POOL_SIZE) against a fixed RDS connection limit.
 UVICORN_WORKERS="${UVICORN_WORKERS:-1}"
-
-CELERY_APP="app.workers.celery_app:celery_app"
 
 case "$ROLE" in
   api)
@@ -27,9 +35,9 @@ case "$ROLE" in
     # stack appends --reload to this same role.
     #
     # --proxy-headers with a trusted-any allowlist is safe here BECAUSE the
-    # only route to the container is Cloud Run's front end, which strips and
-    # re-signs X-Forwarded-*. Without it every request appears to arrive over
-    # http and the Secure auth cookies are refused.
+    # only route to the container is the ALB, which strips and re-signs
+    # X-Forwarded-*. Without it every request appears to arrive over http and
+    # the Secure auth cookies are refused.
     WORKER_FLAG=""
     if [ "$UVICORN_WORKERS" -gt 1 ]; then
       WORKER_FLAG="--workers $UVICORN_WORKERS"
@@ -41,39 +49,34 @@ case "$ROLE" in
       --proxy-headers --forwarded-allow-ips='*' \
       $WORKER_FLAG "$@"
     ;;
-  worker)
-    # No -Q: consumes every queue in celery_app.task_queues, so this role keeps
-    # draining mail as well and a deployment that never adds the mail-worker
-    # pool below still delivers every message.
-    exec celery -A "$CELERY_APP" worker \
-      --loglevel="${CELERY_LOGLEVEL:-info}" \
-      --concurrency="${CELERY_CONCURRENCY:-2}" \
-      "$@"
+  agent)
+    # One dispatched task, then exit. The Fargate task stops when this process
+    # ends, and that is when the meter stops. There is deliberately no loop:
+    # a process that waited for more work would be the always-on pool this
+    # architecture exists to remove.
+    exec python -m app.workers.entrypoints.ecs_task "$@"
     ;;
-  mail-worker)
-    # Delivery ONLY. An invitation must not wait behind an LLM chain: on
-    # 2026-08-01 two wedged question-generation tasks took both slots of the
-    # shared worker and a queued staff invite went undelivered while the API
-    # had already reported it sent. Sending is IO against Gmail SMTP and cheap,
-    # so this pool runs small and its slots can never be occupied by AI work.
-    exec celery -A "$CELERY_APP" worker \
-      --loglevel="${CELERY_LOGLEVEL:-info}" \
-      --concurrency="${CELERY_MAIL_CONCURRENCY:-4}" \
-      --queues=mail \
-      "$@"
-    ;;
-  beat)
-    # Beat writes its schedule file, so it needs a writable path. The image's
-    # source tree is owned by root and must stay read-only to the runtime user.
-    exec celery -A "$CELERY_APP" beat \
-      --loglevel="${CELERY_LOGLEVEL:-info}" \
-      --schedule "${CELERY_BEAT_SCHEDULE:-/tmp/celerybeat-schedule}" \
-      "$@"
+  lambda)
+    # The Lambda runtime interface client, for the three functions that run
+    # this image: the generic task worker and the two request/response agents.
+    # The handler is passed as an argument, which is how one image serves all
+    # three without a per-function build.
+    #
+    # AWS_LAMBDA_RUNTIME_API is set by the Lambda service and by nothing else,
+    # so its absence means this container is being run locally against the RIE
+    # or by hand. Refusing loudly beats starting a client that will block
+    # forever on a runtime API that is not there.
+    if [ -z "${AWS_LAMBDA_RUNTIME_API:-}" ]; then
+      echo "docker-entrypoint: the 'lambda' role needs AWS_LAMBDA_RUNTIME_API." >&2
+      echo "Run it under the Lambda service or the runtime interface emulator." >&2
+      exit 64
+    fi
+    exec python -m awslambdaric "$@"
     ;;
   migrate)
-    # Run as a Cloud Run Job, never on API startup: several instances boot at
-    # once during a rollout and would race each other through the same
-    # migration. Alembic takes a lock, so the losers would crash-loop.
+    # Run as a one-shot task, never on API startup: several tasks boot at once
+    # during a rollout and would race each other through the same migration.
+    # Alembic takes a lock, so the losers would crash-loop.
     exec alembic upgrade head "$@"
     ;;
   *)

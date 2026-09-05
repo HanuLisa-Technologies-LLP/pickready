@@ -186,7 +186,7 @@ async def reconcile(
     """Charge every settled abandoned assessment and queue any due reminders.
 
     `queue_reminder` is injected so this function stays testable without a
-    broker; the Celery task passes the real enqueue.
+    dispatcher; the task passes the real one.
     """
     now = now or datetime.now(timezone.utc)
     result = ReconciliationResult()

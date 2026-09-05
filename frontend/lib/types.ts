@@ -384,24 +384,45 @@ export interface Job {
   days_until_posting_ends?: number | null;
   days_until_grace_ends?: number | null;
   posting_summary?: string | null;
+  /** When the client closed this posting early, and their own words on why.
+   *  Team-facing only: no candidate surface renders either. */
+  closed_at?: string | null;
+  closed_reason?: string | null;
   /** What happens at the third monitoring warning (proctoring spec 6).
    *  Absent on responses from a backend without proctoring. */
   proctoring_warning_policy?: ProctoringWarningPolicy;
 }
 
-/** Where a job sits in its fixed 30-day lifecycle. */
-export type PostingStatus = "scheduled" | "active" | "grace_period" | "expired";
+/**
+ * Where a job sits in its fixed 30-day lifecycle.
+ *
+ * `closed` is the client's own early stop, once the hiring requirement is met
+ * (workflow Gate 8). It is not one of the four date-derived states and it
+ * outranks all of them, which is why it reads differently below: the other
+ * four describe a calendar, this one describes a decision.
+ */
+export type PostingStatus =
+  | "scheduled"
+  | "active"
+  | "grace_period"
+  | "expired"
+  | "closed";
 
 export const POSTING_STATUS_LABELS: Record<PostingStatus, string> = {
   scheduled: "Not yet live",
   active: "Live",
   grace_period: "Closed, grace period",
   expired: "Expired",
+  closed: "Closed, requirement met",
 };
 
 // ── The 10-stage hiring pipeline (spec §3.3) ─────────────────────────────────
 
 export const PIPELINE_STATUSES = [
+  // Gate 5: a resume the recruiter uploaded from their databank, belonging to
+  // somebody who has not applied. Its only forward edge is `applied`, which
+  // the candidate takes themselves.
+  "sourced",
   "applied",
   "assessment_invited",
   "assessment_in_progress",
@@ -417,6 +438,7 @@ export const PIPELINE_STATUSES = [
 export type PipelineStage = (typeof PIPELINE_STATUSES)[number];
 
 export const PIPELINE_LABELS: Record<PipelineStage, string> = {
+  sourced: "Sourced, not yet applied",
   applied: "Application received",
   assessment_invited: "Assessment invitation sent",
   assessment_in_progress: "Assessment in progress",
@@ -432,6 +454,7 @@ export const PIPELINE_LABELS: Record<PipelineStage, string> = {
 
 /** Short label for a table cell, where the full sentence is too wide. */
 export const PIPELINE_SHORT_LABELS: Record<PipelineStage, string> = {
+  sourced: "Sourced",
   applied: "Applied",
   assessment_invited: "Invited",
   assessment_in_progress: "Assessing",
@@ -586,6 +609,10 @@ export interface RankedCandidate {
   profile_age: ProfileAge;
   /** "Old Profile" / "New Profile", so the UI never renders a raw enum. */
   profile_age_label: string;
+  /** Applied after the last assessment round on this job, so nobody has
+   *  considered them yet (workflow section 32). Presentation only: it changes
+   *  no score, no ranking and no access. */
+  is_new_candidate: boolean;
   /** True once someone on the team has already paid the bulk review rate for
    *  this profile, so reopening it costs nothing. */
   review_charged: boolean;
@@ -626,6 +653,10 @@ export interface RankedCandidatesResponse {
   has_previous: boolean;
   range_start: number;
   range_end: number;
+  /** How many candidates on this JOB arrived after the last assessment round.
+   *  Counted over the whole job and never narrowed by the page filters, so it
+   *  still reads correctly while the supplement is filtered out of the view. */
+  new_candidate_count: number;
 }
 
 /**

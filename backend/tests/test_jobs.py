@@ -203,13 +203,25 @@ def _stub_create_deps(monkeypatch) -> dict:
     monkeypatch.setattr(jobs_api, "audit", _fake_audit)
     monkeypatch.setattr(jobs_api.fsm, "apply_direct_publish", _fake_publish)
     monkeypatch.setattr(
-        jobs_api.celery_app, "send_task",
+        jobs_api, "dispatch",
         lambda *a, **k: calls.setdefault("matching", (a, k)),
     )
     monkeypatch.setattr(
         jobs_api, "get_settings",
         lambda: SimpleNamespace(frontend_url="https://readypick.ai"),
     )
+    # Gate 1 (workflow section 18): job creation is refused until the client
+    # has completed its Company Hiring Requirements. Satisfied here rather than
+    # routed around, the same way `_satisfy_publication_gate` satisfies RBAC 21
+    # -- every test below is about some OTHER property of create_job, and a
+    # fake session cannot answer the gate's query honestly. The gate itself is
+    # tested directly in test_company_requirements_gate.py.
+    from app.services.hiring import company_requirements
+
+    async def _dna_complete(session, tenant_id):
+        return True
+
+    monkeypatch.setattr(company_requirements, "is_complete", _dna_complete)
     return calls
 
 
@@ -498,11 +510,20 @@ async def test_generate_jd_calls_service(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_jd_503_when_function_absent(monkeypatch) -> None:
-    # Service module present but without the expected function → clean 503,
-    # never a 500. (The bare-ImportError branch is the same contract for the
-    # case where the module isn't wired up at all.)
-    _patch_jd_module(monkeypatch, SimpleNamespace())
+async def test_generate_jd_503_when_the_agent_cannot_be_reached(monkeypatch) -> None:
+    """A clean 503, never a 500 and never an empty draft.
+
+    The generator itself DEGRADES: an outage produces a template document the
+    recruiter can edit, and that is an answer the agent gave. Not reaching the
+    agent at all is not an answer, and returning an empty draft for it would
+    present "we could not ask" as "this is what it wrote".
+    """
+    from app.workers import agent_client
+
+    async def _unreachable(_brief):
+        raise agent_client.AgentInvokeError("readypick-jd-gen is not there")
+
+    monkeypatch.setattr(jobs_api.agent_client, "generate_jd_document", _unreachable)
     with pytest.raises(Exception) as ei:
         await jobs_api.generate_jd(_brief(), user=_user(), session=_FakeSession())
     assert getattr(ei.value, "status_code", None) == 503
@@ -704,7 +725,7 @@ def _stub_publish_deps(monkeypatch) -> dict:
     monkeypatch.setattr(jobs_api.fsm, "apply_direct_publish", _fake_publish)
     monkeypatch.setattr(jobs_api, "_can_see_pre_ratified", _can_see)
     monkeypatch.setattr(
-        jobs_api.celery_app, "send_task",
+        jobs_api, "dispatch",
         lambda *a, **k: calls["tasks"].append(a),
     )
     monkeypatch.setattr(
@@ -869,7 +890,7 @@ def _stub_databank_deps(monkeypatch, failing: set | None = None) -> dict:
     monkeypatch.setattr(resume_storage, "apply_resume_asset", lambda p, a: None)
     monkeypatch.setattr(resume_parsing, "extract_contact_identity", _identity)
     monkeypatch.setattr(
-        jobs_api.celery_app, "send_task",
+        jobs_api, "dispatch",
         lambda *a, **k: calls["tasks"].append(a),
     )
     monkeypatch.setattr(

@@ -1,4 +1,4 @@
-"""Celery task implementations  -  names match the contract in celery_app.py:
+"""Every background task the product has, and where each one runs.
 
   pickready.send_email(tenant_id, to, template_name, context, attachments=None)
   pickready.send_sms(phone, message)
@@ -8,30 +8,37 @@
   pickready.parse_verification_reply(verification_request_id, raw_email_text)
   pickready.refresh_dashboard_views()
 
-All slow/async work happens here, never inline in request handlers
-(claude.md rule 4). Tasks are sync Celery functions running async service
-code via asyncio.run with a FRESH engine per task  -  never a shared/global
-engine, since Celery may fork and asyncio loops don't survive forks.
+All slow work happens here, never inline in a request handler (claude.md rule
+4). A task is a plain synchronous function running async service code through
+`asyncio.run`, with a FRESH engine per run: an execution environment is frozen
+between invocations and a pooled connection does not survive the freeze, so a
+shared engine hands the next run a socket that looks healthy and fails on use.
 
-Retries: exponential backoff, max 5 attempts.
+`@task` records the name, the destination and the retry policy in ONE
+declaration (see `registry`). `Route.LAMBDA` is work measured in seconds;
+`Route.ECS` is work measured in minutes, which runs as one on-demand Fargate
+task per dispatch and stops when the process exits.
+
+Retries live in `runtime.run_task`, inside the invocation, and the platform's
+asynchronous retry is set to zero so the two cannot multiply. There is no soft
+time limit any more: the ceiling is the Lambda's timeout or the Fargate task's
+`stopTimeout`, and because the retry loop lives inside the thing that gets
+killed, a task that outran its budget is not retried. That is the behaviour the
+`dont_autoretry_for` exclusion list used to buy, now structural.
 
 SECURITY (ESD §16): OTP codes and API keys are NEVER logged or written to
-audit metadata  -  email `context` payloads may contain OTPs and are therefore
+audit metadata. Email `context` payloads may contain OTPs and are therefore
 never persisted or logged, only template/recipient/status metadata is.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from celery.exceptions import SoftTimeLimitExceeded
-from celery.signals import worker_ready
 from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.config import get_settings, preflight_delivery_config
 from app.services.smtp_service import send_email_async as smtp_send
@@ -51,67 +58,24 @@ from app.models import (
     VerificationRequest,
     VerificationStatus,
 )
-from app.workers.celery_app import celery_app
+from app.workers.dispatch import dispatch
+from app.workers.registry import Route, task
+from app.workers.runtime import (
+    TaskContext,
+    worker_session as _worker_session,
+    _run,
+)
 
 logger = logging.getLogger(__name__)
 
 
-# A task that blew its 600-second soft time limit must NOT be retried.
-#
-# Observed in production 2026-08-01: `generate_technical_questions` reached an
-# unterminating loop in the deterministic fallback matrix builder (deleted
-# 2026-08-29 with the rest of the single-pass generator), held a pool slot for
-# the full soft limit, raised SoftTimeLimitExceeded, and was then handed
-# straight back to `autoretry_for=(Exception,)` -- which catches
-# SoftTimeLimitExceeded, because it derives from Exception. Two such tasks took
-# both slots of the `--concurrency=2` worker and, at six attempts each, would
-# have held them for roughly an hour. Every queued email sat behind them: a
-# staff invitation enqueued at 14:07 UTC was still unsent, with the worker
-# silent since 14:03, which is exactly the reported "invites not sent".
-#
-# A task that could not finish in ten minutes will not finish in ten more, so
-# the retry buys nothing and costs the pool slot that delivery needs. The
-# timeout is now terminal: one hung task costs one attempt, not the queue.
-NO_RETRY_ON_TIMEOUT = (SoftTimeLimitExceeded,)
-
-
-# ── Startup preflight ────────────────────────────────────────────────────────
-
-@worker_ready.connect
-def _delivery_preflight(**_kwargs) -> None:
-    """Log a loud WARNING at worker boot if any SMTP/MSG91 credential is
-    missing (sprint brief: a missing key must not fail silently). Never a hard
-    crash  -  see preflight_delivery_config's ASSUMPTION."""
-    preflight_delivery_config()
-
-
-# ── Per-task engine/session helper ───────────────────────────────────────────
-
-@asynccontextmanager
-async def _worker_session():
-    """Fresh engine + session for one task run, disposed on exit.
-
-    ASSUMPTION: worker tasks are trusted backend processes that legitimately
-    operate across tenants (Databank matching spans tenant_id NULL rows), so
-    the session runs with app.bypass_rls = 'on'  -  the same escape hatch the
-    RLS policies define for the audit-logged super-admin path. Tenant scoping
-    inside tasks is done explicitly per query where a tenant is known.
-    """
-    engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
-    try:
-        factory = async_sessionmaker(engine, expire_on_commit=False)
-        async with factory() as session:
-            # false => session-level (not transaction-local): survives commits.
-            await session.execute(
-                text("SELECT set_config('app.bypass_rls', 'on', false)")
-            )
-            yield session
-    finally:
-        await engine.dispose()
-
-
-def _run(coro):
-    return asyncio.run(coro)
+# -- Startup preflight -------------------------------------------------------
+# Celery ran this from a `worker_ready` signal, once per worker process. There
+# is no long-lived worker process any more, so it runs at MODULE IMPORT, which
+# in a Lambda execution environment is once per cold start and in a Fargate
+# task is once per run. Same guarantee it always gave: a loud WARNING when an
+# SMTP or MSG91 credential is missing, never a hard crash.
+preflight_delivery_config()
 
 
 async def _audit(
@@ -149,7 +113,7 @@ async def _audit_delivery_exhausted(
     """Write a terminal-failure audit row when transient retries are exhausted.
 
     Opens its own session because the per-task session used for the send has
-    already unwound by the time Celery reports the final failure.
+    already unwound by the time the final failure is reported.
     """
     try:
         async with _worker_session() as session:
@@ -281,20 +245,17 @@ async def _send_email_async(
     return {"status": "sent", "message_id": message_id}
 
 
-@celery_app.task(
-    bind=True,
+@task(
     name="pickready.send_email",
-    # Only TRANSIENT failures auto-retry after a fixed 60-second delay. Permanent
-    # failures (unverified domain, invalid recipient, bad key) are handled in
-    # the body and NOT retried  -  retrying them just floods the logs.
-    autoretry_for=(TransientDeliveryError,),
-    retry_backoff=False,
-    default_retry_delay=60,
-    retry_jitter=False,
-    max_retries=None,  # actual cap comes from settings.delivery_max_retries
+    route=Route.LAMBDA,
+    max_attempts_setting="delivery_max_retries",
+    backoff_seconds=60.0,
+    backoff_max_seconds=60.0,
+    retry_on=(TransientDeliveryError,),
+    bind=True,
 )
 def send_email(
-    self,
+    ctx: TaskContext,
     tenant_id: str | None,
     to: str,
     template_name: str,
@@ -312,8 +273,6 @@ def send_email(
       * TransientDeliveryError → fixed 60-second delay, capped at
         settings.delivery_max_retries; audited when retries are exhausted.
     """
-    self.max_retries = get_settings().delivery_max_retries
-
     async def _task():
         async with _worker_session() as session:
             return await _send_email_async(
@@ -331,9 +290,12 @@ def send_email(
         )
         return {"status": "failed", "error": err.error_name}
     except TransientDeliveryError:
-        # autoretry_for handles the backoff/retry. When retries are exhausted
-        # Celery re-raises here; record the terminal failure to the audit log.
-        if self.request.retries >= self.max_retries:
+        # `runtime.run_task` owns the backoff and the cap. This branch records
+        # the TERMINAL failure, so it must fire on the last attempt and on no
+        # other: auditing every attempt would report one undelivered email
+        # several times and make the audit log disagree with itself about how
+        # many were lost.
+        if ctx.is_final_attempt:
             _run(
                 _audit_delivery_exhausted(
                     tenant_id, to, template_name, "email"
@@ -391,7 +353,7 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
         )
         return {"status": "failed", "error": err.error_name}
     except TransientDeliveryError:
-        # Leave the row `queued` so a retry can pick it up; Celery's
+        # Leave the row `queued` so a retry can pick it up; the runtime's
         # autoretry_for handles the backoff.
         raise
 
@@ -409,19 +371,17 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
     return {"status": "sent"}
 
 
-@celery_app.task(
-    bind=True,
+@task(
     name="pickready.send_lifecycle_email",
-    autoretry_for=(TransientDeliveryError,),
-    retry_backoff=False,
-    default_retry_delay=60,
-    retry_jitter=False,
-    max_retries=None,  # actual cap comes from settings.delivery_max_retries
+    route=Route.LAMBDA,
+    max_attempts_setting="delivery_max_retries",
+    backoff_seconds=60.0,
+    backoff_max_seconds=60.0,
+    retry_on=(TransientDeliveryError,),
+    bind=True,
 )
-def send_lifecycle_email(self, email_log_id: str):
+def send_lifecycle_email(ctx: TaskContext, email_log_id: str):
     """Send one of the six lifecycle emails from its `email_log` row."""
-    self.max_retries = get_settings().delivery_max_retries
-
     async def _task():
         async with _worker_session() as session:
             return await _send_lifecycle_email_async(session, email_log_id)
@@ -429,7 +389,7 @@ def send_lifecycle_email(self, email_log_id: str):
     try:
         return _run(_task())
     except TransientDeliveryError:
-        if self.request.retries >= self.max_retries:
+        if ctx.is_final_attempt:
             # Retries exhausted  -  settle the row as failed so the log never
             # leaves a message stuck in `queued` forever.
             async def _mark_failed():
@@ -475,7 +435,7 @@ async def _autosend_lifecycle_email(
         return {"status": "skipped", "reason": "no recipient"}
 
     # Idempotence: never send the same automatic type twice for one
-    # application. A Celery retry after a partial failure would otherwise
+    # application. A retry after a partial failure would otherwise
     # double-mail the candidate.
     already = (
         await session.execute(
@@ -520,11 +480,14 @@ async def _autosend_lifecycle_email(
     )
     session.add(row)
     await session.commit()
-    celery_app.send_task("pickready.send_lifecycle_email", args=[str(row.id)])
+    dispatch("pickready.send_lifecycle_email", args=[str(row.id)])
     return {"status": "queued", "email_log_id": str(row.id)}
 
 
-@celery_app.task(name="pickready.send_application_confirmation")
+@task(
+    name="pickready.send_application_confirmation",
+    route=Route.LAMBDA,
+)
 def send_application_confirmation(link_id: str):
     """Email type 1: confirm an application was received (spec §6.1)."""
     async def _task():
@@ -536,7 +499,10 @@ def send_application_confirmation(link_id: str):
     return _run(_task())
 
 
-@celery_app.task(name="pickready.send_assessment_reminder")
+@task(
+    name="pickready.send_assessment_reminder",
+    route=Route.LAMBDA,
+)
 def send_assessment_reminder(link_id: str, hours_elapsed: int = 24):
     """Email type 2: nudge a candidate whose assessment is still unfinished."""
     async def _task():
@@ -553,22 +519,20 @@ def send_assessment_reminder(link_id: str, hours_elapsed: int = 24):
 
 # ── SMS ──────────────────────────────────────────────────────────────────────
 
-@celery_app.task(
-    bind=True,
+@task(
     name="pickready.send_sms",
-    # Same taxonomy as email: only transient failures back off + retry.
-    autoretry_for=(TransientDeliveryError,),
-    retry_backoff=True,
-    retry_backoff_max=RETRY_BACKOFF_MAX_SECONDS,
-    retry_jitter=True,
-    max_retries=None,
+    route=Route.LAMBDA,
+    max_attempts_setting="delivery_max_retries",
+    backoff_seconds=2.0,
+    backoff_max_seconds=RETRY_BACKOFF_MAX_SECONDS,
+    retry_on=(TransientDeliveryError,),
+    bind=True,
 )
-def send_sms(self, phone: str, message: str):
+def send_sms(_ctx: TaskContext, phone: str, message: str):
     """Send an SMS via the MSG91 REST API. `phone` and `message` content (which
     may be an OTP) are never logged  -  only status + the provider error body on
     failure. Permanent failures (bad sender id / recipient / missing key) are
     not retried; transient ones use exponential backoff."""
-    self.max_retries = get_settings().delivery_max_retries
     try:
         _run(send_sms_async(phone, message))
     except PermanentDeliveryError as err:
@@ -584,26 +548,21 @@ def send_sms(self, phone: str, message: str):
 
 # ── Matching / parsing pipelines ────────────────────────────────────────────
 
-@celery_app.task(
+@task(
     name="pickready.run_matching",
+    route=Route.ECS,
+    max_attempts=2,
+    backoff_seconds=5.0,
     bind=True,
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
 )
-def run_matching(self, job_id: str):
+def run_matching(ctx: TaskContext, job_id: str):
     from app.services import matching, matching_progress
 
     # The recruiter watches these stages on the job page instead of a blocking
-    # modal. They go through Celery's own task state rather than a side channel,
-    # so the progress and the terminal state come from ONE place: a task that has
-    # finished cannot still be showing a stage as running.
-    progress = matching_progress.Progress(
-        publish=lambda payload: self.update_state(
-            state=matching_progress.STATE_PROGRESS, meta=payload
-        )
-    )
+    # modal. They go through the SAME run-status record that carries the
+    # terminal state, so the progress and the outcome come from one place: a
+    # task that has finished cannot still be showing a stage as running.
+    progress = matching_progress.Progress(publish=ctx.publish)
 
     async def _task():
         async with _worker_session() as session:
@@ -622,7 +581,7 @@ def run_matching(self, job_id: str):
             # newly-completed ones.
             #
             # `pickready.run_functional_assessment` already does this correctly
-            # -- credit-gated, one Celery task per candidate so one failure
+            # -- credit-gated, one task per candidate so one failure
             # cannot sink another's -- and is the task actually dispatched when
             # a conversation completes (api/assessments.py). Report synthesis
             # from a matching run reuses that same task instead of a second,
@@ -658,7 +617,7 @@ def run_matching(self, job_id: str):
                     )
                 ).scalars().all()
                 for link_id in link_ids:
-                    celery_app.send_task(
+                    dispatch(
                         "pickready.run_functional_assessment", args=[str(link_id)]
                     )
                 logger.info(
@@ -669,12 +628,11 @@ def run_matching(self, job_id: str):
     _run(_task())
 
 
-@celery_app.task(
+@task(
     name="pickready.compile_tatva_matrix",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
+    route=Route.ECS,
+    max_attempts=2,
+    backoff_seconds=5.0,
 )
 def compile_tatva_matrix(job_id: str, replace: bool = False, correlation_id: str = ""):
     """Sutra: this job's Tatva matrix, through all seven stages.
@@ -699,7 +657,7 @@ def compile_tatva_matrix(job_id: str, replace: bool = False, correlation_id: str
     finalises it (`hiring.scorecard.freeze`).
 
     Idempotent by default: a job that already has active items keeps them, so a
-    Celery redelivery cannot discard a matrix a human has already edited.
+    redelivery cannot discard a matrix a human has already edited.
     """
     from app.models.job import Job
     from app.services.hiring import pipeline_halt, scorecard
@@ -746,12 +704,11 @@ def compile_tatva_matrix(job_id: str, replace: bool = False, correlation_id: str
     _run(_task())
 
 
-@celery_app.task(
+@task(
     name="pickready.generate_matching_categories",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
+    route=Route.ECS,
+    max_attempts=2,
+    backoff_seconds=5.0,
 )
 def generate_matching_categories(job_id: str, replace: bool = False):
     """Job setup: the job's own Matching category list (spec §3.2).
@@ -787,12 +744,9 @@ def generate_matching_categories(job_id: str, replace: bool = False):
 #: deploy, so a task already sitting on the broker under an old name must still
 #: find a handler when it is delivered. Both DELEGATE; neither carries logic of
 #: its own, so there is one implementation and two ways in.
-@celery_app.task(
+@task(
     name="pickready.generate_ppi_framework",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
+    route=Route.ECS,
 )
 def generate_ppi_framework(job_id: str, replace: bool = False):
     """DEPRECATED alias for `pickready.compile_tatva_matrix` (2026-08-29)."""
@@ -800,12 +754,9 @@ def generate_ppi_framework(job_id: str, replace: bool = False):
     compile_tatva_matrix(job_id, replace=replace)
 
 
-@celery_app.task(
+@task(
     name="pickready.generate_technical_questions",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
+    route=Route.ECS,
 )
 def generate_technical_questions(job_id: str):
     """DEPRECATED alias for `pickready.compile_tatva_matrix` (2026-08-06).
@@ -817,7 +768,10 @@ def generate_technical_questions(job_id: str):
     compile_tatva_matrix(job_id)
 
 
-@celery_app.task(name="pickready.reconcile_job_setup")
+@task(
+    name="pickready.reconcile_job_setup",
+    route=Route.LAMBDA,
+)
 def reconcile_job_setup():
     """Find every job whose matrix never landed, and try again.
 
@@ -922,18 +876,17 @@ def reconcile_job_setup():
     _run(_task())
 
 
-@celery_app.task(
+@task(
     name="pickready.generate_candidate_questions",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
+    route=Route.ECS,
+    max_attempts=2,
+    backoff_seconds=5.0,
 )
 def generate_candidate_questions(link_id: str):
     """This candidate's PPI questions, from their resume + the job's framework.
 
     Per candidate, unlike the technical bank. Idempotent: a candidate who
-    already has questions keeps exactly those, so a Celery redelivery cannot
+    already has questions keeps exactly those, so a redelivery cannot
     hand someone a different assessment halfway through.
     """
     from app.models.candidate import JobCandidateLink
@@ -956,12 +909,11 @@ def generate_candidate_questions(link_id: str):
     _run(_task())
 
 
-@celery_app.task(
+@task(
     name="pickready.run_functional_assessment",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
+    route=Route.ECS,
+    max_attempts=2,
+    backoff_seconds=5.0,
 )
 def run_functional_assessment(link_id: str):
     """Score the conversation and write the report.
@@ -1067,16 +1019,15 @@ def run_functional_assessment(link_id: str):
         # separate task, so the two never race on the same rows and a
         # proctoring failure can never take the assessment report with it.
         # It is informational and moves no grade (proctoring spec P3).
-        celery_app.send_task("pickready.generate_proctoring_report", args=[str(link_id)])
+        dispatch("pickready.generate_proctoring_report", args=[str(link_id)])
     _run(_task())
 
 
-@celery_app.task(
+@task(
     name="pickready.generate_proctoring_report",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=3,
+    route=Route.ECS,
+    max_attempts=2,
+    backoff_seconds=5.0,
 )
 def generate_proctoring_report(link_id: str):
     """Write the Proctoring Report for one application (proctoring spec 7).
@@ -1134,7 +1085,10 @@ def generate_proctoring_report(link_id: str):
     _run(_task())
 
 
-@celery_app.task(name="pickready.reconcile_proctoring_sessions")
+@task(
+    name="pickready.reconcile_proctoring_sessions",
+    route=Route.LAMBDA,
+)
 def reconcile_proctoring_sessions():
     """Hourly: close the sessions nothing else will close, and report them.
 
@@ -1183,7 +1137,7 @@ def reconcile_proctoring_sessions():
                 if conversation is None:
                     continue
                 if conversation.completed_at is not None:
-                    celery_app.send_task(
+                    dispatch(
                         "pickready.generate_proctoring_report",
                         args=[str(ps.job_candidate_link_id)],
                     )
@@ -1195,7 +1149,7 @@ def reconcile_proctoring_sessions():
                 await proctoring_ingestion.end_session(
                     session, ps, outcome=OUTCOME_ABANDONED, reason_code=None, now=now
                 )
-                celery_app.send_task(
+                dispatch(
                     "pickready.generate_proctoring_report",
                     args=[str(ps.job_candidate_link_id)],
                 )
@@ -1209,7 +1163,10 @@ def reconcile_proctoring_sessions():
     _run(_task())
 
 
-@celery_app.task(name="pickready.purge_proctoring_events")
+@task(
+    name="pickready.purge_proctoring_events",
+    route=Route.LAMBDA,
+)
 def purge_proctoring_events():
     """Hourly retention sweep over `proctoring_events` (proctoring spec 5).
 
@@ -1245,12 +1202,10 @@ def purge_proctoring_events():
     _run(_task())
 
 
-@celery_app.task(
+@task(
     name="pickready.release_held_assessments",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=3,
+    route=Route.LAMBDA,
+    max_attempts=3,
 )
 def release_held_assessments(tenant_id: str | None = None):
     """Finish every report that was held for want of credits (spec §11).
@@ -1300,7 +1255,7 @@ def release_held_assessments(tenant_id: str | None = None):
                     )
                 if not checked[row_tenant]:
                     continue
-                celery_app.send_task(
+                dispatch(
                     "pickready.run_functional_assessment", args=[str(link_id)]
                 )
                 released += 1
@@ -1311,7 +1266,10 @@ def release_held_assessments(tenant_id: str | None = None):
     _run(_task())
 
 
-@celery_app.task(name="pickready.remind_unapproved_technical_questions")
+@task(
+    name="pickready.remind_unapproved_technical_questions",
+    route=Route.LAMBDA,
+)
 def remind_unapproved_technical_questions():
     """The operational safeguard on the pipeline's one manual step (spec §5).
 
@@ -1398,12 +1356,10 @@ def remind_unapproved_technical_questions():
     _run(_task())
 
 
-@celery_app.task(
+@task(
     name="pickready.parse_resume",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
+    route=Route.LAMBDA,
+    max_attempts=3,
 )
 def parse_resume(profile_id: str):
     from app.services import resume_parsing
@@ -1417,19 +1373,18 @@ def parse_resume(profile_id: str):
 
 # ── Project Evidence Intelligence ────────────────────────────────────────────
 
-@celery_app.task(
+@task(
     name="pickready.process_candidate_project",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
+    route=Route.ECS,
+    max_attempts=2,
+    backoff_seconds=5.0,
 )
 def process_candidate_project(project_id: str):
     """Run the whole evidence pipeline for one submitted project.
 
     Idempotent by construction: derived output lives in columns on the one
     project row, a completed project returns immediately, and staging keys
-    are content-addressed, so a Celery redelivery reruns safely. Transient
+    are content-addressed, so a redelivery reruns safely. Transient
     failures (storage, a provider 429) raise and use the retry budget;
     deterministic refusals (a hostile archive, a rejected repository URL) are
     recorded as terminal statuses inside the pipeline and do NOT raise.
@@ -1452,7 +1407,10 @@ def process_candidate_project(project_id: str):
     _run(_task())
 
 
-@celery_app.task(name="pickready.reconcile_project_intake")
+@task(
+    name="pickready.reconcile_project_intake",
+    route=Route.LAMBDA,
+)
 def reconcile_project_intake():
     """Hourly sweeper for the two states that must not persist quietly.
 
@@ -1510,7 +1468,7 @@ def reconcile_project_intake():
                     await project_pipeline.delete_intake_objects(session, project)
                     retried_deletion += 1
                 elif project.status in (STATUS_SUBMITTED, STATUS_PROCESSING):
-                    celery_app.send_task(
+                    dispatch(
                         "pickready.process_candidate_project",
                         args=[str(project.id)],
                     )
@@ -1518,7 +1476,7 @@ def reconcile_project_intake():
                 elif project.status == STATUS_PARTIALLY_PROCESSED:
                     runs = int((project.telemetry_json or {}).get("runs", 0))
                     if runs < MAX_AUTOMATIC_RUNS:
-                        celery_app.send_task(
+                        dispatch(
                             "pickready.process_candidate_project",
                             args=[str(project.id)],
                         )
@@ -1535,12 +1493,10 @@ def reconcile_project_intake():
 
 # ── Employer verification (ESD §10) ─────────────────────────────────────────
 
-@celery_app.task(
+@task(
     name="pickready.send_verification_requests",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
+    route=Route.LAMBDA,
+    max_attempts=3,
 )
 def send_verification_requests(profile_id: str):
     """Send tokenized verification-form links to the (up to 3) previous
@@ -1588,12 +1544,10 @@ def send_verification_requests(profile_id: str):
     _run(_task())
 
 
-@celery_app.task(
+@task(
     name="pickready.parse_verification_reply",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
+    route=Route.LAMBDA,
+    max_attempts=3,
 )
 def parse_verification_reply(verification_request_id: str, raw_email_text: str):
     """Fallback path: employer replied by email instead of using the form  - 
@@ -1636,12 +1590,9 @@ def parse_verification_reply(verification_request_id: str, raw_email_text: str):
 
 # ── Billing + credits (killer-spec Parts 2 and 3) ───────────────────────────
 
-@celery_app.task(
+@task(
     name="pickready.reconcile_assessment_credits",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=3,
+    route=Route.LAMBDA,
 )
 def reconcile_assessment_credits():
     """Daily sweep: charge abandoned assessments and queue due reminders.
@@ -1655,7 +1606,7 @@ def reconcile_assessment_credits():
         from app.services import credit_reconciliation
 
         def _queue(link_id: str, hours_elapsed: int) -> None:
-            celery_app.send_task(
+            dispatch(
                 "pickready.send_assessment_reminder", args=[link_id, hours_elapsed]
             )
 
@@ -1667,7 +1618,10 @@ def reconcile_assessment_credits():
     return _run(_task())
 
 
-@celery_app.task(name="pickready.send_payment_failed_email")
+@task(
+    name="pickready.send_payment_failed_email",
+    route=Route.LAMBDA,
+)
 def send_payment_failed_email(tenant_id: str):
     """Tell the customer a charge failed, before credits quietly stop arriving.
 
@@ -1690,7 +1644,7 @@ def send_payment_failed_email(tenant_id: str):
             if row is None:
                 logger.warning("billing.payment_failed_email_no_recipient tenant=%s", tenant_id)
                 return {"sent": False, "reason": "no recipient"}
-            celery_app.send_task(
+            dispatch(
                 "pickready.send_email",
                 args=[
                     tenant_id,
@@ -1707,7 +1661,10 @@ def send_payment_failed_email(tenant_id: str):
     return _run(_task())
 
 
-@celery_app.task(name="pickready.send_credit_warning_email")
+@task(
+    name="pickready.send_credit_warning_email",
+    route=Route.LAMBDA,
+)
 def send_credit_warning_email(tenant_id: str, level: int):
     """The Part 5 §4 balance warnings: LOW at 20 credits, CRITICAL at 10.
 
@@ -1746,7 +1703,7 @@ def send_credit_warning_email(tenant_id: str, level: int):
                 if await credits_service.has_active_stem_jobs(session, tid)
                 else ""
             )
-            celery_app.send_task(
+            dispatch(
                 "pickready.send_email",
                 args=[
                     tenant_id,
@@ -1768,7 +1725,10 @@ def send_credit_warning_email(tenant_id: str, level: int):
     return _run(_task())
 
 
-@celery_app.task(name="pickready.send_credit_invoice_email")
+@task(
+    name="pickready.send_credit_invoice_email",
+    route=Route.LAMBDA,
+)
 def send_credit_invoice_email(purchase_id: str):
     """Email the GST invoice PDF for a settled credit-pack purchase.
 
@@ -1822,7 +1782,7 @@ def send_credit_invoice_email(purchase_id: str):
                 return {"sent": False, "reason": "no recipient"}
 
             pdf = credit_packs.render_invoice_pdf(purchase, tenant)
-            celery_app.send_task(
+            dispatch(
                 "pickready.send_email",
                 args=[
                     str(purchase.tenant_id),
@@ -1854,15 +1814,13 @@ def send_credit_invoice_email(purchase_id: str):
 
 # ── Dashboard (ESD §14) ─────────────────────────────────────────────────────
 
-@celery_app.task(
+@task(
     name="pickready.refresh_dashboard_views",
-    autoretry_for=(Exception,),
-    dont_autoretry_for=NO_RETRY_ON_TIMEOUT,
-    retry_backoff=True,
-    max_retries=5,
+    route=Route.LAMBDA,
+    max_attempts=3,
 )
 def refresh_dashboard_views():
-    """Refresh the dashboard materialized view (Celery-beat, every 5 min).
+    """Refresh the dashboard materialized view (scheduled, every 5 min).
     CONCURRENTLY requires the unique index on job_id and must run outside a
     transaction block  -  hence the AUTOCOMMIT connection.
 

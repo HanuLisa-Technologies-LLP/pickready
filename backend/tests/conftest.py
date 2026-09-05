@@ -37,6 +37,18 @@ os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6381/0")
 # InsecureKeyLengthWarning.
 os.environ.setdefault("JWT_SECRET", "readypick-test-suite-signing-key-not-a-secret")
 
+# Background work is RECORDED, not run. There is no Lambda in front of a test
+# run, and running the tasks in-process would make every route test that
+# happens to enqueue one depend on a model provider, an SMTP server and a
+# minute of wall clock.
+#
+# This is the honest version of what the Celery suite did by accident: it
+# published to a Redis broker with no worker behind it, so the message went
+# nowhere and nothing said so. `record` goes nowhere too, and keeps the list,
+# which is what lets a test assert WHICH task a route dispatched instead of
+# monkeypatching the transport and proving only that the call site ran.
+os.environ.setdefault("TASK_DISPATCH_BACKEND", "record")
+
 import pytest  # noqa: E402  -- must follow the sys.path insert
 
 #: The skip gate (spec-doc6 3.3). It has to be a PLUGIN and not a test, because
@@ -46,6 +58,21 @@ import pytest  # noqa: E402  -- must follow the sys.path insert
 #: holds ordinary tests, which run normally; a plugin and a test module are not
 #: mutually exclusive.
 pytest_plugins = ("tests.test_skip_inventory",)
+
+
+@pytest.fixture(autouse=True)
+def _clear_recorded_dispatches():
+    """Each test sees only its own dispatches.
+
+    The recorder is process-global, so without this a test asserting "exactly
+    one email was dispatched" passes or fails depending on what ran before it,
+    which is the order-dependent failure that reproduces on CI and not locally.
+    """
+    from app.workers import dispatch
+
+    dispatch.clear_recorded()
+    yield
+    dispatch.clear_recorded()
 
 
 @pytest.fixture(autouse=True)

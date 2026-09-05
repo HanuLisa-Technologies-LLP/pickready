@@ -21,7 +21,7 @@ did is noise (spec §4.1 marks it "backend event only").
 
 This module is a PURE CONTENT SERVICE, matching the existing
 `outreach_content` pattern: it drafts, it never sends and never writes to the
-database. The API layer records the draft in `email_log` and the Celery task
+database. The API layer records the draft in `email_log` and the dispatched task
 delivers it (claude.md rules 4 and 5).
 
 DEGRADATION
@@ -53,6 +53,7 @@ from app.models.email_log import (
     EMAIL_TYPE_ASSESSMENT_INVITATION,
     EMAIL_TYPE_INTERVIEW_COMPLETED,
     EMAIL_TYPE_INTERVIEW_SCHEDULED,
+    EMAIL_TYPE_DATABANK_INVITATION,
     EMAIL_TYPE_JOINED,
     EMAIL_TYPE_OFFER_EXTENDED,
     EMAIL_TYPE_ASSESSMENT_REMINDER,
@@ -87,6 +88,7 @@ _PROMPT_DEFAULTS: dict[str, dict[str, Any]] = {
         "strengths": "strong, relevant experience for this role",
         "next_steps": "the team will be in touch to arrange an interview",
     },
+    EMAIL_TYPE_DATABANK_INVITATION: {"application_link": ""},
     EMAIL_TYPE_REJECTED: {},
     EMAIL_TYPE_HOLD: {"hold_days": "10"},
     EMAIL_TYPE_QUESTION_BANK_REMINDER: {
@@ -133,6 +135,12 @@ _FALLBACK_SUBJECTS: dict[str, str] = {
     EMAIL_TYPE_INTERVIEW_COMPLETED: "Thank you for your time, {job_title}",
     EMAIL_TYPE_OFFER_EXTENDED: "An offer from {company_name}, {job_title}",
     EMAIL_TYPE_JOINED: "Welcome to {company_name}",
+    # Not "Your application" and not "Congratulations": they have not applied,
+    # and a subject line that implies they have is the first thing that would
+    # mislead them, before the body has a chance to be careful.
+    EMAIL_TYPE_DATABANK_INVITATION: (
+        "An opening at {company_name}, {job_title}"
+    ),
 }
 
 
@@ -143,6 +151,7 @@ _REQUIRED_LINK_KEY: dict[str, str] = {
     EMAIL_TYPE_ASSESSMENT_INVITATION: "assessment_link",
     EMAIL_TYPE_ASSESSMENT_REMINDER: "assessment_link",
     EMAIL_TYPE_QUESTION_BANK_REMINDER: "job_link",
+    EMAIL_TYPE_DATABANK_INVITATION: "application_link",
 }
 
 #: Anything that reads as a URL. Three shapes, and the third is the one that
@@ -295,6 +304,19 @@ def _fallback_body(email_type: str, ctx: dict[str, Any]) -> str:
             f"{ctx.get('next_steps', '')}\n\n"
             "We will be in touch as soon as we have an update. If anything in "
             "your details changes in the meantime, just reply to this email.\n\n"
+            f", The {company} team"
+        )
+    if email_type == EMAIL_TYPE_DATABANK_INVITATION:
+        link = ctx.get("application_link") or ""
+        return (
+            f"Hi {name},\n\n"
+            f"We have your resume on file at {company}, and we are hiring "
+            f"for a {job} role that looks like it could suit you.\n\n"
+            "You have not applied for it, and nothing happens unless you "
+            "decide to. If you would like to be considered, sign in, finish "
+            "your profile and submit an application here.\n\n"
+            + (f"{link}\n\n" if link else "")
+            + "If the role is not for you, no reply is needed.\n\n"
             f", The {company} team"
         )
     if email_type == EMAIL_TYPE_ASSESSMENT_REMINDER:

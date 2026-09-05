@@ -51,7 +51,7 @@ async def parse_reply(
     Returns a dict containing exactly VERIFICATION_FIELDS. When the reply is
     unparseable (the LLM returns non-JSON / a non-object  -  e.g. an out-of-band
     prose reply), every field degrades to None and a warning is logged rather
-    than raising, so a junk reply never crash-loops the Celery task. Only truly
+    than raising, so a junk reply never crash-loops the task. Only truly
     empty input raises VerificationParsingError; llm_router.LLMUnavailableError
     (whole provider chain down) propagates so the task's retry policy applies.
     """

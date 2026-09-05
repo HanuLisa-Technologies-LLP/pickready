@@ -69,7 +69,7 @@ class _Fx:
         self.enqueued: list[str] = []
 
     def enqueue(self, link_id: str) -> None:
-        """Stands in for `celery_app.send_task`, so the tests can assert the
+        """Stands in for `workers.dispatch.dispatch`, so the tests can assert the
         report was ordered without a broker."""
         self.enqueued.append(link_id)
 

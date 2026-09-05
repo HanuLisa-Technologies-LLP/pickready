@@ -1,4 +1,37 @@
 """Application settings, sourced from environment variables (see /.env.example)."""
+
+#: The wall clock the product is operated on, and the one every rendered time is
+#: shown in. India, because that is where the product is sold and where the
+#: recruiter reading "10:32" is standing.
+#:
+#: It lives HERE rather than on whatever happens to schedule work, which is
+#: where it used to live: it was `celery_app.conf.timezone`, and the proctoring
+#: report read it off the Celery app object so the two could not drift. That
+#: coupling was right and the anchor was wrong, because it made a rendering
+#: decision a property of the job runner. The scheduler now reads it too
+#: (`workers/schedule`), so the same single definition still holds both.
+PLATFORM_TIMEZONE = "Asia/Kolkata"
+
+#: What an unpopulated secret holds in Secrets Manager, and what this module
+#: turns back into "" before anything reads it.
+#:
+#: WHY IT EXISTS AT ALL. ECS fetches every secret in a task definition before
+#: the container starts, so a secret with no version stops the whole service
+#: rather than degrading one feature. Secrets Manager will not accept an empty
+#: string, so `infra/modules/secrets` seeds each one with this instead.
+#:
+#: WHY IT IS NORMALISED HERE AND NOWHERE ELSE. Every "is this configured"
+#: check in the product tests for a falsy value: `missing_delivery_keys`,
+#: `llm_router.key_for_model`, `checkout_ready`, the Tavily gate. Handing any of
+#: them a non-empty sentinel would make an unconfigured credential look
+#: configured and fail later, at a provider, with a 401 that reads like a
+#: revoked key. Turning it into "" at the boundary means the code that runs is
+#: exactly the code that runs when the variable was never set.
+#:
+#: It is NOT a credential and cannot authenticate to anything. Pinned against
+#: the Terraform default by `tests/test_placeholder_secret.py`.
+PLACEHOLDER_SECRET = "PLACEHOLDER_NOT_CONFIGURED"
+
 from functools import lru_cache
 
 from pydantic import model_validator
@@ -20,9 +53,29 @@ class Settings(BaseSettings):
     db_pool_timeout_seconds: int = 30
     db_pool_recycle_seconds: int = 1800
 
-    # Redis / Celery
+    # Redis. Cache, rate limiting, the proctoring warning counter and the
+    # background run-status record. It is no longer a message broker: there is
+    # no queue in it, and nothing consumes from it.
     redis_url: str = "redis://localhost:6379/0"
     technical_review_reminder_hours: int = 48
+
+    # -- Background task dispatch --------------------------------------------
+    #
+    # Three real deployments, never a fallback chain (see workers/dispatch):
+    #   aws     invoke Lambda, which runs short work directly and starts an
+    #           on-demand Fargate task for long work. Staging and production.
+    #   local   run the task in a thread in this process. The docker-compose
+    #           stack, which has no Lambda.
+    #   record  accept the dispatch, run nothing, remember it. The test suite,
+    #           where executing a task would make every route test depend on a
+    #           model provider. Refused outright in production.
+    task_dispatch_backend: str = "aws"
+
+    # How long a synchronous agent invoke may take before the CLIENT gives up.
+    # Deliberately longer than the functions' own timeouts, so the function's
+    # ceiling is what stops the work: a client that times out first abandons a
+    # call that is still running and, with retries enabled, starts a second.
+    agent_invoke_read_timeout_seconds: int = 660
 
     # Auth
     jwt_secret: str = "dev-only-secret-change-me"
@@ -135,7 +188,11 @@ class Settings(BaseSettings):
     # per-service IAM policy in `infra/modules/secrets`. A long-lived key in an
     # env var is precisely what that scoping exists to avoid.
     s3_bucket: str = ""
-    aws_region: str = "ap-south-1"
+    # ap-south-2 (Hyderabad). The deployment region is a locked decision;
+    # every bucket, function, cluster and secret this product addresses
+    # lives there, so a wrong default here is a set of NoSuchBucket and
+    # ResourceNotFound errors that read like missing resources.
+    aws_region: str = "ap-south-2"
     #: Localstack / MinIO only. None in every real environment, where boto3
     #: resolves the real regional endpoint.
     s3_endpoint_url: str = ""
@@ -328,6 +385,20 @@ class Settings(BaseSettings):
 
     # App
     environment: str = "development"
+
+    @model_validator(mode="after")
+    def _drop_placeholder_secrets(self) -> "Settings":
+        """Turn every placeholder back into "not configured".
+
+        Applied to EVERY string field rather than a named list, because the
+        list would be the thing that drifts: a secret added to
+        `infra/modules/secrets` without a matching entry here would arrive as a
+        non-empty sentinel and read as configured.
+        """
+        for name, field in type(self).model_fields.items():
+            if getattr(self, name, None) == PLACEHOLDER_SECRET:
+                object.__setattr__(self, name, "")
+        return self
     frontend_url: str = "http://localhost:3000"
 
     # Platform Owner  -  the ONLY identity permitted to hold the owner
@@ -377,6 +448,23 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def serves_over_https(self) -> bool:
+        """Whether the browser reaches this deployment over TLS.
+
+        THE AUTH COOKIE'S `Secure` FLAG READS THIS, not `is_production`, and the
+        difference is a real one: `Secure` is a property of the ORIGIN, not a
+        production feature. Tying it to `is_production` meant a cookie issued by
+        the pilot or by staging went out without it over a genuine HTTPS origin.
+
+        Derived from `frontend_url` because that is the same string the load
+        balancer actually serves and `jobs.public_job_url` already builds
+        candidate links from, so this cannot drift from reality. It is https in
+        every deployed environment, http on a laptop, and right in an
+        environment nobody has thought about yet.
+        """
+        return self.frontend_url.lower().startswith("https://")
 
     def missing_delivery_keys(self) -> list[str]:
         """Names of unset outbound-delivery credentials (for startup preflight).

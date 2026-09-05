@@ -8,22 +8,24 @@ so a task that fails this check is not promoted and the deploy reverts. That
 makes the question this endpoint asks the question that decides whether a
 release ships.
 
-WHY IT PROBES THE BROKER AS WELL AS THE DATABASE
--------------------------------------------------
+WHY IT PROBES REDIS AS WELL AS THE DATABASE
+--------------------------------------------
 It used to probe the database only, and the reason it now probes both is not
 symmetry.
 
-Publishing to Redis has NO timeout by default, so an unreachable broker does not
-raise, it HANGS. That silently defeats every `try`/`except` wrapped around an
-enqueue, because nothing is ever raised for the handler to catch. This platform
-has already been burned by it: a management job found thirty files, hung on its
-first `send_task`, and died at the 900-second ceiling having written nothing,
-while the deploy that shipped it reported success.
+Redis stopped being the message broker on 2026-09-04, and that made this probe
+MORE necessary rather than less. What it still carries is the rate limiter, the
+proctoring warning counter and the background run-status record, and two of
+those three fail in ways nobody sees from outside: the limiter fails open by
+design, and a run-status write is deliberately non-fatal to the work it
+describes. So a task with no Redis serves requests that look fine and quietly
+stops enforcing a limit, stops counting proctoring warnings toward a
+termination, and stops reporting what a matching run is doing.
 
-A task whose broker is unreachable therefore accepts requests and then stops
-partway through them, one at a time, with no error anywhere. That is exactly the
-shape a health check exists to keep out of a target group, and a database-only
-probe promotes it.
+The proctoring counter is the one that decides it. The warning machine answers
+503 rather than silently not warning, so a task without Redis fails every
+assessment turn it is handed. That is exactly the shape a health check exists
+to keep out of a target group, and a database-only probe promotes it.
 
 spec-doc6 §13.2 states the requirement directly: health checks "hit real
 application health endpoints that verify database and cache connectivity, not a
@@ -34,11 +36,11 @@ WHY IT DOES NOT REUSE `app.core.cache`
 `cache._redis()` returns None when Redis is unreachable and latches
 `_unavailable` so the next request does not retry. That is correct for the read
 path, where a cache miss is cheaper than an error, and it is precisely wrong
-here: a probe built on it would report a healthy task with no broker, which is
+here: a probe built on it would report a healthy task with no Redis, which is
 the failure it exists to detect. So this module opens its own connection, and it
 is a fresh one each time on purpose. A pooled connection that was established
 before the outage can survive one; establishing a new connection is the thing
-that actually proves the broker is reachable now.
+that actually proves Redis is reachable now.
 
 WHAT THIS COSTS, STATED RATHER THAN DISCOVERED
 ------------------------------------------------
@@ -86,8 +88,8 @@ async def _probe_database() -> None:
         await session.execute(text("SELECT 1"))
 
 
-async def _probe_broker() -> None:
-    """PING the Celery broker over a connection opened for this probe.
+async def _probe_redis() -> None:
+    """PING Redis over a connection opened for this probe.
 
     Explicit socket timeouts on the client as well as the `wait_for` around it.
     The `wait_for` bounds the whole await; the socket timeouts bound the read
@@ -106,7 +108,7 @@ async def _probe_broker() -> None:
         await client.ping()
     finally:
         # Always closed. A probe that leaked a connection every 30 seconds would
-        # exhaust the broker's client limit in a day and take down the thing it
+        # exhaust the server's client limit in a day and take down the thing it
         # was checking on.
         await client.aclose()
 
@@ -125,7 +127,7 @@ async def probe_dependencies() -> dict:
     """
     await asyncio.gather(
         asyncio.wait_for(_probe_database(), timeout=PROBE_TIMEOUT_SECONDS),
-        asyncio.wait_for(_probe_broker(), timeout=PROBE_TIMEOUT_SECONDS),
+        asyncio.wait_for(_probe_redis(), timeout=PROBE_TIMEOUT_SECONDS),
     )
     return {"status": "ok", "database": "ok", "cache": "ok"}
 

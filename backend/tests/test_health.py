@@ -1,4 +1,4 @@
-"""The deploy gate must prove the database AND the broker are reachable.
+"""The deploy gate must prove the database AND Redis are reachable.
 
 WHY THE BROKER HALF IS HERE
 ----------------------------
@@ -7,7 +7,11 @@ connectivity, not a static 200". This endpoint was not a static 200 before this
 phase, it probed the database, and the missing half was the one that matters
 most for this platform.
 
-Publishing to Redis has no timeout by default, so an unreachable broker does not
+Redis stopped being the message broker on 2026-09-04. It still carries the
+proctoring warning counter, and `services/proctoring/gate` answers 503 rather
+than silently not warning, so a task that has lost it refuses every assessment
+turn while looking perfectly healthy from outside. That is what this probe is
+for now, and it is the same shape as the reason it was added: a dependency that
 raise, it HANGS. Nothing is raised for a handler's `except` to catch. A task in
 that state accepts requests and stops partway through them, silently, one at a
 time. A database-only probe promotes it and the deploy reports success, which is
@@ -41,9 +45,9 @@ class _Session:
 
 
 class _Redis:
-    """A broker double that records whether it was pinged and whether it was
+    """A Redis double that records whether it was pinged and whether it was
     closed. `aclose` matters: this probe opens a connection every 30 seconds on
-    every task, so one that leaked would exhaust the broker's client limit."""
+    every task, so one that leaked would exhaust the server's client limit."""
 
     def __init__(self, *, fail: bool = False, hang: bool = False) -> None:
         self.fail = fail
@@ -56,7 +60,7 @@ class _Redis:
         if self.hang:
             await asyncio.sleep(3600)
         if self.fail:
-            raise ConnectionError("broker unavailable")
+            raise ConnectionError("redis unavailable")
         return True
 
     async def aclose(self) -> None:
@@ -64,7 +68,7 @@ class _Redis:
 
 
 def _probe_with(redis):
-    """The real `_probe_broker` with the client substituted: it still pings and
+    """The real `_probe_redis` with the client substituted: it still pings and
     it still closes in a `finally`, so the closing test below is testing the
     contract rather than the double."""
 
@@ -85,14 +89,14 @@ def wire(monkeypatch):
         session = session if session is not None else _Session()
         redis = redis if redis is not None else _Redis()
         monkeypatch.setattr("app.core.db.get_session_factory", lambda: lambda: session)
-        monkeypatch.setattr(health_module, "_probe_broker", _probe_with(redis))
+        monkeypatch.setattr(health_module, "_probe_redis", _probe_with(redis))
         return session, redis
 
     return _wire
 
 
 @pytest.mark.asyncio
-async def test_health_probes_the_database_and_the_broker(wire) -> None:
+async def test_health_probes_the_database_and_redis(wire) -> None:
     session, redis = wire()
 
     response = await main.health()
@@ -103,8 +107,8 @@ async def test_health_probes_the_database_and_the_broker(wire) -> None:
         "a session without using it passes with wrong credentials"
     )
     assert redis.pinged, (
-        "the broker was never probed. An unreachable broker does not raise on "
-        "publish, it hangs, so a task with a broken broker looks healthy."
+        "Redis was never probed. A task that has lost Redis refuses every "
+        "assessment turn at the proctoring gate while looking healthy."
     )
 
 
@@ -121,7 +125,7 @@ async def test_health_fails_when_the_database_is_unreachable(wire) -> None:
 
 
 @pytest.mark.asyncio
-async def test_health_fails_when_the_broker_is_unreachable(wire) -> None:
+async def test_health_fails_when_redis_is_unreachable(wire) -> None:
     """THE HALF ADDED IN THIS PHASE.
 
     Raising is the whole point. A 200 carrying `{"cache": "down"}` is a healthy
@@ -130,14 +134,14 @@ async def test_health_fails_when_the_broker_is_unreachable(wire) -> None:
     """
     wire(redis=_Redis(fail=True))
 
-    with pytest.raises(ConnectionError, match="broker unavailable"):
+    with pytest.raises(ConnectionError, match="redis unavailable"):
         await main.health()
 
 
 @pytest.mark.asyncio
-async def test_health_closes_the_broker_connection_even_when_the_ping_fails(wire) -> None:
+async def test_health_closes_the_redis_connection_even_when_the_ping_fails(wire) -> None:
     """One connection per probe, every 30 seconds, on every task. A probe that
-    leaked on the failure path would exhaust the broker's client limit during
+    leaked on the failure path would exhaust the server's client limit during
     exactly the incident it was reporting."""
     _, redis = wire(redis=_Redis(fail=True))
 
@@ -148,11 +152,11 @@ async def test_health_closes_the_broker_connection_even_when_the_ping_fails(wire
 
 
 @pytest.mark.asyncio
-async def test_health_gives_up_on_a_hanging_broker(monkeypatch) -> None:
+async def test_health_gives_up_on_a_hanging_redis(monkeypatch) -> None:
     """THE FAILURE THIS ENDPOINT EXISTS FOR, and the one that is not an
     exception.
 
-    A broker that accepts the TCP connection and then never answers produces no
+    A server that accepts the TCP connection and then never answers produces no
     error at all. Without a bound, the probe waits forever and the load balancer
     reports a timeout it cannot distinguish from a slow one. The bound must stay
     below the target group's own `health_timeout_seconds`, which the Terraform
@@ -167,7 +171,7 @@ async def test_health_gives_up_on_a_hanging_broker(monkeypatch) -> None:
     monkeypatch.setattr(health_module, "PROBE_TIMEOUT_SECONDS", 0.05)
 
     hanging = _Redis(hang=True)
-    monkeypatch.setattr(health_module, "_probe_broker", _probe_with(hanging))
+    monkeypatch.setattr(health_module, "_probe_redis", _probe_with(hanging))
 
     with pytest.raises(asyncio.TimeoutError):
         await main.health()
@@ -178,7 +182,7 @@ async def test_health_does_not_reuse_the_degrading_cache_client() -> None:
     """`app.core.cache._redis()` returns None when Redis is unreachable and
     latches `_unavailable` so the next call does not retry. That is right for
     the read path and exactly wrong here: a probe built on it would report a
-    healthy task with no broker at all.
+    healthy task with no Redis at all.
 
     Asserted by walking the module's IMPORTS, not by grepping its text: the
     module docstring explains this rule at length and names the module it
@@ -203,5 +207,5 @@ async def test_health_does_not_reuse_the_degrading_cache_client() -> None:
     assert "app.core.cache" not in imported, (
         "the health probe imports app.core.cache, whose client degrades to None "
         "on an outage and latches. A probe built on it reports a healthy task "
-        "with no broker. Open a connection here instead."
+        "with no Redis. Open a connection here instead."
     )

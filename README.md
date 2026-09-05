@@ -6,7 +6,7 @@ adaptive AI assessment, and come out the other side as a **PRISM Report** a
 recruiter can act on, graded in words and never in numbers.
 
 Next.js 16 frontend, FastAPI backend, Firebase authentication, PostgreSQL with
-pgvector, Celery for every slow path, fully containerised, deployed to AWS ECS
+pgvector, Lambda and on-demand Fargate for every slow path, fully containerised, deployed to AWS ECS
 Fargate.
 
 | | |
@@ -62,7 +62,7 @@ intelligence is retained.
 | Frontend | Next.js 16.2, React 18.3, TypeScript, Tailwind, shadcn/ui |
 | Backend | FastAPI, Python 3.12, Pydantic v2, async SQLAlchemy |
 | Database | PostgreSQL 16 + pgvector, row-level security per tenant |
-| Cache / queue | Redis 7, the Celery broker and result backend |
+| Shared state / cache | Redis 7: rate limiting, the proctoring warning counter, background run status, and the cache |
 | AI | One vendor, three endpoints: `gpt-5.6-terra` (judge and write), `gpt-5.6-luna` (extract and classify), `voyage-4` (embeddings). Routed through `services/llm_router` with per-task timeouts, budgets and a circuit breaker |
 | Auth | Firebase Authentication (Google, email/password, phone) plus app-issued portal JWTs |
 | Payments | Razorpay Subscriptions and credit-pack Orders |
@@ -133,7 +133,7 @@ Five workloads from two images, all on AWS ECS Fargate:
 |---|---|---|---|
 | `readypick-<env>-api` | ECS service | backend | Public API, Razorpay webhooks |
 | `readypick-<env>-frontend` | ECS service | frontend | Public web app |
-| `readypick-<env>-worker` | ECS service | backend | Celery task processing |
+| `readypick-<env>-agent` | ECS task definition, no service | backend | Long AI work. One task per dispatch, started by `readypick-assessment-trigger`; it runs once and exits |
 | `readypick-<env>-beat` | ECS service, exactly 1 task | backend | Scheduled dispatch |
 | `readypick-<env>-migrate` | ECS one-shot task | backend | Alembic migrations |
 

@@ -118,7 +118,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     ),
     # ── Names that MUST exist here because a caller sends them ───────────────
     # `render` raises ValueError when a template name resolves to neither a
-    # tenant row nor a default, and that raise happens inside the Celery task,
+    # tenant row nor a default, and that raise happens inside the background task,
     # AFTER the API has already answered 200. Three names were being sent with
     # no default and no seeded row, so those invitations were discarded with no
     # email_log row, no audit_log row, and nothing the user could see. The

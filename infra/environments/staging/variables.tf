@@ -149,3 +149,45 @@ variable "planning_profile" {
   type        = bool
   default     = false
 }
+
+variable "alarm_emails" {
+  description = <<-EOT
+    Who is notified when an alarm fires.
+
+    An email subscription is PENDING until its recipient clicks the
+    confirmation link, and Terraform reports it as created either way. An empty
+    list is allowed and means the alarms fire with nobody subscribed, which is
+    not a silent state: the console shows the topic with no subscribers.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "reserve_lambda_concurrency" {
+  description = <<-EOT
+    Whether to apply the per-function concurrency ceilings.
+
+    FALSE, because this account's TOTAL Lambda concurrency is 10 -- the
+    new-account default, not the usual 1000 -- and AWS refuses any reservation
+    that would leave fewer than 10 unreserved. Every reservation is therefore
+    impossible, and the apply fails with a message about
+    `UnreservedConcurrentExecution` rather than about the quota.
+
+    Nothing is unprotected in the meantime. The ceilings exist because each
+    concurrent task-worker invocation opens its own database engine against a
+    `db.t4g.micro` connection limit, and an account cap of 10 is a HARDER
+    ceiling than the 20 that was being asked for.
+
+    Turn it on after raising the quota:
+
+      aws service-quotas request-service-quota-increase \
+        --service-code lambda --quota-code L-B99A9384 --desired-value 1000
+
+    Check it first, because a quota increase is not instant:
+
+      aws lambda get-account-settings \
+        --query 'AccountLimit.ConcurrentExecutions'
+  EOT
+  type        = bool
+  default     = false
+}

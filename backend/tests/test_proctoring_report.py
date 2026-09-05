@@ -391,12 +391,12 @@ def test_a_session_with_no_end_time_still_renders_a_date_line() -> None:
 
 
 def test_the_report_timezone_matches_the_platforms_own() -> None:
-    """A recruiter reading "10:32" reads their own wall clock. If the beat
+    """A recruiter reading "10:32" reads their own wall clock. If the sweep
     schedule and the report disagreed, an operator correlating a log line
     with a report would be five and a half hours out."""
-    from app.workers.celery_app import celery_app
+    from app.core import config
 
-    assert proctoring_report.REPORT_TIMEZONE == celery_app.conf.timezone
+    assert proctoring_report.REPORT_TIMEZONE == config.PLATFORM_TIMEZONE
 
 
 def test_the_closing_line_is_present_and_disclaims_the_score() -> None:

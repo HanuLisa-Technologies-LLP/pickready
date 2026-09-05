@@ -501,7 +501,7 @@ def _unkeyed_mutations(run: Trajectory) -> list[str]:
     """A mutating call with no idempotency key.
 
     The product already learned this in the money path: Razorpay delivers
-    webhooks at least once and Celery redelivers tasks, so a double effect is
+    webhooks at least once and a platform redelivers tasks, so a double effect is
     the DEFAULT behaviour unless something prevents it. An agent retrying a
     mutating tool is the same situation with a less careful caller.
     """

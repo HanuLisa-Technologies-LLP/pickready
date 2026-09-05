@@ -98,7 +98,7 @@ from app.services.functional_assessment import (
     rating_label,
 )
 from app.services.rating import GRADES, grade_for_percent
-from app.workers.celery_app import celery_app
+from app.workers.dispatch import dispatch
 from app.services.rate_limit import rate_limit
 
 logger = logging.getLogger(__name__)
@@ -219,7 +219,7 @@ async def _framework_repair_pending(session: AsyncSession, job: Job) -> bool:
         # Nothing to enqueue. The setup screen says the SWOT session is
         # outstanding, which is the actionable half of this state.
         return True
-    celery_app.send_task(
+    dispatch(
         "pickready.compile_tatva_matrix",
         args=[str(job.id)],
         kwargs={"correlation_id": job.correlation_id or ""},
@@ -834,7 +834,7 @@ async def respond_swot_intake(
         # human, always.
         row.agent_name = "bodha"
         if job.framework_approved_at is None:
-            celery_app.send_task(
+            dispatch(
                 "pickready.compile_tatva_matrix",
                 args=[str(job.id)],
                 kwargs={
@@ -1900,10 +1900,10 @@ async def _ensure_conversation_ready(
 
     There used to be two halves here and an asymmetry worth explaining: the
     technical slots were created inline because they came from a pure function
-    of the JD, while the PPI questions went to Celery because they were a model
+    of the JD, while the PPI questions were dispatched because they were a model
     call. Draft v4 left one half. Every question is generated per candidate
     against the saved matrix, so the whole preparation is a model call, it stays
-    in Celery (CLAUDE.md rule 4), and the candidate is asked to retry in a
+    in a background task (claude.md rule 4), and the candidate is asked to retry in a
     moment rather than made to wait on a request.
     """
     has_questions = (
@@ -1915,7 +1915,7 @@ async def _ensure_conversation_ready(
     ).scalar_one()
     if has_questions:
         return
-    celery_app.send_task("pickready.generate_candidate_questions", args=[str(link.id)])
+    dispatch("pickready.generate_candidate_questions", args=[str(link.id)])
     raise HTTPException(
         status_code=409,
         detail="We are preparing your assessment. Please try again in a moment.",
@@ -2616,7 +2616,7 @@ async def respond(
             tenant_id=job.tenant_id,
             job_candidate_link_id=link.id,
         )
-        celery_app.send_task("pickready.run_functional_assessment", args=[str(link.id)])
+        dispatch("pickready.run_functional_assessment", args=[str(link.id)])
     await session.flush()
     next_index = conversation.next_question_index
 

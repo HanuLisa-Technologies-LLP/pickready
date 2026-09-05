@@ -479,7 +479,7 @@ jobs:
           terraform_version: ${{ env.TF_VERSION }}
           terraform_wrapper: false
 
-      - name: fmt and validate, every module and both environments
+      - name: fmt and validate, every module and every environment
         # `init -backend=false` plus `validate` resolves every module, variable
         # type, output reference and expression without touching AWS.
         run: ./infra/validate.sh
@@ -527,7 +527,7 @@ jobs:
           quiet: true
           soft_fail: false
 
-      - name: Offline plan, staging and production
+      - name: Offline plan, pilot, staging and production
         # No credentials, no account, no network. See the script's header.
         run: ./infra/plan-offline.sh --artifact
 
@@ -573,6 +573,221 @@ jobs:
   # promise: the steps are complete, correct and reviewable, and a person has to
   # set a repository variable before any of them touches an AWS account.
   # ---------------------------------------------------------------------------
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # THE PILOT LANE
+  #
+  # The only environment that has actually been applied. It is separate from the
+  # staging and production jobs below rather than a parameterisation of them,
+  # for the same reason there are three environment directories: a conditional
+  # deciding which environment a job targets is one wrong variable away from
+  # applying the wrong plan, and the blast radius of that mistake is the
+  # environment with customers in it.
+  #
+  # THE ORDER IS LOAD BEARING and it is not the obvious one:
+  #
+  #   1. build and push        every image, tagged by SHA
+  #   2. terraform apply       the SHAPE. Terraform ignores the running image
+  #                            on both ECS and Lambda, so this does not deploy
+  #                            code; it makes sure the thing the code will run
+  #                            in exists and is correct.
+  #   3. MIGRATE               a one-shot ECS task, on the NEW image, BEFORE
+  #                            anything serving traffic is updated. A migration
+  #                            that runs after the services would leave every
+  #                            task briefly running code against a schema it
+  #                            does not match.
+  #   4. update the services   ECS rolls, with the circuit breaker armed.
+  #   5. update the functions  and READ BACK what they are running.
+  #   6. verify by DIGEST      not by this job's exit code.
+  #
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  pilot-build-and-push:
+    name: Build and push to ECR (pilot)
+    needs: [backend-tests, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
+    if: vars.PILOT_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write # OIDC. No AWS access key is stored in this repository.
+
+    outputs:
+      backend_digest: ${{ steps.backend.outputs.digest }}
+      frontend_digest: ${{ steps.frontend.outputs.digest }}
+      analysis_digest: ${{ steps.analysis.outputs.digest }}
+      image_tag: ${{ steps.tag.outputs.tag }}
+      backend_image: ${{ steps.backend_uri.outputs.uri }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag
+        id: tag
+        # SHA, NEVER `latest`. Combined with IMMUTABLE tags on the ECR
+        # repositories, this makes a tag a permanent name for a specific set of
+        # bytes, which is what makes digest verification mean anything.
+        run: echo "tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PILOT_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Backend image
+        id: backend
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          push: true
+          # ARM64 matches the ECS task definitions' `cpu_architecture` AND the
+          # Lambda functions' architecture. A mismatch on the Lambda side is the
+          # nastier one: the function is accepted, then fails at cold start with
+          # an exec format error that names nothing useful.
+          platforms: linux/arm64
+          tags: ${{ steps.ecr.outputs.registry }}/readypick-pilot/backend:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+
+      - name: Backend image URI
+        id: backend_uri
+        # BY DIGEST, not by tag. The functions and the task definitions are
+        # pointed at the exact bytes that were built, so a tag that is somehow
+        # moved later cannot change what is running.
+        run: |
+          echo "uri=${{ steps.ecr.outputs.registry }}/readypick-pilot/backend@${{ steps.backend.outputs.digest }}" >> "$GITHUB_OUTPUT"
+
+      - name: Frontend image
+        id: frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: true
+          platforms: linux/arm64
+          tags: ${{ steps.ecr.outputs.registry }}/readypick-pilot/frontend:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          # THE FIREBASE WEB CONFIG IS A BUILD INPUT, not a runtime one.
+          #
+          # `NEXT_PUBLIC_*` values are inlined into the browser bundle by the
+          # compiler, so they have to be present when `next build` runs. Without
+          # them the build FAILS at prerender with
+          # `FirebaseError: auth/invalid-api-key`, which reads like a bad
+          # credential and is actually an absent one.
+          #
+          # They are not secrets in the cryptographic sense: every one of them
+          # ships to every visitor's browser, and Firebase's own security model
+          # says so. They are repository secrets here only because that is the
+          # narrower default, and because the project id names a real project.
+          build-args: |
+            NEXT_PUBLIC_FIREBASE_API_KEY=${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+            NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+            NEXT_PUBLIC_FIREBASE_PROJECT_ID=${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+            NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+            NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+            NEXT_PUBLIC_FIREBASE_APP_ID=${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
+
+      - name: Analysis service image
+        id: analysis
+        uses: docker/build-push-action@v6
+        with:
+          context: analysis-service
+          push: true
+          platforms: linux/arm64
+          tags: ${{ steps.ecr.outputs.registry }}/readypick-pilot/analysis:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          # THE TOKEN IS A BUILD SECRET, NOT A BUILD ARG. The two pyannote
+          # repositories are gated, and a build ARG or ENV would be written into
+          # a layer and printed by `docker history`.
+          secrets: |
+            huggingface_token=${{ secrets.HUGGINGFACE_TOKEN }}
+
+  pilot-deploy:
+    name: Deploy (pilot)
+    needs: pilot-build-and-push
+    if: vars.PILOT_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    # AUTO-APPLY, and this is a deliberate choice recorded in DEPLOYMENT_LOG.md.
+    # The pilot is not production: it exists to be deployed to. The environment
+    # is declared with no required reviewer, so the gate is visible in the
+    # repository settings rather than absent; adding a reviewer later is one
+    # setting and no workflow change.
+    environment:
+      name: pilot
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PILOT_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Plan
+        working-directory: infra/environments/pilot
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -no-color \
+            -var="image_tag=${{ needs.pilot-build-and-push.outputs.image_tag }}" \
+            -out=tfplan | tee plan.txt
+
+      - name: Apply
+        # THE SAVED PLAN, not a second plan. `terraform apply tfplan` applies
+        # exactly what was printed above; `terraform apply -auto-approve` would
+        # re-plan against whatever the world looks like now and could apply
+        # something nobody read.
+        working-directory: infra/environments/pilot
+        run: terraform apply -input=false -no-color tfplan
+
+      - name: Migrate
+        # A one-shot ECS task on the NEW image, BEFORE the services are updated.
+        # Its task role holds ONE secret, the DSN, and nothing else. The script
+        # polls for STOPPED and reads the container exit code, because
+        # `aws ecs run-task` returning is not the migration finishing: a job
+        # that was accepted and then died is exactly what a pipeline reports as
+        # success, and this platform has had that failure.
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: ./scripts/run-migration.sh pilot
+
+      - name: Update the Lambda functions
+        # Terraform owns the shape and ignores the running image; this points
+        # the three image-backed functions at the digest that was just built and
+        # reads back what they are actually running.
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+        run: ./scripts/update-lambda-code.sh pilot "${{ needs.pilot-build-and-push.outputs.backend_image }}"
+
+      - name: Verify by DIGEST, not by this job's exit code
+        # This asks ECS which image the RUNNING TASKS actually have and compares
+        # it to what was pushed. A green apply proves Terraform returned zero;
+        # this proves the bytes serving traffic are the bytes that were tested.
+        # The gap between the two is a circuit-breaker rollback, which the
+        # service definition reports as success.
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          EXPECTED_BACKEND_DIGEST: ${{ needs.pilot-build-and-push.outputs.backend_digest }}
+          EXPECTED_FRONTEND_DIGEST: ${{ needs.pilot-build-and-push.outputs.frontend_digest }}
+          EXPECTED_ANALYSIS_DIGEST: ${{ needs.pilot-build-and-push.outputs.analysis_digest }}
+        run: ./scripts/verify-deployment.sh pilot
 
   build-and-push:
     name: Build and push to ECR
@@ -635,6 +850,25 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: true
+          # THE FIREBASE WEB CONFIG IS A BUILD INPUT, not a runtime one.
+          #
+          # `NEXT_PUBLIC_*` values are inlined into the browser bundle by the
+          # compiler, so they have to be present when `next build` runs. Without
+          # them the build FAILS at prerender with
+          # `FirebaseError: auth/invalid-api-key`, which reads like a bad
+          # credential and is actually an absent one.
+          #
+          # They are not secrets in the cryptographic sense: every one of them
+          # ships to every visitor's browser, and Firebase's own security model
+          # says so. They are repository secrets here only because that is the
+          # narrower default, and because the project id names a real project.
+          build-args: |
+            NEXT_PUBLIC_FIREBASE_API_KEY=${{ secrets.NEXT_PUBLIC_FIREBASE_API_KEY }}
+            NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=${{ secrets.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN }}
+            NEXT_PUBLIC_FIREBASE_PROJECT_ID=${{ secrets.NEXT_PUBLIC_FIREBASE_PROJECT_ID }}
+            NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=${{ secrets.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET }}
+            NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+            NEXT_PUBLIC_FIREBASE_APP_ID=${{ secrets.NEXT_PUBLIC_FIREBASE_APP_ID }}
 
       - name: Analysis service image
         id: analysis

@@ -61,6 +61,38 @@ _SORT_KEYS: dict[str, str] = {
     "behavioural": "pfi.pfi_score",
 }
 
+# ── The final ranking (workflow sections 43 and 44) ──────────────────────────
+#
+# THE PRE-ASSESSMENT ORDER IS NOT THE FINAL ORDER, AND THIS IS WHERE THAT
+# BECOMES TRUE. The three keys above are all read from the RESUME stage: two
+# come out of `match_breakdown_json`, which Yukti computes from a document the
+# candidate wrote, and the third from report dimensions. Ordered by those alone,
+# a candidate who ranked first on their resume ranks first for ever, and the
+# assessment -- the only evidence in the product that was actually observed --
+# moves nobody. The workflow document is explicit that it must: "a candidate who
+# ranked highly before assessment can move down".
+#
+# So the order is STAGE first, then the strongest evidence available at that
+# stage:
+#
+#   1. has a delivered report          the assessed shortlist, on top
+#   2. that report's overall score     the final ranking, among the assessed
+#   3. the grade's resume keys         the pre-assessment ranking, below it,
+#                                      and the tie-break above it
+#
+# STAGE FIRST, RATHER THAN ONE BLENDED NUMBER. An assessment score and a resume
+# similarity score are not on the same scale, so any fixed weighting between
+# them is a number nobody can justify and everybody eventually tunes by feel --
+# the identical argument `services/rag/fusion` makes for reading ORDER rather
+# than mixing a cosine distance with a `ts_rank`. Reading stage first also
+# matches what a recruiter is actually doing: the assessed list is the decision
+# list, and the unassessed pool below it is the list still to be worked through.
+#
+# `overall_score` is INTERNAL, like every other key here. It is an ORDER BY
+# input; the payload carries the four grade words and never the number.
+_ASSESSED_KEY = "(rep.synthesized_at IS NOT NULL)"
+_ASSESSMENT_SCORE_KEY = "rep.overall_score"
+
 #: Grade -> ordered sort-key names.
 _GRADE_SORT_ORDER: dict[str, tuple[str, ...]] = {
     "non_managerial": ("skills", "experience", "behavioural"),
@@ -94,6 +126,50 @@ _PROFILE_AGE_SQL = (
     "      AND l.created_at < j.posting_start_date "
     f"     THEN '{PROFILE_AGE_OLD}' ELSE '{PROFILE_AGE_NEW}' END"
 )
+
+
+# ── New Candidates (workflow section 32) ─────────────────────────────────────
+#
+# "New candidates who apply for the role after the initial ranking are
+# displayed under a dedicated New Candidates section. This prevents newly
+# arriving candidates from being invisible to the hiring team."
+#
+# The invisibility is real and it is a consequence of ranking. A recruiter
+# works down a ranked page, selects a batch and moves on; somebody who applies
+# the next morning lands wherever their score puts them, which for most people
+# is page two of a list nobody opens again. Nothing is broken and nobody sees
+# them.
+#
+# WHAT MAKES A CANDIDATE NEW: they arrived after the most recent time this job
+# invited ANYONE to an assessment. That instant is when the team last acted on
+# the ranking, so it is the honest boundary between "was considered in a round"
+# and "has never been in front of anybody".
+#
+# DERIVED, NEVER STORED, for the same reason `profile_age` is: a stored flag
+# needs back-filling on every selection round and is wrong for every row
+# written between the round and the backfill.
+#
+# BEFORE THE FIRST ROUND, NOBODY IS NEW. The comparison is against a MAX over
+# an empty set, which is NULL, and `l.created_at > NULL` is NULL -- falsy,
+# which is exactly right. A job whose first batch has not gone out has one
+# pool, not a pool plus a supplement, and marking all of it New would make the
+# section noise on the day the recruiter most needs the main list.
+_NEW_CANDIDATE_SQL = """
+    l.created_at > (
+        SELECT MAX(conv.invitation_sent_at)
+          FROM assessment_conversations conv
+          JOIN job_candidate_links prior ON prior.id = conv.job_candidate_link_id
+         WHERE prior.job_id = l.job_id
+           AND conv.invitation_sent_at IS NOT NULL
+    )
+"""
+
+#: `?arrival=` values. `new` is the dedicated section; `considered` is the rest
+#: of the table, offered so the main list can exclude the supplement rather
+#: than showing every candidate twice.
+ARRIVAL_NEW = "new"
+ARRIVAL_CONSIDERED = "considered"
+ARRIVALS: tuple[str, ...] = (ARRIVAL_NEW, ARRIVAL_CONSIDERED)
 
 
 def profile_age(link_created_at, posting_start) -> str:
@@ -136,13 +212,26 @@ def sort_keys_for_grade(grade: str | None) -> tuple[str, ...]:
 def order_by_clause(grade: str | None) -> str:
     """Build the ORDER BY body for `grade`.
 
+    Two stages, in this order: the assessed candidates ranked by their
+    assessment, then everyone else ranked by their resume. See the note above
+    `_ASSESSED_KEY` for why stage comes first and why the two are not blended
+    into one number.
+
     Every key is DESC NULLS LAST so an unscored candidate sinks rather than
     floating to the top on a NULL. The trailing `l.created_at, l.id` is what
     makes the order TOTAL: without it, two candidates with identical scores
     could swap places between page 1 and page 2 and one of them would vanish
     from the paginated result.
+
+    The resume keys stay BELOW the assessment keys rather than being dropped
+    once a report exists. They are the whole order for the unassessed pool, and
+    among the assessed they break a tie between two identical assessment
+    scores, which is a real and common case on a four-band scale.
     """
-    parts = [f"{_SORT_KEYS[key]} DESC NULLS LAST" for key in sort_keys_for_grade(grade)]
+    parts = [f"{_ASSESSED_KEY} DESC", f"{_ASSESSMENT_SCORE_KEY} DESC NULLS LAST"]
+    parts.extend(
+        f"{_SORT_KEYS[key]} DESC NULLS LAST" for key in sort_keys_for_grade(grade)
+    )
     parts.extend(["l.created_at ASC", "l.id ASC"])
     return ", ".join(parts)
 
@@ -170,6 +259,11 @@ class RankedPage:
     total: int
     page: int
     page_size: int
+    #: How many candidates on this job arrived after the last assessment round
+    #: (workflow section 32). Counted over the WHOLE job, not this page: the
+    #: point of the section is that these people are not on the page a
+    #: recruiter is looking at.
+    new_candidate_count: int = 0
 
     @property
     def total_pages(self) -> int:
@@ -225,6 +319,7 @@ async def ranked_candidates(
     page_size: int | None = PAGE_SIZE,
     include_archived: bool = False,
     profile_age_filter: str | None = None,
+    arrival_filter: str | None = None,
 ) -> RankedPage:
     """One page of the job's candidate table, ordered per `grade`.
 
@@ -232,9 +327,10 @@ async def ranked_candidates(
     of the ranking the recruiter is working through — but can be included for
     the audit view.
 
-    `profile_age_filter` narrows to Old or New Profiles. It is validated against
-    PROFILE_AGES here rather than interpolated, so nothing caller-supplied ever
-    reaches the SQL text.
+    `profile_age_filter` narrows to Old or New Profiles, and `arrival_filter`
+    to the New Candidates section (workflow section 32) or to everything else.
+    Both are validated against a module constant rather than interpolated, so
+    nothing caller-supplied ever reaches the SQL text.
     """
     resolved_page, resolved_size = normalize_page(page, page_size)
     offset = (resolved_page - 1) * resolved_size
@@ -242,19 +338,39 @@ async def ranked_candidates(
     age_filter = ""
     if profile_age_filter in PROFILE_AGES:
         age_filter = f"AND {_PROFILE_AGE_SQL} = '{profile_age_filter}'"
+    arrival = ""
+    if arrival_filter == ARRIVAL_NEW:
+        arrival = f"AND ({_NEW_CANDIDATE_SQL})"
+    elif arrival_filter == ARRIVAL_CONSIDERED:
+        # `NOT (x)` would drop the rows where the comparison is NULL, which is
+        # every row on a job that has never invited anybody -- i.e. the whole
+        # table. COALESCE says what is meant: not-new includes not-yet-decided.
+        arrival = f"AND NOT COALESCE({_NEW_CANDIDATE_SQL}, FALSE)"
 
-    total = (
+    counts = (
         await session.execute(
             text(
                 f"""
-                SELECT COUNT(*) FROM job_candidate_links l
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE TRUE {archived_filter} {age_filter} {arrival}
+                    ) AS matching,
+                    -- The New Candidates count deliberately ignores `arrival`
+                    -- and the age filter: it answers "how many people are
+                    -- waiting outside the list you are looking at", which a
+                    -- count narrowed by the same filter could never do.
+                    COUNT(*) FILTER (
+                        WHERE COALESCE({_NEW_CANDIDATE_SQL}, FALSE) {archived_filter}
+                    ) AS newly_arrived
+                FROM job_candidate_links l
                 JOIN jobs j ON j.id = l.job_id
-                WHERE l.job_id = :job_id {archived_filter} {age_filter}
+                WHERE l.job_id = :job_id
                 """
             ),
             {"job_id": str(job_id)},
         )
-    ).scalar_one()
+    ).one()
+    total, new_candidate_count = int(counts[0]), int(counts[1])
 
     # `order_by_clause` is composed only from module constants keyed by the
     # job's own grade — no caller input reaches the SQL text. Values are bound.
@@ -290,6 +406,7 @@ async def ranked_candidates(
                     rep.id                  AS report_id,
                     rep.synthesized_at      AS report_ready_at,
                     {_PROFILE_AGE_SQL}      AS profile_age,
+                    COALESCE({_NEW_CANDIDATE_SQL}, FALSE) AS is_new_candidate,
                     -- EXISTS, not a LEFT JOIN: old_profile_reviews is UNIQUE on
                     -- (link, reviewer), so joining it would duplicate a row for
                     -- every colleague who had also opened that profile and the
@@ -306,7 +423,7 @@ async def ranked_candidates(
                 LEFT JOIN pfi ON pfi.link_id = l.id
                 LEFT JOIN functional_skills_reports rep
                        ON rep.job_candidate_link_id = l.id
-                WHERE l.job_id = :job_id {archived_filter} {age_filter}
+                WHERE l.job_id = :job_id {archived_filter} {age_filter} {arrival}
                 ORDER BY {order_by_clause(grade)}
                 LIMIT :limit OFFSET :offset
                 """
@@ -318,9 +435,10 @@ async def ranked_candidates(
     level = grade_label(grade)
     return RankedPage(
         rows=[_row_payload(row, level, job_id) for row in rows],
-        total=int(total),
+        total=total,
         page=resolved_page,
         page_size=resolved_size,
+        new_candidate_count=new_candidate_count,
     )
 
 
@@ -388,6 +506,11 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
         # Profile is ranked, listed and openable exactly like a new one.
         "profile_age": row["profile_age"],
         "profile_age_label": PROFILE_AGE_LABELS.get(row["profile_age"], ""),
+        # New Candidate (workflow section 32): arrived after the last
+        # assessment round on this job. Presentation only, exactly like
+        # `profile_age` -- it changes no score, no ranking and no access, it
+        # only stops the person from being invisible.
+        "is_new_candidate": bool(row["is_new_candidate"]),
         "review_charged": bool(row["review_charged"]),
         # The validation questionnaire, as an explicit Q&A the recruiter can
         # read on the row (spec §29). Paired SERVER-side against the field list

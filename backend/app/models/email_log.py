@@ -33,6 +33,12 @@ EMAIL_TYPE_INTERVIEW_SCHEDULED = "interview_scheduled"
 EMAIL_TYPE_INTERVIEW_COMPLETED = "interview_completed"
 EMAIL_TYPE_OFFER_EXTENDED = "offer_extended"
 EMAIL_TYPE_JOINED = "joined"
+# ── The databank invitation (migration 0078, workflow section 12) ────────────
+# Sent to somebody whose resume the recruiter already holds, asking them to
+# sign in and APPLY. It is deliberately not one of the pipeline transition
+# emails above: nothing about the candidate's state changes when it is sent,
+# because they have no application yet. That is the whole point of Gate 5.
+EMAIL_TYPE_DATABANK_INVITATION = "databank_invitation"
 
 EMAIL_TYPES: tuple[str, ...] = (
     EMAIL_TYPE_APPLICATION_CONFIRMATION,
@@ -47,6 +53,7 @@ EMAIL_TYPES: tuple[str, ...] = (
     EMAIL_TYPE_INTERVIEW_COMPLETED,
     EMAIL_TYPE_OFFER_EXTENDED,
     EMAIL_TYPE_JOINED,
+    EMAIL_TYPE_DATABANK_INVITATION,
 )
 
 #: Which prompt template drafts each type (app/prompts/*.txt).
@@ -63,6 +70,7 @@ EMAIL_TYPE_PROMPTS: dict[str, str] = {
     EMAIL_TYPE_INTERVIEW_COMPLETED: "email_interview_completed",
     EMAIL_TYPE_OFFER_EXTENDED: "email_offer_extended",
     EMAIL_TYPE_JOINED: "email_joined",
+    EMAIL_TYPE_DATABANK_INVITATION: "email_databank_invitation",
 }
 
 STATUS_QUEUED = "queued"

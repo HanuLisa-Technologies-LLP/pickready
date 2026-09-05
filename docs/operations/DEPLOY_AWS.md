@@ -129,14 +129,20 @@ GitHub Actions  ->  Terraform  ->  AWS (region: var.region)
 Traffic       Route53  -> ALB -> ECS      alias record, TLS 1.2+, 80 redirects
                                           to 443, WAF module built and disabled
 Certificate   ACM                          DNS-validated, renews itself
-Compute       ECS Fargate                  api / worker / beat / frontend / migrate
+Compute       ECS Fargate                  api / frontend / analysis (services)
+                                          agent / migrate (on-demand, no service)
+Background    Lambda                       task-worker / jd-gen / company-profile
+                                          assessment-trigger (zip, holds PassRole)
+Schedules     EventBridge Scheduler        7 sweeps, mirroring workers/schedule.py
 Database      RDS PostgreSQL 16            + pgvector, created by migration 0001
 Object store  S3                           resumes, compliance docs, evidence
-Cache/queue   ElastiCache Redis 7.1        Celery broker + working memory,
-                                           noeviction, AUTH token, TLS
+Shared state  ElastiCache Redis 7.1        rate limits, the proctoring warning
+                                           counter, run status, cache. NOT a
+                                           broker. noeviction, AUTH token, TLS
 Registry      ECR                          immutable tags, SHA-named
 Secrets       Secrets Manager              per-service IAM, enumerated
-IaC           Terraform                    11 modules, 2 environment roots
+IaC           Terraform                    14 modules, 3 environment roots
+                                          (pilot is the canonical one)
 ```
 
 Three network tiers, and the third is the one worth arguing for:

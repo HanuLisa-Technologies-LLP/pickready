@@ -3,7 +3,7 @@
 When staff select top candidates and click "proceed to next round", this
 service composes a warm, professional, personalized email (candidate name, job
 role, company). It returns the CONTENT only ({subject, html, text}); a separate
-Celery task sends it via SMTP  -  this module is a pure service (no DB, no send).
+A dispatched task sends it via SMTP  -  this module is a pure service (no DB, no send).
 
 The LLM is routed through `llm_router` with provider/key fallback (claude.md
 rule 9). The model is asked for a plain-text subject + body; this module builds

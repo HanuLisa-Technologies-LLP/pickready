@@ -41,7 +41,8 @@ from app.schemas.outreach import (
 from app.services import capabilities as caps
 from app.services import outreach_content
 from app.services.audit import audit
-from app.workers.celery_app import celery_app
+from app.workers import status as task_status
+from app.workers.dispatch import dispatch
 
 logger = logging.getLogger(__name__)
 
@@ -327,7 +328,7 @@ async def send_outreach(
     task_ids: list[str] = []
     for rec in recipients:
         try:
-            task = celery_app.send_task(
+            task = dispatch(
                 "pickready.send_email",
                 args=[
                     str(user.tenant_id),
@@ -392,12 +393,17 @@ async def outreach_delivery_status(
     failed = 0
     pending = 0
     for task_id in payload.task_ids:
-        result = celery_app.AsyncResult(task_id)
-        if not result.ready():
+        result = await task_status.read(task_id)
+        if not result.done:
             pending += 1
             continue
-        value = result.result if isinstance(result.result, dict) else {}
-        if result.successful() and value.get("status") == "sent":
+        # `send_email` returns {"status": "sent"} on delivery and
+        # {"status": "failed"} on a PERMANENT failure it decided not to retry,
+        # which is a run that succeeded and an email that did not arrive. Both
+        # halves have to be read, or a bad address counts as delivered.
+        if result.state == task_status.STATE_SUCCESS and (
+            result.payload.get("status") == "sent"
+        ):
             sent += 1
         else:
             failed += 1

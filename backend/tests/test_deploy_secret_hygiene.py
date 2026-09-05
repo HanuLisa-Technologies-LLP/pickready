@@ -222,7 +222,14 @@ def _service_secrets() -> dict[str, list[str]]:
     start = source.index("variable \"service_secrets\"")
     block = source[start:]
     parsed: dict[str, list[str]] = {}
-    for match in re.finditer(r"^\s{4}(\w+)\s*=\s*\[([^\]]*)\]", block, re.MULTILINE):
+    # The keys are QUOTED, because HCL parses a bare `task-worker` as
+    # subtraction. Matching both spellings would let a future unquoted key that
+    # Terraform refuses still satisfy this parser, so only the quoted form is
+    # accepted and an unparseable file fails the assertion below rather than
+    # silently returning an empty map.
+    for match in re.finditer(
+        r'^\s{4}"([\w-]+)"\s*=\s*\[([^\]]*)\]', block, re.MULTILINE
+    ):
         service = match.group(1)
         names = re.findall(r'"(\w+)"', match.group(2))
         parsed[service] = names
@@ -251,20 +258,71 @@ def test_no_service_holds_every_secret() -> None:
         )
 
 
-def test_the_scheduler_cannot_read_a_model_credential() -> None:
+def test_the_scheduler_holds_no_secret_at_all() -> None:
     """A scheduler that could reach a model credential is a scheduler that could
-    spend money. It reads the broker and nothing else."""
+    spend money.
+
+    The Celery beat service held one secret, the broker, because it had to
+    connect to a queue in order to publish. EventBridge Scheduler publishes
+    nothing and connects to nothing: it invokes a function, and the function
+    holds the credentials. So the answer moved from "one secret" to "none", and
+    the assertion is that the scheduler does not appear here at all.
+    """
     services = _service_secrets()
-    beat = set(services.get("beat", []))
-    assert beat == {"REDIS_URL"}, f"beat holds {sorted(beat)}; it needs only the broker"
+    assert "beat" not in services, "the Celery beat scheduler is gone"
+    assert "scheduler" not in services, (
+        "the scheduler has an entry in service_secrets; it invokes a function "
+        "and holds no credential of its own, so an entry here is a grant "
+        "nothing needs"
+    )
 
 
-def test_the_worker_cannot_read_the_firebase_service_account() -> None:
+def test_the_trigger_holds_no_secret_at_all() -> None:
+    """The one thing in the account holding iam:PassRole.
+
+    It calls ecs:RunTask and returns. It reads nothing, and an empty list would
+    be worse than an absence: the module emits one IAM policy per entry, and a
+    policy whose statement has an empty resource list is one AWS refuses.
+    """
+    services = _service_secrets()
+    assert "trigger" not in services
+    assert "assessment-trigger" not in services
+
+
+def test_background_work_cannot_read_the_firebase_service_account() -> None:
     """A background task never authenticates a browser session, so it has no
-    business being able to read the key that would let it."""
+    business being able to read the key that would let it.
+
+    Both halves of the background work are checked: the short-work function and
+    the on-demand agent that replaced the Celery worker between them do
+    everything that worker did.
+    """
     services = _service_secrets()
-    worker = set(services.get("worker", []))
-    assert "FIREBASE_SERVICE_ACCOUNT_JSON" not in worker
+    for consumer in ("task-worker", "agent"):
+        assert consumer in services, f"{consumer} has no entry in service_secrets"
+        assert "FIREBASE_SERVICE_ACCOUNT_JSON" not in services[consumer]
+
+
+def test_the_synchronous_agents_hold_no_delivery_or_payment_credential() -> None:
+    """`jd-gen` and `company-profile` write a draft and send nothing.
+
+    Neither drafts an email, neither takes a payment, and neither authenticates
+    anybody, so SMTP, Razorpay and Firebase are all reach their work does not
+    need.
+    """
+    services = _service_secrets()
+    forbidden = {
+        "SMTP_PASSWORD",
+        "MSG91_API_KEY",
+        "RAZORPAY_KEY_SECRET",
+        "RAZORPAY_WEBHOOK_SECRET",
+        "FIREBASE_SERVICE_ACCOUNT_JSON",
+        "JWT_SECRET",
+    }
+    for consumer in ("jd-gen", "company-profile"):
+        assert consumer in services, f"{consumer} has no entry in service_secrets"
+        overreach = forbidden & set(services[consumer])
+        assert not overreach, f"{consumer} can read {sorted(overreach)}"
 
 
 def test_the_migration_job_holds_exactly_one_secret() -> None:
@@ -896,12 +954,31 @@ def test_no_account_id_region_or_domain_is_hardcoded() -> None:
     Comments are exempt and code is not: `docs/operations/DEPLOY_AWS.md` and several module
     docstrings DISCUSS ap-south-1 as the likely choice, which is the owner's
     decision to make. Naming it in an argument would make it already made.
+
+    ONE EXEMPTION, AND IT IS NOT A CHOICE: a `backend` block. Terraform does not
+    evaluate variables inside one at all, so the state bucket's region has to be
+    a literal there or there is no remote state. The exemption is narrow on
+    purpose, keyed on the file being nothing but a backend block, so it cannot
+    be used to smuggle a hardcoded region into a resource.
     """
     account = re.compile(r'"[0-9]{12}"')
     region = re.compile(r'"(af|ap|ca|eu|il|me|sa|us)-[a-z]+-[0-9]"')
 
     offenders: list[str] = []
     for path in ALL_TERRAFORM:
+        if path.name == "backend.tf":
+            body = path.read_text(encoding="utf-8")
+            assert 'backend "s3"' in body, (
+                f"{path.relative_to(ROOT)} is exempt from the hardcoded-region "
+                "rule only because a backend block cannot take a variable. It "
+                "no longer contains one, so the exemption no longer applies."
+            )
+            assert "resource " not in body and "module " not in body, (
+                f"{path.relative_to(ROOT)} holds more than a backend block. The "
+                "exemption covers the one construct Terraform will not let take "
+                "a variable, not a file that happens to be called backend.tf."
+            )
+            continue
         in_heredoc = False
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()

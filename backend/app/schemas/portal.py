@@ -3,7 +3,9 @@ import re
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator,
+)
 
 from app.models.enums import JobStatus, PipelineStatus
 
@@ -218,6 +220,68 @@ class ApplicationOut(BaseModel):
     #: uninvited candidate who saw a link would hit a 403.
     assessment_invited: bool = False
     assessment_completed: bool = False
+
+
+class UpdateOut(BaseModel):
+    """One row of the candidate's Updates feed (workflow section 14).
+
+    NO SCORE, NO GRADE, NO RANK and no number describing the candidate: this is
+    a client-facing surface and the no-numbers rule applies in full. The copy
+    is a fixed catalogue in `services/candidate_updates`, so nothing a model
+    wrote reaches it.
+    """
+
+    id: uuid.UUID
+    kind: str
+    title: str
+    body: str
+    #: A relative portal path, or null when this update is information rather
+    #: than an action. Relative by database CHECK, so a stored row can never
+    #: turn the Updates page into somebody else's redirector.
+    link_path: str | None = None
+    job_title: str | None = None
+    company_name: str | None = None
+    #: Whether the same event also went out by email, so the candidate knows
+    #: whether to look in their inbox for the detail.
+    emailed: bool = False
+    read_at: datetime | None = None
+    created_at: datetime
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def unread(self) -> bool:
+        return self.read_at is None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UpdatesOut(BaseModel):
+    updates: list[UpdateOut]
+    #: Unread across the WHOLE feed, not this page. It drives the nav badge,
+    #: which has to be right on page two as well as page one.
+    unread_count: int
+    total: int
+    page: int
+    page_size: int
+    has_next: bool
+
+
+class UpdatesSummaryOut(BaseModel):
+    """Just the badge. A dedicated route so the nav does not fetch a page of
+    rows it will not render on every navigation."""
+
+    unread_count: int
+
+
+class MarkUpdatesReadIn(BaseModel):
+    """Which updates to mark read.
+
+    Omitting `ids` marks the whole feed read, which is what opening the page
+    does. Passing them explicitly exists so a future per-row control does not
+    have to invent a second route.
+    """
+
+    ids: list[uuid.UUID] | None = None
 
 
 class ApplicationsOut(BaseModel):

@@ -20,6 +20,8 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| Background work without Celery (2026-09-05) | Dispatch, the four functions, the on-demand agent, the schedule |
+| End-to-end hiring workflow (2026-09-04) | The eight gates, the sourced stage, the final ranking, the Updates feed, job closure |
 | Proctoring + question formats (2026-09-02) | Mandatory monitoring, the shared warning counter, the six question formats, evidence dominance |
 | Project Evidence Intelligence (2026-09-01) | Candidate projects, derived evidence, temporary originals |
 | spec-doc6 (2026-08-29) | Runbook reconciliation, Part A activation, RBAC, dashboard, AWS close-out |
@@ -47,13 +49,313 @@ phase sections above them are where the sharp edges are.
    and a new capability constant is only HALF a change -- the seeding migration
    is the other half.
 3. **Every tenant-scoped query goes through the RLS-aware session.**
-4. **All slow work is a Celery task**, never inline in a request handler.
+4. **All slow work is DISPATCHED**, never inline in a request handler.
+   `dispatch("pickready.x", args=[...])`, never Celery: it was removed on
+   2026-09-05 and the dependency is gone from `requirements.txt`.
 5. **One implementation per concept.** No dual code paths for one behaviour.
 6. **No silent fallbacks.** No bare `except`, no default substituted for a
    failed retrieval, no template output presented as generation.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
+
+## Current hard rules, background work without Celery (2026-09-05)
+
+Celery is GONE. `app/workers/celery_app.py` is deleted, `celery` and `flower`
+are out of `requirements.txt`, and the `worker`, `mail-worker` and `beat`
+container roles are out of `docker-entrypoint.sh`. Redis stays, and it is no
+longer a broker. **This supersedes general rule 4** and the parts of the
+2026-07-28 and 2026-08-06 sections that describe queues, pools and beat.
+
+`docs/spec/BACKGROUND_WORK.md` is the specification. `DEPLOYMENT_LOG.md` at the
+repository root is the record of the AWS deployment that went with it.
+
+### The one way to start background work
+
+`dispatch("pickready.<task>", args=[...])`, from `app/workers/dispatch.py`. It
+returns a `TaskHandle` whose `id` is generated client-side, so a request handler
+has the polling id before the invoke completes -- the same contract Celery's
+client-side task ids gave, so the frontend's `task_id` and `task_ids` fields are
+unchanged.
+
+- **Three backends, three real deployments, never a fallback chain.** `aws`
+  invokes Lambda; `local` runs the task in a daemon thread, which is what the
+  compose stack does because there is no Lambda on a laptop; `record` accepts
+  the dispatch, runs nothing and remembers it, which is what the test suite does
+  because executing a task would make every route test depend on a model
+  provider. `record` is REFUSED IN PRODUCTION by the dispatcher itself.
+- **A dispatch failure RAISES.** Several call sites already caught the enqueue
+  failure and degraded visibly (a skipped outreach recipient says it could not
+  be queued); a dispatcher that swallowed the error would turn those into
+  silence.
+- **Every boto3 client is built with explicit connect and read timeouts and a
+  bounded retry count.** This is the same lesson the broker's publish timeout
+  taught: an unreachable endpoint that HANGS defeats every `try/except` around
+  the call, because nothing is ever raised for the handler to catch. botocore's
+  default connect timeout is 60 seconds with retries stacked on top.
+
+### The route is the cost decision, and it is DATA
+
+`@task(name=..., route=...)` in `app/workers/registry.py` records the name, the
+implementation, the destination and the retry policy in ONE declaration. Celery
+kept the name on a decorator and the queue in `task_routes` on the app object,
+and a task added without a routing entry fell through to the default queue.
+
+- **`Route.LAMBDA`** is work measured in seconds: delivery, resume parsing, the
+  reconciliation sweeps. It runs in `readypick-task-worker`, billed per
+  invocation, with no standing capacity for a slow task to occupy.
+- **`Route.ECS`** is work measured in minutes: scoring a whole candidate pool,
+  compiling a Tatva matrix, writing a PRISM report. One on-demand Fargate task
+  per dispatch, started by `readypick-assessment-trigger`, which stops when the
+  process exits. Lambda's fifteen-minute ceiling is the hard reason for the
+  split.
+- **What the mail-queue split guaranteed now holds structurally.** A staff
+  invitation can never wait behind an LLM chain, because the two kinds of work
+  do not share a pool: neither of them has one.
+
+### Retries live in ONE place, and the platform's own retry is set to zero
+
+`runtime.run_task` owns the loop, and `aws_lambda_function_event_invoke_config`
+sets `maximum_retry_attempts = 0`. Two mechanisms stacked would MULTIPLY: three
+in-process attempts under two platform attempts is nine sends of one email.
+
+- **The loop PREDICTS.** `delay + longest_attempt_so_far >= remaining budget`
+  refuses an attempt that could not finish, using
+  `context.get_remaining_time_in_millis()` as the budget. The same rule
+  `agent_loop` and `llm_router` already state, applied to the outer loop.
+- **There is no soft time limit any more, and that is a simplification.** The
+  ceiling is the Lambda's timeout or the Fargate task's `stopTimeout`. The retry
+  loop lives inside the invocation that gets killed, so a task that outran its
+  budget is not retried, structurally -- which is what
+  `dont_autoretry_for=(SoftTimeLimitExceeded,)` was buying.
+- **A final failure is RE-RAISED**, so the function's error metric moves, the
+  alarm fires and the on-failure destination publishes. Swallowing it would
+  leave the platform believing every invocation succeeded.
+
+### The schedule is data in two places, and a test compares them
+
+`app/workers/schedule.py` is the source of truth; each environment mirrors it as
+EventBridge Scheduler rules; `tests/test_schedule_parity.py` reads both and
+fails on drift. The failure this prevents has happened here: a beat entry fired
+`pickready.probe_llm_models` every hour for a whole release after the module it
+imported was deleted. **An entry in Python with no rule in Terraform is the
+silent half** -- a sweep does nothing when there is nothing to repair, so "not
+running" and "nothing to do" produce the same empty log.
+
+### Two agents are invoked SYNCHRONOUSLY, and there is no third
+
+`readypick-jd-gen` and `readypick-company-profile` produce a draft the recruiter
+is waiting for, so the route blocks exactly as long as it did; what changed is
+which process spends the time. `agent_client` calls the service function
+directly under `local` and `record`, so there is ONE implementation of each
+agent and it lives in `app/services`.
+
+**There is no `readypick-resume-jd-match`**, and that is deliberate. This
+product's resume-to-JD matching is `pickready.run_matching`: a batch over every
+candidate linked to a job, with model calls per batch and a stage-by-stage
+progress display. A 256MB, 300-second function could not finish it, and there is
+no single-candidate caller to give one instead, so building it would mean
+inventing a caller for it.
+
+### Redis is not a broker, which made the health probe MORE necessary
+
+What it still carries is the rate limiter (fails open by design), the caches,
+the background run-status record every polling screen reads, and the proctoring
+warning counter. The counter is the one that decides it: `proctoring/gate`
+answers 503 rather than silently not warning, so a task that has lost Redis
+refuses every assessment turn while looking healthy from outside. `/health`
+probes it, and `maxmemory-policy` stays `noeviction` for a NEW reason -- LRU
+would evict a live assessment's warning counter and silently reset a
+candidate's warnings to zero.
+
+### The run-status record replaced Celery's result backend
+
+`app/workers/status.py`, Redis, six-hour TTL. It answers the two live questions
+the product actually asks: the matching run's stage list on the job page, and
+the per-recipient delivery state in the outreach modal.
+
+- **An unknown id reads as PENDING**, exactly as `AsyncResult` behaved. The
+  alternative is worse: reporting "unknown" would make the job page stop polling
+  a run that is about to start. The consequence is documented rather than
+  hidden.
+- **A FAILURE records the exception CLASS NAME and an empty payload.** A message
+  can quote a row, and this payload is read by a recruiter's browser. The
+  Celery endpoint read `result.info`, which is the stage payload only while the
+  task is running and is the exception on failure.
+- **Reading the outreach state needs BOTH halves.** `send_email` returns
+  `{"status": "failed"}` for a permanent failure it deliberately did not retry,
+  which is a run that succeeded and an email that did not arrive.
+
+### The infrastructure, and the one thing that holds iam:PassRole
+
+`infra/environments/pilot/` is the canonical composition; staging and production
+were migrated to the same shape in the same change, because they still declared
+`celery -A app.workers.celery_app` as a container command and the image can no
+longer run it. The brief asked for a `terraform/` tree at the repository root
+and this reuses `infra/` instead, because a second tree is two answers to "where
+is the infrastructure" and CI reads the older one.
+
+- **`readypick-assessment-trigger` is the only zip, and it must stay thirty
+  lines and boto3.** Passing a role is a privilege-escalation primitive:
+  anything that can pass a role can run code as it. The API service is reachable
+  from the internet and has no business holding it; a function whose whole
+  source fits on a screen can. Its grant names all three of the task
+  definitions (with a revision wildcard, so a deploy does not break it), the
+  cluster, and the two roles.
+- **The other three functions run the BACKEND IMAGE with a different handler**,
+  because they import the model router, the prompt registry and a database
+  session. A second artifact carrying the same code would let an agent and the
+  API disagree about what a prompt says or what a grade means.
+- **The migration job is an on-demand task definition and nothing had ever
+  declared one.** `scripts/run-migration.sh` runs `${cluster}-migrate` and reads
+  the network from Terraform outputs; neither existed in any environment, and it
+  had never been found because no environment had ever been applied.
+- **A `for_each` or `count` keyed on an ARN cannot be planned.** A function
+  names its secret policy by KEY, a literal, and the module looks the ARN up in
+  a map whose keys are equally static. The same trade the `ecs` module already
+  makes.
+
+
+## Current hard rules, the end-to-end hiring workflow (2026-09-04)
+
+`docs/spec/HIRING_WORKFLOW.md` is the specification. It is precedence rank 4,
+beside the Dashboard Specification, and the two do not overlap: one governs a
+table, the other governs a sequence.
+
+### Three names that already existed, and were NOT duplicated
+
+The workflow document names three things this product had already built. All
+three kept their implementation and their name in code, because one
+implementation per concept:
+
+- **"Company Hiring Requirements" IS Company DNA.** A second free-text box
+  beside it would immediately disagree with it about which one Sutra reads, and
+  Sutra reads the COMPILED artifact by design (an unbounded client-authored
+  string in a prompt that decides what every candidate is graded on is an
+  injection surface).
+- **"Executive Profile" IS the PRISM Report.** Already immutable, already with
+  a fixed section order. A second consolidated document would force a choice
+  about which one a recruiter is reading.
+- **"Pre-Assessment Report" IS the Pre-Screen Grade / AI Score.** spec-doc6 C9
+  had already settled that those two names are one artifact.
+
+### The gates that were missing, and what enforces them now
+
+- **Gate 1: no Company DNA, no job.** `hiring/company_requirements.creation_blocked`
+  at the top of `POST /jobs`, asked of the TABLE (`status = complete` on the
+  current row), never a stamp. An open draft does not satisfy it. At CREATE and
+  not at publish, because the requirements are what the JD generator, the SWOT
+  session and the scorecard derivation all read. NOT retroactive: a job created
+  before the client completed theirs stays created.
+- **Gate 2: the experience band spans at most `MAX_EXPERIENCE_SPAN_YEARS` (5).**
+  In `ExperienceBandMixin`, so create, patch and JD generation all inherit it and
+  a recruiter cannot create a legal band then widen it with a PATCH. **The
+  ceiling is on the SPAN, never on the values** -- 15-to-20 is as valid as
+  0-to-5, or the rule quietly becomes "no senior roles". Refused rather than
+  clamped: clamping picks an end of the recruiter's band to discard and
+  publishes a range nobody agreed to. An inverted pair is reported as inverted,
+  not as a span of minus seven years.
+- **Gate 5: SOURCED IS NOT APPLIED, and the enforcement is a MISSING EDGE.**
+  `hiring_pipeline.SOURCED` is the first stage and its only forward edge is
+  `applied`. A sourced candidate cannot be invited to an assessment or
+  shortlisted because the transition does not exist -- not a flag a future
+  caller has to remember. **What was wrong:** the databank upload wrote every
+  resume as `applied`, which claims a person read the job, wanted it and
+  submitted their notice period. Every count and funnel inherited the claim.
+  The invitation (`POST /jobs/{id}/candidates/databank/invite`) moves nobody:
+  being emailed is not applying. The candidate converts their own row by
+  applying, and the apply path finds the sourced link rather than refusing it
+  as a duplicate -- telling somebody acting on our own invitation that they
+  have already applied is false and a dead end.
+- **Gate 8: `POST /jobs/{id}/close`, and `closed` is a fifth posting state that
+  DOMINATES the four date-derived ones.** Checked first in `posting_status`;
+  checked after the window, a job closed on day 18 reads as active for twelve
+  more days. A COLUMN, never a back-dated `posting_start_date` -- moving the
+  start rewrites which applications were in-window and which profiles are Old,
+  and both are read as history. Terminal for candidates, invisible to the team:
+  `can_edit_application` deliberately takes no `closed_at`, so somebody already
+  invited can finish work the client has already been charged for. **No
+  reopen** (RBAC 22 asks for a controlled revision mechanism).
+
+### The final ranking, which the product did not have
+
+**The pre-assessment order was the permanent order.** The top sort key was a
+resume-derived skills score, so a candidate who ranked first on their resume
+ranked first for ever and the assessment moved nobody. `order_by_clause` is now
+two stages: assessed candidates by their assessment, then everyone else by
+their resume.
+
+- **STAGE FIRST, never one blended number.** An assessment score and a resume
+  similarity score are not on the same scale, so any fixed weighting is a number
+  nobody can justify -- the same argument `services/rag/fusion` makes for reading
+  ORDER rather than mixing a cosine distance with a `ts_rank`.
+- **The stage is read from the REPORT (`rep.synthesized_at`), never from
+  `l.status`.** A status is a denormalised mirror; the report is the artifact.
+  Ordering on the status would put a candidate whose synthesis failed above
+  candidates who have a real report.
+- **The resume keys stay underneath.** They are the whole order for the
+  unassessed pool and they break a tie between two identical assessment scores,
+  which is common on a four-band scale.
+
+### The Updates feed, and why it is not `email_log`
+
+`candidate_updates` (migration 0079) is the candidate's in-portal record of
+everything that has happened to them. It exists because email was the only
+channel and email fails silently: a spam filter, a full inbox, a typo in an
+address a recruiter uploaded, and somebody misses an assessment invitation with
+neither side finding out.
+
+- **The copy is a FIXED CATALOGUE in `services/candidate_updates.py`, not a
+  prompt.** No model is called, and `test_candidate_updates.py` asserts that
+  over the source. This is the surface that exists BECAUSE the email might not
+  arrive, and the email already depends on a provider; a feed that failed the
+  same way at the same time would protect nobody.
+- **No score, no grade, no number, no em dash**, swept over the whole catalogue
+  rather than checked at a call site -- a rule enforced at one call site is a
+  rule the next entry breaks.
+- **`email_log` is an outbound DELIVERY record, including for internal
+  recipients.** Not every update has an email and not every email has an update.
+  One table would force every future event to invent an email it does not send.
+- **The write is at the chokepoint.** `apply_transition` writes the feed row
+  beside its two status writes, so none of its six callers can forget. It still
+  does NOT send the email, and that is why a third write is acceptable: an email
+  needs drafting, a provider, review and a Celery enqueue; a feed row needs none
+  of them.
+- **`sourced` produces no update.** A resume landing in a databank is not an
+  event the candidate caused.
+- **`link_path` must be RELATIVE, by database CHECK.** The feed renders it as an
+  href, so an absolute URL would turn the candidate's own page into somebody
+  else's redirector.
+- **The RLS WITH CHECK admits a tenant-scoped write**, unlike
+  `candidate_projects`. A feed row is written by a RECRUITER's session on every
+  stage change, so bypass-only would 403 every transition in the product.
+
+### New Candidates
+
+- **New means: arrived after the most recent assessment round on this job.**
+  Derived, never stored, exactly like `profile_age`.
+- **Before the first round, NOBODY is new.** `created_at > (MAX over empty set)`
+  is NULL, which is falsy -- the behaviour falls out of the comparison rather
+  than out of a special case. The complementary filter must be
+  `NOT COALESCE(..., FALSE)`: `NOT NULL` is NULL and would empty the whole table
+  on every job that has never invited anybody.
+- **The count is over the WHOLE job, never narrowed by the page filters.** It
+  answers "who is waiting outside the list you are looking at".
+
+### Two inferences that were correct and silently became wrong
+
+Both were fine while `hold` was the only status outside the six coarse
+dashboard stages, and both broke the moment `sourced` joined it:
+
+- **`dashboard_stage(...) is None` no longer means "on hold".** Use
+  `hiring_pipeline.is_on_hold`. Reading the absence of a stage as a pause labels
+  a resume nobody has contacted as an application somebody deliberately paused.
+- **`stage.value` on a None stage is an AttributeError, not a wrong label.** Both
+  dashboard call sites now read `hiring_pipeline.dashboard_stage_label`.
+
+`PipelineStatus` in `models/enums.py` gained `sourced` for the reason its own
+docstring already records: an enum missing a value the column accepts 500s
+every read of every row that carries it, permanently, for that whole tenant.
 
 ## Current hard rules, proctoring and question formats (2026-09-02)
 
@@ -1897,12 +2199,15 @@ ReadyPick is a multi-tenant recruitment/ATS platform for Hanulisa Technologies L
     /schemas               Pydantic request/response models
     /services              domain logic; see the package map below
     /prompts               versioned prompt files + registry.py
-    /workers               celery_app.py (schedule) and tasks.py
+    /workers               dispatch, registry, runtime, schedule, tasks,
+                           and entrypoints/ (the Lambda and Fargate doors)
     /core                  config, security, db session with the RLS setter
     /scripts               seeds, evals, legacy_reset, verify_live
-  /alembic/versions        migrations, 0001 to 0076
+  /alembic/versions        migrations, 0001 to 0079
   /tests                   151 test modules
+/lambda                    the one zip-packaged function: assessment_trigger
 /infra                     Terraform modules + docker-compose.yml (local dev)
+                           environments/pilot is the canonical composition
 /scripts                   test.sh, deploy helpers, smoke tests
 /docs                      ALL documentation. Start at docs/README.md
 ```
@@ -1934,7 +2239,7 @@ These are architectural decisions already made in ESD.md — do not silently dev
 1. **Every tenant-scoped query goes through the RLS-aware session.** Never hand-write a `WHERE tenant_id = ...` filter as the *only* protection — the Postgres RLS policy is the real boundary; app-level filtering is defense in depth, not a substitute.
 2. **Authentication is Firebase (as of 2026-07-24).** All roles sign in via Firebase Auth — Google, email/password, and phone. The backend verifies the Firebase ID token (`services/firebase_auth.py`) and issues the app's own portal-scoped JWT cookies; database roles/permissions remain authoritative (Firebase is identity only, never authorization). **Exception to the original "no passwords" rule:** candidate email/password is explicitly allowed (user decision, 2026-07-24). Do NOT build a custom password store or "forgot password" flow — Firebase owns credentials and recovery. The legacy MSG91 OTP send-path is retained as a working SMS feature but is no longer the login mechanism.
 3. **Permissions are data, not code, and staff are hierarchical (reversed 2026-08-14).** Super Admin -> Recruitment Manager -> Recruiter -> Hiring Manager. Managers control only roles below them and may grant only capabilities they hold. Keep using `require_capability("...")` backed by `role_permissions` and the per-user overlay; never hardcode operational access by role in jobs, pipeline or candidates.
-4. **All async/slow work is a Celery task**, never inline in a request handler: matching/re-ranking, email/SMS sending, resume parsing, verification-reply parsing, dashboard aggregation.
+4. **All async/slow work is DISPATCHED**, never inline in a request handler: matching/re-ranking, email/SMS sending, resume parsing, verification-reply parsing, dashboard aggregation. SUPERSEDED IN PART 2026-09-05: the transport is `app/workers/dispatch.dispatch`, not Celery, which is deleted. The rule that slow work never runs in a request handler is unchanged.
 5. **All outbound email goes through Gmail SMTP from the backend.** Configure `smtp.gmail.com:587` with STARTTLS, the Gmail address, and a Google App Password via `SMTP_*`. The authenticated Gmail mailbox is always the From address. Sending remains a Celery task with database audit records and permanent-vs-transient failure handling.
 6. **Candidate resumes ARE persisted on the candidate profile and reused across applications (as of 2026-07-24, PRD v1.0 FR-6.2).** Store the uploaded resume on the candidate's profile; on a new application, offer to reuse the last resume or upload a fresh one. (This reverses the earlier fresh-upload-only rule.)
 7. **Databank candidates never re-enter the verification/40-aspect flow** — their existing Profile is reused as-is. Only freshly sourced candidates go through Section 5's data-collection + verification steps.
@@ -1967,6 +2272,10 @@ Notes that are not obvious from the file itself:
   `OPENROUTER_API_KEY_1..7`). Every slot is OPTIONAL — the router enumerates
   only populated ones, so three keys and twenty-one behave identically. The
   `llm_provider_keys` table takes precedence over env when it has rows.
+- **`TASK_DISPATCH_BACKEND`** selects where background work runs: `aws`
+  (Lambda and on-demand Fargate), `local` (a thread in this process, for
+  compose) or `record` (accept and remember, for the test suite; refused in
+  production). See `app/workers/dispatch.py`.
 - **Email is Gmail SMTP only** (`SMTP_*`): `smtp.gmail.com:587` with STARTTLS
   and a Google App Password. The authenticated mailbox is always the From
   address. There is no Resend/Mailtrap path.
@@ -2003,13 +2312,17 @@ change actually needs.
 | An API route | `app/api/<section>.py` | `require_capability(...)`, never a role branch |
 | A capability | `services/capabilities.py` | **A seeding migration too**, plus `tests/test_capability_seed_parity.py` |
 | A table | `app/models/`, `alembic/versions/` | RLS policy + grant; export it from `models/__init__.py` |
-| A Celery task | `workers/tasks.py`, `celery_app.py` | Name contract, idempotency, and the worker does not autoreload |
+| A background task | `workers/tasks.py` | `@task(name=..., route=...)`, and a route is a COST decision: seconds go to `Route.LAMBDA`, minutes to `Route.ECS` |
+| A scheduled sweep | `workers/schedule.py` AND every environment's `module "scheduler"` | `tests/test_schedule_parity.py` compares them; one without the other is a sweep that never runs |
 | An LLM call | `config/llm_providers.py` first | Task type, timeout, budget, temperature, max tokens, retry budget |
 | A prompt | `app/prompts/*.txt` | Bump `# version:`; the registry digests the body |
 | A scoring rule | `services/hiring/runbook_data/*.yaml` | Cite the Runbook section; parity test enforces it |
 | A client-facing string | The renderer | No number, no em dash, correct Tatva/PRISM naming |
 | A candidate-facing upload | The relevant storage service | Validate, never execute, bound every ceiling in config |
 | A frontend surface | `frontend/app/(group)/` | `DESIGN.md` tokens; navy is structure, teal is evidence |
+| A workflow gate | `docs/spec/HIRING_WORKFLOW.md` first | The gate is a real check with tests, never a paragraph; name where it lives |
+| A candidate-facing notification | `services/candidate_updates.py` | A fixed catalogue entry, never a prompt; no number, no grade, relative link only |
+| A pipeline stage | `services/hiring_pipeline.py` | The CHECK constraint, `PipelineStatus`, the dashboard mapping, and the frontend union |
 | A proctoring threshold | `core/config.py` (`proctoring_*`) | It is served to the browser from `services/proctoring/config.py`; no literal in the pipeline |
 | A proctoring event type | `services/proctoring/catalog.py` | Its path (A, B, C), its group, its phrasing in `phrasing.py`; internal identifiers never reach a recruiter |
 | A question format | `services/assessment_formats/types.py` | The payload model, the answer model, `candidate_view`, the migration CHECK, the frontend component behind the one dispatcher |

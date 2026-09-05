@@ -79,7 +79,7 @@ from app.services.resume_storage import (
     store_resume,
 )
 from app.services.resume_access import issue_resume_token, verify_resume_token
-from app.workers.celery_app import celery_app
+from app.workers.dispatch import dispatch
 
 router = APIRouter()
 
@@ -187,7 +187,7 @@ async def upload_resume(
     session.add(link)
     await session.flush()
 
-    celery_app.send_task("pickready.parse_resume", args=[str(profile.id)])
+    dispatch("pickready.parse_resume", args=[str(profile.id)])
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
                 action="resume_uploaded", target_type="profile", target_id=profile.id,
                 metadata={"job_id": str(job.id), "candidate_id": str(candidate.id),
@@ -885,7 +885,7 @@ async def schedule_interview(
         attendee_emails=[candidate.email] if candidate.email else [],
         description=body.notes or "",
     )
-    celery_app.send_task(
+    dispatch(
         "pickready.send_email",
         args=[
             str(user.tenant_id), candidate.email, "interview_invite",

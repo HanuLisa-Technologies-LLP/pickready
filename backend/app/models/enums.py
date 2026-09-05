@@ -109,7 +109,14 @@ class PipelineStatus(str, enum.Enum):
 
     `offered` and `offer_extended` are deliberately BOTH here: 0018 kept the old
     name valid rather than rewriting history, so both can appear in the table.
+
+    `sourced` (migration 0078) is the stage BEFORE applied: a resume the
+    recruiter uploaded from their databank, belonging to somebody who has not
+    applied. It is a real stored value, so it has to be here for exactly the
+    reason the docstring above records -- an enum missing a value the column
+    accepts 500s every read of every row that carries it.
     """
+    sourced = "sourced"
     applied = "applied"
     assessment_invited = "assessment_invited"
     assessment_in_progress = "assessment_in_progress"

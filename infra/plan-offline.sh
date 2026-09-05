@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# `terraform plan` for staging AND production, with no credentials, no account,
-# and no network (spec-doc6 §13.3).
+# `terraform plan` for pilot, staging AND production, with no credentials, no
+# account, and no network (spec-doc6 §13.3).
 #
 # WHAT CHANGED, AND WHY THE PREVIOUS ANSWER WAS INCOMPLETE
 # ---------------------------------------------------------
@@ -85,11 +85,46 @@ VARS="$ROOT/environments/offline-plan.tfvars"
 
 failures=0
 
-for env in staging production; do
-  dir="$ROOT/environments/$env"
+# THE PILOT HAS A REAL REMOTE BACKEND, and that is why it is planned from a
+# COPY rather than in place.
+#
+# `terraform plan` refuses to run against an uninitialised backend, and this
+# profile has no credentials and no network to initialise an S3 one with.
+# `-backend=false` does not help: it initialises providers and then plan still
+# refuses. So the pilot's `*.tf` are copied to a sibling directory WITHOUT
+# `backend.tf`, where the absent backend block means Terraform defaults to the
+# local one, which is exactly what §13.3 asks for.
+#
+# A SIBLING, not a temp directory anywhere else: the environment roots reference
+# `../../modules`, so a copy at any other depth would resolve to nothing. The
+# copy is gitignored and removed on exit.
+prepare_plan_dir() {
+  env="$1"
+  src="$ROOT/environments/$env"
+  if [ ! -f "$src/backend.tf" ]; then
+    echo "$src"
+    return
+  fi
+  dst="$ROOT/environments/.$env-offline-plan"
+  rm -rf "$dst"
+  mkdir -p "$dst"
+  for f in "$src"/*.tf; do
+    [ "$(basename "$f")" = "backend.tf" ] && continue
+    cp "$f" "$dst/"
+  done
+  echo "$dst"
+}
+
+cleanup_plan_dirs() {
+  rm -rf "$ROOT"/environments/.*-offline-plan 2>/dev/null || true
+}
+trap cleanup_plan_dirs EXIT
+
+for env in pilot staging production; do
+  dir="$(prepare_plan_dir "$env")"
   echo "── terraform plan: $env ─────────────────────────────────────────"
 
-  # -backend=false is not used here: without a backend block the environment
+  # -backend=false is not used here: with no backend block the environment
   # roots default to the LOCAL backend, which is what §13.3 asks for ("a local
   # backend for the planning profile so no remote state is required"). No
   # bucket, no lock table, no network.
@@ -126,7 +161,7 @@ if [ "$failures" -gt 0 ]; then
 fi
 
 cat <<'NOTE'
-Both environments plan.
+All three environments plan.
 
 READ THIS BEFORE REPEATING IT ANYWHERE. A plan in the planning profile has
 never contacted AWS. It proves the configuration is internally consistent and

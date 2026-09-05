@@ -21,6 +21,11 @@ EmailType = Literal[
     "interview_completed",
     "offer_extended",
     "joined",
+    # The databank invitation (workflow section 12). Listed here so a recruiter
+    # can compose one by hand through /emails/draft like any other type; note
+    # it is NOT a transition email -- nothing about the candidate's state
+    # changes when it goes out, because they have not applied.
+    "databank_invitation",
 ]
 
 # Belt and braces: the Literal above and the model constant must not drift.

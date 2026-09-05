@@ -1,5 +1,5 @@
-# Local dev stack (ESD §15): postgres+pgvector, redis, backend API, celery
-# worker, celery beat, frontend dev server. Run from repo root:
+# Local dev stack (ESD §15): postgres+pgvector, redis, the backend API, the
+# proctoring analysis service and the frontend dev server. Run from repo root:
 #   docker compose -f infra/docker-compose.yml up --build
 name: pickready
 
@@ -44,6 +44,10 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
       REDIS_URL: redis://redis:6379/0
+      # Run background tasks in a thread in this process. There is no Lambda on
+      # a laptop, and `record` would accept the work and not do it, which is a
+      # test-suite posture rather than a development one.
+      TASK_DISPATCH_BACKEND: local
       FRONTEND_URL: http://localhost:3000
       # Where the proctoring pipeline posts audio chunks. Empty in .env means
       # audio analysis is UNAVAILABLE, which the report states plainly; inside
@@ -69,48 +73,30 @@ services:
     command: >
       api --reload --reload-dir /app/app --reload-include "*.py"
 
-  worker:
-    build: ../backend
-    # Same as backend: env_file carries all secrets into the worker. The worker
-    # is what actually SENDS mail/SMS and uploads to Cloudinary, so it must have
-    # the SMTP_* email credentials, CLOUDINARY_URL, MSG91_* and the LLM keys —
-    # all provided via ../.env below. Same caution: no SMTP_* override here.
-    env_file: ../.env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
-      REDIS_URL: redis://redis:6379/0
-      # The worker runs the reconciliation sweeps that re-read a session, so it
-      # needs the same address the API posts chunks to.
-      PROCTORING_ANALYSIS_SERVICE_URL: http://analysis:8100
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ../backend:/app
-    # Unprivileged: Celery's SecurityWarning about running as uid 0 is a real
-    # warning, not noise. The account is created in ../backend/Dockerfile and is
-    # now also the image's default USER, so this line is belt and braces.
-    user: "10001:10001"
-    command: worker
-
-  beat:
-    build: ../backend
-    env_file: ../.env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      redis:
-        condition: service_healthy
-    volumes:
-      - ../backend:/app
-    user: "10001:10001"
-    # Beat writes its schedule file; /tmp is writable by the unprivileged user
-    # while the bind-mounted source tree is not (and should not be). The path
-    # is the entrypoint's default (CELERY_BEAT_SCHEDULE).
-    command: beat
+  # THERE IS NO WORKER CONTAINER AND NO BEAT CONTAINER, and their absence is
+  # the local half of the 2026-09-04 change that removed Celery.
+  #
+  # Background work is dispatched through `app.workers.dispatch`, whose backend
+  # is configuration. In a deployed environment that is `aws`: short work goes
+  # to the `readypick-task-worker` Lambda and long work becomes one on-demand
+  # Fargate task. On a laptop there is neither, so the backend is `local` and
+  # the API process runs the task in a daemon thread. It is the same task, the
+  # same `runtime.run_task`, and the same retry policy; only the transport
+  # differs, exactly as the LLM router's provider selection does.
+  #
+  # WHAT IS GENUINELY MISSING LOCALLY: the periodic sweeps. A laptop has no
+  # EventBridge Scheduler, so `reconcile_job_setup`, the credit reconciler and
+  # the proctoring sweeps do NOT run here. Nothing fires them, and because a
+  # sweep does nothing when there is nothing to repair, "not running" and
+  # "nothing to do" produce the same empty log. Run one by hand when you need
+  # it, which is also how to reproduce a sweep bug:
+  #
+  #   docker compose -f infra/docker-compose.yml exec backend \
+  #     python -c "from app.workers.runtime import run_task; \
+  #                run_task({'task': 'pickready.reconcile_job_setup', \
+  #                          'args': [], 'kwargs': {}, 'run_id': ''})"
+  #
+  # `backend/app/workers/schedule.py` is the list of them.
 
   # The proctoring analysis service (../analysis-service): speaker counting on
   # a fifteen-second audio chunk, and an AI-text estimate that ships disabled.

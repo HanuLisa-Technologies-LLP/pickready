@@ -492,6 +492,27 @@ async def test_smtp_missing_creds_is_permanent(monkeypatch):
 
 # ── permanent failure is not retried; transient is ──────────────────────────
 
+async def _noop_coroutine():
+    return None
+
+
+def _ctx(attempt: int = 1, max_attempts: int = 3):
+    """A task context, as `runtime.run_task` would build one.
+
+    Task bodies are plain functions now, so a test calls one directly instead of
+    going through Celery's `.run`, which auto-bound `self` and defaulted
+    `self.request.retries` to zero.
+    """
+    from app.workers.runtime import TaskContext
+
+    return TaskContext(
+        run_id="",
+        name="pickready.send_email",
+        attempt=attempt,
+        max_attempts=max_attempts,
+    )
+
+
 def test_permanent_failure_not_retried(monkeypatch):
     """send_email must swallow a PermanentDeliveryError (return, no retry)."""
     from app.workers import tasks
@@ -503,17 +524,13 @@ def test_permanent_failure_not_retried(monkeypatch):
 
     monkeypatch.setattr(tasks, "_send_email_async", _boom)
     monkeypatch.setattr(tasks, "_worker_session", _noop_session)
-    monkeypatch.setattr(
-        tasks, "get_settings", lambda: SimpleNamespace(delivery_max_retries=2)
-    )
 
-    # bind=True → `.run` auto-binds `self` to the real task instance; on a
-    # non-executing task self.request.retries defaults to 0. Must NOT raise.
-    tasks.send_email.run(None, "a@b.test", "otp", {})
+    result = tasks.send_email(_ctx(), None, "a@b.test", "otp", {})
+    assert result == {"status": "failed", "error": "validation_error"}
 
 
 def test_transient_failure_reraises(monkeypatch):
-    """A transient failure must propagate so Celery's autoretry can back off."""
+    """A transient failure must propagate so the runtime's retry loop backs off."""
     from app.workers import tasks
 
     async def _boom(session, *a, **k):
@@ -521,12 +538,43 @@ def test_transient_failure_reraises(monkeypatch):
 
     monkeypatch.setattr(tasks, "_send_email_async", _boom)
     monkeypatch.setattr(tasks, "_worker_session", _noop_session)
+
+    audited = []
     monkeypatch.setattr(
-        tasks, "get_settings", lambda: SimpleNamespace(delivery_max_retries=2)
+        tasks,
+        "_audit_delivery_exhausted",
+        lambda *a, **k: (audited.append(a), _noop_coroutine())[1],
     )
-    # retries below cap (0 < 2) → re-raises without the exhausted-audit row.
+
     with pytest.raises(TransientDeliveryError):
-        tasks.send_email.run(None, "a@b.test", "otp", {})
+        tasks.send_email(_ctx(attempt=1, max_attempts=3), None, "a@b.test", "otp", {})
+    assert not audited, (
+        "the terminal-failure audit fired on an intermediate attempt; one "
+        "undelivered email would be recorded as several"
+    )
+
+
+def test_the_exhausted_audit_fires_on_the_last_attempt_only(monkeypatch):
+    """The audit row means "this email was given up on", so it must be written
+    once, at the point that becomes true."""
+    from app.workers import tasks
+
+    async def _boom(session, *a, **k):
+        raise TransientDeliveryError("resend", 503, "server_error", "later")
+
+    monkeypatch.setattr(tasks, "_send_email_async", _boom)
+    monkeypatch.setattr(tasks, "_worker_session", _noop_session)
+
+    audited = []
+    monkeypatch.setattr(
+        tasks,
+        "_audit_delivery_exhausted",
+        lambda *a, **k: (audited.append(a), _noop_coroutine())[1],
+    )
+
+    with pytest.raises(TransientDeliveryError):
+        tasks.send_email(_ctx(attempt=3, max_attempts=3), None, "a@b.test", "otp", {})
+    assert len(audited) == 1
 
 
 # ── startup preflight ────────────────────────────────────────────────────────
@@ -586,7 +634,7 @@ def test_every_template_name_the_app_sends_has_a_default() -> None:
 
     app_root = Path(__file__).resolve().parents[1] / "app"
     # Parsed, not regexed: the call is
-    # `send_task("pickready.send_email", args=[<tenant>, <to>, "<name>", {...}])`
+    # `dispatch("pickready.send_email", args=[<tenant>, <to>, "<name>", {...}])`
     # and the template name is args[2]. A regex over this shape kept picking up
     # keys out of the context dict that follows it.
     found: set[str] = set()
@@ -609,7 +657,7 @@ def test_every_template_name_the_app_sends_has_a_default() -> None:
                 if isinstance(name, ast.Constant) and isinstance(name.value, str):
                     found.add(name.value)
 
-    assert found, "scanner matched nothing — the send_task shape must have changed"
+    assert found, "scanner matched nothing; the dispatch shape must have changed"
     missing = sorted(name for name in found if name not in DEFAULT_TEMPLATES)
     assert not missing, (
         f"template name(s) {missing} are sent by the app but have no entry in "
@@ -617,126 +665,183 @@ def test_every_template_name_the_app_sends_has_a_default() -> None:
     )
 
 
-# ── Queue isolation for delivery (regression, 2026-08-01) ────────────────────
+# -- Delivery is never starved by AI work (regression, 2026-08-01) -----------
 #
 # Production incident: every task shared one `celery` queue against a
 # `--concurrency=2` worker. Two `generate_technical_questions` runs wedged both
 # slots in an unterminating loop, and a staff invitation enqueued at 14:07 UTC
 # was not delivered until 14:13, when a slot briefly freed at the soft-time-limit
 # boundary. The API had already answered 201 with `email_dispatch: "queued"`, so
-# nothing surfaced the delay. Delivery now has its own queue.
-
-def _celery_app():
-    # Importing tasks is what registers them; the routing assertions below are
-    # meaningless against an empty registry.
-    import app.workers.tasks  # noqa: F401
-    from app.workers.celery_app import celery_app
-
-    return celery_app
-
-
-def test_mail_queue_is_declared_alongside_the_default() -> None:
-    """A worker started without -Q consumes exactly the declared queues.
-
-    If `mail` were routed but never declared, the existing single worker pool
-    would stop consuming it and every email would queue forever.
-    """
-    names = {q.name for q in _celery_app().amqp.queues.values()}
-    assert {"celery", "mail"} <= names
+# nothing surfaced the delay.
+#
+# Celery answered it with a second queue and a second worker pool, and these
+# tests asserted the routing that made the split real. There are no queues and
+# no pools any more, so the assertions moved to the thing that now carries the
+# guarantee: WHERE a task runs. Delivery runs in the per-invocation worker
+# function; the work that wedged the pool runs as its own on-demand task. The
+# two cannot contend for one another's capacity because neither of them holds
+# any capacity to contend for.
 
 
-def test_declared_queue_routing_keys_match_their_names() -> None:
-    """The Redis transport picks the destination list by ROUTING KEY.
+def _delivery_specs():
+    from app.workers.registry import all_specs
 
-    Left unset, Celery fills a queue's routing key from
-    task_default_routing_key, which is the DEFAULT queue's name, so `mail`
-    would be declared with routing key "celery". Mail would then land back in
-    the `celery` list and a worker started with `--queues=mail` would sit idle
-    while invitations piled up behind the AI work the split exists to escape.
-    """
-    for queue in _celery_app().amqp.queues.values():
-        assert queue.routing_key == queue.name, (
-            f"queue {queue.name!r} has routing key {queue.routing_key!r}; on "
-            "Redis its messages would be delivered to the wrong list"
+    return [
+        spec
+        for spec in all_specs()
+        if "send_" in spec.name or spec.name.endswith("_email")
+    ]
+
+
+def test_every_outbound_delivery_task_runs_per_invocation() -> None:
+    """Delivery must never sit behind an LLM chain that legitimately takes
+    minutes. Scanned from the registry rather than a hand-kept list, because a
+    hand-kept list is exactly what drifts."""
+    from app.workers.registry import Route
+
+    delivery = _delivery_specs()
+    assert delivery, "registry scan matched no delivery tasks"
+    misrouted = sorted(
+        spec.name for spec in delivery if spec.route is not Route.LAMBDA
+    )
+    assert not misrouted, (
+        f"delivery task(s) {misrouted} are routed to on-demand compute; an "
+        "invitation there waits on a container start it does not need"
+    )
+
+
+def test_no_long_running_task_shares_the_delivery_route() -> None:
+    """The other half of the split: the work that wedged the pool must be on
+    the on-demand route, so it has nowhere to starve delivery from."""
+    from app.workers.registry import Route, resolve
+
+    for name in (
+        "pickready.compile_tatva_matrix",
+        "pickready.generate_candidate_questions",
+        "pickready.run_functional_assessment",
+        "pickready.run_matching",
+    ):
+        assert resolve(name).route is Route.ECS, (
+            f"{name} runs minutes of model work and must not share a "
+            "short-work function with delivery"
         )
 
 
-def test_every_outbound_delivery_task_is_routed_to_the_mail_queue() -> None:
-    """Delivery must never sit behind an LLM chain that legitimately takes
-    minutes. Scanned from the task registry rather than a hand-kept list."""
-    celery = _celery_app()
-    delivery = {
-        name
-        for name in celery.tasks
-        if name.startswith("pickready.")
-        and ("send_" in name or name.endswith("_email"))
+def test_a_timed_out_task_is_not_retried() -> None:
+    """A task killed at its platform ceiling gets no retry, structurally.
+
+    Celery needed `dont_autoretry_for=(SoftTimeLimitExceeded,)` for this,
+    because its soft limit raised an ordinary Exception inside the task and
+    `autoretry_for=(Exception,)` caught it: the incident log shows
+    `retry: Retry in 1s: SoftTimeLimitExceeded()` and the slot re-occupied in
+    the same second.
+
+    The retry loop now lives INSIDE the invocation, so a killed invocation takes
+    its retry loop with it. This asserts the property that makes that true:
+    nothing in the runtime re-dispatches, so no failed run can schedule another.
+    """
+    import ast
+    import pathlib as _pathlib
+
+    source = (
+        _pathlib.Path(__file__).resolve().parents[1]
+        / "app"
+        / "workers"
+        / "runtime.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    called = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    } | {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
-    assert delivery, "task registry scan matched nothing"
-    misrouted = sorted(
-        name
-        for name in delivery
-        if celery.amqp.router.route({}, name)["queue"].name != "mail"
-    )
-    assert not misrouted, (
-        f"delivery task(s) {misrouted} still route to the slow queue; an "
-        "invitation there can be starved by AI work"
+    assert "dispatch" not in called, (
+        "runtime re-dispatches on failure; a task killed at its ceiling would "
+        "then be retried by a fresh invocation, which is exactly what the "
+        "soft-timeout exclusion list existed to prevent"
     )
 
 
-def test_routed_task_names_all_exist() -> None:
-    """A typo in task_routes fails open: the task keeps using the slow queue
-    and nothing reports it."""
-    celery = _celery_app()
-    unknown = sorted(
-        n for n in celery.conf.task_routes if n not in celery.tasks
+def test_the_retry_loop_refuses_an_attempt_that_cannot_finish() -> None:
+    """Predictive, not observational.
+
+    A delivery task backing off sixty seconds with forty seconds of budget left
+    must not start the retry. Being killed mid-send is the expensive case: SMTP
+    may already have accepted the message, and the next attempt sends it twice.
+    """
+    from app.workers import runtime
+    from app.workers.registry import Route, TaskSpec
+
+    attempts = []
+
+    def _always_fails():
+        attempts.append(1)
+        raise RuntimeError("transient")
+
+    spec = TaskSpec(
+        name="test.backoff",
+        fn=_always_fails,
+        route=Route.LAMBDA,
+        max_attempts=5,
+        max_attempts_setting=None,
+        backoff_seconds=60.0,
+        backoff_max_seconds=60.0,
+        retry_on=(Exception,),
+        bind=False,
+        summary="",
     )
-    assert not unknown, f"task_routes names no such task: {unknown}"
-
-
-def test_a_timed_out_task_is_not_auto_retried() -> None:
-    """SoftTimeLimitExceeded derives from Exception, so `autoretry_for=
-    (Exception,)` used to hand a hung task straight back to the pool: the
-    incident log shows `retry: Retry in 1s: SoftTimeLimitExceeded()` and the
-    slot re-occupied in the same second. A task that could not finish in ten
-    minutes will not finish in ten more, and the retry costs the pool slot
-    delivery needs."""
-    from celery.exceptions import SoftTimeLimitExceeded
-
-    celery = _celery_app()
-    offenders = []
-    for name, task in celery.tasks.items():
-        if not name.startswith("pickready."):
-            continue
-        if Exception not in (getattr(task, "autoretry_for", None) or ()):
-            continue
-        if SoftTimeLimitExceeded not in (
-            getattr(task, "dont_autoretry_for", None) or ()
-        ):
-            offenders.append(name)
-    assert not offenders, (
-        f"task(s) {sorted(offenders)} auto-retry on a soft-timeout and can "
-        "wedge a worker slot indefinitely"
+    original = runtime.resolve
+    runtime.resolve = lambda _name: spec
+    try:
+        with pytest.raises(RuntimeError):
+            runtime.run_task(
+                {"run_id": "", "task": "test.backoff", "args": [], "kwargs": {}},
+                remaining_seconds=lambda: 40.0,
+            )
+    finally:
+        runtime.resolve = original
+    assert attempts == [1], (
+        "a retry was started that could not have finished inside the budget"
     )
 
 
-# ── An unreachable broker must fail, not hang ────────────────────────────────
+# -- An unreachable dispatch target must fail, not hang ----------------------
 
-def test_the_broker_has_publish_timeouts() -> None:
-    """Publishing to Redis has NO timeout by default, so `send_task` against a
-    private IP with no route blocks forever instead of raising.
+
+def test_the_dispatch_client_bounds_every_call() -> None:
+    """Publishing to Redis had NO timeout by default, so `send_task` against a
+    private IP with no route blocked forever instead of raising.
 
     That is worse than an error, because every caller that carefully wraps its
-    enqueue in try/except never gets to run the handler -- nothing is raised.
-    Observed in production: a Cloud Run job with REDIS_URL but no VPC egress
-    hung on its first enqueue and was killed at the 900s ceiling having written
-    nothing.
+    enqueue in try/except never gets to run the handler: nothing is raised.
+    Observed in production, a job with REDIS_URL but no VPC egress hung on its
+    first enqueue and was killed at the 900s ceiling having written nothing.
+
+    botocore has the same shape of default, a 60-second connect timeout with
+    retries stacked on top, so the same assertion is worth making about the
+    client that replaced it.
     """
-    celery = _celery_app()
-    options = celery.conf.broker_transport_options or {}
-    assert options.get("socket_connect_timeout"), (
-        "no broker connect timeout; an unreachable broker will hang callers"
+    from app.workers import dispatch as dispatch_mod
+
+    dispatch_mod.reset_client()
+    try:
+        config = dispatch_mod._lambda_client().meta.config
+    finally:
+        dispatch_mod.reset_client()
+    assert config.connect_timeout and config.connect_timeout <= 10, (
+        "no bounded connect timeout; an unreachable endpoint will hang callers"
     )
-    assert options.get("socket_timeout"), "no broker socket timeout"
-    assert celery.conf.broker_connection_max_retries is not None, (
-        "connection retries are unbounded; a dead broker retries forever"
+    assert config.read_timeout and config.read_timeout <= 30, (
+        "no bounded read timeout; a host that accepts and never answers hangs"
+    )
+    # botocore normalises `max_attempts` to `total_max_attempts` (which counts
+    # the first call), so both spellings are accepted rather than the one this
+    # happens to have been written with.
+    retries = config.retries or {}
+    assert retries.get("max_attempts") or retries.get("total_max_attempts"), (
+        "retries are unbounded; a dead endpoint retries forever"
     )

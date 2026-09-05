@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 #: An empty parsed-fields document in the fixed schema (used when a resume has
 #: no extractable text or the LLM extraction can't be parsed  -  the profile is
-#: still stored so nothing crashes the Celery task).
+#: still stored so nothing crashes the task).
 _EMPTY_PARSED_FIELDS: dict[str, Any] = {
     "skills": [],
     "total_experience_years": None,
@@ -65,7 +65,7 @@ class ResumeParsingError(RuntimeError):
 # ── Text extraction ──────────────────────────────────────────────────────────
 #
 # Extraction is defensive: a corrupt, empty, image-only, or wrong-format file
-# yields "" rather than raising, so the Celery `parse_resume` task never
+# yields "" rather than raising, so the `parse_resume` task never
 # crash-loops on unparseable content (a genuinely transient failure  -  e.g. the
 # Cloudinary download  -  still propagates from `parse_resume` and is retried).
 
@@ -127,7 +127,7 @@ def _extract_docx(data: bytes) -> str:
 #
 # The databank uploader has to create or find a candidate row BEFORE it can
 # create the job link, and it must not wait for the real parse to happen (that
-# is a Celery task, claude.md rule 4, and it calls an LLM). So it needs one
+# is a background task, claude.md rule 4, and it calls an LLM). So it needs one
 # cheap, local, deterministic answer to "whose resume is this".
 #
 # These are pure regex/heuristic functions over already-extracted text. They do
@@ -235,7 +235,7 @@ async def extract_structured_fields(
     an LLM call, and unparseable LLM output logs a warning and returns the
     empty schema rather than raising  -  the raw resume text stays as the
     matcher's fallback signal. `llm_router.LLMUnavailableError` (whole provider
-    chain down) still propagates so the Celery task's retry policy handles it.
+    chain down) still propagates so the task's retry policy handles it.
     """
     if not resume_text or not resume_text.strip():
         return dict(_EMPTY_PARSED_FIELDS)

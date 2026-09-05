@@ -112,8 +112,9 @@ def test_order_by_is_a_total_order() -> None:
     between page 1 and page 2 and one of them would vanish from the results."""
     clause = jc.order_by_clause("non_managerial")
     assert clause.endswith("l.created_at ASC, l.id ASC")
-    # Every score key sinks NULLs, so an unscored candidate never floats up.
-    assert clause.count("DESC NULLS LAST") == 3
+    # Every score key sinks NULLs, so an unscored candidate never floats up:
+    # the assessment score plus the grade's three resume keys.
+    assert clause.count("DESC NULLS LAST") == 4
 
 
 def test_order_by_reflects_the_grade() -> None:

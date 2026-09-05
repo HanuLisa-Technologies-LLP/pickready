@@ -243,7 +243,7 @@ async def test_a_follow_up_is_filed_under_the_same_question_key(monkeypatch) -> 
     from app.services.functional_assessment import answers_by_key
 
     monkeypatch.setattr(mod, "_candidate_link", _link_stub)
-    monkeypatch.setattr(mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -299,7 +299,7 @@ async def test_a_follow_up_does_not_advance_the_index(monkeypatch) -> None:
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
 
-    monkeypatch.setattr(mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "dispatch", lambda *a, **k: None)
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -341,7 +341,7 @@ async def test_a_pending_follow_up_holds_completion_open(monkeypatch) -> None:
     from app.models.assessment import AssessmentConversation
 
     dispatched: list[str] = []
-    monkeypatch.setattr(mod.celery_app, "send_task",
+    monkeypatch.setattr(mod, "dispatch",
                         lambda name, *a, **k: dispatched.append(name))
 
     engine, factory = await _factory_or_skip()
@@ -391,7 +391,7 @@ async def test_without_a_follow_up_the_flow_is_unchanged(monkeypatch) -> None:
     from app.models.assessment import AssessmentConversation
 
     dispatched: list[str] = []
-    monkeypatch.setattr(mod.celery_app, "send_task",
+    monkeypatch.setattr(mod, "dispatch",
                         lambda name, *a, **k: dispatched.append(name))
 
     engine, factory = await _factory_or_skip()
@@ -431,7 +431,7 @@ async def test_irrelevant_answer_holds_counter_then_valid_reask_advances_one(
     from app.core.db import superadmin_scope
     from app.services.answer_classification import Classification
 
-    monkeypatch.setattr(mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "dispatch", lambda *a, **k: None)
     verdicts = iter(
         [
             Classification(
@@ -502,7 +502,7 @@ async def test_reask_cap_records_evidence_gap_and_moves_on(monkeypatch) -> None:
     from app.models.assessment import AssessmentMessage
     from app.services.answer_classification import Classification
 
-    monkeypatch.setattr(mod.celery_app, "send_task", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "dispatch", lambda *a, **k: None)
 
     async def _invalid(**kwargs):
         return Classification(

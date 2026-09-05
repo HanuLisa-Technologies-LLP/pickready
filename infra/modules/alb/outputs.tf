@@ -38,3 +38,17 @@ output "public_listener_rules" {
   EOT
   value       = { for pattern, rule in aws_lb_listener_rule.public : pattern => rule.arn }
 }
+
+# CloudWatch's ALB dimensions are the ARN SUFFIX, not the ARN: "app/name/id"
+# and "targetgroup/name/id". Passing a full ARN produces an alarm that
+# evaluates against a dimension nothing publishes, so it sits in
+# INSUFFICIENT_DATA for ever and reads as "quiet" rather than as "wrong".
+output "arn_suffix" {
+  description = "The LoadBalancer dimension value for a CloudWatch metric."
+  value       = aws_lb.this.arn_suffix
+}
+
+output "target_group_arn_suffixes" {
+  description = "{name -> the TargetGroup dimension value for a CloudWatch metric}."
+  value       = { for name, tg in aws_lb_target_group.this : name => tg.arn_suffix }
+}

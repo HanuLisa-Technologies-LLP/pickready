@@ -75,7 +75,8 @@ The test stack runs `redis:7.2-alpine`, inside the same `redis7` parameter-group
 family the module declares. This is a naming mismatch and not a defect, and it
 is recorded here so the next person does not go looking for a 7.1 image.
 
-**Redis is `noeviction`, not `allkeys-lru`.** It is the Celery broker, not a
+**Redis is `noeviction`, not `allkeys-lru`.** It carries a live assessment's
+proctoring warning counter and the run-status record a recruiter is watching, not just a
 cache, and the test stack carries production's semantics
 (`infra/modules/elasticache/main.tf` sets the same). Under memory pressure the
 LRU default silently evicts queued TASKS, and the symptom is work that was

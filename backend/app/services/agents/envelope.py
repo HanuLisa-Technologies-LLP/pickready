@@ -82,7 +82,7 @@ def new_workflow_id() -> str:
     """One id for a whole pipeline run, minted by whoever starts it.
 
     Bodha through Siddhi is one workflow even though it is six agents and
-    several Celery tasks. Without a shared id, "what happened to this
+    several background tasks. Without a shared id, "what happened to this
     candidate's assessment" is six unrelated trace queries.
     """
     return _uuid_hex()

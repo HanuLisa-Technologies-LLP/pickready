@@ -81,7 +81,10 @@ def _cookie_kwargs() -> dict:
     settings = get_settings()
     kwargs = {
         "httponly": True,
-        "secure": settings.is_production,
+        # `Secure` follows the ORIGIN, not the environment name. See
+        # `Settings.serves_over_https`: tying it to `is_production` sent the
+        # auth cookie without it from every non-production HTTPS deployment.
+        "secure": settings.serves_over_https,
         "samesite": settings.cookie_samesite,
     }
     if settings.cookie_domain:
@@ -132,7 +135,10 @@ def clear_auth_cookies(response) -> None:
     # by a policy the original cookie satisfied.
     common = {
         "domain": settings.cookie_domain or None,
-        "secure": settings.is_production,
+        # `Secure` follows the ORIGIN, not the environment name. See
+        # `Settings.serves_over_https`: tying it to `is_production` sent the
+        # auth cookie without it from every non-production HTTPS deployment.
+        "secure": settings.serves_over_https,
         "samesite": settings.cookie_samesite,
         "httponly": True,
     }

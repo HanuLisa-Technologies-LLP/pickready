@@ -100,7 +100,7 @@ from app.models.job import Job
 from app.models.tenant import Tenant
 from app.services import ppi
 from app.services.application_validation import MANDATORY_KEYS
-from app.workers.celery_app import celery_app
+from app.workers.dispatch import dispatch
 
 #: The three procurement types, cycled so the demo exercises the filter on the
 #: candidate table. Nothing branches on `source_type` (claude.md): all three are
@@ -406,7 +406,7 @@ async def _run(dry_run: bool, rank: bool) -> int:
 
     if rank and not dry_run:
         for job_id in ranked_jobs:
-            celery_app.send_task("pickready.run_matching", args=[str(job_id)])
+            dispatch("pickready.run_matching", args=[str(job_id)])
         print(f"= dispatched run_matching for {len(ranked_jobs)} job(s)")
     else:
         # Said out loud rather than left to inference. A candidate table with no

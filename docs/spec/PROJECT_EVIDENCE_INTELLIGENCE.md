@@ -50,7 +50,8 @@ policy. No object-store copy of derived evidence is needed; it is compact by
 construction. Temporary originals go through the existing shared
 `object_storage` S3 transport under the `project-intake/` prefix.
 
-Processing runs in Celery (`pickready.process_candidate_project`), with an
+Processing is dispatched (`pickready.process_candidate_project`, on-demand
+compute because archive parsing is minutes of work), with an
 hourly sweeper (`pickready.reconcile_project_intake`) that retries failed
 deletions, re-enqueues lost tasks, and re-attempts missing AI interpretations
 (bounded by a run counter).

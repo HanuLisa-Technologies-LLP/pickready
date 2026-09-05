@@ -12,7 +12,7 @@ one of them true:
 2. **The balance is the ledger.** `SUM(subunits_delta)`, never a mutable
    counter. A customer disputing their usage gets a statement, not a number.
 
-3. **Every write is idempotent.** Celery redelivers, Razorpay redelivers, a
+3. **Every write is idempotent.** A platform redelivers, Razorpay redelivers, a
    recruiter double-clicks. Each entry carries a UNIQUE `idempotency_key`, so
    the second attempt is a no-op instead of a second charge.
 """
@@ -485,7 +485,7 @@ async def _sync_warning_flags(session: AsyncSession, tenant_id: uuid.UUID) -> No
     burst of concurrent completions cannot double-send, and `grant` resets
     both flags (Rule 5) so the system starts fresh after each top-up.
 
-    The email is a Celery task and the enqueue is best-effort: a broker outage
+    The email is a dispatched task and the dispatch is best-effort: an outage
     must never turn a credit deduction into an error, so the failure is logged
     and the flag stays set (the in-app banner from the summary API still
     shows).
@@ -511,9 +511,9 @@ async def _sync_warning_flags(session: AsyncSession, tenant_id: uuid.UUID) -> No
         if transitioned is None:
             continue
         try:
-            from app.workers.celery_app import celery_app
+            from app.workers.dispatch import dispatch
 
-            celery_app.send_task(
+            dispatch(
                 "pickready.send_credit_warning_email",
                 args=[str(tenant_id), level],
             )
