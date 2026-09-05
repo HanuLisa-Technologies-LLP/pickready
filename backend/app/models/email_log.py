@@ -76,6 +76,27 @@ EMAIL_TYPE_PROMPTS: dict[str, str] = {
 STATUS_QUEUED = "queued"
 STATUS_SENT = "sent"
 STATUS_FAILED = "failed"
+# ── Delivery-tracking statuses (Corporate Email System spec section 8) ───────
+# `processing` is the worker's claim on a row it is actively delivering;
+# `delivered`, `bounced` and `complaint` are provider-reported outcomes,
+# written by the SES event endpoint keyed on `provider_message_id`. Under the
+# SMTP transport a row terminates at `sent`, honestly: Gmail reports no
+# per-message delivery events back to this product.
+STATUS_PROCESSING = "processing"
+STATUS_DELIVERED = "delivered"
+STATUS_BOUNCED = "bounced"
+STATUS_COMPLAINT = "complaint"
+
+#: Mirrored by ck_email_log_status (migration 0080) -- keep both in step.
+EMAIL_STATUSES: tuple[str, ...] = (
+    STATUS_QUEUED,
+    STATUS_PROCESSING,
+    STATUS_SENT,
+    STATUS_DELIVERED,
+    STATUS_FAILED,
+    STATUS_BOUNCED,
+    STATUS_COMPLAINT,
+)
 
 
 class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
@@ -120,3 +141,17 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # ── Delivery tracking (Corporate Email System spec section 8) ────────────
+    #: The provider's message id (SES MessageId, or the SMTP Message-ID). What
+    #: the SES delivery/bounce/complaint event is matched back on.
+    provider_message_id: Mapped[str | None] = mapped_column(String(300))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    bounced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    complained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The corporate sender this message was queued under, when the recruiter
+    #: chose one. SET NULL so revoking-then-deleting a sender never erases the
+    #: delivery record; the send-time chokepoint in workers/tasks.py re-loads
+    #: this row and refuses anything that is not `active` (spec section 11).
+    sender_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("client_email_senders.id", ondelete="SET NULL")
+    )

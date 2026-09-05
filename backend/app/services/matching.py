@@ -60,7 +60,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Job, JobCandidateLink, LinkSource, Profile
-from app.services import llm_router, matching_categories, rating
+from app.services import llm_router, longevity, matching_categories, rating
 from app.services.embeddings import EmbeddingError, embed
 from app.services.hiring import ontology, prescreen
 # `assign_tier` is the persisted spelling of `services.rating`'s four grades,
@@ -1868,6 +1868,30 @@ async def run_matching(
             # HR-visible, never candidate-visible -- the holistic 5th comment.
             link.match_rationale = breakdown["overall"]["comment"]
             link.tier = assign_tier(link.match_score)
+            # ── Service-longevity signal (add-features spec 2026-09-05,
+            #    Candidate Scoring Signals) ──────────────────────────────────
+            # A deterministic ordering prior from the parsed job-tenure
+            # history. It adjusts the INTERNAL match_score only, and the
+            # adjustment is grade-preserving by construction: the tier was
+            # assigned on the line above from the unadjusted score, and
+            # `adjusted_match_score` drops any lift that would convert to a
+            # different grade, so the word a client reads is identical with
+            # and without the signal. `insufficient_history` (and
+            # `frequent_mover`) lift by exactly zero -- a candidate with no
+            # readable tenure history ranks precisely where their evidence
+            # alone puts them, never lower. Only the WORD band is recorded on
+            # the breakdown, as provenance beside `scoring_mode`; no tenure
+            # number is written anywhere.
+            parsed_fields = (
+                profile.parsed_fields_json
+                if isinstance(profile.parsed_fields_json, dict)
+                else {}
+            )
+            band = longevity.band_for_history(parsed_fields.get("employment_history"))
+            link.match_score = longevity.adjusted_match_score(
+                link.match_score, band, grade_of=assign_tier
+            )
+            breakdown["longevity_band"] = band
             scored_links.append((profile, link, breakdown))
             scored += 1
 

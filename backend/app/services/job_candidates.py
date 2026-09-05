@@ -43,6 +43,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import assessment_video_access as video_access
 from app.services.matching import ranking_payload
 
 #: Spec §2.4 — 25 rows per page.
@@ -405,6 +406,25 @@ async def ranked_candidates(
                     p.resume_mime_type      AS resume_mime_type,
                     rep.id                  AS report_id,
                     rep.synthesized_at      AS report_ready_at,
+                    -- Assessment/video metadata for the client dashboard
+                    -- (2026-09-05 dashboard/video spec, sections 3-5).
+                    -- METADATA ONLY: rows, never S3, never media work. The
+                    -- two laterals below fetch the newest session and the
+                    -- newest recording per link inside this one statement, so
+                    -- the page stays a single query with no per-row read.
+                    sess.mode               AS assessment_mode,
+                    sess.status             AS conversation_status,
+                    vid.status              AS video_recording_status,
+                    EXISTS (
+                        SELECT 1 FROM proctoring_reports pr
+                        JOIN proctoring_sessions psess
+                          ON psess.id = pr.proctoring_session_id
+                         WHERE psess.job_candidate_link_id = l.id
+                    )                       AS has_proctoring_report,
+                    EXISTS (
+                        SELECT 1 FROM proctoring_sessions psess2
+                         WHERE psess2.job_candidate_link_id = l.id
+                    )                       AS has_proctoring_session,
                     {_PROFILE_AGE_SQL}      AS profile_age,
                     COALESCE({_NEW_CANDIDATE_SQL}, FALSE) AS is_new_candidate,
                     -- EXISTS, not a LEFT JOIN: old_profile_reviews is UNIQUE on
@@ -423,6 +443,23 @@ async def ranked_candidates(
                 LEFT JOIN pfi ON pfi.link_id = l.id
                 LEFT JOIN functional_skills_reports rep
                        ON rep.job_candidate_link_id = l.id
+                LEFT JOIN LATERAL (
+                    -- `sess`, not `conv`: `_NEW_CANDIDATE_SQL` already uses
+                    -- `conv` for its own scalar subquery over this table, and
+                    -- two aliases one shadowing the other is a review trap.
+                    SELECT ac.mode, ac.status
+                    FROM assessment_conversations ac
+                    WHERE ac.job_candidate_link_id = l.id
+                    ORDER BY ac.created_at DESC, ac.id DESC
+                    LIMIT 1
+                ) sess ON TRUE
+                LEFT JOIN LATERAL (
+                    SELECT vr.status
+                    FROM video_recordings vr
+                    WHERE vr.job_candidate_link_id = l.id
+                    ORDER BY vr.created_at DESC, vr.id DESC
+                    LIMIT 1
+                ) vid ON TRUE
                 WHERE l.job_id = :job_id {archived_filter} {age_filter} {arrival}
                 ORDER BY {order_by_clause(grade)}
                 LIMIT :limit OFFSET :offset
@@ -502,6 +539,27 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
         # The PPI Report button is only actionable once a report exists.
         "has_report": row["report_id"] is not None,
         "report_ready_at": row["report_ready_at"],
+        # ── Assessment/video metadata (2026-09-05 dashboard/video spec) ──────
+        # Words derived server-side from row presence alone; the query above
+        # touched no media and this payload carries no score and no internal
+        # lifecycle identifier beyond the raw mode value the UI already knows.
+        # `.get()` rather than indexing: the absent-key state IS the honest
+        # empty state (no session, no recording), so a caller holding a
+        # pre-existing row shape reads "Not started" / "No recording" rather
+        # than crashing.
+        "assessment_mode": row.get("assessment_mode"),
+        "assessment_mode_label": video_access.mode_label(row.get("assessment_mode")),
+        "prism_report_status": video_access.prism_status_word(
+            has_report=row["report_id"] is not None,
+            conversation_status=row.get("conversation_status"),
+        ),
+        "proctoring_report_status": video_access.proctoring_status_word(
+            has_proctoring_report=bool(row.get("has_proctoring_report")),
+            has_proctoring_session=bool(row.get("has_proctoring_session")),
+        ),
+        "video_status": video_access.video_status_word(
+            row.get("video_recording_status")
+        ),
         # Old Profile / New Profile. Presentation and billing only: an Old
         # Profile is ranked, listed and openable exactly like a new one.
         "profile_age": row["profile_age"],

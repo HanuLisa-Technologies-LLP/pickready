@@ -119,6 +119,10 @@ class PortalJobOut(BaseModel):
     department: str | None
     level: str | None
     company_name: str | None
+    #: Slug of the employer's PUBLIC page (/employers/{slug}), when one is
+    #: visible; None when the page is hidden, so the portal never links to a
+    #: URL that would 404 (2026-09-05 add-features spec).
+    company_slug: str | None = None
     status: JobStatus
     #: Canonical JD column (jobs.jd_json). Defaults to {} so a legacy row with
     #: a NULL JD serializes as an empty object rather than failing validation.
@@ -186,6 +190,8 @@ class ApplicationOut(BaseModel):
     job_id: uuid.UUID
     job_title: str
     company_name: str | None
+    #: Slug of the employer's PUBLIC page, same contract as PortalJobOut.
+    company_slug: str | None = None
     applied_at: datetime
     # Latest pipeline status; None means still in review.
     #
@@ -286,3 +292,74 @@ class MarkUpdatesReadIn(BaseModel):
 
 class ApplicationsOut(BaseModel):
     applications: list[ApplicationOut]
+
+
+# ── Background verification (add-features spec 2026-09-05) ──────────────────
+#
+# Candidate-owned surface: the candidate names up to two previous employers'
+# departmental mailboxes, watches each inquiry's status in words, reads the
+# parsed reply, and controls per-tenant sharing. No score and no number is
+# involved anywhere in this feature; every state is a word.
+
+
+class BGVInquiryCreateIn(BaseModel):
+    """One previous employer and their departmental mailbox."""
+
+    employer_name: str = Field(min_length=2, max_length=200)
+    departmental_email: str = Field(max_length=320)
+
+    @field_validator("employer_name", "departmental_email")
+    @classmethod
+    def _strip(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+
+class BGVShareConsentOut(BaseModel):
+    tenant_id: uuid.UUID
+    #: The employer's display name, so the card labels the toggle in words.
+    tenant_name: str | None = None
+    consented_at: datetime
+
+
+class BGVInquiryOut(BaseModel):
+    id: uuid.UUID
+    employer_name: str
+    departmental_email: str
+    #: matched | mismatched | indeterminate. Provenance, never a gate.
+    domain_match_result: str
+    #: collected | dispatched | dispatch_failed | response_received |
+    #: parsed | parse_failed
+    status: str
+    inquiry_sent_at: datetime | None
+    response_received_at: datetime | None
+    #: Exactly the seven spec fields once parsed, otherwise None. The raw
+    #: reply email is never serialized to anyone.
+    parsed_fields: dict | None = None
+    #: Tenants this inquiry's result is currently shared with.
+    consents: list[BGVShareConsentOut] = Field(default_factory=list)
+
+
+class BGVShareableTenantOut(BaseModel):
+    """A tenant the candidate has an application with, i.e. one they may
+    grant or revoke BGV visibility for."""
+
+    tenant_id: uuid.UUID
+    tenant_name: str | None = None
+
+
+class BGVListOut(BaseModel):
+    inquiries: list[BGVInquiryOut]
+    shareable_tenants: list[BGVShareableTenantOut]
+    #: True while the candidate may still add another inquiry (the spec
+    #: collects the previous TWO employers).
+    can_add: bool
+
+
+class BGVConsentIn(BaseModel):
+    """Grant or revoke visibility of ONE inquiry to ONE tenant."""
+
+    tenant_id: uuid.UUID
+    granted: bool

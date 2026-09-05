@@ -30,9 +30,13 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 # libpq5 is the runtime half of libpq-dev; curl is kept for container-level
-# health probing. Neither pulls in a compiler.
+# health probing. Neither pulls in a compiler. ffmpeg (which ships ffprobe) is
+# the video-interview processing dependency (dual-mode spec section 6): audio
+# extraction and the H.264/AAC compression both shell out to it, and
+# `services/video/processing.py` reports an honest failure when the binary is
+# missing rather than pretending the step ran.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 curl \
+    libpq5 curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

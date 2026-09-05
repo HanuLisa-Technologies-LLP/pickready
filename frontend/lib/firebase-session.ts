@@ -110,6 +110,29 @@ export function friendlyAuthError(err: unknown): string | null {
     case "auth/popup-blocked":
       return "Your browser blocked the sign-in popup. Allow popups and try again.";
 
+    // The serving origin is not in Firebase Auth's authorized-domains list.
+    // This is an OPERATOR fault, never the user's: telling them to "check
+    // their details" (the default below) sends them round the login form for
+    // a failure no retyping can fix. Production hit exactly this on
+    // 2026-09-05, when the apex readypick.ai was serving traffic while only
+    // www.readypick.ai had been authorized. The console line names the origin
+    // so the next operator can see the mismatch in one glance; no token or
+    // account information is ever logged.
+    case "auth/unauthorized-domain":
+      console.error(
+        `google-sign-in failed: ${code} for origin ${window.location.origin}. ` +
+          "Add this origin to Firebase Authentication > Settings > Authorized domains."
+      );
+      return "Google sign-in is currently unavailable. Please try again.";
+
+    // Provider misconfiguration or a transient Firebase-side fault. Same
+    // shape: not the user's fault, so the copy says unavailable, not invalid.
+    case "auth/internal-error":
+    case "auth/invalid-api-key":
+    case "auth/configuration-not-found":
+      console.error(`google-sign-in failed: ${code}`);
+      return "Google sign-in is currently unavailable. Please try again.";
+
     // Newer Firebase collapses wrong-password / user-not-found into this.
     case "auth/invalid-credential":
     case "auth/wrong-password":

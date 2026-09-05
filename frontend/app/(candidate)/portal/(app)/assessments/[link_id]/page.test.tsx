@@ -40,6 +40,30 @@ vi.mock("@/components/assessment/assessment-conversation", () => ({
   ),
 }));
 
+// The page now asks the server where the session stands (mode, consent)
+// before mounting anything (dual-mode spec section 2). A session already
+// consented in the conversational mode goes straight into the assessment,
+// which is the state these wiring tests exercise; the mode and consent
+// screens have their own components.
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    apiGet: vi.fn().mockResolvedValue({
+      mode: "conversational",
+      mode_frozen: true,
+      consented: true,
+      consent: {
+        assessment_mode: "conversational",
+        text: "Consent text from the server.",
+        consent_version: "test",
+        privacy_policy_version: "test",
+        terms_version: "test",
+      },
+    }),
+  };
+});
+
 const STUB_BRIDGE: ProctoringBridge = {
   status: "active",
   sessionId: "ps-1",
@@ -85,20 +109,21 @@ describe("candidate assessment progress", () => {
 });
 
 describe("the assessment page", () => {
-  it("mounts the conversation INSIDE the proctoring shell, never beside it", () => {
+  it("mounts the conversation INSIDE the proctoring shell, never beside it", async () => {
     // Proctoring is mandatory (spec principle P4). A page that rendered the
     // conversation outside the shell would be an unmonitored assessment, and
     // it would look identical on screen, so containment is what is asserted
     // rather than mere presence.
     render(<UnifiedAssessmentPage />);
-    const shell = screen.getByTestId("proctoring-shell");
-    const conversation = screen.getByTestId("assessment-conversation");
+    const shell = await screen.findByTestId("proctoring-shell");
+    const conversation = await screen.findByTestId("assessment-conversation");
     expect(shell.contains(conversation)).toBe(true);
   });
 
-  it("hands both halves the same application", () => {
+  it("hands both halves the same application", async () => {
     render(<UnifiedAssessmentPage />);
-    expect(screen.getByTestId("proctoring-shell").getAttribute("data-link-id")).toBe("link-1");
+    const shell = await screen.findByTestId("proctoring-shell");
+    expect(shell.getAttribute("data-link-id")).toBe("link-1");
     expect(screen.getByText("Conversation for link-1")).toBeTruthy();
   });
 });

@@ -194,13 +194,24 @@ def test_smtp_settings_only_accept_gmail() -> None:
 
 def test_no_otp_copy_reaches_any_portal() -> None:
     """Firebase owns authentication. The MSG91 SMS send-path is retained as a
-    feature (claude.md rule 2) but must not appear as a login step in any UI."""
+    feature (claude.md rule 2) but must not appear as a login step in any UI.
+
+    NARROWED, NOT REMOVED (Corporate Email System spec, 2026-09-05): a LOGIN
+    OTP stays banned everywhere. The one sanctioned OTP surface is corporate
+    SENDER MAILBOX verification (spec sections 3 and 4), which proves a client
+    controls a business mailbox and authenticates nobody. That surface lives
+    in exactly one component, exempted by name below; any other file carrying
+    OTP copy is still an offender."""
     pattern = re.compile(r"\botp\b|one[- ]time password|verification code", re.IGNORECASE)
     offenders: list[str] = []
     for path in _frontend_sources():
         # The legacy input component is retained but must stay unreferenced;
         # that is asserted separately below.
         if path.name == "otp-input.tsx":
+            continue
+        # The sender mailbox-verification dialog (2026-09-05 spec). It is a
+        # settings surface behind manage_email_senders, not a login step.
+        if path.name == "email-senders-card.tsx":
             continue
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()

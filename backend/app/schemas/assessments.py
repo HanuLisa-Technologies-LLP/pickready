@@ -347,6 +347,12 @@ class FunctionalReportOut(NumberFreeDelivery):
     #: Reports are immutable. Advertised in the payload so the UI never has to
     #: infer it in order to hide edit/delete affordances.
     immutable: bool = True
+    #: Whether the candidate consented to their assessment being retained for
+    #: future jobs (Consent & Privacy spec, 2026-09-05): Download enabled if
+    #: Yes, View-only if No or never asked. Advertised here so the UI hides
+    #: the Download control instead of offering a button the PDF route will
+    #: refuse with 403. Viewing is not gated by this flag.
+    report_download_allowed: bool = False
 
 
 class AnswerBehaviourIn(BaseModel):
@@ -435,6 +441,10 @@ class ConversationOut(BaseModel):
     conversation_id: uuid.UUID
     #: active | completed | terminated
     status: str
+    #: Which input mechanism this session uses (dual-mode spec section 2):
+    #: 'conversational' or 'video_interview'. Defaulted so every constructor
+    #: that predates dual mode stays truthful about its own rows.
+    mode: str = "conversational"
     prompt: str | None
     progress_label: str
     answered_questions: int
@@ -583,3 +593,94 @@ class InvitationResolveOut(BaseModel):
     #: Never a reason to skip the assessment: under PPI the framework is
     #: generated from each job's own JD, so nothing is portable between jobs.
     recent_prior_report: bool = False
+
+
+# ── Dual-mode assessment (2026-09-05 spec sections 2-5, 16) ──────────────────
+
+
+class AssessmentModeIn(BaseModel):
+    """The candidate's mode choice, made before consent and before starting."""
+
+    mode: str
+
+    @field_validator("mode")
+    @classmethod
+    def _known_mode(cls, value: str) -> str:
+        from app.models.dual_mode import ASSESSMENT_MODES
+
+        if value not in ASSESSMENT_MODES:
+            raise ValueError(f"unknown assessment mode {value!r}")
+        return value
+
+
+class ConsentTermsOut(BaseModel):
+    """One mode's consent screen, exactly as configured (spec 3.2, 3.3).
+
+    The versions travel with the text so the client shows what the server will
+    stamp; the row written on acceptance re-reads the settings server-side and
+    never trusts these echoes back.
+    """
+
+    assessment_mode: str
+    text: str
+    consent_version: str
+    privacy_policy_version: str
+    terms_version: str
+
+
+class ModeStateOut(BaseModel):
+    """Where this assessment session stands in the mode/consent flow."""
+
+    mode: str
+    #: True once the assessment has begun (or a recording exists): the mode
+    #: can no longer change, because the records already written belong to it.
+    mode_frozen: bool
+    #: Whether a consent row exists for THIS session in THIS mode.
+    consented: bool
+    #: The consent terms for the CURRENT mode.
+    consent: ConsentTermsOut
+
+
+class VideoQuestionOut(BaseModel):
+    """One question of the video interview, in served order."""
+
+    ordinal: int
+    #: The text the candidate reads aloud and answers in speech.
+    prompt: str
+    #: The format detail (candidate view only; the answer key never crosses).
+    question: QuestionOut
+
+
+class VideoStartOut(BaseModel):
+    """The video interview, opened: the recording session and the questions."""
+
+    conversation_id: uuid.UUID
+    recording_id: uuid.UUID
+    status: str
+    questions: list[VideoQuestionOut]
+    #: Ceilings the recorder must respect, served so the client and server
+    #: never disagree about a number (the proctoring config rule, applied here).
+    max_upload_bytes: int
+    max_duration_seconds: int
+
+
+class VideoMarkIn(BaseModel):
+    """The next-question control: the question now on screen."""
+
+    question_id: uuid.UUID
+
+
+class VideoRecordingStatusOut(BaseModel):
+    """The candidate's honest view of their recording (spec 16).
+
+    `status` is the lifecycle state, `message` is the plain-language account
+    of it. No score, no grade, no internal identifier beyond the recording's
+    own id, and the message never pretends a failed step ran.
+    """
+
+    recording_id: uuid.UUID
+    status: str
+    message: str
+    #: True only for `upload_failed`, where the fix is the candidate's own
+    #: re-upload; every other failure is retried server-side by staff.
+    can_retry_upload: bool = False

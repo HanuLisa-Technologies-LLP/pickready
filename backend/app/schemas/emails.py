@@ -83,6 +83,11 @@ class EmailSendItem(BaseModel):
 class EmailSendIn(BaseModel):
     email_type: EmailType
     messages: list[EmailSendItem] = Field(min_length=1, max_length=50)
+    #: Optional ACTIVE corporate sender to send under (Corporate Email System
+    #: spec section 6). Validated at queue time in api/emails AND re-validated
+    #: at send time in workers/tasks, so a revocation between the two still
+    #: takes effect (spec section 11). None keeps the platform default sender.
+    sender_id: uuid.UUID | None = None
 
 
 class EmailLogOut(BaseModel):
@@ -101,6 +106,12 @@ class EmailLogOut(BaseModel):
     generated_by_ai: bool
     created_at: datetime
     sent_at: datetime | None
+    # Delivery tracking (Corporate Email System spec section 8). All optional
+    # so pre-0080 rows and SMTP deployments serialise unchanged.
+    sender_id: uuid.UUID | None = None
+    delivered_at: datetime | None = None
+    bounced_at: datetime | None = None
+    complained_at: datetime | None = None
 
 
 class EmailSendOut(BaseModel):

@@ -181,6 +181,8 @@ TaskType = Literal[
     "format_composition",
     "answer_evaluation",
     "fill_blank_equivalence",
+    # ── Background verification (add-features spec 2026-09-05) ──
+    "bgv_reply_extraction",
     # ── Legacy role hints (ESD §8.4), retained verbatim so every pre-existing
     #    caller keeps its established behaviour ──
     "rerank",
@@ -265,6 +267,10 @@ MODEL_FOR_TASK: dict[str, str] = {
     "rerank": MODEL_LUNA,
     # Resume parsing and field extraction.
     "extraction": MODEL_LUNA,
+    # BGV employer-reply field extraction (add-features spec 2026-09-05).
+    # Narrow and mechanical, exactly like `extraction`: it copies what the
+    # reply states into seven keys and must not evaluate the candidate.
+    "bgv_reply_extraction": MODEL_LUNA,
 }
 
 #: An unlisted task is a programming error, not a default. Kept as an explicit
@@ -364,6 +370,8 @@ TASK_TIMEOUTS: dict[str, float] = {
     "triangulation": 60.0,
     "report_synthesis": 120.0,
     "extraction": 60.0,
+    # Background: one structured extraction over one email reply.
+    "bgv_reply_extraction": 60.0,
     # Background. One reasoning pass over a reduced evidence pack.
     "project_evidence": 60.0,
     # Background: one structured payload, or one batch of evidence anchors,
@@ -406,6 +414,7 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "triangulation": 140.0,
     "report_synthesis": 280.0,
     "extraction": 140.0,
+    "bgv_reply_extraction": 140.0,
     "project_evidence": 140.0,
     "format_composition": 140.0,
     "answer_evaluation": 140.0,
@@ -452,6 +461,8 @@ TASK_MAX_TOKENS: dict[str, int] = {
     # Seven report sections in one response -- the largest thing we ask for.
     "report_synthesis": 8192,
     "extraction": 8192,
+    # Seven short fields from one email reply.
+    "bgv_reply_extraction": 1024,
     "project_evidence": 4096,
     "format_composition": 4096,
     "answer_evaluation": 4096,
@@ -486,6 +497,7 @@ TASK_TEMPERATURE: dict[str, float] = {
     "report_synthesis": 0.0,        # states the grades a client reads
     "rerank": 0.0,                  # orders candidates
     "extraction": 0.0,
+    "bgv_reply_extraction": 0.0,
     "claim_extraction": 0.0,
     "evidence_tiering": 0.0,
     "dimension_evaluation": 0.0,    # THE grade. Never above zero.
@@ -550,6 +562,7 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "triangulation": 3,
     "report_synthesis": 3,
     "extraction": 3,
+    "bgv_reply_extraction": 3,
     "project_evidence": 3,
     "format_composition": 3,
     "answer_evaluation": 3,

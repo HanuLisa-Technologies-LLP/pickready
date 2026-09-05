@@ -56,6 +56,7 @@ from app.schemas.portal import (
 from app.services import application_validation
 from app.services import candidate_updates
 from app.services import candidate_profile_form as profile_form
+from app.services import employer_pages
 from app.services import hiring_pipeline
 from app.services import job_posting
 from app.services import job_relevance
@@ -290,6 +291,10 @@ def _portal_job_out(
         department=job.department,
         level=job.level,
         company_name=tenant.name if tenant else None,
+        # The employer-page link travels with the card only while the page is
+        # actually served, so the portal never renders a link that 404s
+        # (2026-09-05 add-features spec, "Employer Page & Content").
+        company_slug=employer_pages.visible_slug(tenant),
         status=job.status,
         jd_json=job.jd_json or {},
         assessment_grade=job.assessment_grade,
@@ -673,6 +678,102 @@ async def save_profile_form(
         metadata={"answered": len(answers), "complete": profile_form.is_complete(answers)},
     )
     return _profile_form_out(candidate, await _main_resume_profile(session, candidate))
+
+
+# ── Data-retention choices (Consent & Privacy spec, 2026-09-05) ─────────────
+#
+# Two consents the candidate controls from My Profile, stored on their own
+# candidate record beside the databank consent they extend. True means retain
+# for future jobs, False means this job only, and a consent that was never
+# given reads as "this job only": the client portal's Download control is
+# enabled only on an explicit Yes (services/retention_consent.py is the one
+# reader of that rule).
+
+
+class RetentionConsentsOut(BaseModel):
+    """The candidate's current choices, with when each was last made.
+    A null value means the question has not been answered yet."""
+
+    retain_assessment: bool | None = None
+    retain_assessment_updated_at: datetime | None = None
+    retain_video: bool | None = None
+    retain_video_updated_at: datetime | None = None
+
+
+class RetentionConsentsIn(BaseModel):
+    """Set one or both choices. A field left out is left unchanged, so the
+    two toggles can save independently."""
+
+    retain_assessment: bool | None = None
+    retain_video: bool | None = None
+
+
+def _retention_consents_out(candidate: Candidate) -> RetentionConsentsOut:
+    return RetentionConsentsOut(
+        retain_assessment=candidate.retain_assessment_consent,
+        retain_assessment_updated_at=candidate.retain_assessment_consented_at,
+        retain_video=candidate.retain_video_consent,
+        retain_video_updated_at=candidate.retain_video_consented_at,
+    )
+
+
+@router.get("/me/retention-consents", response_model=RetentionConsentsOut)
+async def get_retention_consents(
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> RetentionConsentsOut:
+    """The candidate's own data-retention choices, for the My Profile card."""
+    candidate = await _candidate_for_user(session, user)
+    return _retention_consents_out(candidate)
+
+
+@router.put("/me/retention-consents", response_model=RetentionConsentsOut)
+async def set_retention_consents(
+    body: RetentionConsentsIn,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> RetentionConsentsOut:
+    """Record the candidate's retention choices, stamping when each was made.
+
+    Only the fields the request actually sent are written (`model_fields_set`),
+    so saving one toggle never rewrites the other's timestamp. An explicit
+    null is refused rather than stored: once a candidate has been asked, the
+    honest states are Yes and No, and "unask me" is not one of them.
+    """
+    candidate = await _candidate_for_user(session, user)
+    fields = body.model_fields_set
+    now = datetime.now(timezone.utc)
+    changed: list[str] = []
+    if "retain_assessment" in fields:
+        if body.retain_assessment is None:
+            raise HTTPException(
+                status_code=422,
+                detail="retain_assessment must be true or false",
+            )
+        candidate.retain_assessment_consent = body.retain_assessment
+        candidate.retain_assessment_consented_at = now
+        changed.append("retain_assessment")
+    if "retain_video" in fields:
+        if body.retain_video is None:
+            raise HTTPException(
+                status_code=422,
+                detail="retain_video must be true or false",
+            )
+        candidate.retain_video_consent = body.retain_video
+        candidate.retain_video_consented_at = now
+        changed.append("retain_video")
+    if changed:
+        await session.flush()
+        await audit(
+            session,
+            tenant_id=None,
+            actor_user_id=user.user_id,
+            action="candidate_retention_consents_saved",
+            target_type="candidate",
+            target_id=candidate.id,
+            metadata={"fields": changed},
+        )
+    return _retention_consents_out(candidate)
 
 
 @router.put("/me/resume", response_model=StoredResumeOut)
@@ -1598,7 +1699,9 @@ async def my_applications(
             select(
                 JobCandidateLink,
                 Job,
-                Tenant.name,
+                # The whole Tenant row rather than Tenant.name: the employer
+                # page link needs slug + visibility from the same joined row.
+                Tenant,
                 AssessmentConversation,
                 # EXISTS rather than a join: a link is UNIQUE on its report
                 # today, but joining a table that could ever return two rows
@@ -1631,7 +1734,7 @@ async def my_applications(
     )
 
     out: list[ApplicationOut] = []
-    for link, job, company_name, conversation, report_ready, latest_status in rows:
+    for link, job, tenant, conversation, report_ready, latest_status in rows:
         window = job_posting.describe(job) if job else None
         can_edit = job is not None and job_posting.can_edit_application(
             applied_at=link.created_at,
@@ -1653,7 +1756,8 @@ async def my_applications(
             link_id=link.id,
             job_id=link.job_id,
             job_title=job.title if job else "",
-            company_name=company_name,
+            company_name=tenant.name if tenant else None,
+            company_slug=employer_pages.visible_slug(tenant),
             applied_at=link.created_at,
             stage=legacy_stage,
             assessment_status=job.assessment_status if job else None,
@@ -1791,3 +1895,318 @@ async def edit_application(
         assessment_required=False,
         assessment_notice=None,
     )
+
+
+# ── Background verification (add-features spec 2026-09-05) ──────────────────
+#
+# Candidate-owned, candidate-driven. The candidate names up to two previous
+# employers' departmental mailboxes, ReadyPick sends ONE fixed-template
+# inquiry per explicit candidate action, and the parsed reply lands on the
+# candidate's own profile. An employer tenant sees the result only through a
+# `bgv_share_consents` row the candidate wrote for that specific tenant
+# (api/candidates.get_bgv_results is the one reader). Following up with an
+# unresponsive employer is the candidate's own responsibility by design, so
+# there is no reminder sweep and no re-send of a successfully dispatched
+# inquiry.
+
+from app.models.bgv import (  # noqa: E402 -- section-scoped, matching the projects section style
+    DISPATCHABLE_STATUSES as _BGV_DISPATCHABLE,
+    MAX_INQUIRIES_PER_CANDIDATE as _BGV_MAX,
+    STATUS_DISPATCH_FAILED as _BGV_DISPATCH_FAILED,
+    BGVInquiry,
+    BGVShareConsent,
+)
+from app.schemas.portal import (  # noqa: E402
+    BGVConsentIn,
+    BGVInquiryCreateIn,
+    BGVInquiryOut,
+    BGVListOut,
+    BGVShareConsentOut,
+    BGVShareableTenantOut,
+)
+from app.services import bgv as bgv_service  # noqa: E402
+
+
+async def _bgv_shareable_tenants(
+    session: AsyncSession, candidate: Candidate
+) -> list[BGVShareableTenantOut]:
+    """Tenants where this candidate has an application (a job link), which is
+    the whole universe a share consent may target: sharing with an employer
+    the candidate has never applied to would be consent with no consumer."""
+    rows = (
+        await session.execute(
+            select(JobCandidateLink.tenant_id, Tenant.name)
+            .join(Tenant, Tenant.id == JobCandidateLink.tenant_id)
+            .where(JobCandidateLink.candidate_id == candidate.id)
+            .distinct()
+            .order_by(Tenant.name)
+        )
+    ).all()
+    return [
+        BGVShareableTenantOut(tenant_id=tenant_id, tenant_name=name)
+        for tenant_id, name in rows
+    ]
+
+
+async def _bgv_inquiry_out(
+    session: AsyncSession, inquiry: BGVInquiry, tenant_names: dict
+) -> BGVInquiryOut:
+    consents = (
+        await session.execute(
+            select(BGVShareConsent)
+            .where(BGVShareConsent.bgv_inquiry_id == inquiry.id)
+            .order_by(BGVShareConsent.consented_at)
+        )
+    ).scalars().all()
+    return BGVInquiryOut(
+        id=inquiry.id,
+        employer_name=inquiry.employer_name,
+        departmental_email=inquiry.departmental_email,
+        domain_match_result=inquiry.domain_match_result,
+        status=inquiry.status,
+        inquiry_sent_at=inquiry.inquiry_sent_at,
+        response_received_at=inquiry.response_received_at,
+        parsed_fields=inquiry.parsed_fields_json,
+        consents=[
+            BGVShareConsentOut(
+                tenant_id=c.tenant_id,
+                tenant_name=tenant_names.get(c.tenant_id),
+                consented_at=c.consented_at,
+            )
+            for c in consents
+        ],
+    )
+
+
+async def _bgv_list_out(
+    session: AsyncSession, candidate: Candidate
+) -> BGVListOut:
+    inquiries = (
+        await session.execute(
+            select(BGVInquiry)
+            .where(BGVInquiry.candidate_id == candidate.id)
+            .order_by(BGVInquiry.created_at)
+        )
+    ).scalars().all()
+    shareable = await _bgv_shareable_tenants(session, candidate)
+    tenant_names = {t.tenant_id: t.tenant_name for t in shareable}
+    return BGVListOut(
+        inquiries=[
+            await _bgv_inquiry_out(session, i, tenant_names) for i in inquiries
+        ],
+        shareable_tenants=shareable,
+        can_add=len(inquiries) < _BGV_MAX,
+    )
+
+
+@router.get("/me/bgv", response_model=BGVListOut)
+async def list_bgv_inquiries(
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> BGVListOut:
+    """The candidate's own background-verification card: inquiries, their
+    status in words, parsed fields once a reply is extracted, and the
+    per-tenant sharing state."""
+    candidate = await _candidate_for_user(session, user)
+    return await _bgv_list_out(session, candidate)
+
+
+@router.post(
+    "/me/bgv", response_model=BGVListOut, status_code=status.HTTP_201_CREATED
+)
+async def create_bgv_inquiry(
+    body: BGVInquiryCreateIn,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> BGVListOut:
+    """Record one previous employer's departmental mailbox (spec: the
+    previous TWO employers).
+
+    A free/personal provider address is refused at intake: a reply from
+    gmail.com proves a person owns a mailbox, not that a company's HR
+    department answered. The domain-versus-employer-name comparison runs here
+    once, deterministically, and is stored as provenance; a mismatch is
+    recorded, never a block.
+    """
+    candidate = await _candidate_for_user(session, user)
+    existing = (
+        await session.execute(
+            select(func.count())
+            .select_from(BGVInquiry)
+            .where(BGVInquiry.candidate_id == candidate.id)
+        )
+    ).scalar_one()
+    if existing >= _BGV_MAX:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Background verification covers your previous two employers, "
+                "both are already recorded"
+            ),
+        )
+    if bgv_service.email_domain(body.departmental_email) is None:
+        raise HTTPException(
+            status_code=422, detail="That does not look like an email address"
+        )
+    if bgv_service.is_free_provider_domain(body.departmental_email):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Please use the company's own departmental mailbox (such as "
+                "hr@ or careers@ on the company domain), not a personal email "
+                "provider"
+            ),
+        )
+    duplicate = (
+        await session.execute(
+            select(BGVInquiry.id).where(
+                BGVInquiry.candidate_id == candidate.id,
+                func.lower(BGVInquiry.departmental_email)
+                == body.departmental_email.lower(),
+            )
+        )
+    ).scalars().first()
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="An inquiry to that mailbox is already recorded",
+        )
+    inquiry = BGVInquiry(
+        id=uuid.uuid4(),
+        candidate_id=candidate.id,
+        employer_name=body.employer_name,
+        departmental_email=body.departmental_email,
+        domain_match_result=bgv_service.domain_match(
+            body.employer_name, body.departmental_email
+        ),
+        reply_token=secrets.token_urlsafe(24),
+    )
+    session.add(inquiry)
+    await session.flush()
+    await audit(
+        session,
+        tenant_id=None,
+        actor_user_id=user.user_id,
+        action="bgv_inquiry_recorded",
+        target_type="bgv_inquiry",
+        target_id=inquiry.id,
+        metadata={"domain_match": inquiry.domain_match_result},
+    )
+    return await _bgv_list_out(session, candidate)
+
+
+@router.post("/me/bgv/{inquiry_id}/dispatch", response_model=BGVListOut)
+async def dispatch_bgv_inquiry(
+    inquiry_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> BGVListOut:
+    """Send (or, after a visible failure, re-send) the inquiry email.
+
+    Only `collected` and `dispatch_failed` rows are dispatchable: a second
+    email to an HR mailbox that already received one reads as spam and burns
+    the candidate's credibility, so re-sending a dispatched inquiry is a 409,
+    not a convenience. An enqueue failure is recorded on the row as
+    `dispatch_failed` and reported as an error, never swallowed.
+    """
+    candidate = await _candidate_for_user(session, user)
+    inquiry = await session.get(BGVInquiry, inquiry_id)
+    if inquiry is None or inquiry.candidate_id != candidate.id:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+    if inquiry.status not in _BGV_DISPATCHABLE:
+        raise HTTPException(
+            status_code=409, detail="This inquiry has already been sent"
+        )
+    try:
+        dispatch("pickready.send_bgv_inquiry", args=[str(inquiry.id)])
+    except Exception as exc:
+        # The dispatcher RAISES on an enqueue failure (claude.md 2026-09-05).
+        # Record it where the candidate can see it, then surface the error.
+        inquiry.status = _BGV_DISPATCH_FAILED
+        inquiry.updated_at = datetime.now(timezone.utc)
+        await session.flush()
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "The inquiry could not be queued for delivery, please try "
+                "again"
+            ),
+        ) from exc
+    await audit(
+        session,
+        tenant_id=None,
+        actor_user_id=user.user_id,
+        action="bgv_inquiry_dispatch_requested",
+        target_type="bgv_inquiry",
+        target_id=inquiry.id,
+        metadata={},
+    )
+    return await _bgv_list_out(session, candidate)
+
+
+@router.put("/me/bgv/{inquiry_id}/consents", response_model=BGVListOut)
+async def set_bgv_share_consent(
+    inquiry_id: uuid.UUID,
+    body: BGVConsentIn,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> BGVListOut:
+    """Grant or revoke ONE tenant's visibility of ONE inquiry's result.
+
+    Grantable tenants are exactly those where the candidate has an
+    application. Revoking deletes the consent row, and the recruiter surface
+    reads the table live, so a revocation takes effect on the next request.
+    """
+    candidate = await _candidate_for_user(session, user)
+    inquiry = await session.get(BGVInquiry, inquiry_id)
+    if inquiry is None or inquiry.candidate_id != candidate.id:
+        raise HTTPException(status_code=404, detail="Inquiry not found")
+    linked = (
+        await session.execute(
+            select(JobCandidateLink.id)
+            .where(
+                JobCandidateLink.candidate_id == candidate.id,
+                JobCandidateLink.tenant_id == body.tenant_id,
+            )
+            .limit(1)
+        )
+    ).scalars().first()
+    if linked is None:
+        raise HTTPException(
+            status_code=422,
+            detail="You can only share with an employer you have applied to",
+        )
+    consent = (
+        await session.execute(
+            select(BGVShareConsent).where(
+                BGVShareConsent.bgv_inquiry_id == inquiry.id,
+                BGVShareConsent.tenant_id == body.tenant_id,
+            )
+        )
+    ).scalars().first()
+    if body.granted and consent is None:
+        session.add(
+            BGVShareConsent(
+                id=uuid.uuid4(),
+                bgv_inquiry_id=inquiry.id,
+                tenant_id=body.tenant_id,
+                consented_at=datetime.now(timezone.utc),
+            )
+        )
+    elif not body.granted and consent is not None:
+        await session.delete(consent)
+    await session.flush()
+    await audit(
+        session,
+        tenant_id=body.tenant_id,
+        actor_user_id=user.user_id,
+        action=(
+            "bgv_share_consent_granted"
+            if body.granted
+            else "bgv_share_consent_revoked"
+        ),
+        target_type="bgv_inquiry",
+        target_id=inquiry.id,
+        metadata={"tenant_id": str(body.tenant_id)},
+    )
+    return await _bgv_list_out(session, candidate)

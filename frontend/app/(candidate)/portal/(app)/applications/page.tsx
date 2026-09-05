@@ -20,6 +20,7 @@
 // go hunting for it.
 
 import * as React from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { CalendarClock, FileText, ListChecks, PencilLine } from "lucide-react";
 
@@ -62,6 +63,8 @@ interface ApplicationRow {
   job_id: string;
   job_title: string;
   company_name?: string | null;
+  /** Public employer page slug; null whenever that page is not served. */
+  company_slug?: string | null;
   applied_at?: string | null;
   status: PipelineStage;
   stage_label: string;
@@ -170,8 +173,18 @@ function ApplicationCard({
               {application.job_title || "Untitled role"}
             </button>
             <p className="mt-1 text-sm leading-6">
-              {application.company_name ?? "-"}, applied{" "}
-              {formatDate(application.applied_at)}
+              {application.company_name && application.company_slug ? (
+                // Links to the public employer page only when it is served.
+                <Link
+                  href={`/employers/${application.company_slug}`}
+                  className="font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  {application.company_name}
+                </Link>
+              ) : (
+                (application.company_name ?? "-")
+              )}
+              , applied {formatDate(application.applied_at)}
             </p>
           </div>
           <StageBadge status={application.status} />

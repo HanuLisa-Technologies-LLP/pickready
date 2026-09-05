@@ -136,6 +136,21 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "{{outreach_url}}\n\n"
         "Regards,\n{{company_name}} People Team",
     ),
+    # api/email_senders.py: the corporate sender mailbox-ownership code
+    # (Corporate Email System spec sections 3 and 4). This is NOT a login OTP;
+    # it proves a client's POC controls the mailbox being registered as an
+    # automated sender. The code is in the context and is never logged.
+    "sender_verification": (
+        "Your ReadyPick sender verification code",
+        "Hello {{sender_name}},\n\n"
+        "{{company_name}} is registering this mailbox as an authorized sender "
+        "for automated recruitment email on ReadyPick.\n\n"
+        "Your verification code is {{otp_code}}. It is valid for "
+        "{{ttl_minutes}} minutes.\n\n"
+        "If you were not expecting this, you can ignore this email and "
+        "nothing will change.\n\n"
+        "Regards,\nReadyPick",
+    ),
     # api/admin.py, when the platform owner creates a customer.
     "client_invite": (
         "Your {{tenant_name}} workspace on ReadyPick is ready",
@@ -160,6 +175,35 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "ReadyPick never asks you to set a separate password.\n\n"
         "This link expires on {{expires_on}}.\n\n"
         "Regards,\nThe {{company_name}} team",
+    ),
+    # workers/tasks.py `pickready.send_bgv_inquiry` (add-features spec
+    # 2026-09-05, Candidate Verification). A FIXED template by design: the
+    # inquiry states facts and asks for facts, no generation involved. The
+    # reference line carries the reply token the inbound-email webhook
+    # matches the employer's reply on (api/verification.py), so it must stay
+    # in the body in the exact "Reference: BGV-<token>" form.
+    "bgv_inquiry": (
+        "Employment verification request regarding {{candidate_name}}",
+        "Dear HR team at {{employer_name}},\n\n"
+        "{{candidate_name}} has listed {{employer_name}} as a previous "
+        "employer on their ReadyPick candidate profile and has asked us to "
+        "request a standard employment verification. Could you please reply "
+        "to this email confirming the following, to the extent your policy "
+        "allows:\n\n"
+        "- Employment duration (dates of joining and exit)\n"
+        "- Designation held\n"
+        "- Reporting manager\n"
+        "- Compensation last drawn\n"
+        "- Whether exit formalities were completed\n"
+        "- No-objection certificate status\n"
+        "- Relieving method (resignation, termination, or contract end)\n\n"
+        "Please keep the reference line below in your reply so it reaches "
+        "the right record:\n\n"
+        "Reference: BGV-{{reply_token}}\n\n"
+        "This request was initiated by the candidate. If you are not the "
+        "right contact, we would appreciate a forward to the appropriate "
+        "team.\n\n"
+        "Regards,\nReadyPick Verification",
     ),
 }
 

@@ -72,6 +72,7 @@ from app.services import job_posting
 from app.services import candidate_updates
 from app.services import hiring_pipeline
 from app.services import rbac
+from app.services import status_hygiene
 from app.services import telemetry_events
 from app.services.audit import audit
 from app.workers import agent_client
@@ -962,6 +963,32 @@ async def _notify_applicants_of_closure(session: AsyncSession, job: Job) -> None
             "job_id": str(job.id),
         },
     )
+
+
+@router.get(
+    "/setup/status-hygiene",
+    response_model=status_hygiene.StatusHygieneSummary,
+)
+async def status_hygiene_precheck(
+    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> status_hygiene.StatusHygieneSummary:
+    """Operational Hygiene pre-check for new Job Setup.
+
+    Provenance: add-features-specdoc (2026-09-05), "Operational Hygiene".
+    Lists this tenant's earlier jobs (closed, or past their posting window)
+    that still carry applications in a non-terminal pipeline stage, so the
+    Create Job screen can remind the team to finish deciding them.
+
+    DELIBERATELY ADVISORY. The locked owner decision is a strong reminder and
+    never a hard block: an urgent hire must not stall on unrelated old-job
+    cleanup. Nothing here is wired into POST /jobs as a gate, and nothing may
+    be -- a non-empty summary changes what the recruiter is TOLD, never what
+    they may do. Behind CREATE_JOB because it exists solely to precede that
+    action, and inventing a new capability for a read the creator already
+    implies would be a seeding migration for nothing.
+    """
+    return await status_hygiene.unresolved_summary(session, user.tenant_id)
 
 
 @router.post("/{job_id}/archive", response_model=JobOut)

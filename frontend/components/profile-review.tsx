@@ -14,6 +14,7 @@ import {
   FunctionalSkillsReportView,
   type FunctionalReport,
 } from "@/components/functional-skills-report";
+import { BgvResultsPanel } from "@/components/bgv-results-panel";
 import { ProjectEvidencePanel } from "@/components/project-evidence-panel";
 import { ResumeViewer, describeResumeUrl } from "@/components/resume-viewer";
 import { SendOutreachModal } from "@/components/send-outreach-modal";
@@ -270,6 +271,7 @@ export function ProfileReview({
                   <TabsTrigger value="scores">AI assessment</TabsTrigger>
                   <TabsTrigger value="resume">Resume</TabsTrigger>
                   <TabsTrigger value="projects">Projects</TabsTrigger>
+                  <TabsTrigger value="verification">Verification</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="scores" className="mt-4">
@@ -361,6 +363,13 @@ export function ProfileReview({
                       labelled apart, strength as a word, no original files
                       (none are retained). */}
                   <ProjectEvidencePanel candidateId={selected.candidate.id} />
+                </TabsContent>
+
+                <TabsContent value="verification" className="mt-4">
+                  {/* Consent-gated on the server: an inquiry the candidate
+                      has not shared with this employer arrives as a bare
+                      "Not shared by the candidate" marker. */}
+                  <BgvResultsPanel candidateId={selected.candidate.id} />
                 </TabsContent>
 
               </Tabs>

@@ -65,6 +65,10 @@ EMPLOYER_FORM_FIELDS: list[EmployerFormField] = [
 # Recipient scheme for inbound reply-parsing fallback: verify+<token>@<domain>
 _TOKEN_IN_ADDRESS = re.compile(r"verify\+([A-Za-z0-9_\-]+)@")
 _TOKEN_IN_BODY = re.compile(r"/verification/form/([A-Za-z0-9_\-]{20,})")
+# Background-verification replies (add-features spec 2026-09-05): the inquiry
+# email carries "Reference: BGV-<token>" in its body and asks the employer to
+# keep it in the reply, so the reply (or its quoted original) contains it.
+_BGV_TOKEN_IN_BODY = re.compile(r"BGV-([A-Za-z0-9_\-]{16,64})")
 
 
 @router.post("/outreach", response_model=OutreachOut)
@@ -253,18 +257,61 @@ async def inbound_email_webhook(
         # Fallback: the reply often quotes the original form URL.
         match = _TOKEN_IN_BODY.search(body.text or "")
         token = match.group(1) if match else None
-    if token is None:
-        return InboundEmailOut(matched=False)
+    if token is not None:
+        vr = (
+            await session.execute(
+                select(VerificationRequest).where(VerificationRequest.token == token)
+            )
+        ).scalars().first()
+        if vr is not None and vr.status == VerificationStatus.pending:
+            dispatch(
+                "pickready.parse_verification_reply", args=[str(vr.id), body.text or ""]
+            )
+            return InboundEmailOut(matched=True)
 
-    vr = (
+    return await _match_bgv_reply(session, body.text or "")
+
+
+async def _match_bgv_reply(
+    session: AsyncSession, reply_text: str
+) -> InboundEmailOut:
+    """Route an employer's background-verification reply to its inquiry row
+    (add-features spec 2026-09-05, Candidate Verification).
+
+    The reply is matched on the `BGV-<token>` reference the inquiry email
+    asked the employer to keep. The raw reply is stored on the row FIRST and
+    only then is extraction dispatched, so a failed parse never destroys the
+    evidence it failed on (`pickready.parse_bgv_reply` reads the same text).
+    A reply for a row that is not expecting one -- never dispatched, or
+    already parsed -- is left alone rather than clobbering a good result.
+    """
+    from app.models.bgv import (
+        STATUS_DISPATCHED,
+        STATUS_PARSE_FAILED,
+        STATUS_RESPONSE_RECEIVED,
+        BGVInquiry,
+    )
+
+    match = _BGV_TOKEN_IN_BODY.search(reply_text)
+    if match is None:
+        return InboundEmailOut(matched=False)
+    inquiry = (
         await session.execute(
-            select(VerificationRequest).where(VerificationRequest.token == token)
+            select(BGVInquiry).where(BGVInquiry.reply_token == match.group(1))
         )
     ).scalars().first()
-    if vr is None or vr.status != VerificationStatus.pending:
+    if inquiry is None or inquiry.status not in {
+        STATUS_DISPATCHED,
+        STATUS_RESPONSE_RECEIVED,
+        STATUS_PARSE_FAILED,
+    }:
         return InboundEmailOut(matched=False)
 
-    dispatch(
-        "pickready.parse_verification_reply", args=[str(vr.id), body.text or ""]
-    )
+    now = datetime.now(timezone.utc)
+    inquiry.response_raw = reply_text
+    inquiry.response_received_at = inquiry.response_received_at or now
+    inquiry.status = STATUS_RESPONSE_RECEIVED
+    inquiry.updated_at = now
+    await session.flush()
+    dispatch("pickready.parse_bgv_reply", args=[str(inquiry.id), reply_text])
     return InboundEmailOut(matched=True)

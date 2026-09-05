@@ -315,8 +315,11 @@ async def apply_transition(
     row = (
         await session.execute(
             text(
-                "SELECT id, tenant_id, status FROM job_candidate_links "
-                "WHERE id = :lid"
+                "SELECT l.id, l.tenant_id, l.status, l.job_id, l.candidate_id, "
+                "j.correlation_id "
+                "FROM job_candidate_links l "
+                "LEFT JOIN jobs j ON j.id = l.job_id "
+                "WHERE l.id = :lid"
             ),
             {"lid": str(link_id)},
         )
@@ -352,6 +355,29 @@ async def apply_transition(
         },
     )
     await _record_candidate_update(session, link_id=link_id, status=status)
+    # A FOURTH write, and the same chokepoint argument as the feed row above:
+    # a stage that IS a section 5.1 lifecycle milestone (interview completed,
+    # offer extended, joined) emits its telemetry event here so none of the
+    # six callers can forget. `emit` never raises into this transaction
+    # (2026-09-05 Talent Intelligence spec, section 5.1).
+    from app.services import telemetry_events  # noqa: PLC0415 -- keep import-light
+
+    milestone = telemetry_events.STAGE_MILESTONE_EVENTS.get(status)
+    if milestone is not None:
+        await telemetry_events.emit(
+            session,
+            tenant_id=tenant_id,
+            event_code=milestone,
+            job_id=uuid.UUID(str(row["job_id"])) if row["job_id"] else None,
+            candidate_id=(
+                uuid.UUID(str(row["candidate_id"])) if row["candidate_id"] else None
+            ),
+            job_candidate_link_id=link_id,
+            actor_user_id=actor_user_id,
+            correlation_id=row["correlation_id"],
+            payload={"stage": status, "from_status": previous},
+            occurred_at=now,
+        )
     return TransitionResult(
         link_id=link_id,
         previous=previous,

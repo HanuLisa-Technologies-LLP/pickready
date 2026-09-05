@@ -22,7 +22,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Check, Copy, ExternalLink, Sparkles } from "lucide-react";
+import { AlertTriangle, Check, Copy, ExternalLink, Sparkles, X } from "lucide-react";
 
 import Link from "next/link";
 
@@ -87,6 +87,18 @@ interface CreatedJob {
   public_application_url?: string | null;
 }
 
+/** One earlier job still carrying applications awaiting a status update. */
+interface HygieneJob {
+  job_id: string;
+  title: string;
+  unresolved_count: number;
+}
+
+interface HygieneSummary {
+  jobs: HygieneJob[];
+  total_unresolved: number;
+}
+
 /** Loosely unwrap a possibly-wrapped API payload. */
 function pick<T = Record<string, unknown>>(res: unknown, key: string): T {
   if (res && typeof res === "object" && key in (res as object)) {
@@ -140,6 +152,14 @@ export default function CreateJobPage() {
   const [requirementsComplete, setRequirementsComplete] =
     React.useState<boolean | null>(null);
 
+  // Operational Hygiene pre-check (add-features spec 2026-09-05): earlier
+  // jobs whose applicants still await a status update. A STRONG REMINDER by
+  // locked decision, never a gate: it changes what the recruiter is told, not
+  // what they can submit. A failed fetch renders nothing -- the reminder must
+  // never block or delay creating a job.
+  const [hygiene, setHygiene] = React.useState<HygieneJob[] | null>(null);
+  const [hygieneDismissed, setHygieneDismissed] = React.useState(false);
+
   const [reportingOptions, setReportingOptions] = React.useState<string[]>([]);
   const [reportingChoice, setReportingChoice] = React.useState("");
   const [gradeError, setGradeError] = React.useState<string | null>(null);
@@ -187,6 +207,22 @@ export default function CreateJobPage() {
       cancelled = true;
     };
   }, [user?.tenant_id]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    apiGet<HygieneSummary>("/jobs/setup/status-hygiene")
+      .then((res) => {
+        if (!cancelled) setHygiene(res.jobs ?? []);
+      })
+      .catch(() => {
+        // Advisory only: an unreadable pre-check shows no banner and blocks
+        // nothing.
+        if (!cancelled) setHygiene(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   /**
    * Both ends present, min not above max, and the span within the ceiling.
@@ -353,6 +389,61 @@ export default function CreateJobPage() {
             </Button>
           </CardContent>
         </Card>
+      ) : null}
+
+      {/* Operational Hygiene reminder. Prominent, dismissible, and advisory
+          by locked decision: it never disables the form or the publish
+          action. Amber is the attention tone the design system already uses
+          for warnings (credit banner, hold badge); text stays full-ink. */}
+      {hygiene && hygiene.length > 0 && !hygieneDismissed ? (
+        <div
+          role="status"
+          className="mb-6 rounded-xl border border-amber-600 bg-amber-50 p-4 text-amber-950 dark:bg-amber-950/50 dark:text-amber-50"
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle
+              className="mt-0.5 h-5 w-5 shrink-0 text-amber-600"
+              aria-hidden="true"
+            />
+            <div className="min-w-0 flex-1 space-y-2">
+              <h2 className="text-base font-semibold">
+                Earlier jobs still have applicants waiting on a decision
+              </h2>
+              <p className="text-sm">
+                Before this new role goes up, close the loop on the people
+                below. Every applicant left without a final status is someone
+                still waiting to hear from your team.
+              </p>
+              <ul className="space-y-1 text-sm">
+                {hygiene.map((job) => (
+                  <li key={job.job_id}>
+                    <Link
+                      href={`/org/jobs/${job.job_id}`}
+                      className="font-medium underline underline-offset-2"
+                    >
+                      {job.title}
+                    </Link>{" "}
+                    has {job.unresolved_count}{" "}
+                    {job.unresolved_count === 1 ? "applicant" : "applicants"}{" "}
+                    awaiting a status update.
+                  </li>
+                ))}
+              </ul>
+              <p className="text-sm">
+                This is a reminder, not a block: you can still create and
+                publish this job right now.
+              </p>
+            </div>
+            <button
+              type="button"
+              aria-label="Dismiss reminder"
+              onClick={() => setHygieneDismissed(true)}
+              className="shrink-0 rounded-md p-1 hover:bg-amber-100 dark:hover:bg-amber-900"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
       ) : null}
 
       <Card>

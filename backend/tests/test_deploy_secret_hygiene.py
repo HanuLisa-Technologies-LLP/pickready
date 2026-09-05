@@ -490,6 +490,22 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
         "is held by no other service."
     ),
     "/api/v1/verification/inbound-email": "the inbound-email parser's webhook.",
+    "/api/v1/email-senders/events/ses": (
+        "SES delivery/bounce/complaint notifications over SNS (2026-09-05 "
+        "spec, Corporate Email System section 8). The handler verifies the "
+        "SNS message signature against Amazon's pinned certificate host and "
+        "refuses any TopicArn other than the configured one before touching "
+        "a row; an empty setting refuses everything."
+    ),
+    # The public employer pages (2026-09-05 spec, Employer Page & Content).
+    # The spec makes these the one product surface beside the published job
+    # page that is deliberately reachable without an account: a candidate
+    # searches a company, reads about it and applies from its careers list.
+    # Both routes are rate-limited, serve a closed field allowlist with no
+    # contacts, billing or applicant counts, and hide non-public tenants
+    # behind the same 404 an unknown slug gets.
+    "/api/v1/employers": "the public employer directory search.",
+    "/api/v1/employers/{slug}": "one public employer page with its careers list.",
     # Genuinely public, and each returns something already public.
     "/api/v1/billing/config": (
         "the Razorpay KEY ID, which is public by design. The Key Secret is "

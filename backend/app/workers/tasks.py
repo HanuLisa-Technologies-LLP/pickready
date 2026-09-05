@@ -137,6 +137,54 @@ async def _audit_delivery_exhausted(
 
 # ── Email ────────────────────────────────────────────────────────────────────
 
+async def _deliver_email(
+    *,
+    to: str,
+    subject: str,
+    html: str,
+    text: str | None = None,
+    attachments: list[dict] | None = None,
+    sender=None,
+) -> str | None:
+    """One door to the outbound transport (Corporate Email System spec
+    section 6). The transport is DEPLOYMENT DATA (`settings.email_transport`,
+    "smtp" or "ses"), exactly one per deployment, never a fallback chain.
+
+    `sender` is an ACTIVE ClientEmailSender row or None. Under SES an active
+    corporate sender IS the From address; under SMTP Gmail refuses arbitrary
+    From on the authenticated mailbox, so the corporate sender travels as
+    Reply-To and From stays the Gmail address (assumption recorded in
+    smtp_service._build_message). Returns the provider message id.
+
+    ASSUMPTION (spec section 6): under "ses" with no corporate sender, the
+    configured `smtp_from_email` address doubles as the platform's SES-verified
+    default identity; the deployment must verify it in the SES account.
+    """
+    settings = get_settings()
+    if settings.email_transport == "ses":
+        from app.services.ses_service import send_email_async as ses_send
+
+        return await ses_send(
+            from_email=sender.email if sender is not None else settings.smtp_from_email,
+            from_name=sender.name if sender is not None else settings.smtp_from_name,
+            to=to,
+            subject=subject,
+            html=html,
+            text=text,
+            attachments=attachments,
+        )
+    return await smtp_send(
+        from_email=settings.smtp_from_email,
+        from_name=settings.smtp_from_name,
+        to=to,
+        subject=subject,
+        html=html,
+        text=text,
+        attachments=attachments,
+        reply_to=sender.email if sender is not None else None,
+    )
+
+
 async def _send_email_async(
     session: AsyncSession,
     tenant_id: str | None,
@@ -166,15 +214,17 @@ async def _send_email_async(
                 template_name, tenant_id,
             )
 
-    # Gmail is the sole outbound provider and its authenticated mailbox is
-    # always the From address. Tenant-domain sender substitution is forbidden.
-    from_addr = settings.smtp_from_email
-    sender_path = "gmail"
+    # ONE transport per deployment (settings.email_transport): the platform's
+    # own identity is the From address on this template path either way, and
+    # tenant-domain sender substitution happens only through an ACTIVE
+    # corporate sender on the lifecycle path, never here.
+    sender_path = settings.email_transport
 
-    # Structured, secret-free log so delivery failures are diagnosable  - 
+    # Structured, secret-free log so delivery failures are diagnosable  -
     # never the message body/context (may carry OTP codes, ESD §16).
     logger.info(
-        "email.sender provider=smtp path=%s template=%s tenant_id=%s spf_dkim=%s env=%s",
+        "email.sender provider=%s path=%s template=%s tenant_id=%s spf_dkim=%s env=%s",
+        settings.email_transport,
         sender_path,
         template_name,
         str(tenant.id) if tenant is not None else "-",
@@ -200,9 +250,7 @@ async def _send_email_async(
             session, tenant.id if tenant is not None else None, template_name, context
         )
         html_body = email_render.text_to_html(body)
-        message_id = await smtp_send(
-            from_email=from_addr,
-            from_name=settings.smtp_from_name,
+        message_id = await _deliver_email(
             to=to,
             subject=subject,
             html=html_body,
@@ -329,15 +377,44 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
         )
         return {"status": row.status, "resent": False}
 
-    settings = get_settings()
+    # ── The sender validation chokepoint (Corporate Email System spec
+    #    sections 10 and 11) ─────────────────────────────────────────────────
+    # When the job carries a sender, the sender is re-loaded HERE, at send
+    # time, not trusted from queue time. That is what makes revocation take
+    # effect for already-queued emails: a sender revoked between queue and
+    # send fails the message honestly rather than sending under an identity
+    # the client has withdrawn.
+    sender = None
+    if row.sender_id is not None:
+        from app.models.email_sender import SENDER_ACTIVE, ClientEmailSender
+
+        sender = await session.get(ClientEmailSender, row.sender_id)
+        if sender is None or sender.status != SENDER_ACTIVE:
+            reason = (
+                "Sender was removed" if sender is None
+                else f"Sender is {sender.status.replace('_', ' ')}, not active"
+            )
+            row.status = STATUS_FAILED
+            row.error = f"Refused at send time: {reason}"
+            await session.commit()
+            await _audit(
+                session, str(row.tenant_id), "lifecycle_email_sender_refused",
+                "email_log", str(row.id),
+                {
+                    "email_type": row.email_type,
+                    "sender_id": str(row.sender_id),
+                    "sender_status": sender.status if sender is not None else "missing",
+                },
+            )
+            return {"status": "failed", "error": "sender_not_active"}
+
     try:
-        await smtp_send(
-            from_email=settings.smtp_from_email,
-            from_name=settings.smtp_from_name,
+        provider_message_id = await _deliver_email(
             to=row.recipient_email,
             subject=row.subject,
             html=to_html(row.body),
             text=row.body,
+            sender=sender,
         )
     except PermanentDeliveryError as err:
         # Terminal: record it and do NOT re-raise, so the retry budget is not
@@ -360,6 +437,10 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
     row.status = STATUS_SENT
     row.sent_at = datetime.now(timezone.utc)
     row.error = None
+    # The provider id is what a later SES delivery/bounce/complaint event is
+    # matched back on (spec section 8). The SMTP Message-ID is recorded too;
+    # Gmail simply never reports events against it.
+    row.provider_message_id = provider_message_id
     await session.commit()
     await _audit(
         session, str(row.tenant_id), "lifecycle_email_sent",
@@ -1868,4 +1949,190 @@ def refresh_dashboard_views():
                 )
         finally:
             await engine.dispose()
+    _run(_task())
+
+
+# ── Background verification (add-features spec 2026-09-05) ──────────────────
+
+@task(
+    name="pickready.send_bgv_inquiry",
+    route=Route.LAMBDA,
+    max_attempts_setting="delivery_max_retries",
+    backoff_seconds=60.0,
+    backoff_max_seconds=60.0,
+    retry_on=(TransientDeliveryError,),
+    bind=True,
+)
+def send_bgv_inquiry(ctx: TaskContext, inquiry_id: str):
+    """Send one background-verification inquiry to one previous employer's
+    departmental mailbox (add-features spec 2026-09-05, Candidate
+    Verification).
+
+    The email is the FIXED `bgv_inquiry` template (services/email_render):
+    factual, professional, no generation. It is dispatched only on the
+    candidate's own explicit action, and following up with the employer is
+    the candidate's responsibility by design, so there is no reminder sweep.
+
+    Every failure is visible on the row: a permanent delivery failure or an
+    unexpected error lands the inquiry in `dispatch_failed`; a transient SMTP
+    failure retries on the delivery budget and lands there when the budget is
+    exhausted. Success stamps `dispatched` and `inquiry_sent_at` only after
+    SMTP accepted the message, because a timestamp is not evidence that work
+    happened unless it is written after the work did.
+    """
+    from app.models.bgv import (
+        DISPATCHABLE_STATUSES,
+        STATUS_DISPATCHED,
+        STATUS_DISPATCH_FAILED,
+        BGVInquiry,
+    )
+
+    async def _task():
+        async with _worker_session() as session:
+            inquiry = await session.get(BGVInquiry, uuid.UUID(str(inquiry_id)))
+            if inquiry is None:
+                raise ValueError(f"BGVInquiry {inquiry_id} not found")
+            if inquiry.status not in DISPATCHABLE_STATUSES:
+                # Already dispatched (or further along): a duplicate inquiry
+                # email to an HR mailbox reads as spam and burns the
+                # candidate's credibility, so a re-delivered task is a no-op.
+                logger.info(
+                    "bgv.inquiry_not_dispatchable id=%s status=%s",
+                    inquiry_id, inquiry.status,
+                )
+                return {"status": inquiry.status, "sent": False}
+
+            candidate = await session.get(Candidate, inquiry.candidate_id)
+            context = {
+                "employer_name": inquiry.employer_name,
+                "candidate_name": (
+                    candidate.full_name
+                    if candidate is not None and candidate.full_name
+                    else "the candidate"
+                ),
+                "reply_token": inquiry.reply_token,
+            }
+            now = datetime.now(timezone.utc)
+            try:
+                await _send_email_async(
+                    session, None, inquiry.departmental_email,
+                    "bgv_inquiry", context,
+                )
+            except PermanentDeliveryError as err:
+                inquiry.status = STATUS_DISPATCH_FAILED
+                inquiry.updated_at = now
+                await session.commit()
+                logger.error(
+                    "bgv.inquiry_permanent_failure id=%s to=%s ACTION: %s",
+                    inquiry_id, inquiry.departmental_email, err.hint,
+                )
+                return {"status": "dispatch_failed", "error": err.error_name}
+            except TransientDeliveryError:
+                if ctx.is_final_attempt:
+                    inquiry.status = STATUS_DISPATCH_FAILED
+                    inquiry.updated_at = now
+                    await session.commit()
+                raise
+            except Exception:
+                # A render or configuration failure is not retryable here and
+                # must not strand the row looking untouched: the candidate is
+                # told the dispatch failed, and the re-raise moves the error
+                # metric.
+                inquiry.status = STATUS_DISPATCH_FAILED
+                inquiry.updated_at = now
+                await session.commit()
+                raise
+
+            inquiry.status = STATUS_DISPATCHED
+            inquiry.inquiry_sent_at = now
+            inquiry.updated_at = now
+            await session.commit()
+            return {"status": "dispatched"}
+
+    return _run(_task())
+
+
+@task(
+    name="pickready.parse_bgv_reply",
+    route=Route.LAMBDA,
+    max_attempts=3,
+)
+def parse_bgv_reply(inquiry_id: str, raw_email_text: str):
+    """Extract the seven BGV fields from an employer's reply (add-features
+    spec 2026-09-05). The raw reply is already on the row (the inbound-email
+    webhook wrote it before dispatching this task), so a failed extraction
+    loses nothing: the inquiry lands in `parse_failed` honestly and the reply
+    text is kept for a later attempt. A provider outage propagates so the
+    task's retry policy applies instead of being mislabelled a parse failure.
+    """
+    from app.models.bgv import (
+        STATUS_PARSED,
+        STATUS_PARSE_FAILED,
+        STATUS_RESPONSE_RECEIVED,
+        BGVInquiry,
+    )
+    from app.services import bgv as bgv_service
+
+    async def _task():
+        async with _worker_session() as session:
+            inquiry = await session.get(BGVInquiry, uuid.UUID(str(inquiry_id)))
+            if inquiry is None:
+                raise ValueError(f"BGVInquiry {inquiry_id} not found")
+            if inquiry.status not in {STATUS_RESPONSE_RECEIVED, STATUS_PARSE_FAILED}:
+                logger.info(
+                    "bgv.reply_parse_ignored id=%s status=%s",
+                    inquiry_id, inquiry.status,
+                )
+                return {"status": inquiry.status, "parsed": False}
+
+            now = datetime.now(timezone.utc)
+            try:
+                parsed = await bgv_service.parse_reply(
+                    raw_email_text, session=session
+                )
+            except bgv_service.BGVParseError as exc:
+                inquiry.status = STATUS_PARSE_FAILED
+                inquiry.updated_at = now
+                await session.commit()
+                logger.warning(
+                    "bgv.reply_parse_failed id=%s reason=%s", inquiry_id, exc
+                )
+                return {"status": "parse_failed"}
+
+            inquiry.parsed_fields_json = parsed
+            inquiry.status = STATUS_PARSED
+            inquiry.updated_at = now
+            await session.commit()
+            return {"status": "parsed"}
+
+    return _run(_task())
+
+
+@task(
+    name="pickready.process_assessment_video",
+    route=Route.ECS,
+    max_attempts=2,
+    backoff_seconds=10.0,
+)
+def process_assessment_video(recording_id: str):
+    """The video-interview processing pipeline (dual-mode spec section 6).
+
+    Route.ECS because this is work measured in minutes: downloading a
+    recording, two ffmpeg passes and an Amazon Transcribe job over an
+    hour-long interview legitimately outrun Lambda's ceiling.
+
+    The whole body lives in `services/video/processing.process_recording`,
+    which owns the recording's state machine: every failure lands the row in
+    the failure state naming the step (committed before the re-raise, so a
+    retry or the staff retry endpoint knows what to retry), the transcript is
+    written into the SAME records the conversational mode writes, and the
+    completion it triggers (`charge_completed` + the scoring dispatch) is
+    idempotent, so this task redelivered is safe.
+    """
+    from app.services.video import processing
+
+    async def _task():
+        async with _worker_session() as session:
+            await processing.process_recording(session, uuid.UUID(str(recording_id)))
+
     _run(_task())

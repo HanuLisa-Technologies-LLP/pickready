@@ -22,7 +22,10 @@ from app.api import (
     companies,
     company_dna,
     dashboard,
+    email_senders,
     emails,
+    employer_pages,
+    intelligence,
     jobs,
     matching,
     outreach,
@@ -33,6 +36,7 @@ from app.api import (
     reports,
     telemetry,
     verification,
+    videos,
 )
 from app.core.config import get_settings
 
@@ -121,6 +125,14 @@ app.include_router(dashboard.router, prefix=f"{API_PREFIX}/dashboard", tags=["da
 app.include_router(portal.router, prefix=f"{API_PREFIX}/portal", tags=["portal"])
 app.include_router(telemetry.router, prefix=f"{API_PREFIX}/telemetry", tags=["telemetry"])
 app.include_router(emails.router, prefix=f"{API_PREFIX}/emails", tags=["emails"])
+# Corporate email senders (Corporate Email System spec, 2026-09-05): the
+# registration/OTP/authorization lifecycle, the fixed template registry, and
+# the SES delivery-event webhook. New in this release, mounted once.
+app.include_router(
+    email_senders.router,
+    prefix=f"{API_PREFIX}/email-senders",
+    tags=["email-senders"],
+)
 app.include_router(pipeline.router, prefix=f"{API_PREFIX}/pipeline", tags=["pipeline"])
 app.include_router(provider.router, prefix=f"{API_PREFIX}/provider", tags=["provider"])
 # Business Development Portal, the fourth portal (/bd in the UI and the API).
@@ -131,6 +143,21 @@ app.include_router(bd.router, prefix=f"{API_PREFIX}/bd", tags=["bd"])
 # configured against by mistake.
 app.include_router(billing.router, prefix=f"{API_PREFIX}/billing", tags=["billing"])
 app.include_router(reports.router, prefix=f"{API_PREFIX}/reports", tags=["reports"])
+# Talent Intelligence dashboards (2026-09-05 spec): operational metrics only,
+# behind view_intelligence_dashboards.
+app.include_router(
+    intelligence.router, prefix=f"{API_PREFIX}/intelligence", tags=["intelligence"]
+)
+# PUBLIC employer pages (2026-09-05 add-features spec). Unauthenticated by
+# design, like GET /jobs/public/{id}; mounted at one path only, new in this
+# release with no v1/v2 split to honour.
+app.include_router(
+    employer_pages.router, prefix=f"{API_PREFIX}/employers", tags=["employers"]
+)
+# Client-portal video access (2026-09-05 dashboard/Executive Profile/video
+# spec, sections 15-19): metadata plus the audited preview/download URLs.
+# Mounted at one path only, new in this release with no v1/v2 split to honour.
+app.include_router(videos.router, prefix=f"{API_PREFIX}/videos", tags=["videos"])
 app.include_router(assessments.router, prefix="/api/v2/assessments", tags=["assessments-v2"])
 # Proctoring (proctoring-spec-doc.md). Mounted beside the assessment it
 # monitors, under v2 only: it is new in this release and has no v1 client.

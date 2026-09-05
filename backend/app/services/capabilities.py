@@ -135,6 +135,16 @@ HIRING_MANAGER_CONTROLLED: frozenset[str] = frozenset(
     }
 )
 
+# Talent Intelligence dashboards (add-features spec 2026-09-05, sections 2-5).
+# One capability for the whole 18-dashboard suite: the dashboards read the
+# SAME operational aggregates at four altitudes, and splitting the grant per
+# tier would imply the data differs when only the framing does. Granted to the
+# four org roles that run hiring (client, recruitment manager, HR manager,
+# recruiter, hiring manager); the Interview Manager reads candidates, not
+# operations, so it is withheld there. Seeded by migration 0082, because a
+# capability constant is only half a change (claude.md).
+VIEW_INTELLIGENCE_DASHBOARDS = "view_intelligence_dashboards"
+
 # Business Development Portal (the fourth portal, /bd). Three grants, one per
 # area of the console, so a BD lead can be given the customer database and the
 # AI Reach search without the ability to edit anyone's pipeline.
@@ -161,6 +171,9 @@ ALL_CAPABILITIES = [
     EDIT_EVALUATION_RUBRICS, FINALIZE_ROLE_DEFINITION, REJECT_JD,
     ADD_TEAM_REVIEW_REMARK, VIEW_CANDIDATE_REPORTS, VIEW_CANDIDATE_RATINGS,
     ASSIGN_ROLES, INTEGRITY_DISPOSITION,
+    # Talent Intelligence dashboards (2026-09-05 spec). Appended, same rule
+    # as above: response field order must not shuffle.
+    VIEW_INTELLIGENCE_DASHBOARDS,
 ]
 
 # Flattened staff model (PRD v1.0 §4, FINAL — 2026-07-24). HR Manager,
@@ -634,3 +647,59 @@ DEFAULT_PERMISSION_MATRIX[Role.interview_manager] = {
     **_INTERVIEW_MANAGER_ACCESS,
     **_SPEC_GRANTS_INTERVIEW_MANAGER,
 }
+
+# ── Corporate email senders (Corporate Email System spec, 2026-09-05) ────────
+#
+# Two capabilities, because the spec's section 10 separates them explicitly:
+# registering and verifying a mailbox is operational work, while ACTIVATING it
+# as an official automated sender is the client Super Admin's decision and
+# "unauthorized client users" must not be able to make it. Seeded by migration
+# 0080 (a capability constant is only half a change).
+
+#: Add a sender, resend / enter its verification OTP, list senders.
+MANAGE_EMAIL_SENDERS = "manage_email_senders"
+#: Authorize (activate), disable, re-enable and revoke a verified sender.
+AUTHORIZE_EMAIL_SENDERS = "authorize_email_senders"
+
+# Appended, never interleaved: resolve_capability_set returns capabilities in
+# ALL_CAPABILITIES order and an existing response's field order must not
+# shuffle (same reasoning as the 2026-08-29 batch above).
+ALL_CAPABILITIES.extend([MANAGE_EMAIL_SENDERS, AUTHORIZE_EMAIL_SENDERS])
+
+# The grant layer, mirrored row for row by migration 0080's SEED_ROWS and
+# compared against the migrated database by tests/test_capability_seed_parity.
+DEFAULT_PERMISSION_MATRIX[Role.client].update(
+    {MANAGE_EMAIL_SENDERS: True, AUTHORIZE_EMAIL_SENDERS: True}
+)
+# hr_manager receives the SAME grant as recruitment_manager: the legacy role
+# "ranks beside Recruitment Manager until existing accounts are migrated
+# deliberately" (claude.md, spec v4), and tests/test_rbac.py pins the two
+# organisation-wide roles as identical grant-for-grant.
+for _role in (Role.recruitment_manager, Role.hr_manager):
+    DEFAULT_PERMISSION_MATRIX[_role].update(
+        {MANAGE_EMAIL_SENDERS: True, AUTHORIZE_EMAIL_SENDERS: False}
+    )
+for _role in (Role.recruiter, Role.hiring_manager, Role.interview_manager):
+    DEFAULT_PERMISSION_MATRIX[_role].update(
+        {MANAGE_EMAIL_SENDERS: False, AUTHORIZE_EMAIL_SENDERS: False}
+    )
+
+# ── Talent Intelligence dashboards (2026-09-05 spec, sections 2-5) ──────────
+#
+# The grant layer for VIEW_INTELLIGENCE_DASHBOARDS, mirrored row for row by
+# migration 0082's SEED_ROWS and compared against the migrated database by
+# tests/test_capability_seed_parity. The four hiring-side org roles read the
+# operational dashboards; the Interview Manager reads candidates, not
+# operations, and gets an explicit False so the template state is observable.
+DEFAULT_PERMISSION_MATRIX[Role.client].update({VIEW_INTELLIGENCE_DASHBOARDS: True})
+DEFAULT_PERMISSION_MATRIX[Role.recruitment_manager].update(
+    {VIEW_INTELLIGENCE_DASHBOARDS: True}
+)
+DEFAULT_PERMISSION_MATRIX[Role.hr_manager].update({VIEW_INTELLIGENCE_DASHBOARDS: True})
+DEFAULT_PERMISSION_MATRIX[Role.recruiter].update({VIEW_INTELLIGENCE_DASHBOARDS: True})
+DEFAULT_PERMISSION_MATRIX[Role.hiring_manager].update(
+    {VIEW_INTELLIGENCE_DASHBOARDS: True}
+)
+DEFAULT_PERMISSION_MATRIX[Role.interview_manager].update(
+    {VIEW_INTELLIGENCE_DASHBOARDS: False}
+)

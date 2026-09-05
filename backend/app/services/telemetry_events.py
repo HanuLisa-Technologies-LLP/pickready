@@ -19,13 +19,22 @@ product surfaces in this codebase emit today:
 * EV_HM_DECISION   -- a pipeline stage decision (api/pipeline.change_status
   and the dashboard's stage move, api/dashboard.move_stage).
 * EV_INT_COMPLETED -- assessment_conversations.completed_at being stamped
-  (api/assessments, the conversation-completion write). The AI assessment
-  interview is this platform's interview session; there is no separate
-  human interview-round completion write today.
+  (api/assessments, the conversation-completion write), AND the pipeline's
+  `interview_completed` stage (via STAGE_MILESTONE_EVENTS below). The two
+  are distinguishable by payload: the assessment path carries
+  `conversation_id`, the pipeline path carries `{"stage": ...}`.
+* EV_OFFER_EXTENDED -- the pipeline transition into `offer_extended`,
+  emitted at the `apply_transition` chokepoint so none of its callers can
+  forget (2026-09-05 spec section 5.1, wired via STAGE_MILESTONE_EVENTS).
+* EV_ONBOARD_JOIN -- the pipeline transition into `joined`, same chokepoint.
+  There is no scheduled-vs-actual join date object, so the payload carries
+  the stage only; JRR reads this as "joined" without the on-schedule
+  qualifier and says so in its formula note.
 
-The remaining six codes are DEFINED (so the vocabulary is stable and the
+The remaining four codes are DEFINED (so the vocabulary is stable and the
 store is ready) but NOT EMITTED, because the product surface that would
-trigger them does not exist yet. This is a documented gap, not an oversight:
+trigger them does not exist yet. This is a documented gap, not an oversight;
+inventing a fake emission would poison every metric reading the code:
 
 * EV_CALIB_SENT / EV_CALIB_APPROVED -- section 5.1's calibration batch flow
   (3-5 profiles sent to the HM for baseline approval) has no object here;
@@ -34,14 +43,26 @@ trigger them does not exist yet. This is a documented gap, not an oversight:
 * EV_SCORECARD_SUB -- there is no interviewer scorecard object; the nearest
   surface (candidate_team_reviews) is a hiring-team verdict, not a
   per-interview rubric scorecard.
-* EV_OFFER_EXTENDED / EV_OFFER_DECISION -- offers exist only as a pipeline
-  STATUS (offer_extended); there is no offer object carrying comp or a
-  candidate accept/decline decision.
-* EV_ONBOARD_JOIN -- joining exists only as the `joined` pipeline status;
-  there is no onboarding object with a scheduled vs actual join date.
+* EV_OFFER_DECISION -- there is no candidate accept/decline object. The
+  `joined` stage implies acceptance and EV_ONBOARD_JOIN records it; a
+  `rejected` transition out of `offer_extended` is ambiguous (candidate
+  decline vs employer withdrawal), so emitting a decision there would
+  fabricate a datum the product never captured.
 
 When those surfaces land, wire their write paths through `emit` and move the
 code from PENDING_EVENT_CODES to WIRED_EVENT_CODES.
+
+THE STAGE-TO-EVENT MAPPING (2026-09-05 spec, Agent F)
+-----------------------------------------------------
+`STAGE_MILESTONE_EVENTS` maps a pipeline stage the product actually has onto
+the section 5.1 milestone it IS. It is consulted by
+`hiring_pipeline.apply_transition` -- the chokepoint all six transition
+callers share -- so a milestone can never be missed by one caller.
+EV_HM_DECISION is deliberately NOT in this mapping: a decision event carries
+its ACTOR and is emitted at the API surfaces where the actor is known
+(pipeline.change_status, dashboard.move_stage, candidates.decide_profile),
+while a milestone event records that the candidate's lifecycle reached a
+point, whoever moved it.
 """
 import logging
 import uuid
@@ -68,7 +89,14 @@ EV_ONBOARD_JOIN = "EV_ONBOARD_JOIN"
 
 #: Codes with a live emission point in this codebase (see module docstring).
 WIRED_EVENT_CODES: frozenset[str] = frozenset(
-    {EV_REQ_CREATED, EV_PROFILE_SUBMIT, EV_HM_DECISION, EV_INT_COMPLETED}
+    {
+        EV_REQ_CREATED,
+        EV_PROFILE_SUBMIT,
+        EV_HM_DECISION,
+        EV_INT_COMPLETED,
+        EV_OFFER_EXTENDED,
+        EV_ONBOARD_JOIN,
+    }
 )
 
 #: Codes awaiting their product surface (see module docstring for which).
@@ -77,11 +105,20 @@ PENDING_EVENT_CODES: frozenset[str] = frozenset(
         EV_CALIB_SENT,
         EV_CALIB_APPROVED,
         EV_SCORECARD_SUB,
-        EV_OFFER_EXTENDED,
         EV_OFFER_DECISION,
-        EV_ONBOARD_JOIN,
     }
 )
+
+#: Pipeline stage -> the section 5.1 milestone that stage IS. Consulted by
+#: `hiring_pipeline.apply_transition`; see the module docstring for why
+#: EV_HM_DECISION is not here. Keys are `hiring_pipeline` stage strings,
+#: written literally rather than imported to keep this module import-light
+#: (hiring_pipeline imports THIS module).
+STAGE_MILESTONE_EVENTS: dict[str, str] = {
+    "interview_completed": EV_INT_COMPLETED,
+    "offer_extended": EV_OFFER_EXTENDED,
+    "joined": EV_ONBOARD_JOIN,
+}
 
 #: The full section 5.1 vocabulary. Anything else is refused by `emit` (logged
 #: and swallowed, per the never-raise contract) so typos cannot mint a

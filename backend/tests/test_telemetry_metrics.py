@@ -40,11 +40,20 @@ def test_event_code_registry_matches_part2_section_5_1() -> None:
         telemetry_events.WIRED_EVENT_CODES & telemetry_events.PENDING_EVENT_CODES
     )
     assert all(len(code) <= 30 for code in expected)
-    # The four milestones this codebase actually has today.
+    # The six milestones this codebase actually has today. Offer extension and
+    # joining became emittable when the apply_transition chokepoint gained the
+    # stage-milestone mapping (2026-09-05 Talent Intelligence spec).
     assert telemetry_events.WIRED_EVENT_CODES == {
         "EV_REQ_CREATED", "EV_PROFILE_SUBMIT", "EV_HM_DECISION",
-        "EV_INT_COMPLETED",
+        "EV_INT_COMPLETED", "EV_OFFER_EXTENDED", "EV_ONBOARD_JOIN",
     }
+    # Every stage in the milestone mapping is a real pipeline stage and maps
+    # onto a WIRED code; a typo here would mint events no metric reads.
+    from app.services import hiring_pipeline
+
+    for stage, code in telemetry_events.STAGE_MILESTONE_EVENTS.items():
+        assert stage in hiring_pipeline.ALL_STATUSES
+        assert code in telemetry_events.WIRED_EVENT_CODES
 
 
 def test_health_bands_prl_boundaries() -> None:

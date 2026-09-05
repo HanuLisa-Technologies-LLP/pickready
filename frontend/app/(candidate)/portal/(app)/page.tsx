@@ -304,13 +304,33 @@ export default function PortalJobsPage() {
                         aria-hidden="true"
                       />
                       <span className="truncate">
-                        {[
-                          job.company_name ?? job.tenant_name,
-                          job.department,
-                          job.level,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
+                        {(() => {
+                          const employer =
+                            job.company_name ?? job.tenant_name ?? null;
+                          const rest = [job.department, job.level]
+                            .filter(Boolean)
+                            .join(" · ");
+                          return (
+                            <>
+                              {employer && job.company_slug ? (
+                                // The company name links to its public
+                                // employer page only when that page is
+                                // actually served (company_slug is null
+                                // for a hidden page).
+                                <Link
+                                  href={`/employers/${job.company_slug}`}
+                                  className="font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                >
+                                  {employer}
+                                </Link>
+                              ) : (
+                                employer
+                              )}
+                              {employer && rest ? " · " : null}
+                              {rest || null}
+                            </>
+                          );
+                        })()}
                       </span>
                     </p>
                   </div>

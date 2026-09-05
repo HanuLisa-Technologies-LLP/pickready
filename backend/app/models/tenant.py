@@ -113,6 +113,26 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     #: printed on the invoice when present.
     gstin: Mapped[str | None] = mapped_column(String(20))
 
+    # ── Public employer page (migration 0084) ────────────────────────────────
+    # The URL identity of the customer's PUBLIC employer page
+    # (/employers/{slug}), from the 2026-09-05 add-features spec ("Employer
+    # Page & Content"). It lives on `tenants` and not `companies` for the same
+    # reason billing does: a customer IS a tenant, the name the slug derives
+    # from lives here, and a `companies` row does not exist until the client
+    # first signs in -- a page keyed there would be unreachable for exactly
+    # the customer who was just onboarded. Nullable until generated: the
+    # migration backfills every existing tenant and the two creation paths
+    # (Provider onboarding, BD promotion) assign one at creation via
+    # `services/employer_pages.assign_slug`. Lowercase, hyphenated, unique.
+    public_slug: Mapped[str | None] = mapped_column(String(140), unique=True)
+    # Whether the employer page is publicly visible. A page is served only
+    # when this is true AND the customer status is `active`; flipping it off
+    # hides the page without touching the slug, so turning it back on
+    # restores the same URL.
+    is_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+
 
 #: `tenants.status` values. Mirrors the CHECK constraint in migration 0020.
 CUSTOMER_ACTIVE = "active"

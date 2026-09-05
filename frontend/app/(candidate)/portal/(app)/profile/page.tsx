@@ -11,7 +11,9 @@
 // Role is deliberately not shown: a candidate has exactly one.
 
 import { SettingsPage } from "@/components/settings-page";
+import { BackgroundVerificationCard } from "@/components/background-verification-card";
 import { CandidateProfileForm } from "@/components/candidate-profile-form";
+import { DataRetentionCard } from "@/components/data-retention-card";
 import { MainResumeCard } from "@/components/main-resume-card";
 import { ProjectsSection } from "@/components/projects-section";
 
@@ -25,6 +27,8 @@ export default function CandidateProfilePage() {
       showRole={false}
     >
       <MainResumeCard />
+      <DataRetentionCard />
+      <BackgroundVerificationCard />
       <ProjectsSection />
       <CandidateProfileForm />
     </SettingsPage>

@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| The add-features release (2026-09-06) | Corporate senders + OTP, dual-mode assessment, video access, retention consents, BGV, employer pages, intelligence dashboards |
 | Background work without Celery (2026-09-05) | Dispatch, the four functions, the on-demand agent, the schedule |
 | End-to-end hiring workflow (2026-09-04) | The eight gates, the sourced stage, the final ranking, the Updates feed, job closure |
 | Proctoring + question formats (2026-09-02) | Mandatory monitoring, the shared warning counter, the six question formats, evidence dominance |
@@ -57,6 +58,103 @@ phase sections above them are where the sharp edges are.
    failed retrieval, no template output presented as generation.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
+
+
+## Current hard rules, the add-features release (2026-09-06)
+
+The 2026-09-05 add-features specification is an OWNER document and three of its
+requirements deliberately reverse standing rules. Each reversal was made WITH
+its pinning test in the same change, never around it. Migrations 0080 to 0085.
+
+### Three owner reversals, and their exact width
+
+- **The no-OTP rule is NARROWED, not gone.** Login OTP stays banned everywhere.
+  A 6-digit OTP exists for exactly one purpose: proving ownership of a
+  corporate SENDER mailbox (`services/email_senders/verification.py`). Hash
+  only in Redis, 3 attempts, 45-second resend cooldown, TTL from settings.
+  `test_platform_audit.py` exempts `email-senders-card.tsx` by name and
+  nothing else.
+- **"Gmail SMTP only" became transport-as-deployment-data.** `email_transport`
+  selects `smtp` (default, unchanged behaviour) or `ses`. ONE transport per
+  deployment, never a fallback chain, same shape as `TASK_DISPATCH_BACKEND`.
+  Under smtp the authenticated mailbox stays From and the tenant sender is
+  Reply-To; under ses the sender is From. The spec's SQS stage maps onto the
+  existing dispatch system: one implementation per concept.
+- **An assessment video is a CONSENTED artifact, and proctoring still stores
+  no media.** The two must never blur: everything under `services/video/` is
+  imported by no scorer (pinned beside the proctoring isolation tests), and
+  nothing under `services/proctoring/` gained a media write path. A
+  conversational session has NO video; the dashboard says "No video recorded"
+  rather than pretending.
+
+### Corporate senders
+
+Only an ACTIVE sender sends, and the check runs AT SEND TIME in the delivery
+task, which is what makes revoking a sender apply to emails already queued.
+The lifecycle FSM lives in `services/email_senders/lifecycle.py`; authorize is
+the client super admin's act and stamps who and when. The free-provider
+blocklist is the `sender_domain_blocklist` setting (subdomain-aware), shared
+by BGV's departmental-email validation rather than copied.
+
+### Dual-mode assessment
+
+`assessment_conversations.mode` defaults `conversational`, so every legacy row
+keeps its truthful mode. The mode is chosen BEFORE consent and FROZEN once the
+session starts. Consent is per session, versioned (consent, privacy policy,
+terms), configurable wording from settings, and gates BOTH modes at the same
+chokepoint as the proctoring gate. The video pipeline (Route.ECS) is
+extract -> transcribe -> structure -> score -> compress -> verify -> delete
+raw, each failure landing in its NAMED state and re-raised; transcription
+disabled reports `transcription_failed` with an honest message, never a fake
+transcript. The raw object is deleted only after the compressed object is
+HEAD-verified, the project-intake pattern. Video answers land in the SAME
+rows the conversational scorers read, so scoring and the PRISM report are
+mode-blind; `services/assessment_canonical.py` is the one adapter.
+
+### Video access, retention consents
+
+Preview is a short-lived presigned URL on the compressed mp4 (S3 range serves
+streaming; nothing transcodes on read). Download additionally requires the
+candidate's OWN retention consent: `retention_consent.video_download_allowed`,
+where NULL means never-asked and refuses, the safe direction. The same shape
+gates the PRISM PDF via `assessment_download_allowed`, enforced at the route,
+with `report_download_allowed` serialized so the UI hides the control instead
+of rendering a dead button. Every preview and download writes an audit row.
+No bucket name and no object key crosses an API boundary.
+
+### BGV, employer pages, dashboards, signals
+
+- BGV rows are CANDIDATE-owned. An employer tenant reads a result only through
+  a `bgv_share_consents` row for that tenant; no consent reads as "Not shared
+  by the candidate", never a 404 of the page. Domain match is provenance,
+  never a block. A parse failure is `parse_failed`, honestly.
+- The public employer page hangs off `tenants.public_slug` (a customer IS a
+  tenant), reads through the same no-auth pattern as `/apply/{id}`, lists only
+  in-window published jobs, and serializes a closed allowlist: no contacts, no
+  billing, no applicant counts.
+- The 18 intelligence dashboards read `telemetry_events` (which ALREADY
+  existed, migration 0073 -- check before building on a "new" table) and the
+  tenant's own history. Metric formulas and G/A/R thresholds are DATA in
+  `services/intelligence_metrics.py`; an unmeasurable metric answers
+  `no_data` with a reason, never 0.0. Operational numbers are allowed here;
+  a candidate score never is.
+- The longevity signal is an internal ordering prior: grade-preserving by
+  construction (it cannot move a four-word tier) and insufficient history
+  contributes exactly nothing. The status-hygiene pre-check is ADVISORY by
+  locked decision; nothing may wire it into POST /jobs as a gate.
+
+### What production sign-in taught (2026-09-06)
+
+Google sign-in was dead on the live site for two stacked reasons, and both are
+worth generalising. `www.readypick.ai` was authorized in Firebase while the
+site serves at the APEX, so every popup failed `auth/unauthorized-domain`; a
+"domain was added" claim needs the EXACT origin checked, and
+`friendlyAuthError` now names the failing origin in the console instead of
+telling the user to re-check their password. And
+`readypick-pilot/FIREBASE_SERVICE_ACCOUNT_JSON` still held
+`PLACEHOLDER_NOT_CONFIGURED`: a secret CONTAINER is not a configured secret,
+and the 503-vs-401 answer of `/auth/firebase/session` on a bogus token is the
+one-line probe that tells them apart.
 
 
 ## Current hard rules, background work without Celery (2026-09-05)

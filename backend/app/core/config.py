@@ -175,6 +175,47 @@ class Settings(BaseSettings):
     msg91_api_key: str = ""
     msg91_sender_id: str = "PCKRDY"
 
+    # ── Outbound email transport (Corporate Email System spec section 6) ────
+    #
+    # ONE transport per deployment, selected by DATA, never a fallback chain
+    # (the same discipline the model layer keeps). "smtp" is the existing Gmail
+    # path, unchanged; "ses" sends through Amazon SES via boto3 with the same
+    # permanent/transient failure taxonomy. Owner decision 2026-09-05: this
+    # narrows "Gmail SMTP is the only outbound mail path" to
+    # transport-as-deployment-data.
+    email_transport: str = "smtp"
+    #: The SNS topic SES publishes delivery/bounce/complaint events to. The
+    #: webhook refuses any message whose TopicArn differs (spec section 8).
+    #: Empty means the event endpoint refuses everything.
+    ses_sns_topic_arn: str = ""
+
+    # ── Corporate sender registration (Corporate Email System spec) ─────────
+    #
+    # Free/personal mail providers may never be registered as a corporate
+    # sender (spec section 2). Comma-separated so an operator can extend it
+    # from the environment without a deploy; matching also refuses SUBDOMAINS
+    # of a blocked domain, so mail.yahoo.com cannot slip past.
+    sender_domain_blocklist: str = (
+        "gmail.com,googlemail.com,yahoo.com,yahoo.co.in,ymail.com,outlook.com,"
+        "hotmail.com,live.com,msn.com,icloud.com,me.com,mac.com,proton.me,"
+        "protonmail.com,aol.com,gmx.com,gmx.net,mail.com,rediffmail.com,"
+        "rediff.com,zoho.com,zohomail.com,yandex.com,yandex.ru,fastmail.com,"
+        "tutanota.com,tuta.com,hey.com,mail.ru,inbox.com,hushmail.com"
+    )
+    #: Mailbox-ownership OTP (spec section 4). 600 s sits inside the spec's
+    #: 5 to 10 minute window.
+    sender_otp_ttl_seconds: int = 600
+    sender_otp_max_attempts: int = 3
+    sender_otp_resend_cooldown_seconds: int = 45
+
+    def sender_blocked_domains(self) -> frozenset[str]:
+        """The blocklist, parsed once per call: lowercased, trimmed, non-empty."""
+        return frozenset(
+            part.strip().lower()
+            for part in self.sender_domain_blocklist.split(",")
+            if part.strip()
+        )
+
     # ── Private file storage (S3) ───────────────────────────────────────────
     #
     # Durable values stored in the database are s3:// object references; a raw
@@ -335,6 +376,75 @@ class Settings(BaseSettings):
     #: before the option counts as a real misconception rather than filler.
     assessment_misconception_min_words: int = 4
 
+    # ── Dual-mode assessment: consent + video interview (2026-09-05 spec) ───
+    #
+    # CONSENT IS A HARD PREREQUISITE FOR BOTH MODES (spec section 3). The
+    # wording is CONFIGURABLE, never hardcoded in a handler (spec 3.2: "the
+    # exact legal wording should be configurable"), and the versions below are
+    # stamped onto every consent row so a dispute is settled by which wording
+    # was accepted. The defaults are complete and honest: they state
+    # collection, storage, processing, speech-to-text, AI analysis and the
+    # PRISM Report destination in plain language, with no em dash.
+    assessment_consent_version: str = "2026-09-05"
+    assessment_privacy_policy_version: str = "2026-09-05"
+    assessment_terms_version: str = "2026-09-05"
+    assessment_consent_text_video: str = (
+        "Before you begin the video interview, please understand and agree to "
+        "the following. Your interview will be recorded: both your video and "
+        "your audio are captured for the full session. The recording is "
+        "stored securely and is processed for assessment purposes. Your "
+        "speech is converted into text, and the resulting information is "
+        "analyzed by AI as part of your evaluation. Information derived from "
+        "this assessment may be included in the report the hiring team "
+        "receives about your candidacy. If you do not agree, you will not be "
+        "able to take the video interview; you may choose the conversational "
+        "assessment instead, which has its own consent terms."
+    )
+    assessment_consent_text_conversational: str = (
+        "Before you begin the assessment, please understand and agree to the "
+        "following. ReadyPick collects and processes what you submit during "
+        "the assessment: your written answers, your questions, your responses "
+        "to multiple-choice and coding questions, and session data such as "
+        "timings and interaction records. This information is stored, is "
+        "analyzed by AI as part of your evaluation, and may be included in "
+        "the report the hiring team receives about your candidacy. If you do "
+        "not agree, you will not be able to take the assessment."
+    )
+    # ── Video interview ceilings and processing knobs ───────────────────────
+    # Every ceiling is a setting, never a literal in the pipeline (same rule
+    # as proctoring and projects). Sized for an hour-long interview recorded
+    # by MediaRecorder at browser defaults.
+    video_max_upload_bytes: int = 1024 * 1024 * 1024
+    video_max_duration_seconds: int = 2 * 3600
+    #: Amazon Transcribe. DISABLED by default because it needs an AWS account
+    #: with the service enabled in the deployment region; when disabled a
+    #: recording lands in `transcription_failed` with a message saying speech
+    #: to text is not configured. HONEST AND RETRYABLE, never a fake
+    #: transcript (no silent fallback).
+    transcribe_enabled: bool = False
+    transcribe_language_code: str = "en-IN"
+    video_transcribe_timeout_seconds: int = 1800
+    video_transcribe_poll_seconds: int = 15
+    #: ffmpeg transcode settings for the long-term compressed mp4 (video spec
+    #: section 8: codec and quality are configurable, storage optimization,
+    #: not destructive compression). H.264 + AAC for browser playability.
+    video_compression_crf: int = 28
+    video_compression_preset: str = "medium"
+    video_compression_audio_bitrate_kbps: int = 96
+    #: The compressed object's duration must be within this many seconds of
+    #: the raw recording's before the raw is deleted (video spec section 10:
+    #: verify before delete).
+    video_duration_tolerance_seconds: float = 3.0
+    video_ffmpeg_timeout_seconds: int = 1800
+    #: Presigned delivery-URL lifetimes for the client portal (video spec
+    #: sections 16 and 18). A presigned URL is a bearer token once it leaves
+    #: the page, so both are short by default. Preview must outlive a full
+    #: watch-through of the longest permitted interview because the player's
+    #: seek issues range requests against the same URL; download only needs to
+    #: cover the click and a slow connection's head start.
+    video_preview_url_ttl_seconds: int = 3 * 3600
+    video_download_url_ttl_seconds: int = 900
+
     # ── Project Evidence Intelligence limits ────────────────────────────────
     #
     # Candidate project submissions are UNTRUSTED input processed into derived
@@ -427,6 +537,16 @@ class Settings(BaseSettings):
             raise ValueError("SMTP_USER must be a Gmail address")
         if self.smtp_user and self.smtp_from_email.lower() != self.smtp_user.lower():
             raise ValueError("SMTP_FROM_EMAIL must match SMTP_USER")
+        return self
+
+    @model_validator(mode="after")
+    def validate_email_transport(self) -> "Settings":
+        """Exactly one of the two real transports; a typo must not silently
+        select anything (Corporate Email System spec section 6)."""
+        value = (self.email_transport or "").strip().lower()
+        if value not in {"smtp", "ses"}:
+            raise ValueError("EMAIL_TRANSPORT must be smtp or ses")
+        object.__setattr__(self, "email_transport", value)
         return self
 
     @model_validator(mode="after")

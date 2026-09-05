@@ -160,6 +160,25 @@ async def send_emails(
     by_link = {m.link_id: m for m in body.messages}
     targets, skipped = await _load_targets(session, user, list(by_link))
 
+    # Queue-time sender validation (Corporate Email System spec section 6):
+    # the chosen corporate sender must exist in THIS tenant and be active.
+    # The worker re-validates at send time (spec section 11), so this check is
+    # the early, actionable refusal, not the security boundary.
+    if body.sender_id is not None:
+        from app.models.email_sender import SENDER_ACTIVE, ClientEmailSender
+
+        sender = await session.get(ClientEmailSender, body.sender_id)
+        if sender is None or sender.tenant_id != user.tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Sender not found"
+            )
+        if sender.status != SENDER_ACTIVE:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="That sender is not active. Only an active, authorized "
+                "sender can be used for automated emails.",
+            )
+
     logs: list[EmailLog] = []
     for link, candidate, job in targets:
         message = by_link[link.id]

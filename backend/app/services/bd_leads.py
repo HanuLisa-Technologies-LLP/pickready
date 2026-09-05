@@ -40,6 +40,7 @@ from app.models.bd import (
     BDLead,
 )
 from app.models.tenant import CUSTOMER_ARCHIVED, Tenant
+from app.services import employer_pages
 from app.schemas.bd import CSV_COLUMNS, BDCustomerOut, JobCardOut
 from app.services.reach_embeddings import (
     ReachEmbeddingError,
@@ -300,6 +301,11 @@ async def _create_tenant_from_lead(session: AsyncSession, lead: BDLead) -> Tenan
     )
     session.add(tenant)
     await session.flush()
+    # A prospect gets its employer-page slug at creation too: the page itself
+    # stays hidden until the customer status is `active` (the public routes
+    # filter on it), so assigning early just means the URL is ready the day
+    # they are onboarded (2026-09-05 add-features spec).
+    await employer_pages.assign_slug(session, tenant)
     return tenant
 
 

@@ -70,6 +70,7 @@ def _build_message(
     html: str,
     text: str | None,
     attachments: list[dict] | None,
+    reply_to: str | None = None,
 ) -> tuple[MIMEMultipart | MIMEText, str]:
     """Assemble a MIME message. Returns (message, message_id).
 
@@ -108,6 +109,13 @@ def _build_message(
     root["To"] = to
     root["Subject"] = subject
     root["Message-ID"] = message_id
+    if reply_to:
+        # ASSUMPTION (Corporate Email System spec section 6): under the SMTP
+        # transport Gmail refuses an arbitrary From on an authenticated
+        # mailbox, so a corporate sender travels as Reply-To -- replies reach
+        # the client's own mailbox while From stays the authenticated Gmail
+        # address. Under SES the sender IS the From address (ses_service).
+        root["Reply-To"] = reply_to
     return root, message_id
 
 
@@ -119,6 +127,7 @@ async def send_email_async(
     html: str,
     text: str | None = None,
     attachments: list[dict] | None = None,
+    reply_to: str | None = None,
 ) -> str | None:
     """Send one email over SMTP. Returns the Message-ID on success.
 
@@ -149,7 +158,8 @@ async def send_email_async(
         )
 
     message, message_id = _build_message(
-        from_email, from_name, to, subject, html, text, attachments
+        from_email, from_name, to, subject, html, text, attachments,
+        reply_to=reply_to,
     )
 
     use_ssl = bool(settings.smtp_ssl)

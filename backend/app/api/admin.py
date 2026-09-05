@@ -59,7 +59,7 @@ from app.schemas.admin import (
     TenantUpdateIn,
     derive_tenant_domain,
 )
-from app.services import rbac
+from app.services import employer_pages, rbac
 from app.services.audit import audit, record_action
 from app.services.capabilities import DEFAULT_PERMISSION_MATRIX
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
@@ -219,6 +219,9 @@ async def create_tenant(
     )
     session.add(tenant)
     await session.flush()
+    # Every customer gets a public employer-page slug at creation (2026-09-05
+    # add-features spec); visibility is governed separately by `is_public`.
+    await employer_pages.assign_slug(session, tenant)
 
     client_user = User(
         tenant_id=tenant.id,

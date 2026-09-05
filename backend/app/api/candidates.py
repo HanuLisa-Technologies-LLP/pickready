@@ -63,6 +63,7 @@ from app.schemas.candidates import (
 )
 from app.services import capabilities as caps
 from app.services import email_render
+from app.services import telemetry_events
 from app.services import rbac
 from app.services import team_review
 from app.services.audit import audit
@@ -608,6 +609,24 @@ async def decide_profile(
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
                 action="profile_decision", target_type="job_candidate_link",
                 target_id=link.id, metadata={"status": body.status, "remarks": body.remarks})
+    # Talent Intelligence spec section 5.1: EV_HM_DECISION, an explicit
+    # accept/reject/hold on a presented profile. Feeds PRL and SLA_PR
+    # (services/intelligence_metrics.py). Never allowed to fail the decision.
+    await telemetry_events.emit(
+        session,
+        tenant_id=user.tenant_id,
+        event_code=telemetry_events.EV_HM_DECISION,
+        job_id=link.job_id,
+        candidate_id=link.candidate_id,
+        job_candidate_link_id=link.id,
+        actor_user_id=user.user_id,
+        correlation_id=(
+            await session.execute(
+                select(Job.correlation_id).where(Job.id == link.job_id)
+            )
+        ).scalar_one_or_none(),
+        payload={"decision": body.status},
+    )
     return StatusOut(link_id=link.id, status=entry.status, remarks=entry.remarks,
                      at=entry.at or datetime.now(timezone.utc))
 
@@ -991,3 +1010,111 @@ async def list_job_links(
         has_next=page < total_pages,
         has_previous=page > 1,
     )
+
+
+# ── Background verification, recruiter view (add-features spec 2026-09-05) ──
+
+
+@router.get("/{candidate_id}/bgv")
+async def get_bgv_results(
+    candidate_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> dict:
+    """Background-verification results, gated by the candidate's own consent.
+
+    Access mirrors `/project-evidence` exactly: VIEW_REVIEW_SCREEN, the
+    candidate must be linked to a job in THIS tenant (a candidate who is not
+    answers 404, never 403 -- a cross-tenant read must not confirm
+    existence), and non-HR holders need the HM grant.
+
+    The consent boundary is the locked spec decision: an inquiry is shown
+    ONLY where the candidate wrote a `bgv_share_consents` row for this
+    tenant. An unshared inquiry appears as a single unshared marker carrying
+    NO employer name, no mailbox and no fields, so the section can honestly
+    read "Not shared by the candidate" without leaking who was asked. The
+    raw reply email is never serialized to anyone; recruiters read the
+    parsed fields and the domain-match word only.
+    """
+    from app.models.bgv import BGVInquiry, BGVShareConsent
+
+    candidate = await session.get(Candidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    linked = (
+        await session.execute(
+            select(JobCandidateLink.id)
+            .where(
+                JobCandidateLink.candidate_id == candidate_id,
+                JobCandidateLink.tenant_id == user.tenant_id,
+            )
+            .limit(1)
+        )
+    ).scalars().first()
+    if linked is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    full_access = await rbac.has_capability(
+        session, user.tenant_id, user.role, caps.SEND_OUTREACH
+    )
+    if not full_access:
+        granted = (
+            await session.execute(
+                select(JobCandidateLink).where(
+                    JobCandidateLink.candidate_id == candidate_id,
+                    JobCandidateLink.tenant_id == user.tenant_id,
+                    JobCandidateLink.hm_access_granted.is_(True),
+                )
+            )
+        ).scalars().first()
+        if granted is None:
+            raise HTTPException(status_code=403, detail="Profile access not granted")
+
+    inquiries = (
+        await session.execute(
+            select(BGVInquiry)
+            .where(BGVInquiry.candidate_id == candidate_id)
+            .order_by(BGVInquiry.created_at)
+        )
+    ).scalars().all()
+    shared_ids = {
+        row
+        for row in (
+            await session.execute(
+                select(BGVShareConsent.bgv_inquiry_id).where(
+                    BGVShareConsent.bgv_inquiry_id.in_(
+                        [i.id for i in inquiries]
+                    ),
+                    BGVShareConsent.tenant_id == user.tenant_id,
+                )
+            )
+        ).scalars()
+    } if inquiries else set()
+
+    items: list[dict] = []
+    for inquiry in inquiries:
+        if inquiry.id in shared_ids:
+            items.append(
+                {
+                    "shared": True,
+                    "employer_name": inquiry.employer_name,
+                    "departmental_email": inquiry.departmental_email,
+                    "domain_match_result": inquiry.domain_match_result,
+                    "status": inquiry.status,
+                    "inquiry_sent_at": (
+                        inquiry.inquiry_sent_at.isoformat()
+                        if inquiry.inquiry_sent_at
+                        else None
+                    ),
+                    "response_received_at": (
+                        inquiry.response_received_at.isoformat()
+                        if inquiry.response_received_at
+                        else None
+                    ),
+                    "parsed_fields": inquiry.parsed_fields_json,
+                }
+            )
+        else:
+            items.append(
+                {"shared": False, "note": "Not shared by the candidate"}
+            )
+    return {"inquiries": items}

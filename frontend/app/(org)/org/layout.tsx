@@ -11,6 +11,7 @@ import {
   CreditCard,
   FileText,
   Fingerprint,
+  Gauge,
   LayoutDashboard,
   Settings,
   ShieldCheck,
@@ -149,6 +150,13 @@ export default function OrgLayout({
     // client-side capability list is a page somebody is told does not exist.
     { href: COMPANY_DNA_ROUTE, label: "Company DNA", icon: Fingerprint },
     { href: "/org/dashboard", label: "Dashboard", icon: LayoutDashboard },
+    // Talent Intelligence (2026-09-05 spec): the 18 operational dashboards.
+    // Gated on view_intelligence_dashboards, which the RBAC engine resolves
+    // server-side and /auth/me returns because the capability is in
+    // ALL_CAPABILITIES (seeded by migration 0082).
+    hasCapability("view_intelligence_dashboards")
+      ? { href: "/org/intelligence", label: "Intelligence", icon: Gauge }
+      : null,
     // The AI Dashboard was REMOVED from the customer portal (spec 30, client
     // instruction). Deleted rather than hidden: a nav entry behind a flag is a
     // page that comes back, and the route, the component and its API handler

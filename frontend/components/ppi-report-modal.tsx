@@ -34,6 +34,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import type { FunctionalReport } from "@/components/functional-skills-report";
+import { AssessmentVideoSection } from "@/components/assessment-video-section";
 import { Button } from "@/components/ui/button";
 
 // Recharts is sizeable and only needed after a recruiter opens a report.
@@ -112,15 +113,24 @@ export function PPIReportModal({
               ) : null}
             </div>
             {linkId && report ? (
-              <Button asChild size="sm" variant="outline">
-                <a
-                  href={`/api/v2/assessments/reports/links/${linkId}/pdf`}
-                  download
-                >
-                  <Download className="mr-2 h-4 w-4" aria-hidden />
-                  Download PDF
-                </a>
-              </Button>
+              report.report_download_allowed ? (
+                <Button asChild size="sm" variant="outline">
+                  <a
+                    href={`/api/v2/assessments/reports/links/${linkId}/pdf`}
+                    download
+                  >
+                    <Download className="mr-2 h-4 w-4" aria-hidden />
+                    Download PDF
+                  </a>
+                </Button>
+              ) : (
+                // No dead button: the candidate chose view-only retention, so
+                // the server answers 403 to the PDF route. Say why instead.
+                <p className="flex items-center gap-1.5 text-xs font-medium">
+                  <Lock className="h-3.5 w-3.5" aria-hidden />
+                  View only, at the candidate&apos;s request
+                </p>
+              )
             ) : null}
           </div>
           <DialogDescription className="flex items-center gap-1.5">
@@ -138,6 +148,14 @@ export function PPIReportModal({
         ) : report ? (
           <FunctionalSkillsReportView report={report} />
         ) : null}
+
+        {/* Assessment video (2026-09-05 dashboard/video spec section 20).
+            BESIDE the report, never inside it: the PRISM Report's section
+            order is fixed and test-pinned, and the video is a separate,
+            consented artifact whose availability changes over time. Rendered
+            from its own live metadata route even while the report itself
+            failed to load, because the video question is independent. */}
+        {!loading && linkId ? <AssessmentVideoSection linkId={linkId} /> : null}
       </DialogContent>
     </Dialog>
   );

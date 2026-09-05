@@ -150,6 +150,19 @@ class DashboardRowOut(BaseModel):
     under_integrity_review: bool = False
     archived: bool = False
 
+    # Assessment/video metadata (2026-09-05 dashboard/video spec §3-5).
+    # Availability WORDS only, beside the eight columns: "Video interview" /
+    # "Conversational" / "Not started" for the mode, Available / Processing /
+    # Not available for the two reports, and Ready / Processing / Failed /
+    # No recording for the video. No score, no lifecycle identifier, no
+    # object key; the media itself is reached only through the audited
+    # /videos routes.
+    assessment_mode: str | None = None
+    assessment_mode_label: str = "Not started"
+    prism_report_status: str = "Not available"
+    proctoring_report_status: str = "Not available"
+    video_status: str = "No recording"
+
 
 class DashboardControlsOut(BaseModel):
     """What THIS caller may do, resolved server-side from RBAC.

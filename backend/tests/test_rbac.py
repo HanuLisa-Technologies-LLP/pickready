@@ -104,6 +104,10 @@ def test_the_flat_model_diverges_only_where_24_says_so() -> None:
         ASSIGN_ROLES,
         # spec-doc6 C7: HR Manager by right, Super Admin by audited override.
         INTEGRITY_DISPOSITION,
+        # 2026-09-05 Corporate Email System spec: registering and verifying a
+        # corporate sender is manager-level work (the organisation-wide pair),
+        # not the Recruiter's; ACTIVATING one stays the Super Admin's alone.
+        "manage_email_senders",
     }
     assert differing == expected, (
         "the Recruiter and HR Manager grants diverge somewhere RBAC 24 does "

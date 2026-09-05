@@ -638,6 +638,18 @@ export interface RankedCandidate {
   education_label?: MatchingLabel | null;
   overall_label?: MatchingLabel | null;
   validation_answers: ValidationAnswer[];
+  /** How the assessment was conducted: 'conversational' | 'video_interview',
+   *  or null before any session opens (2026-09-05 dashboard/video spec 4.1). */
+  assessment_mode?: AssessmentMode | null;
+  /** "Video interview" / "Conversational" / "Not started", server-rendered. */
+  assessment_mode_label?: string;
+  /** PRISM Report availability word: Available / Processing / Not available. */
+  prism_report_status?: string;
+  /** Proctoring Report availability word, same vocabulary. */
+  proctoring_report_status?: string;
+  /** "Ready" / "Processing" / "Failed" / "No recording". Metadata only; the
+   *  words come from the server so the table never invents a state. */
+  video_status?: string;
 }
 
 export interface RankedCandidatesResponse {
@@ -948,6 +960,11 @@ export interface PortalJob {
   level?: string;
   tenant_name?: string;
   company_name?: string;
+  /**
+   * Slug of the employer's PUBLIC page (/employers/{slug}); null whenever the
+   * page is hidden, so the portal never links to a URL that 404s.
+   */
+  company_slug?: string | null;
   /** Present on the single-job read; the list endpoint may omit it. */
   jd?: Record<string, unknown> | null;
   jd_json?: Record<string, unknown> | null;
@@ -1273,4 +1290,248 @@ export interface ProctoringReport {
    *  analysis means the report describes less than the whole session. */
   monitoring_was_incomplete: boolean;
   generated_at: string;
+}
+
+/* ── Talent Intelligence dashboards (2026-09-05 spec, sections 2-5) ──────────
+ * Operational metrics only: latencies, ratios, compliance percentages. No
+ * per-candidate assessment score, numeric grade or match percentage ever
+ * travels through these types; candidate quality reaches a client only as
+ * the four grade words, elsewhere. */
+
+/** Server-decided health WORD; the client renders it and never re-bands. */
+export type IntelligenceHealth = "green" | "amber" | "red" | "no_data";
+
+export interface IntelligenceMetric {
+  metric_id: string;
+  title: string;
+  formula: string;
+  unit: string;
+  thresholds: string;
+  proxy_note: string | null;
+  value: number | null;
+  status: IntelligenceHealth;
+  /** Set exactly when status is no_data: the plain-language reason there is
+   *  nothing to show, rendered instead of a fabricated zero. */
+  status_reason: string | null;
+  inputs: Record<string, unknown>;
+  segments?: Record<string, number | null> | null;
+}
+
+export type IntelligenceTier = "A" | "B" | "C" | "D";
+
+export interface IntelligenceDashboardSummary {
+  key: string;
+  title: string;
+  tier: IntelligenceTier;
+  tier_title: string;
+  audience: string;
+  description: string;
+  metric_ids: string[];
+  /** Widgets the product can measure today; a measurable widget can still be
+   *  no_data for a tenant with no rows yet. */
+  metrics_measurable: number;
+  metrics_total: number;
+}
+
+export interface IntelligenceDashboardTierGroup {
+  tier: IntelligenceTier;
+  title: string;
+  dashboards: IntelligenceDashboardSummary[];
+}
+
+export interface IntelligenceDashboardIndex {
+  tiers: IntelligenceDashboardTierGroup[];
+}
+
+export interface IntelligenceDashboardDetail {
+  key: string;
+  title: string;
+  tier: IntelligenceTier;
+  tier_title: string;
+  audience: string;
+  description: string;
+  widgets: IntelligenceMetric[];
+}
+
+export interface IntelligenceAlert {
+  id: string;
+  severity: "red" | "amber";
+  title: string;
+  detail: string;
+  link_path: string | null;
+}
+
+export interface IntelligenceAlerts {
+  alerts: IntelligenceAlert[];
+  computed_at: string;
+}
+
+// ── Background verification (add-features spec 2026-09-05) ────────────────
+
+export type BgvDomainMatch = "matched" | "mismatched" | "indeterminate";
+
+export type BgvInquiryStatus =
+  | "collected"
+  | "dispatched"
+  | "dispatch_failed"
+  | "response_received"
+  | "parsed"
+  | "parse_failed";
+
+export interface BgvShareConsent {
+  tenant_id: string;
+  tenant_name: string | null;
+  consented_at: string;
+}
+
+export interface BgvInquiry {
+  id: string;
+  employer_name: string;
+  departmental_email: string;
+  domain_match_result: BgvDomainMatch;
+  status: BgvInquiryStatus;
+  inquiry_sent_at: string | null;
+  response_received_at: string | null;
+  /** The seven parsed reply fields once extraction succeeds, else null. */
+  parsed_fields: Record<string, string | boolean | null> | null;
+  consents: BgvShareConsent[];
+}
+
+export interface BgvShareableTenant {
+  tenant_id: string;
+  tenant_name: string | null;
+}
+
+export interface BgvList {
+  inquiries: BgvInquiry[];
+  shareable_tenants: BgvShareableTenant[];
+  can_add: boolean;
+}
+
+/* ── Corporate email senders (Corporate Email System spec, 2026-09-05) ───── */
+
+export type EmailSenderStatus =
+  | "pending_verification"
+  | "email_verified"
+  | "active"
+  | "verification_expired"
+  | "disabled"
+  | "revoked";
+
+export interface EmailSender {
+  id: string;
+  name: string;
+  email: string;
+  status: EmailSenderStatus;
+  email_verified: boolean;
+  authorized_by: string | null;
+  authorized_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EmailSenderList {
+  senders: EmailSender[];
+  can_manage: boolean;
+  can_authorize: boolean;
+}
+
+/** The code itself is never in a response; it travels only to the mailbox. */
+export interface EmailSenderOtpIssue {
+  sender_id: string;
+  status: EmailSenderStatus;
+  resend_cooldown_seconds: number;
+  expires_in_seconds: number;
+}
+
+export interface EmailSenderVerifyResult {
+  verified: boolean;
+  reason: string;
+  attempts_remaining: number;
+  status: EmailSenderStatus;
+}
+
+// ── Dual-mode assessment (2026-09-05 spec) ──────────────────────────────────
+
+export type AssessmentMode = "conversational" | "video_interview";
+
+/** One mode's consent terms, exactly as the server will stamp them. */
+export interface AssessmentConsentTerms {
+  assessment_mode: AssessmentMode;
+  text: string;
+  consent_version: string;
+  privacy_policy_version: string;
+  terms_version: string;
+}
+
+/** Where the session stands in the mode/consent flow. */
+export interface AssessmentModeState {
+  mode: AssessmentMode;
+  mode_frozen: boolean;
+  consented: boolean;
+  consent: AssessmentConsentTerms;
+}
+
+export interface VideoInterviewQuestion {
+  ordinal: number;
+  prompt: string;
+  question: {
+    id: string;
+    question_type: string;
+    payload: Record<string, unknown>;
+    time_allocation_seconds: number;
+  };
+}
+
+export interface VideoInterviewStart {
+  conversation_id: string;
+  recording_id: string;
+  status: string;
+  questions: VideoInterviewQuestion[];
+  max_upload_bytes: number;
+  max_duration_seconds: number;
+}
+
+export interface VideoRecordingStatus {
+  recording_id: string;
+  status: string;
+  message: string;
+  can_retry_upload: boolean;
+}
+
+// ── Client-portal video access (2026-09-05 dashboard/video spec 15-18) ──────
+
+/** GET /videos/links/{link_id}: one application's video facts. Metadata only;
+ *  no bucket, no object key, no score ever appears here. */
+export interface VideoAccess {
+  job_candidate_link_id: string;
+  /** Null when no recording exists (every conversational session today). */
+  recording_id: string | null;
+  assessment_mode: AssessmentMode | null;
+  /** "Video interview" / "Conversational" / "Not started". */
+  assessment_mode_label: string;
+  /** "Ready" / "Processing" / "Failed" / "No recording". */
+  video_status: string;
+  /** One client-facing sentence explaining the word above. */
+  video_status_detail: string;
+  /** Set only once the recording is ready; null is "not known yet". */
+  duration_seconds: number | null;
+  compressed_size_bytes: number | null;
+  /** Whether POST .../preview will mint a URL right now. */
+  preview_available: boolean;
+  /** Preview availability AND the candidate's download consent. */
+  download_available: boolean;
+  /** Why download is withheld while preview works; null otherwise. */
+  download_blocked_reason: string | null;
+  /** Whether the retry endpoint would accept this recording. */
+  can_retry: boolean;
+}
+
+/** POST /videos/links/{link_id}/preview or /download: one minted short-lived
+ *  URL. Returned once, expires on the server's clock, never stored. */
+export interface VideoDelivery {
+  url: string;
+  expires_in_seconds: number;
+  disposition: "inline" | "attachment";
+  filename: string | null;
 }

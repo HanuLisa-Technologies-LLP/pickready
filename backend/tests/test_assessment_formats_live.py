@@ -134,6 +134,7 @@ async def _seed(factory, fx: _Fx, *, with_proctoring: bool = True) -> None:
         JobCompetency,
     )
     from app.models.candidate import JobCandidateLink, Profile
+    from app.models.dual_mode import AssessmentConsent
     from app.models.proctoring import OUTCOME_ACTIVE, ProctoringSession
 
     now = datetime.now(timezone.utc)
@@ -190,6 +191,22 @@ async def _seed(factory, fx: _Fx, *, with_proctoring: bool = True) -> None:
                     invitation_sent_at=now,
                 ))
                 await s.flush()
+                # ASSESSMENT CONSENT IS MANDATORY (dual-mode spec 3.1, beside
+                # the proctoring consent below and distinct from it). The
+                # start route refuses without a consent row for this session
+                # and mode, so the fixture seeds what the consent screen
+                # would have recorded. Seeded unconditionally: the
+                # no-proctoring test still asserts the PROCTORING refusal,
+                # which runs first.
+                s.add(AssessmentConsent(
+                    tenant_id=fx.tenant_id, candidate_id=fx.cand_id,
+                    conversation_id=fx.conv_id,
+                    job_candidate_link_id=fx.link_id,
+                    assessment_mode="conversational",
+                    consent_status="granted", consented_at=now,
+                    consent_version="test", privacy_policy_version="test",
+                    terms_version="test",
+                ))
                 if with_proctoring:
                     s.add(ProctoringSession(
                         id=fx.proctoring_id, tenant_id=fx.tenant_id,

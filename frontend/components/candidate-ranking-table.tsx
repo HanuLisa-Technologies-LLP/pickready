@@ -3,9 +3,10 @@
 // The inline candidate ranking table (spec §2). Lives ON the job page, there
 // is no separate review screen any more.
 //
-// Columns (new spec, 2026-07-28):
-//   Name | Type of Procurement | Status | Resume | AI Rating & Report |
-//   PRISM Report | Decision
+// Columns (new spec, 2026-07-28; Assessment added by the 2026-09-05
+// dashboard/video spec):
+//   Name | Type of Procurement | Status | Assessment | Resume |
+//   AI Rating & Report | PRISM Report | Q&A | Validation | Decision
 //
 // Changes the client asked for on 2026-07-28:
 //   * Level column removed. The grade is a property of the JOB, so printing it
@@ -239,7 +240,7 @@ export function CandidateRankingTable({
   // Keep the empty-state cell spanning the WHOLE table as columns come and go
   // with the caller's capabilities, a hardcoded span leaves a ragged row.
   const selectable = Boolean(onEmail || onSelectionChange);
-  const columnCount = 8 + (selectable ? 1 : 0) + (canDecide ? 2 : 0);
+  const columnCount = 9 + (selectable ? 1 : 0) + (canDecide ? 2 : 0);
   const selectedRows = rows.filter((r) => selected.has(r.link_id));
 
   /**
@@ -376,7 +377,7 @@ export function CandidateRankingTable({
       {/* Horizontal scroll on narrow screens (spec §10), the page body itself
           must never scroll sideways. */}
       <div className="overflow-x-auto rounded-lg border">
-        <Table className="min-w-[900px]">
+        <Table className="min-w-[1020px]">
           <TableHeader>
             <TableRow>
               {selectable ? (
@@ -399,6 +400,10 @@ export function CandidateRankingTable({
               <TableHead className="w-[200px]">Name</TableHead>
               <TableHead className="w-[130px]">Type of Procurement</TableHead>
               <TableHead className="w-[150px]">Status</TableHead>
+              {/* How the assessment was conducted and whether its recording is
+                  there to watch (2026-09-05 dashboard/video spec 4.1 / 4.4).
+                  Metadata words from the server; this file computes nothing. */}
+              <TableHead className="w-[140px]">Assessment</TableHead>
               <TableHead className="w-[110px]">Resume</TableHead>
               <TableHead className="w-[180px]">
                 AI Rating &amp; Report
@@ -503,6 +508,31 @@ export function CandidateRankingTable({
                   </TableCell>
                   <TableCell className="pt-4">
                     <StageBadge status={row.status} short />
+                  </TableCell>
+                  <TableCell className="pt-4">
+                    {/* Mode word, then the video word underneath. Both come
+                        from the server; "Ready" is teal because a watchable
+                        recording is evidence, and the empty states stay plain
+                        words because they are normal, not warnings. */}
+                    <span className="inline-block whitespace-nowrap rounded border border-border bg-muted px-1.5 py-0.5 text-[11px] font-medium leading-tight">
+                      {row.assessment_mode_label ?? "Not started"}
+                    </span>
+                    <span
+                      className={
+                        "mt-1 block text-xs " +
+                        (row.video_status === "Ready"
+                          ? "font-medium text-teal-700"
+                          : "")
+                      }
+                    >
+                      {row.video_status === "Ready"
+                        ? "Video ready"
+                        : row.video_status === "Processing"
+                          ? "Video processing"
+                          : row.video_status === "Failed"
+                            ? "Video failed"
+                            : "No video"}
+                    </span>
                   </TableCell>
                   <TableCell className="pt-4">
                     <Button

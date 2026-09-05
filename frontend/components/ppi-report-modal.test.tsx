@@ -4,14 +4,28 @@ import * as React from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const { apiGet } = vi.hoisted(() => ({ apiGet: vi.fn() }));
+const { apiGet, toastApi } = vi.hoisted(() => ({
+  apiGet: vi.fn(),
+  // Stable across renders: the real useToast returns a stable `toast`, and the
+  // modal lists it in its fetch effect's dependency array. A mock minting a
+  // fresh function every render re-runs that effect after each render, which
+  // resets the loaded report and makes every "after the fetch" assertion racy.
+  toastApi: { toast: vi.fn() },
+}));
 
 vi.mock("@/lib/api", () => ({ apiGet }));
 vi.mock("@/components/ui/toast", () => ({
-  useToast: () => ({ toast: vi.fn() }),
+  useToast: () => toastApi,
 }));
 vi.mock("@/components/functional-skills-report", () => ({
   FunctionalSkillsReportView: () => <div>Rendered report</div>,
+}));
+// Mocked so these tests stay about the modal: the section has its own fetch
+// (the video metadata route), which would otherwise consume the mocked apiGet.
+vi.mock("@/components/assessment-video-section", () => ({
+  AssessmentVideoSection: ({ linkId }: { linkId: string }) => (
+    <div>Assessment video section for {linkId}</div>
+  ),
 }));
 vi.mock("@/components/ui/dialog", () => ({
   Dialog: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -45,6 +59,7 @@ describe("PPIReportModal PDF export", () => {
       overall_grade: "Matching",
       overall_summary: "Evidence summary",
       synthesized_at: "2026-08-07T00:00:00Z",
+      report_download_allowed: true,
     });
 
     render(
@@ -63,6 +78,42 @@ describe("PPIReportModal PDF export", () => {
       "/api/v2/assessments/reports/links/link-1/pdf"
     );
     expect(link.hasAttribute("download")).toBe(true);
+  });
+
+  it("shows view-only instead of a dead Download button without retention consent", async () => {
+    // Consent & Privacy spec (2026-09-05): the candidate chose "this job
+    // only" (or was never asked), so the server answers 403 on the PDF route.
+    // The UI must say why rather than offer a button that fails.
+    apiGet.mockResolvedValue({
+      id: "report-1",
+      job_candidate_link_id: "link-1",
+      reference_code: "K7QP-2M4X-9TB1",
+      ai_score: [],
+      must_have: [],
+      nice_to_have: [],
+      behavioural: [],
+      validation: {},
+      radar_charts: [],
+      overall_grade: "Matching",
+      overall_summary: "Evidence summary",
+      synthesized_at: "2026-09-05T00:00:00Z",
+      report_download_allowed: false,
+    });
+
+    render(
+      <PPIReportModal
+        open
+        onOpenChange={() => undefined}
+        linkId="link-1"
+        candidateName="Fixture Candidate"
+        jobTitle="Platform Engineer"
+      />
+    );
+
+    expect(
+      await screen.findByText(/View only, at the candidate's request/i)
+    ).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Download PDF/i })).toBeNull();
   });
 
   it("heads the document with the PRISM name and its expansion", async () => {
@@ -106,6 +157,38 @@ describe("PPIReportModal PDF export", () => {
     // real defect.
     expect(
       await screen.findByText("K7QP-2M4X-9TB1", {}, { timeout: 5000 })
+    ).toBeTruthy();
+  });
+
+  it("carries the Assessment video section beside the report", async () => {
+    // 2026-09-05 dashboard/video spec section 20: the Executive Profile
+    // surface gains the video component BESIDE the PRISM Report, never as a
+    // ninth report section (the report's section order is fixed and pinned).
+    apiGet.mockResolvedValue({
+      id: "report-1",
+      job_candidate_link_id: "link-1",
+      ai_score: [],
+      must_have: [],
+      nice_to_have: [],
+      behavioural: [],
+      validation: {},
+      radar_charts: [],
+      overall_grade: "Matching",
+      overall_summary: "Evidence summary",
+      synthesized_at: "2026-09-05T00:00:00Z",
+    });
+
+    render(
+      <PPIReportModal
+        open
+        onOpenChange={() => undefined}
+        linkId="link-1"
+        candidateName="Fixture Candidate"
+      />
+    );
+
+    expect(
+      await screen.findByText("Assessment video section for link-1")
     ).toBeTruthy();
   });
 });

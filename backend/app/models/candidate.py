@@ -38,6 +38,25 @@ class Candidate(Base, UUIDPKMixin, CreatedAtMixin):
     gender: Mapped[str | None] = mapped_column(String(30))
     consent_databank: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # ── Data-retention consents (migration 0083, Consent & Privacy spec
+    #    2026-09-05) ─────────────────────────────────────────────────────────
+    # Same boolean-with-timestamp pattern the proctoring session uses for its
+    # consent stamp, stored beside `consent_databank` because they answer the
+    # same class of question. Semantics of each pair:
+    #   True  = retain for future jobs (client portal Download enabled)
+    #   False = this job only (View-only)
+    #   NULL  = never asked, treated as False, the safe direction
+    # Read ONLY through services/retention_consent.py so the NULL rule cannot
+    # drift between the PDF route, the serializer and video delivery.
+    retain_assessment_consent: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    retain_assessment_consented_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retain_video_consent: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    retain_video_consented_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # ── Unified candidate profile (migration 0015) ───────────────────────────
     # The 40 validation aspects, answered ONCE here as a structured form rather
     # than re-asked inside every job's assessment conversation (client decision,

@@ -148,6 +148,11 @@ export interface FunctionalReport {
   proctoring?: ProctoringReport | null;
   synthesized_at: string;
   immutable?: boolean;
+  /** Whether the candidate consented to their assessment being retained for
+   *  future jobs: Download offered only when true, View-only otherwise. The
+   *  server enforces the same rule on the PDF route, this flag just keeps the
+   *  UI from offering a button the server would refuse. */
+  report_download_allowed?: boolean;
 }
 
 interface ValidationField {

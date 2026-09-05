@@ -185,12 +185,14 @@ async def _capture_sender(monkeypatch, *, tenant, environment):
     captured = {}
 
     async def _fake_smtp(
-        from_email, from_name, to, subject, html, text=None, attachments=None
+        from_email, from_name, to, subject, html, text=None, attachments=None,
+        reply_to=None,
     ):
         captured["from"] = from_email
         captured["from_name"] = from_name
         captured["html"] = html
         captured["text"] = text
+        captured["reply_to"] = reply_to
         return "msg_123"
 
     async def _fake_render(session, tid, name, ctx):
@@ -207,6 +209,9 @@ async def _capture_sender(monkeypatch, *, tenant, environment):
             environment=environment,
             smtp_from_email="sender@gmail.com",
             smtp_from_name="PickReady",
+            # ONE transport per deployment (Corporate Email System spec,
+            # 2026-09-05); "smtp" is the default these tests exercise.
+            email_transport="smtp",
         ),
     )
     monkeypatch.setattr(tasks, "_audit", _fake_audit)
@@ -231,7 +236,7 @@ async def test_sender_tenant_verified_still_uses_gmail(monkeypatch):
     captured = await _capture_sender(monkeypatch, tenant=tenant, environment="production")
     assert captured["from"] == "sender@gmail.com"
     assert captured["from_name"] == "PickReady"
-    assert captured["audit"]["sender_path"] == "gmail"
+    assert captured["audit"]["sender_path"] == "smtp"
 
 
 @pytest.mark.asyncio
@@ -241,7 +246,7 @@ async def test_sender_tenant_unverified_uses_gmail(monkeypatch):
     )
     captured = await _capture_sender(monkeypatch, tenant=tenant, environment="production")
     assert captured["from"] == "sender@gmail.com"
-    assert captured["audit"]["sender_path"] == "gmail"
+    assert captured["audit"]["sender_path"] == "smtp"
 
 
 @pytest.mark.asyncio
@@ -252,7 +257,7 @@ async def test_sender_verified_development_uses_gmail(monkeypatch):
     captured = await _capture_sender(monkeypatch, tenant=tenant, environment="development")
     # Even a verified domain must not send from the tenant in development.
     assert captured["from"] == "sender@gmail.com"
-    assert captured["audit"]["sender_path"] == "gmail"
+    assert captured["audit"]["sender_path"] == "smtp"
 
 
 @pytest.mark.asyncio
@@ -260,7 +265,7 @@ async def test_sender_tenant_none_does_not_crash(monkeypatch):
     # Platform users (Owner OTP) have tenant_id=None — this was a real past bug.
     captured = await _capture_sender(monkeypatch, tenant=None, environment="production")
     assert captured["from"] == "sender@gmail.com"
-    assert captured["audit"]["sender_path"] == "gmail"
+    assert captured["audit"]["sender_path"] == "smtp"
     # html body is derived from the plain-text body and sent alongside text.
     assert captured["text"] == "body"
     assert "body" in captured["html"]

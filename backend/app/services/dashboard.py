@@ -61,6 +61,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import assessment_video_access as video_access
 from app.services import hiring_pipeline, rating
 from app.services.hiring import gates as hiring_gates
 from app.services.hiring import prescreen
@@ -555,6 +556,17 @@ class DashboardRow:
     own_verdict: str | None
     own_verdict_at: Any | None
 
+    # ── Assessment/video metadata (2026-09-05 dashboard/video spec §3-5) ─────
+    # Availability WORDS beside the eight columns, never inside them:
+    # `COLUMNS` is the specification's fixed scanning order and stays eight.
+    # Defaults are the honest empty state (no session, no recording), which is
+    # also what a queried row from before these columns existed reads as.
+    assessment_mode: str | None = None
+    assessment_mode_label: str = video_access.MODE_NOT_STARTED_LABEL
+    prism_report_status: str = video_access.REPORT_NOT_AVAILABLE
+    proctoring_report_status: str = video_access.REPORT_NOT_AVAILABLE
+    video_status: str = video_access.VIDEO_NONE
+
 
 @dataclass(frozen=True)
 class DashboardPage:
@@ -624,6 +636,27 @@ _UNDER_REVIEW_SQL = """
             SELECT 1 FROM review_dispositions rd WHERE rd.evaluation_id = eval.id
         )
     )
+"""
+
+#: Assessment mode + latest recording, one lateral each (2026-09-05
+#: dashboard/video spec §3-5). METADATA ONLY: rows, never S3, never media
+#: work, fetched inside the same single statement as everything else so the
+#: page stays one query with no per-row read.
+_ASSESSMENT_VIDEO_JOINS = """
+    LEFT JOIN LATERAL (
+        SELECT ac.mode, ac.status
+        FROM assessment_conversations ac
+        WHERE ac.job_candidate_link_id = link.id
+        ORDER BY ac.created_at DESC, ac.id DESC
+        LIMIT 1
+    ) conv ON true
+    LEFT JOIN LATERAL (
+        SELECT vr.status
+        FROM video_recordings vr
+        WHERE vr.job_candidate_link_id = link.id
+        ORDER BY vr.created_at DESC, vr.id DESC
+        LIMIT 1
+    ) vid ON true
 """
 
 #: Ranks for the two sorts that must not be alphabetical.
@@ -760,6 +793,7 @@ async def candidates_page(
         JOIN candidates cand ON cand.id = link.candidate_id
         JOIN jobs job ON job.id = link.job_id
         {_LATEST_EVALUATION}
+        {_ASSESSMENT_VIDEO_JOINS}
         WHERE {where}
     """
 
@@ -814,7 +848,27 @@ async def candidates_page(
                     (SELECT tr.updated_at FROM candidate_team_reviews tr
                       WHERE tr.job_candidate_link_id = link.id
                         AND tr.reviewer_user_id = :viewer_id)
-                                           AS own_verdict_at
+                                           AS own_verdict_at,
+                    -- Assessment/video metadata (2026-09-05 dashboard/video
+                    -- spec §3-5): presence facts the assembly turns into the
+                    -- availability WORDS. No media, no S3, same statement.
+                    conv.mode              AS assessment_mode,
+                    conv.status            AS conversation_status,
+                    vid.status             AS video_recording_status,
+                    EXISTS (
+                        SELECT 1 FROM functional_skills_reports fsr
+                         WHERE fsr.job_candidate_link_id = link.id
+                    )                      AS has_prism_report,
+                    EXISTS (
+                        SELECT 1 FROM proctoring_reports pr
+                        JOIN proctoring_sessions psess
+                          ON psess.id = pr.proctoring_session_id
+                         WHERE psess.job_candidate_link_id = link.id
+                    )                      AS has_proctoring_report,
+                    EXISTS (
+                        SELECT 1 FROM proctoring_sessions psess2
+                         WHERE psess2.job_candidate_link_id = link.id
+                    )                      AS has_proctoring_session
                 {base}
                 ORDER BY {_order_by(sort, direction)}
                 LIMIT :limit OFFSET :offset
@@ -932,6 +986,22 @@ def assemble_row(row: Mapping[str, Any]) -> DashboardRow:
         team_review_count=int(row.get("team_review_count") or 0),
         own_verdict=row.get("own_verdict"),
         own_verdict_at=row.get("own_verdict_at"),
+        # Assessment/video metadata (2026-09-05 dashboard/video spec §3-5).
+        # `.get()` throughout: a mapping without these keys is the honest
+        # empty state (no session, no recording), never an error.
+        assessment_mode=row.get("assessment_mode"),
+        assessment_mode_label=video_access.mode_label(row.get("assessment_mode")),
+        prism_report_status=video_access.prism_status_word(
+            has_report=bool(row.get("has_prism_report")),
+            conversation_status=row.get("conversation_status"),
+        ),
+        proctoring_report_status=video_access.proctoring_status_word(
+            has_proctoring_report=bool(row.get("has_proctoring_report")),
+            has_proctoring_session=bool(row.get("has_proctoring_session")),
+        ),
+        video_status=video_access.video_status_word(
+            row.get("video_recording_status")
+        ),
     )
 
 

@@ -681,6 +681,23 @@ class RankedCandidateOut(BaseModel):
     has_report: bool = False
     report_ready_at: datetime | None = None
 
+    # ── Assessment/video metadata (2026-09-05 dashboard/video spec §3-5) ─────
+    #: 'conversational' | 'video_interview', null before any session opens.
+    assessment_mode: str | None = None
+    #: "Video interview" / "Conversational" / "Not started".
+    assessment_mode_label: str = "Not started"
+    #: PRISM Report availability word: Available / Processing / Not available.
+    #: Derived from the same report presence `has_report` reads; the words are
+    #: the spec's dashboard vocabulary, never a lifecycle identifier.
+    prism_report_status: str = "Not available"
+    #: Proctoring Report availability word, from the EXISTING proctoring
+    #: report presence (spec 4.3: reuse, never recreate).
+    proctoring_report_status: str = "Not available"
+    #: "Ready" / "Processing" / "Failed" / "No recording". Metadata only: the
+    #: table query reads rows, never S3, and a conversational session with no
+    #: recording honestly reads "No recording".
+    video_status: str = "No recording"
+
     # ── Type of procurement (2026-07-28) ─────────────────────────────────────
     #: applied | sourced | databank. Display and filtering ONLY: all three go
     #: through identical parsing, matching and assessment.

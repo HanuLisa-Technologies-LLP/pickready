@@ -313,6 +313,12 @@ def _row_out(row: dashboard_service.DashboardRow) -> DashboardRowOut:
         stored_status=row.stored_status,
         under_integrity_review=row.under_integrity_review,
         archived=row.archived,
+        # Assessment/video metadata (2026-09-05 dashboard/video spec §3-5).
+        assessment_mode=row.assessment_mode,
+        assessment_mode_label=row.assessment_mode_label,
+        prism_report_status=row.prism_report_status,
+        proctoring_report_status=row.proctoring_report_status,
+        video_status=row.video_status,
     )
 
 

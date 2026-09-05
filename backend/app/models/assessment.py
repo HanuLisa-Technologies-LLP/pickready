@@ -345,6 +345,18 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
     next_question_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # ── Assessment mode (migration 0081, dual-mode spec section 2) ───────────
+    # Which input mechanism this session uses: 'conversational' (the existing
+    # typed conversation) or 'video_interview' (spoken answers, recorded,
+    # transcribed and structured into the SAME records the scorers read).
+    # The server default keeps every legacy row truthful: those sessions were
+    # conversational. Frozen once `started_at` is stamped -- switching input
+    # mechanisms mid-assessment would leave half the evidence in each channel.
+    mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="conversational",
+        server_default="conversational",
+    )
+
     # ── Adaptive follow-up state (migration 0038) ────────────────────────────
     # A follow-up is GENERATED when one answer is submitted and ANSWERED on the
     # next request, so it has to survive between the two. It deliberately does
