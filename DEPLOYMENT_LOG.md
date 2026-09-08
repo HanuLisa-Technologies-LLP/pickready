@@ -708,3 +708,80 @@ standing rules.
   Git Bash on Windows (curl.exe and MSYS disagree about `/tmp`); run it from
   Linux/CI, or verify the openapi and `/auth/me` shapes directly as this
   release's verification did.
+
+---
+
+## 2026-09-09 — Company DNA removed, pilot (ap-south-2)
+
+Commit `9dd2d95` (the images) on `feat/ses-sns-delivery-tracking`. Every commit
+after it in this release changes only tests, fixtures and one frontend comment;
+`git diff --stat 9dd2d95 HEAD -- backend/app backend/alembic frontend/app
+frontend/components frontend/lib` is two lines of comment, so the running bytes
+are the tested bytes.
+
+### What was deployed, and how it was proven
+
+| | |
+|---|---|
+| Backend image | `backend:sha-9dd2d95958d2` @ `sha256:297e34c9c3ea3881b26d79539e9fcac7093d6613f7d6cb02551936d80f593b1b` |
+| Lambda sibling | `backend:sha-9dd2d95958d2-fn` @ `sha256:d4f171300831cebfc27003642c2b124ae749d3355bd053e9fc765f302681d20f` |
+| Frontend image | `frontend:sha-9dd2d95958d2` @ `sha256:386739abe4cf785a0ac7146b405f1219186dfc0265f412ca8833410c22e33946` |
+| Task definitions | api:21, frontend:13, migrate:18, analysis re-registered on its pinned `93ebfcb` |
+| Migration | 0088_remove_company_dna, one-shot task `683a5df5909c4bfc91ac41b44d460050`, exit 0 |
+
+`verify-deployment.sh` per-service lines: api 4 containers all on the backend
+digest, frontend 2 on the frontend digest, analysis NO RUNNING TASKS. Its exit
+code is still FAILED and still for the standing reason: the account's Fargate
+vCPU quota is 4 and analysis wants 2 vCPU per task. Read the lines, not the
+exit code. Both ALB target groups: all targets healthy.
+
+### The check that actually proves the release
+
+The OpenAPI document, before and after, against the live site:
+
+    before: 284 paths, 6 of them /api/v1/clients/{client_id}/company-dna*
+    after:  278 paths, zero
+
+and `GET /api/v1/clients/<uuid>/company-dna/status`, a live route an hour
+earlier, now answers 404. `POST /jobs` and `GET /companies/me/profile` both
+answer 401 unauthenticated, which is reachable-and-gated rather than gone.
+
+### THE REGION DEFAULT COST A STEP, AND IT IS FIXED
+
+`run-migration.sh` defaulted to `AWS_REGION=ap-south-1` while the pilot lives
+in ap-south-2, so the migration answered **"TaskDefinition not found"** -- which
+reads as a broken deploy rather than as a lookup in an empty region.
+`verify-deployment.sh` carried the same default; `deploy-services.sh` and
+`update-lambda-code.sh` carried the opposite one. All four now read
+`AWS_REGION`, then `AWS_DEFAULT_REGION`, then the CLI's own configured region,
+and REFUSE by name when none of them says. spec-doc6 D5 removes the assumption
+by name; a default here was that assumption, hardcoded in four places, in two
+directions.
+
+### THE FRONTEND IMAGE NEEDS BUILD ARGS THAT THIS FILE DID NOT RECORD
+
+`frontend/Dockerfile` refuses without `NEXT_PUBLIC_FIREBASE_API_KEY` and
+`NEXT_PUBLIC_FIREBASE_PROJECT_ID`, and the values live in
+`frontend/.env.local`. A build without them fails inside `npm run build`
+rather than at the guard, because buildx serves the guard's RUN layer from
+cache. The working command:
+
+    set -a; . frontend/.env.local; set +a
+    docker buildx build --platform linux/arm64 --provenance=false --sbom=false --push \
+      --build-arg NEXT_PUBLIC_FIREBASE_API_KEY="$NEXT_PUBLIC_FIREBASE_API_KEY" \
+      --build-arg NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN="$NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN" \
+      --build-arg NEXT_PUBLIC_FIREBASE_PROJECT_ID="$NEXT_PUBLIC_FIREBASE_PROJECT_ID" \
+      --build-arg NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET="$NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET" \
+      --build-arg NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID="$NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID" \
+      --build-arg NEXT_PUBLIC_FIREBASE_APP_ID="$NEXT_PUBLIC_FIREBASE_APP_ID" \
+      -t "<registry>/readypick-pilot/frontend:$TAG" frontend
+
+A stale `frontend/.next-dev/` also fails the build's type check against routes
+that no longer exist. `.dockerignore` excludes it from the image, but it fails
+a LOCAL `npm run build`, which is where the deleted page surfaced first.
+
+### Things this release did NOT do
+
+- No `terraform apply` outside the two `-target`ed resources.
+- `analysis_image_tag` stayed pinned at `93ebfcb`; nothing rebuilt it.
+- The vCPU quota case is still open; analysis still has no running task.
