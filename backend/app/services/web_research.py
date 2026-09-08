@@ -668,6 +668,37 @@ def _normalise_url(value: object) -> str | None:
     return url
 
 
+#: Best first. The judge returns a word, and a rep scanning a page of two dozen
+#: companies should meet the strongest evidence at the top rather than in
+#: whatever order a search engine happened to rank pages.
+_CONFIDENCE_ORDER: dict[str, int] = {
+    "Highly Matching": 0,
+    "Matching": 1,
+    "Moderately Matching": 2,
+    "Not Matching": 3,
+}
+
+
+def _dedupe_by_company(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One card per employer, keeping the best-evidenced one.
+
+    Deduplication upstream is by URL, which is the right key for a PAGE and
+    the wrong one for a COMPANY: careers.fisglobal.com and www.fisglobal.com
+    are two URLs and one employer, and a rep reading "FIS Global" twice learns
+    nothing the second time and trusts the list less.
+    """
+    best: dict[str, dict[str, Any]] = {}
+    for card in cards:
+        key = str(card.get("company") or "").casefold().strip()
+        if not key:
+            continue
+        rank = _CONFIDENCE_ORDER.get(card.get("confidence_label"), 3)
+        held = best.get(key)
+        if held is None or rank < _CONFIDENCE_ORDER.get(held.get("confidence_label"), 3):
+            best[key] = card
+    return list(best.values())
+
+
 def shape_cards(evaluated: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Turn verified results into card dicts, dropping the unusable ones.
 
@@ -721,9 +752,14 @@ def shape_cards(evaluated: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if value:
                     card[key] = value
                     card["contact_source_url"] = contact_source_url
-        if len(cards) >= MAX_CARDS:
-            break
-    return cards
+    # DEDUPE THEN ORDER THEN CAP, in that order, and the order matters: capping
+    # first would spend the ceiling on duplicates of one employer, and ordering
+    # after capping would sort an already-arbitrary subset.
+    unique = _dedupe_by_company(cards)
+    unique.sort(
+        key=lambda card: _CONFIDENCE_ORDER.get(card.get("confidence_label"), 3)
+    )
+    return unique[:MAX_CARDS]
 
 
 # ── The graph ────────────────────────────────────────────────────────────────

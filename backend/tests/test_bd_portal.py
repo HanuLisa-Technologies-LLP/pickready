@@ -984,3 +984,42 @@ def test_the_stage_timeouts_fit_inside_the_search_budget() -> None:
     )
     assert worst_case < web_research.SEARCH_BUDGET_SECONDS
     assert web_research.SEARCH_BUDGET_SECONDS < 65
+
+
+def test_one_card_per_employer_keeping_the_best_evidenced_one() -> None:
+    """Upstream dedup is by URL, which is the right key for a PAGE and the
+    wrong one for a COMPANY. careers.fisglobal.com and www.fisglobal.com are
+    two URLs and one employer, and the live search returned both."""
+    cards = web_research.shape_cards(
+        [
+            {"job_title": "A", "company": "FIS Global",
+             "company_url": "careers.fisglobal.com",
+             "confidence": "moderately matching"},
+            {"job_title": "B", "company": "FIS Global",
+             "company_url": "www.fisglobal.com", "confidence": "highly matching"},
+        ]
+    )
+    assert len(cards) == 1
+    assert cards[0]["confidence_label"] == "Highly Matching"
+
+
+def test_the_strongest_evidence_is_at_the_top() -> None:
+    cards = web_research.shape_cards(
+        [
+            {"job_title": "A", "company": "Weak", "company_url": "weak.example.com",
+             "confidence": "not matching"},
+            {"job_title": "B", "company": "Strong", "company_url": "strong.example.com",
+             "confidence": "highly matching"},
+        ]
+    )
+    assert [c["company"] for c in cards] == ["Strong", "Weak"]
+
+
+def test_the_ceiling_is_spent_on_distinct_employers() -> None:
+    """Capping before deduplicating would fill the page with one company."""
+    noisy = [
+        {"job_title": "x", "company": "Same", "company_url": f"s{n}.example.com",
+         "confidence": "matching"}
+        for n in range(web_research.MAX_CARDS + 10)
+    ]
+    assert len(web_research.shape_cards(noisy)) == 1
