@@ -143,8 +143,8 @@ export default function CreateJobPage() {
   } | null>(null);
 
   // Gate 1 (workflow section 18): a client cannot create a job until its
-  // Company Hiring Requirements exist. The SERVER refuses the create call; this
-  // reads the same status so the recruiter is told before they write a JD
+  // Company Profile says what the company does. The SERVER refuses the create
+  // call; this reads the same field so the recruiter is told before they write a JD
   // rather than after. `null` means "not answered yet" and blocks nothing --
   // an unreadable status must not lock the form, because the server is the
   // gate and it will refuse honestly on submit.
