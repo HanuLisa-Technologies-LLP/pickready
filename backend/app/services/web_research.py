@@ -406,7 +406,9 @@ def _provider_failure(exc: Exception) -> str:
     return "unavailable"
 
 
-async def _tavily_search(query: str, api_key: str) -> SearchBatch:
+async def _tavily_search(
+    query: str, api_key: str, *, exclude_domains: tuple[str, ...] | None = None
+) -> SearchBatch:
     """One advanced Tavily search with a typed operational outcome.
 
     The tavily-python client is synchronous, so it runs in a worker thread and
@@ -426,13 +428,12 @@ async def _tavily_search(query: str, api_key: str) -> SearchBatch:
             max_results=RESULTS_PER_QUERY,
             include_answer=False,
             include_raw_content=False,
-            # FILTERED AT THE PROVIDER, which is the third reason the page was
-            # thin. Every one of these hosts was fetched, counted against
-            # `max_results`, and then dropped by the judge or by
-            # `_company_from_url`, so a search for a common role spent most of
-            # its result slots on pages that could never become a card.
-            # Excluding them here means the slots go to employers instead.
-            exclude_domains=list(EXCLUDED_SEARCH_DOMAINS),
+            # A PARAMETER, NOT A CONSTANT, and that distinction is load
+            # bearing: `company_research` reuses this transport and its
+            # preferred sources include Glassdoor, which AI Reach excludes.
+            # Baking AI Reach's list in here silently stripped Company
+            # Research of a source the client named by name.
+            exclude_domains=list(exclude_domains or ()),
         )
 
     try:
@@ -600,7 +601,10 @@ def _first_company_site(batch: "SearchBatch") -> str | None:
 
 
 async def _resolve_one(company: str, api_key: str) -> tuple[str, str | None]:
-    batch = await _tavily_search(f"{company} official website", api_key)
+    batch = await _tavily_search(
+        f"{company} official website", api_key,
+        exclude_domains=EXCLUDED_SEARCH_DOMAINS,
+    )
     return company, _first_company_site(batch)
 
 
@@ -821,7 +825,12 @@ async def _search_node(state: ResearchState) -> dict:
     if state.get("status") != "ok" or not queries:
         return {"hit_count": 0}
     batches: list[SearchBatch] = await asyncio.gather(
-        *(_tavily_search(query, ctx.api_key) for query in queries)
+        *(
+            _tavily_search(
+                query, ctx.api_key, exclude_domains=EXCLUDED_SEARCH_DOMAINS
+            )
+            for query in queries
+        )
     )
     ctx.hits = merge_results([list(batch.results) for batch in batches])
     if not ctx.hits:
@@ -858,7 +867,13 @@ async def _search_node(state: ResearchState) -> dict:
         widened = widen_queries(ctx.job_role, ctx.city, ctx.industry)
         if widened:
             extra: list[SearchBatch] = await asyncio.gather(
-                *(_tavily_search(query, ctx.api_key) for query in widened)
+                *(
+                    _tavily_search(
+                        query, ctx.api_key,
+                        exclude_domains=EXCLUDED_SEARCH_DOMAINS,
+                    )
+                    for query in widened
+                )
             )
             ctx.hits = merge_results(
                 [ctx.hits] + [list(batch.results) for batch in extra]

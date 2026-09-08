@@ -897,7 +897,7 @@ async def test_a_missing_company_site_is_looked_up_rather_than_dropped(
     with no company_url and the judge was told to drop it first."""
     from app.services import web_research
 
-    async def _fake_search(query: str, api_key: str):
+    async def _fake_search(query: str, api_key: str, **kwargs):
         assert "Acme Systems" in query
         return web_research.SearchBatch(
             results=({"url": "https://acmesystems.example/about"},)
@@ -916,7 +916,7 @@ async def test_resolution_never_invents_a_domain_from_a_name(monkeypatch) -> Non
     card to be dropped, as before."""
     from app.services import web_research
 
-    async def _empty(query: str, api_key: str):
+    async def _empty(query: str, api_key: str, **kwargs):
         return web_research.SearchBatch(results=())
 
     monkeypatch.setattr(web_research, "_tavily_search", _empty)
@@ -933,7 +933,7 @@ async def test_a_board_result_is_never_returned_as_the_employers_site(
     company's website."""
     from app.services import web_research
 
-    async def _board(query: str, api_key: str):
+    async def _board(query: str, api_key: str, **kwargs):
         return web_research.SearchBatch(
             results=({"url": "https://www.indeed.com/cmp/acme-systems"},)
         )
@@ -1023,3 +1023,22 @@ def test_the_ceiling_is_spent_on_distinct_employers() -> None:
         for n in range(web_research.MAX_CARDS + 10)
     ]
     assert len(web_research.shape_cards(noisy)) == 1
+
+
+def test_ai_reach_exclusions_do_not_leak_into_company_research() -> None:
+    """The two features SHARE `_tavily_search`, and their source policies are
+    opposites: AI Reach excludes Glassdoor because it wants employers rather
+    than review sites, and Company Research treats Glassdoor as one of the
+    client's named sources. Baking AI Reach's list into the transport silently
+    stripped Company Research of it, and every source it found came back from
+    one host."""
+    import inspect
+
+    from app.services import company_research, web_research
+
+    signature = inspect.signature(web_research._tavily_search)
+    assert signature.parameters["exclude_domains"].default is None
+    assert "glassdoor.com" in web_research.EXCLUDED_SEARCH_DOMAINS
+    assert "glassdoor" in company_research.PREFERRED_HOSTS
+    gather = inspect.getsource(company_research._gather)
+    assert "exclude_domains" not in gather
