@@ -69,16 +69,16 @@ logger = logging.getLogger(__name__)
 
 #: Per-Tavily-call timeout. Advanced search is slower than basic; beyond this
 #: the user is better served by a clean empty segment than by a spinner.
-TAVILY_TIMEOUT_SECONDS = 10.0
+TAVILY_TIMEOUT_SECONDS = 9.0
 
 #: Timeout for the single evaluate LLM pass.
-EVALUATE_TIMEOUT_SECONDS = 25.0
+EVALUATE_TIMEOUT_SECONDS = 32.0
 
 #: The whole company-site resolution round, which runs its lookups in parallel.
 #: Bounded separately and deliberately small: it is a REPAIR step, and a card
 #: whose employer site could not be resolved in time is dropped exactly as it
 #: was before this step existed.
-RESOLVE_BUDGET_SECONDS = 10.0
+RESOLVE_BUDGET_SECONDS = 8.0
 
 #: How many employer-site lookups one search may spend. A ceiling rather than
 #: "however many came back unresolved": each is a billed Tavily call, and the
@@ -94,7 +94,7 @@ WIDEN_THRESHOLD_HITS = 12
 #: asyncio.wait_for. AI Reach is user-initiated and interactive so it may run
 #: in-request (rather than as a background task), but only because it is bounded:
 #: at 30 seconds the request returns `status="timeout"` instead of hanging.
-SEARCH_BUDGET_SECONDS = 58.0
+SEARCH_BUDGET_SECONDS = 61.0
 #: THE FOUR TIMEOUTS ABOVE MUST SUM UNDER THIS, and under the load balancer's
 #: 65-second idle timeout beneath that. Search, an optional widened round,
 #: the judge and the site resolution run in sequence: 10 + 10 + 25 + 10 = 55,
@@ -151,12 +151,18 @@ MAX_EVALUATE_HITS = 36
 #: is small enough that the 413 class of failure cannot return. It also makes
 #: the judge PARTIALLY resilient: one batch failing costs its twelve hits
 #: rather than the entire page.
-#: SIX, NOT TWELVE. Measured again on the live pilot: a twelve-hit batch still
+#: FIVE. Measured again on the live pilot: a twelve-hit batch still
 #: ran past 25 seconds. The bottleneck is the OUTPUT, not the input -- a
 #: reasoning model emitting twelve JSON objects of eleven fields each is slow
 #: however short the snippets are. Six halves the emitted tokens per call and
 #: the batches all run concurrently, so the wall clock is one small call.
-_EVALUATE_BATCH_SIZE = 6
+#:
+#: Measured again live: at six hits and a 25-second timeout, MORE THAN HALF the
+#: batches were still timing out, and each loss cost its six hits -- which is
+#: why the same search returned thirteen companies on one run and six on the
+#: next. The timeout went to 32 seconds with the other stages trimmed to keep
+#: the sum inside the budget, and the batch to five.
+_EVALUATE_BATCH_SIZE = 5
 
 #: Circuit breaker, same idea as the LLM router's: after this many consecutive
 #: failures, skip Tavily entirely until the cooldown elapses.
