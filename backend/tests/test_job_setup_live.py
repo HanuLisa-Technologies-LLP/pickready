@@ -444,7 +444,7 @@ class Caller:
 
 
 @pytest.fixture
-def client(world: World, sessions, monkeypatch) -> Iterator[Caller]:
+def client(world: World, sessions) -> Iterator[Caller]:
     caller = Caller(world)
 
     async def _current_user() -> CurrentUser:
