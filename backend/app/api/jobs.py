@@ -358,10 +358,11 @@ async def create_job(
             ),
         )
 
-    # ── Gate 1: Company Hiring Requirements must exist (workflow §18) ───────
-    # The company-level artifact every job on this tenant is derived against.
+    # ── Gate 1: the Company Profile must say something (workflow §18) ──────
+    # The company-level statement every job on this tenant is derived from,
+    # and the one this job's own narrative sections are seeded from below.
     # Asked of the TABLE, and only at the moment of creation: a job created
-    # before the client completed theirs stays created.
+    # before the client wrote their profile stays created.
     from app.services.hiring import company_requirements  # noqa: PLC0415
 
     blocked = await company_requirements.creation_blocked(session, user.tenant_id)

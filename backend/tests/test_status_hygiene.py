@@ -282,10 +282,10 @@ async def test_a_job_is_created_while_hygiene_items_exist(monkeypatch) -> None:
 
     monkeypatch.setattr(credits, "has_positive_balance", _funded)
 
-    async def _dna_complete(session, tenant_id):
+    async def _profile_complete(session, tenant_id):
         return True
 
-    monkeypatch.setattr(company_requirements, "is_complete", _dna_complete)
+    monkeypatch.setattr(company_requirements, "is_complete", _profile_complete)
 
     async def _fake_audit(session, **kwargs):
         return None
