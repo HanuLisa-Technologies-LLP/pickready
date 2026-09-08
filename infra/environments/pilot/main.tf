@@ -78,8 +78,33 @@ provider "aws" {
   }
 }
 
+# A SECOND REGION, FOR ONE SERVICE. Amazon Transcribe has no endpoint in
+# ap-south-2 at all -- not "unavailable to this account", the DNS name does not
+# resolve -- so a deployment here must call it in ap-south-1. A Transcribe job
+# is region-local over S3, reading and writing a bucket in its own region, so
+# the small working bucket below comes with it. Nothing else in this
+# environment uses this alias, and nothing else should.
+provider "aws" {
+  alias  = "transcribe"
+  region = var.transcribe_region
+
+  skip_credentials_validation = var.planning_profile
+  skip_requesting_account_id  = var.planning_profile
+  skip_region_validation      = var.planning_profile
+  skip_metadata_api_check     = var.planning_profile
+
+  default_tags {
+    tags = local.tags
+  }
+}
+
 locals {
   environment = "pilot"
+
+  # The frontend's tag, falling back to the shared one. See the variable's own
+  # description for why the two can differ and what an apply that ignores it
+  # does to the running service.
+  frontend_image_tag = var.frontend_image_tag != "" ? var.frontend_image_tag : var.image_tag
 
   # The internal service namespace, owned here and nowhere else. The analysis
   # service sits behind no load balancer, so a Cloud Map name is the only way
@@ -177,6 +202,16 @@ data "aws_iam_policy_document" "kms" {
         "elasticache.amazonaws.com",
         "secretsmanager.amazonaws.com",
         "sns.amazonaws.com",
+        # SES ENCRYPTS THE EVENT PAYLOAD ITSELF before handing it to SNS, so
+        # publishing to an encrypted topic needs the SES principal on the KEY,
+        # not just on the topic. Without it CreateConfigurationSetEventDestination
+        # fails outright: "Access denied to KMS key for SNS topic".
+        #
+        # This is also why the topic uses this environment's own CMK rather
+        # than `alias/aws/sns`: an AWS-managed key has a fixed policy that
+        # cannot be granted to SES at all, so encryption would have had to be
+        # dropped to make delivery tracking work.
+        "ses.amazonaws.com",
         "logs.${var.region}.amazonaws.com",
       ]
     }
@@ -402,6 +437,274 @@ module "s3" {
   tags = local.tags
 }
 
+# The account id, for the one ARN in this environment that has to be written
+# out by hand: a Transcribe job's ARN is not an attribute of any resource here,
+# because the jobs are created by the application at run time.
+data "aws_caller_identity" "current" {}
+
+# ── Speech to text, in the one region that has it ────────────────────────────
+#
+# A WORKING BUCKET, not a store. `run_transcription` copies the extracted audio
+# in, runs the job, copies the transcript back to the product's own bucket and
+# deletes both objects. The expiry rule below is the backstop for a delete that
+# did not happen, not the mechanism.
+#
+# SSE-S3 rather than the environment's KMS key, and that is forced rather than
+# chosen: the key is regional and lives in `var.region`, so an object encrypted
+# with it cannot be written here.
+
+resource "aws_s3_bucket" "transcribe" {
+  count    = var.transcribe_enabled ? 1 : 0
+  provider = aws.transcribe
+
+  # NAMED, NOT DERIVED, the same rule the storage bucket follows: S3 names are
+  # global across every AWS account, so a derived name is one that may already
+  # belong to somebody else.
+  bucket = var.transcribe_bucket_name
+}
+
+resource "aws_s3_bucket_public_access_block" "transcribe" {
+  count    = var.transcribe_enabled ? 1 : 0
+  provider = aws.transcribe
+
+  bucket                  = aws_s3_bucket.transcribe[0].id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "transcribe" {
+  count    = var.transcribe_enabled ? 1 : 0
+  provider = aws.transcribe
+
+  bucket = aws_s3_bucket.transcribe[0].id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "transcribe" {
+  count    = var.transcribe_enabled ? 1 : 0
+  provider = aws.transcribe
+
+  bucket = aws_s3_bucket.transcribe[0].id
+
+  rule {
+    id     = "expire-working-objects"
+    status = "Enabled"
+    filter {}
+    # ONE DAY. The pipeline deletes its own objects; anything still here
+    # outlived a job that failed between the copy in and the delete, and a
+    # candidate's assessment audio must not sit in a second region waiting for
+    # somebody to notice.
+    expiration {
+      days = 1
+    }
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+}
+
+# The agent task is the only caller: video processing is Route.ECS. Scoped to
+# this product's own job names and to the working bucket, never `*`.
+data "aws_iam_policy_document" "transcribe" {
+  count = var.transcribe_enabled ? 1 : 0
+
+  statement {
+    sid = "RunTranscriptionJobs"
+    actions = [
+      "transcribe:StartTranscriptionJob",
+      "transcribe:GetTranscriptionJob",
+    ]
+    resources = [
+      "arn:aws:transcribe:${var.transcribe_region}:${data.aws_caller_identity.current.account_id}:transcription-job/readypick-*",
+    ]
+  }
+
+  statement {
+    sid = "WorkingObjects"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+    ]
+    resources = ["${aws_s3_bucket.transcribe[0].arn}/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "agent_transcribe" {
+  count = var.transcribe_enabled ? 1 : 0
+
+  name   = "${var.project}-${local.environment}-transcribe"
+  role   = element(split("/", module.ecs.task_role_arns["agent"]), 1)
+  policy = data.aws_iam_policy_document.transcribe[0].json
+}
+
+# ── Outbound mail ────────────────────────────────────────────────────────────
+#
+# `ses:SendRawEmail` and nothing else. The transport builds the MIME message
+# itself (attachments, Reply-To), so the simple send action would not serve it,
+# and no read, no identity management and no configuration-set write is reach
+# the delivery path needs.
+#
+# The task worker is where mail actually leaves the platform, because delivery
+# is Route.LAMBDA. The API holds the same grant for the one send that is not
+# dispatched: the corporate-sender ownership code, which a person is waiting on
+# in the browser.
+data "aws_iam_policy_document" "ses_send" {
+  statement {
+    sid       = "SendRawEmail"
+    actions   = ["ses:SendRawEmail"]
+    resources = ["*"]
+  }
+
+  # READ-ONLY IDENTITY LOOKUP, which is what replaced the sender OTP. A
+  # corporate sender is eligible when the ACCOUNT holds a verified SES identity
+  # covering it -- the address itself, or its domain. Asking SES is the honest
+  # check; a mailbox round trip of our own only proved the same thing twice.
+  # Nothing here creates or deletes an identity from application code.
+  statement {
+    sid = "ReadSendingIdentities"
+    actions = [
+      "ses:GetIdentityVerificationAttributes",
+      "ses:ListIdentities",
+    ]
+    resources = ["*"]
+  }
+}
+
+# ── SES delivery events: one configuration set, one topic, one subscription ──
+#
+# SHARED, NOT PER TENANT. A topic per company multiplies an AWS resource by a
+# number the product grows without bound, and every one would carry the same
+# policy and the same single subscriber. Correlation is DATA instead: each send
+# is tagged with the tenant, sender and candidate it belongs to, and the webhook
+# resolves the row from the SES message id it already stores.
+#
+# Standard, never FIFO: SES refuses a FIFO topic as an event destination.
+
+resource "aws_sns_topic" "ses_events" {
+  name = "${var.project}-${local.environment}-ses-events"
+  # THIS ENVIRONMENT'S OWN CMK, not `alias/aws/sns`. An AWS-managed key has a
+  # fixed policy that cannot be granted to the SES service principal, and SES
+  # encrypts the event payload itself before publishing -- so the managed key
+  # makes CreateConfigurationSetEventDestination fail outright. The choice is
+  # the CMK or no encryption at all, and a bounce event names the candidate's
+  # address, so it is the CMK. The matching grant is in the key policy above.
+  kms_master_key_id = aws_kms_key.this.arn
+}
+
+# SES publishes as a SERVICE PRINCIPAL, so the grant lives on the topic rather
+# than on any role this platform holds. Conditioned on our own account, or SES
+# in any other account could publish events here and move a delivery status.
+data "aws_iam_policy_document" "ses_events_topic" {
+  statement {
+    sid       = "AllowSESPublish"
+    effect    = "Allow"
+    actions   = ["SNS:Publish"]
+    resources = [aws_sns_topic.ses_events.arn]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ses.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+}
+
+resource "aws_sns_topic_policy" "ses_events" {
+  arn    = aws_sns_topic.ses_events.arn
+  policy = data.aws_iam_policy_document.ses_events_topic.json
+}
+
+resource "aws_sesv2_configuration_set" "this" {
+  configuration_set_name = "${var.project}-${local.environment}"
+
+  delivery_options {
+    # TLS WHERE THE RECEIVER OFFERS IT. REQUIRE bounces mail to any receiving
+    # domain without STARTTLS, which is a deliverability decision this product
+    # has no business making on a candidate's behalf.
+    tls_policy = "OPTIONAL"
+  }
+
+  reputation_options {
+    reputation_metrics_enabled = true
+  }
+
+  sending_options {
+    sending_enabled = true
+  }
+}
+
+resource "aws_sesv2_configuration_set_event_destination" "sns" {
+  configuration_set_name = aws_sesv2_configuration_set.this.configuration_set_name
+  event_destination_name = "${var.project}-${local.environment}-sns"
+
+  event_destination {
+    enabled = true
+
+    sns_destination {
+      topic_arn = aws_sns_topic.ses_events.arn
+    }
+
+    # NO OPEN AND NO CLICK. Both require SES to rewrite the message -- a
+    # tracking pixel and wrapped links -- inside mail telling a candidate about
+    # their own application. The delivery OUTCOME is all this product needs.
+    matching_event_types = [
+      "SEND",
+      "DELIVERY",
+      "BOUNCE",
+      "COMPLAINT",
+      "REJECT",
+      "RENDERING_FAILURE",
+      "DELIVERY_DELAY",
+    ]
+  }
+}
+
+# The webhook verifies the SNS signature and pins the topic ARN, so an https
+# subscription is safe to declare. SNS posts a SubscriptionConfirmation first
+# and the endpoint confirms it only after that signature check passes, which is
+# why the API has to know the topic ARN BEFORE this is created. That ordering
+# is the reason the topic and the task definition's environment ship together.
+resource "aws_sns_topic_subscription" "ses_events_webhook" {
+  count = local.has_public_entry ? 1 : 0
+
+  topic_arn = aws_sns_topic.ses_events.arn
+  protocol  = "https"
+  endpoint  = "${local.frontend_url}/api/v1/email-senders/events/ses"
+
+  # RAW DELIVERY OFF. The handler reads the SNS envelope itself -- Type,
+  # TopicArn, SigningCertURL, Signature -- and raw delivery strips exactly the
+  # fields the signature check needs.
+  raw_message_delivery = false
+
+  # Terraform waits for the endpoint to confirm. If it cannot, that is a real
+  # failure worth surfacing rather than a subscription silently left pending.
+  confirmation_timeout_in_minutes = 5
+}
+
+resource "aws_iam_role_policy" "task_worker_ses" {
+  name   = "${var.project}-${local.environment}-ses-send"
+  role   = element(split("/", module.lambda.execution_role_arns["task-worker"]), 1)
+  policy = data.aws_iam_policy_document.ses_send.json
+}
+
+resource "aws_iam_role_policy" "api_ses" {
+  name   = "${var.project}-${local.environment}-ses-send"
+  role   = element(split("/", module.ecs.task_role_arns["api"]), 1)
+  policy = data.aws_iam_policy_document.ses_send.json
+}
+
 # ── Traffic ──────────────────────────────────────────────────────────────────
 #
 # The certificate, the DNS record and the WAF are CONDITIONAL on a domain being
@@ -581,6 +884,18 @@ module "ecs" {
     # thread and `record` runs nothing, and neither belongs on a deployed
     # service: `record` is refused in production by the dispatcher itself.
     TASK_DISPATCH_BACKEND = "aws"
+    # ONE TRANSPORT PER DEPLOYMENT, never a fallback chain: the same shape
+    # TASK_DISPATCH_BACKEND has. SES sends as the tenant's own verified
+    # sender, which is the whole point of the corporate-sender feature and
+    # something an authenticated Gmail mailbox structurally cannot do.
+    EMAIL_TRANSPORT = "ses"
+    # THE CONFIGURATION SET IS WHAT MAKES DELIVERY TRACKING EXIST. SES only
+    # publishes events for a message sent under a configuration set that has an
+    # event destination, so a send without this name attached is a send nobody
+    # ever learns the outcome of. The topic ARN is what the webhook pins an
+    # incoming message against; empty there means refuse everything.
+    SES_CONFIGURATION_SET = aws_sesv2_configuration_set.this.configuration_set_name
+    SES_SNS_TOPIC_ARN     = aws_sns_topic.ses_events.arn
   }
 
   services = {
@@ -602,11 +917,32 @@ module "ecs" {
       needs_s3         = true
       environment = {
         PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
+        # PUBLIC BY DESIGN, and a plain variable rather than a secret for that
+        # reason: the browser reads it from GET /billing/config at runtime.
+        # Its partner, RAZORPAY_KEY_SECRET, is server-side only and is mounted
+        # from Secrets Manager below. Checkout needs both.
+        RAZORPAY_KEY_ID = var.razorpay_key_id
       }
-      # The backend writes nothing to disk by design: resume bytes never
-      # persist on the application filesystem. This enforces an invariant the
-      # code already claims.
-      readonly_root = true
+      # The backend writes no APPLICATION data to disk by design: resume bytes
+      # never persist on the filesystem, and that invariant is what
+      # `readonly_root` enforces.
+      #
+      # `/tmp` IS THE NARROW EXCEPTION, AND IT IS LOAD BEARING FOR SIGN-IN.
+      # Verifying a Firebase ID token fetches Google's public signing certs,
+      # and `google-auth` caches that response through `cachecontrol`, which
+      # writes it to a NamedTemporaryFile. With no writable temp directory
+      # that raises FileNotFoundError deep inside verification, where it is
+      # indistinguishable from a bad credential: the route answered 401
+      # "Invalid Firebase session" for every valid Google and password
+      # sign-in on the live site, which is what sent the search to Firebase's
+      # authorized-domain list instead of here. An empty ephemeral volume, so
+      # the rest of the filesystem stays immutable for the life of the task.
+      readonly_root  = true
+      writable_paths = ["/tmp"]
+      # The backend image runs as uid 10001 (`pickready`). Mounting the volume
+      # is only half the fix: a Fargate task volume arrives root-owned 0755, so
+      # it has to be handed to that uid before the application starts.
+      writable_paths_uid = "10001"
       secrets = {
         DATABASE_URL                  = module.secrets.secret_arns["DATABASE_URL"]
         REDIS_URL                     = module.secrets.secret_arns["REDIS_URL"]
@@ -650,6 +986,20 @@ module "ecs" {
       readonly_root = false
       environment = {
         PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
+        # SPEECH TO TEXT. `pickready.process_assessment_video` is Route.ECS, so
+        # this task is the only thing that ever calls Transcribe. The region is
+        # separate from `AWS_REGION` because ap-south-2 has no Transcribe
+        # endpoint, and the bucket travels with the region because a job cannot
+        # read a bucket outside its own. With the feature off, a recording
+        # lands in `transcription_failed` saying so rather than carrying a
+        # fabricated transcript.
+        TRANSCRIBE_ENABLED = var.transcribe_enabled ? "true" : "false"
+        TRANSCRIBE_REGION  = var.transcribe_region
+        # A SPLAT AND A JOIN, never `[0]` behind a conditional. Terraform does
+        # not reliably short-circuit an index expression, so `[0]` on a
+        # count = 0 resource fails the plan even on the branch that never runs.
+        # An empty splat joins to "", which is exactly "no working bucket".
+        TRANSCRIBE_BUCKET = join("", aws_s3_bucket.transcribe[*].id)
       }
       # NO FIREBASE KEY. A background task never authenticates a browser
       # session, so it has no business reading the service account.
@@ -695,7 +1045,7 @@ module "ecs" {
     }
 
     frontend = {
-      image            = "${module.ecr.repository_urls["frontend"]}:${var.image_tag}"
+      image            = "${module.ecr.repository_urls["frontend"]}:${local.frontend_image_tag}"
       cpu              = 512
       memory           = 1024
       desired_count    = local.service_count
@@ -729,6 +1079,10 @@ module "ecs" {
       # matplotlib insist on, which the image points at /tmp.
       readonly_root  = true
       writable_paths = ["/tmp"]
+      # The image runs as uid 10001. A Fargate task volume mounts root-owned
+      # 0755, so without this the mount is unwritable and torch and matplotlib
+      # fail at import -- the same trap that broke sign-in on the API.
+      writable_paths_uid = "10001"
       # The Hugging Face token, and nothing else. It holds no DSN and no
       # model-provider key, because all it is handed is audio and all it
       # answers is a speaker count.
@@ -794,7 +1148,6 @@ module "lambda" {
         OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
-        SMTP_PASSWORD             = module.secrets.secret_arns["SMTP_PASSWORD"]
         TAVILY_API_KEY            = module.secrets.secret_arns["TAVILY_API_KEY"]
         MSG91_API_KEY             = module.secrets.secret_arns["MSG91_API_KEY"]
         LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
@@ -814,6 +1167,21 @@ module "lambda" {
         # synthesis per newly completed candidate.
         TASK_DISPATCH_BACKEND           = "aws"
         PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
+        # THE OUTBOUND MAIL HOP. Delivery is Route.LAMBDA, so this function is
+        # where a message actually leaves the platform. It reads the same
+        # single transport the services do; the Gmail app password is not
+        # mounted here any more, because a credential for a transport this
+        # deployment does not use is reach the function does not need.
+        EMAIL_TRANSPORT = "ses"
+        # SES sends only for an identity the ACCOUNT has verified, so this is
+        # not a free-text display address: it must be a verified sender.
+        SMTP_FROM_EMAIL = var.platform_from_email
+        SMTP_FROM_NAME  = "ReadyPick"
+        # This function is the last hop before SES, so it is the one that must
+        # attach the configuration set. Without it SES accepts the message and
+        # publishes no event, and every row stays `sent` for ever.
+        SES_CONFIGURATION_SET = aws_sesv2_configuration_set.this.configuration_set_name
+        SES_SNS_TOPIC_ARN     = aws_sns_topic.ses_events.arn
       }
     }
 

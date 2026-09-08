@@ -175,3 +175,91 @@ variable "reserve_lambda_concurrency" {
   type        = bool
   default     = false
 }
+
+# ── Speech to text ───────────────────────────────────────────────────────────
+
+variable "transcribe_enabled" {
+  description = <<-EOT
+    Whether this environment calls Amazon Transcribe at all.
+
+    OFF is a real answer, not a broken one: with it false a recording lands in
+    `transcription_failed` with a message saying speech to text is not
+    configured, and the staff retry endpoint re-runs it once it is. Never a
+    fabricated transcript.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "transcribe_region" {
+  description = <<-EOT
+    The region Transcribe jobs run in, which is NOT necessarily `region`.
+
+    ap-south-2 has no Transcribe endpoint at all, so a deployment there calls
+    ap-south-1. Where the deployment region does have the service, set this to
+    the same value and the working bucket becomes a same-region bucket.
+
+    NO DEFAULT, for the same reason `region` has none: a region literal in
+    executable Terraform is an assumption the next environment inherits
+    without anybody deciding it, and `tests/test_deploy_secret_hygiene.py`
+    fails the build over exactly that. The value lives in terraform.tfvars.
+  EOT
+  type        = string
+}
+
+variable "transcribe_bucket_name" {
+  description = <<-EOT
+    The working bucket in `transcribe_region`. A Transcribe job reads its media
+    from, and writes its output to, a bucket in its own region, so this exists
+    only because the two regions differ.
+
+    NAMED, NOT DERIVED, the same rule `storage_bucket_name` follows: S3 names
+    are global across every AWS account.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "razorpay_key_id" {
+  description = <<-EOT
+    The Razorpay publishable key id, served to the browser by
+    GET /billing/config. PUBLIC by design and therefore a variable rather than
+    a secret; its partner, RAZORPAY_KEY_SECRET, is server-side only and is
+    mounted from Secrets Manager. Empty disables checkout, which the billing
+    page reports honestly rather than rendering a button that cannot work.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "platform_from_email" {
+  description = <<-EOT
+    The From address for platform mail under the SES transport.
+
+    SES sends only for an identity the ACCOUNT has verified, so this is not a
+    free-text display address: an unverified value is refused per message with
+    MailFromDomainNotVerifiedException, which the delivery layer classifies as
+    permanent and does not retry.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "frontend_image_tag" {
+  description = <<-EOT
+    The frontend image tag, when it differs from `image_tag`.
+
+    IT DOES, AND PRETENDING OTHERWISE DEREGISTERS A LIVE TASK DEFINITION. The
+    two images are built from the same commit by the same pipeline and normally
+    carry the same tag, but the frontend has been deployed out of band at least
+    once, and a single variable then plans the frontend BACK to the backend's
+    tag. Because Terraform models a task definition change as delete-then-
+    create, that apply deregisters the exact revision the running service
+    points at: the tasks already up survive, and the service can no longer
+    replace one that dies.
+
+    Empty means "the same as `image_tag`", which is the normal case.
+  EOT
+  type        = string
+  default     = ""
+}

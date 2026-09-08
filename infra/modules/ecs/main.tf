@@ -342,7 +342,47 @@ resource "aws_ecs_task_definition" "this" {
     }
   }
 
-  container_definitions = jsonencode([
+  container_definitions = jsonencode(concat(
+    # THE INIT CONTAINER, and only where one is asked for. It runs as root,
+    # takes ownership of every mounted scratch path for the application's uid
+    # and exits; the application container does not start until it has
+    # succeeded. `user = "0"` overrides the image's own USER for THIS container
+    # alone, so the application container still runs unprivileged.
+    #
+    # It reuses the SAME image rather than pulling a second one: a task that
+    # needs two images to start has two ways to fail, and this one only ever
+    # runs chown.
+    each.value.writable_paths_uid == null || length(each.value.writable_paths) == 0 ? [] : [
+      {
+        name       = "${each.key}-init"
+        image      = each.value.image
+        user       = "0"
+        essential  = false
+        entryPoint = ["sh", "-c"]
+        command = [
+          join(" && ", [
+            for path in each.value.writable_paths :
+            "chown ${each.value.writable_paths_uid}:${each.value.writable_paths_uid} ${path} && chmod 1777 ${path}"
+          ])
+        ]
+        mountPoints = [
+          for path in each.value.writable_paths : {
+            sourceVolume  = replace(trim(path, "/"), "/", "-")
+            containerPath = path
+            readOnly      = false
+          }
+        ]
+        logConfiguration = {
+          logDriver = "awslogs"
+          options = {
+            "awslogs-group"         = aws_cloudwatch_log_group.this[each.key].name
+            "awslogs-region"        = var.region
+            "awslogs-stream-prefix" = "${each.key}-init"
+          }
+        }
+      }
+    ],
+    [
     {
       name = each.key
       # BY DIGEST WHERE ONE IS SUPPLIED, otherwise by SHA tag. spec-doc5 §D.6
@@ -442,8 +482,19 @@ resource "aws_ecs_task_definition" "this" {
         # PID 1 without an init leaves anything they orphan behind.
         initProcessEnabled = true
       }
+
+      # WAIT FOR THE CHOWN. Without this the application container races the
+      # init container and usually loses, which would make the whole fix look
+      # intermittent -- the worst failure mode there is for an auth bug.
+      dependsOn = each.value.writable_paths_uid == null || length(each.value.writable_paths) == 0 ? null : [
+        {
+          containerName = "${each.key}-init"
+          condition     = "SUCCESS"
+        }
+      ]
     }
-  ])
+    ],
+  ))
 
   tags = merge(var.tags, { Service = each.key })
 }

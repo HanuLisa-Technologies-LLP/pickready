@@ -188,6 +188,14 @@ class Settings(BaseSettings):
     #: webhook refuses any message whose TopicArn differs (spec section 8).
     #: Empty means the event endpoint refuses everything.
     ses_sns_topic_arn: str = ""
+    #: The SES configuration set every send is attached to. THIS IS WHAT MAKES
+    #: DELIVERY TRACKING EXIST: SES publishes an event only for a message sent
+    #: under a configuration set carrying an event destination, so a send
+    #: without this name attached is one whose outcome nobody ever learns.
+    #: Empty sends without one, which is correct for a deployment that has not
+    #: provisioned the set: the message is still delivered and the row simply
+    #: stays at `sent` rather than pretending to a delivery it cannot observe.
+    ses_configuration_set: str = ""
 
     # ── Corporate sender registration (Corporate Email System spec) ─────────
     #
@@ -202,11 +210,10 @@ class Settings(BaseSettings):
         "rediff.com,zoho.com,zohomail.com,yandex.com,yandex.ru,fastmail.com,"
         "tutanota.com,tuta.com,hey.com,mail.ru,inbox.com,hushmail.com"
     )
-    #: Mailbox-ownership OTP (spec section 4). 600 s sits inside the spec's
-    #: 5 to 10 minute window.
-    sender_otp_ttl_seconds: int = 600
-    sender_otp_max_attempts: int = 3
-    sender_otp_resend_cooldown_seconds: int = 45
+    # The three sender-OTP knobs (ttl, max attempts, resend cooldown) were
+    # REMOVED with the mailbox OTP on 2026-09-08, not left as dead settings. A
+    # setting nothing reads is one an operator will eventually tune expecting
+    # an effect; SES identity verification is the ownership check now.
 
     def sender_blocked_domains(self) -> frozenset[str]:
         """The blocklist, parsed once per call: lowercased, trimmed, non-empty."""
@@ -423,6 +430,20 @@ class Settings(BaseSettings):
     #: transcript (no silent fallback).
     transcribe_enabled: bool = False
     transcribe_language_code: str = "en-IN"
+    #: THE TRANSCRIBE REGION IS NOT NECESSARILY THE DEPLOYMENT REGION, and that
+    #: is a fact about AWS rather than a preference: ap-south-2 (Hyderabad) has
+    #: no Transcribe endpoint at all, so a pilot deployed there must call the
+    #: service in ap-south-1 (Mumbai). Empty means `aws_region`, which is
+    #: correct wherever Transcribe exists in the deployment region.
+    transcribe_region: str = ""
+    #: A Transcribe job reads its media from, and writes its output to, a
+    #: bucket in ITS OWN region: a job running in ap-south-1 cannot read
+    #: s3://bucket when that bucket lives in ap-south-2. This names the working
+    #: bucket in `transcribe_region`. The pipeline copies the extracted audio
+    #: in, runs the job, copies the transcript back to `s3_bucket` and deletes
+    #: both working objects, so nothing accumulates here. Empty means
+    #: `s3_bucket`, which is correct only when the two regions agree.
+    transcribe_bucket: str = ""
     video_transcribe_timeout_seconds: int = 1800
     video_transcribe_poll_seconds: int = 15
     #: ffmpeg transcode settings for the long-term compressed mp4 (video spec
@@ -537,6 +558,37 @@ class Settings(BaseSettings):
             raise ValueError("SMTP_USER must be a Gmail address")
         if self.smtp_user and self.smtp_from_email.lower() != self.smtp_user.lower():
             raise ValueError("SMTP_FROM_EMAIL must match SMTP_USER")
+        return self
+
+    @property
+    def effective_transcribe_region(self) -> str:
+        """The region the Transcribe client is built in."""
+        return (self.transcribe_region or self.aws_region or "").strip()
+
+    @property
+    def effective_transcribe_bucket(self) -> str:
+        """The bucket a Transcribe job reads and writes, in that region."""
+        return (self.transcribe_bucket or self.s3_bucket or "").strip()
+
+    @model_validator(mode="after")
+    def validate_transcribe_colocation(self) -> "Settings":
+        """Refuse the cross-region misconfiguration rather than fail per job.
+
+        Transcribe is region-local over S3, so pointing the client at another
+        region while leaving the bucket behind produces a BadRequestException
+        on EVERY recording, one at a time, hours after the deploy. Naming it
+        here makes it a boot failure a deploy can see.
+        """
+        if not self.transcribe_enabled:
+            return self
+        deployment = (self.aws_region or "").strip()
+        region = (self.transcribe_region or "").strip()
+        if region and region != deployment and not (self.transcribe_bucket or "").strip():
+            raise ValueError(
+                "TRANSCRIBE_REGION differs from AWS_REGION, so TRANSCRIBE_BUCKET "
+                "must name a bucket in TRANSCRIBE_REGION: an Amazon Transcribe "
+                "job cannot read or write a bucket in another region."
+            )
         return self
 
     @model_validator(mode="after")

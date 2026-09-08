@@ -145,6 +145,7 @@ async def _deliver_email(
     text: str | None = None,
     attachments: list[dict] | None = None,
     sender=None,
+    correlation: dict | None = None,
 ) -> str | None:
     """One door to the outbound transport (Corporate Email System spec
     section 6). The transport is DEPLOYMENT DATA (`settings.email_transport`,
@@ -172,6 +173,10 @@ async def _deliver_email(
             html=html,
             text=text,
             attachments=attachments,
+            # SES-ONLY, and deliberately not plumbed into the SMTP path: these
+            # become SES message tags, which have no SMTP equivalent. Handing
+            # them to Gmail would mean inventing headers nothing ever reads.
+            correlation=correlation,
         )
     return await smtp_send(
         from_email=settings.smtp_from_email,
@@ -415,12 +420,27 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
             html=to_html(row.body),
             text=row.body,
             sender=sender,
+            # Correlation for the SES event that comes back minutes later.
+            # `notification_id` IS the email_log row id: that is the record an
+            # event has to find, so naming anything else here would leave the
+            # tag pointing at something the webhook does not look up.
+            correlation={
+                "tenant_id": row.tenant_id,
+                "sender_id": row.sender_id,
+                "candidate_id": row.candidate_id,
+                "job_id": row.job_id,
+                "notification_id": row.id,
+            },
         )
     except PermanentDeliveryError as err:
         # Terminal: record it and do NOT re-raise, so the retry budget is not
         # burned on something that can never succeed.
         row.status = STATUS_FAILED
         row.error = err.error_name
+        # STAMPED ON THE FAILURE PATH TOO. A row that failed still went out
+        # over a transport, and knowing which one is most of the diagnosis.
+        row.failed_at = datetime.now(timezone.utc)
+        row.transport = get_settings().email_transport
         await session.commit()
         log_delivery_error("lifecycle_email", err)
         await _audit(
@@ -436,6 +456,11 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
 
     row.status = STATUS_SENT
     row.sent_at = datetime.now(timezone.utc)
+    # RECORDED PER ROW, never inferred later from the current setting: a
+    # deployment that switches transport would otherwise relabel history, and
+    # `sent` means different things under each (terminal under smtp, awaiting
+    # a delivery event under ses).
+    row.transport = get_settings().email_transport
     row.error = None
     # The provider id is what a later SES delivery/bounce/complaint event is
     # matched back on (spec section 8). The SMTP Message-ID is recorded too;

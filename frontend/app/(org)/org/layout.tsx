@@ -13,6 +13,7 @@ import {
   Fingerprint,
   Gauge,
   LayoutDashboard,
+  MailCheck,
   Settings,
   ShieldCheck,
   Users,
@@ -172,6 +173,18 @@ export default function OrgLayout({
     // rule 10). The Review Screen and the Email Templates builder are gone, 
     // candidates are reviewed inline on the job page, and all six lifecycle
     // emails are AI-drafted and edited at send time rather than pre-authored.
+    // Sender Authorization. The Super Admin's decision on which addresses may
+    // speak for this company, and the ONLY surface in the portal that makes
+    // one. Gated on `authorize_email_senders`, which only the client Super
+    // Admin holds: a Recruitment Manager can propose a sender from Settings
+    // but must never be shown a control that approves one.
+    //
+    // A sidebar item rather than a settings card because it is a decision
+    // QUEUE somebody comes back to, not configuration set once. Registering a
+    // sender stays in Settings, where managing the list belongs.
+    hasCapability("authorize_email_senders")
+      ? { href: "/org/senders", label: "Sender Authorization", icon: MailCheck }
+      : null,
     { href: "/org/settings", label: "Settings", icon: Settings },
   ].filter((item) => item !== null) as NavItem[];
 

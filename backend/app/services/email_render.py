@@ -136,21 +136,10 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "{{outreach_url}}\n\n"
         "Regards,\n{{company_name}} People Team",
     ),
-    # api/email_senders.py: the corporate sender mailbox-ownership code
-    # (Corporate Email System spec sections 3 and 4). This is NOT a login OTP;
-    # it proves a client's POC controls the mailbox being registered as an
-    # automated sender. The code is in the context and is never logged.
-    "sender_verification": (
-        "Your ReadyPick sender verification code",
-        "Hello {{sender_name}},\n\n"
-        "{{company_name}} is registering this mailbox as an authorized sender "
-        "for automated recruitment email on ReadyPick.\n\n"
-        "Your verification code is {{otp_code}}. It is valid for "
-        "{{ttl_minutes}} minutes.\n\n"
-        "If you were not expecting this, you can ignore this email and "
-        "nothing will change.\n\n"
-        "Regards,\nReadyPick",
-    ),
+    # The `sender_verification` template was REMOVED with the mailbox OTP on
+    # 2026-09-08. It was the only carrier of a six-digit code into a client
+    # mailbox, and nothing dispatches it any more. Left in place it would be
+    # a renderable OTP email one dispatch call away from coming back.
     # api/admin.py, when the platform owner creates a customer.
     "client_invite": (
         "Your {{tenant_name}} workspace on ReadyPick is ready",

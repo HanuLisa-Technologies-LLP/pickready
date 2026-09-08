@@ -1412,22 +1412,35 @@ export interface BgvList {
 
 export type EmailSenderStatus =
   | "pending_verification"
-  | "email_verified"
   | "active"
-  | "verification_expired"
   | "disabled"
-  | "revoked";
+  | "revoked"
+  | "rejected"
+  // Retired with the mailbox OTP on 2026-09-08 and KEPT IN THE UNION, because
+  // rows written before it still carry them. A union missing a value the API
+  // can return makes every consumer of that row a type error or, worse, an
+  // empty render.
+  | "email_verified"
+  | "verification_expired";
 
 export interface EmailSender {
   id: string;
   name: string;
   email: string;
   status: EmailSenderStatus;
+  // Retained for rows verified under the withdrawn mailbox check. Nothing
+  // sets it any more; the provider's own identity verification is the
+  // ownership check now.
   email_verified: boolean;
-  authorized_by: string | null;
   authorized_at: string | null;
   created_at: string;
-  updated_at: string;
+  /** Whether mail would actually leave for this address, asked of the
+   *  provider at read time. Never a stored copy: the answer changes without
+   *  this product being told. */
+  can_send: boolean;
+  /** One plain sentence for the Super Admin. Deliberately carries no AWS
+   *  vocabulary: not SES, not an identity, not DKIM. */
+  sending_detail: string;
 }
 
 export interface EmailSenderList {
@@ -1437,19 +1450,9 @@ export interface EmailSenderList {
 }
 
 /** The code itself is never in a response; it travels only to the mailbox. */
-export interface EmailSenderOtpIssue {
-  sender_id: string;
-  status: EmailSenderStatus;
-  resend_cooldown_seconds: number;
-  expires_in_seconds: number;
-}
+// EmailSenderOtpIssue was REMOVED on 2026-09-08 with the sender mailbox OTP.
 
-export interface EmailSenderVerifyResult {
-  verified: boolean;
-  reason: string;
-  attempts_remaining: number;
-  status: EmailSenderStatus;
-}
+// EmailSenderVerifyResult went with it: nothing verifies a code any more.
 
 // ── Dual-mode assessment (2026-09-05 spec) ──────────────────────────────────
 
