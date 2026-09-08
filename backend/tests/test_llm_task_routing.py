@@ -137,6 +137,15 @@ SPEC_B3_ASSIGNMENT = {
     # candidate's own request path. Narrow, mechanical, must be fast: the
     # extraction tier, for the same reason `rerank` is.
     "fill_blank_equivalence": llm_providers.MODEL_LUNA,
+    # Web research, both halves. BOTH WERE ON THE EXTRACTION TIER under the
+    # `extraction` hint until 2026-09-08, which is the one place a task DID
+    # silently sit on the wrong tier, and it cost the product a BD page that
+    # returned two companies and a researched profile that read like filler.
+    # `bd_reach_evaluate` judges retrieved pages; `company_profile_research`
+    # writes prose a candidate reads. Judge and write are both Terra by the
+    # §B.3 split, and this entry is the second, independent statement of that.
+    "bd_reach_evaluate": llm_providers.MODEL_TERRA,
+    "company_profile_research": llm_providers.MODEL_TERRA,
 }
 
 

@@ -818,3 +818,153 @@ def test_bdlead_uses_eager_defaults_so_updated_at_survives_a_flush() -> None:
         "BDLead needs eager_defaults so the UPDATE uses RETURNING; without it "
         "every mutating /bd/leads route 500s with MissingGreenlet."
     )
+
+
+# ── The 2026-09-08 volume repair ─────────────────────────────────────────────
+#
+# A BD rep searching a role and a city got two or three cards. Three causes
+# compounded, and each one below is pinned so the funnel cannot silently narrow
+# again: an under-powered judge, a candidate pool capped at the DISPLAY
+# ceiling, and result slots spent on job boards that could never become a card.
+
+
+def test_the_judge_and_the_writer_are_on_the_reasoning_tier() -> None:
+    """The root cause. Both ran under the `extraction` hint, which is Luna --
+    the tier `config/llm_providers` reserves for narrow mechanical work and
+    explicitly forbids from evaluating."""
+    from app.config import llm_providers
+
+    assert llm_providers.model_for("bd_reach_evaluate") == llm_providers.MODEL_TERRA
+    assert (
+        llm_providers.model_for("company_profile_research")
+        == llm_providers.MODEL_TERRA
+    )
+
+
+def test_the_candidate_pool_is_larger_than_the_display_ceiling() -> None:
+    """The funnel is lossy by design: the judge drops what it cannot support.
+    Capping the pool at MAX_CARDS meant the surplus needed to FILL MAX_CARDS
+    was discarded before the judge ever saw it."""
+    from app.services import web_research
+
+    assert web_research.MAX_EVALUATE_HITS > web_research.MAX_CARDS
+
+
+def test_job_boards_are_excluded_at_the_provider_not_after() -> None:
+    """A board fetched and then dropped has still consumed a result slot. The
+    exclusion has to reach Tavily, not just the post-filter."""
+    from app.services import web_research
+
+    for host in ("indeed.com", "naukri.com", "linkedin.com" if False else "shine.com"):
+        assert host in web_research.EXCLUDED_SEARCH_DOMAINS
+
+
+def test_every_planned_and_widened_query_names_the_role() -> None:
+    """Volume is worthless without relevance. Widening drops the industry and
+    the phrasing; it never drops the thing being searched for."""
+    from app.services import web_research
+
+    planned = web_research.plan_queries("Data Engineer", "Pune", "Fintech")
+    widened = web_research.widen_queries("Data Engineer", "Pune", "Fintech")
+    assert len(planned) >= 6
+    assert widened
+    for query in planned + widened:
+        assert "Data Engineer" in query, query
+
+
+@pytest.mark.asyncio
+async def test_a_missing_company_site_is_looked_up_rather_than_dropped(
+    monkeypatch,
+) -> None:
+    """THE LARGEST SINGLE RECOVERY. A snippet naming an employer without its
+    domain used to be discarded outright, because `shape_cards` drops a card
+    with no company_url and the judge was told to drop it first."""
+    from app.services import web_research
+
+    async def _fake_search(query: str, api_key: str):
+        assert "Acme Systems" in query
+        return web_research.SearchBatch(
+            results=({"url": "https://acmesystems.example/about"},)
+        )
+
+    monkeypatch.setattr(web_research, "_tavily_search", _fake_search)
+    evaluated = [{"company": "Acme Systems", "company_url": None}]
+    resolved = await web_research.resolve_company_sites(evaluated, "key")
+    assert resolved[0]["company_url"] == "https://acmesystems.example"
+
+
+@pytest.mark.asyncio
+async def test_resolution_never_invents_a_domain_from_a_name(monkeypatch) -> None:
+    """`acme.com` for "Acme Systems" is exactly the plausible-looking dead link
+    the drop rule exists to prevent. A lookup that finds nothing leaves the
+    card to be dropped, as before."""
+    from app.services import web_research
+
+    async def _empty(query: str, api_key: str):
+        return web_research.SearchBatch(results=())
+
+    monkeypatch.setattr(web_research, "_tavily_search", _empty)
+    evaluated = [{"company": "Acme Systems", "company_url": None}]
+    resolved = await web_research.resolve_company_sites(evaluated, "key")
+    assert resolved[0]["company_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_board_result_is_never_returned_as_the_employers_site(
+    monkeypatch,
+) -> None:
+    """If the lookup surfaces Indeed, the card must not claim Indeed is the
+    company's website."""
+    from app.services import web_research
+
+    async def _board(query: str, api_key: str):
+        return web_research.SearchBatch(
+            results=({"url": "https://www.indeed.com/cmp/acme-systems"},)
+        )
+
+    monkeypatch.setattr(web_research, "_tavily_search", _board)
+    resolved = await web_research.resolve_company_sites(
+        [{"company": "Acme Systems", "company_url": None}], "key"
+    )
+    assert resolved[0]["company_url"] is None
+
+
+def test_the_company_profile_word_range_meets_the_clients_own_guidance() -> None:
+    """The old range sat BELOW the client's stated floor, which is how a
+    researched profile came out reading like filler."""
+    from app.services import company_research
+
+    assert company_research.WORD_MIN >= 80
+    assert company_research.WORD_MAX >= 170
+
+
+def test_company_research_asks_the_sources_the_client_named() -> None:
+    """Wikipedia, the business press and the company's own writing were not
+    being searched for at all."""
+    from app.services import company_research
+
+    queries = " | ".join(
+        company_research._plan_queries("Acme Systems", "acme.example", "Fintech")
+    ).casefold()
+    for expected in ("wikipedia", "news", "blog", "careers", "glassdoor", "ambitionbox"):
+        assert expected in queries, expected
+
+
+def test_the_stage_timeouts_fit_inside_the_search_budget() -> None:
+    """Getting this wrong is not a slow page, it is an EMPTY one.
+
+    The budget wraps the WHOLE graph, so if the stages can sum past it a
+    pipeline whose every part succeeded still returns `status="timeout"` with
+    no cards, which from the outside is indistinguishable from a Tavily outage.
+    The budget in turn must sit under the load balancer's 65-second idle
+    timeout, or the browser gets a 504 instead of the honest timeout message.
+    """
+    from app.services import web_research
+
+    worst_case = (
+        web_research.TAVILY_TIMEOUT_SECONDS * 2  # search, then the widened round
+        + web_research.EVALUATE_TIMEOUT_SECONDS
+        + web_research.RESOLVE_BUDGET_SECONDS
+    )
+    assert worst_case < web_research.SEARCH_BUDGET_SECONDS
+    assert web_research.SEARCH_BUDGET_SECONDS < 65

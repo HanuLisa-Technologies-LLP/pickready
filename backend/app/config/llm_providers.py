@@ -183,6 +183,9 @@ TaskType = Literal[
     "fill_blank_equivalence",
     # ── Background verification (add-features spec 2026-09-05) ──
     "bgv_reply_extraction",
+    # ── Web research (BD Portal AI Reach, Company Profile research) ──
+    "bd_reach_evaluate",
+    "company_profile_research",
     # ── Legacy role hints (ESD §8.4), retained verbatim so every pre-existing
     #    caller keeps its established behaviour ──
     "rerank",
@@ -248,6 +251,25 @@ MODEL_FOR_TASK: dict[str, str] = {
     # the reasoning tier's job by definition.
     "format_composition": MODEL_TERRA,
     "answer_evaluation": MODEL_TERRA,
+    # Web research, both halves, and BOTH WERE ON LUNA UNDER `extraction` UNTIL
+    # 2026-09-08. That was the single reason AI Reach returned two or three
+    # companies and a researched company profile read thin, and it is the same
+    # boundary violation this table warns about one screen up, in the other
+    # direction: a JUDGING and a WRITING task were running on the tier reserved
+    # for narrow mechanical work.
+    #
+    # `bd_reach_evaluate` decides which retrieved pages are real hiring pages at
+    # real companies, resolves the employer's own site from a thin snippet, and
+    # refuses anything it cannot support. That is judgment under an explicit
+    # accuracy-over-volume instruction, and an under-powered judge told to drop
+    # what it cannot verify drops nearly everything.
+    #
+    # `company_profile_research` writes the three sections a candidate reads
+    # before applying, every statement grounded in retrieved text. Evidence-
+    # grounded writing, which is Terra's half of the split by definition, and
+    # the same argument `email_composition` records below its own entry.
+    "bd_reach_evaluate": MODEL_TERRA,
+    "company_profile_research": MODEL_TERRA,
     # ── Luna: extraction, classification, routing ───────────────────────────
     # A fill-in-the-blank near miss ("Postgres" against "PostgreSQL") is a
     # yes-or-no equivalence classification over two short strings, on the
@@ -372,6 +394,14 @@ TASK_TIMEOUTS: dict[str, float] = {
     "extraction": 60.0,
     # Background: one structured extraction over one email reply.
     "bgv_reply_extraction": 60.0,
+    # INTERACTIVE, and a third entry in the generative-interactive exception
+    # above. Both judge or write over a pack of retrieved web pages, which is
+    # the largest input either receives, and a recruiter is watching. Holding
+    # these at the 15-second interactive cap would not make the page faster; it
+    # would make every research pass time out and return the thin result these
+    # numbers exist to fix.
+    "bd_reach_evaluate": 30.0,
+    "company_profile_research": 45.0,
     # Background. One reasoning pass over a reduced evidence pack.
     "project_evidence": 60.0,
     # Background: one structured payload, or one batch of evidence anchors,
@@ -415,6 +445,11 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "report_synthesis": 280.0,
     "extraction": 140.0,
     "bgv_reply_extraction": 140.0,
+    "bd_reach_evaluate": 70.0,
+    # Bounded by the same invariant every other entry is: a total budget above
+    # `timeout * attempts` describes a wall-clock ceiling the retry loop can
+    # never actually reach, which makes it a number that documents nothing.
+    "company_profile_research": 135.0,
     "project_evidence": 140.0,
     "format_composition": 140.0,
     "answer_evaluation": 140.0,
@@ -463,6 +498,13 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "extraction": 8192,
     # Seven short fields from one email reply.
     "bgv_reply_extraction": 1024,
+    # Up to MAX_EVALUATE_HITS judged cards, each with a company, two URLs and a
+    # contact block. The old ceiling was `extraction`'s 8192 and it was reached:
+    # a truncated JSON array parses as nothing, which is one of the ways the
+    # page came back empty.
+    "bd_reach_evaluate": 16384,
+    # Three sections at the top of their word range, plus the sources list.
+    "company_profile_research": 8192,
     "project_evidence": 4096,
     "format_composition": 4096,
     "answer_evaluation": 4096,
@@ -506,6 +548,10 @@ TASK_TEMPERATURE: dict[str, float] = {
     "project_evidence": 0.0,        # judges claims against evidence
     "answer_evaluation": 0.0,       # judges an answer against its rubric
     "fill_blank_equivalence": 0.0,  # classifies two strings as equivalent or not
+    # Judges retrieved pages for truthfulness and relevance and drops what it
+    # cannot support. A judging task, so deterministic: two runs over the same
+    # search results must not disagree about which companies are real.
+    "bd_reach_evaluate": 0.0,
 
     # ── Generative: these write. ────────────────────────────────────────────
     "competency_transformation": 0.2,
@@ -518,6 +564,11 @@ TASK_TEMPERATURE: dict[str, float] = {
     "email_composition": 0.5,
     "swot_intake": 0.5,
     "company_dna_intake": 0.5,
+    # Writes three sections of prose from retrieved content. Low rather than
+    # zero: every sentence must stay anchored to what was retrieved, and the
+    # deterministic guards (word range, no invented number, no generic phrase)
+    # are what enforce that rather than the sampling temperature.
+    "company_profile_research": 0.3,
     # The unified candidate conversation. The highest in the product, and the
     # only place where sounding different to different people is the point.
     "conversation_turn": 0.7,

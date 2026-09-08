@@ -69,20 +69,51 @@ logger = logging.getLogger(__name__)
 
 #: Per-Tavily-call timeout. Advanced search is slower than basic; beyond this
 #: the user is better served by a clean empty segment than by a spinner.
-TAVILY_TIMEOUT_SECONDS = 12.0
+TAVILY_TIMEOUT_SECONDS = 10.0
 
 #: Timeout for the single evaluate LLM pass.
-EVALUATE_TIMEOUT_SECONDS = 20.0
+EVALUATE_TIMEOUT_SECONDS = 25.0
+
+#: The whole company-site resolution round, which runs its lookups in parallel.
+#: Bounded separately and deliberately small: it is a REPAIR step, and a card
+#: whose employer site could not be resolved in time is dropped exactly as it
+#: was before this step existed.
+RESOLVE_BUDGET_SECONDS = 10.0
+
+#: How many employer-site lookups one search may spend. A ceiling rather than
+#: "however many came back unresolved": each is a billed Tavily call, and the
+#: cards that survive without one are already the better-evidenced half.
+MAX_RESOLVE_LOOKUPS = 12
+
+#: Below this many DISTINCT retrieved pages, the search is retried with the
+#: constraints loosened. Set at half the display ceiling: the funnel loses most
+#: of what it fetches, so fewer than this cannot fill a usable page.
+WIDEN_THRESHOLD_HITS = 12
 
 #: Hard ceiling on the WHOLE internet segment, enforced by the caller with
 #: asyncio.wait_for. AI Reach is user-initiated and interactive so it may run
 #: in-request (rather than as a background task), but only because it is bounded:
 #: at 30 seconds the request returns `status="timeout"` instead of hanging.
-SEARCH_BUDGET_SECONDS = 30.0
+SEARCH_BUDGET_SECONDS = 58.0
+#: THE FOUR TIMEOUTS ABOVE MUST SUM UNDER THIS, and under the load balancer's
+#: 65-second idle timeout beneath that. Search, an optional widened round,
+#: the judge and the site resolution run in sequence: 10 + 10 + 25 + 10 = 55,
+#: leaving three seconds of slack inside the budget and seven outside it.
+#:
+#: Getting this wrong is not a slow page, it is an EMPTY one: the budget wraps
+#: the whole graph, so a pipeline whose parts each finished would still return
+#: `status="timeout"` with no cards, which is indistinguishable from a provider
+#: outage. The widened round is conditional and the common path is 45 seconds.
 
 #: Results requested per planned query, and the ceiling on cards returned.
-RESULTS_PER_QUERY = 6
-MAX_CARDS = 12
+#:
+#: RAISED 2026-09-08, from 6 and 12. A BD rep searching a city and a role got
+#: two or three cards, which is not a shortlist. The supply was the first of
+#: three reasons: six results across three overlapping queries, deduplicated,
+#: left barely a dozen distinct pages before a deliberately strict judge had
+#: even looked at them.
+RESULTS_PER_QUERY = 15
+MAX_CARDS = 24
 
 #: The most hits that reach the evaluate prompt in one pass.
 #:
@@ -94,10 +125,19 @@ MAX_CARDS = 12
 #: falling through to the next provider, and the request only ever succeeded
 #: when a provider with a larger limit happened to have quota.
 #:
-#: Twelve is MAX_CARDS: the shape step cannot emit more than that, so hits
-#: beyond it could never have reached the page even when the judge succeeded.
-#: Bounding here costs nothing that was ever displayed.
-MAX_EVALUATE_HITS = MAX_CARDS
+#: DECOUPLED FROM MAX_CARDS on 2026-09-08, and that coupling was the second
+#: reason the page was thin. The old comment reasoned that hits beyond the card
+#: ceiling "could never have reached the page", which is only true if the judge
+#: keeps everything it is shown. It does not: it is instructed to drop anything
+#: it cannot support, and it drops most of what it sees. Capping the candidate
+#: pool at the DISPLAY ceiling therefore threw away the surplus the funnel
+#: needs to fill that ceiling.
+#:
+#: The 413 the original comment records is still real and still bounded, by
+#: this number times `_SNIPPET_CHARS` below. What changed is the provider: the
+#: 8000-token-per-minute Groq pool that answered 413 is gone, and this task now
+#: runs on the reasoning tier with `TASK_MAX_TOKENS` raised to match.
+MAX_EVALUATE_HITS = 36
 
 #: Circuit breaker, same idea as the LLM router's: after this many consecutive
 #: failures, skip Tavily entirely until the cooldown elapses.
@@ -273,11 +313,51 @@ def plan_queries(
             f"{firm} careers {role} {town} {sector}".strip(),
             f"{firm} HR talent acquisition contact email {role} {town}".strip(),
         ]
+    # SEVEN ANGLES, NOT THREE. The old trio was three phrasings of one question
+    # and the search engine answered them with substantially the same pages, so
+    # deduplication ate most of the nominal supply. These ask genuinely
+    # different questions: who is hiring, who is a named employer in the
+    # sector, and who is advertising on their own careers page rather than on a
+    # board. `careers` and `we are hiring` are the two phrases an employer's own
+    # site uses and an aggregator listing does not.
     return [
         f"{role} jobs in {town} {sector}".strip(),
         f"companies hiring {role} {town} {sector}".strip(),
         f"{sector} companies HR talent acquisition contact {role} {town}".strip(),
+        f"{town} {sector} companies careers page {role}".strip(),
+        f'"{role}" "{town}" we are hiring careers'.strip(),
+        f"top {sector} companies hiring {role} in {town}".strip(),
+        f"{role} openings {town} company website apply".strip(),
     ]
+
+
+def widen_queries(
+    job_role: str, city: str, industry: str
+) -> list[str]:
+    """The second round, run only when the first produced almost nothing.
+
+    Each query DROPS a constraint rather than rephrasing one: without the
+    industry, without the exact role wording, without the city. A rep who
+    searched a narrow sector in a small city has an empty page otherwise, and
+    an empty page reads as a broken feature rather than as a narrow search.
+    """
+    role = (job_role or "").strip()
+    town = (city or "").strip()
+    sector = (industry or "").strip()
+    if not role or not town:
+        return []
+    # THE ROLE SURVIVES EVERY WIDENING. What gets dropped is the industry, the
+    # exact phrasing and the assumption that the employer advertises the way the
+    # first round assumed. Dropping the role instead would return whoever is
+    # hiring for anything in that city, which is volume without relevance and
+    # is the opposite of what a BD rep can act on.
+    widened = [
+        f"{role} jobs {town}",
+        f"{role} careers {town} apply now",
+    ]
+    if sector:
+        widened.append(f"{sector} {role} companies {town}")
+    return widened
 
 
 # ── Node 2: search ───────────────────────────────────────────────────────────
@@ -321,6 +401,13 @@ async def _tavily_search(query: str, api_key: str) -> SearchBatch:
             max_results=RESULTS_PER_QUERY,
             include_answer=False,
             include_raw_content=False,
+            # FILTERED AT THE PROVIDER, which is the third reason the page was
+            # thin. Every one of these hosts was fetched, counted against
+            # `max_results`, and then dropped by the judge or by
+            # `_company_from_url`, so a search for a common role spent most of
+            # its result slots on pages that could never become a card.
+            # Excluding them here means the slots go to employers instead.
+            exclude_domains=list(EXCLUDED_SEARCH_DOMAINS),
         )
 
     try:
@@ -376,7 +463,9 @@ _EVALUATE_SYSTEM = registry.render("bd_reach_evaluate_system")
 
 #: How much of each retrieved page snippet is shown to the verifier. Enough to
 #: judge, short enough that a long page cannot crowd out the other results.
-_SNIPPET_CHARS = 900
+#: Trimmed with the hit ceiling raised, so the whole pack stays about the same
+#: size while covering three times as many companies.
+_SNIPPET_CHARS = 700
 
 
 def build_evaluate_prompt(
@@ -442,7 +531,100 @@ def parse_evaluation(raw: str) -> list[dict[str, Any]]:
     return [r for r in (results or []) if isinstance(r, dict)]
 
 
-# ── Node 4: shape ────────────────────────────────────────────────────────────
+#: Statuses whose `evaluated` list is worth shaping into cards. "ok" is the
+#: verified path; "unverified" is the degraded one, where the search worked and
+#: the judge did not. Every other status carries no results by construction.
+_SHAPEABLE_STATUSES: frozenset[str] = frozenset({"ok", "unverified"})
+
+
+# ── Node 4: resolve the employer's own site ──────────────────────────────────
+#
+# THE SINGLE LARGEST RECOVERY IN THIS PIPELINE, and it exists because of one
+# rule interacting badly with one fact.
+#
+# The rule: `shape_cards` drops any card with no `company_url`, because the
+# spec says clicking a card opens the company website and a card that cannot do
+# that is a dead click. That rule is right and stays.
+#
+# The fact: a search result's SNIPPET very often names the employer without
+# containing the employer's domain. "Acme Systems is hiring a Senior Java
+# Developer in Pune" tells the judge the company and tells it nothing about
+# acme-systems.com. Under the old prompt the judge was told to DROP such a
+# result outright, so a real, relevant, correctly-identified employer was
+# discarded for a reason that one more cheap search answers.
+#
+# So the judge now returns the company with a null `company_url`, and this node
+# looks the site up. Every lookup is a real search against the real web: nothing
+# here guesses a domain from a company name, because "acme.com" for "Acme
+# Systems" is exactly the plausible-looking wrong link the drop rule exists to
+# prevent.
+
+
+def _first_company_site(batch: "SearchBatch") -> str | None:
+    """The first result in a lookup that looks like an employer's own site."""
+    for hit in batch.results:
+        url = _normalise_url(hit.get("url"))
+        if not url:
+            continue
+        # `_company_from_url` returns None for a board or a social host, which
+        # is exactly the filter wanted here.
+        if _company_from_url(url) is None:
+            continue
+        return _site_root(url)
+    return None
+
+
+async def _resolve_one(company: str, api_key: str) -> tuple[str, str | None]:
+    batch = await _tavily_search(f"{company} official website", api_key)
+    return company, _first_company_site(batch)
+
+
+async def resolve_company_sites(
+    evaluated: list[dict[str, Any]], api_key: str
+) -> list[dict[str, Any]]:
+    """Fill in a missing `company_url` by searching for the employer's site.
+
+    Returns the SAME list with `company_url` populated where a lookup
+    succeeded. An unresolved company keeps its null and is dropped by
+    `shape_cards`, exactly as it was before: this step can only ever ADD cards.
+    """
+    missing: list[str] = []
+    for item in evaluated:
+        if _normalise_url(item.get("company_url")):
+            continue
+        name = str(item.get("company") or "").strip()
+        if name and name not in missing:
+            missing.append(name)
+    if not missing:
+        return evaluated
+
+    lookups = missing[:MAX_RESOLVE_LOOKUPS]
+    try:
+        results = await asyncio.wait_for(
+            asyncio.gather(*(_resolve_one(name, api_key) for name in lookups)),
+            timeout=RESOLVE_BUDGET_SECONDS,
+        )
+    except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
+        # A repair that failed leaves the cards exactly as the judge left them.
+        logger.info(
+            "web_research.resolve_failed error=%s", type(exc).__name__
+        )
+        return evaluated
+
+    found = {name: url for name, url in results if url}
+    if found:
+        logger.info(
+            "web_research.resolved_company_sites requested=%d found=%d",
+            len(lookups), len(found),
+        )
+    for item in evaluated:
+        if _normalise_url(item.get("company_url")):
+            continue
+        item["company_url"] = found.get(str(item.get("company") or "").strip())
+    return evaluated
+
+
+# ── Node 5: shape ────────────────────────────────────────────────────────────
 
 def _normalise_url(value: object) -> str | None:
     """A usable http(s) URL, or None.
@@ -606,6 +788,24 @@ async def _search_node(state: ResearchState) -> dict:
         # never trip the circuit.
         await _record_success()
         return {"hit_count": 0, "message": NO_RESULTS_MESSAGE}
+    # A THIN FIRST ROUND IS RETRIED WIDER, ONCE. Before this, a narrow sector in
+    # a smaller city returned three pages and the rep got an empty result that
+    # read as a broken feature. Each widened query drops a constraint rather
+    # than rephrasing one, and the round is skipped entirely whenever the first
+    # pass already found enough, so the common case costs nothing.
+    if len(ctx.hits) < WIDEN_THRESHOLD_HITS:
+        widened = widen_queries(ctx.job_role, ctx.city, ctx.industry)
+        if widened:
+            extra: list[SearchBatch] = await asyncio.gather(
+                *(_tavily_search(query, ctx.api_key) for query in widened)
+            )
+            ctx.hits = merge_results(
+                [ctx.hits] + [list(batch.results) for batch in extra]
+            )
+            logger.info(
+                "web_research.widened queries=%d hits=%d",
+                len(widened), len(ctx.hits),
+            )
     await _record_success()
     return {"hit_count": len(ctx.hits)}
 
@@ -623,7 +823,14 @@ async def _evaluate_node(state: ResearchState) -> dict:
         # keeps routing policy in config/llm_providers.py where it belongs
         # rather than inventing a task type in a service (CLAUDE.md).
         raw = await invoke_llm(
-            "extraction", messages, response_format_json=True,
+            # ITS OWN TASK TYPE, ON THE REASONING TIER, since 2026-09-08. This
+            # ran under `extraction` -- Luna, the tier `config/llm_providers`
+            # reserves for narrow mechanical work and explicitly forbids from
+            # evaluating. It is the step that decides which companies are real
+            # and resolves an employer from a thin snippet, and an under-powered
+            # judge under an accuracy-over-volume instruction drops almost
+            # everything. That was the largest single cause of a two-card page.
+            "bd_reach_evaluate", messages, response_format_json=True,
             session=ctx.session, timeout=EVALUATE_TIMEOUT_SECONDS,
         )
         return {"evaluated": parse_evaluation(raw)}
@@ -717,6 +924,22 @@ _AGGREGATOR_HOSTS: frozenset[str] = frozenset(
 )
 
 
+#: The same judgement as `_AGGREGATOR_HOSTS`, expressed as registrable domains
+#: because that is what Tavily's `exclude_domains` takes. Kept as a separate
+#: constant rather than derived: a job board is excluded from the SEARCH, while
+#: `_AGGREGATOR_HOSTS` also governs whether an unverified hit may be labelled
+#: with a company name, and collapsing the two would tie a search-cost decision
+#: to a labelling decision.
+EXCLUDED_SEARCH_DOMAINS: tuple[str, ...] = (
+    "indeed.com", "naukri.com", "glassdoor.com", "monster.com", "shine.com",
+    "timesjobs.com", "foundit.in", "simplyhired.com", "ziprecruiter.com",
+    "cutshort.io", "instahyre.com", "hirist.com", "iimjobs.com", "apna.co",
+    "wellfound.com", "internshala.com", "freshersworld.com", "jooble.org",
+    "careerjet.co.in", "facebook.com", "twitter.com", "x.com", "reddit.com",
+    "instagram.com", "quora.com", "youtube.com", "pinterest.com",
+)
+
+
 def _company_from_url(url: str) -> str | None:
     """A readable company name from a host, or None when there is not one.
 
@@ -740,10 +963,12 @@ def _company_from_url(url: str) -> str | None:
     return name.replace("-", " ").title()
 
 
-#: Statuses whose `evaluated` list is worth shaping into cards. "ok" is the
-#: verified path; "unverified" is the degraded one, where the search worked and
-#: the judge did not. Every other status carries no results by construction.
-_SHAPEABLE_STATUSES: frozenset[str] = frozenset({"ok", "unverified"})
+async def _resolve_node(state: ResearchState) -> dict:
+    ctx: _ResearchContext = state["ctx"]
+    evaluated = state.get("evaluated") or []
+    if state.get("status") not in _SHAPEABLE_STATUSES or not evaluated:
+        return {}
+    return {"evaluated": await resolve_company_sites(evaluated, ctx.api_key)}
 
 
 async def _shape_node(state: ResearchState) -> dict:
@@ -769,11 +994,13 @@ def _build_graph():
     graph.add_node("plan", _plan_node)
     graph.add_node("search", _search_node)
     graph.add_node("evaluate", _evaluate_node)
+    graph.add_node("resolve", _resolve_node)
     graph.add_node("shape", _shape_node)
     graph.add_edge(START, "plan")
     graph.add_edge("plan", "search")
     graph.add_edge("search", "evaluate")
-    graph.add_edge("evaluate", "shape")
+    graph.add_edge("evaluate", "resolve")
+    graph.add_edge("resolve", "shape")
     graph.add_edge("shape", END)
     return graph.compile()
 

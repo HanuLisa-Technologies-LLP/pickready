@@ -66,11 +66,17 @@ __all__ = [
 SECTIONS: tuple[str, ...] = ("about_company", "work_life", "benefits")
 
 #: The client's word guidance for these sections is "500 to 1000 reads best",
-#: which is CHARACTERS in the existing helper text. As words that is roughly 80
-#: to 170; the range below is deliberately a little tighter, because a section
-#: at the top of it is a screen of text a candidate will not read.
-WORD_MIN = 60
-WORD_MAX = 120
+#: which is CHARACTERS in the existing helper text, roughly 80 to 170 words.
+#:
+#: RAISED 2026-09-08, from 60 to 120. The old range sat BELOW the client's own
+#: floor on the reasoning that a long section is a screen nobody reads. That
+#: traded away the wrong thing: the sections were not too long, they were too
+#: thin to be worth reading at all, and a 60-word "about" of a company a
+#: candidate is about to apply to says almost nothing. The upper bound is what
+#: guards against a wall of text; the lower bound is what makes the draft worth
+#: keeping.
+WORD_MIN = 120
+WORD_MAX = 220
 
 #: Refused outright (client instruction). Matched on the registrable part of the
 #: host so `m.facebook.com` and `fb.com` are caught with it.
@@ -90,6 +96,11 @@ PREFERRED_HOSTS: tuple[str, ...] = (
     "glassdoor",
     "ambitionbox",
     "linkedin",
+    # Wikipedia is an encyclopaedia entry on the company itself: what it does,
+    # when it was founded, who owns it, what it is known for. It is the single
+    # best source for the `about_company` section and was not being asked for
+    # at all until 2026-09-08.
+    "wikipedia",
     "crunchbase",
 )
 
@@ -97,8 +108,11 @@ PREFERRED_HOSTS: tuple[str, ...] = (
 #: for the same reason the BD evaluator's payload is: an unbounded request is a
 #: 413 from a provider with a smaller limit, which is a permanent failure no
 #: retry can fix.
-_PAGE_CHARS = 1800
-_MAX_PAGES = 8
+#: RAISED with the word range and the model tier. A section grounded in every
+#: statement can only be as rich as the content behind it, and 1800 characters
+#: of a Wikipedia or careers page is the opening paragraph and nothing else.
+_PAGE_CHARS = 3500
+_MAX_PAGES = 14
 
 _EM_DASH = chr(8212)
 
@@ -189,6 +203,15 @@ def _plan_queries(company: str, website: str | None, industry: str | None) -> li
         f"{name} company profile what they do {sector}".strip(),
         f"{name} employee reviews work culture glassdoor ambitionbox",
         f"{name} employee benefits perks linkedin",
+        # ADDED 2026-09-08. The three queries above ask employee-review sites
+        # the same question three ways and never ask what the company IS. These
+        # four are the sources a person researching a company would actually
+        # open: the encyclopaedia entry, the business press, the company's own
+        # writing about how it works, and its own careers page.
+        f"{name} wikipedia company history founded",
+        f"{name} news funding growth {sector}".strip(),
+        f"{name} engineering blog how we work culture",
+        f"{name} careers life at {name} hiring",
     ]
     if site:
         queries.append(f"{name} about careers {site}")
@@ -347,7 +370,14 @@ async def research_company(
         if reflection:
             messages.append({"role": "user", "content": reflection})
         raw = await llm_router.chat_completion(
-            "extraction", messages, response_format_json=True, session=session
+            # ITS OWN TASK TYPE, ON THE REASONING TIER, since 2026-09-08. This
+            # ran under `extraction` -- Luna, the tier reserved for narrow
+            # mechanical field-copying. Writing three sections of grounded prose
+            # a candidate reads before applying is evidence-grounded WRITING,
+            # which is the reasoning tier's half of the split by definition and
+            # the same argument `email_composition` carries in that table.
+            "company_profile_research", messages, response_format_json=True,
+            session=session,
         )
         parsed = _normalise(json.loads(raw))
         if parsed is None:
