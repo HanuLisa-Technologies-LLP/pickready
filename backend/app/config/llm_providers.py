@@ -401,7 +401,12 @@ TASK_TIMEOUTS: dict[str, float] = {
     # would make every research pass time out and return the thin result these
     # numbers exist to fix.
     "bd_reach_evaluate": 30.0,
-    "company_profile_research": 45.0,
+    # FORTY, not forty-five. This agent is invoked SYNCHRONOUSLY from the
+    # request handler, so the whole route -- parallel search plus this write --
+    # has to finish inside the load balancer's 65-second idle timeout or the
+    # recruiter gets a 504 instead of a draft. Search is now concurrent and
+    # bounded at nine seconds, which leaves this the rest of the room.
+    "company_profile_research": 40.0,
     # Background. One reasoning pass over a reduced evidence pack.
     "project_evidence": 60.0,
     # Background: one structured payload, or one batch of evidence anchors,
@@ -450,7 +455,7 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     # `timeout * attempts` describes a wall-clock ceiling the retry loop can
     # never actually reach, which makes it a number that documents nothing.
     # Both dropped again when the retry budget went to two attempts.
-    "company_profile_research": 90.0,
+    "company_profile_research": 80.0,
     "project_evidence": 140.0,
     "format_composition": 140.0,
     "answer_evaluation": 140.0,

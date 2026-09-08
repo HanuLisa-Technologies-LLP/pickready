@@ -39,6 +39,7 @@ was 12 words and I need 60 to 120" is a defect a model fixes when told.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -224,10 +225,21 @@ async def _gather(company: str, website: str | None, industry: str | None) -> li
     if not queries or not web_research.is_configured():
         return []
     key = web_research.tavily_api_key()
-    batches = []
-    for query in queries:
-        batch = await web_research._tavily_search(query, key)
-        batches.append(list(batch.results))
+    # CONCURRENTLY. This was a `for` loop awaiting each search in turn, which
+    # made the whole step the SUM of its queries rather than the slowest one.
+    # At three queries that was tolerable; at seven it put the request past the
+    # load balancer's 65-second idle timeout and the recruiter got a 504 rather
+    # than a draft. The BD research agent next door has always gathered in
+    # parallel, and there was never a reason for these two to differ.
+    results = await asyncio.gather(
+        *(web_research._tavily_search(query, key) for query in queries),
+        return_exceptions=True,
+    )
+    batches = [
+        list(batch.results)
+        for batch in results
+        if isinstance(batch, web_research.SearchBatch)
+    ]
     hits = web_research.merge_results(batches)
     allowed = [hit for hit in hits if is_allowed_source(str(hit.get("url") or ""))]
     dropped = len(hits) - len(allowed)

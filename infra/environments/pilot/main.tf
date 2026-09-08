@@ -702,6 +702,47 @@ resource "aws_iam_role_policy" "task_worker_ses" {
   policy = data.aws_iam_policy_document.ses_send.json
 }
 
+# ── The API's right to start work ────────────────────────────────────────────
+#
+# THE API COULD NOT INVOKE A SINGLE LAMBDA, and that was not a research bug: it
+# broke every dispatched background task in the product. `TASK_DISPATCH_BACKEND`
+# is `aws`, so `dispatch()` invokes `readypick-task-worker`, and `dispatch` RAISES
+# on failure by design. Resume parsing, email delivery, matching runs and the
+# reconciliation sweeps all start with that call. Both synchronous agents failed
+# the same way, which is how it was found: Company Research answered 503 with
+# `AccessDeniedException ... not authorized to perform: lambda:InvokeFunction`,
+# and JD generation had the identical gap.
+#
+# It survived because nothing in the deploy asks this question. The functions
+# exist, the task definitions carry the right environment, every service reports
+# healthy, and the failure only appears when a human clicks something that
+# dispatches. `terraform plan` cannot see a MISSING grant.
+#
+# ENUMERATED BY NAME, never `lambda:*` and never a prefix, which is the same
+# rule `service_secrets` follows one module over. A revision qualifier is
+# deliberately absent: these are invoked by function NAME, so an alias-less ARN
+# is the exact grant rather than a wildcard standing in for one.
+data "aws_iam_policy_document" "api_invoke_agents" {
+  statement {
+    sid     = "InvokeTheFunctionsTheApiActuallyCalls"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      # workers/dispatch.py: WORKER_FUNCTION and TRIGGER_FUNCTION.
+      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-task-worker",
+      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-assessment-trigger",
+      # workers/agent_client.py: the two agents a recruiter waits on.
+      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-jd-gen",
+      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-company-profile",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "api_invoke_agents" {
+  name   = "${var.project}-${local.environment}-invoke-agents"
+  role   = element(split("/", module.ecs.task_role_arns["api"]), 1)
+  policy = data.aws_iam_policy_document.api_invoke_agents.json
+}
+
 resource "aws_iam_role_policy" "api_ses" {
   name   = "${var.project}-${local.environment}-ses-send"
   role   = element(split("/", module.ecs.task_role_arns["api"]), 1)
