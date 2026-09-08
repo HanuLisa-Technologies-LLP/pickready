@@ -263,3 +263,21 @@ variable "frontend_image_tag" {
   type        = string
   default     = ""
 }
+
+variable "analysis_image_tag" {
+  description = <<-EOT
+    The proctoring analysis image tag, when it differs from `image_tag`.
+
+    It differs whenever a release changes the backend or the frontend but not
+    `analysis-service/`, which is most of them: that image carries torch and
+    pyannote and takes far longer to build than everything else combined.
+    Pinning the tag it is ACTUALLY running is more honest than adding a new
+    tag to the same digest, which would claim a rebuild that never happened
+    and quietly absorb any base-image drift into a name that says otherwise.
+
+    Empty means "the same as `image_tag`", which is right whenever the
+    analysis service is genuinely rebuilt in the same release.
+  EOT
+  type        = string
+  default     = ""
+}

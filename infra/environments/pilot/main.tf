@@ -105,6 +105,9 @@ locals {
   # description for why the two can differ and what an apply that ignores it
   # does to the running service.
   frontend_image_tag = var.frontend_image_tag != "" ? var.frontend_image_tag : var.image_tag
+  # Same fallback, same reason. See the variable's description for why the
+  # analysis image so often lags the other two.
+  analysis_image_tag = var.analysis_image_tag != "" ? var.analysis_image_tag : var.image_tag
 
   # The internal service namespace, owned here and nowhere else. The analysis
   # service sits behind no load balancer, so a Cloud Map name is the only way
@@ -1067,7 +1070,7 @@ module "ecs" {
     # group, no listener rule, reachable only at its Cloud Map name from inside
     # the ECS security group.
     analysis = {
-      image         = "${module.ecr.repository_urls["analysis"]}:${var.image_tag}"
+      image         = "${module.ecr.repository_urls["analysis"]}:${local.analysis_image_tag}"
       cpu           = 2048
       memory        = 8192
       desired_count = local.service_count
