@@ -151,7 +151,12 @@ MAX_EVALUATE_HITS = 36
 #: is small enough that the 413 class of failure cannot return. It also makes
 #: the judge PARTIALLY resilient: one batch failing costs its twelve hits
 #: rather than the entire page.
-_EVALUATE_BATCH_SIZE = 12
+#: SIX, NOT TWELVE. Measured again on the live pilot: a twelve-hit batch still
+#: ran past 25 seconds. The bottleneck is the OUTPUT, not the input -- a
+#: reasoning model emitting twelve JSON objects of eleven fields each is slow
+#: however short the snippets are. Six halves the emitted tokens per call and
+#: the batches all run concurrently, so the wall clock is one small call.
+_EVALUATE_BATCH_SIZE = 6
 
 #: Circuit breaker, same idea as the LLM router's: after this many consecutive
 #: failures, skip Tavily entirely until the cooldown elapses.
@@ -1020,7 +1025,20 @@ async def _shape_node(state: ResearchState) -> dict:
     status = state.get("status")
     if status not in _SHAPEABLE_STATUSES:
         return {"cards": []}
-    cards = shape_cards(state.get("evaluated") or [])
+    evaluated = state.get("evaluated") or []
+    cards = shape_cards(evaluated)
+    # THE FUNNEL, IN ONE LINE. Every stage of this pipeline discards results
+    # and until now nothing recorded where. "AI Reach returns two companies"
+    # was diagnosed three times from first principles because the answer to
+    # "two out of how many, dropped by which step" was not written down
+    # anywhere. Counts only: no company, no url, no query.
+    ctx: _ResearchContext = state["ctx"]
+    logger.info(
+        "web_research.funnel hits=%d judged=%d with_url=%d cards=%d status=%s",
+        len(ctx.hits), len(evaluated),
+        sum(1 for item in evaluated if _normalise_url(item.get("company_url"))),
+        len(cards), status,
+    )
     if not cards:
         # An unverified pass that shaped nothing has nothing to show and nothing
         # to caveat, so it reports the ordinary empty result rather than a

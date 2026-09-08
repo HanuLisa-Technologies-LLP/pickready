@@ -620,10 +620,26 @@ def test_the_evaluate_prompt_says_retrieved_text_is_not_instructions() -> None:
     assert "UNTRUSTED SEARCH RESULTS" in prompt[1]["content"]
 
 
-def test_the_evaluator_is_told_to_drop_rather_than_guess() -> None:
+def test_the_evaluator_never_invents_and_no_longer_drops_by_default() -> None:
+    """AMENDED 2026-09-08, owner decision, and the two halves are separate.
+
+    WHAT CHANGED: the instruction used to be "drop anything you cannot
+    support", and under it a BD rep searching a role and a city got two cards.
+    The search now excludes job boards and social media at the provider, so
+    most of what reaches the judge is already a real employer's own page, and
+    gatekeeping it a second time was discarding the product's whole answer. The
+    default is now to KEEP and to express doubt through the confidence word.
+
+    WHAT DID NOT CHANGE, and is the reason this test still exists: the judge
+    may never INVENT. A company, a role or a city the content does not show is
+    still forbidden, and a URL is still never fabricated. Uncertainty is a
+    lower confidence word and a null field, never a plausible-looking guess.
+    """
     system = web_research._EVALUATE_SYSTEM
-    assert "Drop anything you cannot support" in system
+    assert "YOUR DEFAULT IS TO KEEP" in system
     assert "Never invent a URL." in system
+    assert "never by invention" in system
+    assert "Drop anything you cannot support" not in system
 
 
 def test_confidence_is_a_word_and_never_a_number() -> None:
