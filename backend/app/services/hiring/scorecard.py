@@ -732,7 +732,9 @@ async def _name_unanchored(
         used on both, so the bar the hiring manager is held to is the bar the
         model is held to.
         """
-        from app.services.hiring import company_dna  # noqa: PLC0415
+        from app.services.hiring import (  # noqa: PLC0415
+            observable as observable_detector,
+        )
 
         named = candidate.get("named")
         if not isinstance(named, list):
@@ -749,7 +751,7 @@ async def _name_unanchored(
                     f"{name!r} is not a short competency name; give a capability "
                     f"of at most {_MAX_NAME_WORDS} words, not a sentence"
                 )
-            if not observable or not company_dna.is_observable(observable):
+            if not observable or not observable_detector.is_observable(observable):
                 return agent_loop.reject(
                     f"the observable statement for {name!r} is not something "
                     f"anyone could have watched happen; state an action taken, "

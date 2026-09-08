@@ -360,9 +360,9 @@ async def test_an_adjective_observable_is_refused_by_the_same_detector(
 ) -> None:
     """The model is held to the bar §18.5 rule 4 holds the hiring manager to.
 
-    One detector, `company_dna.is_observable`, used by the DNA instrument, the
-    SWOT quality rules and this evaluator. Two copies would drift, and the drift
-    would be invisible: one surface accepting what another refuses.
+    One detector, `observable.is_observable`, used by the SWOT quality rules
+    and by this evaluator. Two copies would drift, and the drift would be
+    invisible: one surface accepting what another refuses.
     """
     from app.services.hiring import scorecard
 

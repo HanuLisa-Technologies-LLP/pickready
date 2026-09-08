@@ -579,8 +579,8 @@ def test_the_trait_rule_uses_the_same_detector_as_the_dna_instrument() -> None:
     import inspect
 
     source = inspect.getsource(swot_quality.review)
-    assert "company_dna.is_observable" in source
-    assert "company_dna.rejection_message" in source
+    assert "observable.is_observable" in source
+    assert "observable.rejection_message" in source
 
 
 def test_at_most_one_trait_refusal_per_area() -> None:
