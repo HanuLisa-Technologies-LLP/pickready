@@ -150,11 +150,10 @@ def test_an_unreadable_term_says_nothing_rather_than_guessing(junk) -> None:
 def test_a_retired_company_term_on_an_old_row_produces_no_sentence() -> None:
     """The removal, asserted from the reader's side.
 
-    Every matrix row frozen before the Company DNA withdrawal carries a
+    Every matrix row frozen before Layer 2 was withdrawn carries a
     `company_layer2` multiplier in its stored provenance. Those rows are still
-    read on the review screen, and a hiring manager must not be told their
-    organisation's philosophy weighed something when there is no longer any
-    such input.
+    read on the review screen, and a hiring manager must not be told a layer
+    weighed something when there is no longer any such input.
     """
     lines = scorecard.plain_provenance(
         _item(provenance=_provenance(company_layer2=1.4))
