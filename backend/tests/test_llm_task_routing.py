@@ -104,9 +104,8 @@ def test_an_unknown_task_type_raises_rather_than_defaulting() -> None:
 # that was not intended has to be made twice to pass.
 
 SPEC_B3_ASSIGNMENT = {
-    # Bodha -- SWOT / Company DNA conversational intake -> the reasoning tier
+    # Bodha -- SWOT conversational intake -> the reasoning tier
     "swot_intake": llm_providers.MODEL_TERRA,
-    "company_dna_intake": llm_providers.MODEL_TERRA,
     # Sutra -- competency naming, observable-evidence authoring, weight
     # derivation -> the reasoning tier
     "competency_transformation": llm_providers.MODEL_TERRA,

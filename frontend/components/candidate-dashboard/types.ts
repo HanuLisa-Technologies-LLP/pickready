@@ -133,7 +133,6 @@ export interface ReadyPickProfile {
   under_integrity_review: boolean;
   needs_human_review: boolean;
   scorecard_version: number | null;
-  company_dna_version: number | null;
   evaluated_at: string | null;
   scoring_mode: string | null;
 }

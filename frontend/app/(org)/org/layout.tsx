@@ -10,7 +10,6 @@ import {
   Briefcase,
   CreditCard,
   FileText,
-  Fingerprint,
   Gauge,
   LayoutDashboard,
   MailCheck,
@@ -25,10 +24,6 @@ import { useAuth } from "@/lib/auth-context";
 import { apiGet } from "@/lib/api";
 import type { BillingOverview } from "@/lib/types";
 import { AppShell, type NavItem } from "@/components/app-shell";
-import {
-  COMPANY_DNA_ROUTE,
-  CompanyDnaGate,
-} from "@/components/company-dna/onboarding-gate";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -137,19 +132,11 @@ export default function OrgLayout({
     // hidden by a stale client-side list is a page somebody is told does not
     // exist. The page itself asks the server what this person may do and
     // renders scoped or full accordingly, which is the more honest
-    // arrangement in any case. Same reasoning as Company DNA below.
+    // arrangement in any case.
     { href: "/org/candidates", label: "Candidates", icon: Users2 },
     // Company Profile (2026-07-27 spec §3.2): the About / Work Life / Benefits
     // sections every new job snapshots into its JD.
     { href: "/org/profile", label: "Company Profile", icon: FileText },
-    // Company DNA (Layer 2). Shown to every staff role, and NOT gated on a
-    // capability here: the two Company DNA grants are rows the RBAC engine
-    // resolves server-side and are not yet in `ALL_CAPABILITIES`, so
-    // `hasCapability` cannot see them. The page itself asks the server what
-    // this person may do and renders read-only or authoring accordingly, which
-    // is the more honest arrangement in any case: a nav item hidden by a stale
-    // client-side capability list is a page somebody is told does not exist.
-    { href: COMPANY_DNA_ROUTE, label: "Company DNA", icon: Fingerprint },
     { href: "/org/dashboard", label: "Dashboard", icon: LayoutDashboard },
     // Talent Intelligence (2026-09-05 spec): the 18 operational dashboards.
     // Gated on view_intelligence_dashboards, which the RBAC engine resolves
@@ -191,11 +178,6 @@ export default function OrgLayout({
   return (
     <AppShell title="Client-Org Portal" nav={nav}>
       <CreditStatusAlert />
-      {/* Impossible to miss for a client with no Layer 2 artifact, and gone the
-          moment there is one. It sits in the shell rather than on one page
-          because the person who needs it is not looking for it: they signed in
-          to post a job. */}
-      <CompanyDnaGate />
       {children}
     </AppShell>
   );

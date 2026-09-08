@@ -509,9 +509,8 @@ async def create_job(
     # the technical-bank half that used to share this task -- the job was
     # silently unusable forever. Nineteen live jobs were in exactly that state.
     # NOT ENQUEUED HERE ANY MORE (2026-08-29). Sutra compiles the Tatva matrix
-    # from Bodha's completed SWOT session and the client's compiled Company DNA;
-    # at job creation neither exists, so a task fired here would refuse on every
-    # job the moment it ran. The compile is enqueued by the SWOT session's own
+    # from Bodha's completed SWOT session; at job creation that does not exist,
+    # so a task fired here would refuse on every job the moment it ran. The compile is enqueued by the SWOT session's own
     # completion (`api/assessments.respond_swot_intake`), which is the event
     # that actually produces its input, and `pickready.reconcile_job_setup`
     # sweeps for a job whose session finished and whose matrix never landed.

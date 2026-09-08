@@ -747,16 +747,15 @@ def compile_tatva_matrix(job_id: str, replace: bool = False, correlation_id: str
     is not cosmetic. The old task ran `ppi.generate_framework`, which asked one
     model for a whole matrix in one pass and assembled one out of the JD's own
     noun phrases when the model was unavailable. This one runs
-    `hiring.scorecard.compile_matrix`: Layer 1's department model, Layer 2's
-    compiled Company DNA and Layer 3's validated SWOT, through the seven stages,
-    with every weight's terms stored on the row it produced.
+    `hiring.scorecard.compile_matrix`: Layer 1's department model and Layer 3's
+    validated SWOT, through the seven stages, with every weight's terms stored
+    on the row it produced.
 
-    IT CAN REFUSE, AND THE REFUSAL IS THE POINT. A job whose client has no
-    Company DNA, or whose Hiring Manager has not finished the SWOT session, gets
-    a `ScorecardInputMissing` naming what is outstanding. That is NOT retried:
-    no amount of waiting supplies a Company DNA artifact, and five backoff
-    attempts against a missing input is five log lines that look like a bug in
-    this task. The setup screen is what surfaces the block to the person who can
+    IT CAN REFUSE, AND THE REFUSAL IS THE POINT. A job whose Hiring Manager has
+    not finished the SWOT session gets a `ScorecardInputMissing` naming what is
+    outstanding. That is NOT retried: no amount of waiting finishes somebody
+    else's session, and five backoff attempts against a missing input is five
+    log lines that look like a bug in this task. The setup screen is what surfaces the block to the person who can
     clear it.
 
     It approves nothing. The matrix stays a draft until the Hiring Manager
@@ -799,13 +798,12 @@ def compile_tatva_matrix(job_id: str, replace: bool = False, correlation_id: str
             await session.commit()
             logger.info(
                 "job_setup.matrix_compiled job_id=%s grade=%s items=%d rejected=%d "
-                "situation=%s dna_version=%d",
+                "situation=%s",
                 job_id,
                 job.assessment_grade,
                 len(result.items),
                 len(result.rejections),
                 result.situation_key,
-                result.company_dna_version,
             )
     _run(_task())
 

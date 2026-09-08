@@ -2,7 +2,6 @@
 
     layers               the precedence model: tune within bounds, never suspend
     department_models    LAYER 1, the platform's own competency baselines
-    company_dna          LAYER 2, the client's philosophy, compiled once
     situations           the six role situation types and their weight effects
     swot_quality         LAYER 3's quality control: the probes and the refusals
     transformation       Sutra's seven stages, SWOT phrase -> matrix item

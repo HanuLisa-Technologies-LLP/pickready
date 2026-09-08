@@ -12,7 +12,7 @@ regrades them against rules that did not exist when they chose to apply.
 Nothing about that failure is visible afterwards. The evaluation carries a
 version, the version is real, the row looks correct, and the only way to notice
 is to compare two timestamps nobody thought to compare. So the resolution is
-done here, once, against `job_company_dna_bindings.frozen_at` -- an append-only
+done here, once, against `job_scorecard_bindings.frozen_at` -- an append-only
 table whose whole design is "what was this job built on when I applied".
 
 WHY THIS IS NOT A JOIN AT READ TIME
@@ -100,8 +100,6 @@ class EvaluationContext:
     #: AS OF -- carried so the resolution can be re-checked by hand.
     applied_at: datetime
     scorecard_version: int
-    company_dna_version: int | None
-    company_dna_id: str | None
     freeze_sequence: int
     frozen_at: datetime | None
     correlation_id: str | None
@@ -112,8 +110,6 @@ class EvaluationContext:
             "link_id": self.link_id,
             "applied_at": self.applied_at.isoformat(),
             "scorecard_version": self.scorecard_version,
-            "company_dna_version": self.company_dna_version,
-            "company_dna_id": self.company_dna_id,
             "freeze_sequence": self.freeze_sequence,
             "frozen_at": self.frozen_at.isoformat() if self.frozen_at else None,
             "correlation_id": self.correlation_id,
@@ -143,15 +139,13 @@ async def resolve_for_application(
                        l.job_id        AS job_id,
                        l.created_at    AS applied_at,
                        b.scorecard_version,
-                       b.company_dna_version,
-                       b.company_dna_id,
                        b.freeze_sequence,
                        b.frozen_at,
                        b.correlation_id
                   FROM job_candidate_links l
              LEFT JOIN LATERAL (
                        SELECT *
-                         FROM job_company_dna_bindings b2
+                         FROM job_scorecard_bindings b2
                         WHERE b2.job_id = l.job_id
                           AND b2.frozen_at IS NOT NULL
                           AND b2.frozen_at <= l.created_at
@@ -183,14 +177,6 @@ async def resolve_for_application(
         link_id=str(row["link_id"]),
         applied_at=row["applied_at"],
         scorecard_version=int(row["scorecard_version"]),
-        company_dna_version=(
-            int(row["company_dna_version"])
-            if row["company_dna_version"] is not None
-            else None
-        ),
-        company_dna_id=(
-            str(row["company_dna_id"]) if row["company_dna_id"] is not None else None
-        ),
         freeze_sequence=int(row["freeze_sequence"]),
         frozen_at=row["frozen_at"],
         correlation_id=row["correlation_id"],
@@ -224,8 +210,6 @@ REVISION_REASONS: tuple[str, ...] = (
     "criterion_defective",
     #: A prohibited disqualifier was found and must be removed (Runbook 12.3).
     "prohibited_disqualifier",
-    #: The client's Company DNA was re-authored, so Layer 2 moved underneath.
-    "company_dna_revised",
     #: The situation type was misclassified at intake, which re-weights the
     #: whole matrix coherently and invisibly. The most expensive intake error.
     "situation_reclassified",
@@ -314,7 +298,7 @@ async def plan_revision(
                   FROM jobs j
              LEFT JOIN LATERAL (
                        SELECT *
-                         FROM job_company_dna_bindings b2
+                         FROM job_scorecard_bindings b2
                         WHERE b2.job_id = j.id
                      ORDER BY b2.freeze_sequence DESC
                         LIMIT 1

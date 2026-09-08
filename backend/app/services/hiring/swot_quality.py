@@ -34,8 +34,8 @@ their own hiring process actually produces when nothing pushes back:
     matrix that grades every imperfect candidate the same, which is the same as
     not grading.
   * TRAITS RATHER THAN EVIDENCE. "Ownership mindset" produces a competency
-    nobody can evidence, which produces a grade nobody can defend. Identical
-    argument to the Company DNA instrument's Section 3, and it uses the same
+    nobody can evidence, which produces a grade nobody can defend. The same
+    bar Sutra holds its own generated statements to, through the same
     detector -- one rule, one implementation.
   * A PROHIBITED DISQUALIFIER. Unlawful, and it must be refused at the moment
     it is typed rather than at compilation, because by then the sentence the

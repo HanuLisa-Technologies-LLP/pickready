@@ -831,7 +831,7 @@ def _disqualifier_lines(text: str) -> list[str]:
     """The manager's stated hard exclusions, one per line, or an empty list.
 
     Kept VERBATIM rather than normalised, because the next thing that happens to
-    them is `company_dna.prohibited_in`, and rewriting a manager's phrasing
+    them is `observable.prohibited_in`, and rewriting a manager's phrasing
     before checking it for an unlawful filter would be laundering exactly the
     thing the check exists to catch.
     """

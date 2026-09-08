@@ -545,11 +545,11 @@ async def finalize_framework(
     refuses to reopen it once anyone has been, and gate G1 starts answering yes.
 
     RBAC §20 makes it an EXPLICIT transition and says what it has to record:
-    the user who finalized it, the timestamp, the relevant version and the
-    relevant hiring-criteria version. All four are written -- two onto the job,
-    two onto the append-only Company DNA binding -- and then again onto the
-    audit row, because the columns answer "what is in force" and the audit row
-    answers "what happened and who did it".
+    the user who finalized it, the timestamp and the relevant criteria version.
+    All three are written -- two onto the job, one onto the append-only
+    scorecard binding -- and then again onto the audit row, because the columns
+    answer "what is in force" and the audit row answers "what happened and who
+    did it".
 
     Authorised through `rbac.require_authorized` rather than
     `require_capability`, and the difference is the point: this route names a
@@ -594,10 +594,9 @@ async def finalize_framework(
                 category: sum(1 for item in rows if item.category == category)
                 for category in ppi.CATEGORIES
             },
-            # RBAC §20's four required facts, in the row as well as the columns.
+            # RBAC §20's required facts, in the row as well as the columns.
             "jd_version": swot_intake.jd_version(job),
             "criteria_version": matrix.version,
-            "company_dna_version": matrix.company_dna_version,
             "situation_key": matrix.situation_key,
         },
     )
@@ -608,11 +607,10 @@ async def finalize_framework(
     await _invalidate_framework(job)
     logger.info(
         "assessments.role_definition_finalized job_id=%s by=%s criteria_version=%d "
-        "dna_version=%s correlation_id=%s",
+        "correlation_id=%s",
         job.id,
         user.user_id,
         matrix.version,
-        matrix.company_dna_version,
         job.correlation_id,
     )
     return await _framework_out(session, job)

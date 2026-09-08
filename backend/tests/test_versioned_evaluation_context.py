@@ -10,7 +10,7 @@ THE SCENARIO spec-doc6 5 ASKS FOR, VERBATIM
 WHAT WAS ACTUALLY WRONG, WHICH IS SUBTLER THAN "NO VERSIONING"
 ----------------------------------------------------------------
 The versioning existed. `evaluations.scorecard_version` is copied rather than
-joined, `job_company_dna_bindings` is append-only, and both carry the discipline
+joined, `job_scorecard_bindings` is append-only, and both carry the discipline
 `report_dimensions.required_level` established years ago. The defect was the
 INSTANT: the version was copied at SCORING time. A criteria revision landing
 between the moment somebody applies and the moment they are scored regraded them
@@ -72,8 +72,6 @@ class _Scenario:
         self.tenant_id = uuid.uuid4()
         self.job_id = uuid.uuid4()
         self.user_id = uuid.uuid4()
-        self.dna_v1 = uuid.uuid4()
-        self.dna_v2 = uuid.uuid4()
         self.candidate_early = uuid.uuid4()
         self.candidate_late = uuid.uuid4()
         self.link_early = uuid.uuid4()
@@ -112,14 +110,6 @@ class _Scenario:
                 "correlation": self.correlation_id,
             },
         )
-        for dna_id, version in ((self.dna_v1, 1), (self.dna_v2, 2)):
-            await session.execute(
-                text(
-                    "INSERT INTO company_dna (id, tenant_id, version, status, "
-                    "is_current) VALUES (:id, :tenant, :version, 'complete', false)"
-                ),
-                {"id": dna_id, "tenant": self.tenant_id, "version": version},
-            )
         for candidate_id, link_id, applied in (
             (self.candidate_early, self.link_early, APPLIED_EARLY),
             (self.candidate_late, self.link_late, APPLIED_LATE),
@@ -143,22 +133,20 @@ class _Scenario:
                 },
             )
 
-    async def freeze(self, session, *, sequence: int, dna_id, at) -> None:
+    async def freeze(self, session, *, sequence: int, at) -> None:
         """One append-only freeze. Nothing ever updates a binding."""
         await session.execute(
             text(
-                "INSERT INTO job_company_dna_bindings "
-                "(id, tenant_id, job_id, company_dna_id, company_dna_version, "
-                " freeze_sequence, scorecard_version, correlation_id, frozen_at) "
-                "VALUES (:id, :tenant, :job, :dna, :dna_version, :sequence, "
-                "        :sequence, :correlation, :at)"
+                "INSERT INTO job_scorecard_bindings "
+                "(id, tenant_id, job_id, freeze_sequence, scorecard_version, "
+                " correlation_id, frozen_at) "
+                "VALUES (:id, :tenant, :job, :sequence, :sequence, "
+                "        :correlation, :at)"
             ),
             {
                 "id": uuid.uuid4(),
                 "tenant": self.tenant_id,
                 "job": self.job_id,
-                "dna": dna_id,
-                "dna_version": sequence,
                 "sequence": sequence,
                 "correlation": self.correlation_id,
                 "at": at,
@@ -195,8 +183,8 @@ class _Scenario:
 async def _scenario(session) -> _Scenario:
     scenario = _Scenario()
     await scenario.build(session)
-    await scenario.freeze(session, sequence=1, dna_id=scenario.dna_v1, at=FROZEN_V1)
-    await scenario.freeze(session, sequence=2, dna_id=scenario.dna_v2, at=FROZEN_V2)
+    await scenario.freeze(session, sequence=1, at=FROZEN_V1)
+    await scenario.freeze(session, sequence=2, at=FROZEN_V2)
     await session.commit()
     return scenario
 
@@ -223,8 +211,6 @@ async def test_a_revision_does_not_reach_backwards_into_an_earlier_application()
                 )
 
                 assert early.scorecard_version == 1
-                assert early.company_dna_version == 1
-                assert early.company_dna_id == str(scenario.dna_v1)
                 assert early.freeze_sequence == 1
                 assert early.applied_at == APPLIED_EARLY
 
@@ -232,7 +218,7 @@ async def test_a_revision_does_not_reach_backwards_into_an_earlier_application()
                 # this did not move, the resolution would be pinning the first
                 # version forever rather than resolving as of an instant.
                 assert late.scorecard_version == 2
-                assert late.company_dna_id == str(scenario.dna_v2)
+                assert late.freeze_sequence == 2
 
                 # The flow id travels with the context, so an evaluation is
                 # joinable to the freeze that produced its criteria.
@@ -254,9 +240,7 @@ async def test_a_freeze_in_the_same_instant_as_the_application_counts() -> None:
         async with factory() as session:
             scenario = _Scenario()
             await scenario.build(session)
-            await scenario.freeze(
-                session, sequence=1, dna_id=scenario.dna_v1, at=APPLIED_EARLY
-            )
+            await scenario.freeze(session, sequence=1, at=APPLIED_EARLY)
             await session.commit()
             try:
                 context = await versioning.resolve_for_application(
@@ -285,7 +269,6 @@ async def test_an_application_that_predates_every_freeze_is_refused() -> None:
             await scenario.freeze(
                 session,
                 sequence=1,
-                dna_id=scenario.dna_v1,
                 at=APPLIED_EARLY + timedelta(days=1),
             )
             await session.commit()

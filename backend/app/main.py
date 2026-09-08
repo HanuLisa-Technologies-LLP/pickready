@@ -20,7 +20,6 @@ from app.api import (
     billing,
     candidates,
     companies,
-    company_dna,
     dashboard,
     email_senders,
     emails,
@@ -113,9 +112,6 @@ API_PREFIX = "/api/v1"
 app.include_router(auth.router, prefix=f"{API_PREFIX}/auth", tags=["auth"])
 app.include_router(admin.router, prefix=f"{API_PREFIX}/admin", tags=["admin"])
 app.include_router(companies.router, prefix=f"{API_PREFIX}/companies", tags=["companies"])
-# Company DNA intake (Layer 2, spec-doc6 4.2 / D3). Mounted at the bare API
-# prefix because its routes are client-scoped: /clients/{client_id}/company-dna.
-app.include_router(company_dna.router, prefix=API_PREFIX, tags=["company-dna"])
 app.include_router(jobs.router, prefix=f"{API_PREFIX}/jobs", tags=["jobs"])
 app.include_router(candidates.router, prefix=f"{API_PREFIX}/candidates", tags=["candidates"])
 app.include_router(matching.router, prefix=f"{API_PREFIX}/matching", tags=["matching"])

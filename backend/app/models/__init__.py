@@ -102,15 +102,13 @@ from app.models.telemetry import TelemetryEvent
 from app.models.tenant import AuditLog, LLMProviderKey, RolePermission, Tenant
 from app.models.hiring import (
     CalibrationRecord,
-    CompanyDNA,
     Evaluation,
     ReviewDisposition,
 )
-# The `company_dna` TABLE is mapped in app.models.hiring (migration 0059).
-# This is the Layer 2 binding that records which version a job's scorecard was
-# frozen against (migration 0060); it is a separate table, not a second
-# mapping of that one.
-from app.models.company_dna import JobCompanyDNABinding
+# The append-only record of which scorecard version a job was frozen against,
+# and when. Read by `orchestration/versioning` to answer what a candidate
+# applied under.
+from app.models.job_scorecard_binding import JobScorecardBinding
 from app.models.user import OTPChallenge, User
 
 __all__ = [
@@ -191,10 +189,9 @@ __all__ = [
     "TAX_DOCUMENT_TYPES",
     "AgentExecutionTrace",
     "CalibrationRecord",
-    "CompanyDNA",
     "Evaluation",
     "ReviewDisposition",
-    "JobCompanyDNABinding",
+    "JobScorecardBinding",
     "AgentLearning",
     "ContextChunk",
     "EvidenceClaim",

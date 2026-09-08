@@ -2157,7 +2157,6 @@ async def _write_evaluation(
             link_id=state["link"].id,
             report_id=report.id,
             scorecard_version=int(getattr(matrix, "version", 1) or 1),
-            company_dna_version=getattr(matrix, "company_dna_version", None),
             situation_type=getattr(matrix, "situation_key", None),
             dimension_scores={
                 result.dimension: result.as_dict() for result in outcome.results

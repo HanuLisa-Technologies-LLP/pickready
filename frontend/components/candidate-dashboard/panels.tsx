@@ -207,8 +207,6 @@ export function ReadyPickProfilePanel({
                   </h3>
                   <p className="mt-2">
                     Scorecard version {profile.scorecard_version ?? "not recorded"}.
-                    Company DNA version{" "}
-                    {profile.company_dna_version ?? "not recorded"}.
                   </p>
                   <p>Scoring mode: {profile.scoring_mode ?? "not recorded"}.</p>
                 </section>

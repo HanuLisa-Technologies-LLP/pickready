@@ -71,14 +71,13 @@ def test_no_sentence_ever_carries_a_number() -> None:
     key = next(iter(situations.SITUATIONS))
     for anchor in ("stream_processing", None):
         for origin in ("the last person never owned anything in production", None):
-            for company in (1.2, 0.8, 1.0, None, "nonsense"):
+            for situation in (1.35, 0.8, 1.0, None, "nonsense"):
                 item = _item(
                     anchor_key=anchor,
                     swot_origin=origin,
                     provenance={
                         "terms": {
-                            "company_layer2": company,
-                            "situation_layer3": 1.35,
+                            "situation_layer3": situation,
                             "role_layer3": 1.1,
                         },
                         "situation_key": key,
@@ -106,42 +105,62 @@ def test_an_unanchored_item_says_it_starts_neutral() -> None:
     assert not any("already recognises" in line for line in lines)
 
 
-# ── Layer 2 and Layer 3: only when they moved something ──────────────────────
+# ── Layer 3: only when it moved something ────────────────────────────────────
 
 
-def test_a_company_layer_that_lifted_the_weight_is_named() -> None:
-    lines = scorecard.plain_provenance(
-        _item(provenance=_provenance(company_layer2=1.2))
-    )
+def _situation_provenance(value):
+    """A provenance carrying one readable situation key and one term."""
+    return {
+        "terms": {"situation_layer3": value},
+        "situation_key": next(iter(situations.SITUATIONS)),
+    }
+
+
+def test_a_layer_that_lifted_the_weight_is_named() -> None:
+    lines = scorecard.plain_provenance(_item(provenance=_situation_provenance(1.35)))
     assert any("more heavily" in line for line in lines)
 
 
-def test_a_company_layer_that_lowered_it_is_named_the_other_way() -> None:
-    lines = scorecard.plain_provenance(
-        _item(provenance=_provenance(company_layer2=0.8))
-    )
+def test_a_layer_that_lowered_it_is_named_the_other_way() -> None:
+    lines = scorecard.plain_provenance(_item(provenance=_situation_provenance(0.8)))
     assert any("less heavily" in line for line in lines)
 
 
 def test_a_layer_that_expressed_no_opinion_says_nothing() -> None:
     """The identity means the layer did not speak. "This was unchanged" about
-    four layers running is noise, and a reader who skips it skips the line that
+    every layer running is noise, and a reader who skips it skips the line that
     did move."""
-    lines = scorecard.plain_provenance(
-        _item(provenance=_provenance(company_layer2=1.0))
-    )
+    lines = scorecard.plain_provenance(_item(provenance=_situation_provenance(1.0)))
     assert not any("heavily" in line for line in lines)
 
 
 @pytest.mark.parametrize("junk", [None, "", "a bit more", {}, []])
 def test_an_unreadable_term_says_nothing_rather_than_guessing(junk) -> None:
     """A provenance dict written by an older pipeline must not produce a
-    sentence claiming a layer did something."""
+    sentence claiming a layer did something.
+
+    A row written before 2026-09-09 still carries a `company_layer2` term. It
+    is not read any more, and nothing reads it back into a sentence.
+    """
     assert scorecard._direction(junk) is None
+    lines = scorecard.plain_provenance(_item(provenance=_situation_provenance(junk)))
+    assert not any("heavily" in line for line in lines)
+
+
+def test_a_retired_company_term_on_an_old_row_produces_no_sentence() -> None:
+    """The removal, asserted from the reader's side.
+
+    Every matrix row frozen before the Company DNA withdrawal carries a
+    `company_layer2` multiplier in its stored provenance. Those rows are still
+    read on the review screen, and a hiring manager must not be told their
+    organisation's philosophy weighed something when there is no longer any
+    such input.
+    """
     lines = scorecard.plain_provenance(
-        _item(provenance=_provenance(company_layer2=junk))
+        _item(provenance=_provenance(company_layer2=1.4))
     )
     assert not any("heavily" in line for line in lines)
+    assert not any("philosophy" in line for line in lines)
 
 
 def test_the_situation_is_named_by_its_label_when_it_moved_the_weight() -> None:

@@ -342,7 +342,6 @@ IMMEDIATE_INTERACTIVE_TASKS = (
     "email_composition",
     "rerank",
     "swot_intake",
-    "company_dna_intake",
 )
 
 #: A request handler is blocked and the output is a DOCUMENT.

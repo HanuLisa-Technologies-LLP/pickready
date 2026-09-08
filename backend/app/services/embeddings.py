@@ -2,7 +2,7 @@
 
 Every RAG surface in ReadyPick embeds through this module -- candidate profile
 vectors, job vectors, `context_chunks`, the department competency models, the
-Company DNA artifacts, the rubric anchors, the skills ontology and the
+The rubric anchors, the skills ontology and the
 validation probe bank. One model, one place, no per-surface choice, because two
 embedding models in one platform means two vector spaces that look
 interchangeable in the schema and are not: a cosine distance computed between a

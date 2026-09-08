@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| Company DNA removed (2026-09-09) | Gate 1 on the Company Profile, the two-layer framework, the surviving detector |
 | The add-features release (2026-09-06) | Corporate senders + OTP, dual-mode assessment, video access, retention consents, BGV, employer pages, intelligence dashboards |
 | Background work without Celery (2026-09-05) | Dispatch, the four functions, the on-demand agent, the schedule |
 | End-to-end hiring workflow (2026-09-04) | The eight gates, the sourced stage, the final ranking, the Updates feed, job closure |
@@ -58,6 +59,90 @@ phase sections above them are where the sharp edges are.
    failed retrieval, no template output presented as generation.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
+
+
+## Current hard rules, Company DNA removed (2026-09-09)
+
+Owner decision. The Company DNA questionnaire is GONE and the **Company
+Profile** replaces it. Five modules, four frontend files, six test modules, one
+YAML data file and Runbook Part IV plus Appendix A were deleted; migration 0088
+drops the tables. **A client must not be able to tell it ever existed.**
+`tests/test_company_dna_removed.py` sweeps `app/`, `tests/` and `scripts/` for
+the name and fails on a hit, so this is enforced over the tree rather than at a
+call site.
+
+### Gate 1 now asks the Company Profile, and it is the same shape
+
+`hiring/company_requirements.creation_blocked` still runs at the top of
+`POST /jobs` and still returns a MESSAGE or None, so no caller can invent its
+own wording. What changed is the table: it reads `companies.about_company`,
+stripped.
+
+- **`about_company` only.** Work Life and Benefits are fields a company may
+  legitimately leave empty; refusing job creation over a section whose absence
+  costs nothing downstream is a gate nobody could defend.
+- **Whitespace is not content.** A profile holding three spaces would seed a
+  job's About section with three spaces.
+- **Still the TABLE, never a stamp**, and still at CREATE and not at publish. A
+  job created before the client wrote their profile stays created.
+
+### The three-layer framework is now TWO layers, and nothing pretends otherwise
+
+Layer 2 was the compiled Company DNA artifact. It is gone, so a weight is
+`baseline (L1) x situation (L3) x role (L3)` and `Weight` no longer carries a
+`company` term. `transformation.derive_threshold(category)` takes the category
+alone. `scorecard._layer2` and `_candidates_from_layer2` are DELETED, which
+removes a refusal as well as a term: a tenant with no artifact could not freeze
+a matrix at all, and now can.
+
+- **`layers.py` is UNCHANGED and `LAYER_COMPANY` stays.** It is the Runbook's
+  own bounds and precedence engine (3.5, 11.2, 11.4), its rows are DATA pinned
+  by `test_runbook_parity`, and 11.2's bounds table is cited by
+  `dimensions.yaml`. Gutting the middle layer would be a hiring-mechanic change
+  this removal does not authorise. What it has today is no live supplier, and
+  `test_hiring_layers` asserts the `evidence_threshold` bound stays ASYMMETRIC
+  for exactly that reason: an asymmetry with no caller is the one most likely
+  to be "simplified" by somebody who cannot see what it was protecting.
+
+### Two things survived deliberately, and both would have been easy to lose
+
+- **`services/hiring/observable.py`.** `is_observable`, `rejection_message` and
+  `prohibited_in` were defined inside the instrument and are not Company DNA
+  concepts: one is Runbook 18.5 rule 3's bar for a SWOT requirement, the other
+  is 12.3. `swot_quality` holds a hiring manager to them and `scorecard` holds
+  the MODEL that names a competency to the same bar, so the two cannot come
+  apart. Moved byte-for-byte; `tests/test_observable_detector.py` is now the
+  one place the behaviour is pinned, in both directions -- "Must hold a valid
+  CA licence" is not a protected-attribute disqualifier.
+- **`job_company_dna_bindings` became `job_scorecard_bindings`, rows intact.**
+  It was never only about Company DNA: it is the append-only record of WHEN a
+  job's scorecard was frozen and at what version, and
+  `orchestration/versioning.resolve_for_application` reads it to answer "what
+  was this job built on when I applied" for every candidate already assessed.
+  Dropping it would delete that answer. Renamed with `ALTER TABLE ... RENAME`
+  rather than left carrying a dead feature's name, and its two `company_dna_*`
+  columns dropped BEFORE the table they referenced.
+
+### The Runbook is v1.4, and section numbers were NOT renumbered
+
+Part IV (15, 16, 17) and Appendix A are removed in full; 61's SOP-01 is
+rewritten around the Company Profile. **15 to 17 are absent rather than
+reused**, because `runbook_data/` carries 103 citations by section number and
+renumbering would repoint every one of them silently. The YAML mirror lost
+`company_dna_instrument.yaml` and one duplicate rule in `disqualifiers.yaml`
+(18.5 already carried it, cited correctly), and every meta moved to 1.4 in the
+same change -- `test_runbook_parity` compares the two directions and would have
+failed either half alone.
+
+### Two names that look removable and are not
+
+- **`dna` stays in `provenance.CORRELATION_KINDS`** with no issuer. Traces and
+  audit rows written before today carry `dna-<hex>` ids, and dropping the kind
+  would make `is_correlation_id` answer False for a stored value that is
+  perfectly well formed -- a reader silently deciding history is corrupt.
+- **`docs/history/` and `docs/operations/TEST_BASELINE.md` still name it.**
+  Both are dated provenance. They record what was true when they were written
+  and are not updated to match current behaviour.
 
 
 ## Current hard rules, the add-features release (2026-09-06)
@@ -618,13 +703,14 @@ items 9 to 20 and its seven-module Terraform list.
 
 ### THE THREE MISSING DOCUMENTS ALL EXIST NOW. Read them, do not re-derive them.
 
-- **`docs/product/Readypick Hiring Philosophy.md`** (RPN-PHIL-001, now **v1.1**).
+- **`docs/product/Readypick Hiring Philosophy.md`** (RPN-PHIL-001, now **v1.4**
+  -- this line read v1.1 and was stale for two releases).
   It sat at the repository root until the 2026-09-01 documentation
   consolidation. Note the filename uses SPACES; every document writes it with
-  underscores. Three call sites resolve this path on disk, so moving it again
-  means changing them: `services/hiring/dna_compilation.RUNBOOK_MARKDOWN`,
-  `tests/test_runbook_parity.RUNBOOK_GLOB` and
-  `tests/test_runbook_reconciliation.RUNBOOK_PATH`. It was absent for the whole
+  underscores. TWO call sites resolve this path on disk (the third,
+  `dna_compilation.RUNBOOK_MARKDOWN`, went with Company DNA on 2026-09-09), so
+  moving it again means changing them: `tests/test_runbook_parity.RUNBOOK_GLOB`
+  and `tests/test_runbook_reconciliation.RUNBOOK_PATH`. It was absent for the whole
   of spec-doc5, which is why nine sites carried guesses. It is authoritative
   for evaluation mechanics.
 - **`docs/spec/RBAC_SPECIFICATION.md`** is **precedence rank 1**, above the
@@ -729,7 +815,8 @@ evaluation... Use it" was therefore false**, and anything written against it was
 relying on nothing.
 
 That grep now returns hits in `api/assessments.py`, `api/jobs.py`,
-`api/dashboard.py`, `api/company_dna.py` and `workers/tasks.py`. Job setup runs
+`api/dashboard.py` and `workers/tasks.py` (it also named `api/company_dna.py`
+until 2026-09-09). Job setup runs
 Bodha's SWOT and Sutra's seven stages and freezes a matrix behind G1; Yukti
 grades a resume on the evidence model and the ontology; Miti's five isolated
 evaluators score live with a model-free aggregator; Siddhi composes the PRISM
@@ -1084,8 +1171,9 @@ exemptions. Anthropic is REMOVED, not kept as a fallback, and
   integrity" and modifies no weight), and observable-evidence questions in
   section 3 that REJECT an adjective and ask again. "ownership mindset" is
   refused; "has taken a project from an unclear brief to a shipped outcome" is
-  accepted. One detector, `company_dna.is_observable`, used by both the DNA
-  instrument and the SWOT quality rules -- two copies would drift invisibly.
+  accepted. One detector, now `observable.is_observable`, used by the SWOT
+  quality rules and by Sutra -- two copies would drift invisibly. The DNA half
+  of Bodha's dual mandate was withdrawn on 2026-09-09; the detector was not.
 - **A disqualifier is matched on WORD BOUNDARIES and includes numeric age
   bars.** The first version matched substrings and refused "Must hold a valid CA
   licence" because "hold" contains "old", while accepting "No candidates over

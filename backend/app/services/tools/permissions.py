@@ -156,8 +156,7 @@ def agents_holding(tool: str) -> frozenset[str]:
 # what a principal must be able to AUTHORISE. Both are needed and neither
 # subsumes the other.
 
-#: Bodha, the intake agent. Two mandates: the per-job SWOT session and the
-#: one-time-per-client Company DNA intake.
+#: Bodha, the per-job SWOT intake agent.
 AGENT_BODHA = "bodha"
 #: Sutra, the seven-stage matrix compiler.
 AGENT_SUTRA = "sutra"
@@ -201,8 +200,7 @@ NAMED_AGENTS: tuple[str, ...] = (
 # agent may CAUSE is an authorization question and lives with the other
 # authorization questions.
 
-#: Bodha, the intake agent. Two mandates: the per-job SWOT session and the
-#: one-time-per-client Company DNA intake.
+#: Bodha, the per-job SWOT intake agent.
 AGENT_BODHA = "bodha"
 #: Sutra, the seven-stage matrix compiler.
 AGENT_SUTRA = "sutra"

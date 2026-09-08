@@ -107,7 +107,7 @@ def test_the_preserve_default_covers_the_tables_d2_never_named() -> None:
         "technical_questions",
         "job_matching_categories",
         "context_chunks",
-        "job_company_dna_bindings",
+        "job_scorecard_bindings",
     }
 
 

@@ -1081,7 +1081,6 @@ def profile_panel(
         "under_integrity_review": under_integrity_review,
         "needs_human_review": bool(evaluation.get("needs_human_review")),
         "scorecard_version": evaluation.get("scorecard_version"),
-        "company_dna_version": evaluation.get("company_dna_version"),
         "evaluated_at": evaluation.get("completed_at"),
         "scoring_mode": evaluation.get("scoring_mode"),
     }

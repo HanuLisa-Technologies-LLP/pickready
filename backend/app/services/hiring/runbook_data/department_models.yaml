@@ -11,7 +11,7 @@
 
 meta:
   document: RPN-PHIL-001
-  runbook_version: "1.3"
+  runbook_version: "1.4"
   description: "Department competency models (Part VI) and the Layer 1 baseline weight matrix they select a family from."
 
 reading_rule:

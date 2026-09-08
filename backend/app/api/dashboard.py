@@ -437,7 +437,7 @@ async def _latest_evaluation(session: AsyncSession, link_id: uuid.UUID) -> dict 
             sql_text(
                 "SELECT id, aggregate_json, dimension_scores, competency_scores, "
                 "       triangulation_json, gate_results_json, confidence, "
-                "       needs_human_review, scorecard_version, company_dna_version, "
+                "       needs_human_review, scorecard_version, "
                 "       situation_type, scoring_mode, completed_at "
                 "FROM evaluations WHERE link_id = :lid "
                 "ORDER BY created_at DESC, id DESC LIMIT 1"

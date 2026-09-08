@@ -163,7 +163,6 @@ TaskType = Literal[
     "jd_generation",
     "technical_questions",
     "swot_intake",
-    "company_dna_intake",
     "situation_classification",
     "competency_transformation",
     # ── Scoring ──
@@ -219,7 +218,6 @@ MODEL_FOR_TASK: dict[str, str] = {
     "technical_questions": MODEL_TERRA,
     # Bodha, both mandates: structured interview judgment and probe selection.
     "swot_intake": MODEL_TERRA,
-    "company_dna_intake": MODEL_TERRA,
     # Sutra: competency naming, observable-evidence authoring, weight
     # derivation. Judgment-heavy.
     "competency_transformation": MODEL_TERRA,
@@ -365,7 +363,6 @@ TASK_TIMEOUTS: dict[str, float] = {
     "email_composition": 15.0,
     "rerank": 15.0,
     "swot_intake": 15.0,
-    "company_dna_intake": 15.0,
     # ── GENERATIVE interactive: a request handler is blocked and the output is
     #    a DOCUMENT. This is the one number the model consolidation genuinely
     #    moved, and it is worth stating why rather than letting a reader assume
@@ -437,7 +434,6 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "email_composition": 30.0,
     "rerank": 30.0,
     "swot_intake": 30.0,
-    "company_dna_intake": 30.0,
     # The generative-interactive exception. See TASK_TIMEOUTS above.
     "jd_generation": 50.0,
     "technical_questions": 200.0,
@@ -488,7 +484,6 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "jd_generation": 4096,
     "email_composition": 1024,
     "swot_intake": 1024,
-    "company_dna_intake": 1024,
     "situation_classification": 512,
     "rerank": 2048,
     "technical_questions": 8192,
@@ -569,7 +564,6 @@ TASK_TEMPERATURE: dict[str, float] = {
     "jd_generation": 0.5,
     "email_composition": 0.5,
     "swot_intake": 0.5,
-    "company_dna_intake": 0.5,
     # Writes three sections of prose from retrieved content. Low rather than
     # zero: every sentence must stay anchored to what was retrieved, and the
     # deterministic guards (word range, no invented number, no generic phrase)
@@ -608,7 +602,6 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "jd_generation": 3,
     "email_composition": 3,
     "swot_intake": 3,
-    "company_dna_intake": 3,
     "rerank": 3,
     "technical_questions": 3,
     "competency_transformation": 3,
