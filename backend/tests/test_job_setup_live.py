@@ -66,7 +66,13 @@ from app.models.tenant import AuditLog, RolePermission, Tenant
 from app.models.user import User
 from app.services import capabilities as caps
 from app.services import ppi, swot_intake
-from app.services.hiring import pipeline_halt, scorecard, situations, swot_quality
+from app.services.hiring import (
+    company_requirements,
+    pipeline_halt,
+    scorecard,
+    situations,
+    swot_quality,
+)
 from app.services.hiring_pipeline import JobLifecycleState
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
@@ -729,6 +735,68 @@ def _stored_raw_weights(sessions, job_id: str) -> dict[str, float]:
                     }
 
     return asyncio.run(_go())
+
+
+# ── Gate 1, through the route rather than through the function ──────────────
+
+
+def _clear_company_profile(sessions, tenant: uuid.UUID) -> None:
+    async def _go():
+        async with sessions() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await session.execute(
+                        sa.text(
+                            "UPDATE companies SET about_company = NULL "
+                            "WHERE tenant_id = :t"
+                        ),
+                        {"t": tenant},
+                    )
+
+    asyncio.run(_go())
+
+
+def test_job_creation_is_refused_and_then_allowed_by_the_company_profile(
+    client: Caller, sessions
+) -> None:
+    """Gate 1 at the ROUTE, in both directions, through HTTP.
+
+    `test_workflow_gates.py` proves the function; this proves a recruiter
+    actually meets it. Both directions, because a gate asserted only on its
+    refusal passes just as happily when it refuses everything, and a client
+    who has written their profile and still cannot post a job has a product
+    that does not work.
+
+    Self-contained: it clears the profile first rather than assuming its
+    tenant has none, so no other test in this module can decide its outcome.
+    """
+    tenant = client.world.tenant_a
+    client.sign_in(Role.hr_manager, tenant)
+    _clear_company_profile(sessions, tenant)
+
+    refused = client.post(
+        "/jobs",
+        json={
+            "title": "Platform Engineer",
+            "grade": "non_managerial",
+            "publish": False,
+            "jd_markdown": (
+                "## About the role" + chr(10) * 2
+                + "Own the ingestion platform." + chr(10)
+            ),
+            "jd": {},
+        },
+    )
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert detail == company_requirements.MISSING_MESSAGE
+    # The refusal names the page and what to write there, and carries no
+    # trace of the instrument it replaced.
+    assert "Company Profile" in detail
+    assert "dna" not in detail.lower()
+
+    _write_company_profile(sessions, tenant)
+    assert _create_job(client, "Platform Engineer")
 
 
 # ── The happy path, end to end ───────────────────────────────────────────────
