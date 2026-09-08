@@ -445,11 +445,12 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "report_synthesis": 280.0,
     "extraction": 140.0,
     "bgv_reply_extraction": 140.0,
-    "bd_reach_evaluate": 70.0,
+    "bd_reach_evaluate": 50.0,
     # Bounded by the same invariant every other entry is: a total budget above
     # `timeout * attempts` describes a wall-clock ceiling the retry loop can
     # never actually reach, which makes it a number that documents nothing.
-    "company_profile_research": 135.0,
+    # Both dropped again when the retry budget went to two attempts.
+    "company_profile_research": 90.0,
     "project_evidence": 140.0,
     "format_composition": 140.0,
     "answer_evaluation": 140.0,
@@ -618,6 +619,16 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "format_composition": 3,
     "answer_evaluation": 3,
     "fill_blank_equivalence": 2,
+    # TWO, NOT THREE, and both are interactive. Measured on the live pilot
+    # 2026-09-08: the judge timed out at 25 seconds, the router spent a second
+    # full attempt on it, and the retry alone consumed more than the remaining
+    # search budget -- so a search that had fetched 36 real pages returned a
+    # timeout and no cards at all. A third attempt on a request somebody is
+    # watching cannot finish inside the budget the caller wraps it in, and the
+    # router's own deadline rule (never start an attempt that cannot finish)
+    # is what makes two the honest number rather than three.
+    "bd_reach_evaluate": 2,
+    "company_profile_research": 2,
 }
 
 DEFAULT_RETRY_BUDGET = 3

@@ -93,6 +93,19 @@ variable "service_secrets" {
       "FIREBASE_SERVICE_ACCOUNT_JSON",
       "RAZORPAY_KEY_SECRET",
       "LLM_KEY_ENCRYPTION_SECRET",
+      # THE BD PORTAL'S AI REACH RUNS IN THE REQUEST HANDLER, and this key is
+      # why it returned nothing on the live site. The search is deliberately
+      # NOT dispatched -- it is user-initiated, interactive and bounded by
+      # `web_research.SEARCH_BUDGET_SECONDS` -- so the API is the process that
+      # calls Tavily, and it was the one runtime identity without the key.
+      #
+      # It failed silently by design: an absent key is a supported state that
+      # answers `status="unconfigured"` so the customer-database segment keeps
+      # working. That graceful path is right, and it is exactly what made this
+      # invisible. The task worker and the company-profile function have held
+      # the key since the roster was written; only the caller that needed it
+      # most did not.
+      "TAVILY_API_KEY",
     ]
     "task-worker" = [
       "DATABASE_URL",

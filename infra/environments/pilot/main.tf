@@ -956,6 +956,9 @@ module "ecs" {
         FIREBASE_SERVICE_ACCOUNT_JSON = module.secrets.secret_arns["FIREBASE_SERVICE_ACCOUNT_JSON"]
         RAZORPAY_KEY_SECRET           = module.secrets.secret_arns["RAZORPAY_KEY_SECRET"]
         LLM_KEY_ENCRYPTION_SECRET     = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        # AI Reach calls Tavily from the request handler, so the API is the
+        # process that needs this. See the IAM list in modules/secrets.
+        TAVILY_API_KEY                = module.secrets.secret_arns["TAVILY_API_KEY"]
       }
     }
 

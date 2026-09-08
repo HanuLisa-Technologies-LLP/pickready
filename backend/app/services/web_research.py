@@ -139,6 +139,20 @@ MAX_CARDS = 24
 #: runs on the reasoning tier with `TASK_MAX_TOKENS` raised to match.
 MAX_EVALUATE_HITS = 36
 
+#: HITS PER JUDGE CALL, and the calls run CONCURRENTLY.
+#:
+#: Measured on the live pilot 2026-09-08: one call carrying 36 hits took longer
+#: than its 25-second timeout, the router retried it, and the retry blew the
+#: whole search budget -- so a search that had successfully fetched 36 real
+#: pages returned `status="timeout"` and zero cards.
+#:
+#: Three concurrent calls of twelve finish in about the time ONE of them takes,
+#: which is roughly a third of the single large call, and the pack per request
+#: is small enough that the 413 class of failure cannot return. It also makes
+#: the judge PARTIALLY resilient: one batch failing costs its twelve hits
+#: rather than the entire page.
+_EVALUATE_BATCH_SIZE = 12
+
 #: Circuit breaker, same idea as the LLM router's: after this many consecutive
 #: failures, skip Tavily entirely until the cooldown elapses.
 _FAILURE_THRESHOLD = 3
@@ -814,14 +828,17 @@ async def _evaluate_node(state: ResearchState) -> dict:
     ctx: _ResearchContext = state["ctx"]
     if state.get("status") != "ok" or not ctx.hits:
         return {"evaluated": []}
-    messages = build_evaluate_prompt(
-        ctx.hits, job_role=ctx.job_role, city=ctx.city,
-        industry=ctx.industry, company=ctx.company,
-    )
-    try:
-        # `extraction` is the established long-context task route. Reusing it
-        # keeps routing policy in config/llm_providers.py where it belongs
-        # rather than inventing a task type in a service (CLAUDE.md).
+    hits = ctx.hits[:MAX_EVALUATE_HITS]
+    batches = [
+        hits[start:start + _EVALUATE_BATCH_SIZE]
+        for start in range(0, len(hits), _EVALUATE_BATCH_SIZE)
+    ]
+
+    async def _judge(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        messages = build_evaluate_prompt(
+            batch, job_role=ctx.job_role, city=ctx.city,
+            industry=ctx.industry, company=ctx.company,
+        )
         raw = await invoke_llm(
             # ITS OWN TASK TYPE, ON THE REASONING TIER, since 2026-09-08. This
             # ran under `extraction` -- Luna, the tier `config/llm_providers`
@@ -833,7 +850,35 @@ async def _evaluate_node(state: ResearchState) -> dict:
             "bd_reach_evaluate", messages, response_format_json=True,
             session=ctx.session, timeout=EVALUATE_TIMEOUT_SECONDS,
         )
-        return {"evaluated": parse_evaluation(raw)}
+        return parse_evaluation(raw)
+
+    try:
+        # `extraction` is the established long-context task route. Reusing it
+        # keeps routing policy in config/llm_providers.py where it belongs
+        # rather than inventing a task type in a service (CLAUDE.md).
+        # `return_exceptions` so ONE failed batch costs its own twelve hits and
+        # not the other twenty-four. An all-or-nothing gather here would undo
+        # the whole point of batching.
+        outcomes = await asyncio.gather(
+            *(_judge(batch) for batch in batches), return_exceptions=True
+        )
+        evaluated: list[dict[str, Any]] = []
+        failed = 0
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                failed += 1
+                logger.warning(
+                    "web_research.evaluate_batch_failed error=%s",
+                    type(outcome).__name__,
+                )
+                continue
+            evaluated.extend(outcome)
+        if failed and not evaluated:
+            # EVERY batch failed, which is the single-call failure this used to
+            # be. Fall through to the honest unverified path rather than
+            # reporting an empty verified result.
+            return _unverified(ctx)
+        return {"evaluated": evaluated}
     except LLMUnavailableError:
         logger.info("web_research.evaluate_unavailable")
         return _unverified(ctx)
