@@ -57,6 +57,7 @@ document.
 | File | What it holds |
 |---|---|
 | [ESD.md](architecture/ESD.md) | Engineering and system design, implementation-aligned |
+| [AI_RUNTIME.md](architecture/AI_RUNTIME.md) | The AI runtime AS BUILT: retrieval, the reranker, the scoring lock, the eval layer and the release gate. Names what is NOT built, in the same document |
 | [adr/](architecture/adr/) | Architecture decision records |
 
 ### `spec/` — normative specifications
