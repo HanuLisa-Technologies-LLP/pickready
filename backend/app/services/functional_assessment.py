@@ -83,6 +83,7 @@ from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELD
 from app.services.assessment_formats import evaluation as format_evaluation
 from app.services.assessment_formats import rendering as format_rendering
 from app.services.assessment_formats import types as question_types
+from app.config import llm_providers
 from app.prompts import registry
 from app.services.rating import (
     GRADES,
@@ -1052,6 +1053,21 @@ def invented_terms(value: str, *, evidence: str, name: str) -> list[str]:
             invented.append(token)
     # Stable, de-duplicated, so the same defect reads the same way twice.
     return sorted(set(invented))
+
+
+def _report_prompt_versions() -> str:
+    """The registry labels of the versioned prompts a model-backed run uses.
+
+    `name@declared+digest`, semicolon separated, resolved at WRITE time so the
+    stored value describes the prompt files in the running image rather than
+    whatever is on disk when somebody later asks. The remark system prompt is
+    inline in `bounded_remark` and therefore versioned by the image, not here;
+    the column's own docstring says so, because a provenance field that
+    silently claimed completeness would be worse than one that states its
+    limit.
+    """
+    names = ("assessment_answer_scoring", "report_gap_probes")
+    return "; ".join(f"{name}@{registry.version(name)}" for name in names)
 
 
 async def bounded_remark(
@@ -2082,6 +2098,20 @@ async def synthesis_node(state: AssessmentState) -> dict:
         # release needs no data restore. Reports written before today keep
         # theirs and still render it.
         "synthesized_at": datetime.now(timezone.utc),
+        # PROVENANCE (0094). Written only for a model-backed run, resolved at
+        # THIS moment rather than reconstructed later from deploy timestamps.
+        # A deterministic-fallback report carries NULL for both, because no
+        # model and no versioned prompt produced it, and recording one would
+        # claim work that never happened -- the same honesty rule that flags
+        # the fallback for human review five lines below.
+        "model_id": (
+            llm_providers.model_for("report_synthesis")
+            if scoring_mode == MODE_LLM_RUBRIC
+            else None
+        ),
+        "prompt_version": (
+            _report_prompt_versions() if scoring_mode == MODE_LLM_RUBRIC else None
+        ),
         "needs_human_review": (
             not gate_verdict.passed
             or uncertainty_review
