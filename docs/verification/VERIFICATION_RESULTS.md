@@ -336,3 +336,46 @@ the retriever; quality becomes measurable only with a `recorded` run against
 an index holding real volume, and the deployed environment still holds zero
 candidates. The reasoning and decision sets remain EMPTY at version 2026.Q3.2
 and must stay empty until a human labels them.
+
+---
+
+# Third deployment, commit 3b27abb (2026-09-10)
+
+Native support replaces the deleted vendor sync; the pilot database grows up a
+size; reports gain provenance columns. Backend image `sha-3b27abb`, digest
+`sha256:bfa2a8eb48fa793107cd9814e03c08fc7b11520ba2f9f600206a26c5ab7e86dd`;
+frontend image `sha-3b27abb`, digest
+`sha256:e54c7d134918d7b8150a5991d8f97e99f4dcf546de517b5bc22814fb11ae5f70`.
+Single plain manifests (`--provenance=false --sbom=false`), so ECS and Lambda
+share one digest per image.
+
+| Step | Result |
+|---|---|
+| Backend suite on the deployed commit | 6132 passed, 1 skipped, 0 failed |
+| `terraform apply` (pilot) | 4 added, 4 changed, 5 destroyed: four task-definition revisions, the RDS in-place modify, and the vendor sync's EventBridge rule destroyed |
+| RDS after the apply | `db.t4g.medium`, status available, `PendingModifiedValues` empty, `max_allocated_storage` 200. Read back from `describe-db-instances`, not from the plan |
+| RDS Proxy | NOT built, owner decision, after the vendor's pinning documentation was read: for PostgreSQL the proxy pins on SET commands, `set_config()`, and named prepared statements, and this application does all three on effectively every session. The reasoning lives beside the `instance_class` line in `infra/environments/pilot/main.tf` |
+| Migration job | exit 0, polled to STOPPED; schema read back as `0094_report_provenance` |
+| Services rolled | api 26 to 27, frontend 14 to 15, analysis already on 12 |
+| Lambdas | all 3 image-backed functions running `sha-3b27abb` |
+| **Verified by digest** | api (4 tasks), frontend (2), analysis (4): every running task is the image this build produced |
+| Support routes live | `GET /api/v1/support/threads` and `GET /api/v1/provider/support/threads` both answer 401 unauthenticated: mounted and gated, not 404 |
+| Vendor sync rule | `readypick-sync-intercom-companies` absent from the scheduler listing |
+| Site | 200 |
+| API errors in the ten minutes after rollout | none |
+
+## What this deployment deliberately did not prove
+
+The Support surface is proven live at the ROUTE level (mounted, auth-gated,
+zero errors) and end to end in the suite (RLS in both directions, the FSM,
+the notification dispatch, the capability gates, against a real database).
+No support thread has been opened through the production UI yet, because the
+environment's three tenants are demo tenants and opening one is a signed-in
+human act. The first real thread is the remaining live exercise, and it is a
+two-minute manual step, not an engineering gap.
+
+The RDS bump is proven applied; what it is FOR (HNSW working memory, the
+connection ceiling under Lambda concurrency) becomes measurable only when
+real load exists. The standing watch item is CloudWatch `DatabaseConnections`
+against the new ceiling, and the pinning analysis stands recorded for whoever
+next reaches for a proxy.

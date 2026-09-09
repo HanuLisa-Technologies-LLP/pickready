@@ -785,3 +785,32 @@ a LOCAL `npm run build`, which is where the deleted page surfaced first.
 - No `terraform apply` outside the two `-target`ed resources.
 - `analysis_image_tag` stayed pinned at `93ebfcb`; nothing rebuilt it.
 - The vCPU quota case is still open; analysis still has no running task.
+
+## 2026-09-10 — Native support, RDS bump, runtime completions, pilot (ap-south-2)
+
+Commit `3b27abb` on `feat/ai-upgrade-rpn-ai-up-001`. One tag for backend and
+frontend (`sha-3b27abb`), plain manifests, one digest per image for both
+runtimes. Suite on the deployed commit: 6132 passed, 1 skipped, 0 failed.
+
+- Migrations 0093 (support_threads + support_messages + RLS + capability
+  seeds) and 0094 (report `model_id`/`prompt_version`) applied; schema read
+  back `0094_report_provenance`.
+- `terraform apply -var image_tag=sha-3b27abb -var frontend_image_tag=sha-3b27abb`:
+  the tfvars pin `bootstrap`, and applying WITHOUT the overrides registers
+  task-definition revisions pointing at the bootstrap image, which the next
+  deploy-services.sh would then faithfully roll out. Worth restating every
+  release until a wrapper owns it.
+- RDS: `db.t4g.micro -> db.t4g.medium` in place, storage ceiling 100 -> 200,
+  floor kept at 50, `multi_az` still false with the must-flip note now in the
+  file. Terraform waited out the modify; `describe-db-instances` read back
+  medium/available/no-pending before the migration ran. NO RDS PROXY, owner
+  decision: the vendor's own pinning documentation says PostgreSQL sessions
+  pin on SET, set_config() and named prepared statements, and this
+  application does all three on effectively every session, so the proxy
+  would multiplex nothing. Reasoning beside the instance_class line.
+- The vendor-sync EventBridge rule (`readypick-sync-intercom-companies`) was
+  destroyed with the integration; the scheduler listing no longer names it.
+- Services api 26->27, frontend 14->15; analysis untouched on 12; all three
+  verified by digest against RUNNING tasks. Lambdas all on `sha-3b27abb`.
+- Support routes answer 401 unauthenticated at the apex: mounted and gated.
+  Zero API errors in the ten minutes after rollout.
