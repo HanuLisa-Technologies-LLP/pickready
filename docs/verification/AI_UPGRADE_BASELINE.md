@@ -311,6 +311,64 @@ is uniformly broken.
 
 ---
 
+## 4a. W2 verified against production, 2026-09-09
+
+The baseline above is the BEFORE. This is the after, and it is recorded here
+rather than in a separate file because the pair is the measurement.
+
+Deploying W2 and running it in pilot found **four defects that no local test
+could have found**, three of them in code and one in infrastructure. Each is
+recorded because the class matters more than the instance.
+
+1. **`assessment_conversations.link_id` does not exist**; the column is
+   `job_candidate_link_id`. Written from an inferred name. asyncpg raised on
+   the first prepare.
+2. **`pending()` and `load()` disagreed about what "has text" means.** The
+   sweep asked SQL `btrim(col) <> ''`, the loaders asked Python `str.strip()`,
+   and `btrim` with no second argument strips SPACES ONLY. A JD holding two
+   newlines was reported as pending and loaded as nothing, so the sweep would
+   queue it, the task would no-op, and the next hour would repeat -- forever,
+   with a bill as the only symptom. Measured before the fix: 2 of 5 pending
+   documents disagreed. After: 0, and nothing left pending after one pass.
+3. **A profile can name a tenant that no longer exists, and that was a poison
+   pill.** `profiles.source_tenant_id` is a plain nullable UUID with NO foreign
+   key, because a profile is shared across tenants via the databank;
+   `context_chunks.tenant_id` HAS one. A dangling reference reads as valid
+   until the INSERT fails on the foreign key, and a NULL-only check meant that
+   document burned all three attempts every hour, forever.
+4. **`readypick-task-worker` could not invoke itself.** A `Route.LAMBDA` task
+   that dispatches `Route.LAMBDA` work is one function invoking another, and
+   one function serves every short task. `reconcile_context_index` is the first
+   task in the product that does it; every earlier sweep dispatched to
+   `Route.ECS`, a different grant. Not a regression: a capability the
+   architecture had never exercised. `dispatch` RAISING rather than swallowing
+   is the only reason it was visible.
+
+**The evidence, read from the table rather than from a log.** One demo job
+(`24d147a5-d8ea-5d16-b61b-a26c38afc224`, "Python Backend Developer", Sarkar
+Corp) was given a real job description, because pilot held no indexable
+document of any kind and the acceptance criterion is not evaluable without one.
+
+```
+rag.reconcile.swept queued=1 limit=200 unindexable=0
+rag.index.written source_type=jd written=6 unchanged=0 embedded=6 degraded=False
+context_chunks_total: 6   context_chunks_sources: 1   context_chunks_embedded: 6
+rag.reconcile.swept queued=0 limit=200 unindexable=0
+```
+
+Six chunks, six real Voyage vectors, `degraded=False`, and a second sweep that
+finds nothing to repair. That is the whole W2 chain -- discover by table,
+dispatch, load, chunk, embed, write, and stop -- executed in production against
+the real embedding provider.
+
+**What it does not show.** The publish route's own `dispatch` line and the
+resume path's are covered by code and by the local suite, not by this run:
+pilot has no candidate to parse a resume for, and no recruiter session was
+driven through `POST /jobs/{id}/publish`. Retrieval QUALITY is not measured
+here at all; that needs the W7 golden set against a recorded run.
+
+---
+
 ## 5. What this baseline commits the programme to
 
 1. **W1 is re-scoped from "wire it" to "verify it, and prove it end to end".**
