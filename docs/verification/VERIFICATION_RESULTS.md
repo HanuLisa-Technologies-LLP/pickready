@@ -256,3 +256,36 @@ meets the per-minute meter: it made no measurable progress in eleven minutes
 while the other models finished cases in seconds. A juror that cannot be
 measured inside a probe's budget cannot inform a gate threshold.
 `strip_reasoning` is kept anyway, because any model may emit one.
+
+---
+
+# Second deployment, commit 418b1c3 (2026-09-09)
+
+Backend image `sha-418b1c3`, digest
+`sha256:fbc7e572be84acea6ec73d7afa1ac1e0d83f8c3f228ba9ece7a550ddcd6ea925`.
+
+| Step | Result |
+|---|---|
+| Backend suite on the deployed commit | 6093 passed, 1 skipped, 0 failed |
+| `terraform apply` | 3 added, 2 changed, 3 replaced. The three replacements are task-definition revisions |
+| Migration job | exit 0, polled to STOPPED |
+| Services rolled | api, frontend, analysis |
+| Lambdas | 3 image-backed functions, updated BY DIGEST |
+| **Verified by digest** | every running task is this build |
+| Production read-back | `schema_version: 0092_security_provenance` |
+| Site | 200 |
+| API errors in the ten minutes after rollout | none |
+
+## The Lambda manifest problem is solved, not worked around
+
+The previous deployment could not point a Lambda at the image it had built:
+`docker buildx --provenance=true` pushes an OCI INDEX whose children are the
+image manifest and a provenance attestation, ECS pulls it happily, and Lambda
+answers `InvalidParameterValueException: The image manifest, config or layer
+media type for the source image ... is not supported`. That deploy pointed the
+functions at the child arm64 manifest instead, which worked and left two
+different digests describing one build.
+
+This build uses `--provenance=false --sbom=false`, which pushes a single plain
+manifest. ECS and Lambda now accept THE SAME digest, so "verify by digest" means
+one number for the whole deployment rather than one per runtime.
