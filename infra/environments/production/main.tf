@@ -923,12 +923,6 @@ module "scheduler" {
       task            = "pickready.release_held_assessments"
       rate_expression = "rate(60 minutes)"
     }
-    # Six-hourly, and a sweep rather than a hook on every tenant write: a hook
-    # would put a third-party round trip in the path of an ordinary edit.
-    "readypick-sync-intercom-companies" = {
-      task            = "pickready.sync_intercom_companies"
-      rate_expression = "rate(360 minutes)"
-    }
   }
 
   tags = local.tags

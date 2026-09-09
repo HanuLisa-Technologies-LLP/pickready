@@ -152,23 +152,6 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "duplicate scoring run it is supposed to repair."
         ),
     ),
-    ScheduledTask(
-        rule="readypick-sync-intercom-companies",
-        task="pickready.sync_intercom_companies",
-        interval_minutes=360,
-        why=(
-            "Keeps the customer list in the support tool current. A SWEEP "
-            "rather than a hook on every tenant write, because a hook would "
-            "put a third-party round trip in the path of an ordinary edit and "
-            "turn a vendor outage into an outage in customer administration "
-            "here. Six-hourly rather than hourly: nothing downstream breaks "
-            "while an industry label is a few hours stale, and the sweep "
-            "writes every tenant on every run. It sends only the closed "
-            "allowlist in `services/intercom.COMPANY_FIELDS`; a candidate is "
-            "never projected. With no credential it returns having sent "
-            "nothing, which is a configuration choice and not a failure."
-        ),
-    ),
 )
 
 RULE_NAMES: tuple[str, ...] = tuple(entry.rule for entry in SCHEDULE)

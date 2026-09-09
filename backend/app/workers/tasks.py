@@ -1349,55 +1349,6 @@ def purge_proctoring_events():
 
 
 @task(
-    name="pickready.sync_intercom_companies",
-    route=Route.LAMBDA,
-    max_attempts=2,
-)
-def sync_intercom_companies():
-    """Push the CUSTOMER list to Intercom. Never a candidate, never a score.
-
-    A sweep rather than a per-write hook, and the choice is deliberate. A hook
-    on every tenant UPDATE would put a third-party round trip in the path of an
-    ordinary edit, and an outage at the vendor would become an outage in
-    customer administration here. A sweep does nothing when there is nothing to
-    send and cannot take a request down with it.
-
-    WHAT IT SENDS is decided entirely by `services/intercom.COMPANY_FIELDS`,
-    a closed allowlist that the projection ITERATES. This task hands it a
-    `tenants` row and has no say in which columns travel, which is what stops
-    the sweep growing a leak the day somebody adds a column.
-
-    UNCONFIGURED IS NOT FAILED. With no `INTERCOM_ACCESS_TOKEN` the service
-    answers `unconfigured` and this returns having sent nothing, the same shape
-    the Tavily path already has. It is logged once for the whole run rather
-    than once per tenant, because a per-tenant line would make a deliberate
-    configuration look like a storm of errors.
-    """
-    from app.models.tenant import Tenant
-    from app.services import intercom
-
-    async def _task():
-        if not intercom.is_configured():
-            logger.info("intercom.sweep_skipped reason=unconfigured")
-            return
-        async with _worker_session() as session:
-            # No `superadmin_scope` here: `worker_session` already runs with
-            # `app.bypass_rls = 'on'` session-level, because a background task
-            # is a trusted backend process that legitimately spans tenants.
-            # Wrapping it again would be a second answer to one question.
-            tenants = (await session.execute(select(Tenant))).scalars().all()
-            counts: dict[str, int] = {}
-            for tenant in tenants:
-                outcome = intercom.sync_company(tenant)
-                counts[outcome.status] = counts.get(outcome.status, 0) + 1
-            logger.info(
-                "intercom.sweep_complete tenants=%d outcomes=%s",
-                len(tenants), counts,
-            )
-    _run(_task())
-
-
-@task(
     name="pickready.release_held_assessments",
     route=Route.LAMBDA,
     max_attempts=3,

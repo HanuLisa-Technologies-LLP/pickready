@@ -147,9 +147,13 @@ protocol, or it is not reported.
 
 - `services/egress.py`: a host allowlist, no redirect outside it, and refusal by
   RESOLVED address, so DNS rebinding cannot walk past a hostname check.
-- `services/intercom.py`: closed allowlists that the projection ITERATES, never
-  the row. A candidate is never projected. A forbidden field name raises rather
-  than being filtered, because a filter sends the rest and tells nobody.
+- **The Intercom integration was DELETED on 2026-09-10** by owner decision, and
+  the rule it carried moved rather than lapsed. Support is now native
+  (`services/support`), so there is no outbound customer projection at all: a
+  candidate identifier, score, grade or evaluation detail may never reach
+  `support_messages`, and `tests/test_support_candidate_boundary.py` sweeps for
+  it. A schema boundary is stronger than a payload allowlist because there is
+  nothing left to widen.
 - A hidden-text hit in a resume is PROVENANCE, never a rejection.
 - Embeddings are PII at rest, so `pickready.cascade_erasure` reaches vectors and
   caches. An erasure that deletes rows and leaves vectors leaves the resume

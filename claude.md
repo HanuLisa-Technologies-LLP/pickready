@@ -200,18 +200,23 @@ wrote to, above an index that stayed empty.
   also matches conversations that finished seconds ago and are being scored
   right now: without the lock it would have MANUFACTURED the duplicate it
   exists to repair.
-- **Intercom holds CUSTOMER data and never candidate data, by construction.**
-  Nothing existed before 2026-09-09; a repository-wide search returned zero
-  hits. `services/intercom.COMPANY_FIELDS` and `CONTACT_FIELDS` are closed
-  allowlists and the projection ITERATES THE ALLOWLIST, never the row, because
-  the failure mode of every CRM sync ever written is that it forwards the model
-  and the model grows. `SYNCABLE_ROLES` is an allowlist for the same reason a
-  `!= "candidate"` check is not: that check admits every role invented later.
-  A forbidden field name RAISES rather than being filtered out, because a
-  filter sends the rest and tells nobody. It is a six-hourly SWEEP, never a
-  hook on a tenant write, so a vendor outage cannot become an outage in
-  customer administration here, and an absent credential answers
-  `unconfigured` and sends nothing.
+- ~~**Intercom holds CUSTOMER data and never candidate data, by
+  construction.**~~ **SUPERSEDED 2026-09-10, owner decision: THE INTERCOM
+  INTEGRATION IS DELETED**, not finished and not disabled.
+  `services/intercom.py`, its test, the `pickready.sync_intercom_companies`
+  task, its schedule entry, the EventBridge rule in all three environments and
+  `INTERCOM_ACCESS_TOKEN` are gone; `tests/test_intercom_removed.py` sweeps the
+  tree and fails on a hit. **THE RULE IT CARRIED SURVIVES INTACT AND NOW BINDS
+  `services/support`**, the native in-product replacement: a support thread is
+  about the CUSTOMER, and no candidate identifier, score, grade or evaluation
+  detail may ever reach `support_messages`. What changed is that the boundary
+  is now a SCHEMA boundary rather than a vendor payload allowlist, which is
+  strictly stronger: there is no outbound projection left to widen. The reason
+  the allowlist existed is the reason the sweep in
+  `tests/test_support_candidate_boundary.py` exists, and it is the same reason:
+  the failure mode of every support integration ever written is that somebody
+  helpfully pastes the record they were looking at into the ticket. See the
+  2026-09-10 section for what replaced it.
 - **A URL is an address, not a sentence about a candidate.**
   `contains_forbidden_number` masks URL-like tokens before its patterns run.
   Before that fix it read `.../assessments/d7be...` as an assessment word beside
