@@ -929,6 +929,16 @@ def test_the_interview_manager_holds_only_what_section_13_grants() -> None:
         caps.ADD_TEAM_REVIEW_REMARK,   # 13.4 "add remarks"
         caps.VIEW_COMPANY_JOBS,        # 24 "View all company jobs: Scoped"
         caps.VIEW_DASHBOARD,           # the surface those four are read on
+        # 2026-09-10, deliberate addition rather than template inheritance,
+        # which is the distinction this test's docstring exists to force.
+        # Support is in NEITHER 13.3's grants nor 13.5's refusals, because it
+        # did not exist when RBAC was written; the higher authority is silent,
+        # so the call is made here and recorded. It is not a pipeline control
+        # and reads no candidate data: it is the ability to report a broken
+        # screen, and a role that could not would have to relay the report
+        # through a colleague, which is how a bug loses the detail that made
+        # it actionable. Migration 0093 seeds it and states the same reason.
+        caps.OPEN_SUPPORT_THREADS,
     }
     for capability in INTERVIEW_MANAGER_MUST_NOT:
         assert not caps.DEFAULT_PERMISSION_MATRIX[Role.interview_manager].get(
