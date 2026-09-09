@@ -91,6 +91,7 @@ document.
 | [VERIFICATION_RESULTS.md](verification/VERIFICATION_RESULTS.md) | Live vendor runs that succeeded, with dates |
 | [VERIFICATION_PENDING.md](verification/VERIFICATION_PENDING.md) | What remains unproven, stated plainly |
 | [PROCTORING_AND_FORMATS_VERIFICATION.md](verification/PROCTORING_AND_FORMATS_VERIFICATION.md) | What was executed for proctoring and question formats, and what was not |
+| [AI_UPGRADE_BASELINE.md](verification/AI_UPGRADE_BASELINE.md) | RPN-AI-UP-001 W0. What was reachable, what was exercised, and the live pilot row counts on 2026-09-09. A measurement, not a description: never edit it to match new behaviour |
 
 These two are load-bearing: `backend/tests/test_no_live_vendor_claims.py`
 reads them, so a claim about a live call must be evidenced in

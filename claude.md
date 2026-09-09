@@ -814,18 +814,48 @@ route or worker imported. **spec-doc6 D2's "gate G1 already blocks
 evaluation... Use it" was therefore false**, and anything written against it was
 relying on nothing.
 
-That grep now returns hits in `api/assessments.py`, `api/jobs.py`,
-`api/dashboard.py` and `workers/tasks.py` (it also named `api/company_dna.py`
-until 2026-09-09). Job setup runs
-Bodha's SWOT and Sutra's seven stages and freezes a matrix behind G1; Yukti
-grades a resume on the evidence model and the ontology; Miti's five isolated
-evaluators score live with a model-free aggregator; Siddhi composes the PRISM
-report through a citation chokepoint with no bypass parameter. The old
-single-pass generators are DELETED, not flagged off.
+Part A IS live now. Job setup runs Bodha's SWOT and Sutra's seven stages and
+freezes a matrix behind G1; Yukti grades a resume on the evidence model and the
+ontology; Miti's five isolated evaluators score live with a model-free
+aggregator; Siddhi composes the PRISM report through a citation chokepoint with
+no bypass parameter. The old single-pass generators are DELETED, not flagged
+off.
 
-**Keep that grep as the check.** It is the cheapest honest answer to "is the
-framework actually reachable", and it is the one that was quietly false for a
-whole phase while every module was green in isolation.
+~~**Keep that grep as the check.**~~ **SUPERSEDED 2026-09-09, and the
+supersession is the interesting part.** This paragraph used to read "that grep
+now returns hits in `api/assessments.py`, `api/jobs.py`, `api/dashboard.py`,
+`api/company_dna.py` and `workers/tasks.py`". **Run it today and it returns two
+hits, both comments in `workers/tasks.py`** -- and Part A is live anyway. The
+sentence was wrong about the METHOD while being right about the SUBSTANCE, and
+both halves of that matter:
+
+- **The grep never could have worked.** `hiring\.` does not match `from
+  app.services.hiring import scorecard`, because there is no dot after the
+  package name. It matches attribute access like `hiring.scorecard.freeze`,
+  which is what a COMMENT tends to contain and what an import statement does
+  not. The check this file called "the cheapest honest answer" was measuring
+  prose.
+- **And it only ever looked one hop deep.** Miti and Siddhi are reached at
+  depth two, through `services/functional_assessment`, and `from
+  app.services.miti import live` is written INSIDE `synthesis_node` on purpose,
+  to break a real import cycle. Nothing that reads module-level imports in two
+  directories can see either fact.
+
+RPN-AI-UP-001 section 1.1 ran exactly this grep, got the two comment hits, and
+concluded that 19,000 lines of Part A were unreachable and needed wiring. They
+were already wired. **A bad detector does not fail safe: it manufactured a
+phantom workstream, and the next thing built on top of it would have been a
+second scoring path.**
+
+**The check is now `backend/tests/test_ai_reachability.py`**, which walks the
+real import graph transitively from every module under `app/api` and
+`app/workers`, follows function-level imports, and fails in BOTH directions --
+when a package that is supposed to be live loses its last route, and when a
+package recorded as dead quietly acquires one. It also separates *importable*
+from *exercised*, because `services/rag` is importable from a route and has
+never run: `index_document` has no caller, and `context_chunks` held zero rows
+in pilot on 2026-09-09. The evidence is in
+[docs/verification/AI_UPGRADE_BASELINE.md](docs/verification/AI_UPGRADE_BASELINE.md).
 
 ### A test-isolation trap that hid nineteen failures
 
@@ -2518,9 +2548,16 @@ change actually needs.
 - A green pipeline means the service answers HTTP. Verify against the thing a
   user touches: a row count, an actual API response, a grep of the DEPLOYED
   image. Never against the source tree.
-- `grep -rn "hiring\.\|miti\.\|siddhi\." backend/app/api backend/app/workers`
-  is the cheapest honest answer to "is the framework actually reachable". It
-  returned nothing for a whole phase while every module was green in isolation.
+- `pytest tests/test_ai_reachability.py` answers "is the framework actually
+  reachable", transitively and in both directions. **It replaces the grep this
+  line used to recommend** (`grep -rn "hiring\.\|miti\.\|siddhi\."
+  backend/app/api backend/app/workers`), which could not match an import
+  statement at all and never looked past one hop. See the 2026-08-29 section
+  above: that grep returns two comment hits today, against a framework that is
+  live.
+- A package being IMPORTABLE is not the same as it being EXERCISED, and the
+  test keeps the two apart. `services/rag` is reachable from a route and has
+  never run once.
 - Run `./scripts/test.sh` (fresh database, flushed cache) rather than pytest
   against a reused one. A suite that only passes on a warm database is telling
   you something.
