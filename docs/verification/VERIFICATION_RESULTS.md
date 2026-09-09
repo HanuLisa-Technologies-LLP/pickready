@@ -289,3 +289,50 @@ different digests describing one build.
 This build uses `--provenance=false --sbom=false`, which pushes a single plain
 manifest. ECS and Lambda now accept THE SAME digest, so "verify by digest" means
 one number for the whole deployment rather than one per runtime.
+
+---
+
+# W6.3 asymmetric embeddings: already wired, now proven live (2026-09-10)
+
+The workstream brief allowed for the possibility that this was already done,
+and it was. `rag/index.py` embeds with the DOCUMENT input type,
+`rag/retrieval._semantic` calls `embed_query` and carries a comment saying
+exactly why, and `matching.py` is deliberately symmetric because its stored
+vectors are compared in both directions (a job ranked for a resume and a
+resume ranked for a job read the same columns). No code changed for this
+workstream; what was missing was live evidence that the asymmetry is real.
+
+- Run at: 2026-09-10, `VOYAGE_CONTEXT_4`, model `voyage-4`
+
+| Path | Result | Detail |
+|---|---|---|
+| `embed(text, input_type="document")` vs `embed(text, input_type="query")` | PASS | the SAME sentence produced two different 1024-wide vectors: cosine similarity 0.841414 between them, all 1024 components differing |
+
+A cosine of 0.84 between two embeddings of one identical sentence is the
+vendor's query/document asymmetry doing real work. Had the two come back
+identical, `embed_query` would have been decoration and the retrieval comment
+a false claim.
+
+---
+
+# The retrieval golden set: 60 cases, version 2026.Q3.2 (2026-09-10)
+
+Q3.1's 24 hand-authored queries and 60 chunks are frozen and carried verbatim;
+36 new hand-authored queries over 90 new hand-authored chunks join them across
+six new role domains. All synthetic by construction, which W7.1 permits for
+retrieval because a query-to-chunk pair is objectively checkable.
+
+| Check | Result |
+|---|---|
+| `python -m app.scripts.eval_retrieval --gate` | exit 0 |
+| Harness self check | passed, 4 stamped values reproduced within 1e-09 |
+| Case count against the floor | 60 of 300, reported by the gate itself |
+| Human verification | 0 of 60; every case carries `human_verified: false` |
+| Quality gate eligibility | still refused: the only run is a `reference_fixture` |
+
+**What this did NOT change, stated so nobody infers otherwise:** retrieval
+QUALITY remains unmeasured. The fixture run measures the metric harness, not
+the retriever; quality becomes measurable only with a `recorded` run against
+an index holding real volume, and the deployed environment still holds zero
+candidates. The reasoning and decision sets remain EMPTY at version 2026.Q3.2
+and must stay empty until a human labels them.

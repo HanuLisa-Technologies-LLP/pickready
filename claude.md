@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| Native support + runtime completions (2026-09-10) | The Support surface, the vendor sync removal, the RDS proxy refusal, W6.5, W6.6, report provenance, the golden set at 60 |
 | AI runtime upgrade (2026-09-09) | The retrieval index, the tool firewall, the action ledger, the eval OS, the sufficiency gate, AI activity |
 | Company DNA removed (2026-09-09) | Gate 1 on the Company Profile, the two-layer framework, the surviving detector |
 | The add-features release (2026-09-06) | Corporate senders + OTP, dual-mode assessment, video access, retention consents, BGV, employer pages, intelligence dashboards |
@@ -61,6 +62,84 @@ phase sections above them are where the sharp edges are.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
+
+## Current hard rules, native support and the runtime completions (2026-09-10)
+
+Owner decisions this day: the Intercom integration is DELETED and replaced by
+an in-product Support surface; EEO reporting and impact ratios are REFUSED
+rather than deferred; the pilot RDS proxy is NOT built, with the vendor's
+pinning documentation as the reason. Migrations 0093 and 0094.
+
+- **Support is native, and the candidate boundary moved from a payload
+  allowlist to a schema.** `support_threads` and `support_messages` (0093),
+  `services/support` owns the FSM, `api/support.py` carries both routers.
+  The thread status is DERIVED from who wrote (`status_after_message` takes
+  the author's side and nothing else), so "waiting on ReadyPick" can never
+  mean "threads somebody remembered to mark". `open | awaiting_customer |
+  resolved`, named for who owes the next move; `resolved` reopens on a
+  customer reply. `author_side` is denormalised at write time so a later role
+  change cannot rewrite who said what. RLS is plain tenant equality in BOTH
+  directions, and the message row carries its own tenant_id because a policy
+  that joins to the parent evaluates against rows the session cannot see.
+  No candidate identifier, score, grade or evaluation detail may reach a
+  support message; enforced structurally (the write path imports no candidate
+  model, neither table has a candidate-shaped column, the notification email
+  carries no message body), swept by `test_support_candidate_boundary.py`.
+  `tests/test_intercom_removed.py` keeps the vendor gone, absolutely: live
+  source does not name it, per the c718694 precedent.
+- **`handle_support_threads` is a PLATFORM capability outside
+  `DEFAULT_PERMISSION_MATRIX`,** seeded as a global row by 0093, because the
+  matrix is copied into per-tenant rows for every new customer and the role
+  holding it has no tenant. It is the notification ROUTING list, not a route
+  gate; the Provider routes stay behind `get_superadmin_db`.
+  `open_support_threads` sits in the matrix AND in the interview_manager
+  entry, and the second half is load-bearing: `seed_dev_data` RECONCILES
+  global rows to the matrix, so a grant living only in a migration is flipped
+  to False the first time the dev seed runs. The full suite caught exactly
+  that; a targeted run structurally could not have.
+- **The pilot RDS proxy was evaluated against the vendor's documentation and
+  refused.** RDS Proxy for PostgreSQL pins a session on any SET command, on
+  `set_config()`, and on named prepared statements; only transaction-level
+  advisory locks are exempt. This application issues `SET LOCAL ROLE` in
+  every tenant transaction, a session-level `set_config` on every worker
+  connection, and asyncpg caches prepared statements, so effectively every
+  session pins: no multiplexing, and the "instance connections stay flat"
+  acceptance test is unpassable by documented behaviour. The instance went
+  `db.t4g.micro` to `db.t4g.medium` instead (pgvector HNSW working memory,
+  and the max_connections ceiling scales with instance memory), the storage
+  CEILING to 200GB with the floor kept at 50, and `multi_az = false` now
+  says in place that it must flip before any real tenant's data arrives.
+- **W6.5 lives at ACQUISITION, not in the sufficiency gates.**
+  `rag/acquisition.acquire`: one broadened retry (section filter dropped,
+  pool doubled and capped), bounded by STRUCTURE (two attempts exist in
+  straight-line code, no loop) and by the predictive deadline rule. Scope is
+  never broadened: tenant, source type, source ids and version pin stay
+  exactly as asked, because a widened scope is an isolation bug wearing a
+  recall improvement's clothes. The gates' EMPTY_STATE_COPY contract is
+  untouched and the module imports neither the gates nor anything that
+  scores.
+- **W6.6: the ledger's `contradicts` stance finally has a writer.** The read
+  side existed end to end (CLAIM_CONTRADICTED grades MATERIAL and routes to
+  `needs_human_review`); nothing had ever written the stance, so "I have not
+  used Kafka" was filed as SUPPORT for the Kafka claim.
+  `evidence/negative.py` detects first-person disclaimers deterministically,
+  a denial's reach ends at the first clause boundary, and the stance is
+  decided per answer inside the one existing recording loop. Negative
+  evidence is NOT absent evidence: non-answers never reach the loop and keep
+  costing confidence, not score. No flag auto-rejects, by import graph.
+- **Reports carry `model_id` and `prompt_version` (0094).** Written only for
+  a model-backed run, resolved at write time; a deterministic-fallback report
+  carries NULL for both because naming a model would claim work that never
+  happened, and old rows are never backfilled for the same reason.
+  `prompt_version` states its own limit: the remark system prompt is inline
+  in `bounded_remark` and versioned by the image, not by the registry labels
+  the column carries.
+- **EEO reporting and impact ratios are REFUSED, not deferred** (owner,
+  2026-09-10). No jurisdiction was ever named and the customers are Indian
+  entities, so a US-schema EEO surface is wrong work; impact ratios require
+  collecting exactly the protected-attribute data `hiring/layers.INVARIANTS`
+  refuses, and the invariant stands. Recorded in AI_RUNTIME.md as published
+  positions.
 
 ## Current hard rules, the AI runtime upgrade (2026-09-09)
 
@@ -268,8 +347,9 @@ wrote to, above an index that stayed empty.
   jurors share a publisher with the product's models and that is a real
   weakness of the panel, recorded rather than glossed: `qwen/qwen3.8-27b` is
   the only fully independent leg.
-- **Retrieval QUALITY is unmeasured.** The golden retrieval set is 24
-  hand-authored cases against a floor of 300, 0% production sample, 0 of 24
+- **Retrieval QUALITY is unmeasured.** ~~The golden retrieval set is 24
+  hand-authored cases against a floor of 300~~ **AMENDED 2026-09-10: 60 cases
+  now, version 2026.Q3.2, Q3.1 frozen.** Still 0% production sample, 0 of 60
   human verified, and the shipped run is a `reference_fixture` rather than a
   `recorded` one, so it is explicitly not gate-eligible for quality. What DOES
   gate is the harness self check.

@@ -123,10 +123,12 @@ because no in-process assertion can see that failure at all.
 
 `app/evaluation/`, structurally outside the product's closed model mapping.
 
-- **`golden.py` and `datasets/`.** The retrieval set is 24 hand-authored cases
-  against a floor of 300. The reasoning and decision sets are EMPTY and stay
-  empty: they must be human labelled, because ground truth produced by the same
-  class of model being evaluated measures agreement with that model.
+- **`golden.py` and `datasets/`.** The retrieval set is 60 hand-authored cases
+  against a floor of 300 (version 2026.Q3.2, grown from 24 on 2026-09-10;
+  Q3.1 is frozen on disk because a version-stamped ground truth must not
+  mutate). The reasoning and decision sets are EMPTY and stay empty: they must
+  be human labelled, because ground truth produced by the same class of model
+  being evaluated measures agreement with that model.
 - **`judges/`.** Groq is the judge vendor. `qwen/qwen3.8-27b` is the only fully
   independent leg; the two `gpt-oss` models share a publisher with the product's
   models, which is a real weakness of the panel and is recorded rather than
@@ -161,20 +163,53 @@ protocol, or it is not reported.
 
 ## What is NOT built
 
-Stated here so nobody has to infer it from silence.
+Stated here so nobody has to infer it from silence. Four of the 2026-09-09
+entries were BUILT on 2026-09-10 and moved out of this section: W6.3 was found
+already wired and proven live (the same sentence embeds at cosine 0.841 to
+itself across the two input types), W6.5 is `rag/acquisition.py` (one bounded
+broadened retry, structurally two attempts, the EMPTY_STATE_COPY contract
+untouched), W6.6 is `evidence/negative.py` (the ledger's `contradicts` stance
+finally has a writer; a disclaimer routes a report to a person and can move no
+grade), and reports now carry `model_id` and `prompt_version` (0094, NULL for
+historical and fallback rows, never backfilled).
 
-- **W5.2 durable execution**, **W6.3 asymmetric embeddings**, **W6.5 the
-  sufficiency loop**, **W6.6 negative evidence**.
-- **W10**: shadow evaluation, tenant canary, drift detection.
-- **W11**: the GDPR Article 15 explanation surface, EEO reporting, impact
-  ratios.
+- **W5.2 durable execution.** Not built, and the investigation says why: a
+  resume path composes with `agent_actions`, and see that entry below for
+  what blocks its first consumer.
+- **W10**: shadow evaluation, tenant canary, drift detection. Sequential, not
+  parallel: drift detection is a scheduled window over `release_gate.evaluate`
+  and is small, but it needs a rolling window of judge traffic that only
+  shadow evaluation can produce, and shadow evaluation is its own migration,
+  task and evaluation-side comparison. The canary needs `MODEL_FOR_TASK` to
+  grow a per-tenant resolution layer without breaking the comparability rule
+  (two candidates on one job, one model version).
+- **W11a, the GDPR Article 15 explanation surface**: not built; the right
+  foundation is Siddhi's citation chokepoint and the no-numbers rule applies
+  in full. **W11b EEO reporting and W11c impact ratios: REFUSED, owner
+  decision 2026-09-10.** EEO because no jurisdiction was ever named and
+  ReadyPick's customers are Indian entities, so a US-schema surface would be
+  wrong work; impact ratios because they require collecting the exact
+  protected-attribute data `hiring/layers.INVARIANTS` refuses to infer, and
+  the invariant stands. These are published positions, not gaps.
 - **Retrieval QUALITY is unmeasured.** The harness self check gates; quality
-  does not, and the golden set is far below its own stated floor.
-- **`agent_actions` has no live writer**, `tools.execute` is importable and
-  unexercised, and `agent_execution_traces` has no live writer.
-- **No report carries a `model_id` or `prompt_version` column**, so a delivered
-  report cannot be replayed against the exact model and prompt that produced it.
-- **The only deployed environment holds no candidate data**: three demo tenants,
-  thirty jobs, zero candidates, profiles, applications, reports or evaluations.
-  Every acceptance criterion phrased against production volume needs a seeded
-  worked example rather than traffic, and that substitution must stay visible.
+  does not. The golden set is 60 cases against the 300 floor, 0 human
+  verified, and the only run is a reference fixture.
+- **`agent_actions` still has no live writer, and the 2026-09-10
+  investigation found a real reason at every candidate site.** Wiring the
+  gate inside a request handler breaks endpoint atomicity, because
+  `ledger.reserve` COMMITS so intent survives the process, and committing
+  mid-transaction changes what a failed batch rolls back. Wiring it around
+  the SMTP send does not fit either: SMTP has NO read-back, so an UNKNOWN
+  (timeout mid-DATA) is unresolvable and the gate would freeze a delivery the
+  current retry policy deliberately risks duplicating. Wiring it around
+  report writing would be a second concurrency mechanism beside the advisory
+  lock, the exact `tiers.py` violation. The right first consumer is a future
+  side effect with a true read-back (a vendor API with a GET). `tools.execute`
+  and `agent_execution_traces` stay unexercised for the related reason: no
+  production caller makes agent tool calls yet, so `retrieve_context` (which
+  now performs W6.5 acquisition) is reachable and waiting.
+- **The only deployed environment holds no candidate data**: three demo
+  tenants, thirty jobs, zero candidates, profiles, applications, reports or
+  evaluations. Every acceptance criterion phrased against production volume
+  needs a seeded worked example rather than traffic, and that substitution
+  must stay visible.
