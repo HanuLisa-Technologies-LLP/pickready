@@ -537,6 +537,28 @@ class Settings(BaseSettings):
     #: a single hourly run rather than the work itself.
     retrieval_index_sweep_batch: int = 200
 
+    # ── Retrieval intelligence (RPN-AI-UP-001 W6) ───────────────────────────
+    #
+    # Deployment data, one value per deployment, never a fallback chain: the
+    # same shape as TASK_DISPATCH_BACKEND and email_transport. Read through a
+    # validator that RAISES on an unrecognised value, because the failure mode
+    # of a wrong one is SILENT -- retrieval keeps working and simply gets
+    # worse, which is indistinguishable from a tenant with thin evidence.
+    #: `voyage` (the cross-encoder) or `lexical` (the deterministic pass).
+    #: Defaults to `lexical` deliberately: an environment that has not made the
+    #: decision runs the behaviour it runs today, and turning the cross-encoder
+    #: on is an explicit act.
+    retrieval_reranker: str = "lexical"
+    #: Whether a situating prefix is generated at index time.
+    retrieval_contextual_prefix: bool = True
+    #: The reranker's credential, named after the model it unlocks (rerank-2.5),
+    #: the same convention as VOYAGE_CONTEXT_4 and OPENAI_GPT_TERRA. A separate
+    #: variable from the embedding key even where the Voyage account issues one
+    #: string: it makes "the reranker is not configured" distinguishable from
+    #: "embedding is not configured", so an unset value here is a RECORDED
+    #: degradation rather than an embedding outage wearing a reranker's name.
+    voyage_rerank_2_5: str = ""
+
     # Payments  -  Razorpay Subscriptions. The Key ID is public (Checkout needs it
     # in the browser and reads it from GET /billing/config); the Key Secret and
     # the webhook secret are server-side only and never reach a response body,

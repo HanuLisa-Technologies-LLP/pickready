@@ -43,7 +43,9 @@ from app.models.agent import (
     STATUS_SUCCESS,
     AgentExecutionTrace,
     AgentLearning,
+    AgentToolApprovalRule,
 )
+from app.models.agent_action import AgentAction
 from app.models.context import ContextChunk
 from app.models.evidence import EvidenceClaim, EvidenceClaimLink, EvidenceItemRow
 from app.models.candidate_update import CandidateUpdate
@@ -187,12 +189,14 @@ __all__ = [
     "RolePermission",
     "SubmittedVia",
     "TAX_DOCUMENT_TYPES",
+    "AgentAction",
     "AgentExecutionTrace",
     "CalibrationRecord",
     "Evaluation",
     "ReviewDisposition",
     "JobScorecardBinding",
     "AgentLearning",
+    "AgentToolApprovalRule",
     "ContextChunk",
     "EvidenceClaim",
     "EvidenceClaimLink",

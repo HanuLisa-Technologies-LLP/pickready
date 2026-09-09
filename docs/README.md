@@ -64,6 +64,7 @@ document.
 |---|---|
 | [RBAC_SPECIFICATION.md](spec/RBAC_SPECIFICATION.md) | Precedence rank 1. Roles, capabilities, isolation, lifecycle |
 | [HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) | The end-to-end candidate and client journeys, and the eight gates that hold them together |
+| [AI_RUNTIME_UPGRADE.md](spec/AI_RUNTIME_UPGRADE.md) | RPN-AI-UP-001, precedence rank 3a. The AI runtime, retrieval, evaluation and AI security. **Read it beside [verification/AI_UPGRADE_BASELINE.md](verification/AI_UPGRADE_BASELINE.md)**, which records where its own section 2 audit turned out to be wrong |
 | [CANDIDATE_DASHBOARD_SPECIFICATION.md](spec/CANDIDATE_DASHBOARD_SPECIFICATION.md) | The candidate list surface |
 | [PROJECT_EVIDENCE_INTELLIGENCE.md](spec/PROJECT_EVIDENCE_INTELLIGENCE.md) | Project evidence: pipeline, security, retention |
 | [PROCTORING.md](spec/PROCTORING.md) | Mandatory assessment monitoring: principles, paths, the report, retention |

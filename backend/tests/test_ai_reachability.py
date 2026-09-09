@@ -89,6 +89,18 @@ LIVE: dict[str, str] = {
     "app.services.proctoring": "api/proctoring.py and the assessment gate",
     "app.services.assessment_formats": "the six question formats on the live turn",
     "app.services.projects": "Project Evidence Intelligence, api and worker",
+    "app.services.memory": (
+        "RPN-AI-UP-001 W3.5 and W3.6, wired 2026-09-09. workers/tasks.py "
+        "registers pickready.revoke_learnings_from_source, which calls "
+        "memory.experience. Before that the five memory layers were reached "
+        "only from reasoning/, which is itself unreachable."
+    ),
+    "app.services.observability": (
+        "RPN-AI-UP-001 W4.6, wired 2026-09-09. llm_router.invoke_llm opens a "
+        "GenAI span at the same chokepoint LangSmith tracing already used, and "
+        "_attempt reports the token counts against it. Before that the trace "
+        "module was reached only from reasoning/runner.py and recorded nothing."
+    ),
     "app.services.rag": (
         "RPN-AI-UP-001 W2, wired 2026-09-09. workers/tasks.py registers "
         "pickready.index_document and pickready.reconcile_context_index, which "
@@ -102,13 +114,8 @@ LIVE: dict[str, str] = {
 #: becomes reachable this test fails, and the fix is to MOVE the entry, which
 #: is what keeps `claude.md` and this file from disagreeing.
 NOT_LIVE: dict[str, str] = {
-    "app.services.memory": "RPN-AI-UP-001 W3.5; reached only from reasoning/ and an eval",
     "app.services.reasoning": "RPN-AI-UP-001 W5; reached only from eval scripts",
     "app.services.orchestration": "RPN-AI-UP-001 W10.1; reached only from eval scripts",
-    "app.services.observability": (
-        "RPN-AI-UP-001 W4.6. Reached only from reasoning/runner.py, which is "
-        "itself unreachable, so the trace module records nothing in production."
-    ),
     "app.evaluation": (
         "W7.4 requires this in the other direction too: nothing under "
         "app/services may import app/evaluation, and no route or worker may "
@@ -372,24 +379,29 @@ def _callers_of(relative: str, function: str) -> list[str]:
     return callers
 
 
-@pytest.mark.parametrize(
-    "target", sorted(ENTRY_POINTS_WITHOUT_CALLERS), ids=lambda t: f"{t[1]}"
-)
-def test_a_function_recorded_as_uncalled_still_has_no_caller(
-    target: tuple[str, str],
-) -> None:
+def test_every_function_recorded_as_uncalled_still_has_no_caller() -> None:
     """A recorded dead entry point has not quietly been wired.
 
     The mirror of the test below. It is what forced this file to be updated
     when W2 gave `index_document` its first caller: a finding must not outlive
-    the defect it describes."""
-    callers = _callers_of(*target)
-    assert not callers, (
-        f"{target[0]}::{target[1]} now HAS callers: {callers}\n"
-        f"It was recorded as uncalled because: {ENTRY_POINTS_WITHOUT_CALLERS[target]}\n"
-        "If this is the workstream that wires it, move the entry to "
-        "REQUIRED_CALLERS and assert the new behaviour instead."
-    )
+    the defect it describes.
+
+    NOT PARAMETRISED, and the reason is worth the line. `ENTRY_POINTS_WITHOUT_
+    CALLERS` is legitimately empty right now, and `@parametrize` over an empty
+    collection emits a SKIPPED placeholder rather than nothing. The skip
+    inventory then reports an undeclared skip, and the only ways to satisfy it
+    are to declare a skip that is not really a skip or to delete the check --
+    both of which trade a real assertion for a green summary line. Iterating
+    inside the body means an empty dict is a test that passes having checked
+    everything there was to check."""
+    for target, reason in sorted(ENTRY_POINTS_WITHOUT_CALLERS.items()):
+        callers = _callers_of(*target)
+        assert not callers, (
+            f"{target[0]}::{target[1]} now HAS callers: {callers}\n"
+            f"It was recorded as uncalled because: {reason}\n"
+            "If this is the workstream that wires it, move the entry to "
+            "REQUIRED_CALLERS and assert the new behaviour instead."
+        )
 
 
 @pytest.mark.parametrize("target", sorted(REQUIRED_CALLERS), ids=lambda t: f"{t[1]}")

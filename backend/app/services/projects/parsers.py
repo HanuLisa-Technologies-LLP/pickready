@@ -25,7 +25,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.services.projects import formats
+from app.services.projects import formats, invisible_text
 from app.services.projects.formats import Classification, classify
 from app.services.projects.limits import ProjectLimits
 
@@ -274,15 +274,29 @@ def _parse_document(path: str, data: bytes, cls: Classification, limits: Project
         text = _decode(data, limits.max_text_chars_per_file)
         if label in {"html", "htm"}:
             text = re.sub(r"<[^>]+>", " ", text)
-    text = text[: limits.max_text_chars_per_file]
+    # INVISIBLE CONTENT (W9.2). A document is the one artifact family whose TEXT
+    # reaches a prompt, through `text_excerpt`; source files contribute counts
+    # and labels only. So this is where hidden instructions would arrive, and it
+    # is where they are detected, recorded and normalised away. The scan never
+    # raises and never rejects: `supported` stays True and the visible content
+    # is parsed exactly as before.
+    scan = invisible_text.scan_document(path, data, text, invisible_text.LIMITS)
+    text = scan.normalised_text[: limits.max_text_chars_per_file]
     headings = re.findall(r"^#{1,4}\s+(.{2,120})$", text, re.M)[:20]
     signals: dict[str, Any] = {
         "word_count": len(re.findall(r"\b[\w'-]+\b", text)),
         "headings": [h.strip() for h in headings],
         "is_readme": "readme" in path.lower(),
+        # Always present, so an absent key means the parser predates the scan
+        # rather than meaning a clean file. A stamp that only appears on a hit
+        # cannot distinguish "checked and clean" from "never checked".
+        "intake_scan": scan.as_json(),
     }
     if page_count is not None:
         signals["page_count"] = page_count
+    limitation = " ".join(
+        part for part in (limitation, scan.limitation(), scan.scan_limitation) if part
+    ) or None
     return ParsedArtifact(
         path=path, family=cls.family, label=cls.label, supported=True,
         size_bytes=len(data), limitation=limitation, signals=signals,

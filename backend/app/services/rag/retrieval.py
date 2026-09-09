@@ -26,9 +26,14 @@ deployed for this product, and pretending otherwise would put a hard dependency
 on a model that does not exist behind an interface that silently returns the
 input order. What runs instead is a lexical affinity pass -- query term coverage
 plus a section-type prior -- which is a real improvement over fusion alone and
-is honest about what it is. `rerank` takes the scorer as a parameter, so
-introducing a cross-encoder later is a one-line change at the call site rather
-than a rewrite.
+is honest about what it is.
+
+SUPERSEDED IN PART 2026-09-09 (RPN-AI-UP-001 W6.1). A cross-encoder IS
+available now: `services/rag/reranker` calls Voyage `rerank-2.5` when the
+deployment selects it, and falls back to that same lexical pass with
+`degraded=True` RECORDED when it cannot. The paragraph above still describes
+what a `lexical` deployment runs, and the design it praises is what made the
+swap a one-line change at the call site rather than a rewrite.
 
 FRESHNESS AND VERSION ARE FILTERS, APPLIED BEFORE RANKING
 ----------------------------------------------------------
@@ -50,7 +55,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.services.embeddings import EmbeddingError, embed
-from app.services.rag import chunking
+from app.services.rag import chunking, reranker
 
 logger = logging.getLogger(__name__)
 
@@ -300,25 +305,10 @@ def lexical_affinity(query: str, chunk: RetrievedChunk) -> float:
     return round(covered * _SECTION_PRIOR.get(chunk.section_type, 0.85), 6)
 
 
-def rerank(
-    query: str,
-    chunks: Sequence[RetrievedChunk],
-    *,
-    top_k: int = DEFAULT_TOP_K,
-    scorer: Callable[[str, RetrievedChunk], float] = lexical_affinity,
-) -> list[RetrievedChunk]:
-    """Reorder by a second, content-aware pass and take the top k.
-
-    Ties fall back to the fused score, so reranking can only ever reorder within
-    what fusion already considered plausible. A scorer that returns 0 for
-    everything therefore degrades to fusion order rather than to arbitrary order.
-    """
-    scored = sorted(
-        chunks,
-        key=lambda chunk: (scorer(query, chunk), chunk.score),
-        reverse=True,
-    )
-    return list(scored[:top_k])
+# `rerank` USED TO LIVE HERE and is now `reranker.lexical_order`, moved rather
+# than copied: `services/rag/reranker` needs the same deterministic pass as its
+# recorded degradation path, and two implementations of one behaviour is the
+# fault `services/tiers.py` had for a whole release (RPN-AI-UP-001 W6.1).
 
 
 async def retrieve(
@@ -333,10 +323,50 @@ async def retrieve(
     depth: int = CANDIDATE_DEPTH,
     scorer: Callable[[str, RetrievedChunk], float] = lexical_affinity,
 ) -> list[RetrievedChunk]:
-    """Hybrid retrieve, fuse, rerank. Returns at most `top_k` chunks."""
+    """Hybrid retrieve, fuse, rerank. Returns at most `top_k` chunks.
+
+    A thin wrapper over `retrieve_with_record`, so the existing callers are
+    untouched. A caller that must RECORD which reranker ran uses the other one;
+    there is still one implementation.
+    """
+    chunks, _ = await retrieve_with_record(
+        session,
+        query,
+        source_type=source_type,
+        source_ids=source_ids,
+        section_types=section_types,
+        source_version=source_version,
+        top_k=top_k,
+        depth=depth,
+        scorer=scorer,
+    )
+    return chunks
+
+
+async def retrieve_with_record(
+    session: AsyncSession,
+    query: str,
+    *,
+    source_type: str | None = None,
+    source_ids: Sequence[uuid.UUID] | None = None,
+    section_types: Sequence[str] | None = None,
+    source_version: str | None = None,
+    top_k: int = DEFAULT_TOP_K,
+    depth: int = CANDIDATE_DEPTH,
+    scorer: Callable[[str, RetrievedChunk], float] = lexical_affinity,
+) -> tuple[list[RetrievedChunk], reranker.RerankOutcome]:
+    """Hybrid retrieve, fuse, rerank, AND say which reranker did it.
+
+    The outcome is the W6.1 record: when the cross-encoder is unavailable the
+    run reports `reranker="lexical", degraded=True` rather than silently
+    substituting. Pretending a cross-encoder ran when it did not is the same
+    failure as presenting template output as generation.
+    """
     query = " ".join(str(query or "").split())
     if not query:
-        return []
+        return [], reranker.RerankOutcome(
+            chunks=[], reranker=reranker.configured_backend()
+        )
 
     where, params = _filters(source_type, source_ids, section_types, source_version)
 
@@ -345,7 +375,9 @@ async def retrieve(
 
     fused = fuse({"semantic": semantic_ids, "keyword": keyword_ids})
     if not fused:
-        return []
+        return [], reranker.RerankOutcome(
+            chunks=[], reranker=reranker.configured_backend()
+        )
 
     rows = await session.execute(
         text(
@@ -370,4 +402,7 @@ async def retrieve(
         )
         for row in rows
     ]
-    return rerank(query, candidates, top_k=top_k, scorer=scorer)
+    outcome = await reranker.rerank_chunks(
+        query, candidates, top_k=top_k, lexical_scorer=scorer
+    )
+    return outcome.chunks, outcome

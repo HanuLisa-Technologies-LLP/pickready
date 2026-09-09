@@ -25,8 +25,47 @@ tripping the breaker on the first occurrence.
 
 WHAT THIS MODULE IS RESPONSIBLE FOR
 ------------------------------------
-    resolve credential -> bound the attempt -> call -> classify a failure ->
-    back off -> retry within budget -> account for what it cost -> trace it.
+    resolve credential -> refuse what it cannot afford -> bound the attempt ->
+    call -> classify a failure -> RECOVER ACCORDING TO ITS CLASS -> retry
+    within budget -> account for what it cost -> trace it.
+
+SEMANTIC RECOVERY, AND THE COST CEILING (RPN-AI-UP-001 W4.1 and W4.7)
+----------------------------------------------------------------------
+Until 2026-09-09 classification answered ONE question: retry, or do not. That
+is right for a 429 and wrong for three failures this platform can receive, so
+the class now decides HOW to recover, and the mapping is DATA in
+`llm_providers.RECOVERY_FOR_FAILURE` rather than a chain of `if status ==` in
+this file. Three of the rows are new and each of them changes what happens
+rather than only when:
+
+  * a CONTEXT OVERFLOW is retried COMPRESSED, through
+    `context_budget.compress_messages`, which removes whole turns or whole
+    sentences and never cuts inside one. Retrying identically would reproduce
+    the same 400 and spend an attempt proving it, and a request shortened past
+    a sentence boundary would hand a model half a sentence.
+  * a REFUSAL is not retried at all and raises `ModelRefusal`, a SUBCLASS of
+    `LLMUnavailableError` so every existing caller still degrades rather than
+    500ing, carrying `needs_human_review` for the callers that want to tell
+    "unreachable" from "read it and declined".
+  * a SCHEMA VIOLATION, when the caller passed a `validate`, is retried with the
+    validator's own message fed back VERBATIM through
+    `agent_loop.reflection_text`. That is the only class whose retry carries a
+    different prompt, and the mechanism is the loop's rather than a second copy
+    of it. The message goes into the PROMPT and never into the error text: a
+    validator message can quote the value it rejected, and a rejected value is a
+    candidate's own words.
+
+A TIMEOUT is now separated from a transport error, because they are different
+facts. A refused connection demonstrably did not reach the vendor; a timeout may
+have been served with only the answer lost, so the raised error carries
+`unknown_outcome` rather than letting a side-effecting caller assume it did not
+happen.
+
+The cost ceiling is the latency ceiling in the other unit. `TASK_COST_CEILING_USD`
+is checked against the WORST case a request could produce, BEFORE the call and
+again before each retry, and every refusal is recorded in `cost_refusals()`,
+because a budget that stopped something silently is indistinguishable from a
+task that finished.
 
 It RAISES on final failure. That is the same split `services/tools.execute`
 keeps and it is deliberate: a router that swallowed an outage would hand its
@@ -123,9 +162,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import random
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from langgraph.graph import END, START, StateGraph
@@ -135,23 +175,37 @@ from typing_extensions import TypedDict
 from app.config.llm_providers import (
     CREDENTIAL_STATUSES,
     ENV_VAR_FOR_MODEL,
+    FAILURE_CLIENT_ERROR,
+    FAILURE_CONTEXT_OVERFLOW,
+    FAILURE_REFUSAL,
+    FAILURE_SCHEMA_VIOLATION,
+    FAILURE_TIMEOUT,
+    FAILURE_TRANSPORT,
+    FAILURE_UNCLASSIFIED,
     JSON_OBJECT_RESPONSE_FORMAT,
     OPENAI_CHAT_COMPLETIONS_URL,
     PROVIDER,
     SETTINGS_ATTR_FOR_MODEL,
-    backoff_seconds,
+    VENDOR_ERROR_ALLOWED_FIELDS,
     classify_status,
+    cost_ceiling_for,
     estimate_cost_usd,
+    is_context_overflow_code,
     is_priced,
+    is_refusal_finish_reason,
     is_retryable_status,
+    jittered_backoff_seconds,
     max_tokens_for,
     model_for,
+    recovery_for,
     retry_budget_for,
     temperature_for,
     timeout_for,
     total_budget_for,
 )
-from app.services import tracing
+from app.services import context_budget, tracing
+from app.services.observability import otel
+from app.services.agent_loop import reflection_text
 from app.services.reliability import vendor_contract
 
 _FAILURE_THRESHOLD = 2          # consecutive transient failures before tripping
@@ -186,7 +240,42 @@ class LLMUnavailableError(RuntimeError):
     Callers catch this and fall back to their own DETERMINISTIC behaviour. It is
     never allowed to reach a user as a 500: an outage should cost the product
     its adaptivity, not its availability.
+
+    `unknown_outcome` is set when the last thing that happened was a TIMEOUT.
+    W4.1 is explicit that a timeout is UNKNOWN rather than absent for a side
+    effecting call: the request may have been received and served, and only the
+    answer was lost. Every caller in this codebase today is read-only in the
+    vendor's terms, so nothing acts on it yet; it is carried because the
+    alternative is a caller that has to guess, and a caller that guesses "it did
+    not happen" is the one that sends a second email.
     """
+
+    def __init__(self, message: str, *, unknown_outcome: bool = False) -> None:
+        super().__init__(message)
+        self.unknown_outcome = unknown_outcome
+
+
+class ModelRefusal(LLMUnavailableError):
+    """The vendor answered and DECLINED. Not a transport failure.
+
+    A SUBCLASS, deliberately. Every caller in this codebase catches
+    `LLMUnavailableError` and degrades to deterministic behaviour, which stays
+    the right answer here: a refusal must not become a 500. What the subclass
+    adds is the ability for a caller that cares to tell "the vendor was
+    unreachable" from "the vendor read the request and would not answer it",
+    because only the second one is a person's problem.
+
+    It is never retried. W4.1: asking a model that has already declined to
+    decline again spends the budget on nothing.
+    """
+
+    needs_human_review = True
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        #: The vendor's own short reason. A `finish_reason` or the API's
+        #: `refusal` string, never a candidate's text.
+        self.reason = reason
 
 
 # ── Credential ───────────────────────────────────────────────────────────────
@@ -388,6 +477,51 @@ def key_stats() -> dict[str, dict[str, Any]]:
     }
 
 
+#: Every call this router REFUSED on cost, newest last, bounded.
+#:
+#: W4.7: "record every refusal, because a budget that stopped something
+#: silently is indistinguishable from a task that finished". That is the same
+#: argument `reliability.budget.Budget.refusals` already makes, and this is the
+#: router's copy of it for the ceiling the router owns.
+#:
+#: Bounded because it is in-process memory on a long-lived worker. Dropping the
+#: OLDEST is right for this record: a refusal is an alarm, and the alarm you
+#: need is the one that just fired.
+_COST_REFUSAL_LOG_LIMIT = 100
+_cost_refusal_log: list[dict[str, Any]] = []
+
+
+def _record_cost_refusal(
+    *,
+    task_type: str,
+    model: str,
+    estimated_usd: float,
+    ceiling_usd: float,
+    stage: str,
+) -> None:
+    """Record one cost refusal. Identifiers and numbers, never content."""
+    _cost_refusal_log.append(
+        {
+            "task_type": task_type,
+            "model": model,
+            "estimated_usd": round(estimated_usd, 6),
+            "ceiling_usd": round(ceiling_usd, 6),
+            "stage": stage,
+        }
+    )
+    del _cost_refusal_log[:-_COST_REFUSAL_LOG_LIMIT]
+    logger.warning(
+        "llm_router.cost_refused task=%s model=%s estimated_usd=%.4f "
+        "ceiling_usd=%.4f stage=%s",
+        task_type, model, estimated_usd, ceiling_usd, stage,
+    )
+
+
+def cost_refusals() -> list[dict[str, Any]]:
+    """The recorded cost refusals, for the admin health endpoint."""
+    return [dict(entry) for entry in _cost_refusal_log]
+
+
 def reset_provider_stats() -> None:
     """Test and operator hook: clear every counter and every breaker."""
     global _provider_stat
@@ -396,6 +530,7 @@ def reset_provider_stats() -> None:
     _key_stats.clear()
     _key_models.clear()
     _breakers.clear()
+    _cost_refusal_log.clear()
     clear_provider_breaker()
 
 
@@ -490,11 +625,87 @@ def is_retryable(exc: Exception) -> bool:
     A non-429 4xx is OUR bug -- a malformed request, an unknown model id, a
     message list the API refuses -- and it will fail identically on retry, so
     spending the budget on it delays the caller's fallback for nothing.
+
+    NOT the router loop's authority any more, and retained deliberately rather
+    than left ambiguous: `_attempt` asks `classify_failure` and then
+    `recovery_for`, which can tell a context overflow from an ordinary 400 and
+    this cannot. This remains the answer to the narrower question "is this
+    exception a transient", which is what `scripts/reembed.py` and
+    `tools/executor` import it for.
     """
     status = status_of(exc)
     if status is not None:
         return is_retryable_status(status)
     return isinstance(exc, (httpx.TimeoutException, httpx.TransportError, asyncio.TimeoutError))
+
+
+def vendor_error_code(exc: Exception) -> str | None:
+    """The vendor's own short error code, from an error body. Never a message.
+
+    ONLY the fields in `VENDOR_ERROR_ALLOWED_FIELDS` are read, and that is an
+    allowlist rather than a denylist for the reason the trace allowlist is one:
+    `error.message` on a 400 can echo the request, and the request carries a
+    real candidate's answers and a real job description. A code is a short
+    vendor-controlled enum and is safe to log; a message is content and is not.
+
+    Returns None when the body was not JSON or carried no code. That is not a
+    silent fallback: the caller's only use for it is to distinguish a context
+    overflow from every other 400, and "no code" correctly means "not
+    identifiable as an overflow", which leaves the 400 classified exactly as it
+    was before this function existed.
+    """
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+    reader = getattr(response, "json", None)
+    if not callable(reader):
+        return None
+    try:
+        body = reader()
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return None
+    for name in VENDOR_ERROR_ALLOWED_FIELDS:
+        value = error.get(name)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def classify_failure(exc: Exception) -> str:
+    """The failure CLASS, which `recovery_for` turns into a strategy.
+
+    This is the half of W4.1 that had to grow. `classify_status` answered four
+    ways and the router asked it one question ("retry?"); the classes below are
+    what a semantic recovery needs to tell apart, and two of them are not HTTP
+    statuses at all.
+
+    A timeout is separated from a transport error because they are different
+    facts: a refused connection demonstrably did not reach the vendor, while a
+    timeout may have been served and only the answer lost. An exception that is
+    neither an HTTP status nor a transport failure is UNCLASSIFIED rather than
+    assumed transient, which preserves the previous behaviour exactly: a
+    `VendorContractViolation` was never retried and still is not.
+    """
+    status = status_of(exc)
+    if status is None:
+        if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)):
+            return FAILURE_TIMEOUT
+        if isinstance(exc, httpx.TransportError):
+            return FAILURE_TRANSPORT
+        return FAILURE_UNCLASSIFIED
+    kind = classify_status(status)
+    if kind == FAILURE_CLIENT_ERROR and is_context_overflow_code(
+        vendor_error_code(exc)
+    ):
+        # The one 400 that is not simply our bug: the request was too long, and
+        # the recovery is to send less rather than to send it again.
+        return FAILURE_CONTEXT_OVERFLOW
+    return kind
 
 
 def retry_after_seconds(exc: Exception) -> float | None:
@@ -535,6 +746,29 @@ class _Result:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     had_usage: bool = False
+    #: The vendor's own `finish_reason`, carried so a refusal can be told from
+    #: an answer. Defaults None so `as_result("plain")` and every
+    #: string-returning stub in the test suite keep working unchanged.
+    finish_reason: str | None = None
+    #: The published API's structured refusal string, when there is one. Both
+    #: this and `finish_reason` are checked, because either can arrive alone.
+    refusal: str | None = None
+
+    @property
+    def is_refusal(self) -> bool:
+        return bool(self.refusal) or is_refusal_finish_reason(self.finish_reason)
+
+    @property
+    def refusal_reason(self) -> str:
+        """A short reason, from the vendor's own vocabulary. Never content.
+
+        `refusal` is a sentence the model wrote and could quote the request, so
+        it is NOT used here even though it is the more informative of the two.
+        What this returns is the finish reason, which is an enum.
+        """
+        if is_refusal_finish_reason(self.finish_reason):
+            return str(self.finish_reason)
+        return "the response carried a structured refusal"
 
 
 def as_result(value: "_Result | str") -> _Result:
@@ -678,10 +912,16 @@ def parse_response(payload: dict[str, Any], *, json_mode: bool) -> _Result:
     """
     choices = payload.get("choices") or []
     text = ""
+    finish_reason: str | None = None
+    refusal: str | None = None
     if choices and isinstance(choices[0], dict):
+        reason = choices[0].get("finish_reason")
+        finish_reason = str(reason) if isinstance(reason, str) and reason else None
         message = choices[0].get("message")
         if isinstance(message, dict):
             text = str(message.get("content") or "")
+            declined = message.get("refusal")
+            refusal = str(declined) if isinstance(declined, str) and declined else None
     usage = payload.get("usage") or {}
     had_usage = bool(usage)
     return _Result(
@@ -689,7 +929,24 @@ def parse_response(payload: dict[str, Any], *, json_mode: bool) -> _Result:
         prompt_tokens=int(usage.get("prompt_tokens") or 0),
         completion_tokens=int(usage.get("completion_tokens") or 0),
         had_usage=had_usage,
+        finish_reason=finish_reason,
+        refusal=refusal,
     )
+
+
+def _refusal_result(payload: object) -> _Result | None:
+    """A `_Result` when the body is a refusal, None when it is an answer.
+
+    Narrow on purpose. A body only counts as a refusal when the vendor SAID so,
+    through a structured `refusal` string or a `finish_reason` on the refusal
+    list. An empty answer is not a refusal: that is the silent-failure case
+    `vendor_contract.check_openai_response` exists to catch, and misreading it
+    as a decline would replace one honest loud failure with a quiet one.
+    """
+    if not isinstance(payload, dict):
+        return None
+    result = parse_response(payload, json_mode=False)
+    return result if result.is_refusal else None
 
 
 async def _call_openai(
@@ -724,6 +981,17 @@ async def _call_openai(
     )
     resp.raise_for_status()
     body = resp.json()
+    refused = _refusal_result(body)
+    if refused is not None:
+        # A REFUSAL IS NOT CHECKED AGAINST THE CONTRACT, and that is deliberate
+        # rather than an omission. `check_openai_response` refuses a null
+        # `content` because a null content is the tool-call shape this platform
+        # never requests -- but a structured refusal is exactly a null content
+        # with a `refusal` beside it, and running the check would report a
+        # contract violation for a body that is precisely the published shape.
+        # The once-per-path memo is left unset, so the next ordinary response on
+        # this model still gets the first-live-use check it was built for.
+        return refused
     # FAIL LOUD ON FIRST LIVE USE (spec-doc6 §12.5). The shape below was
     # hand-authored from the published schema and has never been seen from the
     # endpoint, so the first response on each model is checked against it and a
@@ -763,6 +1031,29 @@ class _RouteContext:
     #: deadline PREDICTIVE rather than merely observational -- see the module
     #: docstring.
     longest_attempt: float = 0.0
+    #: The caller's deterministic output check. Raises with a message when the
+    #: response does not satisfy the schema. Feeding that message back VERBATIM
+    #: is the only class of retry that carries a different prompt (W4.1).
+    validate: Callable[[str], None] | None = None
+    #: The validator's last message, appended as one extra turn on the next
+    #: attempt and REPLACED rather than accumulated, so three rejections do not
+    #: send three corrections.
+    feedback: str | None = None
+    #: The dollar ceiling for this logical call, and what it has already spent.
+    #: Both here rather than in the graph state because a refusal has to be
+    #: recorded on the way past, and graph state is replaced wholesale by each
+    #: node's return value.
+    cost_ceiling_usd: float = 0.0
+    spent_usd: float = 0.0
+    #: How many times the messages have already been compressed for an overflow
+    #: retry. Bounded: a request that overflows after two halvings is not a
+    #: request one more halving will fix.
+    compressions: int = 0
+    #: Set by the refusal path, read by `_invoke_llm_inner` to decide WHICH
+    #: exception to raise.
+    refusal_reason: str | None = None
+    #: Set by a timeout. A timeout's outcome is UNKNOWN rather than absent.
+    unknown_outcome: bool = False
 
 
 class RouterState(TypedDict, total=False):
@@ -787,6 +1078,50 @@ def _budget_exhausted(ctx: _RouteContext) -> bool:
     return remaining <= 0 or remaining < ctx.longest_attempt
 
 
+#: The most compressions one logical call will make before giving up. TWO,
+#: because each halves the request: a body that still overflows after two is a
+#: body whose single indivisible part is too large, and a third pass would be
+#: spending the caller's budget to discover that again.
+_MAX_COMPRESSIONS = 2
+
+
+def _worst_case_cost_usd(
+    model: str, messages: list[dict[str, Any]], max_tokens: int
+) -> float:
+    """What one attempt could cost if the model emitted its whole ceiling.
+
+    WORST case, not expected case, because this number is used to REFUSE before
+    the work. Checking after would mean the overspend has already happened and
+    the ceiling is a report rather than a limit -- the argument
+    `reliability/budget.py` already makes for its own ceilings.
+
+    The prompt half is estimated from the assembled message text through
+    `context_budget.estimate_tokens`, which is the same four-characters-per-token
+    estimate `agent_loop` uses for output, so the two halves of a call are
+    counted in one unit.
+    """
+    prompt_text = "\n".join(str(m.get("content") or "") for m in messages)
+    return estimate_cost_usd(
+        model, context_budget.estimate_tokens(prompt_text), max_tokens
+    )
+
+
+def _cost_exhausted(ctx: _RouteContext) -> bool:
+    """True when the NEXT attempt could not be afforded.
+
+    The same shape as `_budget_exhausted`, in dollars instead of seconds, and
+    for the same reason: an attempt that cannot finish inside the budget is
+    never started, so an attempt that cannot be paid for is never started
+    either.
+    """
+    if ctx.cost_ceiling_usd <= 0:
+        return False
+    next_attempt = _worst_case_cost_usd(
+        ctx.model, _outgoing_messages(ctx), ctx.max_tokens
+    )
+    return ctx.spent_usd + next_attempt > ctx.cost_ceiling_usd
+
+
 def should_continue(state: RouterState) -> str:
     if state.get("result") is not None:
         return "succeeded"
@@ -798,14 +1133,48 @@ def should_continue(state: RouterState) -> str:
     if _budget_exhausted(ctx):
         ctx.errors.append("wall-clock budget exhausted before the next attempt")
         return "exhausted"
+    if _cost_exhausted(ctx):
+        detail = (
+            f"the {ctx.cost_ceiling_usd:.4f} USD ceiling for "
+            f"{ctx.task_type} would be exceeded by another attempt, with "
+            f"{ctx.spent_usd:.4f} USD already estimated"
+        )
+        ctx.errors.append(f"cost ceiling reached: {detail}")
+        _record_cost_refusal(
+            task_type=ctx.task_type,
+            model=ctx.model,
+            estimated_usd=ctx.spent_usd,
+            ceiling_usd=ctx.cost_ceiling_usd,
+            stage="before a retry",
+        )
+        return "exhausted"
     return "retry"
+
+
+def _outgoing_messages(ctx: _RouteContext) -> list[dict[str, Any]]:
+    """The message list this attempt will actually send.
+
+    `ctx.messages` is what the caller asked for, possibly compressed by an
+    earlier overflow. The validator's feedback is appended HERE rather than
+    written into `ctx.messages`, so it is replaced on every rejection instead of
+    accumulating: three rejections must send one correction, not three.
+    """
+    if ctx.feedback is None:
+        return list(ctx.messages)
+    return list(ctx.messages) + [
+        {"role": "user", "content": reflection_text([ctx.feedback])}
+    ]
 
 
 async def _attempt(state: RouterState) -> dict[str, Any]:
     ctx = state["ctx"]
     attempts = state.get("attempts", 0) + 1
 
-    delay = backoff_seconds(attempts)
+    # Jittered rather than bare exponential (W4.1, the provider-error row). The
+    # draw is made here and passed in, because `llm_providers` is data and pure
+    # functions and a `random` call inside it would make the policy table
+    # unstubbable.
+    delay = jittered_backoff_seconds(attempts, random.random())
     if delay and ctx.deadline is not None:
         # Never sleep past the deadline: an interactive caller waiting out a
         # backoff it can no longer use is strictly worse than failing now.
@@ -813,13 +1182,14 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
     if delay:
         await asyncio.sleep(delay)
 
+    outgoing = _outgoing_messages(ctx)
     started = time.monotonic()
     try:
         raw = await _call_openai(
             ctx.client,
             ctx.key,
             ctx.model,
-            ctx.messages,
+            outgoing,
             ctx.json_mode,
             ctx.max_tokens,
             ctx.temperature,
@@ -827,22 +1197,54 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 -- classified immediately below
         elapsed = time.monotonic() - started
         ctx.longest_attempt = max(ctx.longest_attempt, elapsed)
-        terminal_credential = is_account_level_failure(exc)
-        retryable = is_retryable(exc)
+        # SEMANTIC RECOVERY (W4.1). The class decides HOW to recover, and the
+        # mapping is DATA in `llm_providers` rather than a chain of `if status
+        # ==` here. What used to be one boolean ("retryable") is now a table
+        # entry that also says whether to trip the breaker at once, whether to
+        # honour a Retry-After, whether the outcome is unknown, and whether the
+        # next attempt should send something different.
+        kind = classify_failure(exc)
+        recovery = recovery_for(kind)
+        retryable = recovery.retry
         status = status_of(exc)
-        kind = classify_status(status) if status is not None else "transport"
         _record(
             fingerprint=ctx.key.fingerprint,
             model=ctx.model,
             ok=False,
             latency_ms=elapsed * 1000,
             )
-        _record_failure(ctx.key, terminal=terminal_credential)
+        _record_failure(ctx.key, terminal=recovery.trips_breaker_immediately)
+        if recovery.outcome_is_unknown:
+            ctx.unknown_outcome = True
         # The message names the classification and the status, and NEVER the
         # response body: a vendor error body can echo the request, and the
         # request carries a real candidate's answers.
         ctx.errors.append(f"{kind} ({status if status is not None else type(exc).__name__})")
-        if status == 400:
+        if kind == FAILURE_CONTEXT_OVERFLOW:
+            # COMPRESS AND RETRY, never retry identically. An identical retry
+            # reproduces the same 400 and spends an attempt proving it.
+            if ctx.compressions >= _MAX_COMPRESSIONS:
+                ctx.errors.append(
+                    f"context overflow persisted after {ctx.compressions} "
+                    f"compressions; another halving would not fix it"
+                )
+                return {"attempts": attempts, "error": "__terminal__"}
+            compression = context_budget.compress_messages(ctx.messages)
+            if not compression.compressed:
+                # Nothing whole could be removed. Stopping here is the honest
+                # answer: cutting inside a sentence hands a model half a
+                # sentence, and a model handed half a sentence completes it
+                # from its own priors.
+                ctx.errors.append(f"could not compress: {compression.note}")
+                return {"attempts": attempts, "error": "__terminal__"}
+            ctx.messages = compression.messages
+            ctx.compressions += 1
+            ctx.errors.append(f"compressed the request: {compression.note}")
+            logger.warning(
+                "llm_router.compressed task=%s model=%s pass=%d note=%s",
+                ctx.task_type, ctx.model, ctx.compressions, compression.note,
+            )
+        if status == 400 and kind == FAILURE_CLIENT_ERROR:
             # A 400 is OUR bug by classification, and it is not retried. Which
             # of our bugs is the question a reader is left with, and the answer
             # is usually one of two published constraints this request may not
@@ -850,11 +1252,15 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
             # and saves an outage's worth of guessing on the path that does.
             # Built from the model and OUR OWN payload, never from the response
             # body, which can echo a real candidate's answers.
+            #
+            # A context overflow is also a 400 and is deliberately excluded: it
+            # has its own recovery two blocks up, and the hazards below describe
+            # a malformed request rather than a long one.
             for hazard in vendor_contract.describe_request_hazards(
                 ctx.model,
                 build_payload(
                     model=ctx.model,
-                    messages=ctx.messages,
+                    messages=outgoing,
                     json_mode=ctx.json_mode,
                     max_tokens=ctx.max_tokens,
                     temperature=ctx.temperature,
@@ -874,8 +1280,12 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
         if not retryable:
             return {"attempts": attempts, "error": "__terminal__"}
         # The vendor's own retry-after wins over the local curve when it is
-        # short enough to still leave room for an attempt.
-        wait = retry_after_seconds(exc)
+        # short enough to still leave room for an attempt. Only the rate-limit
+        # class carries one, and the table says so rather than the header's mere
+        # presence deciding: a 5xx that happened to include the header would
+        # otherwise park the caller on the vendor's schedule for a failure that
+        # is not about rate at all.
+        wait = retry_after_seconds(exc) if recovery.honours_retry_after else None
         if wait and ctx.deadline is not None:
             remaining = ctx.deadline - time.monotonic()
             if wait >= remaining - ctx.longest_attempt:
@@ -887,6 +1297,15 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
     elapsed = time.monotonic() - started
     ctx.longest_attempt = max(ctx.longest_attempt, elapsed)
     result = as_result(raw)
+    # The token counts are only visible HERE. `invoke_llm` opened the span four
+    # frames up and `_invoke_llm_inner` returns a bare string, so without this
+    # the duration histogram is populated and `gen_ai.client.token.usage` is
+    # permanently empty. It is not a second writer: it finds the span this call
+    # is already inside and reports against it.
+    otel.record_usage_on_active_span(
+        input_tokens=result.prompt_tokens,
+        output_tokens=result.completion_tokens,
+    )
     _record(
         fingerprint=ctx.key.fingerprint,
         model=ctx.model,
@@ -897,12 +1316,62 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
         had_usage=result.had_usage,
     )
     _record_success(ctx.key)
+    # What this attempt actually cost, so the ceiling refuses the NEXT one on
+    # measured spend rather than on an estimate of an estimate. A response that
+    # reported no usage falls back to the worst case, which is the safe
+    # direction: under-counting a call the vendor billed would let the ceiling
+    # be passed silently.
+    ctx.spent_usd += (
+        estimate_cost_usd(ctx.model, result.prompt_tokens, result.completion_tokens)
+        if result.had_usage
+        else _worst_case_cost_usd(ctx.model, outgoing, ctx.max_tokens)
+    )
     logger.info(
         "llm_router.ok task=%s model=%s key=%s attempt=%d latency_ms=%.0f "
         "in=%d out=%d priced=%s",
         ctx.task_type, ctx.model, ctx.key.fingerprint, attempts, elapsed * 1000,
         result.prompt_tokens, result.completion_tokens, is_priced(ctx.model),
     )
+
+    if result.is_refusal:
+        # A REFUSAL IS NOT A TRANSPORT FAILURE, and it is not retried (W4.1).
+        # The credential worked and the vendor answered, so the breaker is
+        # already cleared above; what is wrong is the request's content, and
+        # that is a person's problem rather than a schedule's.
+        ctx.refusal_reason = result.refusal_reason
+        ctx.errors.append(f"{FAILURE_REFUSAL} ({result.refusal_reason})")
+        logger.warning(
+            "llm_router.refused task=%s model=%s reason=%s",
+            ctx.task_type, ctx.model, result.refusal_reason,
+        )
+        return {"attempts": attempts, "error": "__terminal__"}
+
+    if ctx.validate is not None:
+        try:
+            ctx.validate(result.content)
+        except Exception as exc:  # noqa: BLE001 -- any validator, any library
+            # THE ONLY RETRY THAT CARRIES A DIFFERENT PROMPT. The validator has
+            # already written the instruction that fixes this, so it is fed back
+            # VERBATIM through `agent_loop.reflection_text`, which is the same
+            # mechanism the loop has used since 2026-08-06 rather than a second
+            # copy of it.
+            #
+            # The message goes into the PROMPT and never into `ctx.errors`. A
+            # validator message can quote the value it rejected, `ctx.errors` is
+            # joined into the exception a caller logs, and a rejected value is a
+            # candidate's own words. So the record carries the exception CLASS
+            # and the prompt carries the sentence.
+            ctx.feedback = str(exc)
+            ctx.errors.append(f"{FAILURE_SCHEMA_VIOLATION} ({type(exc).__name__})")
+            logger.info(
+                "llm_router.schema_violation task=%s model=%s attempt=%d error=%s",
+                ctx.task_type, ctx.model, attempts, type(exc).__name__,
+            )
+            return {"attempts": attempts, "error": FAILURE_SCHEMA_VIOLATION}
+        # Accepted. Any feedback from an earlier attempt has done its job and
+        # must not travel further.
+        ctx.feedback = None
+
     return {"attempts": attempts, "result": result.content, "error": None}
 
 
@@ -944,6 +1413,7 @@ async def invoke_llm(
     session: AsyncSession | None = None,
     timeout: float | None = None,
     total_budget: float | None = None,
+    validate: Callable[[str], None] | None = None,
 ) -> str:
     """Run a completion for `task_type` through the router.
 
@@ -958,26 +1428,56 @@ async def invoke_llm(
     large diff whose only effect is a smaller signature. Removing it is a
     reasonable later cleanup, not part of a vendor consolidation.
 
+    `validate` is the caller's DETERMINISTIC output check, and passing one turns
+    a schema violation into a retry that carries the validator's own message
+    back to the model (W4.1). It must raise, with a message, when the response
+    does not satisfy the schema; a Pydantic `model_validate` is the shape this
+    was built for. It is only accepted alongside `response_format_json`, because
+    a schema is a claim about structured output and the feedback wording says so
+    in as many words.
+
     Returns the assistant text. Raises `LLMUnavailableError` when the vendor
-    could not serve the call within its budget.
+    could not serve the call within its budget, or `ModelRefusal` (a subclass,
+    so an existing `except LLMUnavailableError` still degrades) when the vendor
+    answered and declined.
     """
     # One traced run per logical call, named after the task type, so the
     # dashboard separates the scorers from report synthesis from the interviewer
     # with no per-agent wiring. It wraps the WHOLE call rather than one attempt:
     # what matters operationally is whether this call eventually produced an
     # answer and how long it took, not that attempt two was rate limited.
+    if validate is not None and not response_format_json:
+        raise ValueError(
+            "validate is only accepted with response_format_json=True: a "
+            "schema violation is a claim about structured output, and the "
+            "feedback the router sends back says 'return the corrected result "
+            "in the same JSON shape'"
+        )
+    # The GenAI span sits INSIDE the LangSmith one and wraps the SAME call, so
+    # the two observability systems describe one unit of work and cannot
+    # disagree about whether it succeeded. `model_for` is resolved here rather
+    # than left inside: a span with no `gen_ai.request.model` is unqueryable in
+    # every GenAI dashboard. It is the identical pure lookup `_invoke_llm_inner`
+    # makes as its first statement, so an unknown task type still raises the
+    # identical error from the identical function, one frame earlier.
     with tracing.trace_llm(task_type, messages=messages) as run:
-        try:
-            result = await _invoke_llm_inner(
-                task_type, messages, response_format_json, timeout, total_budget,
-            )
-        except Exception as exc:  # noqa: BLE001 -- re-raised immediately
+        with otel.genai_span(
+            otel.OPERATION_CHAT,
+            request_model=model_for(task_type),
+            task_type=task_type,
+        ):
+            try:
+                result = await _invoke_llm_inner(
+                    task_type, messages, response_format_json, timeout, total_budget,
+                    validate,
+                )
+            except Exception as exc:  # noqa: BLE001 -- re-raised immediately
+                if run is not None:
+                    run.end(error=f"{type(exc).__name__}: {exc}")
+                raise
             if run is not None:
-                run.end(error=f"{type(exc).__name__}: {exc}")
-            raise
-        if run is not None:
-            run.end(output=result)
-        return result
+                run.end(output=result)
+            return result
 
 
 async def _invoke_llm_inner(
@@ -986,6 +1486,7 @@ async def _invoke_llm_inner(
     response_format_json: bool,
     timeout: float | None,
     total_budget: float | None,
+    validate: Callable[[str], None] | None = None,
 ) -> str:
     """The retry loop itself.
 
@@ -1023,20 +1524,44 @@ async def _invoke_llm_inner(
 
     request_timeout = timeout if timeout is not None else timeout_for(task_type)
     budget = total_budget if total_budget is not None else total_budget_for(task_type)
+    max_tokens = max_tokens_for(task_type)
+
+    # THE COST CEILING REFUSES BEFORE THE WORK (W4.7), exactly as the latency
+    # ceiling does. Checked against the WORST case one attempt could produce,
+    # because a check against the typical case would let the pathological one
+    # through, which is the only case a ceiling exists for.
+    ceiling = cost_ceiling_for(task_type)
+    worst_case = _worst_case_cost_usd(model, messages, max_tokens)
+    if worst_case > ceiling:
+        _record_cost_refusal(
+            task_type=task_type,
+            model=model,
+            estimated_usd=worst_case,
+            ceiling_usd=ceiling,
+            stage="before the first attempt",
+        )
+        raise LLMUnavailableError(
+            f"the request for task_type={task_type} on {model} could cost up "
+            f"to {worst_case:.4f} USD against a {ceiling:.4f} USD ceiling; the "
+            f"prompt is far larger than the context budget allows and was "
+            f"refused rather than sent"
+        )
 
     async with httpx.AsyncClient(timeout=request_timeout) as client:
         ctx = _RouteContext(
             task_type=task_type,
             model=model,
             key=key,
-            messages=messages,
+            messages=list(messages),
             json_mode=response_format_json,
             client=client,
             retry_budget=retry_budget_for(task_type),
-            max_tokens=max_tokens_for(task_type),
+            max_tokens=max_tokens,
             temperature=temperature_for(task_type),
             attempt_timeout=request_timeout,
             deadline=time.monotonic() + budget if budget else None,
+            validate=validate,
+            cost_ceiling_usd=ceiling,
         )
         final: RouterState = await _router_graph.ainvoke(
             {"task_type": task_type, "attempts": 0, "result": None,
@@ -1047,8 +1572,15 @@ async def _invoke_llm_inner(
     result = final.get("result")
     if result is not None:
         return result
+    if ctx.refusal_reason is not None:
+        raise ModelRefusal(
+            f"{PROVIDER} declined task_type={task_type} on {model}: "
+            f"{'; '.join(ctx.errors)}",
+            reason=ctx.refusal_reason,
+        )
     raise LLMUnavailableError(
-        f"{PROVIDER} exhausted for task_type={task_type}: {'; '.join(ctx.errors)}"
+        f"{PROVIDER} exhausted for task_type={task_type}: {'; '.join(ctx.errors)}",
+        unknown_outcome=ctx.unknown_outcome,
     )
 
 

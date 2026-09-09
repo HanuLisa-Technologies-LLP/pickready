@@ -13,6 +13,8 @@ from typing import Any, Awaitable, Callable
 
 from pydantic import BaseModel
 
+from app.services.tools.policy import RiskClass
+
 # A handler receives its VALIDATED input model and an optional database
 # session, and returns anything its output model accepts. It never receives the
 # raw payload: a handler that re-parses its own input is a second, divergent
@@ -38,6 +40,19 @@ class ToolSpec:
     input_model: type[BaseModel]
     output_model: type[BaseModel]
     description: str
+    #: What this tool can do to the world (`policy.RiskClass`). A field on the
+    #: spec rather than a lookup table keyed by name, so it is stated at the
+    #: definition site where the handler is visible, and a Python constant
+    #: rather than a row, so no admin screen can ever edit it.
+    #:
+    #: The default is READ, the LEAST privileged class, so a spec that forgets
+    #: to declare one is never treated as more powerful than a bounded read.
+    #: The dangerous direction is the opposite one: a tool that really does
+    #: send an email inheriting this default and running automatically. What
+    #: catches that is `tool_manifest.json` -- the risk class is part of every
+    #: tool's pinned definition, so adding one shows up as a manifest diff in
+    #: CI rather than as a silent widening of reach.
+    risk: RiskClass = RiskClass.READ
     #: Same inputs -> same outputs. Required before anything is cached.
     idempotent: bool = False
     #: Per-ATTEMPT ceiling. The executor's deadline bounds the total.
@@ -104,6 +119,7 @@ def describe() -> list[dict[str, Any]]:
         {
             "name": spec.name,
             "description": spec.description,
+            "risk": spec.risk.value,
             "idempotent": spec.idempotent,
             "timeout_seconds": spec.timeout_seconds,
             "cache_ttl_seconds": spec.cache_ttl_seconds,

@@ -668,11 +668,17 @@ def run_matching(ctx: TaskContext, job_id: str):
     # modal. They go through the SAME run-status record that carries the
     # terminal state, so the progress and the outcome come from one place: a
     # task that has finished cannot still be showing a stage as running.
-    progress = matching_progress.Progress(publish=ctx.publish)
+    # The run id is ALSO the activity operation id. The browser holds it
+    # before the task is picked up, so every payload is attributable from the
+    # first poll and a second run cannot repaint this one (Case 3 section 24).
+    progress = matching_progress.Progress(
+        publish=ctx.publish, operation_id=ctx.run_id
+    )
 
     async def _task():
         async with _worker_session() as session:
             scored = await matching.run_matching(session, job_id, progress=progress)
+            progress.complete()
             logger.info("matching.complete job_id=%s scored=%d", job_id, scored)
             # Report synthesis used to run INLINE here, in a plain loop with no
             # try/except, for every completed conversation on the job -- on
@@ -1557,6 +1563,75 @@ def index_document(source_type: str, source_id: str):
                 result.degraded,
             )
     _run(_task())
+
+
+# ── Erasure and learning revocation (RPN-AI-UP-001 W9.5, W3.6) ───────────────
+
+@task(
+    name="pickready.cascade_erasure",
+    route=Route.LAMBDA,
+)
+def cascade_erasure(candidate_id: str, actor_user_id: str | None = None):
+    """Erase one candidate: rows, VECTORS and caches (W9.5).
+
+    A handful of statements and a Redis scan, so Lambda.
+
+    THE VECTORS ARE THE POINT. An embedding is not a one-way hash: published
+    inversion work recovers 50 to 70% of input words from popular sentence
+    embeddings, and because the model is public and queryable, a dictionary
+    attack against stolen vectors is practical. An erasure that deleted the
+    rows and left `profiles.embedding` behind would leave the candidate's
+    resume recoverable from a column nobody thinks of as personal data.
+
+    `worker_session` runs with `app.bypass_rls = 'on'`, which this needs: a
+    candidate spans tenants via the databank, and their chunks may sit under a
+    tenant the erasing operator is not scoped to.
+    """
+    from app.services import erasure
+
+    async def _task():
+        async with _worker_session() as session:
+            receipt = await erasure.cascade_erasure(
+                session, candidate_id, actor_user_id=actor_user_id
+            )
+            await session.commit()
+            logger.info("erasure.cascaded candidate_id=%s", candidate_id)
+            return receipt.as_json()
+    return _run(_task())
+
+
+@task(
+    name="pickready.revoke_learnings_from_source",
+    route=Route.LAMBDA,
+)
+def revoke_learnings_from_source(
+    tenant_id: str, source: str, source_version: str | None = None
+):
+    """Withdraw every learning traceable to one source (W3.6).
+
+    Deactivates, never deletes: the question a reviewer asks afterwards is what
+    the system had believed and when it stopped, and a deleted row cannot
+    answer it. Scoped to ONE tenant, which is only expressible because W3.5
+    made `agent_learnings.tenant_id` NOT NULL -- before that there was no way
+    to revoke a compromised source without revoking everybody's.
+    """
+    from app.services.memory import experience
+
+    async def _task():
+        async with _worker_session() as session:
+            revoked = await experience.revoke_learnings_from_source(
+                session,
+                tenant_id=tenant_id,
+                source=source,
+                source_version=source_version,
+            )
+            await session.commit()
+            logger.info(
+                "memory.learnings_revoked tenant_id=%s source=%s revoked=%d",
+                tenant_id, source, revoked,
+            )
+            return {"revoked": revoked}
+    return _run(_task())
 
 
 @task(

@@ -79,7 +79,12 @@ from app.models.job_setup import (
     JobSwotIntake,
 )
 from app.prompts import fragments, registry
-from app.services import agent_loop, conversation_guardrails, llm_router
+from app.services import (
+    agent_loop,
+    conversation_guardrails,
+    generation_sufficiency,
+    llm_router,
+)
 from app.services.hiring import pipeline_halt, situations, swot_quality
 
 logger = logging.getLogger(__name__)
@@ -390,6 +395,19 @@ async def compose_question(
     collect.
     """
     fallback = AREA_FALLBACK_QUESTIONS[area]
+    # THE GATE, BEFORE THE PROMPT (`ai-upgrade-spec-doc.md` "case 2"). With
+    # neither a title nor a JD there is no role to write an adaptive question
+    # about, and a model asked anyway writes a question about the intake: "the
+    # information provided so far does not establish what causes people to fail
+    # in this role". The scripted question for the area is both correct and
+    # specific, and it is the fixed empty state for this field.
+    state = generation_sufficiency.swot_question_state(job.title, job.jd_markdown)
+    if not state.sufficient:
+        logger.info(
+            "swot_intake.question_gated job_id=%s area=%s empty_state=%s",
+            job.id, area, state.empty_state_key,
+        )
+        return fallback
     system = registry.render(
         _QUESTION_PROMPT_NAME,
         area=AREA_LABELS[area],
@@ -487,7 +505,11 @@ async def capture_answer(
     follow-up loop it cannot leave.
     """
     text = " ".join(str(answer or "").split())
-    if not text:
+    # The same gate, named. An empty answer already short-circuited here; going
+    # through `generation_sufficiency` means this early return carries a fixed
+    # key like every other skipped generation rather than being an unlabelled
+    # special case only this function knows about.
+    if not generation_sufficiency.swot_capture_state(text).sufficient:
         return [], False
     system = registry.render(
         _CAPTURE_PROMPT_NAME,

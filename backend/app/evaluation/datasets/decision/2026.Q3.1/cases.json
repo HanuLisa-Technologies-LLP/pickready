@@ -1,0 +1,16 @@
+{
+  "set": "decision",
+  "version": "2026.Q3.1",
+  "artefact": "cases",
+  "question": "did the system reach the right outcome",
+  "ground_truth_shape": "full case to expert grade and expert disposition, where the disposition is one of the four review dispositions the G4 gate accepts",
+  "judge_free": false,
+  "cases": [],
+  "why_empty": "MUST BE HUMAN LABELLED, and no human labels exist. A decision case pairs a whole application with the grade and disposition a recruiting expert would have reached. Synthesising it from a model would measure agreement with that model rather than quality, which is the standing rule W7.1 restates without exception.",
+  "why_not_drawn_from_production": "There are no applications. readypick-pilot holds three tenants and thirty jobs and zero applications, zero reports and zero evaluations (docs/verification/AI_UPGRADE_BASELINE.md, taken 2026-09-09). A decision case cannot be drawn from a system that has never decided anything.",
+  "what_would_unblock_it": [
+    "Applications that have been assessed end to end in a deployed environment.",
+    "Expert recruiter hours to state the grade and the disposition independently of what the system produced.",
+    "Failure replays, which W7.1 budgets at 10% of the set: these require real incidents, and a system with no applications has had none."
+  ]
+}

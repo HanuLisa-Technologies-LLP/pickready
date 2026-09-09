@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| AI runtime upgrade (2026-09-09) | The retrieval index, the tool firewall, the action ledger, the eval OS, the sufficiency gate, AI activity |
 | Company DNA removed (2026-09-09) | Gate 1 on the Company Profile, the two-layer framework, the surviving detector |
 | The add-features release (2026-09-06) | Corporate senders + OTP, dual-mode assessment, video access, retention consents, BGV, employer pages, intelligence dashboards |
 | Background work without Celery (2026-09-05) | Dispatch, the four functions, the on-demand agent, the schedule |
@@ -59,6 +60,145 @@ phase sections above them are where the sharp edges are.
    failed retrieval, no template output presented as generation.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
+
+
+## Current hard rules, the AI runtime upgrade (2026-09-09)
+
+`ai-upgrade-spec-doc.md` (RPN-AI-UP-001) is the brief, at precedence rank 3a.
+[docs/verification/AI_UPGRADE_BASELINE.md](docs/verification/AI_UPGRADE_BASELINE.md)
+is the measurement everything in it is scored against, and it is a
+MEASUREMENT: it records what was true on the day it was taken and is never
+edited to match new behaviour.
+
+### The brief's own audit was wrong, and that is the most useful thing in it
+
+Section 1.1 concluded from a grep that 19,000 lines of Part A were unreachable,
+and scoped a wiring workstream on it. **They were already wired.** That grep
+cannot match an import statement at all and never looked past one hop. Building
+W1 as written would have produced a second scoring path.
+
+**So `pytest tests/test_ai_reachability.py` is the check, not a grep.** It walks
+the import graph transitively from `app/api` and `app/workers`, follows
+function-level imports, and fails in BOTH directions. It separates IMPORTABLE
+from EXERCISED, and `REQUIRED_CALLERS` asserts that a function which must have
+a caller still has one -- the assertion that would have caught `index_document`
+sitting uncalled for its entire existence.
+
+### Retrieval is real now, and four defects found it
+
+`context_chunks` had never held a row in any environment.
+`pickready.index_document` (Route.LAMBDA) is dispatched from a parsed resume, a
+published JD and a completed assessment; `pickready.reconcile_context_index`
+sweeps hourly and asks the TABLE with a NOT EXISTS, never a timestamp. Verified
+in pilot: the sweep queued 1, six chunks were written and embedded, the next
+sweep queued 0.
+
+All four were invisible to a local test, and each is worth remembering as a
+CLASS rather than as an instance:
+
+- **A column name written from inference.** `assessment_conversations.link_id`
+  does not exist; it is `job_candidate_link_id`.
+- **Two definitions of "has text" that disagreed.** The sweep asked SQL
+  `btrim(col)`, the loader asked Python `.strip()`, and `btrim` with no second
+  argument strips SPACES ONLY. A JD holding two newlines was queued forever and
+  no-opped forever, with a bill as the only symptom. The test now lives in SQL
+  once and the loaders ASK for it.
+- **A dangling tenant reference is a poison pill.** `profiles.source_tenant_id`
+  is a plain nullable UUID with NO foreign key, because a profile is shared
+  across tenants via the databank; `context_chunks.tenant_id` HAS one. Checking
+  only for NULL meant that one document burned three attempts every hour,
+  forever. Both `pending` and `load` now require the tenant to EXIST.
+- **A Lambda could not invoke a Lambda.** `reconcile_context_index` is the
+  first task in the product that dispatches Route.LAMBDA work from Route.LAMBDA
+  work, and one function serves every short task, so it is the worker invoking
+  ITSELF. Every earlier sweep dispatched to Route.ECS, a different grant. Not a
+  regression: a capability the architecture had never exercised.
+  `invokable_function_keys` names functions by KEY, never by ARN, because a
+  `for_each` keyed on an ARN cannot be planned.
+
+**`dispatch` RAISING rather than swallowing is the only reason any of it was
+visible.** A dispatcher that degraded would have reported a queue it never
+wrote to, above an index that stayed empty.
+
+### The new hard rules, one line each
+
+- **A degradation is RECORDED, never silent.** When the cross-encoder is
+  unavailable, retrieval falls back to the deterministic lexical pass and the
+  run records `reranker: "lexical", degraded: true`. Pretending a cross-encoder
+  ran is the same failure as presenting template output as generation.
+- **The sufficiency signal is a ranking and acquisition prior ONLY.** It may
+  never lower a score, move a band, or reach the aggregator.
+  `tests/test_retrieval_scoring_isolation.py` asserts the import graph the way
+  the proctoring isolation test does.
+- **EVERY cache key contains the tenant id.** This is the most common place
+  tenant isolation silently disappears, and it disappears when somebody adds a
+  cache later for a performance fix. `tests/test_cache_tenant_keying.py` greps
+  every key builder and fails on one that lacks it.
+- **The judge is OUTSIDE the closed model mapping, structurally.** The jury
+  lives in `app/evaluation/judges/`, never `app/services/`;
+  `tests/test_judge_isolation.py` asserts by AST that nothing under
+  `app/services/` imports `app/evaluation/`, and that no route or worker can
+  reach the judges. `MODEL_FOR_TASK` stays a closed mapping onto two ids, and
+  the grep exemption for `app/evaluation/` carries its reason inside the test.
+- **A judge result reports MCC, Cohen's kappa, the confusion matrix and the
+  protocol, or it is not reported.** Raw agreement overstates chance-corrected
+  agreement by a mean of 38.6 points. An abstaining judge produces an INTERVAL
+  or `unavailable`, never 0.0.
+- **UNKNOWN is a third outcome, not a rounding of failure.** A timeout on a
+  side-effecting call means the request MAY have succeeded. Retrying a FAILED
+  action is correct; retrying an UNKNOWN one is a duplicate side effect, and it
+  is resolved by READING BACK. `agent_actions` has no UNKNOWN to RUNNING edge,
+  and that absence is the enforcement.
+- **An idempotency key comes from stable logical inputs**, never a timestamp
+  and never a per-attempt UUID, the same shape the Razorpay path already uses.
+- **An `agent_learnings` row is scoped to ONE tenant.** A learning derived from
+  candidate-authored text in tenant A must not influence grading in tenant B,
+  and per-tenant scoping is enforceable structurally where an approval step is
+  a process somebody performs under deadline.
+- **A hidden-text hit is PROVENANCE, never a rejection.** A resume carrying
+  invisible instructions is signal: it is recorded as a limitation, the model
+  sees the normalised text, and a human decides. Roughly 1% of real resumes
+  carry an injection attempt, so this is not hypothetical.
+- **Embeddings are PII at rest.** Published inversion work recovers 50 to 70%
+  of input words, so an erasure that deletes rows and leaves vectors leaves the
+  resume recoverable. `pickready.cascade_erasure` reaches vectors and caches.
+- **No generation prompt may let the model describe its own confidence,
+  sourcing or sufficiency in output text.** That is decided deterministically
+  BEFORE the prompt runs (`services/generation_sufficiency`), per field, and an
+  insufficient verdict SKIPS generation and returns a fixed key from
+  `EMPTY_STATE_COPY` -- never freeform text. Every generation prompt carries a
+  good, a fenced bad and an edge-case example. An empty state states a fact
+  about the RECORD; meta-commentary states the MODEL's uncertainty.
+- **AI activity status is derived from events the workflow actually reached**,
+  rendered from a fixed catalogue in `services/activity`, never from a timer
+  and never from an extra model call. No chain of thought, no invented count,
+  and a failure terminates the line rather than leaving it spinning.
+- **A URL is an address, not a sentence about a candidate.**
+  `contains_forbidden_number` masks URL-like tokens before its patterns run.
+  Before that fix it read `.../assessments/d7be...` as an assessment word beside
+  a number, so `lifecycle_email` rejected EVERY AI-drafted invitation and
+  reminder, and both went out from the deterministic template with
+  `generated_by_ai=False`, silently, on every send.
+
+### What is NOT proven, and must not be described as if it were
+
+- **No live rerank call has ever been made.** `rerank-2.5` has not been
+  resolved against the endpoint; the module is proven against a fake shaped
+  like the installed SDK. The same holds for the context prefix: that prompt
+  has never been sent to Luna.
+- **No Gemini credential exists**, so W7.2's determinism probe has not run and
+  `configured_jurors()` returns empty. The measured self-disagreement sigma
+  that W8's gate threshold needs is unmeasured.
+- **Retrieval QUALITY is unmeasured.** The golden retrieval set is 24
+  hand-authored cases against a floor of 300, 0% production sample, 0 of 24
+  human verified, and the shipped run is a `reference_fixture` rather than a
+  `recorded` one, so it is explicitly not gate-eligible for quality. What DOES
+  gate is the harness self check.
+- **The only deployed environment holds no candidate data.** Three demo
+  tenants, thirty jobs, and zero candidates, profiles, applications, reports,
+  evaluations and matrices. Every acceptance criterion phrased against
+  production volume needs a seeded worked example rather than traffic, and that
+  substitution must stay visible rather than implied.
 
 
 ## Current hard rules, Company DNA removed (2026-09-09)
@@ -2542,6 +2682,12 @@ change actually needs.
 | A proctoring threshold | `core/config.py` (`proctoring_*`) | It is served to the browser from `services/proctoring/config.py`; no literal in the pipeline |
 | A proctoring event type | `services/proctoring/catalog.py` | Its path (A, B, C), its group, its phrasing in `phrasing.py`; internal identifiers never reach a recruiter |
 | A question format | `services/assessment_formats/types.py` | The payload model, the answer model, `candidate_view`, the migration CHECK, the frontend component behind the one dispatcher |
+| A retrieval change | `services/rag/` | `tests/test_retrieval_tenant_recall.py` measures RECALL against a known set, never "rows came back"; a degraded reranker is RECORDED |
+| A judge or eval change | `app/evaluation/` ONLY | Never `app/services/`; `tests/test_judge_isolation.py` asserts it by AST, and the judge reports MCC, kappa and its protocol or reports nothing |
+| A tool capability | `services/tools/permissions.py` + `policy.py` | Risk class stays a Python constant; only tenant approval is data; the refusal runs BEFORE the handler |
+| An agent action with a side effect | `services/agent_actions/` | A ledger row BEFORE the call, an idempotency key from stable logical inputs, and UNKNOWN resolved by reading back |
+| A generation prompt | `app/prompts/*.txt` + `services/generation_sufficiency.py` | Sufficiency is decided deterministically FIRST; the prompt carries good, bad and edge-case examples; bump `# version:` |
+| An AI activity message | `services/activity/phrasing.py` | A fixed catalogue keyed by (task, event), never a timer, never a number the workflow did not compute |
 
 ### Before you claim it works
 

@@ -48,16 +48,27 @@ from __future__ import annotations
 
 from app.services.tools.errors import (
     RetryableToolError,
+    ToolApprovalRequired,
     ToolError,
     ToolExecutionError,
     ToolInputError,
     ToolNotFound,
     ToolOutputError,
     ToolPermissionError,
+    ToolPolicyError,
+    ToolScopeError,
     ToolTimeout,
 )
 from app.services.tools.executor import ToolResult, execute
 from app.services.tools.permissions import AGENT_TOOLS, AGENTS, granted_tools, is_granted
+from app.services.tools.policy import (
+    PolicyDecision,
+    PolicyVerdict,
+    RiskClass,
+    ToolApproval,
+    ToolContext,
+    ToolObject,
+)
 from app.services.tools.registry import ToolSpec, get, names, register, specs
 from app.services.tools.telemetry import reset_tool_stats, tool_stats
 
@@ -69,14 +80,23 @@ from app.services.tools import implementations as implementations  # noqa: E402
 __all__ = [
     "AGENTS",
     "AGENT_TOOLS",
+    "PolicyDecision",
+    "PolicyVerdict",
     "RetryableToolError",
+    "RiskClass",
+    "ToolApproval",
+    "ToolApprovalRequired",
+    "ToolContext",
     "ToolError",
     "ToolExecutionError",
     "ToolInputError",
     "ToolNotFound",
+    "ToolObject",
     "ToolOutputError",
     "ToolPermissionError",
+    "ToolPolicyError",
     "ToolResult",
+    "ToolScopeError",
     "ToolSpec",
     "ToolTimeout",
     "execute",

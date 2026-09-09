@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Profile
 from app.services import llm_router
 from app.services.embeddings import embed
+from app.services.projects import invisible_text
 from app.services.resume_storage import ResumeStorageError, fetch_resume_bytes, profile_has_resume
 from app.prompts import registry
 
@@ -274,6 +275,14 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
     if profile is None:
         raise ValueError(f"Profile {profile_id} not found")
 
+    # THE INTAKE SCAN RUNS WHERE THE BYTES ARE (W9.2), and only there. Roughly
+    # one resume in a hundred carries a prompt injection attempt, and the
+    # carrier is content a human reader cannot see, so the file itself has to be
+    # inspected -- a scan of already-normalised `resume_text` would find nothing
+    # and would then OVERWRITE the record of what the file actually contained,
+    # which is the audit trail. `intake_scan` stays None on a reparse that did
+    # not download, and the stored record is left exactly as it was.
+    intake_scan: invisible_text.IntakeScan | None = None
     resume_text = profile.resume_text
     if not resume_text:
         if not profile_has_resume(profile):
@@ -286,7 +295,20 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
             data = await fetch_resume_bytes(profile)
         except ResumeStorageError as exc:
             raise ResumeParsingError(str(exc)) from exc
-        resume_text = extract_text(data, profile.resume_original_filename)
+        extracted = extract_text(data, profile.resume_original_filename)
+        intake_scan = invisible_text.scan_document(
+            profile.resume_original_filename or "", data, extracted
+        )
+        # Rule 3: everything downstream of this line -- the extraction prompt,
+        # the embedding, the tsvector, the pre-screen grade -- reads the
+        # normalised text. Nothing reads the raw string again.
+        resume_text = intake_scan.normalised_text
+        if intake_scan.flagged:
+            logger.warning(
+                "resume_parsing.hidden_content_detected profile_id=%s techniques=%s",
+                profile_id,
+                ",".join(intake_scan.techniques),
+            )
 
     if not resume_text or not resume_text.strip():
         # Empty/garbage/scanned resume  -  persist an empty profile and stop.
@@ -298,6 +320,8 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
         )
         profile.resume_text = ""
         profile.parsed_fields_json = dict(_EMPTY_PARSED_FIELDS)
+        if intake_scan is not None:
+            profile.intake_scan_json = intake_scan.as_json()
         await _prescreen(session, profile)
         await session.commit()
         return
@@ -317,6 +341,8 @@ async def parse_resume(session: AsyncSession, profile_id: uuid.UUID | str) -> No
 
     profile.resume_text = resume_text
     profile.parsed_fields_json = parsed
+    if intake_scan is not None:
+        profile.intake_scan_json = intake_scan.as_json()
     profile.embedding = (await embed([resume_text]))[0]
     # Before the commit, so the grade and the parse it was written from land in
     # ONE transaction. A grade committed separately could survive a rolled-back

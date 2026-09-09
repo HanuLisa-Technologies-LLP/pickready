@@ -100,6 +100,18 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
     resume_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
     resume_metadata_json: Mapped[dict | None] = mapped_column(JSONB)
     resume_text: Mapped[str | None] = mapped_column(Text)  # extracted; tsvector col in migration
+    #: The intake scan for hidden content (migration 0092, W9.2). Shape is
+    #: `services/projects/invisible_text.IntakeScan.as_json()`: which techniques
+    #: were found, how often, a bounded sample, and the recruiter-facing
+    #: sentence. It hangs off the PROFILE and not off `candidates`, because a
+    #: profile IS one resume and a candidate with three resumes needs three
+    #: answers; "has this person ever submitted a flagged file" is one join.
+    #: NULL means the resume predates the scan, which is a different fact from
+    #: a clean scan and is deliberately not backfilled to one.
+    #: IT AUTHORISES NOTHING. Nothing in the product may read it as a reason to
+    #: reject, rank or filter; it exists so a human can look and so a challenged
+    #: decision has a record.
+    intake_scan_json: Mapped[dict | None] = mapped_column(JSONB)
     aspects_json: Mapped[dict | None] = mapped_column(JSONB)  # {"1": {...}, ..., "40": {...}}
     parsed_fields_json: Mapped[dict | None] = mapped_column(JSONB)  # skills, experience, education, employment_history
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))  # voyage-4, EMBEDDING_DIM

@@ -34,6 +34,7 @@ from app.schemas.emails import (
     EmailSendOut,
 )
 from app.services import capabilities as caps
+from app.services import generation_sufficiency
 from app.services import assessment_invite, lifecycle_email
 from app.services.audit import audit
 from app.services.matching import RANKING_COMMENT_KEYS, ranking_payload
@@ -90,7 +91,11 @@ def _strengths_prose(breakdown: dict | None) -> str:
         if key != "overall_comment" and payload.get(key)
     ]
     return "\n".join(f"- {line}" for line in lines) or (
-        "strong, relevant experience for this role"
+        # THE CONSTANT, not the literal. `generation_sufficiency` has to
+        # RECOGNISE this exact default in order to refuse generation over it,
+        # and a default and its recogniser held as two independent literals
+        # drift the first time somebody rewords one of them.
+        generation_sufficiency.GENERIC_STRENGTHS_PLACEHOLDER
     )
 
 
