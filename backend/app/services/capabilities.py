@@ -704,6 +704,15 @@ DEFAULT_PERMISSION_MATRIX[Role.hiring_manager].update(_SPEC_GRANTS_HIRING_MANAGE
 DEFAULT_PERMISSION_MATRIX[Role.interview_manager] = {
     **_INTERVIEW_MANAGER_ACCESS,
     **_SPEC_GRANTS_INTERVIEW_MANAGER,
+    # Support (2026-09-10, migration 0093). Stated HERE as well as in the
+    # migration, because `seed_dev_data._seed_permission_template` RECONCILES
+    # existing global rows to this matrix: a grant that lived only in the
+    # migration was flipped back to False the first time the dev seed ran,
+    # which is precisely the dev/migrated divergence 0075's docstring warns
+    # about, and it was caught by the full suite ordering rather than by a
+    # targeted run. The narrowest role in the product still gets to say a
+    # screen is broken.
+    OPEN_SUPPORT_THREADS: True,
 }
 
 # ── Corporate email senders (Corporate Email System spec, 2026-09-05) ────────

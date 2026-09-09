@@ -40,7 +40,7 @@ from app.models.assessment import (
 )
 from app.services import rating
 from app.services.rag import context as rag_context
-from app.services.rag import retrieval as rag_retrieval
+from app.services.rag import acquisition as rag_acquisition
 from app.services.tools import schemas
 from app.services.tools.errors import ToolExecutionError
 from app.services.tools.policy import RiskClass
@@ -429,21 +429,36 @@ register(
 
 # ── retrieve_context ─────────────────────────────────────────────────────────
 
+#: The whole acquisition (first pass plus at most one broadened retry) must
+#: land inside the tool's declared 6-second ceiling with room for context
+#: assembly after it; two thirds of the ceiling is that room stated once.
+_ACQUISITION_DEADLINE_SECONDS = 4.0
+
 
 async def _retrieve_context(
     payload: schemas.RetrievalRequest, *, session: AsyncSession | None
 ) -> schemas.RetrievedContext:
     assert session is not None
-    chunks = await rag_retrieval.retrieve(
+    # W6.5: acquisition, not bare retrieval. When the first pass comes back
+    # empty, ONE broadened retry (section filter dropped, pool doubled) runs
+    # before this tool hands an agent a prompt built from nothing. Bounded by
+    # structure (two attempts exist, no loop) and by a deadline checked
+    # BEFORE the retry, inside this tool's own 6-second ceiling. The floor is
+    # 1: "sufficient for generation" stays the sufficiency gates' question;
+    # this layer only refuses to give up on an EMPTY result without one wider
+    # look. Scope (tenant, source type, source ids) is never broadened.
+    outcome = await rag_acquisition.acquire(
         session,
         payload.query,
+        min_chunks=1,
         source_type=payload.source_type,
         source_ids=list(payload.source_ids),
         section_types=list(payload.section_types) or None,
         top_k=payload.top_k,
+        deadline_seconds=_ACQUISITION_DEADLINE_SECONDS,
     )
     assembled = rag_context.assemble(
-        chunks, query=payload.query, max_tokens=payload.max_tokens
+        outcome.chunks, query=payload.query, max_tokens=payload.max_tokens
     )
     return schemas.RetrievedContext(
         query=payload.query,
