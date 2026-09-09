@@ -389,6 +389,13 @@ async def infer_grade(job: Job, session: AsyncSession) -> str:
 
 # ── Scoring primitives ──────────────────────────────────────────────────────
 
+#: The one scoring mode that does NOT force human review: a real rubric, scored
+#: by a model, against the candidate's real answers. Named rather than spelled
+#: at each site because `needs_human_review` compares against it, and a typo in
+#: a string literal there would silently stop flagging every fallback report.
+MODE_LLM_RUBRIC = "llm_rubric"
+
+
 def _stable_score(seed: str, low: int = 45, high: int = 94) -> int:
     """DETERMINISTIC LAST-RESORT ONLY (claude.md rule 9: degrade, never crash).
 
@@ -1413,8 +1420,21 @@ async def _score_item(
             # unanswered one, and deliberately never reaches `_llm_score`.
             # Letting it through is what produced a passing grade for
             # `ewidjverip`: on an LLM failure the caller falls back to
-            # `_stable_score`, whose 45..94 floor cannot express Not Matching.
-            # See services/answer_quality for the full mechanism.
+            # `_stable_score`, which hashes into 45..94.
+            #
+            # THIS COMMENT USED TO SAY THAT RANGE "cannot express Not
+            # Matching", AND THAT IS FALSE on the current four-grade scale.
+            # Measured over 20,000 seeds against `rating.grade_for_percent`
+            # (90 / 75 / 60): Not Matching 30.0%, Moderately Matching 30.4%,
+            # Matching 29.6%, Highly Matching 10.1%. It was true of an earlier
+            # scale and survived the 2026-07-30 consolidation unread.
+            #
+            # The defect it was describing is real and unchanged, and the
+            # measured numbers state it better than the wrong claim did:
+            # 70.0% of hashed inputs grade Moderately Matching or better, so
+            # keyboard mash reaching this path is far more likely to pass than
+            # to fail. What is wrong is not that the hash cannot fail somebody,
+            # it is that a HASH decides. See services/answer_quality.
             verdict = answer_quality.assess(answer)
             if not verdict.substantive:
                 if answer:
@@ -1987,8 +2007,8 @@ async def synthesis_node(state: AssessmentState) -> dict:
         validation=validation,
     )
 
-    scoring_mode = state.get("ppi_mode", "llm_rubric")
-    if scoring_mode != "llm_rubric":
+    scoring_mode = state.get("ppi_mode", MODE_LLM_RUBRIC)
+    if scoring_mode != MODE_LLM_RUBRIC:
         logger.warning(
             "functional_assessment.scoring_mode link_id=%s mode=%s",
             state["link"].id, scoring_mode,
@@ -2067,6 +2087,28 @@ async def synthesis_node(state: AssessmentState) -> dict:
             or uncertainty_review
             or aggregate.needs_human_review
             or bool(evaluation.unresolved_evidence)
+            # A HASH-SCORED REPORT IS ALWAYS REVIEWED, and until 2026-09-09 it
+            # was not. `scoring_mode` was computed twenty lines above, logged,
+            # and STORED on the row, and none of that reached this flag.
+            #
+            # `claude.md` has stated the rule since the agent framework landed:
+            # "A stub is always flagged for human review ... what makes that
+            # honest rather than misleading is `needs_human_review`, never a
+            # stub that reads like a result." A deterministic fallback is that
+            # stub. `_stable_score` hashes into 45..94, which cannot express
+            # Not Matching at all, and measured over 20,000 seeds it graded
+            # 69.6% of inputs Moderately Matching or better.
+            #
+            # So the failure mode was a provider outage producing a report that
+            # looked exactly like a scored one, carried a plausible grade, and
+            # went to a client with nothing asking a person to look. The column
+            # recording that it happened was written and read by nobody.
+            #
+            # Compared against the ONE known-good mode rather than against a
+            # list of bad ones: a future third mode is unreviewed by default
+            # under `!= fallback`, and reviewed by default here. Review is the
+            # safe direction.
+            or scoring_mode != MODE_LLM_RUBRIC
         ),
         # Issue, location and severity only. A finding's `detail` can quote the
         # report prose, and this column is read from far more places than the

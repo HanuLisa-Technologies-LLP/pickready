@@ -173,10 +173,20 @@ class Settings(BaseSettings):
     # log line and no empty result to notice.
     voyage_context_4: str = ""
 
-    # Retained, unread by the router. `llm_provider_keys` still holds encrypted
-    # rows for the three retired vendors and this is what decrypts them; a
-    # rollback of the consolidation needs the rows readable rather than
-    # restored from a backup.
+    # RETAINED AS KEY MATERIAL, AND NOTHING IN THIS TREE DECRYPTS WITH IT.
+    #
+    # The previous comment here said "this is what decrypts them", which was
+    # false: a tree-wide search finds no reader of this setting outside the
+    # deploy secret-hygiene test that asserts which services may hold it. The
+    # single-vendor consolidation deleted the router that used it along with
+    # the three retired providers.
+    #
+    # It is kept rather than deleted because `llm_provider_keys` still holds
+    # encrypted rows, and the key that opens them is not recoverable once the
+    # secret is dropped. What a rollback would need is this VALUE plus a
+    # decryptor somebody writes; what it must not need is a value nobody
+    # thought to keep. Stating that plainly is the difference between a
+    # deliberate retention and a grant that looks live and is not.
     llm_key_encryption_secret: str = ""
 
     # Embedding output width. Pinned to 1024 because `profiles.embedding`,

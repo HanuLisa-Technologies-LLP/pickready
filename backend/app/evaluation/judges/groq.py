@@ -32,18 +32,28 @@ by CALL and never by reading the model list -- the same discipline the Gemini
 module records, for the same reason: that account's listing advertises three
 2.5-family ids which all answer 404 "no longer available to new users".
 
-`qwen/qwen3.8-27b` and `qwen/qwen3.6-27b` are the independent legs: a different
-lab from the product's models entirely. `openai/gpt-oss-120b` is open-weight and
-architecturally distinct from `gpt-5.6-*`, but it shares an OpenAI lineage with
-them, so it is the leg most exposed to self-preference (published at roughly
-+10% to +25% win rate for a model's own family). It is included for panel
-heterogeneity and it is a MINORITY of the panel deliberately: on a majority
-vote it cannot carry a verdict alone.
+`qwen/qwen3.8-27b` is the fully independent leg: a different lab from the
+product's models entirely. The two `openai/gpt-oss-*` models are OPEN WEIGHT and
+architecturally distinct from `gpt-5.6-terra` and `gpt-5.6-luna`, but they share
+a publisher with them, so they are the legs most exposed to self-preference
+(published at roughly +10% to +25% win rate for a model's own family). **Two of
+three sharing a publisher is a real weakness of this panel and it is recorded
+rather than glossed**: it is what the account can complete a probe on. Adding a
+second independent lab is the first improvement to make when another judge
+vendor is available.
 
-`groq/compound-mini` is deliberately absent. It is an agentic system that may
-call tools, so its answer is not a function of the prompt alone, and a juror
-whose verdict depends on what a search returned that minute cannot be measured
-for self-agreement.
+`qwen/qwen3.6-27b` ANSWERS CORRECTLY AND IS STILL EXCLUDED, which is worth its
+own note. It emits a `<think>` scratchpad on every call, spends its whole token
+ceiling on it, and then meets the per-minute meter; a 600-call probe made no
+measurable progress on it in eleven minutes while the other models finished
+cases in seconds. A juror that cannot be measured within a probe's budget
+cannot inform a gate threshold, and `strip_reasoning` below is kept anyway
+because any model may emit one.
+
+`groq/compound-mini` is deliberately absent for a different reason. It is an
+agentic system that may call tools, so its answer is not a function of the
+prompt alone, and a juror whose verdict depends on what a search returned that
+minute cannot be measured for self-agreement at all.
 
 THE CLOUDFLARE HEADER IS LOAD BEARING
 ---------------------------------------
@@ -71,8 +81,8 @@ logger = logging.getLogger(__name__)
 #: caveat on the gpt-oss leg.
 JUDGE_MODELS: tuple[str, ...] = (
     "qwen/qwen3.8-27b",
-    "qwen/qwen3.6-27b",
     "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
 )
 
 #: The credential slots, enumerated and every one optional, the same roster
