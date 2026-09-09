@@ -235,22 +235,34 @@ wrote to, above an index that stayed empty.
   model it unlocks, so an absent key names the missing capability rather than
   a vendor. **The context prefix is still unproven**: that prompt has never
   been sent to Luna.
-- **A Gemini credential exists now, and W7.2 is still not measured.** Three
-  keys are populated and the probe RAN, but the free tier's daily allowance was
-  exhausted at roughly a third of the 600 calls, so `configured_jurors()` still
-  returns empty and W8's gate threshold still has no measured sigma. What is
-  missing is quota, not code. Two findings from the partial run are worth more
-  than the sigma would have been:
-  **`models.list` IS NOT A CAPABILITY LIST.** It advertises `gemini-2.5-pro`,
-  `gemini-2.5-flash` and `gemini-2.5-flash-lite`, and all three answer
-  `generateContent` with 404 "no longer available to new users" -- the
-  `voyage-context-4` mistake in a new shape. `JUDGE_MODELS` is therefore
-  resolved by CALL, never by listing.
-  And **a quota rejection is not dispersion.** The probe's FIRST run reported
-  `sigma=0.0000, unanimous 5/5` from five cases of nothing but 404s. Only
-  in-scale answers now count toward the rate, `usable_share` travels beside
-  every sigma, and an arm that measured nothing reports `unavailable` rather
-  than a number that reads like perfect agreement.
+- ~~**No Gemini credential exists**~~ ~~**W7.2 is still not measured**~~
+  **SUPERSEDED 2026-09-09. W7.2 IS MEASURED, ON GROQ.** Gemini's free tier
+  exhausted its daily allowance at a third of 600 calls; the Groq keys already
+  in `.env` completed the run. Six arms, five cases, twenty calls each,
+  `usable_share` 1.00 throughout. Worst pooled self-disagreement 0.0300
+  (`gpt-oss-120b` unseeded), worst single case 0.150.
+  **A SEED IS NOT DETERMINISM**: it took `gpt-oss-120b` from 0.0300 to 0.0000
+  and left `gpt-oss-20b` at 0.0100, so reproducibility rests on REPEATS WITH
+  REPORTED DISPERSION, never a seed alone. **All dispersion sat at band
+  boundaries**; every obvious case was 20 for 20 on every model, so a probe of
+  easy cases would have reported 0.0000 and calibrated the gate on the wrong
+  distribution.
+  This unblocked W8: `app/evaluation/release_gate.py` derives
+  `NOISE_BAND = 0.03 x 3 = 0.09` from the measurement rather than guessing it,
+  and **UNAVAILABLE IS NOT A PASS** -- with the human-labelled sets empty the
+  gate returns `releasable=False`, because a metric that could not be computed
+  must block or a broken harness releases everything while showing green.
+  The jury itself is wired and proven end to end (MCC 0.627, kappa 0.556) over
+  SYNTHETIC cases that live in the probe script and never in `datasets/`.
+  Evidence in `VERIFICATION_RESULTS.md`.
+- **The judge vendor is Groq, and that does not reopen the product mapping.**
+  spec-doc5 deleted Groq as a PRODUCT vendor and that stands: `MODEL_FOR_TASK`
+  is still closed onto `gpt-5.6-terra` and `gpt-5.6-luna` with no fallback
+  chain. A JUDGE has the opposite requirement, because a model scoring its own
+  family's output is worth roughly +10% to +25% in win rate. Two of the three
+  jurors share a publisher with the product's models and that is a real
+  weakness of the panel, recorded rather than glossed: `qwen/qwen3.8-27b` is
+  the only fully independent leg.
 - **Retrieval QUALITY is unmeasured.** The golden retrieval set is 24
   hand-authored cases against a floor of 300, 0% production sample, 0 of 24
   human verified, and the shipped run is a `reference_fixture` rather than a

@@ -167,3 +167,92 @@ by re-registering a manifest that had been round-tripped through
 `--output text`, which reserialised it into different bytes. Nothing is
 deployed from it. It was left in place rather than deleted because its child
 manifests are shared with the deployed index. **Deploy from `sha-b790534`.**
+
+---
+
+# W7.2 COMPLETE. The judge determinism measurement (2026-09-09)
+
+Superseding the PARTIAL Gemini entry above. Gemini's free tier exhausted its
+daily allowance at roughly a third of 600 calls; the Groq keys already in the
+environment completed the run.
+
+    python -m app.scripts.probe_judge_determinism --vendor groq --repeats 20
+
+Six arms, five cases each, twenty calls per case. `usable_share` was 1.00 on
+every arm, so every number below rests on twenty real verdicts.
+
+| model | arm | pooled sigma | worst case | unanimous |
+|---|---|---:|---:|---|
+| `qwen/qwen3.8-27b` | temperature 0 | 0.0000 | 0.000 | 5/5 |
+| `qwen/qwen3.8-27b` | temperature 0 + seed | 0.0000 | 0.000 | 5/5 |
+| `openai/gpt-oss-120b` | temperature 0 | 0.0300 | 0.150 | 4/5 |
+| `openai/gpt-oss-120b` | temperature 0 + seed | 0.0000 | 0.000 | 5/5 |
+| `openai/gpt-oss-20b` | temperature 0 | 0.0200 | 0.100 | 4/5 |
+| `openai/gpt-oss-20b` | temperature 0 + seed | 0.0100 | 0.100 | 4/5 |
+
+## What it settled
+
+**A SEED IS NOT DETERMINISM.** It helps and it does not guarantee.
+`gpt-oss-120b` went 0.0300 to 0.0000 with a seed; `gpt-oss-20b` still disagreed
+with itself at 0.0100 WITH one. So W7.2's central question is answered against
+the seed: reproducibility rests on REPEATS WITH REPORTED DISPERSION. That
+matches what this platform already found for its own models, where
+`temperature=0.0` is refused outright and `system_fingerprint` came back null.
+
+**DISPERSION LIVES AT BAND BOUNDARIES.** Every non-zero cell is a boundary case.
+`clear-strong`, `clear-absent` and `claim-without-detail` were 20 for 20 on
+every model in every arm. A probe made of obvious cases would have reported
+0.0000 across the board and calibrated the gate on the wrong distribution.
+
+**THE PANEL IS STEADIER THAN ITS MEMBERS.** The worst single juror moved on 3 of
+20 calls for one case. A majority over three needs two to move together before
+the pooled label does.
+
+**IT DID NOT SETTLE JUDGE QUALITY.** Self-agreement is not accuracy: a model
+answering `matching` every time agrees with itself perfectly. The reasoning and
+decision sets stay EMPTY until a human labels them.
+
+## What it unblocked
+
+`app/evaluation/release_gate.py` (W8) now exists with a threshold derived from
+the measurement rather than guessed: `NOISE_BAND = 0.03 x 3 = 0.09`. A fall in
+agreement inside that band is reported and does not fail, because it is the
+judge disagreeing with itself. A fall wider than it fails even when the absolute
+value still clears the floor.
+
+**UNAVAILABLE IS NOT A PASS.** With the human-labelled sets empty the gate
+returns `unavailable` and `releasable=False`. A metric that could not be
+computed must block, or the first thing a broken harness does is wave every
+release through while showing green.
+
+## The jury pipeline, proven end to end (W7.4, W7.5)
+
+`python -m app.scripts.probe_judge_jury` against the real panel: MCC 0.627,
+Cohen's kappa 0.556, raw agreement 0.667 reported only beside the kappa with its
+38.6-point caveat, full confusion matrix, accuracy interval, 6 presented, 6
+judged, 0 abstentions.
+
+**THOSE CASES ARE SYNTHETIC AND LIVE IN THE SCRIPT.** They prove the plumbing:
+a real panel, real calls, majority pooling with ties abstaining, and
+`build_result` producing chance-corrected metrics. They are not evidence about
+candidates, and they are deliberately not in `app/evaluation/datasets/`, where
+they would be indistinguishable from human labels in six months.
+
+## Two transport findings
+
+**Groq sits behind Cloudflare, which answers 403 code 1010 to urllib's default
+User-Agent.** Not a credential failure and not a rate limit. Without the header
+every call fails looking like a rejected key.
+
+**A fault is classified by STATUS as well as by message text.** Groq's 429 body
+matched no message fragment, read as `unclassified`, and was therefore never
+retried, because `unclassified` is not in `RETRYABLE_FAULTS`.
+
+## One juror excluded for a reason worth recording
+
+`qwen/qwen3.6-27b` ANSWERS CORRECTLY and is still not on the panel. It emits a
+`<think>` scratchpad on every call, spends its whole token ceiling on it, then
+meets the per-minute meter: it made no measurable progress in eleven minutes
+while the other models finished cases in seconds. A juror that cannot be
+measured inside a probe's budget cannot inform a gate threshold.
+`strip_reasoning` is kept anyway, because any model may emit one.

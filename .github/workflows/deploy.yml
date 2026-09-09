@@ -190,13 +190,30 @@ jobs:
 
       - name: Agent evaluation gates
         working-directory: backend
-        # Three evals, all offline. `eval_agents.py` measures the FRAMEWORK --
-        # routing against permissions, tool reachability, deadline feasibility --
-        # rather than what an agent says, and reports quality metrics as
-        # UNAVAILABLE while no expert-labelled dataset exists.
+        # THREE evals, all offline. This comment said "three" while running two
+        # for the whole of the AI upgrade: `eval_retrieval` was written, was
+        # gate-capable, and was wired into nothing.
+        #
+        # `eval_agents.py` measures the FRAMEWORK -- routing against
+        # permissions, tool reachability, deadline feasibility -- rather than
+        # what an agent says, and reports quality metrics as UNAVAILABLE while
+        # no expert-labelled dataset exists.
+        #
+        # `eval_retrieval --gate` gates the HARNESS SELF CHECK and not
+        # retrieval quality, and the distinction is the reason it is safe to
+        # add here. It recomputes the shipped fixture run's metrics under the
+        # current implementation and exits non-zero on any difference, so
+        # changing the nDCG discount, the cutoff handling or the gain scale
+        # turns CI red instead of moving every reported number quietly. It
+        # deliberately does NOT gate on quality: the golden set is 24
+        # hand-authored cases against a floor of 300, and the reasoning and
+        # decision sets report `unavailable` because they must be human
+        # labelled. A gate on those would be a gate on a number nobody
+        # measured.
         run: |
           python -m app.scripts.eval_interview
           python -m app.scripts.eval_agents
+          python -m app.scripts.eval_retrieval --gate
 
       - name: The worked example still runs end to end
         working-directory: backend
