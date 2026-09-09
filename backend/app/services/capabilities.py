@@ -54,6 +54,35 @@ MANAGE_COMPLIANCE_DOCUMENTS = "manage_compliance_documents"
 MANAGE_BILLING = "manage_billing"
 VIEW_BILLING = "view_billing"
 
+# ── In-product support (2026-09-10) ──────────────────────────────────────────
+#
+# A third-party customer-success sync was deleted (claude.md, 2026-09-10) and
+# the surface it served moved inside the product. Two capabilities, and the
+# split is by WHICH SIDE of the conversation somebody is on, not by seniority.
+#
+# OPEN_SUPPORT_THREADS is held by every customer role including the Interview
+# Manager, who otherwise holds the narrowest set in the product. Raising a
+# ticket is not a recruitment capability: somebody locked out of a screen has
+# to be able to say so, and a role that could not would have to relay it
+# through a colleague, which is how a bug report loses the detail that made it
+# actionable.
+OPEN_SUPPORT_THREADS = "open_support_threads"
+
+# HANDLE_SUPPORT_THREADS is the PLATFORM side, and it is deliberately absent
+# from DEFAULT_PERMISSION_MATRIX below. That dict is copied into per-tenant
+# rows for every customer the Owner console creates, and the role that holds
+# this one has no tenant. It is seeded as a GLOBAL row by migration 0093.
+#
+# It is also NOT a route gate, and saying so here is the point: the Provider
+# routes are gated by `get_superadmin_db`, which already enforces the owner
+# audience and audit-logs every cross-tenant read, and `require_capability`
+# structurally cannot serve them because it resolves through `get_tenant_db`
+# and a platform user has no tenant to resolve against. What this capability
+# IS is the notification ROUTING list, asked of the permission rows rather
+# than branched on by role name, so a future ReadyPick support role is a
+# seeded row instead of an edit to a background task.
+HANDLE_SUPPORT_THREADS = "handle_support_threads"
+
 # ── RBAC_SPECIFICATION.md 24: the capabilities that specification names and
 #    this codebase did not have ────────────────────────────────────────────
 #
@@ -216,6 +245,9 @@ _STAFF_OPERATIONAL: dict[str, bool] = {
     # Read-only. A recruiter whose invitations stop sending must be able to see
     # that the credit pool is in deficit; they still cannot change the plan.
     VIEW_BILLING: True,
+    # Raising a support ticket. See the constant for why every customer
+    # role holds it.
+    OPEN_SUPPORT_THREADS: True,
 }
 
 # The customer-side grant set, shared by all four customer roles.

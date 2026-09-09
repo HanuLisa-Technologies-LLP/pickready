@@ -2406,3 +2406,156 @@ def process_assessment_video(recording_id: str):
             await processing.process_recording(session, uuid.UUID(str(recording_id)))
 
     _run(_task())
+
+
+@task(
+    name="pickready.notify_support_message",
+    route=Route.LAMBDA,
+    max_attempts=2,
+)
+def notify_support_message(thread_id: str, message_id: str):
+    """Tell the other side of a support thread that a message arrived.
+
+    Route.LAMBDA: this is work measured in seconds. It resolves recipients and
+    hands each one to `pickready.send_email`, which owns delivery, the
+    transport choice and the retry policy. Two hops rather than one because the
+    fan-out and the send are different failures: one recipient's address
+    bouncing must not stop the others being told.
+
+    WHO IS TOLD DEPENDS ON WHO WROTE
+    ----------------------------------
+    A STAFF message goes to the customer who opened the thread. A CUSTOMER
+    message goes to every ReadyPick staff member holding
+    `handle_support_threads`, asked of the permission ROWS through the rbac
+    engine rather than branched on by role name, so a future support role is a
+    seeded row instead of an edit to this function.
+
+    A recipient with no email is SKIPPED and counted, never silently dropped:
+    a fan-out that told nobody and a fan-out that told everybody produce the
+    same empty log otherwise, which is the failure `dispatch` raising was added
+    to make visible.
+
+    NOTHING ABOUT A CANDIDATE IS IN THE PAYLOAD, and nothing could be. The
+    email carries the thread's subject, the customer's name and a link. The
+    message BODY is deliberately not included: it is free text a human typed,
+    it may quote something a customer pasted, and an email is the one copy of
+    it this product cannot recall. The recipient signs in to read it.
+    """
+    from app.models.support import SIDE_STAFF, SupportMessage, SupportThread
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services import rbac
+    from app.services.capabilities import HANDLE_SUPPORT_THREADS
+
+    async def _task():
+        async with _worker_session() as session:
+            message = await session.get(SupportMessage, uuid.UUID(str(message_id)))
+            thread = await session.get(SupportThread, uuid.UUID(str(thread_id)))
+            if message is None or thread is None:
+                # Not an error: a thread deleted with its tenant between the
+                # dispatch and the invocation is an ordinary race, and there is
+                # nobody left to notify. Logged so it is not invisible.
+                logger.info(
+                    "support.notify_skipped reason=row_gone thread=%s", thread_id
+                )
+                return {"notified": 0, "skipped": 0, "reason": "row_gone"}
+
+            tenant = await session.get(Tenant, thread.tenant_id)
+            company_name = getattr(tenant, "name", "") or "your organisation"
+
+            if message.author_side == SIDE_STAFF:
+                recipients = await _support_customer_recipients(session, thread)
+                template = "support_reply_to_customer"
+                url = f"{get_settings().frontend_url}/org/support/{thread.id}"
+            else:
+                recipients = await _support_staff_recipients(
+                    session, rbac, User, HANDLE_SUPPORT_THREADS
+                )
+                template = "support_message_for_staff"
+                url = f"{get_settings().frontend_url}/admin/support/{thread.id}"
+
+            notified = 0
+            skipped = 0
+            for email in recipients:
+                if not (email or "").strip():
+                    skipped += 1
+                    continue
+                dispatch(
+                    "pickready.send_email",
+                    args=[
+                        # The staff notification is a PLATFORM email and
+                        # carries no tenant, so it uses the default sender
+                        # rather than the customer's own verified one: sending
+                        # ReadyPick's internal queue notice as the customer
+                        # would be wrong in both directions.
+                        str(thread.tenant_id)
+                        if message.author_side == SIDE_STAFF
+                        else None,
+                        email,
+                        template,
+                        {
+                            "company_name": company_name,
+                            "subject_line": thread.subject,
+                            "support_url": url,
+                        },
+                    ],
+                )
+                notified += 1
+
+            logger.info(
+                "support.notified thread=%s side=%s notified=%d skipped=%d",
+                thread_id, message.author_side, notified, skipped,
+            )
+            return {"notified": notified, "skipped": skipped}
+
+    return _run(_task())
+
+
+async def _support_customer_recipients(session, thread) -> list[str]:
+    """The person who opened the thread, or the tenant's Super Admin.
+
+    The fallback matters: `opened_by_user_id` is ON DELETE SET NULL, so a
+    thread whose author has left the company would otherwise notify nobody and
+    a reply would sit unread for as long as the customer took to look.
+    """
+    from app.models.user import User
+
+    if thread.opened_by_user_id:
+        opener = await session.get(User, thread.opened_by_user_id)
+        if opener is not None and (opener.email or "").strip():
+            return [opener.email]
+    rows = await session.execute(
+        select(User.email)
+        .where(
+            User.tenant_id == thread.tenant_id,
+            User.role == "client",
+            User.status != "disabled",
+            User.email.isnot(None),
+        )
+        .order_by(User.created_at)
+        .limit(1)
+    )
+    return [email for (email,) in rows]
+
+
+async def _support_staff_recipients(session, rbac, User, capability) -> list[str]:
+    """Every platform user the permission ROWS say may handle support.
+
+    Asked of the engine per user rather than filtered by role name here, so the
+    answer honours the per-user overlay: somebody whose access was pinned off
+    stops being paged without anybody editing this task.
+    """
+    rows = await session.execute(
+        select(User.id, User.email, User.role)
+        .where(
+            User.tenant_id.is_(None),
+            User.status != "disabled",
+            User.email.isnot(None),
+        )
+        .order_by(User.created_at)
+    )
+    recipients: list[str] = []
+    for user_id, email, role in rows:
+        if await rbac.has_capability(session, None, role, capability, user_id):
+            recipients.append(email)
+    return recipients

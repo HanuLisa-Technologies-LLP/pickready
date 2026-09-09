@@ -49,6 +49,7 @@ from app.models.agent_action import AgentAction
 from app.models.context import ContextChunk
 from app.models.evidence import EvidenceClaim, EvidenceClaimLink, EvidenceItemRow
 from app.models.candidate_update import CandidateUpdate
+from app.models.support import SupportMessage, SupportThread
 from app.models.bgv import BGVInquiry, BGVShareConsent
 from app.models.dual_mode import AssessmentConsent, VideoRecording
 from app.models.project import CandidateProject
@@ -131,6 +132,8 @@ __all__ = [
     "Candidate",
     "CandidateProject",
     "CandidateUpdate",
+    "SupportMessage",
+    "SupportThread",
     "CandidateQuestion",
     "CandidateTeamReview",
     "CandidateTechnicalQuestion",

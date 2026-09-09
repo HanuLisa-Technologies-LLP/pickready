@@ -33,6 +33,7 @@ from app.api import (
     proctoring,
     provider,
     reports,
+    support,
     telemetry,
     verification,
     videos,
@@ -139,6 +140,21 @@ app.include_router(bd.router, prefix=f"{API_PREFIX}/bd", tags=["bd"])
 # configured against by mistake.
 app.include_router(billing.router, prefix=f"{API_PREFIX}/billing", tags=["billing"])
 app.include_router(reports.router, prefix=f"{API_PREFIX}/reports", tags=["reports"])
+# In-product customer support (2026-09-10), which replaced a deleted
+# third-party sync (claude.md, 2026-09-10). Two routers, two audiences,
+# one write path: `router` is the customer's
+# own threads under the org audience, `provider_router` is ReadyPick's queue
+# across every customer and mounts under /provider beside the customer list,
+# because that is where this product's Provider API lives. Mounted at one
+# prefix only, no /api/v2 alias: the feature is new in this release, so there
+# is no v1 client to keep working and a second URL for one surface is a second
+# thing to keep in step.
+app.include_router(support.router, prefix=f"{API_PREFIX}/support", tags=["support"])
+app.include_router(
+    support.provider_router,
+    prefix=f"{API_PREFIX}/provider/support",
+    tags=["provider-support"],
+)
 # Talent Intelligence dashboards (2026-09-05 spec): operational metrics only,
 # behind view_intelligence_dashboards.
 app.include_router(

@@ -194,6 +194,34 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "team.\n\n"
         "Regards,\nReadyPick Verification",
     ),
+    # ── In-product support (2026-09-10) ─────────────────────────────────────
+    #
+    # workers/tasks.py `pickready.notify_support_message`, both directions.
+    #
+    # NEITHER TEMPLATE CARRIES THE MESSAGE BODY, and that is deliberate rather
+    # than an omission. The body is free text a human typed, it may quote
+    # something a customer pasted out of the product, and an email is the one
+    # copy of it this product cannot recall. The notification says a message
+    # arrived and where to read it; the reader signs in for the rest. It is
+    # also what keeps the candidate boundary structural: there is no
+    # substitution here that could carry candidate material even if somebody
+    # had pasted some into the thread.
+    "support_reply_to_customer": (
+        "ReadyPick has replied about: {{subject_line}}",
+        "Hello,\n\n"
+        "A member of the ReadyPick team has replied to your support "
+        "conversation, {{subject_line}}.\n\n"
+        "Read the reply and respond here:\n\n{{support_url}}\n\n"
+        "Regards,\nReadyPick Support",
+    ),
+    "support_message_for_staff": (
+        "{{company_name}} is waiting on a reply: {{subject_line}}",
+        "Hello,\n\n"
+        "{{company_name}} has written in about {{subject_line}} and the "
+        "conversation is waiting on a reply.\n\n"
+        "Open it here:\n\n{{support_url}}\n\n"
+        "Regards,\nReadyPick",
+    ),
 }
 
 
