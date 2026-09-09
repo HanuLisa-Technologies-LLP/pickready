@@ -567,6 +567,7 @@ async def _record_answer_evidence(
     # a single test file went red, because pytest happened to initialise the
     # other side first.
     from app.services.evidence import ledger
+    from app.services.evidence import negative as negative_evidence
     from app.services.miti import claims as claim_model
 
     session = state.get("session")
@@ -620,6 +621,20 @@ async def _record_answer_evidence(
                     },
                     freshness_payload=ledger.freshness(ref.answered_at),
                 )
+                # W6.6: WHICH SIDE of the claim this answer sits on, decided
+                # while the text is in hand. "I have not used Kafka" is a
+                # substantive answer (answer_classification has said so since
+                # 2026-08-05) AND it is counter-evidence, and until 2026-09-10
+                # it was filed as SUPPORT for the claim it explicitly denies.
+                # The detector is deterministic and conservative; its one
+                # consumer is the contradiction report that routes the report
+                # to a person, so a false positive costs a human one look and
+                # never a candidate a grade. Insufficient evidence is NOT
+                # negative evidence: a non-answer never reaches this loop and
+                # keeps costing confidence, not score, exactly as before.
+                disclaimed = negative_evidence.disclaimed_terms(
+                    ref.content, competency.name
+                )
                 if claim_id is None:
                     claim_id = await ledger.record_claim(
                         session,
@@ -642,8 +657,18 @@ async def _record_answer_evidence(
                     tenant_id=job.tenant_id,
                     claim_id=claim_id,
                     evidence_id=evidence_id,
-                    stance=ledger.STANCE_SUPPORTS,
+                    stance=(
+                        ledger.STANCE_CONTRADICTS
+                        if disclaimed
+                        else ledger.STANCE_SUPPORTS
+                    ),
                 )
+                if disclaimed:
+                    logger.info(
+                        "functional_assessment.negative_evidence link_id=%s "
+                        "competency_id=%s terms=%s",
+                        link.id, competency.id, disclaimed,
+                    )
     except Exception:  # noqa: BLE001 -- see the docstring
         logger.warning(
             "functional_assessment.evidence_not_recorded link_id=%s competency_id=%s",
