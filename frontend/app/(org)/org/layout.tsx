@@ -12,6 +12,7 @@ import {
   FileText,
   Gauge,
   LayoutDashboard,
+  LifeBuoy,
   MailCheck,
   Settings,
   ShieldCheck,
@@ -171,6 +172,16 @@ export default function OrgLayout({
     // sender stays in Settings, where managing the list belongs.
     hasCapability("authorize_email_senders")
       ? { href: "/org/senders", label: "Sender Authorization", icon: MailCheck }
+      : null,
+    // Support (2026-09-10). Gated on `open_support_threads`, which every
+    // customer role holds by default and a tenant Super Admin can revoke; the
+    // capability is in ALL_CAPABILITIES so /auth/me returns it and
+    // `hasCapability` can actually see it. That last part is not incidental:
+    // the Candidates entry above is deliberately ungated precisely because its
+    // capability is NOT in that list, and a nav item hidden by a stale
+    // client-side list is a page somebody is told does not exist.
+    hasCapability("open_support_threads")
+      ? { href: "/org/support", label: "Support", icon: LifeBuoy }
       : null,
     { href: "/org/settings", label: "Settings", icon: Settings },
   ].filter((item) => item !== null) as NavItem[];

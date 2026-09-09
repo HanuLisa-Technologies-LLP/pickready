@@ -1538,3 +1538,78 @@ export interface VideoDelivery {
   disposition: "inline" | "attachment";
   filename: string | null;
 }
+
+// ── In-product support (2026-09-10) ─────────────────────────────────────────
+//
+// Two audiences, one conversation. `SupportThread` is what a customer sees of
+// their own thread; `ProviderSupportThread` adds the fact ReadyPick staff need
+// and the customer already knows, which is WHOSE thread it is.
+//
+// The status names WHO OWES THE NEXT MOVE, which is the only thing a support
+// queue is ever sorted by. "awaiting_customer" rather than "pending" so a
+// reader cannot get the direction backwards.
+
+export type SupportThreadStatus = "open" | "awaiting_customer" | "resolved";
+
+export type SupportMessageSide = "customer" | "staff";
+
+export interface SupportMessage {
+  id: string;
+  /** Stored at write time, never re-derived from the author's current role. */
+  author_side: SupportMessageSide;
+  /** Null once the author's account is gone. Rendered as an absence, never as
+   *  "Deleted user", which is a claim about what happened to them. */
+  author_name: string | null;
+  body: string;
+  created_at: string;
+}
+
+export interface SupportThread {
+  id: string;
+  subject: string;
+  status: SupportThreadStatus;
+  created_at: string;
+  last_message_at: string;
+  /** Operational: about a queue, never about a person. */
+  message_count: number;
+}
+
+export interface SupportThreadDetail extends SupportThread {
+  messages: SupportMessage[];
+}
+
+export interface ProviderSupportThread extends SupportThread {
+  tenant_id: string;
+  tenant_name: string;
+  /** The first staff member who replied. Claimed by replying; there is no
+   *  separate claim action. */
+  assigned_to: string | null;
+  assigned_to_name: string | null;
+}
+
+export interface ProviderSupportThreadDetail extends ProviderSupportThread {
+  messages: SupportMessage[];
+}
+
+export interface SupportThreadPage {
+  items: SupportThread[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+}
+
+export interface ProviderSupportThreadPage {
+  items: ProviderSupportThread[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+  /** Threads waiting on ReadyPick across every customer, UNNARROWED by the
+   *  page filters: it answers how much is owed, not how much is on screen. */
+  open_total: number;
+}

@@ -217,6 +217,12 @@ ALL_CAPABILITIES = [
     VIEW_INTELLIGENCE_DASHBOARDS,
     # RPN-AI-UP-001 W3.6, appended for the same reason.
     REVOKE_AGENT_LEARNINGS,
+    # In-product support (2026-09-10). APPENDED, same rule again: the response
+    # field order must not shuffle. Only the customer-side one is listed here.
+    # HANDLE_SUPPORT_THREADS is a PLATFORM capability and this list is what
+    # /auth/me returns to a customer's browser, so a platform-only name here
+    # would advertise a surface no customer can reach.
+    OPEN_SUPPORT_THREADS,
 ]
 
 # Flattened staff model (PRD v1.0 §4, FINAL — 2026-07-24). HR Manager,

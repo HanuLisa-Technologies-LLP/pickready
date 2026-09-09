@@ -23,7 +23,14 @@
 // be able to see which customer is on which plan and who is out of credits;
 // it writes nothing, in keeping with read-only-by-absence.
 
-import { Building2, Briefcase, CreditCard, Settings, Tags } from "lucide-react";
+import {
+  Building2,
+  Briefcase,
+  CreditCard,
+  LifeBuoy,
+  Settings,
+  Tags,
+} from "lucide-react";
 
 import { AppShell } from "@/components/app-shell";
 
@@ -52,6 +59,12 @@ export default function AdminLayout({
         // design; the customer's portal shows a read-only badge and nothing
         // else.
         { href: "/admin/classification", label: "Classification", icon: Tags },
+        // Support (2026-09-10). The queue of customer conversations across
+        // every tenant, which replaced a third-party sync deleted by owner
+        // decision. It belongs in this nav for the same reason Billing does:
+        // the Provider's job here is managing CUSTOMERS, and a customer
+        // waiting on a reply is customer management.
+        { href: "/admin/support", label: "Support", icon: LifeBuoy },
         { href: "/admin/settings", label: "Settings", icon: Settings },
       ]}
     >
