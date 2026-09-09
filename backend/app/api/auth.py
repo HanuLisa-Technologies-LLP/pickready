@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 
 import jwt as pyjwt
+from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, or_, select
 from fastapi.responses import JSONResponse
@@ -194,7 +195,14 @@ async def firebase_session(
     Every failure is a clean 401/403/409/422 — never a 500.
     """
     settings = get_settings()
-    identity = firebase_auth.verify_id_token(body.id_token)
+    # `firebase_admin`'s client is SYNCHRONOUS and `check_revoked=True`
+    # forces a network round trip to the Firebase Admin API on every
+    # verification, so calling it directly blocked the event loop for the
+    # whole trip, on the busiest path in the product. Every other blocking
+    # vendor call in this tree is already offloaded (document_storage,
+    # ses_service, email_senders/eligibility); this was the one that was
+    # missed. `HTTPException` propagates out of the threadpool unchanged.
+    identity = await run_in_threadpool(firebase_auth.verify_id_token, body.id_token)
 
     # ── Owner invariant (claude.md rule 2 + services/owner.py) ──────────────
     # The platform-owner email resolves ONLY to the seeded super_admin. It is

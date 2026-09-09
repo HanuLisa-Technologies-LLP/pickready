@@ -32,6 +32,11 @@ PLATFORM_TIMEZONE = "Asia/Kolkata"
 #: the Terraform default by `tests/test_placeholder_secret.py`.
 PLACEHOLDER_SECRET = "PLACEHOLDER_NOT_CONFIGURED"
 
+#: The development JWT signing key. A module constant rather than a field, so a
+#: production guard can refuse it BY IDENTITY rather than guessing at length or
+#: entropy -- and so the default and the thing that rejects it cannot drift.
+DEV_JWT_SECRET = "dev-only-secret-change-me"
+
 from functools import lru_cache
 
 from pydantic import model_validator
@@ -48,8 +53,31 @@ class Settings(BaseSettings):
     # Connection pool (app/core/db.get_engine). The SQLAlchemy defaults (5 + 10)
     # are small enough that a few concurrent tabs queue for a connection and
     # every request in the queue reads as "slow".
-    db_pool_size: int = 20
-    db_max_overflow: int = 10
+    #
+    # THE CEILING IS THE DATABASE'S, AND THE AUTOSCALER COULD EXCEED IT.
+    # ------------------------------------------------------------------
+    # `db.t4g.micro` has 1 GiB, and RDS derives `max_connections` as
+    # LEAST(DBInstanceClassMemory/9531392, 5000), which is about 112, of which
+    # three are reserved for the superuser: roughly 109 usable.
+    #
+    # At 20 + 10 the previous values, four API tasks alone want 120. The ECS
+    # target-tracking policy scales to `local.service_count * 2` = 4 on CPU, so
+    # the failure was reachable BY LOAD: the autoscaler's response to traffic
+    # was what took the database out. And it does not fail as a pool timeout
+    # that sheds one request -- Postgres answers `FATAL: sorry, too many
+    # connections`, `/health` probes the database too, all four tasks leave the
+    # target group, and the product is fully down.
+    #
+    # 12 + 3 gives 4 x 15 = 60 at the autoscaler's own maximum, leaving room
+    # for the Lambda workers (one engine each, account concurrency 10) and the
+    # on-demand Fargate agents, which are unbounded and take one engine each.
+    #
+    # These are the numbers for THIS instance class. Moving to a larger one is
+    # the other half of the trade and raises them; the rule is that the product
+    # of tasks and (pool_size + max_overflow) stays under the usable ceiling
+    # with headroom for the workers, not that these two integers are sacred.
+    db_pool_size: int = 12
+    db_max_overflow: int = 3
     db_pool_timeout_seconds: int = 30
     db_pool_recycle_seconds: int = 1800
 
@@ -78,7 +106,8 @@ class Settings(BaseSettings):
     agent_invoke_read_timeout_seconds: int = 660
 
     # Auth
-    jwt_secret: str = "dev-only-secret-change-me"
+    #: Refused in production by `_refuse_an_unconfigured_jwt_secret`.
+    jwt_secret: str = DEV_JWT_SECRET
     jwt_access_ttl_minutes: int = 15
     jwt_refresh_ttl_days: int = 7
     firebase_service_account_json: str = ""
@@ -573,6 +602,41 @@ class Settings(BaseSettings):
 
     # App
     environment: str = "development"
+
+    @model_validator(mode="after")
+    def _refuse_an_unconfigured_jwt_secret(self) -> "Settings":
+        """In production, refuse to boot without a real signing key.
+
+        ONE SECRET KEYS EVERYTHING, which is what makes this worth a boot
+        refusal rather than a warning. `jwt_secret` signs the portal session
+        cookies, the OTP hashes, the outreach links, the assessment invite
+        tokens and the signed resume URLs. A known value lets anyone mint
+        `{"aud": "pickready:owner", "role": "super_admin"}` and reach
+        `get_superadmin_db`, which is the RLS bypass scope. That is total
+        platform compromise from a default string.
+
+        AND IT COULD ARRIVE EMPTY. `_drop_placeholder_secrets` below rewrites
+        `PLACEHOLDER_NOT_CONFIGURED` to "", and PyJWT signs HS256 with an empty
+        key without complaint -- so an unprovisioned secret does not fail, it
+        silently signs. That is the exact shape of the 2026-09-06 Firebase
+        incident, where a secret CONTAINER was mistaken for a configured
+        secret, on the one credential whose blast radius is everything.
+
+        Ordered BEFORE the placeholder rewrite so the refusal can name which of
+        the two states it found. Development and test are unaffected: the
+        default is what lets a fresh clone run.
+        """
+        if (self.environment or "").strip().lower() != "production":
+            return self
+        value = (self.jwt_secret or "").strip()
+        if not value or value == PLACEHOLDER_SECRET or value == DEV_JWT_SECRET:
+            raise ValueError(
+                "JWT_SECRET is not configured in production. It signs the "
+                "session cookies, the OTP hashes and every signed link, so a "
+                "default or empty value is a full platform compromise. Set it "
+                "in Secrets Manager and redeploy."
+            )
+        return self
 
     @model_validator(mode="after")
     def _drop_placeholder_secrets(self) -> "Settings":

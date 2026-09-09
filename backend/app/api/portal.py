@@ -10,6 +10,7 @@ from typing import AsyncIterator
 
 from fastapi import Query, APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
+from sqlalchemy.orm import defer
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -420,10 +421,50 @@ async def portal_jobs(
     scored — every non-archived link on a job still enters the scoring pool.
     """
     candidate = await _candidate_for_user(session, user)
+    # ── The SQL pre-filter is a strict SUPERSET of `can_view_job` ────────────
+    #
+    # This query used to be `WHERE ratified_at IS NOT NULL` with no window
+    # predicate, no ceiling and no column projection: every ratified job on the
+    # platform, fully hydrated, including `embedding` and `reach_embedding`.
+    # Those are `vector(1024)`, about 4KB each and out-of-line, so the ORM
+    # detoasted roughly 8KB per job on every board open for a page that renders
+    # a title and a company name. At ten thousand live jobs that is tens of
+    # megabytes per request; the API task runs out of memory before the
+    # database notices.
+    #
+    # THE WINDOW RULE IS STILL THE AUTHORITY, and it still runs below, before
+    # search and before relevance, for the reason the comment there gives. What
+    # goes into SQL is only what `can_view_job` NECESSARILY requires, so the
+    # filter cannot exclude a job the rule would have admitted:
+    #
+    #   * `closed_at IS NULL` -- a closed job is STATUS_CLOSED, which dominates
+    #     the four date-derived states and is never ACTIVE or GRACE.
+    #   * `grace_period_end_date >= now()` -- ACTIVE needs the posting window
+    #     open and GRACE needs the grace window open; the grace end is the
+    #     later of the two, so it is implied by both.
+    #   * `posting_end_date >= candidate.created_at` -- `candidate_registered_
+    #     in_time` refuses a candidate who registered after the active window
+    #     closed, whatever the status.
+    #
+    # A job the SQL admits may still be refused by `can_view_job`. That is the
+    # safe direction and the only one that keeps one implementation of the rule.
+    now = datetime.now(timezone.utc)
     jobs = list(
         (
             await session.execute(
-                select(Job).where(Job.ratified_at.isnot(None))
+                select(Job)
+                .where(
+                    Job.ratified_at.isnot(None),
+                    Job.closed_at.is_(None),
+                    Job.grace_period_end_date >= now,
+                    Job.posting_end_date >= candidate.created_at,
+                )
+                .options(
+                    # Never rendered by this endpoint, and the reason the
+                    # payload was enormous.
+                    defer(Job.embedding),
+                    defer(Job.reach_embedding),
+                )
                 .order_by(Job.created_at.desc())
             )
         ).scalars().all()

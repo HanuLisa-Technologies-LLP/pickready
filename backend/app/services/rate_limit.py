@@ -70,20 +70,33 @@ def client_identifier(request: Request) -> str:
     account abusing an endpoint should not be able to escape by changing
     networks.
 
-    Anonymous callers fall back to the client address. Behind the ALB the real
-    address is the first entry of `X-Forwarded-For`; the socket address is the
-    load balancer and would put every visitor in one bucket. Only the FIRST
-    entry is trusted, because the rest of that header is caller-supplied and a
-    limiter that reads it is a limiter anyone can evade.
+    Anonymous callers fall back to the client address, because the socket
+    address is the load balancer and would put every visitor in one bucket.
+
+    THE LAST ENTRY, NOT THE FIRST, AND THE DIRECTION IS THE WHOLE CONTROL.
+    ---------------------------------------------------------------------
+    This read the FIRST entry, with a docstring arguing that the rest of the
+    header is caller-supplied. That is true and it is backwards. An AWS ALB
+    APPENDS the address it observed to whatever `X-Forwarded-For` arrived, so
+    the first entry is precisely the attacker-supplied part and the last is the
+    one the load balancer saw. Reading the first meant
+    `X-Forwarded-For: <random>` on every request bought a fresh bucket, and
+    every limit in the product was one header away from unlimited.
+
+    There is no backstop behind this: the WAF module is instantiated disabled,
+    and the per-user branch above reads `request.state.rate_limit_subject`,
+    which nothing currently sets.
     """
     token_subject = getattr(request.state, "rate_limit_subject", None)
     if token_subject:
         return f"user:{token_subject}"
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return f"ip:{first}"
+        # The LAST entry: what this deployment's own load balancer observed.
+        # Everything to its left arrived from outside and is caller-controlled.
+        observed = forwarded.split(",")[-1].strip()
+        if observed:
+            return f"ip:{observed}"
     client = request.client
     return f"ip:{client.host}" if client else "ip:unknown"
 

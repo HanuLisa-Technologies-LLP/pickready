@@ -54,7 +54,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.services.embeddings import EmbeddingError, embed
+from app.services.embeddings import EmbeddingError, embed_query
 from app.services.rag import chunking, reranker
 
 logger = logging.getLogger(__name__)
@@ -210,7 +210,14 @@ async def _semantic(
     session: AsyncSession, query: str, where: str, params: dict[str, object], depth: int
 ) -> list[uuid.UUID]:
     try:
-        vectors = await embed([query])
+        # `embed_query`, NOT `embed`. The Voyage models are asymmetric: a query
+        # and a document are embedded with different input types, and `embed`
+        # defaults to DOCUMENT. That function was split out for exactly this
+        # call site, and its docstring says why -- "the document/query
+        # distinction is easy to forget and its failure mode is invisible:
+        # retrieval keeps working and simply gets worse". It was forgotten
+        # here, which is the one place it mattered.
+        query_vector = await embed_query(query)
     except EmbeddingError as exc:
         # Degraded, not failed. The keyword half still answers, and an agent
         # getting lexical-only context is enormously better than one getting
@@ -228,7 +235,7 @@ async def _semantic(
              LIMIT :depth
             """
         ),
-        {**params, "query_vector": _vector_literal(vectors[0]), "depth": depth},
+        {**params, "query_vector": _vector_literal(query_vector), "depth": depth},
     )
     return [row.id for row in rows]
 
