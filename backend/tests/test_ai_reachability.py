@@ -89,6 +89,12 @@ LIVE: dict[str, str] = {
     "app.services.proctoring": "api/proctoring.py and the assessment gate",
     "app.services.assessment_formats": "the six question formats on the live turn",
     "app.services.projects": "Project Evidence Intelligence, api and worker",
+    "app.services.rag": (
+        "RPN-AI-UP-001 W2, wired 2026-09-09. workers/tasks.py registers "
+        "pickready.index_document and pickready.reconcile_context_index, which "
+        "call rag.sources.load and rag.index.index_document. Before that the "
+        "package was importable from a route and had never executed once."
+    ),
 }
 
 #: Packages with NO route into them at all. Each entry is a claim about the
@@ -132,13 +138,6 @@ NOT_LIVE: dict[str, str] = {
 #: import graph. `ENTRY_POINTS_WITHOUT_CALLERS` below is the sharp version of
 #: the same claim, and it is the one W2 has to change.
 IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {
-    "app.services.rag": (
-        "RPN-AI-UP-001 W2. Reachable only because tools.implementations "
-        "defines a handler over it. `index_document` has no caller, so the "
-        "index is never written, and retrieval over an empty table returns "
-        "nothing SILENTLY: the lexical retriever ORs its terms and fusion "
-        "tolerates an empty list."
-    ),
     "app.services.tools": (
         "RPN-AI-UP-001 W3. Reachable only because rbac reads the agent "
         "constants. The capability check runs before the handler, which is the "
@@ -146,19 +145,38 @@ IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {
     ),
 }
 
-#: The behavioural half, and the honest form of the W2 finding: a function that
-#: is the ONLY writer of a table, and has no caller. `(module, function)` ->
-#: the reason it currently has none.
+#: The behavioural half: a function that is the ONLY writer of a table and has
+#: no caller. `(module, function)` -> the reason it currently has none.
 #:
 #: This is what "a timestamp is not evidence that work happened" looks like as
 #: a source-level check. An import proves a name resolves; a call site proves
 #: somebody meant it to run.
-ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
+#:
+#: `rag.index.index_document` WAS the only entry here, and W2 removed it by
+#: giving it a caller. The dict is kept, empty, because the check below is the
+#: shape the next dead entry point needs and rebuilding it would cost more than
+#: the lines it occupies.
+ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {}
+
+#: The positive form of what W2 established, and the regression it guards.
+#: `(module, function)` -> where the call must come from.
+#:
+#: Asserting the caller EXISTS is strictly stronger than asserting the package
+#: is importable, and it is the assertion that would have caught the original
+#: defect: `services/rag` was importable from `api/admin` for its whole life
+#: while `context_chunks` stayed empty in every environment.
+REQUIRED_CALLERS: dict[tuple[str, str], str] = {
     ("app/services/rag/index.py", "index_document"): (
-        "RPN-AI-UP-001 W2.1. The only writer of `context_chunks`. Until "
-        "`pickready.index_document` dispatches it from resume parse, project "
-        "evidence, JD publish and transcript completion, the retrieval index "
-        "is empty and every retrieval is a silent no-op."
+        "app/workers/tasks.py, from pickready.index_document. Without a caller "
+        "the index is never written, and retrieval over an empty table returns "
+        "nothing SILENTLY: the lexical retriever ORs its terms and fusion "
+        "tolerates an empty list, so it looks like a query with no good match."
+    ),
+    ("app/services/rag/sources.py", "pending"): (
+        "app/workers/tasks.py, from pickready.reconcile_context_index. This is "
+        "the sweep that asks the TABLE which documents have no chunks. Without "
+        "it, a dispatch that never arrived leaves a resume invisible to "
+        "retrieval forever, because nothing would ever ask again."
     ),
 }
 
@@ -322,27 +340,20 @@ def test_a_package_recorded_as_importable_but_unexercised_is_still_importable(
     )
 
 
-@pytest.mark.parametrize(
-    "target", sorted(ENTRY_POINTS_WITHOUT_CALLERS), ids=lambda t: f"{t[1]}"
-)
-def test_a_function_recorded_as_uncalled_still_has_no_caller(
-    target: tuple[str, str]
-) -> None:
-    """The behavioural check, and the one W2 is required to break.
+def _callers_of(relative: str, function: str) -> list[str]:
+    """Every CALL site of `function` outside the package that defines it.
 
-    Counts CALL sites, not imports and not re-exports: `rag/__init__.py` names
-    `index_document` in its `__all__` and that is not somebody running it.
-    When W2 adds `pickready.index_document`, this test fails, and the fix is to
-    delete the entry -- which is how the finding cannot outlive the defect."""
-    relative, function = target
-    callers: list[str] = []
+    Calls, not imports and not re-exports: `rag/__init__.py` names
+    `index_document` in its `__all__`, and that is not somebody running it.
+
+    Calls from inside the owning package are excluded too. A subsystem calling
+    its own function proves the subsystem is internally consistent, which is
+    not the question. The question is whether anything OUTSIDE it ever runs.
+    """
     owning_dir = pathlib.Path(relative).parent.as_posix()
+    callers: list[str] = []
     for module, path in _source_files().items():
-        rel = path.relative_to(BACKEND).as_posix()
-        # A function calling itself, or its own package calling it, is not a
-        # caller in the sense that matters: the question is whether anything
-        # OUTSIDE the subsystem ever runs it.
-        if rel.startswith(owning_dir):
+        if path.relative_to(BACKEND).as_posix().startswith(owning_dir):
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
@@ -358,12 +369,47 @@ def test_a_function_recorded_as_uncalled_still_has_no_caller(
             )
             if name == function:
                 callers.append(f"{module}:{node.lineno}")
+    return callers
+
+
+@pytest.mark.parametrize(
+    "target", sorted(ENTRY_POINTS_WITHOUT_CALLERS), ids=lambda t: f"{t[1]}"
+)
+def test_a_function_recorded_as_uncalled_still_has_no_caller(
+    target: tuple[str, str],
+) -> None:
+    """A recorded dead entry point has not quietly been wired.
+
+    The mirror of the test below. It is what forced this file to be updated
+    when W2 gave `index_document` its first caller: a finding must not outlive
+    the defect it describes."""
+    callers = _callers_of(*target)
     assert not callers, (
-        f"{relative}::{function} now HAS callers: {callers}\n"
+        f"{target[0]}::{target[1]} now HAS callers: {callers}\n"
         f"It was recorded as uncalled because: {ENTRY_POINTS_WITHOUT_CALLERS[target]}\n"
-        "If this is the workstream that wires it, delete the entry from "
-        "ENTRY_POINTS_WITHOUT_CALLERS and assert the new behaviour instead. A "
-        "finding must not outlive the defect it describes."
+        "If this is the workstream that wires it, move the entry to "
+        "REQUIRED_CALLERS and assert the new behaviour instead."
+    )
+
+
+@pytest.mark.parametrize("target", sorted(REQUIRED_CALLERS), ids=lambda t: f"{t[1]}")
+def test_a_function_that_must_be_called_still_is(target: tuple[str, str]) -> None:
+    """The regression guard for everything W2 wired.
+
+    Strictly stronger than "the package is importable", and it is the check
+    that would have caught the original defect years earlier: `services/rag`
+    was importable from `api/admin` the whole time `context_chunks` sat empty
+    in every environment.
+
+    It deliberately does not assert WHICH module calls it -- moving a call from
+    `tasks.py` to a new module is a refactor, not a regression. What must not
+    happen is the call disappearing."""
+    callers = _callers_of(*target)
+    assert callers, (
+        f"{target[0]}::{target[1]} has NO caller outside its own package.\n"
+        f"It must be called from: {REQUIRED_CALLERS[target]}\n"
+        "A function with no caller does not fail, it does nothing, and the "
+        "table it was supposed to write stays empty while every test passes."
     )
 
 

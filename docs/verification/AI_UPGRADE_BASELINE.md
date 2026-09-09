@@ -195,7 +195,19 @@ RPN-AI-UP-001 section 2.3 records. No registered task name begins
 
 Produced by `./scripts/pilot-baseline.sh pilot`, which runs
 `python -m app.scripts.ai_baseline` as a one-shot ECS task on the `migrate`
-task definition. Task `134e067c67964e61aaea7b31dcf5142a`, exit 0.
+task definition.
+
+Measured twice. The first run, task `134e067c67964e61aaea7b31dcf5142a`, was an
+inline `python -c` against the image then deployed (`sha-9dd2d95958d2`); see
+3.1 for what it got wrong. The numbers below are the **second** run, task
+`c9a4770204e3454d8ca627ca5b4545ff`, exit 0, executed by the checked-in module
+from the deployed image `sha-efa7a5cbdd6d`
+(`sha256:fd30c9116c44840e6008bd7a77193ba63d37b9b0d273d936d68b5139eca0d940`),
+with every probe returning a value and none reporting an error.
+
+That second run is also W0's production verification: it proves the module is
+in the image the API is running, and that the script works end to end against
+the real database rather than against a local stack.
 
 | Probe | Value |
 |---|---|
@@ -204,7 +216,9 @@ task definition. Task `134e067c67964e61aaea7b31dcf5142a`, exit 0.
 | `pgvector_version` | **`0.8.1`** |
 | `tenants_total` | 3 |
 | `tenants_active` | 3 |
+| `tenants_demo` | **3** |
 | `jobs_total` | 30 |
+| `jobs_published` | 30 |
 | `jobs_with_embedding` | **0** |
 | `candidates_total` | 0 |
 | `profiles_total` | **0** |
@@ -212,11 +226,39 @@ task definition. Task `134e067c67964e61aaea7b31dcf5142a`, exit 0.
 | `applications_total` | **0** |
 | `context_chunks_total` | **0** |
 | `context_chunks_sources` | **0** |
+| `context_chunks_embedded` | **0** |
 | `reports_total` | **0** |
 | `evaluations_total` | **0** |
 | `evidence_items_total` | **0** |
+| `evidence_claims_total` | **0** |
 | `agent_traces_total` | **0** |
 | `agent_learnings_total` | **0** |
+| `job_competencies_total` | **0** |
+| `scorecard_bindings_total` | **0** |
+
+Two of those rows are findings in their own right and were not visible in the
+first measurement.
+
+**`tenants_demo: 3` of `tenants_total: 3`.** Every tenant in the only deployed
+environment is a demonstration tenant. `has_credit_headroom` checks the demo
+flag before summing the balance, so no credit gate in this environment has ever
+refused anything. There is no paying customer here to regress.
+
+**`job_competencies_total: 0` and `scorecard_bindings_total: 0`.** Not one of
+the 30 published jobs has a frozen Tatva matrix. That is decisive for W1's
+acceptance criterion, and it is the 2026-08-06 defect's exact shape seen from
+the other side: `miti.live.evaluate_application` runs gate G1,
+`require_frozen_matrix` refuses a job with no approved frozen matrix, and
+Runbook 14.1 states the consequence as "scoring blocked entirely".
+`functional_assessment.synthesis_node` deliberately lets that raise rather than
+falling back to the job's competency rows, because a fallback would be a second
+implementation of the criteria chosen at runtime.
+
+**So an assessment started against any job in pilot today would raise
+`ScorecardUnavailable`, correctly, and produce no report.** The Part A stack
+being wired is necessary and not sufficient: proving it end to end requires a
+job that has been through Bodha's SWOT and Sutra's seven stages first. That is
+a prerequisite of W1's demonstration, not a defect in W1.
 
 **pgvector 0.8.1 settles W2.3 by measurement rather than by inference from the
 RDS release notes.** `hnsw.iterative_scan` requires 0.8.0 or later, so the

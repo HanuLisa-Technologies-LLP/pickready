@@ -1383,6 +1383,15 @@ module "scheduler" {
       task            = "pickready.purge_proctoring_events"
       rate_expression = "rate(60 minutes)"
     }
+    # RPN-AI-UP-001 W2.2. The Terraform half of the entry in
+    # app/workers/schedule.py. tests/test_schedule_parity.py fails on drift,
+    # because an entry in Python with no rule here is the SILENT half: a sweep
+    # does nothing when there is nothing to repair, so "not running" and
+    # "nothing to do" produce the same empty log.
+    "readypick-reconcile-context-index" = {
+      task            = "pickready.reconcile_context_index"
+      rate_expression = "rate(60 minutes)"
+    }
   }
 
   tags = local.tags

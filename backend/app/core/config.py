@@ -502,6 +502,41 @@ class Settings(BaseSettings):
     #: decision: no private-repository OAuth or token intake exists.
     github_api_token: str = ""
 
+    # ── Retrieval, RPN-AI-UP-001 W2 ─────────────────────────────────────────
+    #
+    # FILTERED ANN RECALL IS THE DANGEROUS ONE, AND IT FAILS SILENTLY.
+    #
+    # An HNSW scan returns its top K by vector distance and the tenant
+    # predicate filters AFTERWARDS. In a multi-tenant table the scan can
+    # traverse mostly other tenants' vectors and return almost nothing for the
+    # calling tenant. It does not error. It returns a short list that reads as
+    # a legitimately sparse result, and recall degrades as tenant count grows
+    # -- worst for the smallest tenants, which are the newest customers.
+    #
+    # `hnsw.iterative_scan` makes the index keep pulling candidates until
+    # enough rows pass the predicate. `strict_order` additionally guarantees
+    # exact distance ordering, which matters here because RRF fusion reads
+    # ORDER and nothing else: a relaxed order would corrupt the one signal
+    # fusion consumes.
+    #
+    # Requires pgvector 0.8.0 or later. Measured 0.8.1 on the pilot cluster and
+    # 0.8.5 on the test image (2026-09-09), so it is available on both. It is a
+    # SETTING rather than a literal so an environment on an older pgvector can
+    # turn it off explicitly, and `off` is then a recorded deployment decision
+    # rather than a silent fallback.
+    #: `strict_order` | `relaxed_order` | `off`.
+    retrieval_hnsw_iterative_scan: str = "strict_order"
+    #: Bounds a runaway iterative scan. Without a ceiling, a query for a tenant
+    #: with no matching rows scans the whole index before returning empty.
+    retrieval_hnsw_max_scan_tuples: int = 20_000
+    #: Candidates the HNSW layer considers per query. pgvector's default is 40,
+    #: which is below the depth the fusion stage asks for.
+    retrieval_hnsw_ef_search: int = 100
+    #: How many documents one `reconcile_context_index` pass repairs. The sweep
+    #: dispatches one indexing task per document, so this bounds the fan-out of
+    #: a single hourly run rather than the work itself.
+    retrieval_index_sweep_batch: int = 200
+
     # Payments  -  Razorpay Subscriptions. The Key ID is public (Checkout needs it
     # in the browser and reads it from GET /billing/config); the Key Secret and
     # the webhook secret are server-side only and never reach a response body,

@@ -118,6 +118,19 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "which is the platform's current posture."
         ),
     ),
+    ScheduledTask(
+        rule="readypick-reconcile-context-index",
+        task="pickready.reconcile_context_index",
+        interval_minutes=60,
+        why=(
+            "Finds documents that have text and no chunk rows, and indexes "
+            "them. Asks the TABLE with a NOT EXISTS, never a timestamp. It "
+            "covers the one failure the call sites cannot: a dispatch that "
+            "never arrived leaves no trace, and an unindexed resume is "
+            "invisible to retrieval forever because nothing would ever ask "
+            "again."
+        ),
+    ),
 )
 
 RULE_NAMES: tuple[str, ...] = tuple(entry.rule for entry in SCHEDULE)

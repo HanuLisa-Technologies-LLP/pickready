@@ -2682,6 +2682,17 @@ async def respond(
             job_candidate_link_id=link.id,
         )
         dispatch("pickready.run_functional_assessment", args=[str(link.id)])
+        # The transcript is final now, so it becomes retrievable evidence
+        # (RPN-AI-UP-001 W2.1). Keyed on the LINK, like the recruiter
+        # transcript route, because the transcript outlives any one
+        # conversation row and every consumer of assessment evidence already
+        # holds a link id.
+        #
+        # AFTER completion and never per turn: a live conversation grows
+        # between two reads by design, so indexing mid-assessment would put
+        # half a transcript in the index and re-embed it on every answer. Same
+        # rule that keeps `extract_assessment` uncached.
+        dispatch("pickready.index_document", args=["assessment", str(link.id)])
     await session.flush()
     next_index = conversation.next_question_index
 

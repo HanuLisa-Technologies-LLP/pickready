@@ -48,6 +48,7 @@ from typing import Callable, Sequence
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.services.embeddings import EmbeddingError, embed
 from app.services.rag import chunking
 
@@ -142,6 +143,64 @@ def _filters(
     return (" AND " + " AND ".join(clauses) if clauses else ""), params
 
 
+#: The values pgvector accepts for `hnsw.iterative_scan`. An allowlist rather
+#: than interpolation of whatever the environment says, because `SET LOCAL`
+#: takes no bind parameters: the only safe input is a member of a closed set.
+_ITERATIVE_SCAN_MODES = frozenset({"off", "relaxed_order", "strict_order"})
+
+
+async def _apply_scan_settings(session: AsyncSession) -> None:
+    """Make the ANN scan keep looking until the tenant predicate is satisfied.
+
+    THE FAILURE THIS PREVENTS DOES NOT RAISE, WHICH IS WHY IT NEEDS A FIX
+    RATHER THAN A TEST.
+
+    Every query below runs under the RLS policy, so `tenant_id =
+    current_setting('app.tenant_id')` is an implicit predicate on top of the
+    explicit `where`. An HNSW scan collects its top `depth` rows by distance
+    FIRST and the predicate filters SECOND, so in a table holding many tenants
+    the scan can walk mostly other tenants' vectors and hand back three rows
+    where forty were asked for. Nothing errors. The caller sees a short list,
+    indistinguishable from a tenant that genuinely has little indexed, and the
+    effect worsens as the table grows -- worst for the smallest and newest
+    tenants, which is the opposite of the direction a defect should degrade in.
+
+    `iterative_scan` makes the index keep pulling candidates until enough rows
+    survive the predicate, bounded by `max_scan_tuples` so a tenant with no
+    matching rows cannot walk the whole index.
+
+    `strict_order` rather than `relaxed_order` is not a default chosen for
+    safety's sake: `fuse()` reads RANK ORDER and nothing else, deliberately,
+    because a cosine distance and a `ts_rank` are not on the same scale.
+    Relaxed ordering would corrupt the one signal fusion consumes, and it would
+    surface as a ranking-quality complaint rather than as a configuration bug.
+
+    This costs one round trip, on the semantic path only. Putting it in
+    `tenant_scope` would charge every request in the product for a guarantee
+    only vector queries need.
+    """
+    settings = get_settings()
+    mode = (settings.retrieval_hnsw_iterative_scan or "").strip().lower()
+    if mode not in _ITERATIVE_SCAN_MODES:
+        # Not a silent fallback. The value came from deployment configuration,
+        # a wrong one is an operator error, and continuing on pgvector's
+        # default would leave recall quietly degraded with nothing recording
+        # that a choice had been made for the operator.
+        raise ValueError(
+            "retrieval_hnsw_iterative_scan must be one of "
+            f"{sorted(_ITERATIVE_SCAN_MODES)}, not "
+            f"{settings.retrieval_hnsw_iterative_scan!r}"
+        )
+    max_scan = int(settings.retrieval_hnsw_max_scan_tuples)
+    ef_search = int(settings.retrieval_hnsw_ef_search)
+    # SET LOCAL, so it reverts at COMMIT and cannot leak onto the next
+    # transaction that borrows this pooled connection. The interpolated values
+    # are an allowlist member and two ints; no caller input reaches the string.
+    await session.execute(text(f"SET LOCAL hnsw.iterative_scan = {mode}"))
+    await session.execute(text(f"SET LOCAL hnsw.max_scan_tuples = {max_scan:d}"))
+    await session.execute(text(f"SET LOCAL hnsw.ef_search = {ef_search:d}"))
+
+
 async def _semantic(
     session: AsyncSession, query: str, where: str, params: dict[str, object], depth: int
 ) -> list[uuid.UUID]:
@@ -154,6 +213,7 @@ async def _semantic(
         logger.warning("rag.retrieval.embedding_unavailable err=%s", type(exc).__name__)
         return []
 
+    await _apply_scan_settings(session)
     rows = await session.execute(
         text(
             f"""

@@ -676,6 +676,12 @@ async def publish_job(
         },
     )
     dispatch("pickready.run_matching", args=[str(job.id)])
+    # The JD is public and final at this point, so it becomes retrievable
+    # (RPN-AI-UP-001 W2.1). At publish rather than at draft save: a draft is
+    # edited repeatedly, and indexing every intermediate state would re-embed a
+    # document nobody can apply to yet. `index_document` is incremental by
+    # content hash, so a later edit re-embeds only the paragraphs that moved.
+    dispatch("pickready.index_document", args=["jd", str(job.id)])
 
     out = PublishJobOut.model_validate(job)
     out.jd_markdown = jd_markdown_for(job) or None
