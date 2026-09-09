@@ -87,6 +87,26 @@ variable "functions" {
     run_task_role_arns            = optional(list(string), [])
     run_task_cluster_arn          = optional(string, null)
     run_task_task_definition_arns = optional(list(string), [])
+    #: Grants lambda:InvokeFunction on exactly these functions, named by their
+    #: KEY in this same map rather than by ARN.
+    #
+    # A KEY, NOT AN ARN, AND THAT IS THE WHOLE DESIGN. The ARN is built from
+    # `local.function_names`, a pure local over the keys of this variable.
+    # Taking an ARN as input would mean an environment writing
+    # `module.lambda.function_arns["task-worker"]` into `module.lambda`'s own
+    # input, which is a cycle; and a `for_each` keyed on an ARN cannot be
+    # planned, which is the trade the `ecs` module already makes.
+    #
+    # WHY IT EXISTS. A Route.LAMBDA task that DISPATCHES another Route.LAMBDA
+    # task is a Lambda invoking a Lambda, and `readypick-task-worker` invokes
+    # ITSELF: one function serves every short task. Nothing needed this until
+    # `pickready.reconcile_context_index` had to queue one
+    # `pickready.index_document` per unindexed document. Every earlier sweep
+    # dispatched to Route.ECS, which goes through the `ecs:RunTask` grant above
+    # and is a different permission entirely, so the gap stayed invisible until
+    # a sweep fanned out to its own function and production answered
+    # AccessDeniedException.
+    invokable_function_keys = optional(list(string), [])
   }))
 
   validation {

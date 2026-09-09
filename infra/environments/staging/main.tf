@@ -709,6 +709,14 @@ module "lambda" {
       description          = "Every short background task: delivery, resume parsing, the reconciliation sweeps."
       image_uri            = "${module.ecr.repository_urls["backend"]}:${var.image_tag}"
       handler              = "app.workers.entrypoints.lambda_worker.lambda_handler"
+      # ITSELF, AND ONLY ITSELF. A Route.LAMBDA sweep that fans out to
+      # Route.LAMBDA work is this function invoking this function: one function
+      # serves every short task. `pickready.reconcile_context_index` is the
+      # first task in the product that does it, and production answered
+      # AccessDeniedException because no earlier sweep had ever needed the
+      # grant -- every previous one dispatched to Route.ECS, which goes through
+      # ecs:RunTask and is a different permission.
+      invokable_function_keys = ["task-worker"]
       memory_mb            = 1024
       timeout_seconds      = 600
       reserved_concurrency = var.reserve_lambda_concurrency ? 10 : null
