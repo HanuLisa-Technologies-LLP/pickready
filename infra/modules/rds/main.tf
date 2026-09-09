@@ -58,6 +58,14 @@ resource "aws_db_parameter_group" "this" {
   parameter {
     name  = "rds.force_ssl"
     value = "1"
+    # STATIC, so it can only be applied at a reboot, and saying so is not
+    # optional. Terraform's default is `immediate`, and RDS REFUSES `immediate`
+    # for a static parameter -- so the omission did not make the setting apply
+    # sooner, it made `terraform apply` fail against a real account. That went
+    # unnoticed because `plan` accepts it happily and this environment had
+    # never been applied with the parameter group already in its deployed
+    # state: the drift only appears on the SECOND apply.
+    apply_method = "pending-reboot"
   }
 
   # Log any statement slower than this. Two seconds rather than zero: logging
