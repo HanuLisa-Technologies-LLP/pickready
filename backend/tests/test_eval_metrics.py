@@ -366,21 +366,26 @@ def test_the_retrieval_golden_set_loads_and_cross_validates() -> None:
     retrieval failure for as long as nobody opens the file."""
     dataset = golden.load_retrieval_set()
     assert dataset.version == golden.GOLDEN_VERSION
-    assert len(dataset.corpus) == 60
-    assert len(dataset.cases) == 24
+    # 2026.Q3.2: Q3.1's 60 chunks and 24 queries verbatim, plus 90 chunks and
+    # 36 queries hand-authored on 2026-09-10 across six new role domains.
+    # Still below the 300-case floor, and the availability report says so.
+    assert len(dataset.corpus) == 150
+    assert len(dataset.cases) == 60
     corpus_ids = dataset.corpus_ids
     for case in dataset.cases:
         assert set(case.qrels) <= corpus_ids, case.query_id
 
 
 def test_the_three_axes_are_stratified_and_the_gaps_are_named() -> None:
-    """Coverage is REPORTED, never assumed. Twenty four cases cannot fill
-    seventy two cells, and a per-stratum number read without its cell count is
+    """Coverage is REPORTED, never assumed. Sixty cases cannot fill seventy
+    two cells either, and a per-stratum number read without its cell count is
     read as more general than its inputs."""
     dataset = golden.load_retrieval_set()
     report = golden.stratification(dataset.cases)
     assert report["cells"]["total"] == 72
-    assert report["cells"]["populated"] == 24
+    # Sixty cases over seventy-two cells: fuller than Q3.1's twenty-four, and
+    # the unpopulated cells are still NAMED rather than papered over.
+    assert report["cells"]["populated"] == 30
     # Every job grade and every dimension category is exercised.
     assert all(count > 0 for count in report["job_grade"].values())
     assert all(count > 0 for count in report["dimension_category"].values())

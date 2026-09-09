@@ -56,7 +56,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 #: Bumped when the CASES change, never when the code that reads them changes.
-GOLDEN_VERSION = "2026.Q3.1"
+GOLDEN_VERSION = "2026.Q3.2"
 
 DATASETS_ROOT = pathlib.Path(__file__).resolve().parent / "datasets"
 
