@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from app.evaluation.judges import determinism, gemini
+from app.evaluation.judges import determinism
 
 
 def main() -> int:
@@ -34,14 +34,25 @@ def main() -> int:
     )
     parser.add_argument("--json", action="store_true", help="indent the record")
     parser.add_argument(
+        "--vendor",
+        default="groq",
+        choices=sorted(determinism.VENDORS),
+        help=(
+            "which judge vendor to measure. Not a fallback chain: both are "
+            "real and the jury is seated from whichever answers."
+        ),
+    )
+    parser.add_argument(
         "--models",
         nargs="*",
-        default=list(gemini.JUDGE_MODELS),
+        default=None,
         help="override the panel under test",
     )
     args = parser.parse_args()
 
-    record, results = determinism.run_probe(args.models, args.repeats)
+    vendor = determinism.VENDORS[args.vendor]
+    models = args.models or list(vendor.JUDGE_MODELS)
+    record, results = determinism.run_probe(vendor, models, args.repeats)
 
     print("JUDGE_DETERMINISM_JSON_START")
     print(json.dumps(record, indent=2 if args.json else None))

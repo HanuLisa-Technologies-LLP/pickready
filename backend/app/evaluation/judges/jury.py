@@ -50,7 +50,7 @@ Provenance: RPN-AI-UP-001 W7.4 and W7.5.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Protocol, Sequence
+from typing import Any, Iterable, Protocol, Sequence
 
 from app.evaluation.golden import GOLDEN_VERSION, JudgedCase
 from app.evaluation.judges.protocol import JudgeProtocol, JudgeResult, build_result
@@ -65,6 +65,19 @@ ABSTAIN = "__abstain__"
 #: abstention is the judge declining, an invalid verdict is the judge or the
 #: parsing being broken.
 INVALID = "__invalid__"
+
+#: The scale a juror votes on when a caller does not supply one. The product's
+#: own four grades, so a measured disagreement is disagreement over the bands a
+#: client actually reads. Declared here rather than imported from
+#: `services.rating` on purpose: `tests/test_judge_isolation.py` asserts that
+#: nothing under `app/evaluation/` reaches into `app/services/`, and an import
+#: for four strings would be the first hole in that.
+DEFAULT_SCALE: tuple[str, ...] = (
+    "highly_matching",
+    "matching",
+    "moderately_matching",
+    "not_matching",
+)
 
 
 class JuryUnavailable(RuntimeError):
@@ -141,31 +154,112 @@ def pool(case_id: str, verdicts: Sequence[str], scale: Sequence[str]) -> PooledV
     return PooledVerdict(case_id, winners[0], tuple(verdicts))
 
 
-def configured_jurors() -> tuple[Juror, ...]:
-    """The panel this deployment can actually call. Empty, and here is why.
+#: The instruction every juror receives. ONE string, shared by the whole panel,
+#: because a jury measures model disagreement and jurors given different
+#: wording would be measuring the prompts instead.
+#:
+#: It names the scale, forbids prose, and says nothing about who wrote the
+#: evidence or what the product thinks of it: a judge that knew the pipeline's
+#: own verdict would be anchored to it, which is the failure an LLM jury exists
+#: to detect rather than reproduce.
+JUDGE_PROMPT = (
+    "You are grading how well a candidate's stated evidence supports a single "
+    "hiring requirement. Reply with exactly one word from this list and nothing "
+    "else: {scale}.\n\nREQUIREMENT: {requirement}\nCANDIDATE EVIDENCE: {evidence}\n\nOne word:"
+)
 
-    W7.2 requires the Gemini determinism probe to run BEFORE any judge code is
-    written, because its result decides whether reproducibility rests on a seed
-    or on repeats with reported dispersion. There is no Gemini credential in
-    this environment, so the probe has not been run and no judge client exists.
 
-    This returns an empty tuple rather than a stub that answers. A stub juror
-    would produce verdicts, those verdicts would produce a kappa, and the kappa
-    would be a number describing nothing while looking exactly like a
-    measurement.
+@dataclass(frozen=True)
+class ModelJuror:
+    """One model, on one vendor, voting on the scale.
+
+    THE VENDOR IS A MODULE, not a client object, and both vendor modules expose
+    the same three names. That is what lets a panel mix Groq and Gemini jurors
+    without this class knowing which is which, and it is what stops a second
+    vendor becoming a second code path.
+
+    A TRANSPORT FAILURE ABSTAINS, IT DOES NOT GUESS. `vendor.call` returns
+    `error:...` or `off_scale:...` for everything that is not a verdict, and
+    both become `ABSTAIN` here. `build_result` then WIDENS the accuracy
+    interval rather than scoring the case wrong, which is the honest treatment:
+    a juror that could not be reached did not disagree with the human, it did
+    not answer. Returning a label on failure would put a vendor outage into a
+    kappa.
+
+    This juror NEVER WRITES, and the protocol it satisfies has exactly one
+    method returning a string. W7.6's rule that a judge holds only read-only
+    tools is enforced by the interface having nowhere to put a write.
     """
+
+    judge_id: str
+    vendor: Any
+    model: str
+    keys: tuple[str, ...]
+    scale: tuple[str, ...]
+    seed: int | None = None
+
+    def verdict(self, case: JudgedCase) -> str:
+        prompt = JUDGE_PROMPT.format(
+            scale=", ".join(self.scale),
+            requirement=getattr(case, "requirement", case.payload_ref),
+            evidence=getattr(case, "evidence", case.notes or case.payload_ref),
+        )
+        answer = self.vendor.call(
+            self.model, prompt, list(self.keys), seed=self.seed, scale=self.scale
+        )
+        return answer if answer in self.scale else ABSTAIN
+
+
+def configured_jurors(scale: Sequence[str] | None = None) -> tuple[Juror, ...]:
+    """The panel this deployment can actually call.
+
+    EMPTY IS STILL A LEGITIMATE ANSWER and is what a deployment with no judge
+    credential gets. It is not a stub: a stub juror would produce verdicts,
+    those verdicts would produce a kappa, and the kappa would be a number
+    describing nothing while looking exactly like a measurement.
+
+    WHICH VENDOR, AND WHY IT IS NOT A FALLBACK CHAIN. Groq is preferred and
+    Gemini is used when Groq has no credential. That reads like a fallback and
+    is not one: a jury is a PANEL, and the choice here is which panel exists,
+    made once at construction from what is configured, never per call. Nothing
+    retries across vendors and no juror silently becomes another juror.
+
+    Groq is first because its free tier can actually complete the W7.2 probe.
+    Gemini's ran out of daily allowance at roughly a third of 600 calls with
+    every key answering 429, and a panel whose self-disagreement cannot be
+    measured cannot inform W8's threshold.
+    """
+    from app.evaluation.judges import gemini, groq  # noqa: PLC0415 - cycle
+
+    bands = tuple(scale) if scale else DEFAULT_SCALE
+    for vendor in (groq, gemini):
+        try:
+            keys = tuple(vendor.credentials())
+        except RuntimeError:
+            continue
+        name = vendor.__name__.rsplit(".", 1)[-1]
+        return tuple(
+            ModelJuror(
+                judge_id=f"{name}:{model}",
+                vendor=vendor,
+                model=model,
+                keys=keys,
+                scale=bands,
+            )
+            for model in vendor.JUDGE_MODELS
+        )
     return ()
 
 
 def unavailable_reason() -> str:
     """Why no judge ran, in the words a report should print."""
     return (
-        "no judge is configured: RPN-AI-UP-001 W7.2 requires the Gemini "
-        "determinism probe (20 calls at temperature 0.0, then with a seed, per "
-        "model) to be run and recorded in VERIFICATION_RESULTS.md before any "
-        "judge client is written, and this environment holds no Gemini "
-        "credential. The measured self-disagreement sigma from that probe is "
-        "the input to the W8 gate threshold and cannot be assumed."
+        "no judge is configured: set one of GROQ_API_KEY_1..3 or "
+        "GEMINI_API_KEY_1..3. A judge must sit OUTSIDE the product's closed "
+        "model mapping, so it cannot borrow OPENAI_GPT_TERRA or "
+        "OPENAI_GPT_LUNA: a model scoring its own family's output is worth "
+        "roughly +10% to +25% in win rate, which would measure loyalty as "
+        "quality."
     )
 
 

@@ -68,7 +68,14 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from app.evaluation.judges import gemini
+from app.evaluation.judges import gemini, groq
+
+#: The vendors a probe can be pointed at. A MODULE per vendor, each exposing
+#: the same three names (`JUDGE_MODELS`, `credentials`, `call`), so this file
+#: never learns which one it was handed. Two vendors is not a fallback chain:
+#: both are real, both get probed, and the jury is seated from whichever
+#: answered. A jury's value is heterogeneity, so having two is the point.
+VENDORS = {"gemini": gemini, "groq": groq}
 
 #: A fixed seed, so the second arm is reproducible across runs of the probe
 #: itself. Any constant would do; what matters is that it does not move.
@@ -79,7 +86,7 @@ PROBE_SEED = 20260909
 #: not rely on the retry path at all. The retry path is the safety net, not the
 #: plan: a probe that only completes because it backs off constantly is
 #: measuring the meter again, more slowly.
-PACING_SECONDS = 4.0
+PACING_SECONDS = 2.0
 
 #: The scale the probe cases are judged on. Four grades, matching the product's
 #: own vocabulary, so the measured dispersion is dispersion over a scale of the
@@ -240,7 +247,7 @@ class ArmResult:
 
 
 def run_arm(
-    model: str, arm: str, repeats: int, keys: Sequence[str], *, seed: int | None
+    vendor, model: str, arm: str, repeats: int, keys: Sequence[str], *, seed: int | None
 ) -> ArmResult:
     result = ArmResult(model=model, arm=arm)
     rotation = 0
@@ -248,7 +255,7 @@ def run_arm(
         answers: list[str] = []
         for _ in range(repeats):
             answers.append(
-                gemini.call(
+                vendor.call(
                     model,
                     case.prompt(),
                     keys,
@@ -271,9 +278,11 @@ def run_arm(
     return result
 
 
-def run_probe(models: Sequence[str], repeats: int) -> tuple[dict, list[ArmResult]]:
+def run_probe(
+    vendor, models: Sequence[str], repeats: int
+) -> tuple[dict, list[ArmResult]]:
     """Both arms over every model. Returns the printable record and the arms."""
-    keys = gemini.credentials()
+    keys = vendor.credentials()
     print(f"credential slots populated: {len(keys)}", file=sys.stderr, flush=True)
     results: list[ArmResult] = []
     for model in models:
@@ -282,9 +291,10 @@ def run_probe(models: Sequence[str], repeats: int) -> tuple[dict, list[ArmResult
             ("temperature_0_seeded", PROBE_SEED),
         ):
             print(f"{model} [{arm}] ...", file=sys.stderr, flush=True)
-            results.append(run_arm(model, arm, repeats, keys, seed=seed))
+            results.append(run_arm(vendor, model, arm, repeats, keys, seed=seed))
     record = {
         "probe": "RPN-AI-UP-001 W7.2 judge determinism",
+        "vendor": vendor.__name__.rsplit(".", 1)[-1],
         "repeats": repeats,
         "cases": len(PROBE_CASES),
         "scale": list(SCALE),

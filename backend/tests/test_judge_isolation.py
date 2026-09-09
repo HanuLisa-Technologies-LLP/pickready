@@ -197,17 +197,108 @@ def test_every_judge_module_is_actually_under_the_judges_directory() -> None:
     assert not (SERVICES_ROOT / "judges").exists()
 
 
-def test_no_juror_is_configured_and_the_reason_is_stated() -> None:
-    """W7.2 comes first and has not been run: there is no Gemini credential in
-    this environment, so the determinism probe that decides the shape of every
-    judge has not happened. An empty panel with a reason, never a stub that
-    answers."""
-    from app.evaluation.judges import configured_jurors, unavailable_reason
+def test_an_uncredentialed_deployment_gets_an_empty_panel_and_a_reason(
+    monkeypatch,
+) -> None:
+    """No credential, no panel, and the reason names what to set.
+
+    SUPERSEDED PREMISE, KEPT DELIBERATELY. This used to assert that the reason
+    mentioned "W7.2", because at the time there was no judge credential of any
+    kind and the determinism probe had never run. Both changed on 2026-09-09:
+    Groq keys exist, the probe ran, and `configured_jurors()` returns a real
+    panel when it can. What survives is the rule that outlived the situation --
+    an empty panel, never a stub that answers, and a reason a reader can act on.
+
+    Every slot is cleared explicitly rather than trusting the test environment
+    to be bare. A test that only passes because the machine happens to lack a
+    key would silently stop testing anything on a developer's laptop.
+    """
+    from app.evaluation.judges import configured_jurors, gemini, groq
+    from app.evaluation.judges import unavailable_reason
+
+    for slot in groq.CREDENTIAL_SLOTS + gemini.CREDENTIAL_SLOTS:
+        monkeypatch.delenv(slot, raising=False)
 
     assert configured_jurors() == ()
     reason = unavailable_reason()
-    assert "W7.2" in reason
-    assert "credential" in reason
+    # It must name the variables to set, because that is the actionable half.
+    assert "GROQ_API_KEY_1" in reason
+    assert "GEMINI_API_KEY_1" in reason
+    # And it must say why the product's own credentials cannot be borrowed.
+    assert "OPENAI_GPT_TERRA" in reason
+
+
+def test_a_credentialed_deployment_gets_a_real_panel(monkeypatch) -> None:
+    """The direction the old test could not check, and the one that matters.
+
+    `configured_jurors()` was HARDCODED to return `()` for its whole existence.
+    An assertion that it returns empty passes just as happily against a
+    function that can never return anything else, so it could never have caught
+    the wiring being absent. This constructs the panel from a fake credential
+    and makes no network call: what is pinned is that a panel FORMS, that its
+    members are distinct, and that every juror is a judge-vendor model rather
+    than one of the product's two.
+    """
+    from app.evaluation.judges import configured_jurors, gemini, groq
+
+    for slot in gemini.CREDENTIAL_SLOTS:
+        monkeypatch.delenv(slot, raising=False)
+    monkeypatch.setenv(groq.CREDENTIAL_SLOTS[0], "not-a-real-key-and-never-called")
+
+    jurors = configured_jurors()
+    assert len(jurors) == len(groq.JUDGE_MODELS)
+
+    ids = [juror.judge_id for juror in jurors]
+    # A jury's value comes from heterogeneity, so two jurors sharing an id are
+    # one judge counted twice. `judge_set` refuses that; this catches it here.
+    assert len(set(ids)) == len(ids)
+
+    # NONE of them may be a product model. That is the whole point of the
+    # judge sitting outside the closed mapping: a model scoring its own
+    # family's output measures loyalty as quality.
+    for juror in jurors:
+        assert "gpt-5.6" not in juror.model
+
+
+def test_a_juror_abstains_rather_than_guessing_when_the_vendor_fails() -> None:
+    """A transport failure did not disagree with the human. It did not answer.
+
+    Returning a label here would put a vendor outage into a kappa. `ABSTAIN`
+    sends it to `build_result`, which WIDENS the accuracy interval instead of
+    scoring the case wrong.
+    """
+    import types
+
+    from app.evaluation.judges import ABSTAIN, DEFAULT_SCALE, ModelJuror
+
+    def failing_call(model, prompt, keys, *, seed, scale, offset=0):
+        return "error:http_503:vendor_overloaded"
+
+    juror = ModelJuror(
+        judge_id="fake:down",
+        vendor=types.SimpleNamespace(call=failing_call),
+        model="fake-model",
+        keys=("k",),
+        scale=DEFAULT_SCALE,
+    )
+    case = types.SimpleNamespace(
+        case_id="c", requirement="r", evidence="e", payload_ref="p", notes=""
+    )
+    assert juror.verdict(case) == ABSTAIN
+
+    # And an answer outside the scale abstains too: an unparseable verdict is
+    # the judge being broken, not the judge being wrong.
+    def off_scale(model, prompt, keys, *, seed, scale, offset=0):
+        return "off_scale:maybe_probably"
+
+    juror = ModelJuror(
+        judge_id="fake:chatty",
+        vendor=types.SimpleNamespace(call=off_scale),
+        model="fake-model",
+        keys=("k",),
+        scale=DEFAULT_SCALE,
+    )
+    assert juror.verdict(case) == ABSTAIN
 
 
 def test_calling_the_jury_with_no_judges_raises_rather_than_returning_zeroes() -> None:
