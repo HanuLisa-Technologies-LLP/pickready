@@ -81,6 +81,31 @@ SOURCE_TYPES: tuple[str, ...] = (
 )
 
 
+#: "This column holds something worth indexing", as ONE definition.
+#:
+#: THE FIRST VERSION HAD TWO, AND THEY DISAGREED. `pending()` asked SQL
+#: `btrim(col) <> ''` while the loaders asked Python `not body.strip()`, and
+#: those are not the same test: `btrim` with no second argument strips SPACES
+#: only, while `str.strip()` strips every whitespace character. So a JD holding
+#: "\n\n" was REPORTED as needing indexing and then LOADED as nothing.
+#:
+#: That disagreement is precisely the failure this module's docstring warns
+#: about in the other direction: the sweep queues the document, the task
+#: no-ops, the document still has no chunks, and the next hour does it again --
+#: forever, with a bill as the only symptom, because every individual step
+#: behaves correctly. It was caught by running the two against each other on a
+#: real database rather than by reading them.
+#:
+#: So the test lives in SQL, once, and the loaders ASK for it rather than
+#: reimplementing it. `E'...'` is an escape string literal; the class is the
+#: six ASCII whitespace characters, which is what `btrim` needs spelled out.
+_WHITESPACE = r"E' \t\r\n\f\v'"
+
+
+def _has_text(column: str) -> str:
+    return f"btrim({column}, {_WHITESPACE}) <> ''"
+
+
 class UnknownSourceType(ValueError):
     """A source type with no loader.
 
@@ -110,8 +135,10 @@ async def _load_jd(session: AsyncSession, source_id: uuid.UUID) -> Document | No
     row = (
         await session.execute(
             text(
-                """
-                SELECT tenant_id, COALESCE(jd_markdown, '') AS body
+                f"""
+                SELECT tenant_id,
+                       COALESCE(jd_markdown, '') AS body,
+                       COALESCE({_has_text('jd_markdown')}, FALSE) AS has_text
                   FROM jobs
                  WHERE id = :id
                 """
@@ -119,7 +146,7 @@ async def _load_jd(session: AsyncSession, source_id: uuid.UUID) -> Document | No
             {"id": str(source_id)},
         )
     ).first()
-    if row is None or not row.body.strip():
+    if row is None or not row.has_text:
         return None
     return Document(
         tenant_id=row.tenant_id,
@@ -133,25 +160,43 @@ async def _load_resume(session: AsyncSession, source_id: uuid.UUID) -> Document 
     row = (
         await session.execute(
             text(
-                """
-                SELECT source_tenant_id, COALESCE(resume_text, '') AS body
-                  FROM profiles
-                 WHERE id = :id
+                f"""
+                SELECT p.source_tenant_id                    AS source_tenant_id,
+                       COALESCE(p.resume_text, '')           AS body,
+                       COALESCE({_has_text('p.resume_text')}, FALSE) AS has_text,
+                       (t.id IS NOT NULL)                    AS tenant_exists
+                  FROM profiles p
+                  LEFT JOIN tenants t ON t.id = p.source_tenant_id
+                 WHERE p.id = :id
                 """
             ),
             {"id": str(source_id)},
         )
     ).first()
-    if row is None or not row.body.strip():
+    if row is None or not row.has_text:
         return None
-    if row.source_tenant_id is None:
-        # Reported, not swallowed. See the module docstring: the chunk table
-        # requires a tenant, and a profile that lost its one is a document that
-        # can never be retrieved.
+    if not row.tenant_exists:
+        # THE TENANT MUST EXIST, NOT MERELY BE NON-NULL, AND THAT IS A REAL
+        # DISTINCTION HERE.
+        #
+        # `profiles.source_tenant_id` is a plain nullable UUID with NO foreign
+        # key (see `models/candidate.py`), because a profile is shared across
+        # tenants via the databank. `context_chunks.tenant_id` DOES have one.
+        # So a profile whose tenant was deleted carries a dangling reference
+        # that reads as perfectly valid until the INSERT, which then fails with
+        # a foreign key violation.
+        #
+        # Checking only for NULL would make that document a POISON PILL: the
+        # task would burn all three attempts, the sweep would find it again an
+        # hour later because it still has no chunks, and it would do that
+        # forever. Found by running the sweep against a real database with an
+        # orphaned profile in it, which is the only way it surfaces.
         logger.warning(
             "rag.sources.unindexable source_type=resume source_id=%s "
-            "reason=no_source_tenant_id",
+            "tenant_id=%s reason=%s",
             source_id,
+            row.source_tenant_id,
+            "no_source_tenant_id" if row.source_tenant_id is None else "tenant_missing",
         )
         return None
     return Document(
@@ -180,7 +225,7 @@ async def _load_assessment(
                        m.speaker   AS speaker,
                        m.content   AS content
                   FROM job_candidate_links l
-                  JOIN assessment_conversations c ON c.link_id = l.id
+                  JOIN assessment_conversations c ON c.job_candidate_link_id = l.id
                   JOIN assessment_messages m      ON m.conversation_id = c.id
                  WHERE l.id = :id
                  ORDER BY c.created_at, m.ordinal
@@ -249,11 +294,11 @@ async def load(
 #: relational questions -- no hashing, no text loaded -- so the sweep stays
 #: cheap enough to run hourly against a growing table.
 _PENDING_SQL: dict[str, str] = {
-    chunking.SOURCE_JD: """
+    chunking.SOURCE_JD: f"""
         SELECT j.id AS source_id
           FROM jobs j
          WHERE j.jd_markdown IS NOT NULL
-           AND btrim(j.jd_markdown) <> ''
+           AND {_has_text('j.jd_markdown')}
            AND NOT EXISTS (
                  SELECT 1 FROM context_chunks c
                   WHERE c.source_type = 'jd' AND c.source_id = j.id
@@ -261,12 +306,14 @@ _PENDING_SQL: dict[str, str] = {
          ORDER BY j.created_at DESC
          LIMIT :limit
     """,
-    chunking.SOURCE_RESUME: """
+    chunking.SOURCE_RESUME: f"""
         SELECT p.id AS source_id
           FROM profiles p
          WHERE p.resume_text IS NOT NULL
-           AND btrim(p.resume_text) <> ''
-           AND p.source_tenant_id IS NOT NULL
+           AND {_has_text('p.resume_text')}
+           AND EXISTS (
+                 SELECT 1 FROM tenants t WHERE t.id = p.source_tenant_id
+               )
            AND NOT EXISTS (
                  SELECT 1 FROM context_chunks c
                   WHERE c.source_type = 'resume' AND c.source_id = p.id
@@ -277,7 +324,7 @@ _PENDING_SQL: dict[str, str] = {
     chunking.SOURCE_ASSESSMENT: """
         SELECT DISTINCT l.id AS source_id
           FROM job_candidate_links l
-          JOIN assessment_conversations c ON c.link_id = l.id
+          JOIN assessment_conversations c ON c.job_candidate_link_id = l.id
           JOIN assessment_messages m      ON m.conversation_id = c.id
          WHERE m.speaker = 'candidate'
            AND NOT EXISTS (
@@ -309,22 +356,30 @@ async def pending(session: AsyncSession, *, limit: int) -> list[tuple[str, uuid.
 
 
 async def unindexable_count(session: AsyncSession) -> int:
-    """Profiles with resume text that no tenant owns.
+    """Profiles with resume text that no EXISTING tenant owns.
 
-    Counted and logged by the sweep rather than left invisible. It is expected
-    to be zero; a non-zero value means the tenant-deletion anonymisation has
-    left retrievable text with no owner, which is a data question rather than
-    an indexing one.
+    Counted and logged by the sweep rather than left invisible. Two ways to
+    qualify, and they are different data problems: `source_tenant_id` is NULL
+    (the tenant-deletion anonymisation in `api/admin.py` reached this row), or
+    it names a tenant that is no longer in the table (it did not). The second
+    is the one that used to crash the indexer on a foreign key violation.
+
+    A non-zero value is a data question rather than an indexing one, so it is
+    reported and never repaired here: guessing an owner for somebody's resume
+    is not a decision this sweep gets to make.
     """
     return int(
         (
             await session.execute(
                 text(
-                    """
-                    SELECT count(*) FROM profiles
-                     WHERE resume_text IS NOT NULL
-                       AND btrim(resume_text) <> ''
-                       AND source_tenant_id IS NULL
+                    f"""
+                    SELECT count(*) FROM profiles p
+                     WHERE p.resume_text IS NOT NULL
+                       AND {_has_text('p.resume_text')}
+                       AND NOT EXISTS (
+                             SELECT 1 FROM tenants t
+                              WHERE t.id = p.source_tenant_id
+                           )
                     """
                 )
             )
