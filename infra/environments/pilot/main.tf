@@ -388,11 +388,47 @@ module "rds" {
   subnet_ids        = module.network.data_subnet_ids
   security_group_id = module.network.rds_security_group_id
 
-  instance_class = "db.t4g.micro"
-  # 50 GB growing to 100. gp3's baseline IOPS is a function of size, so the
-  # floor is a performance floor as well as a capacity one.
+  # t4g.medium, up from t4g.micro (2026-09-10). Two reasons, and neither is
+  # raw connection count. 1GB of RAM is not comfortable working memory for
+  # pgvector HNSW index operations once real candidates land, and RDS derives
+  # its default max_connections from instance memory, so the bump also lifts
+  # the connection ceiling roughly fourfold against Lambda concurrency spikes
+  # (worker_session builds a fresh engine per invocation by design, so Lambda
+  # concurrency, not the app pool size, is what actually drives peak
+  # connections here).
+  #
+  # AN RDS PROXY WAS EVALUATED AND DELIBERATELY NOT BUILT (owner decision,
+  # 2026-09-10). The AWS pinning documentation settles it: for PostgreSQL the
+  # proxy pins a session on any SET command, on set_config(), and on named
+  # prepared statements. This application issues SET LOCAL ROLE inside every
+  # tenant-scoped transaction (core/db.tenant_scope), a session-level
+  # set_config on every worker connection (workers/runtime.worker_session),
+  # and asyncpg caches prepared statements by default, so effectively every
+  # session would pin immediately: no multiplexing, a held backend connection
+  # per client for its whole lifetime, and the one benefit left is queuing
+  # connection storms. Revisit only if CloudWatch DatabaseConnections ever
+  # approaches the instance ceiling; the fix that makes a proxy worthwhile is
+  # an application change (transaction-scoped worker bypass, statement cache
+  # off), not a Terraform change.
+  #
+  # `db_pool_size=12, db_max_overflow=3` in the app were sized against the
+  # micro instance's ceiling and are deliberately untouched by this bump: they
+  # bind the long-lived ECS api service, which was never the pressure point.
+  # Raise them only against a measured need.
+  instance_class = "db.t4g.medium"
+  # 50 GB growing to 200 (raised from 100 on 2026-09-10). Chunk embeddings are
+  # 1024 floats each with an HNSW index on top, many chunks per document, and
+  # they grow faster than relational rows; the ceiling gets room before this
+  # needs revisiting. The STARTING allocation stays 50: gp3's baseline IOPS is
+  # a function of size, so the floor is a performance floor as well as a
+  # capacity one, and pre-paying for unused space buys neither.
   allocated_storage     = 50
-  max_allocated_storage = 100
+  max_allocated_storage = 200
+  # MUST FLIP TO true BEFORE ANY REAL (NON-DEMO) TENANT'S DATA LIVES HERE.
+  # Today this environment holds three demo tenants and zero candidates, and
+  # Multi-AZ roughly doubles the RDS bill for redundancy protecting data that
+  # does not yet exist. The day a real customer is onboarded to pilot, this
+  # line is part of that onboarding. Production already runs multi_az = true.
   multi_az              = false
   backup_retention_days = 7
 
