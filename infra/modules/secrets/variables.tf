@@ -31,6 +31,14 @@ variable "secret_names" {
     "OPENAI_GPT_TERRA",
     "OPENAI_GPT_LUNA",
     "VOYAGE_CONTEXT_4",
+    # The RERANKER's credential, named after the model it unlocks (rerank-2.5),
+    # the same convention as the line above. It holds the same Voyage ACCOUNT
+    # key as VOYAGE_CONTEXT_4, because one account serves both /v1/embeddings
+    # and /v1/rerank, and the names stay separate anyway: an absent key must
+    # name the missing CAPABILITY, so "the reranker is not configured" is a
+    # recorded degradation rather than an embedding outage wearing a
+    # reranker's name.
+    "VOYAGE_RERANK_2_5",
     "DATABASE_URL",
     "REDIS_URL",
     "JWT_SECRET",
@@ -90,6 +98,7 @@ variable "service_secrets" {
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
+      "VOYAGE_RERANK_2_5",
       "FIREBASE_SERVICE_ACCOUNT_JSON",
       "RAZORPAY_KEY_SECRET",
       "LLM_KEY_ENCRYPTION_SECRET",
@@ -113,6 +122,7 @@ variable "service_secrets" {
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
+      "VOYAGE_RERANK_2_5",
       "SMTP_PASSWORD",
       "TAVILY_API_KEY",
       "MSG91_API_KEY",
@@ -124,6 +134,7 @@ variable "service_secrets" {
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
+      "VOYAGE_RERANK_2_5",
       "LLM_KEY_ENCRYPTION_SECRET",
     ]
     "jd-gen" = [

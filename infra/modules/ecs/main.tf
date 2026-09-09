@@ -383,116 +383,116 @@ resource "aws_ecs_task_definition" "this" {
       }
     ],
     [
-    {
-      name = each.key
-      # BY DIGEST WHERE ONE IS SUPPLIED, otherwise by SHA tag. spec-doc5 §D.6
-      # asks for verification "by image digest, not by CI exit code"; pinning
-      # the digest in the task definition is what makes the verification
-      # meaningful, because the running task cannot then be a different image
-      # that happens to share a tag.
-      image     = each.value.image
-      command   = each.value.command
-      essential = true
+      {
+        name = each.key
+        # BY DIGEST WHERE ONE IS SUPPLIED, otherwise by SHA tag. spec-doc5 §D.6
+        # asks for verification "by image digest, not by CI exit code"; pinning
+        # the digest in the task definition is what makes the verification
+        # meaningful, because the running task cannot then be a different image
+        # that happens to share a tag.
+        image     = each.value.image
+        command   = each.value.command
+        essential = true
 
-      # SIGTERM to SIGKILL, and NOT a runtime ceiling: an on-demand task runs
-      # until its process exits and ECS imposes no limit on that. This is the
-      # window a task gets when something else stops it, and Fargate caps it at
-      # 120 seconds. Raising it from the 30-second default is what gives an
-      # interrupted assessment a chance to finish the piece it is on rather
-      # than leaving a conversation scored with no report written.
-      stopTimeout = each.value.stop_timeout
+        # SIGTERM to SIGKILL, and NOT a runtime ceiling: an on-demand task runs
+        # until its process exits and ECS imposes no limit on that. This is the
+        # window a task gets when something else stops it, and Fargate caps it at
+        # 120 seconds. Raising it from the 30-second default is what gives an
+        # interrupted assessment a chance to finish the piece it is on rather
+        # than leaving a conversation scored with no report written.
+        stopTimeout = each.value.stop_timeout
 
-      portMappings = each.value.port == null ? [] : [
-        {
-          containerPort = each.value.port
-          protocol      = "tcp"
+        portMappings = each.value.port == null ? [] : [
+          {
+            containerPort = each.value.port
+            protocol      = "tcp"
+          }
+        ]
+
+        # Plain values only. Anything sensitive is in `secrets` below, which ECS
+        # fetches and injects -- so the value never passes through a shell, a
+        # startup script or a log line.
+        # `PORT` IS DERIVED FROM THE DECLARED PORT, NOT LEFT TO THE IMAGE.
+        #
+        # Both images read PORT and both default it to something: the backend's
+        # entrypoint to 8000, the frontend's Dockerfile to 8080, which is a Cloud
+        # Run convention left over from the previous platform. Nothing on ECS
+        # injects it, so the container listened on 8080 while the task definition,
+        # the target group and the health check all said 3000.
+        #
+        # The symptom was as unhelpful as it sounds: the task RUNS, the log says
+        # `Ready`, and the load balancer reports "Health checks failed" with no
+        # error anywhere, because nothing was listening where anybody looked.
+        #
+        # Setting it here makes the task definition's `port` the single source of
+        # truth, so a container cannot listen anywhere else. An explicit `PORT` in
+        # a service's own `environment` still wins, because `merge` puts it last:
+        # that is an override, and an override should be possible.
+        environment = [
+          for key, value in merge(
+            var.common_environment,
+            each.value.port == null ? {} : { PORT = tostring(each.value.port) },
+            each.value.environment,
+          ) :
+          { name = key, value = tostring(value) }
+        ]
+
+        secrets = [
+          for key, arn in each.value.secrets : { name = key, valueFrom = arn }
+        ]
+
+        logConfiguration = {
+          logDriver = "awslogs"
+          options = {
+            "awslogs-group"         = aws_cloudwatch_log_group.this[each.key].name
+            "awslogs-region"        = var.region
+            "awslogs-stream-prefix" = each.key
+          }
         }
-      ]
 
-      # Plain values only. Anything sensitive is in `secrets` below, which ECS
-      # fetches and injects -- so the value never passes through a shell, a
-      # startup script or a log line.
-      # `PORT` IS DERIVED FROM THE DECLARED PORT, NOT LEFT TO THE IMAGE.
-      #
-      # Both images read PORT and both default it to something: the backend's
-      # entrypoint to 8000, the frontend's Dockerfile to 8080, which is a Cloud
-      # Run convention left over from the previous platform. Nothing on ECS
-      # injects it, so the container listened on 8080 while the task definition,
-      # the target group and the health check all said 3000.
-      #
-      # The symptom was as unhelpful as it sounds: the task RUNS, the log says
-      # `Ready`, and the load balancer reports "Health checks failed" with no
-      # error anywhere, because nothing was listening where anybody looked.
-      #
-      # Setting it here makes the task definition's `port` the single source of
-      # truth, so a container cannot listen anywhere else. An explicit `PORT` in
-      # a service's own `environment` still wins, because `merge` puts it last:
-      # that is an override, and an override should be possible.
-      environment = [
-        for key, value in merge(
-          var.common_environment,
-          each.value.port == null ? {} : { PORT = tostring(each.value.port) },
-          each.value.environment,
-        ) :
-        { name = key, value = tostring(value) }
-      ]
-
-      secrets = [
-        for key, arn in each.value.secrets : { name = key, valueFrom = arn }
-      ]
-
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          "awslogs-group"         = aws_cloudwatch_log_group.this[each.key].name
-          "awslogs-region"        = var.region
-          "awslogs-stream-prefix" = each.key
+        # A HEALTH CHECK ONLY WHERE THERE IS SOMETHING TO CHECK. The on-demand
+        # agent has no HTTP endpoint and is not meant to stay alive: it runs one
+        # dispatched task and exits, so a health check on it would report
+        # unhealthy at exactly the moment it succeeded.
+        healthCheck = each.value.health_path == null ? null : {
+          command     = ["CMD-SHELL", "curl -fsS http://localhost:${each.value.port}${each.value.health_path} || exit 1"]
+          interval    = 30
+          timeout     = 5
+          retries     = 3
+          startPeriod = 60
         }
+
+        mountPoints = [
+          for path in each.value.writable_paths : {
+            sourceVolume  = replace(trim(path, "/"), "/", "-")
+            containerPath = path
+            readOnly      = false
+          }
+        ]
+
+        # Root filesystem read-only where the workload allows it. The backend
+        # writes nothing to disk by design -- resume bytes never persist on the
+        # application filesystem -- so this is enforcing an invariant the code
+        # already claims rather than adding a constraint.
+        readonlyRootFilesystem = each.value.readonly_root
+        linuxParameters = {
+          # An init process to reap zombies. Still wanted: the resume and project
+          # parsers shell out to nothing, but the Python runtime and the AWS SDK
+          # both spawn helper threads and processes, and a container running as
+          # PID 1 without an init leaves anything they orphan behind.
+          initProcessEnabled = true
+        }
+
+        # WAIT FOR THE CHOWN. Without this the application container races the
+        # init container and usually loses, which would make the whole fix look
+        # intermittent -- the worst failure mode there is for an auth bug.
+        dependsOn = each.value.writable_paths_uid == null || length(each.value.writable_paths) == 0 ? null : [
+          {
+            containerName = "${each.key}-init"
+            condition     = "SUCCESS"
+          }
+        ]
       }
-
-      # A HEALTH CHECK ONLY WHERE THERE IS SOMETHING TO CHECK. The on-demand
-      # agent has no HTTP endpoint and is not meant to stay alive: it runs one
-      # dispatched task and exits, so a health check on it would report
-      # unhealthy at exactly the moment it succeeded.
-      healthCheck = each.value.health_path == null ? null : {
-        command     = ["CMD-SHELL", "curl -fsS http://localhost:${each.value.port}${each.value.health_path} || exit 1"]
-        interval    = 30
-        timeout     = 5
-        retries     = 3
-        startPeriod = 60
-      }
-
-      mountPoints = [
-        for path in each.value.writable_paths : {
-          sourceVolume  = replace(trim(path, "/"), "/", "-")
-          containerPath = path
-          readOnly      = false
-        }
-      ]
-
-      # Root filesystem read-only where the workload allows it. The backend
-      # writes nothing to disk by design -- resume bytes never persist on the
-      # application filesystem -- so this is enforcing an invariant the code
-      # already claims rather than adding a constraint.
-      readonlyRootFilesystem = each.value.readonly_root
-      linuxParameters = {
-        # An init process to reap zombies. Still wanted: the resume and project
-        # parsers shell out to nothing, but the Python runtime and the AWS SDK
-        # both spawn helper threads and processes, and a container running as
-        # PID 1 without an init leaves anything they orphan behind.
-        initProcessEnabled = true
-      }
-
-      # WAIT FOR THE CHOWN. Without this the application container races the
-      # init container and usually loses, which would make the whole fix look
-      # intermittent -- the worst failure mode there is for an auth bug.
-      dependsOn = each.value.writable_paths_uid == null || length(each.value.writable_paths) == 0 ? null : [
-        {
-          containerName = "${each.key}-init"
-          condition     = "SUCCESS"
-        }
-      ]
-    }
     ],
   ))
 

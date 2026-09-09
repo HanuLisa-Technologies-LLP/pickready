@@ -190,6 +190,12 @@ class Settings(BaseSettings):
     # segment returns an empty list with status "unconfigured" and a plain
     # message, while "similar to our customers" keeps working.
     tavily_api_key: str = ""
+    # The customer-success surface. Absent is a SUPPORTED state, not a broken
+    # one: `services/intercom` answers `status="unconfigured"` with a plain
+    # reason and changes nothing, the same shape `tavily_api_key` above already
+    # has. Only tenant and staff fields on a closed allowlist are ever sent;
+    # no candidate data leaves this product for a support tool.
+    intercom_access_token: str = ""
 
     # Gmail SMTP only. Values come from the environment and are validated below.
     smtp_host: str = ""

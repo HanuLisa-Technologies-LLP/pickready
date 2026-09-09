@@ -532,6 +532,7 @@ module "ecs" {
         OPENAI_GPT_TERRA              = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA               = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4              = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5             = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
         FIREBASE_SERVICE_ACCOUNT_JSON = module.secrets.secret_arns["FIREBASE_SERVICE_ACCOUNT_JSON"]
         RAZORPAY_KEY_SECRET           = module.secrets.secret_arns["RAZORPAY_KEY_SECRET"]
         LLM_KEY_ENCRYPTION_SECRET     = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
@@ -580,6 +581,7 @@ module "ecs" {
         OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5         = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
         LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
       }
     }
@@ -716,10 +718,10 @@ module "lambda" {
 
   functions = {
     "task-worker" = {
-      package              = "image"
-      description          = "Every short background task: delivery, resume parsing, the reconciliation sweeps."
-      image_uri            = "${module.ecr.repository_urls["backend"]}:${var.image_tag}"
-      handler              = "app.workers.entrypoints.lambda_worker.lambda_handler"
+      package     = "image"
+      description = "Every short background task: delivery, resume parsing, the reconciliation sweeps."
+      image_uri   = "${module.ecr.repository_urls["backend"]}:${var.image_tag}"
+      handler     = "app.workers.entrypoints.lambda_worker.lambda_handler"
       # ITSELF, AND ONLY ITSELF. A Route.LAMBDA sweep that fans out to
       # Route.LAMBDA work is this function invoking this function: one function
       # serves every short task. `pickready.reconcile_context_index` is the
@@ -728,10 +730,10 @@ module "lambda" {
       # grant -- every previous one dispatched to Route.ECS, which goes through
       # ecs:RunTask and is a different permission.
       invokable_function_keys = ["task-worker"]
-      memory_mb            = 1024
-      timeout_seconds      = 600
-      reserved_concurrency = var.reserve_lambda_concurrency ? 40 : null
-      secret_policy_key    = "task-worker"
+      memory_mb               = 1024
+      timeout_seconds         = 600
+      reserved_concurrency    = var.reserve_lambda_concurrency ? 40 : null
+      secret_policy_key       = "task-worker"
       # The SAME map the ECS services use. ECS injects these; Lambda has no
       # equivalent, so the function fetches them at cold start with the
       # policy below. Only the ARNs are here.
@@ -741,6 +743,7 @@ module "lambda" {
         OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5         = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
         SMTP_PASSWORD             = module.secrets.secret_arns["SMTP_PASSWORD"]
         TAVILY_API_KEY            = module.secrets.secret_arns["TAVILY_API_KEY"]
         MSG91_API_KEY             = module.secrets.secret_arns["MSG91_API_KEY"]
@@ -911,6 +914,20 @@ module "scheduler" {
     "readypick-reconcile-context-index" = {
       task            = "pickready.reconcile_context_index"
       rate_expression = "rate(60 minutes)"
+    }
+    # Registered since the credit work and scheduled by nothing until now: it
+    # was dispatched only when a bundle was granted, so a report lost to a
+    # failed dispatch or a killed container stayed lost, for a candidate who
+    # had done the work and a customer who had been charged.
+    "readypick-release-held-assessments" = {
+      task            = "pickready.release_held_assessments"
+      rate_expression = "rate(60 minutes)"
+    }
+    # Six-hourly, and a sweep rather than a hook on every tenant write: a hook
+    # would put a third-party round trip in the path of an ordinary edit.
+    "readypick-sync-intercom-companies" = {
+      task            = "pickready.sync_intercom_companies"
+      rate_expression = "rate(360 minutes)"
     }
   }
 

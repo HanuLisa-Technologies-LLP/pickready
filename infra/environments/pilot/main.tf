@@ -940,6 +940,33 @@ module "ecs" {
     # incoming message against; empty there means refuse everything.
     SES_CONFIGURATION_SET = aws_sesv2_configuration_set.this.configuration_set_name
     SES_SNS_TOPIC_ARN     = aws_sns_topic.ses_events.arn
+    # ONE RERANKER PER DEPLOYMENT, never a fallback chain: the same shape
+    # TASK_DISPATCH_BACKEND and EMAIL_TRANSPORT have, validated against a
+    # closed set by `reranker.configured_backend()`, which RAISES on anything
+    # outside it rather than defaulting.
+    #
+    # PILOT RUNS THE CROSS-ENCODER AND THE OTHER ENVIRONMENTS DO NOT, which is
+    # deliberate. `rerank-2.5` was proven live on 2026-09-09 (see
+    # VERIFICATION_RESULTS.md) and the CODE default is `lexical`, so leaving
+    # this unset anywhere means the deterministic pass runs there. Turning it
+    # on changes which evidence an agent reads FIRST, and retrieval quality is
+    # still unmeasured -- the golden set is 24 hand-authored cases against a
+    # floor of 300 -- so the change is made where it can be watched before it
+    # is made where it cannot.
+    #
+    # IT IS SET ON THE LAMBDAS TOO, and that uniformity is the point. Agents
+    # reach retrieval through `services/tools/implementations`, which runs in
+    # the API, in `task-worker` and in `agent`. Setting it on the ECS services
+    # alone would give two halves of one product different rankings for the
+    # same query, which is worse than either value applied everywhere.
+    #
+    # This is not a claim the cross-encoder will always answer. When it cannot,
+    # the lexical pass runs and the record carries `reranker="lexical",
+    # degraded=true` with a reason, because a degradation is RECORDED and never
+    # silent. What the value guarantees is that a deployment believing it runs
+    # a cross-encoder is not quietly running the placeholder, which is the
+    # failure W6.1 exists to end.
+    RETRIEVAL_RERANKER = "voyage"
   }
 
   services = {
@@ -994,12 +1021,13 @@ module "ecs" {
         OPENAI_GPT_TERRA              = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA               = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4              = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5             = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
         FIREBASE_SERVICE_ACCOUNT_JSON = module.secrets.secret_arns["FIREBASE_SERVICE_ACCOUNT_JSON"]
         RAZORPAY_KEY_SECRET           = module.secrets.secret_arns["RAZORPAY_KEY_SECRET"]
         LLM_KEY_ENCRYPTION_SECRET     = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
         # AI Reach calls Tavily from the request handler, so the API is the
         # process that needs this. See the IAM list in modules/secrets.
-        TAVILY_API_KEY                = module.secrets.secret_arns["TAVILY_API_KEY"]
+        TAVILY_API_KEY = module.secrets.secret_arns["TAVILY_API_KEY"]
       }
     }
 
@@ -1056,6 +1084,7 @@ module "ecs" {
         OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5         = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
         LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
       }
     }
@@ -1184,7 +1213,7 @@ module "lambda" {
       # grant -- every previous one dispatched to Route.ECS, which goes through
       # ecs:RunTask and is a different permission.
       invokable_function_keys = ["task-worker"]
-      memory_mb   = 1024
+      memory_mb               = 1024
       # Ten minutes. The binding case is a delivery task backing off sixty
       # seconds between attempts; the retry loop refuses an attempt that cannot
       # finish inside what is left, so this is a ceiling rather than a target.
@@ -1203,11 +1232,17 @@ module "lambda" {
         OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5         = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
         TAVILY_API_KEY            = module.secrets.secret_arns["TAVILY_API_KEY"]
         MSG91_API_KEY             = module.secrets.secret_arns["MSG91_API_KEY"]
         LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
       }
       environment = {
+        # Must match the ECS services: agents reach retrieval from here too,
+        # and two halves of one product ranking the same query differently
+        # is worse than either value applied everywhere. See the note on
+        # RETRIEVAL_RERANKER in common_environment above.
+        RETRIEVAL_RERANKER = "voyage"
         # AWS_REGION IS NOT SET HERE. It is one of Lambda's RESERVED keys: the
         # runtime injects it with the function's own region, and CreateFunction
         # answers 400 for any request that also supplies it. Nothing is lost --
@@ -1399,6 +1434,20 @@ module "scheduler" {
     "readypick-reconcile-context-index" = {
       task            = "pickready.reconcile_context_index"
       rate_expression = "rate(60 minutes)"
+    }
+    # Registered since the credit work and scheduled by nothing until now: it
+    # was dispatched only when a bundle was granted, so a report lost to a
+    # failed dispatch or a killed container stayed lost, for a candidate who
+    # had done the work and a customer who had been charged.
+    "readypick-release-held-assessments" = {
+      task            = "pickready.release_held_assessments"
+      rate_expression = "rate(60 minutes)"
+    }
+    # Six-hourly, and a sweep rather than a hook on every tenant write: a hook
+    # would put a third-party round trip in the path of an ordinary edit.
+    "readypick-sync-intercom-companies" = {
+      task            = "pickready.sync_intercom_companies"
+      rate_expression = "rate(360 minutes)"
     }
   }
 

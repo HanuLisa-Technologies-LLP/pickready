@@ -173,6 +173,45 @@ wrote to, above an index that stayed empty.
   rendered from a fixed catalogue in `services/activity`, never from a timer
   and never from an extra model call. No chain of thought, no invented count,
   and a failure terminates the line rather than leaving it spinning.
+- **ONE SCORING RUN PER APPLICATION, AND THE LOCK IS ACROSS PROCESSES.**
+  `pg_advisory_lock`, `FOR UPDATE` and `with_for_update` appeared NOWHERE in
+  this tree before 2026-09-09: every concurrency guarantee rested on a UNIQUE
+  constraint refusing the second write, or on nothing. `services/locks` is the
+  one implementation. `run_functional_assessment` takes
+  `pg_try_advisory_xact_lock` BEFORE the credit check and the model chain, and
+  a second run RETURNS rather than waiting -- the first run is doing exactly
+  what the second came to do. `uq_functional_report_link` is not a substitute:
+  it fires at COMMIT, after both runs have paid for Miti's five evaluators and
+  Siddhi's synthesis, and the loser's retry then finds the row EXISTS and
+  rewrites a report that may already have been delivered, which is the
+  immutability rule failing without a sound. `services/coalescing` is not a
+  substitute either and says so itself: it is in-process, and `Route.ECS`
+  gives every dispatch its own container.
+- **The lock key comes from BLAKE2b, never `hash()`.** Python salts `hash()`
+  per process, so two Fargate containers would compute different keys, each
+  would take a lock nobody held, and both would score.
+  `test_the_key_is_stable_across_processes` runs a SUBPROCESS with a different
+  `PYTHONHASHSEED`, because an in-process assertion cannot see this at all.
+- **`release_held_assessments` is SCHEDULED now, and scheduling it was unsafe
+  until the lock existed.** It was registered and dispatched only from the two
+  credit-grant call sites, so a report lost to a dispatch that never arrived or
+  a container killed mid-scoring stayed lost, for a candidate who had done the
+  work and a customer who had been charged. With no tenant argument the sweep
+  also matches conversations that finished seconds ago and are being scored
+  right now: without the lock it would have MANUFACTURED the duplicate it
+  exists to repair.
+- **Intercom holds CUSTOMER data and never candidate data, by construction.**
+  Nothing existed before 2026-09-09; a repository-wide search returned zero
+  hits. `services/intercom.COMPANY_FIELDS` and `CONTACT_FIELDS` are closed
+  allowlists and the projection ITERATES THE ALLOWLIST, never the row, because
+  the failure mode of every CRM sync ever written is that it forwards the model
+  and the model grows. `SYNCABLE_ROLES` is an allowlist for the same reason a
+  `!= "candidate"` check is not: that check admits every role invented later.
+  A forbidden field name RAISES rather than being filtered out, because a
+  filter sends the rest and tells nobody. It is a six-hourly SWEEP, never a
+  hook on a tenant write, so a vendor outage cannot become an outage in
+  customer administration here, and an absent credential answers
+  `unconfigured` and sends nothing.
 - **A URL is an address, not a sentence about a candidate.**
   `contains_forbidden_number` masks URL-like tokens before its patterns run.
   Before that fix it read `.../assessments/d7be...` as an assessment word beside
@@ -182,13 +221,36 @@ wrote to, above an index that stayed empty.
 
 ### What is NOT proven, and must not be described as if it were
 
-- **No live rerank call has ever been made.** `rerank-2.5` has not been
-  resolved against the endpoint; the module is proven against a fake shaped
-  like the installed SDK. The same holds for the context prefix: that prompt
-  has never been sent to Luna.
-- **No Gemini credential exists**, so W7.2's determinism probe has not run and
-  `configured_jurors()` returns empty. The measured self-disagreement sigma
-  that W8's gate threshold needs is unmeasured.
+- ~~**No live rerank call has ever been made.**~~ **SUPERSEDED 2026-09-09.**
+  `rerank-2.5` IS real, resolved against the endpoint and then exercised
+  through the shipped module, so the SDK's real response shape is what
+  `_voyage_order` reads. Over four chunks whose FUSED order put an irrelevant
+  retail chunk first at 0.9, the cross-encoder returned both Kafka chunks
+  (0.5 and 0.4) above it, and the run recorded `reranker="voyage",
+  degraded=False`; blanking the credential recorded `reranker="lexical",
+  degraded=True, reason="credential_not_configured"`. Evidence in
+  `VERIFICATION_RESULTS.md`. **`VOYAGE_RERANK_2_5` holds the same Voyage
+  ACCOUNT key as `VOYAGE_CONTEXT_4`** -- one account serves both endpoints --
+  and the two names stay separate because a credential is named after the
+  model it unlocks, so an absent key names the missing capability rather than
+  a vendor. **The context prefix is still unproven**: that prompt has never
+  been sent to Luna.
+- **A Gemini credential exists now, and W7.2 is still not measured.** Three
+  keys are populated and the probe RAN, but the free tier's daily allowance was
+  exhausted at roughly a third of the 600 calls, so `configured_jurors()` still
+  returns empty and W8's gate threshold still has no measured sigma. What is
+  missing is quota, not code. Two findings from the partial run are worth more
+  than the sigma would have been:
+  **`models.list` IS NOT A CAPABILITY LIST.** It advertises `gemini-2.5-pro`,
+  `gemini-2.5-flash` and `gemini-2.5-flash-lite`, and all three answer
+  `generateContent` with 404 "no longer available to new users" -- the
+  `voyage-context-4` mistake in a new shape. `JUDGE_MODELS` is therefore
+  resolved by CALL, never by listing.
+  And **a quota rejection is not dispersion.** The probe's FIRST run reported
+  `sigma=0.0000, unanimous 5/5` from five cases of nothing but 404s. Only
+  in-scale answers now count toward the rate, `usable_share` travels beside
+  every sigma, and an arm that measured nothing reports `unavailable` rather
+  than a number that reads like perfect agreement.
 - **Retrieval QUALITY is unmeasured.** The golden retrieval set is 24
   hand-authored cases against a floor of 300, 0% production sample, 0 of 24
   human verified, and the shipped run is a `reference_fixture` rather than a
@@ -2713,3 +2775,13 @@ change actually needs.
 ## 8. When Unsure
 
 If a requirement in PRD.md is ambiguous and the ESD doesn't resolve it, don't guess silently — implement the most defensible interpretation, leave a clear `# ASSUMPTION:` comment at the point of implementation, and surface it back to the user rather than letting it drift into an undocumented behavior.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

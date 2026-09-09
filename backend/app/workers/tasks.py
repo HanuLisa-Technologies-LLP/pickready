@@ -1044,6 +1044,31 @@ def run_functional_assessment(link_id: str):
 
     Nothing is lost by waiting. The transcript is the evidence and it is already
     stored; the report is written from it whenever the customer tops up.
+
+    ONE RUN PER APPLICATION, ENFORCED ACROSS PROCESSES
+    ---------------------------------------------------
+    Five call sites dispatch this task: the assessment route, proctoring
+    ingestion, the video pipeline, the credit-hold release sweep and the
+    reconciler. `Route.ECS` starts one Fargate container per dispatch, so two of
+    them firing for one application are two processes sharing nothing but the
+    database, and `services/coalescing` cannot see across that boundary by its
+    own stated design.
+
+    `uq_functional_report_link` already stops two REPORTS existing. What it does
+    not stop is the cost and the damage of getting there. Both runs spend Miti's
+    five evaluators and Siddhi's synthesis before the constraint fires at
+    COMMIT; the loser then raises, and `max_attempts=2` runs the entire chain
+    again; and on that retry the row EXISTS, so the writer takes its UPDATE
+    branch and rewrites a report that may already have been delivered. Reports
+    are immutable in this product and a retake writes a NEW report beside the
+    old one, so a race rewriting one in place is that rule failing without a
+    sound.
+
+    So the second run RETURNS. That is not an error and not a degradation: the
+    first run is doing exactly what the second came to do. The lock is
+    transaction scoped, released by this task's own commit or by the rollback
+    that replaces it, with no `finally` to forget and no leak when a container
+    is killed mid-run.
     """
     from app.models.assessment import (
         AssessmentConversation,
@@ -1053,12 +1078,23 @@ def run_functional_assessment(link_id: str):
     )
     from app.models.candidate import JobCandidateLink
     from app.models.job import Job
-    from app.services import credits
+    from app.services import credits, locks
     from app.services.functional_assessment import run_assessment
     from app.services.report_evidence import persist_skill_evidence
 
     async def _task():
         async with _worker_session() as session:
+            # BEFORE the work, never after. A lock taken after the model calls
+            # would report a duplicate rather than prevent one, the same
+            # argument `require_frozen_matrix` makes for running G1 ahead of
+            # the scoring graph rather than behind it.
+            if not await locks.try_advisory_lock(session, locks.SCORING, link_id):
+                logger.info(
+                    "functional_assessment.already_running link_id=%s "
+                    "another run holds the scoring lock, returning",
+                    link_id,
+                )
+                return
             link = await session.get(JobCandidateLink, uuid.UUID(str(link_id)))
             if link is None:
                 raise ValueError(f"Application {link_id} not found")
@@ -1308,6 +1344,55 @@ def purge_proctoring_events():
             await session.commit()
             logger.info(
                 "proctoring.purged events=%d older_than_days=%d", result.rowcount, days
+            )
+    _run(_task())
+
+
+@task(
+    name="pickready.sync_intercom_companies",
+    route=Route.LAMBDA,
+    max_attempts=2,
+)
+def sync_intercom_companies():
+    """Push the CUSTOMER list to Intercom. Never a candidate, never a score.
+
+    A sweep rather than a per-write hook, and the choice is deliberate. A hook
+    on every tenant UPDATE would put a third-party round trip in the path of an
+    ordinary edit, and an outage at the vendor would become an outage in
+    customer administration here. A sweep does nothing when there is nothing to
+    send and cannot take a request down with it.
+
+    WHAT IT SENDS is decided entirely by `services/intercom.COMPANY_FIELDS`,
+    a closed allowlist that the projection ITERATES. This task hands it a
+    `tenants` row and has no say in which columns travel, which is what stops
+    the sweep growing a leak the day somebody adds a column.
+
+    UNCONFIGURED IS NOT FAILED. With no `INTERCOM_ACCESS_TOKEN` the service
+    answers `unconfigured` and this returns having sent nothing, the same shape
+    the Tavily path already has. It is logged once for the whole run rather
+    than once per tenant, because a per-tenant line would make a deliberate
+    configuration look like a storm of errors.
+    """
+    from app.models.tenant import Tenant
+    from app.services import intercom
+
+    async def _task():
+        if not intercom.is_configured():
+            logger.info("intercom.sweep_skipped reason=unconfigured")
+            return
+        async with _worker_session() as session:
+            # No `superadmin_scope` here: `worker_session` already runs with
+            # `app.bypass_rls = 'on'` session-level, because a background task
+            # is a trusted backend process that legitimately spans tenants.
+            # Wrapping it again would be a second answer to one question.
+            tenants = (await session.execute(select(Tenant))).scalars().all()
+            counts: dict[str, int] = {}
+            for tenant in tenants:
+                outcome = intercom.sync_company(tenant)
+                counts[outcome.status] = counts.get(outcome.status, 0) + 1
+            logger.info(
+                "intercom.sweep_complete tenants=%d outcomes=%s",
+                len(tenants), counts,
             )
     _run(_task())
 

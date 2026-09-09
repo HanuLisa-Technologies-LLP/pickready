@@ -10,7 +10,6 @@ from typing import AsyncIterator
 
 from fastapi import Query, APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy.orm import defer
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -459,12 +458,16 @@ async def portal_jobs(
                     Job.grace_period_end_date >= now,
                     Job.posting_end_date >= candidate.created_at,
                 )
-                .options(
-                    # Never rendered by this endpoint, and the reason the
-                    # payload was enormous.
-                    defer(Job.embedding),
-                    defer(Job.reach_embedding),
-                )
+                # NO `defer()` ON THE VECTOR COLUMNS, and the absence is the
+                # point. `jobs.embedding` and `jobs.reach_embedding` exist in
+                # the DATABASE and are deliberately NOT MAPPED on `Job`: the
+                # model reaches them through raw SQL
+                # (`_invalidate_job_embedding`) precisely so an ordinary read
+                # never drags 1024 floats per row across the wire. Deferring
+                # them was written here from inference, raised `AttributeError:
+                # type object 'Job' has no attribute 'embedding'` on every call
+                # to this endpoint, and the cost it claimed to remove had never
+                # been paid in the first place.
                 .order_by(Job.created_at.desc())
             )
         ).scalars().all()

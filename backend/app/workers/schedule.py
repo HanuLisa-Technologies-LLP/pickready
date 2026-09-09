@@ -131,6 +131,44 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "again."
         ),
     ),
+    ScheduledTask(
+        rule="readypick-release-held-assessments",
+        task="pickready.release_held_assessments",
+        interval_minutes=60,
+        why=(
+            "A completed conversation with no report is a candidate who did "
+            "the work and a customer who was charged for it, with nothing to "
+            "show. The task was REGISTERED and dispatched only from the two "
+            "credit-grant call sites, so it repaired a hold that a top-up "
+            "cleared and nothing else: a dispatch that never arrived, a "
+            "container killed mid-scoring, or a run that raised past its "
+            "attempts left the report missing permanently, because the only "
+            "thing that would ever have asked again was the top-up that had "
+            "already happened. It asks the TABLE with an outer join, never a "
+            "status column. Scheduling it was UNSAFE until the scoring lock "
+            "existed: with no tenant argument the sweep also matches "
+            "conversations that finished seconds ago and are being scored "
+            "right now, and dispatching those would have manufactured the "
+            "duplicate scoring run it is supposed to repair."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-sync-intercom-companies",
+        task="pickready.sync_intercom_companies",
+        interval_minutes=360,
+        why=(
+            "Keeps the customer list in the support tool current. A SWEEP "
+            "rather than a hook on every tenant write, because a hook would "
+            "put a third-party round trip in the path of an ordinary edit and "
+            "turn a vendor outage into an outage in customer administration "
+            "here. Six-hourly rather than hourly: nothing downstream breaks "
+            "while an industry label is a few hours stale, and the sweep "
+            "writes every tenant on every run. It sends only the closed "
+            "allowlist in `services/intercom.COMPANY_FIELDS`; a candidate is "
+            "never projected. With no credential it returns having sent "
+            "nothing, which is a configuration choice and not a failure."
+        ),
+    ),
 )
 
 RULE_NAMES: tuple[str, ...] = tuple(entry.rule for entry in SCHEDULE)
