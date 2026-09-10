@@ -78,6 +78,12 @@ logger = logging.getLogger(__name__)
 #: are hashed into the key, so a typo does not fail loudly, it silently takes a
 #: DIFFERENT lock and excludes nobody.
 SCORING = "functional_assessment.scoring"
+#: One matching run per JOB. Same reasoning as SCORING one level up: five UI
+#: and pipeline call sites dispatch `pickready.run_matching`, Route.ECS gives
+#: each its own container, and two staff members clicking "Run AI matching"
+#: in the same minute used to buy two full runs of the model chain writing
+#: the same rows. The subject is the job id.
+MATCHING = "matching.run"
 
 #: Postgres advisory lock keys are signed 64-bit. BLAKE2b rather than Python's
 #: `hash()`, which is salted per process by default: two containers would

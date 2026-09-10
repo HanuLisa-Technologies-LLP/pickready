@@ -161,7 +161,18 @@ locals {
   # redundancy for requests that have no way in, and one is enough to prove
   # what an unreachable stage is for: that the image boots, resolves its
   # secrets, and reaches RDS and Redis from a private subnet.
-  service_count = local.has_public_entry ? 2 : 1
+  # PILOT RUNS LEAN, EXPLICITLY (2026-09-11 cost decision). One task per
+  # service at rest, because this environment holds three demo tenants and
+  # zero candidates and was paying for warm redundancy nobody consumes: the
+  # analysis service alone (2 vCPU / 8 GB each) idled at two tasks for a
+  # proctoring feature no assessment has ever exercised here. Autoscaling
+  # CEILINGS are unchanged or higher, so behaviour under real load is
+  # preserved: target tracking (CPU 65) grows each service toward its
+  # max_count and shrinks it back, and rolling deploys still start the new
+  # task before draining the old, so a deploy is not an outage. What IS
+  # accepted is that an AZ failure briefly downs the demo site; production
+  # keeps its own sizing and this block does not touch it.
+  service_count = 1
 
   tags = {
     Project     = var.project
@@ -1011,7 +1022,9 @@ module "ecs" {
       cpu           = 512
       memory        = 1024
       desired_count = local.service_count
-      max_count     = local.service_count * 2
+      # The ceiling the OLD sizing allowed (4), kept: lowering the resting
+      # count must not lower what the service can grow to under load.
+      max_count     = 4
       port          = 8000
       health_path   = "/health"
       # REGISTERS THE TASKS WITH THE LOAD BALANCER, when there is one. Without
@@ -1161,7 +1174,7 @@ module "ecs" {
       cpu              = 512
       memory           = 1024
       desired_count    = local.service_count
-      max_count        = local.service_count * 2
+      max_count        = 4
       port             = 3000
       health_path      = "/"
       target_group_arn = local.has_public_entry ? module.alb[0].target_group_arns["frontend"] : null
@@ -1183,7 +1196,10 @@ module "ecs" {
       cpu           = 2048
       memory        = 8192
       desired_count = local.service_count
-      max_count     = local.service_count * 2
+      # Two, not four: each analysis task is 2 vCPU / 8 GB, the costliest
+      # step in the cluster, and its workload (fifteen-second audio chunks)
+      # has never occurred in this environment.
+      max_count     = 2
       port          = 8100
       health_path   = "/health"
       discoverable  = true
