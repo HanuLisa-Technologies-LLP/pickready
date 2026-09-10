@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from typing import Sequence
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Select, func, select
@@ -354,13 +355,38 @@ async def reply_as_customer(
 # Provider Portal
 # ═══════════════════════════════════════════════════════════════════════════
 
-async def _provider_row(
-    session: AsyncSession, thread: SupportThread
+async def _provider_names(
+    session: AsyncSession, threads: Sequence[SupportThread]
+) -> tuple[dict[uuid.UUID, str], dict[uuid.UUID, str]]:
+    """Tenant and assignee names for a PAGE of threads, in two statements.
+
+    Was one `session.get` per tenant plus one per assignee, per row: a page of
+    twenty-five threads across twenty-five customers cost up to fifty queries
+    to render names. The N+1 shape, caught by this session's own audit sweep
+    a day after being written, which is why the sweep exists.
+    """
+    tenant_ids = {thread.tenant_id for thread in threads}
+    user_ids = {thread.assigned_to for thread in threads if thread.assigned_to}
+    tenant_names: dict[uuid.UUID, str] = {}
+    user_names: dict[uuid.UUID, str] = {}
+    if tenant_ids:
+        rows = await session.execute(
+            select(Tenant.id, Tenant.name).where(Tenant.id.in_(tenant_ids))
+        )
+        tenant_names = {row.id: row.name or "" for row in rows}
+    if user_ids:
+        rows = await session.execute(
+            select(User.id, User.full_name).where(User.id.in_(user_ids))
+        )
+        user_names = {row.id: row.full_name for row in rows}
+    return tenant_names, user_names
+
+
+def _provider_row(
+    thread: SupportThread,
+    tenant_names: dict[uuid.UUID, str],
+    user_names: dict[uuid.UUID, str],
 ) -> ProviderThreadOut:
-    tenant = await session.get(Tenant, thread.tenant_id)
-    assignee = (
-        await session.get(User, thread.assigned_to) if thread.assigned_to else None
-    )
     return ProviderThreadOut(
         id=thread.id,
         subject=thread.subject,
@@ -368,9 +394,11 @@ async def _provider_row(
         created_at=thread.created_at,
         last_message_at=thread.last_message_at,
         tenant_id=thread.tenant_id,
-        tenant_name=getattr(tenant, "name", "") or "",
+        tenant_name=tenant_names.get(thread.tenant_id, ""),
         assigned_to=thread.assigned_to,
-        assigned_to_name=getattr(assignee, "full_name", None),
+        assigned_to_name=user_names.get(thread.assigned_to)
+        if thread.assigned_to
+        else None,
     )
 
 
@@ -441,10 +469,11 @@ async def provider_list_threads(
         .all()
     )
     counts = await _counts_by_thread(session, [t.id for t in rows])
+    tenant_names, user_names = await _provider_names(session, rows)
 
     items: list[ProviderThreadOut] = []
     for thread in rows:
-        row = await _provider_row(session, thread)
+        row = _provider_row(thread, tenant_names, user_names)
         row.message_count = counts.get(thread.id, 0)
         items.append(row)
 
@@ -465,7 +494,8 @@ async def provider_read_thread(
     thread = await session.get(SupportThread, thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
-    row = await _provider_row(session, thread)
+    tenant_names, user_names = await _provider_names(session, [thread])
+    row = _provider_row(thread, tenant_names, user_names)
     messages = await _message_rows(session, thread.id)
     return ProviderThreadDetailOut(
         **row.model_dump(exclude={"message_count"}),
@@ -520,4 +550,5 @@ async def provider_patch_thread(
     thread.status = body.status
     thread.updated_at = datetime.now(timezone.utc)
     await session.flush()
-    return await _provider_row(session, thread)
+    tenant_names, user_names = await _provider_names(session, [thread])
+    return _provider_row(thread, tenant_names, user_names)
