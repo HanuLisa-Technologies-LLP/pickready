@@ -39,7 +39,7 @@ from sqlalchemy.sql.elements import TextClause
 
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
-from app.services import llm_router, matching, matching_categories
+from app.services import llm_router, locks, matching, matching_categories
 from app.services.agents import artifacts, gates, identity
 from app.services.matching import client_breakdown, ranking_payload
 from app.services.verification import base as verification
@@ -868,6 +868,16 @@ class _Harness:
 
     def _install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         ids = [profile.id for profile in self.profiles]
+
+        # The harness's fake session speaks no real SQL, and the per-job
+        # matching lock (2026-09-11) probes `pg_try_advisory_xact_lock`
+        # through it. Stubbed as acquired: this file's subject is publishing
+        # parity, and the lock itself is proven against the real database in
+        # test_matching_lock.py, including the refusal direction.
+        async def _lock_acquired(_session, _namespace, _subject):
+            return True
+
+        monkeypatch.setattr(locks, "try_advisory_lock", _lock_acquired)
 
         async def _embed(_texts):
             return [[0.1] * 1024]
