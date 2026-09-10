@@ -814,3 +814,25 @@ runtimes. Suite on the deployed commit: 6132 passed, 1 skipped, 0 failed.
   verified by digest against RUNNING tasks. Lambdas all on `sha-3b27abb`.
 - Support routes answer 401 unauthenticated at the apex: mounted and gated.
   Zero API errors in the ten minutes after rollout.
+
+## 2026-09-11 — The engineering-audit close-out, pilot (ap-south-2)
+
+Commit `bf74fc1` on `feat/ai-upgrade-rpn-ai-up-001`. Backend `sha-bf74fc1`
+(single plain manifest, one digest for ECS and Lambda); frontend deliberately
+kept on yesterday's `sha-3b27abb` because no frontend file changed. Suite on
+the deployed commit: 6135 passed, 1 skipped, 0 failed.
+
+- The LLD audit's three fixes ship: the per-job matching lock, the support
+  queue N+1 removal, and the pilot resize to one task per service at rest
+  with autoscaling ceilings kept.
+- The resize was PROVEN, not assumed: after the apply, target tracking
+  scaled api, frontend and analysis in, and `describe-services` read back
+  desired 1 / running 1 for all three. Roughly 40% of steady-state Fargate
+  spend, gone, with rolling deploys and load behaviour unchanged.
+- One operational lesson worth keeping: `MSYS_NO_PATHCONV=1` (required for
+  AWS CLI ARNs on Git Bash) BREAKS docker compose's path conversion, so a
+  shell that exports it for a build cannot also launch `scripts/test.sh`.
+  The suite "failed" instantly with a mangled compose path; the fix is a
+  clean environment per concern, and the gate caught it because a suite
+  that did not run reports nothing that looks like a pass.
+- Audit deliverables: `docs/architecture/ENGINEERING_AUDIT_2026-09-11.md`.

@@ -379,3 +379,40 @@ connection ceiling under Lambda concurrency) becomes measurable only when
 real load exists. The standing watch item is CloudWatch `DatabaseConnections`
 against the new ceiling, and the pinning analysis stands recorded for whoever
 next reaches for a proxy.
+
+---
+
+# Fourth deployment, commit bf74fc1: the audit close-out (2026-09-11)
+
+The LLD engineering audit's three fixes, deployed and proven. Backend image
+`sha-bf74fc1`, digest
+`sha256:0fe4cdda9e9a90fed0291bada753f760afffb9f9806370360e91cef832a891a5`;
+frontend unchanged and deliberately redeployed from yesterday's
+`sha-3b27abb` digest, because no frontend file changed and a rebuilt
+identical image would only manufacture a second digest for one artifact.
+
+| Step | Result |
+|---|---|
+| Backend suite on the deployed commit | 6135 passed, 1 skipped, 0 failed |
+| `terraform apply` (pilot) | 3 added, 5 changed, 3 destroyed: three backend task-definition revisions and the three autoscaling minimums lowered to one |
+| Migration job | exit 0, polled to STOPPED; schema read back `0094_report_provenance` (no new migration this release, run per procedure) |
+| Lambdas | all 3 image-backed functions running `sha-bf74fc1` |
+| **Verified by digest** | api, frontend, analysis: every running task is the expected image |
+| **The resize, proven rather than assumed** | target tracking scaled every service in: `describe-services` read back desired 1 / running 1 for api, frontend AND analysis after the apply. The analysis service alone was 2 x (2 vCPU / 8 GB) idling for a feature this environment has never exercised; steady-state Fargate spend is roughly 40% lower with every autoscaling ceiling kept |
+| Site | 200 |
+| API errors in the thirty minutes around rollout | none |
+
+## What this deployment carries
+
+- **One matching run per job, across processes.** `locks.MATCHING` taken in
+  `matching.run_matching` before the first vendor call; ordering pinned by
+  AST; the refusal proven against the real database with a held lock
+  (`tests/test_matching_lock.py`). Until today two concurrent "Run AI
+  matching" clicks bought two full pipeline runs.
+- **The support provider queue renders names from two IN-list statements per
+  page** instead of up to fifty single-row gets, caught by the audit's
+  repeatable N+1 sweep one day after the code was written.
+- **The audit deliverables document**,
+  `docs/architecture/ENGINEERING_AUDIT_2026-09-11.md`: seventeen
+  deliverables, every claim naming its test or verification, the refusals
+  with reasons, and the debt inventory.
