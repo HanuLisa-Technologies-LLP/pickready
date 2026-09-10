@@ -58,6 +58,7 @@ document.
 |---|---|
 | [ESD.md](architecture/ESD.md) | Engineering and system design, implementation-aligned |
 | [AI_RUNTIME.md](architecture/AI_RUNTIME.md) | The AI runtime AS BUILT: retrieval, the reranker, the scoring lock, the eval layer and the release gate. Names what is NOT built, in the same document |
+| [ENGINEERING_AUDIT_2026-09-11.md](architecture/ENGINEERING_AUDIT_2026-09-11.md) | The LLD brief's seventeen audit deliverables, measured against this tree: three real gaps found and fixed, the refusals with reasons, and the honest debt inventory |
 | [adr/](architecture/adr/) | Architecture decision records |
 
 ### `spec/` — normative specifications
