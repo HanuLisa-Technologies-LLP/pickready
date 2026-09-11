@@ -124,29 +124,30 @@ async def _add_participant(
     refuse the duplicate, rather than checking first and racing."""
     if party not in PARTIES:
         raise ConversationRefused(f"{party!r} is not a conversation party")
-    try:
-        async with session.begin_nested():
-            await session.execute(
-                text(
-                    "INSERT INTO conversation_participants "
-                    "(id, conversation_id, tenant_id, party, user_id, "
-                    " external_email, external_name, created_at) "
-                    "VALUES (gen_random_uuid(), :cid, :tid, :party, :uid, "
-                    " :email, :name, now())"
-                ),
-                {
-                    "cid": str(conversation_id),
-                    "tid": str(tenant_id),
-                    "party": party,
-                    "uid": str(user_id) if user_id else None,
-                    "email": external_email,
-                    "name": external_name,
-                },
-            )
-    except IntegrityError:
-        # Already in the conversation. Adding somebody twice is not an error
-        # anybody needs to hear about.
-        pass
+    # ON CONFLICT rather than a caught IntegrityError, and the difference is
+    # not style. A swallowed exception hides every OTHER integrity failure this
+    # statement could raise (a dangling conversation, a tenant that no longer
+    # exists) behind the one that is expected, which is exactly the silent
+    # fallback this codebase forbids. Stating the no-op in SQL means the
+    # database absorbs the duplicate and nothing else.
+    await session.execute(
+        text(
+            "INSERT INTO conversation_participants "
+            "(id, conversation_id, tenant_id, party, user_id, "
+            " external_email, external_name, created_at) "
+            "VALUES (gen_random_uuid(), :cid, :tid, :party, :uid, "
+            " :email, :name, now()) "
+            "ON CONFLICT ON CONSTRAINT uq_participant_user DO NOTHING"
+        ),
+        {
+            "cid": str(conversation_id),
+            "tid": str(tenant_id),
+            "party": party,
+            "uid": str(user_id) if user_id else None,
+            "email": external_email,
+            "name": external_name,
+        },
+    )
 
 
 async def ensure_candidate_conversation(
