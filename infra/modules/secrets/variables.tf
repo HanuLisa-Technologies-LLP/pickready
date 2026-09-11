@@ -180,6 +180,36 @@ variable "placeholder_value" {
   default     = "PLACEHOLDER_NOT_CONFIGURED"
 }
 
+variable "service_secret_writers" {
+  description = <<-EOT
+    {service -> the exact secrets it may WRITE}. Almost always empty.
+
+    Reading a secret and replacing it are different powers, and this module has
+    only ever granted the first. One thing needs the second, and the reason it
+    does is the 2026-09-11 outage: `DATABASE_URL` held a hand-copied snapshot
+    of the RDS MASTER password, `manage_master_user_password` had Secrets
+    Manager rotating that password on a schedule, and seven days after the
+    instance was created the copy went stale and every database connection in
+    the product failed at once.
+
+    The fix is the design the `rds` module has documented from the start: the
+    DSN carries a least-privileged application role whose password nothing else
+    rotates. `app.scripts.provision_app_db_role` mints that password INSIDE the
+    VPC and writes it here, so it is never an argument, never in a RunTask call,
+    never in CloudTrail and never in a shell history. Rotating it later is the
+    same script run again.
+
+    Scoped the same way the read grant is: one service, an enumerated list of
+    secret names, never a prefix. A service absent from this map can read what
+    `service_secrets` allows and write nothing, which is the correct answer for
+    every service except the one-shot migration task.
+  EOT
+  type        = map(list(string))
+  default = {
+    "migrate" = ["DATABASE_URL"]
+  }
+}
+
 variable "kms_key_id" {
   type = string
 }

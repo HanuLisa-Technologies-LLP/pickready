@@ -147,6 +147,31 @@ data "aws_iam_policy_document" "service" {
     ]
   }
 
+  # WRITING is a separate statement, over a separate list, and for almost every
+  # service the list is empty and the statement is not emitted at all.
+  #
+  # `dynamic` rather than a second policy document because the grant belongs in
+  # the same reviewable object as the read grant: a reader asking "what may
+  # migrate touch" should not have to know that write access lives somewhere
+  # else. See `service_secret_writers` for the outage that made one service
+  # need this.
+  #
+  # PutSecretValue only. Not DeleteSecret, not UpdateSecret, not RestoreSecret:
+  # replacing a value is the operation, and removing the container is not
+  # something a rotation job should be able to do at all.
+  dynamic "statement" {
+    for_each = length(lookup(var.service_secret_writers, each.key, [])) > 0 ? [1] : []
+    content {
+      sid     = "ReplaceTheValueOfTheSecretsThisServiceRotates"
+      effect  = "Allow"
+      actions = ["secretsmanager:PutSecretValue"]
+      resources = [
+        for secret in var.service_secret_writers[each.key] :
+        aws_secretsmanager_secret.this[secret].arn
+      ]
+    }
+  }
+
   # Decrypting is a separate permission from reading, and it is scoped to the
   # one key and to Secrets Manager as the calling service. Without the
   # ViaService condition this grant would let the role decrypt anything else
@@ -161,6 +186,26 @@ data "aws_iam_policy_document" "service" {
       test     = "StringEquals"
       variable = "kms:ViaService"
       values   = ["secretsmanager.${var.region}.amazonaws.com"]
+    }
+  }
+
+  # Writing a new version ENCRYPTS it, which is a different KMS action from
+  # reading one. Granted only to a service that writes, under the same
+  # ViaService condition, so the key cannot be used for anything but Secrets
+  # Manager acting on this role's behalf.
+  dynamic "statement" {
+    for_each = length(lookup(var.service_secret_writers, each.key, [])) > 0 ? [1] : []
+    content {
+      sid       = "EncryptTheVersionsThisServiceWrites"
+      effect    = "Allow"
+      actions   = ["kms:GenerateDataKey"]
+      resources = [var.kms_key_arn]
+
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = ["secretsmanager.${var.region}.amazonaws.com"]
+      }
     }
   }
 }
@@ -195,6 +240,20 @@ resource "terraform_data" "validate_service_secrets" {
         alltrue([for s in secrets : contains(var.secret_names, s)])
       ])
       error_message = "service_secrets names a secret that is not in secret_names. That would produce a policy granting access to an ARN nothing creates, which reads as a working grant in a review."
+    }
+
+    # The same check for the write map, plus one the read map does not need:
+    # the policy documents are built with `for_each = var.service_secrets`, so
+    # a WRITER naming a service that has no read entry would be dropped in
+    # silence. A rotation job whose grant quietly did not exist would fail at
+    # the last step, after it had already changed a database password.
+    precondition {
+      condition = alltrue([
+        for service, secrets in var.service_secret_writers :
+        contains(keys(var.service_secrets), service) &&
+        alltrue([for s in secrets : contains(var.secret_names, s)])
+      ])
+      error_message = "service_secret_writers names a service with no service_secrets entry, or a secret that is not in secret_names. The first is silently dropped when the policies are built, which is worse than an error."
     }
   }
 }

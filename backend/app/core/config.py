@@ -49,6 +49,26 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://pickready:pickready@localhost:5432/pickready"
     postgres_rls_app_role: str = "pickready_app"
+    # The role migrations SET ROLE to before running DDL, or empty to skip.
+    #
+    # WHY THIS EXISTS (2026-09-11). `DATABASE_URL` used to carry the RDS MASTER
+    # credential, which `manage_master_user_password = true` hands to Secrets
+    # Manager to ROTATE on a schedule. AWS rotated it seven days after the pilot
+    # instance was created, the hand-composed DSN kept the old password, and
+    # every database connection in the product failed at once: the API, the
+    # health probe, and therefore sign-in. The DSN now carries the least
+    # privileged application role (`postgres_rls_app_role`), which owns no
+    # object and whose password nothing else rotates, exactly as
+    # `infra/modules/rds` has documented the design from the start.
+    #
+    # That role deliberately has no DDL rights, so the migration job, and ONLY
+    # the migration job, escalates to the object owner for the length of its
+    # connection. It can, because the login role is a NOINHERIT member of the
+    # owner: membership permits `SET ROLE` while NOINHERIT means an ordinary
+    # application session holds none of the owner's privileges. Left unset in
+    # every runtime that serves traffic, so the escalation is reachable from one
+    # container role and not from the API.
+    postgres_migration_role: str = ""
 
     # Connection pool (app/core/db.get_engine). The SQLAlchemy defaults (5 + 10)
     # are small enough that a few concurrent tabs queue for a connection and

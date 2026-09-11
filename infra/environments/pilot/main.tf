@@ -101,6 +101,20 @@ provider "aws" {
 locals {
   environment = "pilot"
 
+  # The role that OWNS every database object. Not the RDS master: the master's
+  # password is rotated by Secrets Manager on a seven-day schedule, and on
+  # 2026-09-11 that rotation took the whole product down because `DATABASE_URL`
+  # held a copy of it. Ownership was moved here so the master is needed exactly
+  # once, and the application's own credential is one ReadyPick rotates.
+  #
+  # A LITERAL, and it has to be: Terraform does not create this role. SQL does
+  # (`app.scripts.provision_app_db_role`, through
+  # `scripts/rotate-app-db-credential.sh`), for the same reason `CREATE
+  # EXTENSION vector` lives in migration 0001 rather than in the rds module --
+  # a Postgres provider holding the master credential in state is worse than
+  # the duplication of a name.
+  db_owner_role = "readypick_owner"
+
   # The frontend's tag, falling back to the shared one. See the variable's own
   # description for why the two can differ and what an apply that ignores it
   # does to the running service.
@@ -1166,6 +1180,33 @@ module "ecs" {
       readonly_root = true
       secrets = {
         DATABASE_URL = module.secrets.secret_arns["DATABASE_URL"]
+      }
+      # THE ONLY PLACE IN THE CLUSTER THAT CAN ESCALATE, AND THE ONLY PLACE
+      # THAT CAN REWRITE THE DSN. Both belong to the one-shot job and to
+      # nothing that serves a request.
+      #
+      # `DATABASE_URL` carries a least-privileged role that owns no object, so
+      # `alembic upgrade` has to SET ROLE to the owner for DDL, and
+      # `app.scripts.provision_app_db_role` has to be able to replace the DSN
+      # when it rotates that role's password. The API, the agent and the
+      # Lambda worker read the same secret and have neither variable, so
+      # neither power is reachable from a route.
+      #
+      # Why any of this exists: `DATABASE_URL` used to hold a copy of the RDS
+      # MASTER password, which `manage_master_user_password` has Secrets
+      # Manager rotate on a schedule. It rotated on 2026-09-11, the copy went
+      # stale, and every database connection in the product failed at once.
+      #
+      # The owner is a DEDICATED NOLOGIN role rather than the RDS master, and
+      # PostgreSQL 16 is the reason: a role holds no ADMIN OPTION on itself, so
+      # the master cannot grant itself to the application role, and it is not a
+      # superuser here. It can grant a role it CREATED, so
+      # `app.scripts.provision_app_db_role` creates this one, hands it every
+      # object with REASSIGN OWNED, and grants it onward -- after which the
+      # master is unused and its rotation stops mattering.
+      environment = {
+        POSTGRES_MIGRATION_ROLE = local.db_owner_role
+        APP_DSN_SECRET_ID       = module.secrets.secret_arns["DATABASE_URL"]
       }
     }
 
