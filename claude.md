@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| The rotated credential (2026-09-11) | The database credential split, TLS on the DSN, the primary-contact carve-out, the AI Reach contact harvest |
 | Native support + runtime completions (2026-09-10) | The Support surface, the vendor sync removal, the RDS proxy refusal, W6.5, W6.6, report provenance, the golden set at 60 |
 | AI runtime upgrade (2026-09-09) | The retrieval index, the tool firewall, the action ledger, the eval OS, the sufficiency gate, AI activity |
 | Company DNA removed (2026-09-09) | Gate 1 on the Company Profile, the two-layer framework, the surviving detector |
@@ -62,6 +63,117 @@ phase sections above them are where the sharp edges are.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
+
+## Current hard rules, the rotated credential (2026-09-11)
+
+The product was DOWN for part of this day and nothing had been deployed. It is
+the most useful outage this project has had, because the cause was a sentence
+in this repository that had described the right design since the day it was
+written, and had never been true.
+
+### THE APPLICATION'S DATABASE CREDENTIAL IS ITS OWN, AND NOTHING ELSE ROTATES IT
+
+`infra/modules/rds`'s header has always read "THE APPLICATION DOES NOT USE THE
+MASTER CREDENTIAL. `DATABASE_URL` is a separate secret holding a
+least-privileged application role; the master exists to create that role and to
+run migrations." **That role had never been created.** `DATABASE_URL` was
+hand-composed with the RDS master username and a COPY of its password, and
+`manage_master_user_password = true` hands that password to Secrets Manager to
+rotate on a schedule. Seven days after the pilot instance was created, AWS
+rotated it. Every connection in the product failed at once: the API, `/health`,
+and therefore sign-in.
+
+- **A copy of a credential something else rotates is an outage with a date on
+  it.** Not a risk, a schedule. The only durable fix is to stop holding the
+  copy, and `pickready_app` already existed for exactly this: migration 0001
+  created it and every migration since has maintained its grants. It was
+  NOLOGIN, which is the one thing missing.
+  `app.scripts.provision_app_db_role` gives it LOGIN and a password ReadyPick
+  owns, and `scripts/rotate-app-db-credential.sh` runs it again to rotate. The
+  password is minted INSIDE the task and written straight to Secrets Manager,
+  so it is never an argument, never in a RunTask call, never in CloudTrail and
+  never in a shell history.
+- **It PROVES the new credential before it writes the secret.** Opening a second
+  connection with it and reading through the policies, then writing. The other
+  order would end this outage by causing it.
+- **NOINHERIT, and the migration job is the only thing that escalates.** The
+  login role is a member of the object owner, so `alembic/env.py` can
+  `SET ROLE` for DDL; NOINHERIT means an ordinary session holds none of the
+  owner's privileges until it asks. `POSTGRES_MIGRATION_ROLE` is set on the
+  `migrate` container and on nothing that serves a request, and
+  `test_app_db_credential.py` sweeps every environment's Terraform to keep it
+  that way. Two consequences fall out and both are improvements: the app can no
+  longer run DDL at all, and `REVOKE UPDATE, DELETE ON audit_log` finally binds,
+  because it never bound while the app connected as the owner.
+- **`PutSecretValue` is a grant, and it is one service over one secret.**
+  `service_secret_writers` in `infra/modules/secrets`, enumerated like the read
+  map, with a precondition that refuses a writer naming a service that has no
+  read entry -- the policies are built with `for_each = var.service_secrets`, so
+  that entry would otherwise be dropped in silence and the rotation would fail
+  after it had already changed the password.
+
+### THE DSN CARRIES `ssl=require`, AND THE REASON IS THE ERROR MESSAGE
+
+asyncpg's default `prefer` mode retries a refused connection WITHOUT TLS. So the
+traceback said
+
+    no pg_hba.conf entry for host "10.0.11.22", user "readypick_admin",
+    database "readypick", no encryption
+
+which reads as a network or TLS fault and sent the first hour of the
+investigation in the wrong direction. The database's own log had the answer one
+line earlier: `password authentication failed`, on a connection that had matched
+the `hostssl` rule perfectly. **A fallback that changes the error message is
+worse than no fallback**, and this one also meant the product was willing to
+carry a tenant's data across the VPC in the clear. `?ssl=require` removes both.
+`_compose_dsn` carries the query string across verbatim so a rotation cannot
+drop it, and a test asserts that.
+
+- **READ THE DATABASE'S LOG, NOT ONLY THE APPLICATION'S.** `log_connections = 1`
+  is on in the pilot parameter group and it is what settled this in one minute
+  after an hour of reading tracebacks.
+
+### The Provider may set a customer's primary contact. One route, and it is named
+
+Read-only-by-absence stands. The carve-out is `PUT
+/provider/customers/{id}/primary-contact` and its justification is that the
+primary contact is not the customer's own data in the sense the rule protects:
+it is the DOOR into the tenant. Onboarding collected the address once, so a typo,
+an expired invitation, or a tenant seeded without one left a customer
+permanently unreachable and no route anywhere could repair it.
+
+- **`test_provider_portal.PROVIDER_WRITES` now pins the EXACT set of writes.**
+  An inequality only forbids the shapes somebody thought of; the exact set
+  makes a second carve-out a test change with a justification attached.
+- **Changing a bound account's email is a REBIND, never a field write.** Auth
+  resolves an identity by `firebase_uid` OR email, so an account that kept its
+  uid while its email moved would leave the ORIGINAL person signed in under the
+  NEW address. The uid is cleared, the row returns to `invited`, the prior
+  pending invite is revoked, a fresh one is sent, and `rebound` is both audited
+  and serialized so the screen can say what happened before it happens. The
+  same applies to a BD account: `PATCH /admin/bd-users/{id}` now accepts an
+  email and rebinds identically.
+
+### AI Reach: a published mailbox is READ, never inferred
+
+Every card reported no contact, for every company. Two defects wore one symptom,
+which is why "it cannot find a single usual company site" was both true and not
+about finding sites.
+
+- **The evaluator is forbidden from inferring a contact, and a search snippet
+  almost never prints one.** So the model correctly reported nothing, forever.
+  `web_research.harvest_contacts` re-reads pages ALREADY FETCHED and can only
+  find what a page actually published, which meets the never-infer bar by
+  construction instead of by instruction. Three guards: the address's
+  registrable domain must be the company's own (a job board's mailbox is never
+  attributed to the employer it lists), the local part must be on a role-mailbox
+  allowlist (a named person's address on a page is not a hiring contact, and
+  publishing it would be scraping), and `contact_source_url` is always the page
+  it appeared on. An evaluator-verified contact is never overwritten.
+- **The official-site link existed the whole time, in `text-brand-700` on a
+  dark surface.** Dark navy on dark navy. A link nobody can see and a link that
+  does not exist are the same bug report, and no amount of work on the retrieval
+  half would have fixed it.
 
 ## Current hard rules, native support and the runtime completions (2026-09-10)
 

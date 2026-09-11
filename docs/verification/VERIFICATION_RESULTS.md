@@ -416,3 +416,93 @@ identical image would only manufacture a second digest for one artifact.
   `docs/architecture/ENGINEERING_AUDIT_2026-09-11.md`: seventeen
   deliverables, every claim naming its test or verification, the refusals
   with reasons, and the debt inventory.
+
+---
+
+# The rotated master password, and the outage it caused (2026-09-11)
+
+**The product was DOWN and nothing had been deployed.** Sign-in returned 500;
+so did `/health`. This section records what was observed, in the order it was
+observed, because the misleading half is instructive and will be somebody's
+first clue again.
+
+## What the application said, and why it was the wrong clue
+
+```
+asyncpg.exceptions.InvalidAuthorizationSpecificationError: no pg_hba.conf entry
+for host "10.0.11.22", user "readypick_admin", database "readypick", no encryption
+```
+
+Read as a TLS or networking fault. It is neither. asyncpg's default `prefer`
+SSL mode RETRIES a refused connection without TLS, so this is the second
+attempt's rejection, and the first attempt's rejection is the real one.
+
+## What the database said
+
+`log_connections = 1` is on in the pilot parameter group. From
+`error/postgresql.log.2026-09-11-10`:
+
+```
+10.0.10.115(41530):readypick_admin@readypick:FATAL:  password authentication failed for user "readypick_admin"
+10.0.10.115(41530):readypick_admin@readypick:DETAIL:  Connection matched file "/rdsdbdata/config/pg_hba.conf" line 15: "hostssl all all all md5"
+10.0.10.115(41536):readypick_admin@readypick:FATAL:  no pg_hba.conf entry for host "10.0.10.115", ... no encryption
+```
+
+Two lines, one connection attempt each, the second being asyncpg's plaintext
+retry of the first. The TLS rule had matched perfectly well.
+
+## The cause, with its timestamps
+
+| Observation | Value |
+|---|---|
+| RDS event | `Reset master credentials`, 2026-09-11T04:08:19Z |
+| First application failure | 2026-09-11T04:28:40Z (pooled connections carried the gap) |
+| Instance created | 2026-09-04T19:07:28Z, seven days earlier |
+| `manage_master_user_password` | `true` -- AWS generates AND ROTATES the master password |
+| `DATABASE_URL` before the repair | the master username, and a COPY of the master password |
+| Password in `DATABASE_URL` vs the managed secret | **did not match** (checked programmatically, never printed) |
+
+`infra/modules/rds` has documented the correct design since it was written:
+the application uses a least-privileged role, the master exists to create that
+role and to run migrations. That role had never been created.
+
+## Restore, and the two things proven on the way
+
+| Step | Result |
+|---|---|
+| `DATABASE_URL` rewritten from the AWS-managed master secret | version `b736a3a2` |
+| `readypick-pilot-api` forced new deployment | rolled to one running task, PRIMARY COMPLETED |
+| `GET /health` after the roll | `200 OK`, `queries=1 sql_ms=0.6` -- a real statement, not a liveness stub |
+| pg_hba / auth failures in the 7 minutes after | **0** |
+| `?ssl=require` added to the DSN, api rolled again | `GET /health` `200 OK`. **TLS is now proven end to end in pilot**, and the silent plaintext fallback is gone |
+
+`ssl=require` was verified to be accepted by the installed stack before it was
+deployed: SQLAlchemy 2.0.49's asyncpg dialect passes the query parameter
+straight through as asyncpg's `ssl` argument.
+
+## The durable fix, and what is proven about it
+
+`app.scripts.provision_app_db_role` gives the existing `pickready_app` role
+(migration 0001, NOLOGIN, grants maintained by every migration since) a LOGIN
+and a password ReadyPick owns, makes it a NOINHERIT member of the object owner
+so `alembic/env.py` can `SET ROLE` for DDL, proves the credential by opening a
+second connection with it, and only then writes the DSN secret.
+
+| Claim | Evidence |
+|---|---|
+| The role provisions and the credential works | Run against a local `pgvector/pgvector:pg16` at migration head: `ALTER ROLE`, the owner grant and the canonical grants all applied, and the probe connection authenticated and read through the policies |
+| Rotation cannot drop the TLS parameter | `test_app_db_credential.test_the_ssl_parameter_survives_rotation` |
+| Only the migration job can escalate or rewrite the DSN | `test_app_db_credential.test_only_the_migration_job_can_escalate_or_rewrite_the_dsn`, swept over every environment's Terraform |
+| The write grant is `PutSecretValue` on one secret, for one service | `test_the_only_secret_anything_may_write_is_the_dsn_and_only_migrate_may` |
+
+## What is NOT yet proven, and must not be described as if it were
+
+- **The pilot has not been switched to the application role.** The DSN in pilot
+  still carries the master credential, now with `ssl=require`. Until
+  `scripts/rotate-app-db-credential.sh` has run against pilot and the services
+  have been rolled, the seven-day clock is still running and the next rotation
+  will take the site down again.
+- **The full suite has not been run with the application role as the connection
+  role.** A run was attempted and stalled during pytest collection; the stall
+  reproduced and was not diagnosed. Until it is green, "the product works
+  least-privileged" is a design intention and not a measurement.
