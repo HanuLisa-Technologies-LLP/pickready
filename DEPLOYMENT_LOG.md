@@ -836,3 +836,56 @@ the deployed commit: 6135 passed, 1 skipped, 0 failed.
   clean environment per concern, and the gate caught it because a suite
   that did not run reports nothing that looks like a pass.
 - Audit deliverables: `docs/architecture/ENGINEERING_AUDIT_2026-09-11.md`.
+
+## 2026-09-12 — The application's own database credential, pilot (ap-south-2)
+
+Commit `a36cd00` on `feat/ai-upgrade-rpn-ai-up-001`. Backend and frontend both
+`sha-a36cd00`. Suite on the deployed commit: 6203 passed, 1 skipped, 0 failed.
+
+**The product no longer holds the RDS master credential.** `DATABASE_URL` now
+carries `pickready_app` with a password ReadyPick owns, object ownership sits on
+a dedicated `readypick_owner` role, and the master is unused. AWS rotates that
+master again on 2026-09-19; on 2026-09-11 that rotation took the whole site
+down, and it now cannot.
+
+- `rotate-app-db-credential.sh` ran BEFORE the migration, which is the required
+  order: `POSTGRES_MIGRATION_ROLE` is set on the migrate container and the role
+  it names did not exist yet.
+- The migration then ran AS `pickready_app`, escalating with `SET ROLE`, and
+  applied 0095. That is the escalation design proven in production rather than
+  in a rehearsal.
+- Services api 28 -> 29, frontend 15 -> 16; analysis untouched on 12. All three
+  verified by digest against RUNNING tasks. All 3 image-backed Lambdas recycled
+  onto the same backend image, which is what makes them pick up the new DSN
+  (`secrets_bootstrap` fetches once per execution environment).
+- Site 200, login 200, API 200, `/health` 200 with real SQL, and ZERO 500s in
+  the fifteen minutes around the rollout.
+
+### One real defect this deployment found, before it did any damage
+
+The first rotation attempt FAILED with `AccessDeniedException` on
+`PutSecretValue`. The write grant had been added to the per-service secrets
+policy, which is attached to the EXECUTION role; the script writes the secret
+with the application's own boto3 client, which runs as the TASK role. A grant on
+the execution role is a grant the code can never use.
+
+It failed SAFELY, which was the design: the script proves the new credential
+before writing the secret, so the existing DSN stayed in place and the site
+never noticed. The fix splits the write into its own policy attached to the task
+role, the same split `task_s3` already makes and for the same stated reason.
+
+The ownership DDL had already committed at that point, and the site stayed up
+throughout: the master inherits `readypick_owner`, so moving ownership was
+transparent to the running API.
+
+### What this deployment carries besides the credential fix
+
+Migration 0095: `candidate_employments`, `bgv_verifications`, `conversations`,
+`conversation_participants`, `conversation_messages`, `conversation_attachments`,
+RLS on all five tenant tables, the employment-history immutability trigger, and
+three seeded capabilities. The BGV offer gate is live at `apply_transition` and
+is INERT today by construction: it blocks only an explicit `experienced`
+declaration, and no candidate has one yet.
+
+There is no user-facing BGV or conversation surface in this build. The APIs,
+the realtime layer, the SES bridge and the frontend are not written yet.

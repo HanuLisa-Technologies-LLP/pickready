@@ -222,6 +222,19 @@ resource "aws_iam_role_policy_attachment" "task_s3" {
   policy_arn = var.s3_policy_arn
 }
 
+# Replacing a secret's value goes on the TASK role for the same stated reason
+# S3 does: it is the application's own boto3 client making the call. The READ
+# policy above is on the execution role, which fetches secrets and injects them
+# before the container starts, so a write statement added there is a grant the
+# code can never use. `rotate-app-db-credential.sh` failed in pilot with
+# AccessDeniedException on exactly that mistake.
+resource "aws_iam_role_policy_attachment" "task_secret_writer" {
+  for_each = var.secret_writer_policy_arns
+
+  role       = aws_iam_role.task[each.key].name
+  policy_arn = each.value
+}
+
 # ECS Exec, for an operator opening a shell in a running task. PRODUCTION ONLY
 # BY EXPLICIT OPT-IN, and off by default: a shell in a container holding
 # candidate data is a real capability, and it should be a decision rather than

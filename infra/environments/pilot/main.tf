@@ -962,6 +962,16 @@ module "ecs" {
   discovery_namespace = local.internal_namespace
 
   secret_policy_arns  = module.secrets.policy_arns
+
+  # The WRITE half, and it lands on the TASK role rather than the
+
+  # execution role: the execution role injects secrets before the
+
+  # container starts, while `app.scripts.provision_app_db_role` writes
+
+  # the rotated DSN with the application's own SDK.
+
+  secret_writer_policy_arns = module.secrets.writer_policy_arns
   s3_policy_arn       = module.s3.access_policy_arn
   ecr_repository_arns = values(module.ecr.repository_arns)
 

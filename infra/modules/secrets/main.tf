@@ -147,31 +147,6 @@ data "aws_iam_policy_document" "service" {
     ]
   }
 
-  # WRITING is a separate statement, over a separate list, and for almost every
-  # service the list is empty and the statement is not emitted at all.
-  #
-  # `dynamic` rather than a second policy document because the grant belongs in
-  # the same reviewable object as the read grant: a reader asking "what may
-  # migrate touch" should not have to know that write access lives somewhere
-  # else. See `service_secret_writers` for the outage that made one service
-  # need this.
-  #
-  # PutSecretValue only. Not DeleteSecret, not UpdateSecret, not RestoreSecret:
-  # replacing a value is the operation, and removing the container is not
-  # something a rotation job should be able to do at all.
-  dynamic "statement" {
-    for_each = length(lookup(var.service_secret_writers, each.key, [])) > 0 ? [1] : []
-    content {
-      sid     = "ReplaceTheValueOfTheSecretsThisServiceRotates"
-      effect  = "Allow"
-      actions = ["secretsmanager:PutSecretValue"]
-      resources = [
-        for secret in var.service_secret_writers[each.key] :
-        aws_secretsmanager_secret.this[secret].arn
-      ]
-    }
-  }
-
   # Decrypting is a separate permission from reading, and it is scoped to the
   # one key and to Secrets Manager as the calling service. Without the
   # ViaService condition this grant would let the role decrypt anything else
@@ -189,25 +164,6 @@ data "aws_iam_policy_document" "service" {
     }
   }
 
-  # Writing a new version ENCRYPTS it, which is a different KMS action from
-  # reading one. Granted only to a service that writes, under the same
-  # ViaService condition, so the key cannot be used for anything but Secrets
-  # Manager acting on this role's behalf.
-  dynamic "statement" {
-    for_each = length(lookup(var.service_secret_writers, each.key, [])) > 0 ? [1] : []
-    content {
-      sid       = "EncryptTheVersionsThisServiceWrites"
-      effect    = "Allow"
-      actions   = ["kms:GenerateDataKey"]
-      resources = [var.kms_key_arn]
-
-      condition {
-        test     = "StringEquals"
-        variable = "kms:ViaService"
-        values   = ["secretsmanager.${var.region}.amazonaws.com"]
-      }
-    }
-  }
 }
 
 resource "aws_iam_policy" "service" {
@@ -216,6 +172,63 @@ resource "aws_iam_policy" "service" {
   name        = "${local.name}-${each.key}-secrets"
   description = "Exactly the secrets ${each.key} reads. Enumerated, never a prefix."
   policy      = data.aws_iam_policy_document.service[each.key].json
+
+  tags = merge(var.tags, { Service = each.key })
+}
+
+
+# ── The WRITE grant is a SEPARATE policy, and it goes on the TASK role ───────
+#
+# The read policy above is attached to the EXECUTION role, which fetches
+# secrets and injects them before the container starts. Writing is done by the
+# application's own boto3 client, which runs as the TASK role, so a write
+# statement added to the read policy is a grant the code can never use. That is
+# not theoretical: `rotate-app-db-credential.sh` failed in pilot with
+# AccessDeniedException on exactly this, because the statement had been put in
+# the reviewable place rather than the effective one.
+#
+# Same split the `task_s3` attachment already makes, and for the same stated
+# reason: S3 goes on the task role "because it is the application's own boto3
+# client making the call".
+#
+# PutSecretValue only. Not DeleteSecret, not UpdateSecret, not RestoreSecret:
+# replacing a value is the operation, and removing the container is not
+# something a rotation job should be able to do at all.
+data "aws_iam_policy_document" "service_writer" {
+  for_each = var.service_secret_writers
+
+  statement {
+    sid     = "ReplaceTheValueOfTheSecretsThisServiceRotates"
+    effect  = "Allow"
+    actions = ["secretsmanager:PutSecretValue"]
+    resources = [
+      for secret in each.value : aws_secretsmanager_secret.this[secret].arn
+    ]
+  }
+
+  # Writing a new version ENCRYPTS it, which is a different KMS action from
+  # reading one, under the same ViaService condition so the key cannot be used
+  # for anything but Secrets Manager acting on this role's behalf.
+  statement {
+    sid       = "EncryptTheVersionsThisServiceWrites"
+    effect    = "Allow"
+    actions   = ["kms:GenerateDataKey"]
+    resources = [var.kms_key_arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_policy" "service_writer" {
+  for_each = var.service_secret_writers
+
+  name        = "${local.name}-${each.key}-secret-writer"
+  description = "The secrets ${each.key} may REPLACE. Enumerated, and attached to the task role because the application's own SDK makes the call."
+  policy      = data.aws_iam_policy_document.service_writer[each.key].json
 
   tags = merge(var.tags, { Service = each.key })
 }

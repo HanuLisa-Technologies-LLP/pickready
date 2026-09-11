@@ -216,6 +216,12 @@ variable "secret_policy_arns" {
   type        = map(string)
 }
 
+variable "secret_writer_policy_arns" {
+  description = "{service -> the IAM policy granting PutSecretValue on that service's writable secrets}. Attached to the TASK role, not the execution role: the execution role injects secrets before the container starts, while writing is done by the application's own SDK. Defaulted and looked up rather than indexed, because almost every service writes nothing and must not fail a plan for it."
+  type        = map(string)
+  default     = {}
+}
+
 variable "s3_policy_arn" {
   type = string
 }
