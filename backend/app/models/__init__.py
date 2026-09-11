@@ -51,6 +51,14 @@ from app.models.evidence import EvidenceClaim, EvidenceClaimLink, EvidenceItemRo
 from app.models.candidate_update import CandidateUpdate
 from app.models.support import SupportMessage, SupportThread
 from app.models.bgv import BGVInquiry, BGVShareConsent
+from app.models.bgv_verification import BGVVerification
+from app.models.conversation import (
+    Conversation,
+    ConversationAttachment,
+    ConversationMessage,
+    ConversationParticipant,
+)
+from app.models.employment import CandidateEmployment
 from app.models.dual_mode import AssessmentConsent, VideoRecording
 from app.models.project import CandidateProject
 from app.models.candidate import (
@@ -217,4 +225,10 @@ __all__ = [
     "User",
     "UserStatus",
     "VerificationRequest",
+    "CandidateEmployment",
+    "BGVVerification",
+    "Conversation",
+    "ConversationParticipant",
+    "ConversationMessage",
+    "ConversationAttachment",
 ]

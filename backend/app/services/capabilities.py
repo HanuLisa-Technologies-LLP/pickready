@@ -189,6 +189,26 @@ REVOKE_AGENT_LEARNINGS = "revoke_agent_learnings"
 # Business Development Portal (the fourth portal, /bd). Three grants, one per
 # area of the console, so a BD lead can be given the customer database and the
 # AI Reach search without the ability to edit anyone's pipeline.
+# Background verification (2026-09-12). SPLIT INTO READ AND DECIDE, which is
+# the only split that matters here: seeing that an employer is unverified is
+# ordinary pipeline information, while marking one verified is a diligence
+# decision that unblocks an offer. One capability covering both would mean
+# anybody who can read the dashboard can open the gate.
+#
+# Both sit in the flat customer set, like DECIDE_PROFILE, because the four
+# customer roles are functionally identical by product decision. A tenant that
+# wants to narrow the decision to one person does it through the per-user
+# overlay (users.permissions_json) rather than by asking for a fifth role.
+VIEW_BGV = "view_bgv"
+MANAGE_BGV = "manage_bgv"
+
+# Conversations (2026-09-12). One capability for the whole surface: a recruiter
+# who may work a candidate may talk to them, and splitting read from write
+# would produce a screen that renders a thread with no way to answer it.
+# Sending to an employer HR contact additionally requires MANAGE_BGV, because
+# that message is a verification act rather than a conversation.
+USE_CONVERSATIONS = "use_conversations"
+
 MANAGE_BD_LEADS = "manage_bd_leads"        # Personal Reach + Social Reach
 VIEW_BD_CUSTOMERS = "view_bd_customers"    # Customers page + CSV export
 USE_AI_REACH = "use_ai_reach"              # AI Reach search
@@ -202,6 +222,7 @@ ALL_CAPABILITIES = [
     MANAGE_EMAIL_TEMPLATES, EDIT_COMPANY_PROFILE, PUBLISH_JOB,
     MANAGE_COMPLIANCE_DOCUMENTS,
     MANAGE_BD_LEADS, VIEW_BD_CUSTOMERS, USE_AI_REACH,
+    VIEW_BGV, MANAGE_BGV, USE_CONVERSATIONS,
     MANAGE_BILLING, VIEW_BILLING,
     # RBAC_SPECIFICATION.md 24, appended 2026-08-29. Appended rather than
     # interleaved because resolve_capability_set returns capabilities in THIS
@@ -254,6 +275,11 @@ _STAFF_OPERATIONAL: dict[str, bool] = {
     # Raising a support ticket. See the constant for why every customer
     # role holds it.
     OPEN_SUPPORT_THREADS: True,
+    # Background verification and conversations. Seeded by migration 0095;
+    # a capability constant is only half a change.
+    VIEW_BGV: True,
+    MANAGE_BGV: True,
+    USE_CONVERSATIONS: True,
 }
 
 # The customer-side grant set, shared by all four customer roles.

@@ -71,6 +71,26 @@ class Candidate(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Background verification (migration 0095). Two columns rather than a
+    # table, because they are one answer and one stamp about THIS person and
+    # they are read on every profile load.
+    #
+    # `employment_background` is the candidate's own declaration, in their own
+    # words: fresher or experienced. It is never inferred from a parsed resume,
+    # because a parsed history is evidence and this answer decides whether an
+    # offer can be blocked. NULL means the question has not been answered yet,
+    # which is distinct from either answer and never blocks anything.
+    employment_background: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    #: THE IMMUTABILITY GATE. Once stamped, `candidate_employments` is closed
+    #: to writes: the service layer refuses, and a Postgres trigger refuses
+    #: independently so a future route or a psql session cannot quietly rewrite
+    #: what an employer is being asked to confirm. Read through
+    #: `models/employment.finalized` so no caller invents a second definition
+    #: of "submitted".
+    employment_history_finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
 
 class Profile(Base, UUIDPKMixin, CreatedAtMixin):
     """The Profile (PRD glossary): resume + 40-aspect responses + employer
