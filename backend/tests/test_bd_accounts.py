@@ -398,10 +398,101 @@ async def test_an_unknown_bd_user_is_a_404(no_audit) -> None:
     assert caught.value.status_code == 404
 
 
-def test_the_email_is_not_editable() -> None:
-    """It IS the identity Firebase binds to; changing it after a sign-in would
-    orphan the account from its credential."""
-    assert "email" not in set(BDUserUpdateIn.model_fields)
+def test_the_email_is_editable_and_the_rebind_is_what_makes_that_safe() -> None:
+    """INVERTED on 2026-09-11 by owner decision, not deleted.
+
+    This test read `assert "email" not in BDUserUpdateIn.model_fields`, and its
+    reason was sound: the email IS the identity Firebase binds to, so changing
+    it after a sign-in would orphan the account from its credential. The owner
+    asked for it to be editable, and the objection is answered rather than
+    ignored: the change is a REBIND.
+
+    `firebase_uid` is CLEARED, so the row returns to `invited` and the new
+    address binds on its first sign-in. Without that, auth would still match the
+    ORIGINAL person by uid (`api/auth.firebase_session` resolves by uid OR
+    email) and leave them signed in under the new address, which is the orphan
+    this test was defending against wearing a different face.
+
+    Kept as an inversion so the guarantee stays a visible decision. Narrowing it
+    again is a test change somebody has to justify.
+    """
+    assert "email" in set(BDUserUpdateIn.model_fields)
+
+
+class _EmailChangeSession(_Session):
+    """`_Session` for a handler that issues TWO selects with different intent.
+
+    The base fake answers every query with the same rows, which is fine while a
+    handler asks one question. `update_bd_user` asks two: load this account,
+    then is any OTHER account already holding the new address. The second
+    deliberately excludes the row being edited (`User.id != bd_user.id`), and a
+    fake that ignores WHERE clauses cannot express that, so it reports the row
+    as its own duplicate and the handler 409s on a perfectly legal edit.
+
+    Answering the load and then nothing is the honest model of a database where
+    the address is free. `tests/test_primary_contact.py` exercises the opposite
+    case against a REAL database, where the exclusion is what the query does.
+    """
+
+    def __init__(self, rows: list | None = None):
+        super().__init__(rows)
+        self._answered_load = False
+
+    async def execute(self, query):
+        if self._answered_load:
+            return _Result([])
+        self._answered_load = True
+        return _Result(self.rows)
+
+
+@pytest.mark.asyncio
+async def test_changing_a_bound_account_clears_the_firebase_binding(no_audit) -> None:
+    """The half that makes the reversal above defensible, exercised."""
+    row = _bd_row(status=UserStatus.active, full_name="Rep")
+    row.firebase_uid = "firebase-uid-from-an-earlier-sign-in"
+    await admin_api.update_bd_user(
+        row.id,
+        BDUserUpdateIn(email="moved@readypick.ai"),
+        user=_owner(),
+        session=_EmailChangeSession([row]),
+    )
+    assert row.email == "moved@readypick.ai"
+    assert row.firebase_uid is None
+    assert row.status is UserStatus.invited
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_account_is_not_reopened_by_an_email_change(no_audit) -> None:
+    """Disabled is a deliberate act by an operator. A rebind must not undo it:
+    correcting somebody's address is not a decision to let them back in."""
+    row = _bd_row(status=UserStatus.disabled, full_name="Rep")
+    row.firebase_uid = "firebase-uid-from-an-earlier-sign-in"
+    await admin_api.update_bd_user(
+        row.id,
+        BDUserUpdateIn(email="corrected@readypick.ai"),
+        user=_owner(),
+        session=_EmailChangeSession([row]),
+    )
+    assert row.email == "corrected@readypick.ai"
+    assert row.status is UserStatus.disabled
+
+
+@pytest.mark.asyncio
+async def test_an_address_another_rep_already_holds_is_refused(no_audit) -> None:
+    """The guard the fake above steps around, asserted rather than assumed: an
+    edit that could mint what a create refuses would be a second door."""
+    row = _bd_row(status=UserStatus.active, full_name="Rep")
+    other = _bd_row(status=UserStatus.active, full_name="Somebody Else")
+    with pytest.raises(HTTPException) as caught:
+        await admin_api.update_bd_user(
+            row.id,
+            BDUserUpdateIn(email="taken@readypick.ai"),
+            user=_owner(),
+            # The base fake, deliberately: every select answers with `other`, so
+            # the duplicate probe finds an account that is not this one.
+            session=_Session([row, other]),
+        )
+    assert caught.value.status_code == 409
 
 
 def test_an_empty_patch_is_refused() -> None:
