@@ -52,6 +52,7 @@ make every AI Reach search wait for a timeout.
 from __future__ import annotations
 
 import asyncio
+import re
 import json
 import logging
 import math
@@ -653,6 +654,108 @@ async def resolve_company_sites(
     return evaluated
 
 
+# ── Deterministic contact harvest ────────────────────────────────────────────
+#
+# WHY THIS EXISTS (2026-09-11). The evaluator is rightly forbidden from
+# inferring a contact (rule 7 of its prompt), and a job posting's search
+# snippet almost never PRINTS one, so every card reported "no verified public
+# company contact" even when a fetched page carried hr@company.example in
+# plain text two paragraphs below the snippet window. The pages are already
+# in hand; reading them again deterministically costs nothing and can only
+# find what a page actually published, which meets the never-infer bar by
+# construction rather than by instruction.
+
+#: Local parts a company PUBLISHES as its hiring mailbox. An allowlist,
+#: because the harvester must only surface the kind of address printed FOR
+#: this purpose: a personal mailbox found on a page is not a professional
+#: contact, and scraping it would be a privacy failure wearing a feature's
+#: clothes.
+_CONTACT_LOCAL_PARTS = frozenset({
+    "hr", "careers", "career", "jobs", "job", "talent", "recruit",
+    "recruiting", "recruitment", "hiring", "people", "work",
+    "humanresources", "resume", "resumes", "ta", "joinus",
+})
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+#: Second-level labels that mean "the registrable name is one label deeper":
+#: careers.google.com and google.com are one employer, and so are
+#: jobs.example.co.in and example.co.in.
+_CC_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "gov", "ac", "edu"})
+
+
+def _registrable(host: str) -> str:
+    labels = [label for label in host.lower().split(".") if label]
+    if (
+        len(labels) >= 3
+        and labels[-2] in _CC_SECOND_LEVEL
+        and len(labels[-1]) == 2
+    ):
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:]) if len(labels) >= 2 else host
+
+
+def harvest_contacts(
+    evaluated: list[dict[str, Any]], hits: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Attach a PUBLISHED hiring address from pages already fetched.
+
+    Three guards, each load-bearing:
+
+      * the address's domain must be the company's own (registrable-domain
+        match against `company_url`), so a job board's mailbox can never be
+        attributed to the employer it lists;
+      * the local part must be on the role-mailbox allowlist, so only the
+        kind of address a company prints for applicants is ever surfaced;
+      * `contact_source_url` is always the page the address appeared on, so
+        a rep can verify the claim in one click, the same bar the evaluator
+        is held to.
+
+    Never overwrites: an address the evaluator verified from a page wins over
+    anything found here. Returns the same list, mutated in place.
+    """
+    wanting = [
+        item
+        for item in evaluated
+        if not str(item.get("contact_email") or "").strip()
+        and _normalise_url(item.get("company_url"))
+    ]
+    if not wanting or not hits:
+        return evaluated
+
+    found = 0
+    for item in wanting:
+        company_host = urlparse(_normalise_url(item["company_url"])).netloc
+        company_domain = _registrable(company_host)
+        if not company_domain:
+            continue
+        for hit in hits:
+            content = str(hit.get("content") or "")
+            if "@" not in content:
+                continue
+            for email in _EMAIL_RE.findall(content):
+                local, _, domain = email.rpartition("@")
+                if _registrable(domain) != company_domain:
+                    continue
+                if local.lower() not in _CONTACT_LOCAL_PARTS:
+                    continue
+                source = _normalise_url(hit.get("url"))
+                if not source:
+                    continue
+                item["contact_email"] = email
+                item["contact_source_url"] = source
+                found += 1
+                break
+            if item.get("contact_email"):
+                break
+    if found:
+        logger.info(
+            "web_research.contacts_harvested wanted=%d found=%d",
+            len(wanting), found,
+        )
+    return evaluated
+
+
 # ── Node 5: shape ────────────────────────────────────────────────────────────
 
 def _normalise_url(value: object) -> str | None:
@@ -1083,6 +1186,8 @@ async def _shape_node(state: ResearchState) -> dict:
     if status not in _SHAPEABLE_STATUSES:
         return {"cards": []}
     evaluated = state.get("evaluated") or []
+    ctx_for_harvest: _ResearchContext = state["ctx"]
+    evaluated = harvest_contacts(evaluated, ctx_for_harvest.hits)
     cards = shape_cards(evaluated)
     # THE FUNNEL, IN ONE LINE. Every stage of this pipeline discards results
     # and until now nothing recorded where. "AI Reach returns two companies"
