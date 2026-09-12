@@ -198,6 +198,39 @@ locals {
   # and an employer's reply arrives in the sending mailbox instead of in the
   # thread. That is a real, working, degraded mode. Advertising a Reply-To that
   # nothing receives would be strictly worse.
+  # The inbound-mail parser, merged into `module.lambda.functions` only when
+  # `has_inbound` says mail can arrive. See that local for why it is false here.
+  inbound_email_function = {
+    # The inbound-mail parser. A SECOND ZIP FUNCTION, and the reason is the
+    # same one the trigger gives: it sits on the open internet's side of the
+    # product, because anything that can send mail to the reply domain reaches
+    # it. Standard library and boto3 only, so what a stranger can reach is one
+    # file a reviewer reads in full. It holds no database credential and no
+    # model key; the one thing it can do is POST to a webhook that authorises
+    # itself on a token the message already carried.
+    "inbound-email" = {
+      package     = "zip"
+      description = "Parses one received message and posts it to the inbound-email webhook. Reads one S3 object and nothing else."
+      source_dir  = "${path.root}/../../../lambda/inbound_email"
+      handler     = "handler.handler"
+      memory_mb   = 256
+      # A large attachment is fetched whole before it is parsed. Thirty seconds
+      # is generous for that and short enough that a hung webhook is a failed
+      # invocation rather than a held one.
+      timeout_seconds = 30
+      # OUTSIDE THE VPC. It talks to S3 and to the product's own public
+      # endpoint, so putting it in a private subnet would buy nothing and cost
+      # a NAT hop for every reply.
+      in_vpc = false
+      # No secret_policy_key: it reads no secret, which is why it has no entry
+      # in the secrets module's map at all.
+      s3_read_object_arns = [local.inbound_mail_objects]
+      environment = {
+        WEBHOOK_URL = "${local.frontend_url}/api/v1/verification/inbound-email"
+      }
+    }
+  }
+
   ses_receiving_regions = [
     "us-east-1", "us-east-2", "us-west-1", "us-west-2",
     "ap-south-1", "ap-southeast-1", "ap-southeast-2", "ap-northeast-1",
@@ -1363,7 +1396,12 @@ module "lambda" {
   log_retention_days = 30
   failure_topic_arn  = aws_sns_topic.alarms.arn
 
-  functions = {
+  # A FUNCTION NOTHING CAN INVOKE IS DEAD INFRASTRUCTURE, so the inbound-mail
+  # parser exists only where mail can actually arrive. Merged rather than
+  # written into the literal below, because a `count` cannot gate one entry of a
+  # map and an entry gated by a ternary on every field would be four lines of
+  # noise around one decision.
+  functions = merge(local.has_inbound ? local.inbound_email_function : {}, {
     "task-worker" = {
       package     = "image"
       description = "Every short background task: delivery, resume parsing, the reconciliation sweeps."
@@ -1544,35 +1582,7 @@ module "lambda" {
       }
     }
 
-    # The inbound-mail parser. A SECOND ZIP FUNCTION, and the reason is the
-    # same one the trigger gives: it sits on the open internet's side of the
-    # product, because anything that can send mail to the reply domain reaches
-    # it. Standard library and boto3 only, so what a stranger can reach is one
-    # file a reviewer reads in full. It holds no database credential and no
-    # model key; the one thing it can do is POST to a webhook that authorises
-    # itself on a token the message already carried.
-    "inbound-email" = {
-      package     = "zip"
-      description = "Parses one received message and posts it to the inbound-email webhook. Reads one S3 object and nothing else."
-      source_dir  = "${path.root}/../../../lambda/inbound_email"
-      handler     = "handler.handler"
-      memory_mb   = 256
-      # A large attachment is fetched whole before it is parsed. Thirty seconds
-      # is generous for that and short enough that a hung webhook is a failed
-      # invocation rather than a held one.
-      timeout_seconds = 30
-      # OUTSIDE THE VPC. It talks to S3 and to the product's own public
-      # endpoint, so putting it in a private subnet would buy nothing and cost
-      # a NAT hop for every reply.
-      in_vpc = false
-      # No secret_policy_key: it reads no secret, which is why it has no entry
-      # in the secrets module's map at all.
-      s3_read_object_arns = [local.inbound_mail_objects]
-      environment = {
-        WEBHOOK_URL = "${local.frontend_url}/api/v1/verification/inbound-email"
-      }
-    }
-  }
+  })
 
   tags = local.tags
 }
