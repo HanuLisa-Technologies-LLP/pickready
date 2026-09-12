@@ -47,3 +47,11 @@ hosted_zone_id = "ZOFFLINEPLANNOTAREALZONE"
 
 storage_bucket_name     = "readypick-never-created-storage"
 access_logs_bucket_name = "readypick-never-created-alb-logs"
+
+# PILOT-ONLY, and their absence is why pilot was the one environment that could
+# not be planned offline at all: both are required and neither has a default,
+# so the plan stopped before it reached anything. Same shape as every value
+# above -- a region that is not one, and a bucket name that would collide with
+# nothing.
+transcribe_region      = "xx-plan-1"
+transcribe_bucket_name = "readypick-never-created-transcribe"

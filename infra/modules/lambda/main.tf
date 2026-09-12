@@ -57,6 +57,12 @@ locals {
   # KEYED ON A LITERAL, not on an ARN. `secret_policy_key` is a static string
   # in the composition, so this map's key set is known at plan time; a filter on
   # the ARN itself would be a for_each Terraform cannot evaluate until apply.
+  # Functions that read objects from a bucket. Empty for every function that
+  # does not, so neither the grant nor its policy exists for them.
+  s3_reading_functions = {
+    for name, fn in var.functions : name => fn
+    if length(fn.s3_read_object_arns) > 0
+  }
   secret_functions = {
     for name, fn in var.functions :
     name => fn.secret_policy_key if fn.secret_policy_key != null
@@ -263,7 +269,6 @@ resource "aws_iam_role_policy" "run_task" {
 # it need not.
 data "aws_partition" "current" {}
 
-data "aws_caller_identity" "current" {}
 
 data "aws_iam_policy_document" "invoke_function" {
   for_each = local.invoking_functions
@@ -274,7 +279,7 @@ data "aws_iam_policy_document" "invoke_function" {
     actions = ["lambda:InvokeFunction"]
     resources = [
       for key in each.value.invokable_function_keys :
-      "arn:${data.aws_partition.current.partition}:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${local.function_names[key]}"
+      "arn:${data.aws_partition.current.partition}:lambda:${var.region}:${var.account_id}:function:${local.function_names[key]}"
     ]
   }
 }
@@ -285,6 +290,26 @@ resource "aws_iam_role_policy" "invoke_function" {
   name   = "invoke-function"
   role   = aws_iam_role.this[each.key].id
   policy = data.aws_iam_policy_document.invoke_function[each.key].json
+}
+
+# Reading one object out of a named bucket, by prefix.
+data "aws_iam_policy_document" "read_objects" {
+  for_each = local.s3_reading_functions
+
+  statement {
+    sid       = "ReadOnlyTheNamedObjects"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = each.value.s3_read_object_arns
+  }
+}
+
+resource "aws_iam_role_policy" "read_objects" {
+  for_each = local.s3_reading_functions
+
+  name   = "read-objects"
+  role   = aws_iam_role.this[each.key].id
+  policy = data.aws_iam_policy_document.read_objects[each.key].json
 }
 
 # Publishing a permanently failed asynchronous invocation.

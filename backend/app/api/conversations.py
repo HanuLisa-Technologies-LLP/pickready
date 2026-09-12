@@ -42,7 +42,6 @@ candidate's former employer.
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import uuid
 from datetime import datetime, timezone
@@ -61,7 +60,7 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
-from sqlalchemy import event, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
 
@@ -483,13 +482,6 @@ async def mark_read(
     return {"ok": True}
 
 
-#: Publishes in flight. asyncio holds only a WEAK reference to a task, so a
-#: fire-and-forget one can be collected mid-await and the notification simply
-#: never happens -- a bug that shows up as "sometimes the other tab does not
-#: update" and is never reproducible.
-_PENDING_PUBLISHES: set[asyncio.Task] = set()
-
-
 def _publish_after_commit(
     session: AsyncSession,
     *,
@@ -500,29 +492,22 @@ def _publish_after_commit(
 ) -> None:
     """Announce this message the moment its transaction commits, never before.
 
-    See the module docstring. The trigger is SQLAlchemy's own `after_commit`
-    rather than `BackgroundTasks`, because FastAPI runs background tasks inside
-    the dependency exit stack -- which is to say, before this session commits.
-    A rolled-back request therefore publishes nothing at all, which is the
-    behaviour that matters most: a notification for a message that was never
-    stored would have every listening tab render one that does not exist.
+    The mechanism lives in `services/realtime` because the inbound-email
+    webhook needs the same guarantee from a different session, and two copies
+    of an ordering rule is two places for it to stop being true.
     """
-    payload = realtime.message_event(
-        tenant_id=tenant_id,
-        conversation_id=conversation_id,
-        message={
-            **message,
-            "author_name": names.get(str(message.get("author_user_id")))
-            or message.get("author_name"),
-        },
+    realtime.publish_after_commit(
+        session,
+        realtime.message_event(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            message={
+                **message,
+                "author_name": names.get(str(message.get("author_user_id")))
+                or message.get("author_name"),
+            },
+        ),
     )
-    loop = asyncio.get_running_loop()
-
-    @event.listens_for(session.sync_session, "after_commit", once=True)
-    def _fire(_sync_session) -> None:  # noqa: ANN001 -- SQLAlchemy's signature
-        task = loop.create_task(realtime.hub.publish(payload))
-        _PENDING_PUBLISHES.add(task)
-        task.add_done_callback(_PENDING_PUBLISHES.discard)
 
 
 # ── Attachments ──────────────────────────────────────────────────────────────

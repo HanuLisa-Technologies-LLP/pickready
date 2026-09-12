@@ -146,6 +146,7 @@ async def _deliver_email(
     attachments: list[dict] | None = None,
     sender=None,
     correlation: dict | None = None,
+    reply_to: str | None = None,
 ) -> str | None:
     """One door to the outbound transport (Corporate Email System spec
     section 6). The transport is DEPLOYMENT DATA (`settings.email_transport`,
@@ -156,6 +157,13 @@ async def _deliver_email(
     From on the authenticated mailbox, so the corporate sender travels as
     Reply-To and From stays the Gmail address (assumption recorded in
     smtp_service._build_message). Returns the provider message id.
+
+    An EXPLICIT `reply_to` overrides both, and there is exactly one caller:
+    a conversation's own reply address, which is what routes an employer's
+    answer back into the thread it belongs to. It wins over the corporate
+    sender deliberately -- a reply that reached the sender's mailbox instead of
+    the thread is a reply the product cannot see, and a recruiter would sit
+    waiting for an answer that had already arrived somewhere else.
 
     ASSUMPTION (spec section 6): under "ses" with no corporate sender, the
     configured `smtp_from_email` address doubles as the platform's SES-verified
@@ -173,6 +181,7 @@ async def _deliver_email(
             html=html,
             text=text,
             attachments=attachments,
+            reply_to=reply_to,
             # SES-ONLY, and deliberately not plumbed into the SMTP path: these
             # become SES message tags, which have no SMTP equivalent. Handing
             # them to Gmail would mean inventing headers nothing ever reads.
@@ -186,7 +195,7 @@ async def _deliver_email(
         html=html,
         text=text,
         attachments=attachments,
-        reply_to=sender.email if sender is not None else None,
+        reply_to=reply_to or (sender.email if sender is not None else None),
     )
 
 
@@ -197,6 +206,7 @@ async def _send_email_async(
     template_name: str,
     context: dict,
     attachments: list[dict] | None = None,
+    reply_to: str | None = None,
 ) -> dict[str, str]:
     from app.services import email_render
 
@@ -261,6 +271,7 @@ async def _send_email_async(
             html=html_body,
             text=body,
             attachments=attachments,
+            reply_to=reply_to,
         ) or ""
     except DeliveryError as err:
         delivery_status = "failed"
@@ -314,8 +325,14 @@ def send_email(
     template_name: str,
     context: dict,
     attachments: list[dict] | None = None,
+    reply_to: str | None = None,
 ):
     """attachments: [{"filename": str, "content": <base64 str>}] (SMTP MIME part).
+
+    `reply_to` is optional and TRAILING, so every existing four-argument
+    dispatch keeps working unchanged -- including any message already in flight
+    during a rolling deploy, which is the reason it is not inserted earlier in
+    the list.
 
     tenant_id None = platform-level email (e.g. Owner OTP): default template,
     default SMTP sender. Interview invites and verification emails also route
@@ -329,7 +346,8 @@ def send_email(
     async def _task():
         async with _worker_session() as session:
             return await _send_email_async(
-                session, tenant_id, to, template_name, context, attachments
+                session, tenant_id, to, template_name, context, attachments,
+                reply_to=reply_to,
             )
 
     try:

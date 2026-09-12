@@ -169,6 +169,23 @@ locals {
     "https://${var.project}.invalid"
   )
 
+  # ── Receiving a reply ──────────────────────────────────────────────────────
+  #
+  # A SUBDOMAIN of the product's own zone, because receiving mail means owning
+  # the MX record and the apex's MX belongs to whatever mailbox the company
+  # actually reads. Empty without a domain, and that is a real state: the
+  # deployment still SENDS verification requests, and the employer's reply
+  # arrives in the sending mailbox instead of in the thread. The application
+  # records that rather than hiding it (`conversations.reply_address`).
+  reply_domain = local.has_domain ? "reply.${var.domain_name}" : ""
+  has_inbound  = local.reply_domain != ""
+
+  # Composed from the BUCKET NAME rather than read from the module's output,
+  # because `ses_inbound` subscribes the function and therefore depends on it;
+  # taking the ARN from that module would be a cycle. The name is deterministic
+  # and both sides are given the same string.
+  inbound_mail_objects = "arn:aws:s3:::${var.project}-${local.environment}-inbound-mail/inbound/*"
+
   # WITHOUT INGRESS, ONE TASK PER SERVICE.
   #
   # Two once traffic can arrive, one while it cannot. A second task buys
@@ -501,10 +518,17 @@ module "s3" {
   tags = local.tags
 }
 
-# The account id, for the one ARN in this environment that has to be written
-# out by hand: a Transcribe job's ARN is not an attribute of any resource here,
+# The account id, for the ARNs in this environment that have to be written out
+# by hand: a Transcribe job's ARN is not an attribute of any resource here,
 # because the jobs are created by the application at run time.
-data "aws_caller_identity" "current" {}
+#
+# `var.account_id` AND NOT `data "aws_caller_identity"`. The data source calls
+# STS, which the OFFLINE PLAN cannot do: it runs against account 000000000000
+# in a region that does not exist and has never contacted AWS, so the lookup
+# fails DNS resolution and takes the whole plan with it. Pilot was the one
+# environment that could not be planned offline for exactly this reason, and a
+# pre-apply check that cannot run is a check nobody reads. The variable is the
+# same account and is already required.
 
 # ── Speech to text, in the one region that has it ────────────────────────────
 #
@@ -585,7 +609,7 @@ data "aws_iam_policy_document" "transcribe" {
       "transcribe:GetTranscriptionJob",
     ]
     resources = [
-      "arn:aws:transcribe:${var.transcribe_region}:${data.aws_caller_identity.current.account_id}:transcription-job/readypick-*",
+      "arn:aws:transcribe:${var.transcribe_region}:${var.account_id}:transcription-job/readypick-*",
     ]
   }
 
@@ -680,7 +704,7 @@ data "aws_iam_policy_document" "ses_events_topic" {
     condition {
       test     = "StringEquals"
       variable = "AWS:SourceAccount"
-      values   = [data.aws_caller_identity.current.account_id]
+      values   = [var.account_id]
     }
   }
 }
@@ -789,11 +813,11 @@ data "aws_iam_policy_document" "api_invoke_agents" {
     actions = ["lambda:InvokeFunction"]
     resources = [
       # workers/dispatch.py: WORKER_FUNCTION and TRIGGER_FUNCTION.
-      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-task-worker",
-      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-assessment-trigger",
+      "arn:aws:lambda:${var.region}:${var.account_id}:function:${var.project}-task-worker",
+      "arn:aws:lambda:${var.region}:${var.account_id}:function:${var.project}-assessment-trigger",
       # workers/agent_client.py: the two agents a recruiter waits on.
-      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-jd-gen",
-      "arn:aws:lambda:${var.region}:${data.aws_caller_identity.current.account_id}:function:${var.project}-company-profile",
+      "arn:aws:lambda:${var.region}:${var.account_id}:function:${var.project}-jd-gen",
+      "arn:aws:lambda:${var.region}:${var.account_id}:function:${var.project}-company-profile",
     ]
   }
 }
@@ -961,7 +985,7 @@ module "ecs" {
   vpc_id              = module.network.vpc_id
   discovery_namespace = local.internal_namespace
 
-  secret_policy_arns  = module.secrets.policy_arns
+  secret_policy_arns = module.secrets.policy_arns
 
   # The WRITE half, and it lands on the TASK role rather than the
 
@@ -972,8 +996,8 @@ module "ecs" {
   # the rotated DSN with the application's own SDK.
 
   secret_writer_policy_arns = module.secrets.writer_policy_arns
-  s3_policy_arn       = module.s3.access_policy_arn
-  ecr_repository_arns = values(module.ecr.repository_arns)
+  s3_policy_arn             = module.s3.access_policy_arn
+  ecr_repository_arns       = values(module.ecr.repository_arns)
 
   kms_key_arn        = aws_kms_key.this.arn
   log_retention_days = 30
@@ -1011,6 +1035,14 @@ module "ecs" {
     # incoming message against; empty there means refuse everything.
     SES_CONFIGURATION_SET = aws_sesv2_configuration_set.this.configuration_set_name
     SES_SNS_TOPIC_ARN     = aws_sns_topic.ses_events.arn
+    # THE DOMAIN A REPLY COMES BACK TO, and the domain the application builds a
+    # thread's Reply-To on. Both halves read this ONE value, so the address a
+    # verification request asks an employer to reply to and the address SES is
+    # configured to receive cannot drift into each other's blind spot. Empty
+    # without a domain, which is a real state rather than a broken one: the
+    # deployment still sends, and `conversations.reply_address` records that the
+    # reply will arrive in the sending mailbox instead of in the thread.
+    INBOUND_EMAIL_DOMAIN = local.reply_domain
     # ONE RERANKER PER DEPLOYMENT, never a fallback chain: the same shape
     # TASK_DISPATCH_BACKEND and EMAIL_TRANSPORT have, validated against a
     # closed set by `reranker.configured_backend()`, which RAISES on anything
@@ -1048,9 +1080,9 @@ module "ecs" {
       desired_count = local.service_count
       # The ceiling the OLD sizing allowed (4), kept: lowering the resting
       # count must not lower what the service can grow to under load.
-      max_count     = 4
-      port          = 8000
-      health_path   = "/health"
+      max_count   = 4
+      port        = 8000
+      health_path = "/health"
       # REGISTERS THE TASKS WITH THE LOAD BALANCER, when there is one. Without
       # it the service runs, is attached to no target group, and serves no
       # traffic while every dashboard reports it healthy. Null here is not that
@@ -1250,10 +1282,10 @@ module "ecs" {
       # Two, not four: each analysis task is 2 vCPU / 8 GB, the costliest
       # step in the cluster, and its workload (fifteen-second audio chunks)
       # has never occurred in this environment.
-      max_count     = 2
-      port          = 8100
-      health_path   = "/health"
-      discoverable  = true
+      max_count    = 2
+      port         = 8100
+      health_path  = "/health"
+      discoverable = true
       # READ-ONLY ROOT with one exception: the import-time caches torch and
       # matplotlib insist on, which the image points at /tmp.
       readonly_root  = true
@@ -1282,6 +1314,7 @@ module "lambda" {
   project     = var.project
   environment = local.environment
   region      = var.region
+  account_id  = var.account_id
 
   # IN THE VPC, all four. Three of them reach RDS and Redis, which live in
   # subnets with no route to the internet in either direction. The trigger does
@@ -1370,6 +1403,9 @@ module "lambda" {
         # not a free-text display address: it must be a verified sender.
         SMTP_FROM_EMAIL = var.platform_from_email
         SMTP_FROM_NAME  = "ReadyPick"
+        # This function is the hop that actually writes the Reply-To header, so
+        # it needs the same value the API used to build the address.
+        INBOUND_EMAIL_DOMAIN = local.reply_domain
         # This function is the last hop before SES, so it is the one that must
         # attach the configuration set. Without it SES accepts the message and
         # publishes no event, and every row stays `sent` for ever.
@@ -1479,7 +1515,67 @@ module "lambda" {
         ECS_SECURITY_GROUP_IDS = module.network.ecs_security_group_id
       }
     }
+
+    # The inbound-mail parser. A SECOND ZIP FUNCTION, and the reason is the
+    # same one the trigger gives: it sits on the open internet's side of the
+    # product, because anything that can send mail to the reply domain reaches
+    # it. Standard library and boto3 only, so what a stranger can reach is one
+    # file a reviewer reads in full. It holds no database credential and no
+    # model key; the one thing it can do is POST to a webhook that authorises
+    # itself on a token the message already carried.
+    "inbound-email" = {
+      package     = "zip"
+      description = "Parses one received message and posts it to the inbound-email webhook. Reads one S3 object and nothing else."
+      source_dir  = "${path.root}/../../../lambda/inbound_email"
+      handler     = "handler.handler"
+      memory_mb   = 256
+      # A large attachment is fetched whole before it is parsed. Thirty seconds
+      # is generous for that and short enough that a hung webhook is a failed
+      # invocation rather than a held one.
+      timeout_seconds = 30
+      # OUTSIDE THE VPC. It talks to S3 and to the product's own public
+      # endpoint, so putting it in a private subnet would buy nothing and cost
+      # a NAT hop for every reply.
+      in_vpc = false
+      # No secret_policy_key: it reads no secret, which is why it has no entry
+      # in the secrets module's map at all.
+      s3_read_object_arns = [local.inbound_mail_objects]
+      environment = {
+        WEBHOOK_URL = "${local.frontend_url}/api/v1/verification/inbound-email"
+      }
+    }
   }
+
+  tags = local.tags
+}
+
+# ── Receiving a verification reply ───────────────────────────────────────────
+#
+# The MX record, the SES receipt rule, the bucket the raw message lands in, and
+# the notification that wakes the parser. See `modules/ses_inbound` for why the
+# rule matches the whole subdomain and why the message goes through S3 rather
+# than straight to the function.
+
+module "ses_inbound" {
+  source = "../../modules/ses_inbound"
+  count  = local.has_inbound ? 1 : 0
+
+  project     = var.project
+  environment = local.environment
+  account_id  = var.account_id
+  region      = var.region
+
+  reply_domain   = local.reply_domain
+  hosted_zone_id = var.hosted_zone_id
+
+  lambda_function_arn  = module.lambda.function_arns["inbound-email"]
+  lambda_function_name = module.lambda.function_names["inbound-email"]
+
+  # PILOT IS THE ONE RECEIVING IN THIS REGION. SES allows exactly one active
+  # receipt rule set per region per account, so a second environment setting
+  # this would silently take pilot's mail. Stated here so that change is a
+  # conflict in a diff rather than an outage nobody can see.
+  activate_rule_set = true
 
   tags = local.tags
 }

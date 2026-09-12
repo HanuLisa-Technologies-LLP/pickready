@@ -690,6 +690,7 @@ module "lambda" {
   project     = var.project
   environment = local.environment
   region      = var.region
+  account_id  = var.account_id
 
   vpc_subnet_ids     = module.network.private_subnet_ids
   security_group_ids = [module.network.ecs_security_group_id]

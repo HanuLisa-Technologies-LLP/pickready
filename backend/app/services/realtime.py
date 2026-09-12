@@ -48,6 +48,8 @@ import logging
 import uuid
 from typing import Any
 
+from sqlalchemy import event
+
 logger = logging.getLogger(__name__)
 
 #: One channel per tenant. See the module docstring: never per conversation
@@ -209,6 +211,35 @@ class Hub:
 
 #: One hub per process.
 hub = Hub()
+
+#: Publishes in flight. asyncio holds only a WEAK reference to a task, so a
+#: fire-and-forget one can be collected mid-await and the notification simply
+#: never happens -- a bug that reads as "sometimes the other tab does not
+#: update" and is never reproducible.
+_PENDING_PUBLISHES: set[asyncio.Task] = set()
+
+
+def publish_after_commit(session: Any, payload: dict) -> None:
+    """Announce `payload` the moment `session`'s transaction commits.
+
+    THE TRIGGER IS SQLALCHEMY'S OWN `after_commit`, AND THE ALTERNATIVE DOES
+    NOT WORK. FastAPI sends the response, and therefore runs any
+    `BackgroundTasks`, INSIDE the dependency exit stack, so a background
+    publish still fires before a `get_tenant_db`-style session commits.
+    `tests/test_conversations_api.py` asserts the ordering from a second
+    connection and caught exactly that.
+
+    A rolled-back transaction publishes NOTHING, which is the half that matters
+    most: a notification for a message that was never stored would have every
+    listening tab render one that does not exist.
+    """
+    loop = asyncio.get_running_loop()
+
+    @event.listens_for(session.sync_session, "after_commit", once=True)
+    def _fire(_sync_session) -> None:  # noqa: ANN001 -- SQLAlchemy's signature
+        task = loop.create_task(hub.publish(payload))
+        _PENDING_PUBLISHES.add(task)
+        task.add_done_callback(_PENDING_PUBLISHES.discard)
 
 
 def message_event(

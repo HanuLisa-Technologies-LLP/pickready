@@ -27,6 +27,8 @@ already follow everywhere else in this product.
 """
 from __future__ import annotations
 
+import logging
+import re
 import secrets
 import uuid
 from datetime import datetime, timezone
@@ -35,6 +37,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.models.conversation import (
     CHANNEL_CHAT,
     CHANNELS,
@@ -48,6 +51,8 @@ from app.models.conversation import (
     PARTY_EMPLOYER_HR,
     PARTY_RECRUITER,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ConversationRefused(RuntimeError):
@@ -71,6 +76,58 @@ def mint_thread_token() -> str:
     into a customer's BGV thread by emailing it.
     """
     return secrets.token_urlsafe(32)[:64]
+
+
+#: The local part every inbound conversation reply arrives on. One address per
+#: THREAD via the plus tag, never one shared mailbox everything is sorted out
+#: of afterwards: the address IS the routing, so a reply that quotes nothing,
+#: rewrites the subject and strips the body still lands in the right thread.
+REPLY_LOCAL_PART = "conversations"
+
+_REPLY_TOKEN_IN_ADDRESS = re.compile(
+    rf"{REPLY_LOCAL_PART}\+([A-Za-z0-9_\-]{{16,64}})@", re.IGNORECASE
+)
+
+#: Logged once per process rather than per send. An operator needs to know the
+#: deployment cannot receive replies; they do not need to be told on every
+#: email.
+_warned_no_inbound_domain = False
+
+
+def reply_address(thread_token: str) -> str | None:
+    """The Reply-To that routes an employer's answer back into this thread.
+
+    None when no inbound domain is configured, and the caller RECORDS that:
+    a deployment with no receiving domain still sends verification requests,
+    and the reply lands in the sender's own mailbox. Pretending otherwise would
+    leave a recruiter waiting for a reply that arrived somewhere else.
+    """
+    global _warned_no_inbound_domain
+    domain = (get_settings().inbound_email_domain or "").strip().lstrip("@")
+    if not domain:
+        if not _warned_no_inbound_domain:
+            _warned_no_inbound_domain = True
+            logger.warning(
+                "conversations.no_inbound_domain no Reply-To will be set, so an "
+                "employer reply arrives in the sending mailbox rather than in "
+                "the thread"
+            )
+        return None
+    return f"{REPLY_LOCAL_PART}+{thread_token}@{domain}"
+
+
+def token_from_address(*addresses: str | None) -> str | None:
+    """The thread token carried by whichever recipient address holds one.
+
+    Read from the ADDRESS rather than the body. A body match depends on the
+    employer's mail client quoting the original, which many do not and some
+    mangle; an address is reproduced verbatim by every mail system there is.
+    """
+    for address in addresses:
+        match = _REPLY_TOKEN_IN_ADDRESS.search(address or "")
+        if match:
+            return match.group(1)
+    return None
 
 
 def _validate_body(body: str) -> str:

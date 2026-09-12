@@ -649,6 +649,18 @@ async def send(
         client_token=f"bgv-send-{verification_id}-{int(now.timestamp())}",
         now=now,
     )
+    # THE REPLY ADDRESS IS WHAT MAKES THE THREAD RECEIVE ANYTHING. It carries
+    # the conversation's own token, so the employer's answer routes back to
+    # THIS employer's thread whatever they do to the subject line and however
+    # little of the original their mail client quotes. None when the deployment
+    # has no inbound domain, which `conversations.reply_address` records rather
+    # than hides: the request still goes out and the reply arrives in the
+    # sending mailbox instead.
+    conversation = await conversations.authorize_participant(
+        session,
+        conversation_id=uuid.UUID(str(row["conversation_id"])),
+        tenant_id=user.tenant_id,
+    )
     dispatch(
         "pickready.send_email",
         args=[
@@ -656,6 +668,8 @@ async def send(
             row["hr_email"],
             "bgv_verification",
             {"subject": body.subject, "body": body.body},
+            None,
+            conversations.reply_address(conversation["thread_token"]),
         ],
     )
     await session.execute(

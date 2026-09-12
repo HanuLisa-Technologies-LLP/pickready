@@ -234,6 +234,22 @@ class Settings(BaseSettings):
     msg91_api_key: str = ""
     msg91_sender_id: str = "PCKRDY"
 
+    # ── Where a reply comes back to ──────────────────────────────────────────
+    #
+    # The domain SES receives mail for, and the domain a conversation's
+    # Reply-To is built on: `conversations+<thread_token>@<this>`. A SUBDOMAIN,
+    # never the apex, because receiving mail means owning the MX record and the
+    # apex's MX belongs to whatever mailbox the company actually reads.
+    #
+    # EMPTY MEANS NO REPLY-TO IS SET, and that is a real state rather than a
+    # broken one: a deployment that has not provisioned inbound mail still
+    # sends verification requests, and the employer's reply lands in the
+    # sender's own mailbox instead of in the thread. The code SAYS so where it
+    # matters rather than quietly producing a thread that can never receive
+    # anything (`conversations.reply_address` returns None and the caller logs
+    # the degradation once).
+    inbound_email_domain: str = ""
+
     # ── Outbound email transport (Corporate Email System spec section 6) ────
     #
     # ONE transport per deployment, selected by DATA, never a fallback chain

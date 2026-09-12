@@ -6,6 +6,22 @@ variable "environment" {
   type = string
 }
 
+variable "account_id" {
+  description = <<-EOT
+    The AWS account these functions live in.
+
+    PASSED IN RATHER THAN LOOKED UP. `data "aws_caller_identity"` calls STS,
+    which means the OFFLINE PLAN cannot evaluate it: `infra/plan-offline.sh`
+    runs against account 000000000000 in region xx-plan-1 with dummy
+    credentials and has never contacted AWS, so an STS call there fails DNS
+    resolution and takes the whole plan with it. The plan is the only pre-apply
+    check this repository has, and a check that cannot run is a check nobody
+    reads. `scheduler` already takes the account id this way for the same
+    reason.
+  EOT
+  type        = string
+}
+
 variable "region" {
   type = string
 }
@@ -107,6 +123,21 @@ variable "functions" {
     # a sweep fanned out to its own function and production answered
     # AccessDeniedException.
     invokable_function_keys = optional(list(string), [])
+    #: Grants s3:GetObject under exactly these object prefixes, written as
+    #: full object ARNs ("arn:aws:s3:::bucket/prefix/*").
+    #
+    # A BUCKET NAME AND NOT A MODULE OUTPUT. The inbound-mail bucket lives in
+    # `ses_inbound`, which must SUBSCRIBE this function and therefore depends
+    # on it; taking the bucket's ARN from that module's output would be a
+    # cycle. A bucket name is deterministic, so the environment composes the
+    # ARN from the same string both modules are given. The same trade
+    # `run_task_task_definition_arns` already makes.
+    #
+    # GetObject only. The function reads one message and forwards it; it never
+    # lists the bucket (which would enumerate every customer's correspondence)
+    # and never deletes (the lifecycle rule owns expiry, and a function that
+    # could delete could destroy a reply before anybody read it).
+    s3_read_object_arns = optional(list(string), [])
   }))
 
   validation {
