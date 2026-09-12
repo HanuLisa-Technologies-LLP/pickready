@@ -33,6 +33,7 @@ from app.core.security import ALGORITHM, AUDIENCE_CANDIDATE, AUDIENCE_INTERNAL
 from app.models.enums import OTPChannel, Role, UserStatus
 from app.models.tenant import Tenant
 from app.models.user import OTPChallenge, User
+from app.services import staff_invites
 
 # Max OTP *requests* per identifier per hour (abuse guard, FR-1.4).
 REQUEST_CAP_PER_HOUR = 5
@@ -700,6 +701,9 @@ async def verify_challenge(
         pending = pending_channels_for(user)
         if not pending and user.status == UserStatus.invited:
             user.status = UserStatus.active
+        if not pending:
+            # Same session issuance, same acceptance (services/staff_invites).
+            await staff_invites.accept_pending_invite(session, user.id)
         await session.flush()
         if pending:
             return VerifyResult(user=user, pending_channels=pending)
@@ -753,6 +757,7 @@ async def select_context(
 
     if user.status == UserStatus.invited:
         user.status = UserStatus.active
+    await staff_invites.accept_pending_invite(session, user.id)
     await session.flush()
 
     await limiter.set_flag(_context_key(jti), CONTEXT_TOKEN_TTL_MINUTES * 60)

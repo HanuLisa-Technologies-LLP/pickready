@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePathname } from "next/navigation";
 import {
   apiGet,
   apiPost,
@@ -22,6 +23,26 @@ import type { Capability, Role, User } from "@/lib/types";
  * the cookie rotated for as long as the tab is actually being used.
  */
 const SESSION_POLL_MS = 10 * 60 * 1000;
+
+/**
+ * Shortest gap between two capability re-checks triggered by NAVIGATION.
+ *
+ * Capabilities used to be fetched once at sign-in and then only re-read by the
+ * ten-minute poll above. That is fine for "is this session still alive" and
+ * wrong for "what may this person do", because the answer changes from OUTSIDE
+ * this browser: an administrator grants a colleague `edit_company_profile` and
+ * that colleague's open tab keeps rendering the read-only screen for up to ten
+ * minutes, with no way to tell that anything has happened. Every report of "I
+ * granted the permission and it did not apply" is this, not the RBAC engine:
+ * the server had it right the whole time.
+ *
+ * Re-checking on each in-app navigation makes a grant land as soon as the
+ * person moves to the screen it affects, which is when they notice it. The
+ * throttle collapses redirect chains and double-renders into one request;
+ * `/auth/me` is two indexed reads, so this is cheap at the rate a human
+ * navigates.
+ */
+const CAPABILITY_REVALIDATE_MS = 10 * 1000;
 
 /**
  * Routes that render signed-out. A dead session on one of these is normal and
@@ -75,6 +96,7 @@ const AuthContext = React.createContext<AuthContextValue>({
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = React.useState<User | null>(null);
   const [capabilities, setCapabilities] = React.useState<Capability[]>([]);
+  const pathname = usePathname();
 
   const [loading, setLoading] = React.useState(true);
 
@@ -122,6 +144,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   refreshRef.current = refresh;
   const userRef = React.useRef(user);
   userRef.current = user;
+  // When the last `/auth/me` happened, shared by the poll and the navigation
+  // hook so the two never fetch on top of each other.
+  const lastRevalidatedAt = React.useRef(0);
+  // The mount effect already fetches for the landing route; without this the
+  // navigation hook would fire a second, identical request on first paint.
+  const firstPathname = React.useRef(true);
 
   React.useEffect(() => {
     void refreshRef.current();
@@ -139,6 +167,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // what filled the dev logs with an endless /auth/me 401 + /auth/refresh
       // 401 pair from every tab parked on the login page.
       if (!userRef.current) return;
+      lastRevalidatedAt.current = Date.now();
       void tryRefresh().then(() => refreshRef.current());
     };
 
@@ -151,6 +180,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener("online", revalidate);
     };
   }, []);
+
+  // Re-read this person's capabilities when they move around the app.
+  //
+  // A grant made by an administrator lands in the database immediately and was
+  // then invisible to the colleague's already-open tab until the ten-minute
+  // poll happened to fire, because nothing else ever re-read `/auth/me`. The
+  // screens that gate on `hasCapability` therefore kept rendering the
+  // read-only branch long after the permission existed.
+  //
+  // Skipped on the first pathname, which the mount effect above has already
+  // covered, and while signed out, where there is nothing to re-read.
+  React.useEffect(() => {
+    if (firstPathname.current) {
+      firstPathname.current = false;
+      return;
+    }
+    if (!userRef.current) return;
+    const now = Date.now();
+    if (now - lastRevalidatedAt.current < CAPABILITY_REVALIDATE_MS) return;
+    lastRevalidatedAt.current = now;
+    void refreshRef.current();
+  }, [pathname]);
 
   const setSession = React.useCallback(
     (u: User | null, caps: Capability[] = []) => {

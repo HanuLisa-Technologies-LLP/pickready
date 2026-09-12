@@ -49,6 +49,7 @@ from app.schemas.auth import (
 from app.services import otp as otp_service
 from app.services import firebase_auth
 from app.services import rbac
+from app.services import staff_invites
 from app.services.rate_limit import rate_limit
 from app.services.audit import (
     AUTH_CONTEXT_SELECTED,
@@ -137,6 +138,10 @@ async def _finalize_single(
     # path (proving identifier ownership is what flips invited -> active).
     if user.status == UserStatus.invited:
         user.status = UserStatus.active
+    # ...and the INVITATION row learns about it too, or the staff table reports
+    # "Pending" for ever next to an account that is signed in and working
+    # (services/staff_invites carries the full account of why).
+    await staff_invites.accept_pending_invite(session, user.id)
     await record_auth_event(
         session, action=AUTH_LOGIN_SUCCEEDED, actor_user_id=user.id,
         tenant_id=user.tenant_id,
