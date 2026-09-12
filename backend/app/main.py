@@ -21,6 +21,7 @@ from app.api import (
     billing,
     candidates,
     companies,
+    conversations,
     dashboard,
     email_senders,
     emails,
@@ -155,6 +156,13 @@ app.include_router(support.router, prefix=f"{API_PREFIX}/support", tags=["suppor
 # candidate session and everything else is behind require_capability on the
 # tenant session, so neither audience can reach the other's routes.
 app.include_router(bgv.router, prefix=f"{API_PREFIX}/bgv", tags=["bgv"])
+# Native conversations (recruiter to candidate, and the BGV threads with an
+# employer's HR contact). The REST routes and the one WebSocket live together
+# because they authorise identically: the socket is a NOTIFICATION channel over
+# the same rows, never a second write path.
+app.include_router(
+    conversations.router, prefix=f"{API_PREFIX}/conversations", tags=["conversations"]
+)
 app.include_router(
     support.provider_router,
     prefix=f"{API_PREFIX}/provider/support",
