@@ -43,6 +43,7 @@ candidate's former employer.
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -86,6 +87,8 @@ from app.models.conversation import (
 from app.models.enums import Role
 from app.services import capabilities as caps
 from app.services import conversations, object_storage, rbac, realtime
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -770,7 +773,14 @@ async def stream(websocket: WebSocket, conversation_id: uuid.UUID) -> None:
         while True:
             await websocket.send_json(await queue.get())
     except WebSocketDisconnect:
-        pass
+        # THE ORDINARY END OF A SOCKET, not a failure: the tab closed, the
+        # laptop slept, a proxy timed out, a deploy moved the connection to
+        # another task. Recorded rather than swallowed, and it costs the client
+        # nothing, because the socket only ever carried a hint: they reconnect
+        # and refetch, and anything they missed is in Postgres.
+        logger.debug(
+            "conversations.socket_closed conversation=%s", conversation_id
+        )
     finally:
         # ALWAYS, on every exit path. A queue left registered is a slow leak
         # that ends with the reader fanning out to sockets nobody is holding.

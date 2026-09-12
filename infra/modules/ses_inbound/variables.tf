@@ -24,7 +24,7 @@ variable "account_id" {
 variable "region" {
   description = <<-EOT
     The region whose SES inbound endpoint the MX record points at. SES receives
-    mail only in the region the rule set is active in, so this and the
+    mail only in the region its rule set is active in, so this and the
     provider's region are the same value and must stay so.
 
     PASSED IN RATHER THAN LOOKED UP, the same reason `account_id` records:
@@ -32,6 +32,44 @@ variable "region" {
     that deliberately does not exist.
   EOT
   type        = string
+
+  validation {
+    # SES EMAIL RECEIVING EXISTS IN A SMALL SET OF REGIONS, AND IT IS NOT THE
+    # SAME SET AS SES SENDING. This module was first wired for `ap-south-2`,
+    # where the pilot lives and where SES SENDS perfectly well, and the failure
+    # would have been silent in the worst way: `aws ses
+    # describe-active-receipt-rule-set` answers `InvalidAction` there because
+    # the API does not exist in that region, and
+    # `inbound-smtp.ap-south-2.amazonaws.com` does not resolve AT ALL. The MX
+    # record would have pointed at a hostname with no address, every employer's
+    # reply would have bounced at their own mail server, and nothing in this
+    # account would have logged a thing.
+    #
+    # A HARDCODED LIST GOES STALE IN THE SAFE DIRECTION. When AWS adds a region
+    # this refuses a deployment that would have worked, loudly, and the fix is
+    # one line in a diff. The alternative is a lookup that cannot be planned
+    # offline and would not have caught this anyway.
+    #
+    # Receiving and sending need not share a region: the MX points wherever the
+    # rule set is, and the parser reaches the product over the public internet.
+    condition = contains([
+      "us-east-1",
+      "us-east-2",
+      "us-west-1",
+      "us-west-2",
+      "ap-south-1",
+      "ap-southeast-1",
+      "ap-southeast-2",
+      "ap-northeast-1",
+      "ca-central-1",
+      "eu-central-1",
+      "eu-west-1",
+      "eu-west-2",
+      "eu-north-1",
+      "sa-east-1",
+    ], var.region)
+    error_message = "SES email receiving does not exist in this region, and its inbound-smtp hostname does not resolve. The MX record would point at nothing and every reply would bounce at the sender. Receiving may live in a different region from sending: pass a receiving region through a provider alias."
+  }
 }
 
 variable "reply_domain" {

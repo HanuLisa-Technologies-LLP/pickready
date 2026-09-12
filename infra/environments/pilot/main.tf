@@ -178,7 +178,35 @@ locals {
   # arrives in the sending mailbox instead of in the thread. The application
   # records that rather than hiding it (`conversations.reply_address`).
   reply_domain = local.has_domain ? "reply.${var.domain_name}" : ""
-  has_inbound  = local.reply_domain != ""
+
+  # SES EMAIL RECEIVING DOES NOT EXIST IN EVERY REGION SES SENDS FROM, AND THIS
+  # PILOT IS IN ONE OF THE GAPS. `ap-south-2` sends perfectly well;
+  # `describe-active-receipt-rule-set` answers `InvalidAction` there because the
+  # API is absent, and `inbound-smtp.ap-south-2.amazonaws.com` does not resolve
+  # at all. Applying the module here would publish an MX record pointing at a
+  # hostname with no address: every employer's reply would bounce at their own
+  # mail server, and nothing in this account would log it.
+  #
+  # So inbound stays OFF here until the receiving half is moved to a region
+  # that has it (`ap-south-1` is verified and holds no active rule set), which
+  # needs a provider alias and a second `lambda` instance in that region. The
+  # module refuses the wrong region by validation, so this cannot be turned on
+  # by editing one boolean.
+  #
+  # THE CONSEQUENCE IS STATED RATHER THAN HIDDEN. With no inbound domain the
+  # product sets no Reply-To, `conversations.reply_address` records that once,
+  # and an employer's reply arrives in the sending mailbox instead of in the
+  # thread. That is a real, working, degraded mode. Advertising a Reply-To that
+  # nothing receives would be strictly worse.
+  ses_receiving_regions = [
+    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+    "ap-south-1", "ap-southeast-1", "ap-southeast-2", "ap-northeast-1",
+    "ca-central-1", "eu-central-1", "eu-west-1", "eu-west-2", "eu-north-1",
+    "sa-east-1",
+  ]
+  has_inbound = (
+    local.reply_domain != "" && contains(local.ses_receiving_regions, var.region)
+  )
 
   # Composed from the BUCKET NAME rather than read from the module's output,
   # because `ses_inbound` subscribes the function and therefore depends on it;
@@ -1042,7 +1070,7 @@ module "ecs" {
     # without a domain, which is a real state rather than a broken one: the
     # deployment still sends, and `conversations.reply_address` records that the
     # reply will arrive in the sending mailbox instead of in the thread.
-    INBOUND_EMAIL_DOMAIN = local.reply_domain
+    INBOUND_EMAIL_DOMAIN = local.has_inbound ? local.reply_domain : ""
     # ONE RERANKER PER DEPLOYMENT, never a fallback chain: the same shape
     # TASK_DISPATCH_BACKEND and EMAIL_TRANSPORT have, validated against a
     # closed set by `reranker.configured_backend()`, which RAISES on anything
@@ -1405,7 +1433,7 @@ module "lambda" {
         SMTP_FROM_NAME  = "ReadyPick"
         # This function is the hop that actually writes the Reply-To header, so
         # it needs the same value the API used to build the address.
-        INBOUND_EMAIL_DOMAIN = local.reply_domain
+        INBOUND_EMAIL_DOMAIN = local.has_inbound ? local.reply_domain : ""
         # This function is the last hop before SES, so it is the one that must
         # attach the configuration set. Without it SES accepts the message and
         # publishes no event, and every row stays `sent` for ever.
