@@ -55,3 +55,13 @@ access_logs_bucket_name = "readypick-never-created-alb-logs"
 # nothing.
 transcribe_region      = "xx-plan-1"
 transcribe_bucket_name = "readypick-never-created-transcribe"
+
+# The offline region is deliberately not one of these, so `has_inbound` is
+# false in the plan and the SES module is not instantiated. That is the same
+# answer the real pilot gets today and for the same reason.
+ses_receiving_regions = [
+  "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+  "ap-south-1", "ap-southeast-1", "ap-southeast-2", "ap-northeast-1",
+  "ca-central-1", "eu-central-1", "eu-west-1", "eu-west-2", "eu-north-1",
+  "sa-east-1",
+]

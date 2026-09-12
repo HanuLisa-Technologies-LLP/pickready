@@ -281,3 +281,18 @@ variable "analysis_image_tag" {
   type        = string
   default     = ""
 }
+
+variable "ses_receiving_regions" {
+  description = <<-EOT
+    Every region where SES can RECEIVE mail. A SMALLER SET than the regions it
+    can send from, and this deployment sits in one of the gaps: the pilot's own
+    region sends perfectly well and has no inbound-smtp endpoint at all.
+
+    NO DEFAULT, like every other account-specific value in this tree. Which
+    regions can receive changes whenever AWS adds one, and a default would be
+    this file guessing at it. The way that guess fails is silent: an MX record
+    pointing at a hostname that does not resolve, and every employer's reply
+    bouncing at their own mail server with nothing logged here.
+  EOT
+  type        = list(string)
+}

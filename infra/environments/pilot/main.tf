@@ -231,14 +231,8 @@ locals {
     }
   }
 
-  ses_receiving_regions = [
-    "us-east-1", "us-east-2", "us-west-1", "us-west-2",
-    "ap-south-1", "ap-southeast-1", "ap-southeast-2", "ap-northeast-1",
-    "ca-central-1", "eu-central-1", "eu-west-1", "eu-west-2", "eu-north-1",
-    "sa-east-1",
-  ]
   has_inbound = (
-    local.reply_domain != "" && contains(local.ses_receiving_regions, var.region)
+    local.reply_domain != "" && contains(var.ses_receiving_regions, var.region)
   )
 
   # Composed from the BUCKET NAME rather than read from the module's output,
@@ -1603,8 +1597,9 @@ module "ses_inbound" {
   account_id  = var.account_id
   region      = var.region
 
-  reply_domain   = local.reply_domain
-  hosted_zone_id = var.hosted_zone_id
+  reply_domain      = local.reply_domain
+  hosted_zone_id    = var.hosted_zone_id
+  receiving_regions = var.ses_receiving_regions
 
   lambda_function_arn  = module.lambda.function_arns["inbound-email"]
   lambda_function_name = module.lambda.function_names["inbound-email"]

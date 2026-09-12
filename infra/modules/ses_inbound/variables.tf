@@ -34,41 +34,43 @@ variable "region" {
   type        = string
 
   validation {
-    # SES EMAIL RECEIVING EXISTS IN A SMALL SET OF REGIONS, AND IT IS NOT THE
-    # SAME SET AS SES SENDING. This module was first wired for `ap-south-2`,
-    # where the pilot lives and where SES SENDS perfectly well, and the failure
-    # would have been silent in the worst way: `aws ses
-    # describe-active-receipt-rule-set` answers `InvalidAction` there because
-    # the API does not exist in that region, and
-    # `inbound-smtp.ap-south-2.amazonaws.com` does not resolve AT ALL. The MX
-    # record would have pointed at a hostname with no address, every employer's
-    # reply would have bounced at their own mail server, and nothing in this
-    # account would have logged a thing.
+    # SES EMAIL RECEIVING EXISTS IN A SMALLER SET OF REGIONS THAN SES SENDING.
+    # This module was first wired for the pilot's own region, where SES SENDS
+    # perfectly well, and the failure would have been silent in the worst way:
+    # `describe-active-receipt-rule-set` answers `InvalidAction` there because
+    # the API does not exist in the region, and its `inbound-smtp` hostname
+    # does not resolve AT ALL. The MX record would have pointed at a hostname
+    # with no address, every employer's reply would have bounced at their own
+    # mail server, and nothing in this account would have logged a thing.
     #
-    # A HARDCODED LIST GOES STALE IN THE SAFE DIRECTION. When AWS adds a region
-    # this refuses a deployment that would have worked, loudly, and the fix is
-    # one line in a diff. The alternative is a lookup that cannot be planned
-    # offline and would not have caught this anyway.
+    # THE SET IS AN INPUT, NOT A LITERAL. Which regions can receive is an
+    # operational fact that changes when AWS adds one, so it is a declared
+    # variable with no default, the same rule every account-specific value in
+    # this tree follows. An operator states it in a reviewed diff; nothing here
+    # guesses it.
     #
     # Receiving and sending need not share a region: the MX points wherever the
     # rule set is, and the parser reaches the product over the public internet.
-    condition = contains([
-      "us-east-1",
-      "us-east-2",
-      "us-west-1",
-      "us-west-2",
-      "ap-south-1",
-      "ap-southeast-1",
-      "ap-southeast-2",
-      "ap-northeast-1",
-      "ca-central-1",
-      "eu-central-1",
-      "eu-west-1",
-      "eu-west-2",
-      "eu-north-1",
-      "sa-east-1",
-    ], var.region)
+    condition     = contains(var.receiving_regions, var.region)
     error_message = "SES email receiving does not exist in this region, and its inbound-smtp hostname does not resolve. The MX record would point at nothing and every reply would bounce at the sender. Receiving may live in a different region from sending: pass a receiving region through a provider alias."
+  }
+}
+
+variable "receiving_regions" {
+  description = <<-EOT
+    Every region where SES can RECEIVE mail, which is a smaller set than the
+    regions it can send from.
+
+    A VARIABLE WITH NO DEFAULT, like every other account-specific value here.
+    A default would be this module guessing at a fact that changes whenever AWS
+    adds a region, and the way that guess fails is silent: an MX record
+    pointing at a hostname that does not resolve.
+  EOT
+  type        = list(string)
+
+  validation {
+    condition     = length(var.receiving_regions) > 0
+    error_message = "receiving_regions cannot be empty: an empty list refuses every region, including the one that works."
   }
 }
 
