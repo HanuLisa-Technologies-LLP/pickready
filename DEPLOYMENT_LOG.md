@@ -837,6 +837,88 @@ the deployed commit: 6135 passed, 1 skipped, 0 failed.
   that did not run reports nothing that looks like a pass.
 - Audit deliverables: `docs/architecture/ENGINEERING_AUDIT_2026-09-11.md`.
 
+## 2026-09-12 — BGV and conversations go live, pilot (ap-south-2)
+
+Commit `ce139c3` on `feat/ai-upgrade-rpn-ai-up-001`. Images `sha-1af3d00` for
+backend and frontend; the three commits after the build touched only Terraform,
+so no application byte changed between the tag and HEAD. Clean full suite on the
+deployed code: **6245 passed, 1 failed, 1 skipped**, and the one failure is the
+hardcoded-region sweep that `ce139c3` answers.
+
+- **No migration.** 0095 went out with the previous release, so the schema was
+  already in place and the tables were empty: conversations 0, employments 0,
+  verifications 0, read back from the database rather than assumed.
+- Task definitions api 29 to 30, frontend 16 to 17, analysis 12 to 13, migrate
+  and agent to 27. All three image-backed Lambdas moved to the same backend
+  image by `update-lambda-code.sh`, which is how they move: the module sets
+  `ignore_changes = [image_uri, ...]` so Terraform owns the shape and a script
+  owns the code.
+- **Verified by digest against RUNNING tasks**, not against the service
+  definition: api 2 tasks and frontend 1 task on the digests this build
+  produced. `verify-deployment.sh` REFUSED the first attempt because no expected
+  digests were supplied, which is the script working: a skipped check is not a
+  passed check.
+- Site 200, login 200, api target group healthy, every new route answering 401
+  unauthenticated and an unknown path answering 404. **Zero tracebacks, zero
+  exceptions and zero 5xx** in the 35 minutes around the rollout.
+- The three new capabilities are seeded, 5 rows each, one per customer role.
+  Read from `role_permissions`, because a capability constant is half a change.
+
+### THE APPLY WAS TARGETED, AND WHAT WAS EXCLUDED IS THE INTERESTING PART
+
+The plan also wanted to change `module.network.aws_security_group.{rds,redis}`:
+adding an egress rule with an EMPTY destination set, which in AWS replaces the
+default allow-all egress on the DATABASE's security group. That is pre-existing
+drift between the code and the account, it has nothing to do with this feature,
+and this product had a full outage from a database-connectivity change the day
+before. Folding it into a feature release is how an outage gets attributed to
+the wrong change. It is still drift and it still wants applying, deliberately,
+on its own.
+
+### SES INBOUND IS BUILT AND NOT APPLIED, BECAUSE THE REGION CANNOT RECEIVE
+
+`ap-south-2` SENDS perfectly well and cannot receive:
+`aws ses describe-active-receipt-rule-set` answers `InvalidAction` there because
+the API is absent from the region, and `inbound-smtp.ap-south-2.amazonaws.com`
+does not resolve at all. The module as first wired would have published an MX
+record pointing at a hostname with no address. Every employer's reply would have
+bounced at their own mail server and nothing in this account would have logged
+it, which is the exact failure the reply-address design exists to prevent,
+arriving through the infrastructure instead of through the parser.
+
+So `INBOUND_EMAIL_DOMAIN` is empty on every container, the product sets no
+Reply-To, and `conversations.reply_address` records that once rather than
+producing a thread that can never receive anything. An employer's reply arrives
+in the sending mailbox instead of the thread. Everything else in BGV and
+conversations works.
+
+**What remains**: move receiving to `ap-south-1`, which is verified to resolve
+and holds no active rule set, through a provider alias and a second `lambda`
+instance in that region. The module refuses a non-receiving region by
+validation and pilot's `has_inbound` requires one, so this cannot be turned on
+by editing a boolean.
+
+### Two repairs this deployment needed before it could be trusted
+
+- **Pilot could not be planned offline AT ALL**, and had never been. Three
+  `data "aws_caller_identity"` lookups and two missing `offline-plan.tfvars`
+  entries stopped the plan before it reached anything. The data source calls
+  STS; the planning profile runs against account 000000000000 in a region that
+  does not exist. The account id was already a required variable everywhere, so
+  this reads the same fact from the input rather than the network. Staging and
+  production were failing on the same lookup inside the `lambda` module.
+- **The impeccable gate was failing on generated output** it cannot fix: the
+  graphify knowledge-graph viewer, HTML nobody wrote. Now asked of
+  `git check-ignore` rather than a hardcoded list.
+
+### The Sarkar Corp accounts, read from the table
+
+Four users on the tenant. The client Super Admin is `active` and Firebase-bound.
+Two recruiters and one hiring manager are present; their `firebase_uid` is NULL
+and binds on first proven sign-in, which is the designed flow rather than a gap.
+
+---
+
 ## 2026-09-12 — The application's own database credential, pilot (ap-south-2)
 
 Commit `a36cd00` on `feat/ai-upgrade-rpn-ai-up-001`. Backend and frontend both
