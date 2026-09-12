@@ -141,6 +141,19 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # mailbox, and nothing dispatches it any more. Left in place it would be
     # a renderable OTP email one dispatch call away from coming back.
     # api/admin.py, when the platform owner creates a customer.
+    # BACKGROUND VERIFICATION, and it is deliberately a PASS-THROUGH.
+    #
+    # Every other entry here is a template because the product writes the
+    # words. This one is not: the recruitment team reviews and EDITS the draft
+    # the BGV agent produced, and the whole point of that review step is that
+    # their version is what the employer receives. A template would silently
+    # rewrite it.
+    #
+    # It still routes through this module rather than around it, so the BGV
+    # email inherits everything the delivery path already guarantees: the
+    # verified-sender selection, the SES transport, the `email_log` row, the
+    # permanent-versus-transient failure taxonomy and the retry policy.
+    "bgv_verification": ("{{subject}}", "{{body}}"),
     "client_invite": (
         "Your {{tenant_name}} workspace on ReadyPick is ready",
         "Hello,\n\n"

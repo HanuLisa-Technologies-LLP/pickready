@@ -13,6 +13,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api import (
+    bgv,
     assessments,
     admin,
     auth,
@@ -150,6 +151,10 @@ app.include_router(reports.router, prefix=f"{API_PREFIX}/reports", tags=["report
 # is no v1 client to keep working and a second URL for one surface is a second
 # thing to keep in step.
 app.include_router(support.router, prefix=f"{API_PREFIX}/support", tags=["support"])
+# Background verification. ONE router, two audiences: `/bgv/me` runs on the
+# candidate session and everything else is behind require_capability on the
+# tenant session, so neither audience can reach the other's routes.
+app.include_router(bgv.router, prefix=f"{API_PREFIX}/bgv", tags=["bgv"])
 app.include_router(
     support.provider_router,
     prefix=f"{API_PREFIX}/provider/support",
