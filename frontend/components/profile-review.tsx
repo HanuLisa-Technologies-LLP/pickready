@@ -15,6 +15,7 @@ import {
   type FunctionalReport,
 } from "@/components/functional-skills-report";
 import { BgvResultsPanel } from "@/components/bgv-results-panel";
+import { BgvVerificationPanel } from "@/components/bgv-verification-panel";
 import { ProjectEvidencePanel } from "@/components/project-evidence-panel";
 import { ResumeViewer, describeResumeUrl } from "@/components/resume-viewer";
 import { SendOutreachModal } from "@/components/send-outreach-modal";
@@ -369,6 +370,7 @@ export function ProfileReview({
                   {/* Consent-gated on the server: an inquiry the candidate
                       has not shared with this employer arrives as a bare
                       "Not shared by the candidate" marker. */}
+                  <BgvVerificationPanel candidateId={selected.candidate.id} />
                   <BgvResultsPanel candidateId={selected.candidate.id} />
                 </TabsContent>
 
