@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| BGV and conversations (2026-09-12) | The employment declaration, the offer gate, native chat, the reply address, SES inbound |
 | The rotated credential (2026-09-11) | The database credential split, TLS on the DSN, the primary-contact carve-out, the AI Reach contact harvest |
 | Native support + runtime completions (2026-09-10) | The Support surface, the vendor sync removal, the RDS proxy refusal, W6.5, W6.6, report provenance, the golden set at 60 |
 | AI runtime upgrade (2026-09-09) | The retrieval index, the tool firewall, the action ledger, the eval OS, the sufficiency gate, AI activity |
@@ -63,6 +64,171 @@ phase sections above them are where the sharp edges are.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
+
+## Current hard rules, BGV and conversations (2026-09-12)
+
+Two features, built together because one is the other's first real user: the
+BGV Agent drafts an email to a previous employer, and the employer's reply has
+to land somewhere. Migration 0095.
+
+### THE OFFER GATE IS IN `apply_transition`, AND THAT IS THE WHOLE ENFORCEMENT
+
+`hiring_pipeline.apply_transition` is the single chokepoint all six pipeline
+callers reach, and the gate sits there, after `assert_transition` and BEFORE the
+first write. A candidate who declared previous employment cannot be moved to
+`offer_extended` or `offered` until every employer they submitted is marked
+verified by a person.
+
+- **REJECTION IS NEVER BLOCKED, and a fresher is never blocked.** A gate that
+  could stop a rejection would trap somebody in a pipeline over paperwork, and a
+  fresher has no previous employer to verify: `derive_status` answers
+  `not_required` and the gate never fires.
+- **THE STATUS IS DERIVED, NEVER STORED**, like `profile_age` and
+  `posting_status`. `bgv_workflow.derive_status` is a pure function of the
+  declared background, the employer count and the per-employer statuses, so a
+  stored value can never disagree with the rows it was computed from.
+- **ONE `not_verified` DOMINATES.** Checked before anything else, including
+  before "no verifications exist yet": an employer the team has actively refused
+  is a stronger fact than an incomplete process.
+- **The screen renders the SERVER's refusal sentence verbatim**
+  (`offer_blocked_reason`). It is the exact string `apply_transition` would
+  refuse with, so the UI can never promise something the pipeline then refuses,
+  which is the specific way a gate becomes infuriating.
+
+### THE EMPLOYMENT HISTORY IS THE CANDIDATE'S, ONCE, AND IT IS FINAL
+
+Owner decision: one history, per-tenant verification. The candidate submits
+employers ONCE; each hiring tenant runs its own `bgv_verifications` records
+against that one list. `candidate_employments` is deliberately TENANT-FREE.
+
+- **Immutability is a TRIGGER, not a code path.**
+  `candidate_employment_is_final` raises on any INSERT, UPDATE or DELETE once
+  `candidates.employment_history_finalized_at` is set. A rule enforced in a
+  service is a rule the next writer of that table does not know about.
+- **The warning the candidate reads is SERVED BY THE SERVER**
+  (`SUBMISSION_WARNING`), so the sentence describing the rule and the rule
+  itself cannot drift.
+- **The HR contact's address reaches the recruiter running the verification and
+  nobody else.** It is on no list endpoint and no cross-tenant response: it is a
+  third party's personal contact detail a candidate handed over for one purpose.
+
+### THE BGV AGENT WRITES FROM A FACT BLOCK, AND GROUNDING IS CHECKED
+
+`bgv_agent.FactBlock` is a frozen dataclass with seven fields and no free-form
+escape hatch, so a prompt cannot be handed anything the candidate did not
+submit. `verify_grounding` runs inside the existing `agent_loop`, and a failure
+returns the DETERMINISTIC template with `generated_by_ai=False`, which the
+recruiter is told, because template output presented as generation is a lie
+about how the text was produced.
+
+**Nothing infers a verdict from the reply.** A person reads the employer's
+answer and presses Verified or Not verified.
+`tests/test_inbound_conversation_reply.py` asserts that an arriving reply stamps
+`responded_at` and changes no status, no `decided_by` and no `decided_at`,
+because an inferred "verified" would be an automated hiring decision wearing a
+convenience feature's clothes.
+
+### CONVERSATIONS: THE SOCKET IS A NOTIFICATION, THE DATABASE IS THE RECORD
+
+A message is written to Postgres FIRST and announced SECOND. A dropped frame, a
+sleeping background tab, a network change and a deploy that moves a connection
+to another API task are all the same event, and none of them can lose a message
+because the message was never only in flight. Every (re)connect refetches.
+
+- **`BackgroundTasks` DOES NOT GIVE YOU "AFTER THE COMMIT", AND BELIEVING IT
+  DOES IS THE TRAP.** FastAPI sends the response, and therefore runs background
+  tasks, INSIDE the dependency exit stack, so a background publish fires before
+  `get_tenant_db` commits. `realtime.publish_after_commit` hangs off
+  SQLAlchemy's `after_commit` instead, which is the one event that means what it
+  says. `tests/test_conversations_api.py` asserts the ordering from a SECOND
+  connection and is what caught it. A rolled-back request now publishes nothing
+  at all, which is the half that matters: a notification for a message that was
+  never stored would have every listening tab render one that does not exist.
+- **The room is keyed by TENANT and conversation.** Keyed on the conversation
+  alone it would be a cross-tenant broadcast waiting for an id collision, and
+  nothing would report it. The same rule every cache key already follows.
+- **The queue is BOUNDED and overflow is dropped**, which is safe ONLY because
+  the message is already in Postgres. A hub that awaited `queue.put` would let
+  one asleep background tab stall the fan-out for every other browser on the
+  instance.
+- **THE SOCKET ACCEPTS NO FRAME THAT WRITES.** It authenticates from the same
+  cookie, resolves `USE_CONVERSATIONS` live rather than trusting the token, and
+  authorises the same row. Sending is a POST, which is where idempotency, the
+  audit trail and the email bridge live; a socket that could write would be a
+  second send path with none of them.
+- **A BGV thread REFUSES a chat send**, 409 with the reason. An employer message
+  is a verification act with its own capability and its own status transition,
+  so chat must not become an unaudited way to contact a former employer.
+- **The candidate's side is a SECOND ROUTER on the candidate audience.** A
+  candidate has no tenant, so RLS by tenant cannot apply and `get_candidate_db`
+  runs in the bypass scope: every candidate handler filters by the candidate id
+  resolved from their own session. The recruiter's handlers are NOT reused with
+  a different dependency, because that would be one function with two security
+  models and the weaker one would be invisible in the code.
+- **A candidate cannot reach the BGV thread about themselves.** It carries their
+  `candidate_id`, so the lookup checks the KIND as well as the owner. Pinned by
+  a test, because "is this yours" is the obvious simplification and it would
+  hand the candidate their former employer's words about them.
+- **Idempotency is a client token the CLIENT mints.** The server cannot derive
+  it: a double click, a retry after a lost response and a reconnect that replays
+  the send all arrive as distinct requests with identical content, and a content
+  hash would refuse a candidate who legitimately wrote "yes" twice.
+
+### THE REPLY ADDRESS IS THE ROUTING, AND A SUBJECT LINE IS NOT
+
+Every verification request carries
+`Reply-To: conversations+<thread token>@<inbound domain>`. The inbound webhook
+reads the token from the ADDRESS, which is the one part of a message every mail
+system on the path reproduces verbatim. Matching on a subject loses to
+`Re: Fwd: Re:`, to a translated prefix, to a client that rewrites the subject,
+and to a recruiter forwarding the thread, and every one of those failures is
+silent.
+
+- **`INBOUND_EMAIL_DOMAIN` EMPTY IS A REAL STATE.** The deployment still sends;
+  the reply arrives in the sending mailbox rather than in the thread, and
+  `conversations.reply_address` logs that once rather than producing a thread
+  that can never receive anything.
+- **Idempotent on the sender's Message-ID.** SNS delivers AT LEAST ONCE, so a
+  redelivery is the default behaviour unless something prevents it.
+- **The inbound parser is a SECOND ZIP LAMBDA**, standard library and boto3
+  only, for the reason the ECS trigger gives: anything that can send mail to the
+  reply domain reaches it. It holds no database credential and no model key. S3
+  plus SNS rather than a direct Lambda action, because that path caps a message
+  at 256KB and a reply with a scanned letter attached is routinely larger.
+- **A SUBDOMAIN, never the apex.** Receiving mail means owning the MX record,
+  and the apex's MX belongs to whatever mailbox the company actually reads.
+  `reply_domain` validates that it carries at least three labels.
+- **ONE ACTIVE SES RECEIPT RULE SET PER REGION PER ACCOUNT.**
+  `activate_rule_set` defaults to false so an environment has to say it is the
+  one receiving, and a second environment claiming it is then a merge conflict
+  rather than an outage nobody can see.
+
+### PILOT CAN BE PLANNED OFFLINE NOW, AND COULD NOT BEFORE
+
+Three `data "aws_caller_identity"` lookups and two missing
+`offline-plan.tfvars` entries meant `infra/plan-offline.sh` stopped before it
+reached anything in that environment. The data source calls STS, and the
+planning profile runs against account 000000000000 in a region that does not
+exist. **The account id was already a required variable in every environment**,
+so this is the same fact read from the input rather than from the network, and
+`scheduler` already took it that way. Staging and production were failing on the
+same lookup inside the `lambda` module and now plan clean.
+
+**A pre-apply check that cannot run is a check nobody reads**, which is the same
+argument the impeccable gate makes about a detector that only prints warnings.
+That gate also stopped judging gitignored build output: it was failing on the
+graphify knowledge-graph viewer, generated HTML nobody wrote and nobody can fix
+without changing a third-party renderer. Asked of `git check-ignore` rather than
+hardcoded, so it cannot drift, and it excludes nothing that ships, because an
+ignored file is by definition one nobody reviews in a diff.
+
+### The candidate nav is FIVE entries now
+
+Messages joins New Jobs, Applied Jobs, Updates and My Profile, which AMENDS the
+2026-07-27 rule that the nav is exactly three. That rule was written when every
+word from a company arrived by email. A candidate can now be WRITTEN TO inside
+the product, and a reply box they cannot find is an outbox rather than a
+conversation.
 
 ## Current hard rules, the rotated credential (2026-09-11)
 

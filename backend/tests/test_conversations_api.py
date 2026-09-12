@@ -32,10 +32,16 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.api.deps import CurrentUser, get_current_user, get_tenant_db
+from app.api.deps import (
+    CurrentUser,
+    get_candidate_db,
+    get_current_candidate,
+    get_current_user,
+    get_tenant_db,
+)
 from app.core.config import get_settings
 from app.core.db import superadmin_scope, tenant_scope
-from app.core.security import AUDIENCE_ORG
+from app.core.security import AUDIENCE_CANDIDATE, AUDIENCE_ORG
 from app.main import app
 from app.models.conversation import KIND_BGV, PARTY_CANDIDATE
 from app.models.enums import Role
@@ -578,3 +584,241 @@ def test_a_refused_send_publishes_nothing(
     # simply slow would pass an immediate check and still be the bug.
     assert not _settle(lambda: bool(published))
     assert published == []
+
+
+# ── The candidate's own side ─────────────────────────────────────────────────
+#
+# A candidate has NO TENANT, so RLS by tenant cannot protect these routes and
+# `get_candidate_db` runs in the bypass scope. Every guarantee is therefore in
+# the handler's own WHERE clause, and a WHERE clause is exactly the kind of
+# protection that is one careless edit away from being dropped. These are the
+# assertions that would catch that edit.
+
+
+@pytest.fixture
+def candidate_client(world: World) -> Iterator[Caller]:
+    """A signed-in candidate, on the candidate audience and the bypass scope.
+
+    Built exactly as the production dependencies build it, including the bypass
+    scope, so a cross-candidate case here is refused by the handler rather than
+    by a tenant filter that would not exist in production.
+    """
+    sessions = _sessions()
+    caller = Caller()
+
+    async def _current_candidate() -> CurrentUser:
+        assert caller.principal is not None
+        return caller.principal
+
+    async def _candidate_db():
+        async with sessions() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    yield session
+
+    previous = dict(app.dependency_overrides)
+    app.dependency_overrides[get_current_candidate] = _current_candidate
+    app.dependency_overrides[get_candidate_db] = _candidate_db
+    try:
+        with TestClient(app) as http:
+            caller.http = http
+            yield caller
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(previous)
+
+
+def _sign_in_as_candidate(caller: Caller, world: World, candidate: uuid.UUID) -> None:
+    """Give the candidate a portal user whose email matches their record.
+
+    Matched BY EMAIL rather than by a linked user id on purpose: that is the
+    ordinary state, because a candidate exists from an employer's first outreach
+    and is linked to a portal login only when they first sign in.
+    """
+    user_id = uuid.uuid4()
+    sessions = _sessions()
+
+    async def _make_user() -> None:
+        async with sessions() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    email = (
+                        await session.execute(
+                            sa.text("SELECT email FROM candidates WHERE id = :cid"),
+                            {"cid": str(candidate)},
+                        )
+                    ).scalar()
+                    await session.execute(
+                        sa.text(
+                            "INSERT INTO users (id, tenant_id, email, full_name, "
+                            " role, status) "
+                            "VALUES (:id, NULL, :email, 'Karthik Kumar', "
+                            " 'candidate', 'active')"
+                        ),
+                        {"id": str(user_id), "email": email},
+                    )
+
+    _run(_make_user())
+    caller.principal = CurrentUser(
+        user_id=user_id,
+        tenant_id=None,
+        role=Role.candidate,
+        audience=AUDIENCE_CANDIDATE,
+    )
+
+
+def test_a_candidate_reads_and_answers_their_own_thread(
+    client: Caller, candidate_client: Caller, world: World
+) -> None:
+    """A thread only one side can write to is not a conversation."""
+    client.as_recruiter(world, world.tenant_a)
+    conversation_id = _open_thread(client, world.candidate_a).json()["id"]
+    client.http.post(
+        f"{CONV}/{conversation_id}/messages",
+        json={"body": "Are you free on Thursday?", "client_token": "tok-to-candidate"},
+    )
+
+    _sign_in_as_candidate(candidate_client, world, world.candidate_a)
+    listed = candidate_client.http.get(f"{CONV}/me")
+    assert listed.status_code == 200, listed.text
+    assert [row["id"] for row in listed.json()] == [conversation_id]
+    # The COMPANY is named. A candidate's threads span employers, and a list
+    # without it is a list of indistinguishable rows.
+    assert listed.json()[0]["company_name"].startswith("Conv-API-A")
+
+    read = candidate_client.http.get(f"{CONV}/me/{conversation_id}/messages")
+    assert [m["body"] for m in read.json()] == ["Are you free on Thursday?"]
+
+    replied = candidate_client.http.post(
+        f"{CONV}/me/{conversation_id}/messages",
+        json={"body": "Thursday works for me.", "client_token": "tok-candidate-reply"},
+    )
+    assert replied.status_code == 200, replied.text
+    assert replied.json()["author_party"] == "candidate"
+    # NULL, deliberately: writing a candidate's user id into the column the
+    # recruiter's side joins against `users` would make them resolvable through
+    # the employer's own directory.
+    assert replied.json()["author_user_id"] is None
+
+    # And the recruiter sees it, which is the half that makes it a conversation.
+    back = client.http.get(f"{CONV}/{conversation_id}/messages")
+    assert [m["body"] for m in back.json()][-1] == "Thursday works for me."
+
+
+def test_a_candidate_cannot_reach_another_candidates_thread(
+    client: Caller, candidate_client: Caller, world: World
+) -> None:
+    client.as_recruiter(world, world.tenant_b)
+    theirs = _open_thread(client, world.candidate_b).json()["id"]
+
+    _sign_in_as_candidate(candidate_client, world, world.candidate_a)
+    assert (
+        candidate_client.http.get(f"{CONV}/me/{theirs}/messages").status_code == 404
+    )
+    assert (
+        candidate_client.http.post(
+            f"{CONV}/me/{theirs}/messages",
+            json={"body": "Not mine.", "client_token": "tok-other-candidate"},
+        ).status_code
+        == 404
+    )
+
+
+def test_a_candidate_cannot_reach_the_bgv_thread_about_themselves(
+    candidate_client: Caller, world: World
+) -> None:
+    """THE ASSERTION THIS SECTION EXISTS FOR.
+
+    A BGV conversation carries the candidate's own `candidate_id`, so a lookup
+    that checked only "is this yours" would hand the candidate the correspondence
+    between a recruiter and their former employer's HR contact. The kind is
+    checked too, and this is what keeps that check from being simplified away.
+    """
+    sessions = _sessions()
+    conversation_id = uuid.uuid4()
+    employment_id = uuid.uuid4()
+    verification_id = uuid.uuid4()
+
+    async def _make_bgv_thread() -> None:
+        async with sessions() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await session.execute(
+                        sa.text(
+                            "INSERT INTO candidate_employments (id, candidate_id, "
+                            " employer_name, designation, started_on, ended_on, "
+                            " hr_name, hr_email, created_at) "
+                            "VALUES (:id, :cid, 'Acme Systems', 'Engineer', "
+                            " DATE '2021-01-01', DATE '2023-01-01', 'Meera Nair', "
+                            " :email, now())"
+                        ),
+                        {
+                            "id": str(employment_id),
+                            "cid": str(world.candidate_a),
+                            "email": f"hr-{employment_id.hex[:8]}@acme.test",
+                        },
+                    )
+                    await session.execute(
+                        sa.text(
+                            "INSERT INTO bgv_verifications (id, tenant_id, "
+                            " candidate_id, candidate_employment_id, status, "
+                            " created_at) "
+                            "VALUES (:id, :tid, :cid, :eid, 'pending', now())"
+                        ),
+                        {
+                            "id": str(verification_id),
+                            "tid": str(world.tenant_a),
+                            "cid": str(world.candidate_a),
+                            "eid": str(employment_id),
+                        },
+                    )
+                    await session.execute(
+                        sa.text(
+                            "INSERT INTO conversations (id, tenant_id, kind, subject, "
+                            " candidate_id, bgv_verification_id, status, "
+                            " thread_token, created_at) "
+                            "VALUES (:id, :tid, :kind, :subject, :cid, :vid, 'open', "
+                            " :token, now())"
+                        ),
+                        {
+                            "id": str(conversation_id),
+                            "tid": str(world.tenant_a),
+                            "kind": KIND_BGV,
+                            "subject": "Karthik Kumar, Acme, background verification",
+                            "cid": str(world.candidate_a),
+                            "vid": str(verification_id),
+                            "token": conversation_service.mint_thread_token(),
+                        },
+                    )
+                    await session.execute(
+                        sa.text(
+                            "INSERT INTO conversation_messages (id, conversation_id, "
+                            " tenant_id, author_party, body, channel, "
+                            " delivery_status, created_at) "
+                            "VALUES (gen_random_uuid(), :cid, :tid, 'employer_hr', "
+                            " 'He left after a disagreement.', 'email', "
+                            " 'delivered', now())"
+                        ),
+                        {
+                            "cid": str(conversation_id),
+                            "tid": str(world.tenant_a),
+                        },
+                    )
+
+    _run(_make_bgv_thread())
+
+    _sign_in_as_candidate(candidate_client, world, world.candidate_a)
+    assert candidate_client.http.get(f"{CONV}/me").json() == []
+    assert (
+        candidate_client.http.get(
+            f"{CONV}/me/{conversation_id}/messages"
+        ).status_code
+        == 404
+    )
+    assert (
+        candidate_client.http.post(
+            f"{CONV}/me/{conversation_id}/messages",
+            json={"body": "Let me explain.", "client_token": "tok-bgv-candidate"},
+        ).status_code
+        == 404
+    )

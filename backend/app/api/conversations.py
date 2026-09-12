@@ -64,10 +64,25 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.websockets import WebSocketDisconnect
 
-from app.api.deps import ACCESS_COOKIE, CurrentUser, get_current_user, get_tenant_db, require_capability
+from app.api.deps import (
+    ACCESS_COOKIE,
+    CurrentUser,
+    get_candidate_db,
+    get_current_candidate,
+    get_current_user,
+    get_tenant_db,
+    require_capability,
+)
 from app.core.db import get_session_factory, tenant_scope
 from app.core.security import AUDIENCE_ORG, decode_token
-from app.models.conversation import CHANNEL_CHAT, KIND_BGV, MAX_BODY_CHARS, PARTY_RECRUITER
+from app.models.conversation import (
+    CHANNEL_CHAT,
+    KIND_BGV,
+    KIND_CANDIDATE,
+    MAX_BODY_CHARS,
+    PARTY_CANDIDATE,
+    PARTY_RECRUITER,
+)
 from app.models.enums import Role
 from app.services import capabilities as caps
 from app.services import conversations, object_storage, rbac, realtime
@@ -764,3 +779,217 @@ async def stream(websocket: WebSocket, conversation_id: uuid.UUID) -> None:
             conversation_id=conversation_id,
             queue=queue,
         )
+
+
+# ── The candidate's own side ─────────────────────────────────────────────────
+#
+# A SEPARATE ROUTER ON A SEPARATE AUDIENCE, and that is the whole design. A
+# candidate has no tenant -- they span tenants through the databank -- so RLS by
+# tenant cannot apply and `get_candidate_db` runs in the bypass scope. Every
+# handler below therefore filters by the AUTHENTICATED candidate's own id,
+# resolved from their session, and never by an id the client sent.
+#
+# The recruiter's routes above are deliberately NOT reused with a different
+# dependency. They are written against a session whose tenant the database is
+# already enforcing; running the same handler without that would be one function
+# with two security models, and the weaker one would be invisible in the code.
+#
+# A candidate writes to their own CANDIDATE thread and to nothing else. A BGV
+# thread is a recruiter and an employer discussing this person's employment
+# history: the candidate is its subject, not a participant, and there is no
+# route here that can reach one.
+
+candidate_router = APIRouter()
+
+
+async def _candidate_id_for(session: AsyncSession, user: CurrentUser) -> uuid.UUID:
+    """Resolve the signed-in candidate. Never trusts an id from the client.
+
+    The same lookup `api/bgv.py` makes, written the same way: a candidate row is
+    matched by its linked user OR by the address the account signed in with,
+    because a candidate exists from an employer's first outreach and is linked
+    to a portal login only afterwards.
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT c.id FROM candidates c "
+                "LEFT JOIN users u ON u.id = :uid "
+                "WHERE c.user_id = :uid OR (u.email IS NOT NULL AND c.email = u.email) "
+                "ORDER BY c.created_at LIMIT 1"
+            ),
+            {"uid": str(user.user_id)},
+        )
+    ).scalar()
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No candidate record yet, you appear after an employer's first "
+                "outreach"
+            ),
+        )
+    return uuid.UUID(str(row))
+
+
+async def _candidate_thread(
+    session: AsyncSession, *, conversation_id: uuid.UUID, candidate_id: uuid.UUID
+) -> dict:
+    """One conversation, only if it is this candidate's own candidate thread.
+
+    Three conditions, and each is load-bearing: the id exists, it belongs to
+    this candidate, and its kind is `candidate`. Dropping the last would hand a
+    candidate the employer correspondence about them.
+    """
+    row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT id, tenant_id, subject, status, last_message_at "
+                    "FROM conversations "
+                    "WHERE id = :cid AND candidate_id = :cand AND kind = :kind"
+                ),
+                {
+                    "cid": str(conversation_id),
+                    "cand": str(candidate_id),
+                    "kind": KIND_CANDIDATE,
+                },
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return dict(row)
+
+
+class CandidateConversationOut(BaseModel):
+    id: uuid.UUID
+    subject: str
+    status: str
+    #: The company the candidate is talking to. A candidate's threads span
+    #: employers, so a list without this is a list of indistinguishable rows.
+    company_name: str | None = None
+    last_message_at: datetime | None = None
+    inbound: int = 0
+
+
+@candidate_router.get("/me", response_model=list[CandidateConversationOut])
+async def my_conversations(
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> list[CandidateConversationOut]:
+    """Every employer talking to this candidate, most recent first."""
+    candidate_id = await _candidate_id_for(session, user)
+    rows = (
+        (
+            await session.execute(
+                text(
+                    "SELECT c.id, c.subject, c.status, c.last_message_at, "
+                    " t.name AS company_name, "
+                    " (SELECT count(*) FROM conversation_messages m "
+                    "   WHERE m.conversation_id = c.id "
+                    "     AND m.author_party <> :self) AS inbound "
+                    "FROM conversations c "
+                    "JOIN tenants t ON t.id = c.tenant_id "
+                    "WHERE c.candidate_id = :cand AND c.kind = :kind "
+                    "ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC "
+                    "LIMIT 200"
+                ),
+                {
+                    "cand": str(candidate_id),
+                    "kind": KIND_CANDIDATE,
+                    "self": PARTY_CANDIDATE,
+                },
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return [
+        CandidateConversationOut(
+            id=row["id"],
+            subject=row["subject"],
+            status=row["status"],
+            company_name=row["company_name"],
+            last_message_at=row["last_message_at"],
+            # COUNTED, not read from a watermark. `conversation_participants`
+            # carries `last_read_at` per USER, and a candidate is not a member
+            # of the employer's tenant, so there is no row to hold theirs. What
+            # this answers is "how many of these are from them", which is what
+            # the portal renders beside a company's name.
+            inbound=int(row["inbound"] or 0),
+        )
+        for row in rows
+    ]
+
+
+@candidate_router.get("/me/{conversation_id}/messages", response_model=list[MessageOut])
+async def my_messages(
+    conversation_id: uuid.UUID,
+    before: datetime | None = None,
+    limit: int = Query(default=DEFAULT_PAGE, ge=1, le=200),
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> list[MessageOut]:
+    candidate_id = await _candidate_id_for(session, user)
+    conversation = await _candidate_thread(
+        session, conversation_id=conversation_id, candidate_id=candidate_id
+    )
+    rows = await conversations.list_messages(
+        session,
+        conversation_id=conversation_id,
+        tenant_id=uuid.UUID(str(conversation["tenant_id"])),
+        limit=limit,
+        before=before,
+    )
+    names = await _author_names(session, rows)
+    files = await _attachments_for(session, [row["id"] for row in rows])
+    return [
+        _to_message_out(row, names=names, attachments=files.get(str(row["id"]), []))
+        for row in rows
+    ]
+
+
+@candidate_router.post("/me/{conversation_id}/messages", response_model=MessageOut)
+async def my_reply(
+    conversation_id: uuid.UUID,
+    body: SendMessageIn,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> MessageOut:
+    """The candidate's own reply.
+
+    `author_user_id` is left NULL and the PARTY is what identifies them. A
+    candidate's user row belongs to no tenant, and writing it into the column
+    the recruiter's side joins against `users` would make a candidate resolvable
+    through the employer's own directory.
+    """
+    candidate_id = await _candidate_id_for(session, user)
+    conversation = await _candidate_thread(
+        session, conversation_id=conversation_id, candidate_id=candidate_id
+    )
+    tenant_id = uuid.UUID(str(conversation["tenant_id"]))
+    try:
+        message = await conversations.post_message(
+            session,
+            conversation_id=conversation_id,
+            tenant_id=tenant_id,
+            author_party=PARTY_CANDIDATE,
+            body=body.body,
+            channel=CHANNEL_CHAT,
+            client_token=body.client_token,
+        )
+    except conversations.ConversationRefused as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    realtime.publish_after_commit(
+        session,
+        realtime.message_event(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            message=message,
+        ),
+    )
+    return _to_message_out(message, names={})

@@ -163,6 +163,16 @@ app.include_router(bgv.router, prefix=f"{API_PREFIX}/bgv", tags=["bgv"])
 app.include_router(
     conversations.router, prefix=f"{API_PREFIX}/conversations", tags=["conversations"]
 )
+# The candidate's own side, on the CANDIDATE audience. Two routers under one
+# prefix rather than one router with a branch inside it: the recruiter's routes
+# run on a session whose tenant Postgres is enforcing, and a candidate has no
+# tenant to enforce. One handler serving both would be one function with two
+# security models, and the weaker one would be invisible in the code.
+app.include_router(
+    conversations.candidate_router,
+    prefix=f"{API_PREFIX}/conversations",
+    tags=["conversations"],
+)
 app.include_router(
     support.provider_router,
     prefix=f"{API_PREFIX}/provider/support",
