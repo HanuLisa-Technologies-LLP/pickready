@@ -29,6 +29,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 
+import { ConversationPanel } from "@/components/conversation-panel";
 import { apiGet, apiPost } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
 import { Button } from "@/components/ui/button";
@@ -318,6 +319,20 @@ export function BgvVerificationPanel({ candidateId }: { candidateId: string }) {
                     }
                   />
                 </FormField>
+              ) : null}
+
+              {/* The employer exchange itself, READ ONLY. A reply that lands
+                  on the inbound webhook appears here, which is the point: a
+                  recruiter decides verified or not verified from what the
+                  employer actually wrote, on the same screen as the buttons.
+                  Sending is refused from a chat box by the server, so the
+                  compose box is hidden rather than rendered and then refused. */}
+              {item.conversation_id ? (
+                <ConversationPanel
+                  conversationId={item.conversation_id}
+                  readOnly
+                  emptyCopy="Nothing sent to this employer yet."
+                />
               ) : null}
 
               {draft && draft.verification_id === item.id ? (
