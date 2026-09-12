@@ -33,7 +33,19 @@ export type JobFormValues = {
   jd_markdown: string;
 };
 
-const optionalNumber = (value: string): number | null => {
+/**
+ * A numeric form field as the API wants it: the number, or null when the box
+ * is empty.
+ *
+ * Exported because the AI-brief payload hand-rolled its own version as
+ * `Number(value) || null`, and `0 || null` is null in JavaScript. A recruiter
+ * who typed 0 in either experience box, which the schema explicitly allows
+ * (`ge=0`, and a fresher role really is 0 years), had it sent as null and got
+ * back "experience_max_years: Input should be a valid integer" under a toast
+ * claiming the AI was unavailable. One coercion, used by both payloads, is
+ * what stops that coming back.
+ */
+export const optionalNumber = (value: string): number | null => {
   const text = value.trim();
   if (!text) return null;
   const number = Number(text);
@@ -97,5 +109,29 @@ export function buildJobCreatePayload(form: JobFormValues, publish = false) {
       skills: skillsToArray(form.skills),
       experience_years: optionalNumber(form.experience_min_years),
     },
+  };
+}
+
+
+/**
+ * The Create-JD brief sent to `POST /jobs/generate-jd`.
+ *
+ * Lives beside `buildJobCreatePayload` rather than inline in the page for one
+ * reason: the two payloads carry the same experience band, and when only one
+ * of them was built here the other drifted into a coercion that lost zero.
+ *
+ * `brief` is the free-text box the form still calls Brief; the API takes it as
+ * the deprecated `key_requirements` alias, which it folds into `skills`.
+ */
+export function buildJdGeneratePayload(form: JobFormValues, brief: string) {
+  return {
+    title: form.title,
+    department: form.department || null,
+    grade: form.grade || null,
+    skills: skillsToArray(form.skills),
+    key_requirements: brief,
+    reporting_to: form.reporting_to || null,
+    experience_min_years: optionalNumber(form.experience_min_years),
+    experience_max_years: optionalNumber(form.experience_max_years),
   };
 }
