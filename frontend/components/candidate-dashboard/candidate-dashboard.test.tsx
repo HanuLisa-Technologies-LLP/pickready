@@ -74,10 +74,15 @@ describe("the candidate dashboard table", () => {
   it("renders the eight columns in the specified scanning order", async () => {
     apiGet.mockResolvedValue(page());
     render(<CandidateDashboard />);
-    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    // Wait for the RENDERED headers, not merely for the call. The headers come
+    // from the response, and `apiGet` has already been called by the time the
+    // effect returns, so waiting on the call alone asserts against a table
+    // that has not received its data yet. See the note on the source-filter
+    // test below: the identical wait there passed on every developer machine
+    // and failed on CI.
+    await waitFor(() => expect(screen.getAllByRole("columnheader")).toHaveLength(8));
 
     const headers = screen.getAllByRole("columnheader");
-    expect(headers).toHaveLength(8);
     // The order is the tab order and the decision order, both. Asserted as a
     // list rather than as a count, because eight columns in the wrong order is
     // still eight columns and breaks the triage read.
@@ -141,9 +146,17 @@ describe("the candidate dashboard table", () => {
     // candidate, so the list comes from the server and is never hardcoded.
     apiGet.mockResolvedValue(page());
     render(<CandidateDashboard />);
-    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    // `await waitFor(() => expect(apiGet).toHaveBeenCalled())` was a race, and
+    // it failed on CI on 2026-09-12 with "Unable to find an accessible element
+    // with the role option and name Applied". The options are rendered from
+    // `data.source_types`, which is null until the fetch RESOLVES, while the
+    // call itself has happened before that. Waiting on the call therefore
+    // asserted against a select still holding only "All sources", and whether
+    // it passed came down to how the runner scheduled one microtask.
     for (const label of ["Applied", "Sourced", "Databank"]) {
-      expect(screen.getByRole("option", { name: label })).toBeTruthy();
+      await waitFor(() =>
+        expect(screen.getByRole("option", { name: label })).toBeTruthy(),
+      );
     }
   });
 
