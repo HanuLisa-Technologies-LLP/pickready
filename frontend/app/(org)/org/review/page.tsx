@@ -26,7 +26,8 @@ import {
   type MatchingProgress,
 } from "@/components/matching-reasoning";
 import type { CandidateLink, Job, MatchingTaskStatus } from "@/lib/types";
-import { useAuth } from "@/lib/auth-context";
+import { CAP } from "@/lib/permissions";
+import { usePermissions } from "@/lib/use-permissions";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
 import { ProfileReview } from "@/components/profile-review";
@@ -51,15 +52,15 @@ import {
 
 export default function OrgReviewScreen() {
   const { toast } = useToast();
-  const { hasCapability } = useAuth();
+  const { can: hasCapability } = usePermissions();
   // A Hiring Manager acts on profiles (FR-8.2); HR grants access (FR-8.1).
-  const canDecide = hasCapability("decide_profile");
-  const canGrant = hasCapability("view_review_screen") && !canDecide;
-  const canSendOutreach = hasCapability("send_outreach");
-  const canTriggerMatching = hasCapability("trigger_matching");
+  const canDecide = hasCapability(CAP.decideProfile);
+  const canGrant = hasCapability(CAP.viewReviewScreen) && !canDecide;
+  const canSendOutreach = hasCapability(CAP.sendOutreach);
+  const canTriggerMatching = hasCapability(CAP.triggerMatching);
   // Sourcing gates carried over verbatim from the removed per-job tab.
-  const canUpload = hasCapability("upload_resumes");
-  const canViewDatabank = hasCapability("view_databank");
+  const canUpload = hasCapability(CAP.uploadResumes);
+  const canViewDatabank = hasCapability(CAP.viewDatabank);
   const showSourcing = canUpload || canViewDatabank || canTriggerMatching;
   const [jobs, setJobs] = React.useState<Job[]>([]);
   const [jobId, setJobId] = React.useState<string>("");
