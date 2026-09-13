@@ -283,3 +283,45 @@ async def test_a_new_loop_does_not_inherit_the_previous_loop_s_rooms(
         assert hub.local_listeners(tenant_id=tenant, conversation_id=conversation) == 1
     finally:
         await hub.shutdown()
+
+
+async def test_a_closed_loop_cannot_fail_the_commit_that_stored_the_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`publish_after_commit` schedules onto the loop that was running when it
+    was called, and that handler runs INSIDE `commit()`.
+
+    So a RuntimeError from `create_task` does not cost a notification, it costs
+    the request: it comes out of `session.commit()` after the message is
+    already durably stored, and the sender is told the send failed while every
+    other participant can already read it. `hub.publish` was careful about
+    exactly this and the two lines that scheduled it were not.
+    """
+    dead = asyncio.new_event_loop()
+    dead.close()
+
+    fired: list[str] = []
+
+    class _SyncSession:
+        """Enough of SQLAlchemy's session for the listener to attach to."""
+
+    class _Session:
+        sync_session = _SyncSession()
+
+    def _listens_for(target, name, once=False):  # noqa: ANN001, ARG001
+        def decorate(fn):
+            fired.append(name)
+            # Call it the way SQLAlchemy does: synchronously, inside commit.
+            fn(target)
+            return fn
+
+        return decorate
+
+    monkeypatch.setattr(realtime.event, "listens_for", _listens_for)
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: dead)
+
+    # The assertion is the absence of an exception. Before the guard this
+    # raised RuntimeError("Event loop is closed") straight through commit.
+    realtime.publish_after_commit(_Session(), {"tenant_id": "t", "message": {}})
+
+    assert fired == ["after_commit"]

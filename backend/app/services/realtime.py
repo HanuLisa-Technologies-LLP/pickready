@@ -332,7 +332,31 @@ def publish_after_commit(session: Any, payload: dict) -> None:
 
     @event.listens_for(session.sync_session, "after_commit", once=True)
     def _fire(_sync_session) -> None:  # noqa: ANN001 -- SQLAlchemy's signature
-        task = loop.create_task(hub.publish(payload))
+        # THIS RUNS INSIDE `commit()`, SO WHAT IT RAISES, THE CALLER RAISES.
+        #
+        # `hub.publish` already refuses to fail a send it could not announce.
+        # That care was undone by the two lines that SCHEDULE it: this handler
+        # runs inside SQLAlchemy's commit, so a RuntimeError from `create_task`
+        # (the loop closed under a cancelled request, or a session committed
+        # from somewhere other than the loop that opened it) comes out of
+        # `session.commit()` and 500s the request -- AFTER the message is
+        # durably stored. The sender is told their message failed while every
+        # other participant can already read it, which is worse than the missed
+        # notification it is reporting.
+        #
+        # So the scheduling is guarded exactly as the publish itself is, and
+        # the failure is recorded rather than swallowed.
+        # Built before the try so it can be CLOSED if scheduling fails. An
+        # un-awaited coroutine is not free: it warns from whatever unrelated
+        # code the garbage collector happens to be running, which is a worse
+        # thing to debug than the failure that caused it.
+        coro = hub.publish(payload)
+        try:
+            task = loop.create_task(coro)
+        except RuntimeError as exc:
+            coro.close()
+            logger.warning("realtime.schedule_failed error=%s", exc)
+            return
         _PENDING_PUBLISHES.add(task)
         task.add_done_callback(_PENDING_PUBLISHES.discard)
 
