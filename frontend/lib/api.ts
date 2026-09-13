@@ -164,6 +164,39 @@ export async function tryRefresh(): Promise<boolean> {
   return refreshPromise;
 }
 
+/**
+ * Listeners notified when the server refuses a request on PERMISSION grounds.
+ *
+ * WHY THIS HOOK EXISTS (2026-09-13 spec, section 36)
+ * ---------------------------------------------------
+ * Permissions are resolved per request on the server, so a revocation takes
+ * effect there immediately. The capability list the interface renders controls
+ * from is a SNAPSHOT, refreshed on a timer, so for up to one poll interval the
+ * two disagree and a user keeps being offered a control that now 403s. A 403
+ * is the server telling us the snapshot is stale, which makes it the cheapest
+ * reliable trigger there is: the interface catches up on the first refusal
+ * rather than on the next poll.
+ *
+ * It is not a security mechanism. It removes a button that never worked.
+ */
+type ForbiddenListener = () => void;
+const forbiddenListeners = new Set<ForbiddenListener>();
+
+export function onForbidden(listener: ForbiddenListener): () => void {
+  forbiddenListeners.add(listener);
+  return () => forbiddenListeners.delete(listener);
+}
+
+function notifyForbidden(): void {
+  for (const listener of forbiddenListeners) {
+    try {
+      listener();
+    } catch {
+      /* a listener must never break the request that told it */
+    }
+  }
+}
+
 export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   let res = await rawFetch(path, opts);
 
@@ -187,6 +220,9 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     }
     const error = new ApiError(res.status, detail);
     error.message = apiErrorMessage(error);
+    // A 403 says this session is valid and this capability is not held. The
+    // capability snapshot that rendered the control is therefore stale.
+    if (res.status === 403) notifyForbidden();
     throw error;
   }
 

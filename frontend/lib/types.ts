@@ -1535,3 +1535,46 @@ export interface VideoDelivery {
   disposition: "inline" | "attachment";
   filename: string | null;
 }
+
+// ---- The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ----
+
+/** not_generated | generated | failed | edited. */
+export type SwotAnalysisStatus =
+  | "not_generated"
+  | "generated"
+  | "failed"
+  | "edited";
+
+export interface SwotAnalysis {
+  job_id: string;
+  status: SwotAnalysisStatus;
+  strengths: string | null;
+  weaknesses: string | null;
+  opportunities: string | null;
+  threats: string | null;
+  /** "ai" once a generation has succeeded, null for a hand-written document. */
+  generated_by: string | null;
+  last_generated_at: string | null;
+  /** Why the last generation failed. Rendered only in the failed state. */
+  generation_error: string | null;
+  human_edited: boolean;
+  last_modified_at: string | null;
+  last_modified_by_name: string | null;
+  version: number;
+  can_restore_previous: boolean;
+  /**
+   * The effective answer for this user on THIS job: the capability AND the
+   * assignment scope AND the lifecycle state, resolved server-side by the same
+   * call the write routes enforce with. The interface renders from this rather
+   * than from the capability list alone, because the capability list cannot
+   * express the per-job half of the question.
+   */
+  can_edit: boolean;
+}
+
+export interface SwotAnalysisDraft {
+  strengths: string;
+  weaknesses: string;
+  opportunities: string;
+  threats: string;
+}

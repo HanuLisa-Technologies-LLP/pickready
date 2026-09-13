@@ -20,6 +20,8 @@ import { AlertTriangle, ArrowUpRight, Download, Loader2 } from "lucide-react";
 
 import { API_BASE, ApiError, apiGet, apiPost } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { CAP } from "@/lib/permissions";
+import { usePermissions } from "@/lib/use-permissions";
 import { openCheckout, openOrderCheckout } from "@/lib/razorpay";
 import type {
   BillingOverview,
@@ -123,7 +125,8 @@ function toCredits(subunits: number, perCredit: number): string {
 }
 
 export default function BillingPage() {
-  const { user, hasCapability } = useAuth();
+  const { user } = useAuth();
+  const { can } = usePermissions();
   const { toast } = useToast();
   const [data, setData] = React.useState<BillingOverview | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -142,7 +145,7 @@ export default function BillingPage() {
   const [selectedSlug, setSelectedSlug] = React.useState<string | null>(null);
   const [payBusy, setPayBusy] = React.useState(false);
 
-  const canManage = hasCapability("manage_billing");
+  const canManage = can(CAP.manageBilling);
 
   const load = React.useCallback(async () => {
     setLoading(true);

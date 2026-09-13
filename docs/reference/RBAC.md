@@ -480,7 +480,7 @@ this phase.
 |---|---|
 | `rbac.require_authorized` on `api/jobs.py`, `api/pipeline.py`, `api/candidates.py` | **Not wired.** Those routers still gate on `require_capability` alone, so tenant is enforced by RLS and scope/state are not enforced at all. `test_rbac_conformance.py` mounts RBAC 32's route surface with the real dependency and is what the wiring must satisfy. |
 | `jobs.lifecycle_state` writers | Column added and backfilled; no handler transitions it yet. |
-| `job_assignments` writers | Table added; no route assigns anybody yet. |
+| `job_assignments` writers | Table added; no route assigns anybody yet. **This is load-bearing for more than scope now:** every SCOPED cell in the matrix resolves to `not_assigned` in production, so the three scoped roles hold no scoped capability in practice. The Job SWOT Analysis read (2026-09-13) gates on `require_capability` rather than `require_authorized` for exactly this reason, and says so at the route. |
 | Client Super Admin activity view | The reader (`audit.activity`) and the Provider-side route exist. The client-facing route belongs in `api/companies.py`, which this work did not own. |
 | RBAC 35 per-application criteria version | `jobs.criteria_version` exists as a counter. Referencing it from each application's evaluation context is not built. |
 | RBAC 12/22 post-finalization revision workflow | Does not exist, so post-finalization criteria edits are REFUSED rather than allowed-and-versioned. That is the restrictive reading and it is deliberate. |
@@ -545,3 +545,6 @@ rather than a person's sign-in.
 | Agent cannot exceed its principal | `rbac.authorize_agent_action` -> `rbac.decide` |
 | Agent dual attribution | `Principal.__post_init__`, `audit.record_action`, DB CHECK |
 | Two stage concepts stay separate | `test_stage_enum_separation.py` AST walk |
+| Permission COMBINATIONS, not roles | `test_permission_combinations.py` (section 10 of the 2026-09-13 spec: the same role, different grants, different answers) |
+| The Job SWOT Analysis invents no authorization of its own | `test_swot_analysis_authorization.py` |
+| The interface never contradicts the grant | `frontend/lib/read-only-messaging.test.ts`, `frontend/components/permission-notice.test.tsx` |

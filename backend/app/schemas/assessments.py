@@ -684,3 +684,63 @@ class VideoRecordingStatusOut(BaseModel):
     #: True only for `upload_failed`, where the fix is the candidate's own
     #: re-upload; every other failure is retried server-side by staff.
     can_retry_upload: bool = False
+
+
+# ── The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ───
+
+class SwotAnalysisSectionsIn(BaseModel):
+    """A human's four sections. Every one is optional and may be empty: a team
+    that wants to clear a section they disagree with must be able to, and a
+    required field would force them to keep the model's paragraph."""
+
+    strengths: str = Field(default="", max_length=4000)
+    weaknesses: str = Field(default="", max_length=4000)
+    opportunities: str = Field(default="", max_length=4000)
+    threats: str = Field(default="", max_length=4000)
+    #: The version the editor loaded. Sent back so a save that would overwrite
+    #: somebody else's newer save is refused instead of silently winning.
+    expected_version: int | None = None
+
+
+class SwotAnalysisGenerateIn(BaseModel):
+    """Section 32: regeneration over human-edited content is an explicit act.
+
+    Defaults to False so the destructive path is never the one a caller
+    reaches by omission."""
+
+    confirm_overwrite: bool = False
+
+
+class SwotAnalysisOut(BaseModel):
+    """The SWOT document plus everything the UI needs to render the right state.
+
+    `can_edit` is included deliberately. The frontend could resolve it from
+    the capability list it already holds, and for `edit_swot` alone that would
+    be right; it could not resolve the per-JOB half of the same question,
+    because assignment scope and lifecycle state are properties of this job
+    and not of the person. So the server answers the whole question once, on
+    the resource, and the UI renders from the answer. It is not a security
+    boundary: the write routes re-authorize independently.
+    """
+
+    job_id: uuid.UUID
+    #: not_generated | generated | failed | edited
+    status: str
+    strengths: str | None = None
+    weaknesses: str | None = None
+    opportunities: str | None = None
+    threats: str | None = None
+    #: "ai" once a generation has succeeded, null for a hand-written document.
+    generated_by: str | None = None
+    last_generated_at: datetime | None = None
+    #: Why the last generation failed. Rendered only in the `failed` state.
+    generation_error: str | None = None
+    human_edited: bool = False
+    last_modified_at: datetime | None = None
+    last_modified_by_name: str | None = None
+    version: int = 0
+    #: True when a confirmed regeneration replaced human content that can
+    #: still be put back.
+    can_restore_previous: bool = False
+    #: The effective answer for THIS user on THIS job.
+    can_edit: bool = False
