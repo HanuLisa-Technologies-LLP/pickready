@@ -787,6 +787,44 @@ async def update_bd_user(
     """
     bd_user = await _load_bd_user(session, bd_user_id)
     changes = body.model_dump(exclude_unset=True)
+    rebound = False
+    if changes.get("email"):
+        email = str(changes["email"]).strip()
+        if email.lower() != (bd_user.email or "").strip().lower():
+            # The same two guards the create path runs, because an edit that
+            # can mint what a create refuses is a second door.
+            duplicate = (
+                await session.execute(
+                    select(User).where(
+                        User.tenant_id.is_(None),
+                        User.role == Role.bd,
+                        func.lower(User.email) == email.lower(),
+                        User.id != bd_user.id,
+                    )
+                )
+            ).scalars().first()
+            if duplicate is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{email} already holds a Business Development account",
+                )
+            try:
+                ensure_owner_invariant(Role.bd, email)
+            except OwnerRoleViolation as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            bd_user.email = email
+            # REBIND, never a quiet field write: the email is the identity
+            # Firebase binds to (auth matches by uid OR email), so a bound
+            # account keeping its old uid would leave the OLD person signed
+            # in under the NEW address. Clearing the binding returns the row
+            # to invited; the new address binds on its first sign-in and the
+            # old one matches nothing.
+            if bd_user.firebase_uid:
+                bd_user.firebase_uid = None
+                rebound = True
+            bd_user.email_verified_at = None
+            if bd_user.status != UserStatus.disabled:
+                bd_user.status = UserStatus.invited
     if "full_name" in changes:
         bd_user.full_name = changes["full_name"]
     if "phone" in changes:
@@ -804,7 +842,8 @@ async def update_bd_user(
     await audit(
         session, tenant_id=None, actor_user_id=user.user_id,
         action="bd_user_updated", target_type="user", target_id=bd_user.id,
-        metadata={"changed": sorted(changes), "status": bd_user.status.value},
+        metadata={"changed": sorted(changes), "status": bd_user.status.value,
+                  "rebound": rebound},
     )
     return _bd_user_out(bd_user)
 

@@ -4,9 +4,8 @@ WHAT THIS FILE IS FOR
 ---------------------
 spec-doc6 §4.3's acceptance evidence, and it is deliberately awkward to satisfy:
 
-    "a change to a Company DNA answer or to one SWOT input demonstrably moves a
-     weight in the resulting matrix, shown through the API, not through a
-     summary string."
+    "a change to one SWOT input demonstrably moves a weight in the resulting
+     matrix, shown through the API, not through a summary string."
 
 Every assertion below therefore goes through the HTTP surface a recruiter and a
 hiring manager actually touch. A test that called `compile_matrix` directly
@@ -16,16 +15,15 @@ is the exact gap this phase exists to close.
 
 WHY IT NEEDS A REAL DATABASE
 -----------------------------
-The three layers Sutra composes are all STORED. Layer 2 is a `company_dna` row
-with a versioning trigger on it, Layer 3 is a `job_swot_intakes` row with a
-CHECK on its situation key, and the frozen matrix is `job_competencies` plus an
-append-only `job_company_dna_bindings` row. A session double would let the
+The layers Sutra composes are STORED. Layer 3 is a `job_swot_intakes` row with
+a CHECK on its situation key, and the frozen matrix is `job_competencies` plus
+an append-only `job_scorecard_bindings` row. A session double would let the
 application's own WHERE clause be the only boundary, which claude.md rule 1
 forbids, and would not exercise a single one of those constraints.
 
 The schema is built from the ORM metadata plus the DDL that lives only in
-migrations 0060 and 0064, imported FROM those migrations so what runs here is
-what will run in production. The database is a scratch one, created and dropped
+migration 0064, imported FROM that migration so what runs here is what will run
+in production. The database is a scratch one, created and dropped
 by this module; it never touches the development database.
 
 NO PROVIDER IS CALLED. `llm_router.invoke_llm` is patched to a scripted stand-in
@@ -59,21 +57,26 @@ from app.main import app
 from app.models.assessment import JobCompetency
 from app.models.base import Base
 from app.models.billing import CreditLedgerEntry
-from app.models.company_dna import JobCompanyDNABinding
+from app.models.company import Company
 from app.models.enums import Role
-from app.models.hiring import CompanyDNA
+from app.models.job_scorecard_binding import JobScorecardBinding
 from app.models.job import Job
 from app.models.job_setup import JobSwotIntake
 from app.models.tenant import AuditLog, RolePermission, Tenant
 from app.models.user import User
 from app.services import capabilities as caps
 from app.services import ppi, swot_intake
-from app.services.hiring import pipeline_halt, scorecard, situations, swot_quality
+from app.services.hiring import (
+    company_requirements,
+    pipeline_halt,
+    scorecard,
+    situations,
+    swot_quality,
+)
 from app.services.hiring_pipeline import JobLifecycleState
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
-FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures" / "company_dna"
 VERSIONS = pathlib.Path(__file__).resolve().parents[1] / "alembic" / "versions"
 SCRATCH_DB = f"readypick_job_setup_{os.getpid()}"
 #: The jobs router is mounted under both /api/v1 and /api/v2; the assessments
@@ -98,20 +101,16 @@ def _module(name: str, filename: str):
     return module
 
 
-DNA_MIGRATION = _module("_job_setup_migration_0060", "0060_company_dna_versioning.py")
 SUTRA_MIGRATION = _module(
     "_job_setup_migration_0064", "0064_sutra_seven_stage_provenance.py"
 )
 
 #: THE WHOLE SCHEMA, not a named subset.
 #:
-#: `tests/test_company_dna_api.py` names the five tables its router touches,
-#: which is right for a router that reads five tables. This flow is not that: it
-#: crosses job creation (which asks the credit ledger and the company profile),
-#: the Company DNA intake, the SWOT session, the matrix and the audit trail, and
-#: each of those reaches one more table through a foreign key. Naming them was
-#: tried first and produced three rounds of "relation does not exist" for tables
-#: nothing here is testing.
+#: Naming a subset was tried first and produced three rounds of "relation does
+#: not exist": this flow crosses job creation (which asks the credit ledger and
+#: the company profile), the SWOT session, the matrix and the audit trail, and
+#: each of those reaches one more table through a foreign key.
 #:
 #: The named-subset symbols above are still imported and used, so a table this
 #: file asserts against cannot silently stop existing in the metadata.
@@ -124,8 +123,8 @@ ROUTER_TABLES = (
     User.__table__,
     RolePermission.__table__,
     AuditLog.__table__,
-    CompanyDNA.__table__,
-    JobCompanyDNABinding.__table__,
+    Company.__table__,
+    JobScorecardBinding.__table__,
     Job.__table__,
     JobCompetency.__table__,
     JobSwotIntake.__table__,
@@ -135,12 +134,6 @@ ROUTER_TABLES = (
 #: DDL the ORM metadata cannot express, taken from the migrations rather than
 #: copied, so the constraints exercised here are the ones production will have.
 EXTRA_DDL = (
-    "CREATE UNIQUE INDEX uq_company_dna_one_current ON company_dna (tenant_id) "
-    "WHERE is_current",
-    DNA_MIGRATION._IMMUTABILITY_FUNCTION,
-    "CREATE TRIGGER trg_company_dna_version_is_immutable "
-    "BEFORE UPDATE ON company_dna "
-    "FOR EACH ROW EXECUTE FUNCTION company_dna_version_is_immutable()",
     # Migration 0064's two CHECKs, written from its own literals.
     "ALTER TABLE job_swot_intakes ADD CONSTRAINT ck_job_swot_intakes_situation_key "
     "CHECK (situation_key IS NULL OR situation_key IN ("
@@ -232,7 +225,7 @@ async def _build_schema(scratch_url: str) -> None:
                         f'IN SCHEMA public TO "{RLS_ROLE}"'
                     )
                 )
-            for role, capability in DNA_MIGRATION._GRANTS + _CAPABILITY_GRANTS:
+            for role, capability in _CAPABILITY_GRANTS:
                 await conn.execute(
                     sa.text(
                         "INSERT INTO role_permissions (id, tenant_id, role, "
@@ -457,10 +450,7 @@ class Caller:
 
 
 @pytest.fixture
-def client(world: World, sessions, monkeypatch) -> Iterator[Caller]:
-    from app.api import company_dna as dna_router
-
-    monkeypatch.setattr(dna_router, "get_session_factory", lambda: sessions)
+def client(world: World, sessions) -> Iterator[Caller]:
     caller = Caller(world)
 
     async def _current_user() -> CurrentUser:
@@ -521,13 +511,6 @@ def enqueued(_no_dispatch):
 # ── Driving the flow through HTTP ────────────────────────────────────────────
 
 
-def _answers() -> dict:
-    raw = json.loads((FIXTURES / "complete_intake.json").read_text(encoding="utf-8"))
-    return {key: value for key, value in raw.items() if not key.startswith("_")}
-
-
-ANSWERS = _answers()
-
 #: The SWOT the hiring manager gives. Written to pass all six §18.5 rules: real
 #: internal weaknesses, a mix rather than a market complaint, observable
 #: language rather than adjectives, no prohibited disqualifier, and enough
@@ -577,29 +560,36 @@ def _create_job(client: Caller, title: str = "Backend Engineer, Platform") -> st
     return created.json()["id"]
 
 
-def _complete_company_dna(
-    client: Caller, tenant: uuid.UUID, *, overrides: dict[str, Any] | None = None
-) -> int:
-    """Run the whole Layer 2 instrument through HTTP. Returns the version."""
-    base = f"/clients/{tenant}/company-dna"
-    created = client.post(base, json={})
-    assert created.status_code == 201, created.text
-    dna_id = created.json()["id"]
-    answers = dict(ANSWERS)
-    answers.update(overrides or {})
-    body: dict[str, Any] = {}
-    for key, value in answers.items():
-        answered = client.post(
-            f"{base}/{dna_id}/messages", json={"question_key": key, "answer": value}
-        )
-        assert answered.status_code == 200, (key, answered.text)
-        body = answered.json()
-    frozen = client.post(
-        f"{base}/{dna_id}/complete",
-        json={"understanding_token": body["understanding_token"]},
-    )
-    assert frozen.status_code == 200, frozen.text
-    return int(frozen.json()["version"])
+def _write_company_profile(sessions, tenant: uuid.UUID) -> None:
+    """Gate 1's precondition: this organisation has said what it does.
+
+    Written directly, like `_assign`, rather than through the profile PATCH.
+    The profile is a PRECONDITION of everything below and not the thing under
+    test, and routing it through a second capability check would make every
+    matrix assertion in this file depend on who may edit a profile.
+    """
+
+    async def _go():
+        async with sessions() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await session.execute(
+                        sa.text(
+                            "INSERT INTO companies (id, tenant_id, about_company, "
+                            " created_at) "
+                            "VALUES (gen_random_uuid(), :t, :about, now()) "
+                            "ON CONFLICT (tenant_id) DO UPDATE "
+                            "   SET about_company = EXCLUDED.about_company"
+                        ),
+                        {
+                            "t": tenant,
+                            "about": (
+                                "We build payments infrastructure for Indian SMEs."
+                            ),
+                        },
+                    )
+
+    asyncio.run(_go())
 
 
 def _run_swot(
@@ -747,6 +737,68 @@ def _stored_raw_weights(sessions, job_id: str) -> dict[str, float]:
     return asyncio.run(_go())
 
 
+# ── Gate 1, through the route rather than through the function ──────────────
+
+
+def _clear_company_profile(sessions, tenant: uuid.UUID) -> None:
+    async def _go():
+        async with sessions() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await session.execute(
+                        sa.text(
+                            "UPDATE companies SET about_company = NULL "
+                            "WHERE tenant_id = :t"
+                        ),
+                        {"t": tenant},
+                    )
+
+    asyncio.run(_go())
+
+
+def test_job_creation_is_refused_and_then_allowed_by_the_company_profile(
+    client: Caller, sessions
+) -> None:
+    """Gate 1 at the ROUTE, in both directions, through HTTP.
+
+    `test_workflow_gates.py` proves the function; this proves a recruiter
+    actually meets it. Both directions, because a gate asserted only on its
+    refusal passes just as happily when it refuses everything, and a client
+    who has written their profile and still cannot post a job has a product
+    that does not work.
+
+    Self-contained: it clears the profile first rather than assuming its
+    tenant has none, so no other test in this module can decide its outcome.
+    """
+    tenant = client.world.tenant_a
+    client.sign_in(Role.hr_manager, tenant)
+    _clear_company_profile(sessions, tenant)
+
+    refused = client.post(
+        "/jobs",
+        json={
+            "title": "Platform Engineer",
+            "grade": "non_managerial",
+            "publish": False,
+            "jd_markdown": (
+                "## About the role" + chr(10) * 2
+                + "Own the ingestion platform." + chr(10)
+            ),
+            "jd": {},
+        },
+    )
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert detail == company_requirements.MISSING_MESSAGE
+    # The refusal names the page and what to write there, and carries no
+    # trace of the instrument it replaced.
+    assert "Company Profile" in detail
+    assert "dna" not in detail.lower()
+
+    _write_company_profile(sessions, tenant)
+    assert _create_job(client, "Platform Engineer")
+
+
 # ── The happy path, end to end ───────────────────────────────────────────────
 
 
@@ -758,8 +810,7 @@ def test_a_job_created_through_the_api_runs_bodha_then_sutra(
     weight traces to a named Layer 1/2/3 source."
     """
     client.sign_in(Role.hr_manager)
-    version = _complete_company_dna(client, client.world.tenant_a)
-    assert version == 1
+    _write_company_profile(sessions, client.world.tenant_a)
 
     job_id = _create_job(client)
     _assign(sessions, job_id, client.world)
@@ -782,7 +833,6 @@ def test_a_job_created_through_the_api_runs_bodha_then_sutra(
 
     result = _compile(sessions, job_id)
     assert result.items, result.rejections
-    assert result.company_dna_version == version
 
     framework = client.get(f"{ASSESSMENTS}/assessments/jobs/{job_id}/framework")
     assert framework.status_code == 200, framework.text
@@ -809,11 +859,11 @@ def test_a_job_created_through_the_api_runs_bodha_then_sutra(
         assert not any(character.isdigit() for character in prose), prose
 
 
-def test_every_weight_traces_to_a_named_layer_one_two_and_three_source(
+def test_every_weight_traces_to_a_named_layer_one_and_three_source(
     client: Caller, sessions
 ) -> None:
     client.sign_in(Role.hr_manager)
-    _complete_company_dna(client, client.world.tenant_a)
+    _write_company_profile(sessions, client.world.tenant_a)
     job_id = _create_job(client, "Data Platform Engineer")
     _assign(sessions, job_id, client.world)
     client.sign_in(Role.hiring_manager)
@@ -830,84 +880,17 @@ def test_every_weight_traces_to_a_named_layer_one_two_and_three_source(
     assert rows
     for row in rows:
         terms = (row.provenance_json or {}).get("terms") or {}
-        # All four terms of `baseline x company x situation x role`, stored.
+        # Every term of `baseline x situation x role`, stored.
         assert set(terms) == {
             "baseline_layer1",
-            "company_layer2",
             "situation_layer3",
             "role_layer3",
         }, row.name
         assert row.provenance_json["department_model"], row.name
-        assert row.provenance_json["company_dna_version"] >= 1, row.name
         assert row.dimension and row.weight is not None
 
 
 # ── The acceptance evidence spec-doc6 §4.3 asks for ─────────────────────────
-
-
-def test_changing_one_company_dna_answer_moves_a_weight(
-    client: Caller, sessions
-) -> None:
-    """spec-doc6 §17: "Changing one Company DNA answer ... demonstrably moves a
-    weight in the resulting matrix, observed through the API."
-
-    ONE answer, and it is `proven_vs_potential`: Runbook §16 Section 2 makes it
-    a forced scale and §17.1 compiles it into a weight modifier on Track Record
-    and its counter-dimension Trajectory. Moving it from one end of the scale to
-    the other is the smallest change that must reach the matrix, and the two
-    dimensions move in OPPOSITE directions, so normalisation cannot hide it. Everything else about the two runs is byte-identical --
-    same job, same SWOT sentences, same scripted naming -- so a weight that
-    moves can only have moved because of the answer.
-    """
-    tenant = client.world.tenant_b
-    client.sign_in(Role.hr_manager, tenant)
-    _complete_company_dna(client, tenant, overrides={"proven_vs_potential": 1})
-
-    job_id = _create_job(client)
-    _assign(sessions, job_id, client.world, tenant)
-    client.sign_in(Role.hiring_manager, tenant)
-    _run_swot(client, job_id)
-    _compile(sessions, job_id)
-    before = _stored_weights(sessions, job_id)
-    before_raw = _stored_raw_weights(sessions, job_id)
-    assert before and before_raw
-
-    # A NEW VERSION of the artifact, which is how Layer 2 changes: versions are
-    # immutable and a change creates the next one.
-    client.sign_in(Role.hr_manager, tenant)
-    second = _complete_company_dna(client, tenant, overrides={"proven_vs_potential": 5})
-    assert second == 2
-
-    _compile(sessions, job_id)
-    after = _stored_weights(sessions, job_id)
-    after_raw = _stored_raw_weights(sessions, job_id)
-
-    # Asserted on the DERIVED weight, which is where Layer 2's multiplier lands.
-    # The stored `weight` is a normalised share and is scale-invariant, so a
-    # company philosophy that lifts every scored item alike is divided straight
-    # back out by `_rank_and_normalise` and shows as no movement at all. See
-    # `_stored_raw_weights` for the full argument.
-    moved = {
-        name: (before_raw[name], after_raw[name])
-        for name in before_raw
-        if name in after_raw and abs(before_raw[name] - after_raw[name]) > 1e-9
-    }
-    assert moved, (
-        "changing proven_vs_potential from one end of the scale to the other "
-        f"moved no derived weight. before={before_raw} after={after_raw}"
-    )
-
-    # And it is visible through the API. The Layer 2 sentence on the review
-    # screen flips direction, which is what a hiring manager actually reads.
-    client.sign_in(Role.hiring_manager, tenant)
-    prose = [
-        " ".join(row["provenance"])
-        for row in client.get(
-            f"{ASSESSMENTS}/assessments/jobs/{job_id}/framework"
-        ).json()["competencies"]
-    ]
-    assert any("less heavily" in text for text in prose), prose
-    assert any("more heavily" in text for text in prose), prose
 
 
 def test_changing_one_swot_input_moves_a_weight(client: Caller, sessions) -> None:
@@ -921,14 +904,14 @@ def test_changing_one_swot_input_moves_a_weight(client: Caller, sessions) -> Non
     most wants to be demonstrably wired.
 
     Everything else about the two runs is identical -- the same job title, the
-    same four quadrant answers word for word, the same Company DNA version, the
-    same scripted naming -- so the two matrices carry the SAME competencies
+    same four quadrant answers word for word, the same scripted naming -- so
+    the two matrices carry the SAME competencies
     under the same names. A weight that differs can only have come from the one
     answer that differs.
     """
     tenant = client.world.tenant_a
     client.sign_in(Role.hr_manager, tenant)
-    _complete_company_dna(client, tenant)
+    _write_company_profile(sessions, tenant)
 
     first = _create_job(client, "Reliability Engineer")
     _assign(sessions, first, client.world)
@@ -1007,7 +990,7 @@ def test_an_external_only_weakness_is_handed_back_to_the_hiring_manager(
     a different act, and the difference is who is being asked to do more work.
     """
     client.sign_in(Role.hr_manager)
-    _complete_company_dna(client, client.world.tenant_a)
+    _write_company_profile(sessions, client.world.tenant_a)
     job_id = _create_job(client, "Market Weakness Role")
     _assign(sessions, job_id, client.world)
     client.sign_in(Role.hiring_manager)
@@ -1042,7 +1025,7 @@ def test_g1_refuses_a_job_whose_matrix_is_not_frozen(client: Caller, sessions) -
     `miti/pipeline.py`, which nothing imports.
     """
     client.sign_in(Role.hr_manager)
-    _complete_company_dna(client, client.world.tenant_a)
+    _write_company_profile(sessions, client.world.tenant_a)
     job_id = _create_job(client, "Ungated Role")
     _assign(sessions, job_id, client.world)
     client.sign_in(Role.hiring_manager)
@@ -1081,7 +1064,7 @@ def test_g1_cannot_be_bypassed_by_stamping_the_approval_alone(
     ran the seven stages is refused as hard as no row at all.
     """
     client.sign_in(Role.hr_manager)
-    _complete_company_dna(client, client.world.tenant_a)
+    _write_company_profile(sessions, client.world.tenant_a)
     job_id = _create_job(client, "Bypass Attempt Role")
 
     async def _go():
@@ -1124,7 +1107,7 @@ def test_the_hiring_manager_finalises_and_the_recruiter_publishes(
     client: Caller, sessions
 ) -> None:
     client.sign_in(Role.hr_manager)
-    _complete_company_dna(client, client.world.tenant_a)
+    _write_company_profile(sessions, client.world.tenant_a)
     job_id = _create_job(client, "Publishable Role")
     _assign(sessions, job_id, client.world)
 
@@ -1161,8 +1144,8 @@ def test_the_hiring_manager_finalises_and_the_recruiter_publishes(
                     )
                     binding = (
                         await session.execute(
-                            sa.select(JobCompanyDNABinding).where(
-                                JobCompanyDNABinding.job_id == job.id
+                            sa.select(JobScorecardBinding).where(
+                                JobScorecardBinding.job_id == job.id
                             )
                         )
                     ).scalars().all()
@@ -1188,9 +1171,8 @@ def test_the_hiring_manager_finalises_and_the_recruiter_publishes(
     # G1 now passes, and only now.
     assert matrix is not None
     assert matrix.version == 1
-    assert matrix.company_dna_version >= 1
     assert matrix.situation_key in situations.SITUATION_TYPES
-    # RBAC §20's record: one binding carrying both versions and the person.
+    # RBAC §20's record: one binding carrying the version and the person.
     assert len(bindings) == 1
     assert bindings[0].frozen_by == job.finalized_by
     assert bindings[0].scorecard_version == job.criteria_version
@@ -1215,71 +1197,12 @@ def test_publication_is_blocked_when_the_definition_is_not_finalised(
     Manager-controlled components are incomplete."
     """
     client.sign_in(Role.hr_manager)
-    _complete_company_dna(client, client.world.tenant_a)
+    _write_company_profile(sessions, client.world.tenant_a)
     job_id = _create_job(client, "Unfinalised Role")
     _assign(sessions, job_id, client.world)
     client.sign_in(Role.recruiter)
     refused = client.post(f"/jobs/{job_id}/publish")
     assert refused.status_code in (403, 409), refused.text
-
-
-def test_sutra_refuses_without_a_company_dna_and_says_what_to_do(
-    client: Caller, sessions
-) -> None:
-    """spec-doc6 D3: an explicit, actionable block, not a mysterious failure."""
-    tenant = uuid.uuid4()
-
-    async def _seed_tenant():
-        async with sessions() as session:
-            async with session.begin():
-                await session.execute(
-                    sa.text(
-                        "INSERT INTO tenants (id, name, domain, spf_dkim_status) "
-                        "VALUES (:id, 'NoDNA', :domain, 'pending')"
-                    ),
-                    {"id": tenant, "domain": f"{tenant}.setup.test"},
-                )
-                await session.execute(
-                    sa.text(
-                        "INSERT INTO jobs (id, tenant_id, title, jd_json, status, "
-                        "assessment_grade, assessment_status, lifecycle_state, "
-                        "swot_completed_at, correlation_id) VALUES "
-                        "(:jid, :tid, 'No DNA Role', '{}'::jsonb, 'draft', "
-                        "'non_managerial', 'questions_pending_review', 'DRAFT', "
-                        "now(), 'job-nodna')"
-                    ),
-                    {"jid": (job_id := uuid.uuid4()), "tid": tenant},
-                )
-                await session.execute(
-                    sa.text(
-                        "INSERT INTO job_swot_intakes (id, tenant_id, job_id, status, "
-                        "area_index, follow_ups_used, strengths, weaknesses, "
-                        "opportunities, threats, transcript_json, phase, probes_asked, "
-                        "quality_json, completed_at) VALUES "
-                        "(gen_random_uuid(), :tid, :jid, 'complete', 4, 0, "
-                        "'[\"a\"]'::jsonb, '[\"b\"]'::jsonb, '[]'::jsonb, '[]'::jsonb, "
-                        "'[]'::jsonb, 'complete', '[]'::jsonb, '{}'::jsonb, now())"
-                    ),
-                    {"tid": tenant, "jid": job_id},
-                )
-                return job_id
-
-    job_id = asyncio.run(_seed_tenant())
-
-    async def _go():
-        async with sessions() as session:
-            async with session.begin():
-                async with superadmin_scope(session):
-                    job = await session.get(Job, job_id)
-                    with pytest.raises(scorecard.ScorecardInputMissing) as caught:
-                        await scorecard.compile_matrix(
-                            session, job, actor_user_id=None
-                        )
-                    return caught.value
-
-    refusal = asyncio.run(_go())
-    assert refusal.layer == "layer2"
-    assert "Company DNA is required" in refusal.detail
 
 
 # ── The kill switch ─────────────────────────────────────────────────────────
@@ -1296,7 +1219,7 @@ def test_the_halt_switch_refuses_and_never_degrades(
     worse answer would be the one failure mode the switch exists to prevent.
     """
     client.sign_in(Role.hr_manager)
-    _complete_company_dna(client, client.world.tenant_a)
+    _write_company_profile(sessions, client.world.tenant_a)
     job_id = _create_job(client, "Halted Role")
     _assign(sessions, job_id, client.world)
 

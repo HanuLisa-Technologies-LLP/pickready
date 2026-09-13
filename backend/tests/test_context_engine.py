@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import uuid
 
-from app.services.rag import chunking, context, retrieval
+from app.services.rag import chunking, context, retrieval, reranker
 
 # ── chunking ─────────────────────────────────────────────────────────────────
 
@@ -189,7 +189,12 @@ def test_evidence_outranks_a_skills_list_mentioning_the_same_word() -> None:
         chunking.SECTION_EXPERIENCE,
     )
     listing = _chunk("Kafka, Postgres, Terraform", chunking.SECTION_SKILLS)
-    ranked = retrieval.rerank("kafka partition rebalance", [listing, evidence], top_k=2)
+    ranked = reranker.lexical_order(
+        "kafka partition rebalance",
+        [listing, evidence],
+        retrieval.lexical_affinity,
+        top_k=2,
+    )
     assert ranked[0] is evidence
 
 
@@ -197,13 +202,22 @@ def test_a_scorer_that_returns_nothing_degrades_to_fusion_order() -> None:
     """Reranking may only reorder within what fusion already thought plausible."""
     high = _chunk("first", score=0.9)
     low = _chunk("second", score=0.1)
-    ranked = retrieval.rerank("query", [low, high], top_k=2, scorer=lambda q, c: 0.0)
+    ranked = reranker.lexical_order(
+        "query", [low, high], lambda q, c: 0.0, top_k=2
+    )
     assert [chunk.score for chunk in ranked] == [0.9, 0.1]
 
 
 def test_reranking_returns_at_most_top_k() -> None:
     chunks = [_chunk(f"content {index}") for index in range(10)]
-    assert len(retrieval.rerank("content", chunks, top_k=3)) == 3
+    assert (
+        len(
+            reranker.lexical_order(
+                "content", chunks, retrieval.lexical_affinity, top_k=3
+            )
+        )
+        == 3
+    )
 
 
 # ── assembly ─────────────────────────────────────────────────────────────────

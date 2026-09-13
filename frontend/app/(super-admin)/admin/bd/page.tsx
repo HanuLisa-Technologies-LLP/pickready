@@ -130,18 +130,26 @@ export default function BusinessDevelopmentPage() {
   };
 
   const save = async () => {
-    if (!editing && !EMAIL_RE.test(form.email.trim())) {
+    if (!EMAIL_RE.test(form.email.trim())) {
       setFormError("Enter a valid work email address.");
       return;
     }
     setSaving(true);
     try {
       if (editing) {
+        const emailChanged =
+          form.email.trim().toLowerCase() !== editing.email.toLowerCase();
         await apiPatch<BDUser>(`/admin/bd-users/${editing.id}`, {
+          email: emailChanged ? form.email.trim() : undefined,
           full_name: form.full_name.trim() || null,
           phone: form.phone.trim() || null,
         });
-        toast({ title: "Details updated", description: editing.email });
+        toast({
+          title: "Details updated",
+          description: emailChanged
+            ? `Sign-in moves to ${form.email.trim()}. The account is invited again until that address signs in.`
+            : editing.email,
+        });
       } else {
         await apiPost<BDUser>("/admin/bd-users", {
           email: form.email.trim(),
@@ -383,7 +391,7 @@ export default function BusinessDevelopmentPage() {
             </DialogTitle>
             <DialogDescription>
               {editing
-                ? "The email address is the identity this account signs in with, so it cannot be changed here."
+                ? "Changing the email moves sign-in to the new address: the account returns to invited, the old address loses access, and a Firebase identity must exist for the new address before its first login."
                 : "No password is set here. They sign in on the normal login page with this address, using Google or email and password."}
             </DialogDescription>
           </DialogHeader>
@@ -391,18 +399,14 @@ export default function BusinessDevelopmentPage() {
             <FormField
               label="Work email"
               htmlFor="bd-email"
-              required={!editing}
-              hint={
-                editing
-                  ? undefined
-                  : "This exact address must be the one they sign in with."
-              }
+              required
+              hint="This exact address must be the one they sign in with."
             >
               <Input
                 id="bd-email"
                 type="email"
                 value={form.email}
-                disabled={saving || Boolean(editing)}
+                disabled={saving}
                 aria-invalid={Boolean(formError)}
                 onChange={(event) => {
                   setForm({ ...form, email: event.target.value });

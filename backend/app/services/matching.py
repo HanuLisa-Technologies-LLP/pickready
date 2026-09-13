@@ -62,6 +62,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Job, JobCandidateLink, LinkSource, Profile
 from app.services import llm_router, longevity, matching_categories, rating
 from app.services.embeddings import EmbeddingError, embed
+from app.services import locks
 from app.services.hiring import ontology, prescreen
 # `assign_tier` is the persisted spelling of `services.rating`'s four grades,
 # not a second scale: same 90 / 75 / 60 cut-points, same inclusive-upward rule.
@@ -1679,6 +1680,23 @@ async def run_matching(
     job = await session.get(Job, job_id)
     if job is None:
         raise ValueError(f"Job {job_id} not found")
+
+    # ── ONE RUN PER JOB, ACROSS PROCESSES (services/locks). Taken BEFORE the
+    #    first vendor call, because a duplicate refused after the JD embedding
+    #    has already been paid for is a report, not a guard. Route.ECS gives
+    #    every dispatch its own container, so in-process coalescing cannot see
+    #    this duplicate, and the task's own transaction holds until the final
+    #    commit, so the xact-scoped lock covers the whole run with no unlock
+    #    to forget. The second caller RETURNS: the first run is doing exactly
+    #    the work it came to do, and its results reach the same rows. ──
+    if not await locks.try_advisory_lock(session, locks.MATCHING, job_id):
+        logger.info("matching.already_running job_id=%s returning", job_id)
+        reporter.skip(
+            "understanding",
+            "Another matching run for this job is already in progress. Its "
+            "results will appear on this page when it finishes.",
+        )
+        return 0
 
     # ── JD embedding (stored on the jobs row for reuse; column added in
     #    migration). If the embedding service is unavailable, the semantic

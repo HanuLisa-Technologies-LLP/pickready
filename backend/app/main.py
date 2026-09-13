@@ -13,6 +13,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api import (
+    bgv,
     assessments,
     admin,
     auth,
@@ -20,7 +21,7 @@ from app.api import (
     billing,
     candidates,
     companies,
-    company_dna,
+    conversations,
     dashboard,
     email_senders,
     emails,
@@ -34,6 +35,7 @@ from app.api import (
     proctoring,
     provider,
     reports,
+    support,
     telemetry,
     verification,
     videos,
@@ -113,9 +115,6 @@ API_PREFIX = "/api/v1"
 app.include_router(auth.router, prefix=f"{API_PREFIX}/auth", tags=["auth"])
 app.include_router(admin.router, prefix=f"{API_PREFIX}/admin", tags=["admin"])
 app.include_router(companies.router, prefix=f"{API_PREFIX}/companies", tags=["companies"])
-# Company DNA intake (Layer 2, spec-doc6 4.2 / D3). Mounted at the bare API
-# prefix because its routes are client-scoped: /clients/{client_id}/company-dna.
-app.include_router(company_dna.router, prefix=API_PREFIX, tags=["company-dna"])
 app.include_router(jobs.router, prefix=f"{API_PREFIX}/jobs", tags=["jobs"])
 app.include_router(candidates.router, prefix=f"{API_PREFIX}/candidates", tags=["candidates"])
 app.include_router(matching.router, prefix=f"{API_PREFIX}/matching", tags=["matching"])
@@ -143,6 +142,42 @@ app.include_router(bd.router, prefix=f"{API_PREFIX}/bd", tags=["bd"])
 # configured against by mistake.
 app.include_router(billing.router, prefix=f"{API_PREFIX}/billing", tags=["billing"])
 app.include_router(reports.router, prefix=f"{API_PREFIX}/reports", tags=["reports"])
+# In-product customer support (2026-09-10), which replaced a deleted
+# third-party sync (claude.md, 2026-09-10). Two routers, two audiences,
+# one write path: `router` is the customer's
+# own threads under the org audience, `provider_router` is ReadyPick's queue
+# across every customer and mounts under /provider beside the customer list,
+# because that is where this product's Provider API lives. Mounted at one
+# prefix only, no /api/v2 alias: the feature is new in this release, so there
+# is no v1 client to keep working and a second URL for one surface is a second
+# thing to keep in step.
+app.include_router(support.router, prefix=f"{API_PREFIX}/support", tags=["support"])
+# Background verification. ONE router, two audiences: `/bgv/me` runs on the
+# candidate session and everything else is behind require_capability on the
+# tenant session, so neither audience can reach the other's routes.
+app.include_router(bgv.router, prefix=f"{API_PREFIX}/bgv", tags=["bgv"])
+# Native conversations (recruiter to candidate, and the BGV threads with an
+# employer's HR contact). The REST routes and the one WebSocket live together
+# because they authorise identically: the socket is a NOTIFICATION channel over
+# the same rows, never a second write path.
+app.include_router(
+    conversations.router, prefix=f"{API_PREFIX}/conversations", tags=["conversations"]
+)
+# The candidate's own side, on the CANDIDATE audience. Two routers under one
+# prefix rather than one router with a branch inside it: the recruiter's routes
+# run on a session whose tenant Postgres is enforcing, and a candidate has no
+# tenant to enforce. One handler serving both would be one function with two
+# security models, and the weaker one would be invisible in the code.
+app.include_router(
+    conversations.candidate_router,
+    prefix=f"{API_PREFIX}/conversations",
+    tags=["conversations"],
+)
+app.include_router(
+    support.provider_router,
+    prefix=f"{API_PREFIX}/provider/support",
+    tags=["provider-support"],
+)
 # Talent Intelligence dashboards (2026-09-05 spec): operational metrics only,
 # behind view_intelligence_dashboards.
 app.include_router(

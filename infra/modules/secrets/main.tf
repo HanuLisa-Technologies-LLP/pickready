@@ -163,6 +163,7 @@ data "aws_iam_policy_document" "service" {
       values   = ["secretsmanager.${var.region}.amazonaws.com"]
     }
   }
+
 }
 
 resource "aws_iam_policy" "service" {
@@ -171,6 +172,63 @@ resource "aws_iam_policy" "service" {
   name        = "${local.name}-${each.key}-secrets"
   description = "Exactly the secrets ${each.key} reads. Enumerated, never a prefix."
   policy      = data.aws_iam_policy_document.service[each.key].json
+
+  tags = merge(var.tags, { Service = each.key })
+}
+
+
+# ── The WRITE grant is a SEPARATE policy, and it goes on the TASK role ───────
+#
+# The read policy above is attached to the EXECUTION role, which fetches
+# secrets and injects them before the container starts. Writing is done by the
+# application's own boto3 client, which runs as the TASK role, so a write
+# statement added to the read policy is a grant the code can never use. That is
+# not theoretical: `rotate-app-db-credential.sh` failed in pilot with
+# AccessDeniedException on exactly this, because the statement had been put in
+# the reviewable place rather than the effective one.
+#
+# Same split the `task_s3` attachment already makes, and for the same stated
+# reason: S3 goes on the task role "because it is the application's own boto3
+# client making the call".
+#
+# PutSecretValue only. Not DeleteSecret, not UpdateSecret, not RestoreSecret:
+# replacing a value is the operation, and removing the container is not
+# something a rotation job should be able to do at all.
+data "aws_iam_policy_document" "service_writer" {
+  for_each = var.service_secret_writers
+
+  statement {
+    sid     = "ReplaceTheValueOfTheSecretsThisServiceRotates"
+    effect  = "Allow"
+    actions = ["secretsmanager:PutSecretValue"]
+    resources = [
+      for secret in each.value : aws_secretsmanager_secret.this[secret].arn
+    ]
+  }
+
+  # Writing a new version ENCRYPTS it, which is a different KMS action from
+  # reading one, under the same ViaService condition so the key cannot be used
+  # for anything but Secrets Manager acting on this role's behalf.
+  statement {
+    sid       = "EncryptTheVersionsThisServiceWrites"
+    effect    = "Allow"
+    actions   = ["kms:GenerateDataKey"]
+    resources = [var.kms_key_arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.region}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_policy" "service_writer" {
+  for_each = var.service_secret_writers
+
+  name        = "${local.name}-${each.key}-secret-writer"
+  description = "The secrets ${each.key} may REPLACE. Enumerated, and attached to the task role because the application's own SDK makes the call."
+  policy      = data.aws_iam_policy_document.service_writer[each.key].json
 
   tags = merge(var.tags, { Service = each.key })
 }
@@ -195,6 +253,20 @@ resource "terraform_data" "validate_service_secrets" {
         alltrue([for s in secrets : contains(var.secret_names, s)])
       ])
       error_message = "service_secrets names a secret that is not in secret_names. That would produce a policy granting access to an ARN nothing creates, which reads as a working grant in a review."
+    }
+
+    # The same check for the write map, plus one the read map does not need:
+    # the policy documents are built with `for_each = var.service_secrets`, so
+    # a WRITER naming a service that has no read entry would be dropped in
+    # silence. A rotation job whose grant quietly did not exist would fail at
+    # the last step, after it had already changed a database password.
+    precondition {
+      condition = alltrue([
+        for service, secrets in var.service_secret_writers :
+        contains(keys(var.service_secrets), service) &&
+        alltrue([for s in secrets : contains(var.secret_names, s)])
+      ])
+      error_message = "service_secret_writers names a service with no service_secrets entry, or a secret that is not in secret_names. The first is silently dropped when the policies are built, which is worse than an error."
     }
   }
 }

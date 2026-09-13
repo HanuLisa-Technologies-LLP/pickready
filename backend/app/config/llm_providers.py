@@ -76,6 +76,7 @@ carries the row and the command.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal
 
 # ── The roster ───────────────────────────────────────────────────────────────
@@ -164,7 +165,6 @@ TaskType = Literal[
     "technical_questions",
     "swot_intake",
     "swot_analysis",
-    "company_dna_intake",
     "situation_classification",
     "competency_transformation",
     # ── Scoring ──
@@ -178,12 +178,17 @@ TaskType = Literal[
     "email_composition",
     # ── Project Evidence Intelligence ──
     "project_evidence",
+    # ── Retrieval intelligence (RPN-AI-UP-001 W6.2) ──
+    "context_prefix",
     # ── Assessment question formats (assessment-spec-doc.md) ──
     "format_composition",
     "answer_evaluation",
     "fill_blank_equivalence",
     # ── Background verification (add-features spec 2026-09-05) ──
     "bgv_reply_extraction",
+    # ── Web research (BD Portal AI Reach, Company Profile research) ──
+    "bd_reach_evaluate",
+    "company_profile_research",
     # ── Legacy role hints (ESD §8.4), retained verbatim so every pre-existing
     #    caller keeps its established behaviour ──
     "rerank",
@@ -219,7 +224,6 @@ MODEL_FOR_TASK: dict[str, str] = {
     "swot_intake": MODEL_TERRA,
     # The recruitment-facing SWOT document: writing, and evidence-bounded.
     "swot_analysis": MODEL_TERRA,
-    "company_dna_intake": MODEL_TERRA,
     # Sutra: competency naming, observable-evidence authoring, weight
     # derivation. Judgment-heavy.
     "competency_transformation": MODEL_TERRA,
@@ -251,6 +255,25 @@ MODEL_FOR_TASK: dict[str, str] = {
     # the reasoning tier's job by definition.
     "format_composition": MODEL_TERRA,
     "answer_evaluation": MODEL_TERRA,
+    # Web research, both halves, and BOTH WERE ON LUNA UNDER `extraction` UNTIL
+    # 2026-09-08. That was the single reason AI Reach returned two or three
+    # companies and a researched company profile read thin, and it is the same
+    # boundary violation this table warns about one screen up, in the other
+    # direction: a JUDGING and a WRITING task were running on the tier reserved
+    # for narrow mechanical work.
+    #
+    # `bd_reach_evaluate` decides which retrieved pages are real hiring pages at
+    # real companies, resolves the employer's own site from a thin snippet, and
+    # refuses anything it cannot support. That is judgment under an explicit
+    # accuracy-over-volume instruction, and an under-powered judge told to drop
+    # what it cannot verify drops nearly everything.
+    #
+    # `company_profile_research` writes the three sections a candidate reads
+    # before applying, every statement grounded in retrieved text. Evidence-
+    # grounded writing, which is Terra's half of the split by definition, and
+    # the same argument `email_composition` records below its own entry.
+    "bd_reach_evaluate": MODEL_TERRA,
+    "company_profile_research": MODEL_TERRA,
     # ── Luna: extraction, classification, routing ───────────────────────────
     # A fill-in-the-blank near miss ("Postgres" against "PostgreSQL") is a
     # yes-or-no equivalence classification over two short strings, on the
@@ -270,6 +293,12 @@ MODEL_FOR_TASK: dict[str, str] = {
     "rerank": MODEL_LUNA,
     # Resume parsing and field extraction.
     "extraction": MODEL_LUNA,
+    # Contextual retrieval's situating prefix. It says WHERE a passage sits
+    # in its document and nothing about how good the passage is: it
+    # summarises and situates, it does not judge. Terra here would be a
+    # boundary violation dressed as an upgrade, the same argument that keeps
+    # `claim_extraction` on Luna. Pinned by tests/test_contextual_prefix.py.
+    "context_prefix": MODEL_LUNA,
     # BGV employer-reply field extraction (add-features spec 2026-09-05).
     # Narrow and mechanical, exactly like `extraction`: it copies what the
     # reply states into seven keys and must not evaluate the candidate.
@@ -346,7 +375,6 @@ TASK_TIMEOUTS: dict[str, float] = {
     "email_composition": 15.0,
     "rerank": 15.0,
     "swot_intake": 15.0,
-    "company_dna_intake": 15.0,
     # ── GENERATIVE interactive: a request handler is blocked and the output is
     #    a DOCUMENT. This is the one number the model consolidation genuinely
     #    moved, and it is worth stating why rather than letting a reader assume
@@ -377,8 +405,24 @@ TASK_TIMEOUTS: dict[str, float] = {
     "triangulation": 60.0,
     "report_synthesis": 120.0,
     "extraction": 60.0,
+    # Background, on Route.LAMBDA at index time. One short paragraph out, one
+    # document plus one chunk in. Nobody is waiting on it.
+    "context_prefix": 30.0,
     # Background: one structured extraction over one email reply.
     "bgv_reply_extraction": 60.0,
+    # INTERACTIVE, and a third entry in the generative-interactive exception
+    # above. Both judge or write over a pack of retrieved web pages, which is
+    # the largest input either receives, and a recruiter is watching. Holding
+    # these at the 15-second interactive cap would not make the page faster; it
+    # would make every research pass time out and return the thin result these
+    # numbers exist to fix.
+    "bd_reach_evaluate": 30.0,
+    # FORTY, not forty-five. This agent is invoked SYNCHRONOUSLY from the
+    # request handler, so the whole route -- parallel search plus this write --
+    # has to finish inside the load balancer's 65-second idle timeout or the
+    # recruiter gets a 504 instead of a draft. Search is now concurrent and
+    # bounded at nine seconds, which leaves this the rest of the room.
+    "company_profile_research": 40.0,
     # Background. One reasoning pass over a reduced evidence pack.
     "project_evidence": 60.0,
     # Background: one structured payload, or one batch of evidence anchors,
@@ -409,7 +453,6 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "email_composition": 30.0,
     "rerank": 30.0,
     "swot_intake": 30.0,
-    "company_dna_intake": 30.0,
     # The generative-interactive exception. See TASK_TIMEOUTS above.
     "jd_generation": 50.0,
     "swot_analysis": 50.0,
@@ -422,7 +465,14 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "triangulation": 140.0,
     "report_synthesis": 280.0,
     "extraction": 140.0,
+    "context_prefix": 70.0,
     "bgv_reply_extraction": 140.0,
+    "bd_reach_evaluate": 50.0,
+    # Bounded by the same invariant every other entry is: a total budget above
+    # `timeout * attempts` describes a wall-clock ceiling the retry loop can
+    # never actually reach, which makes it a number that documents nothing.
+    # Both dropped again when the retry budget went to two attempts.
+    "company_profile_research": 80.0,
     "project_evidence": 140.0,
     "format_composition": 140.0,
     "answer_evaluation": 140.0,
@@ -456,7 +506,6 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "swot_analysis": 1536,
     "email_composition": 1024,
     "swot_intake": 1024,
-    "company_dna_intake": 1024,
     "situation_classification": 512,
     "rerank": 2048,
     "technical_questions": 8192,
@@ -470,8 +519,20 @@ TASK_MAX_TOKENS: dict[str, int] = {
     # Seven report sections in one response -- the largest thing we ask for.
     "report_synthesis": 8192,
     "extraction": 8192,
+    # 50 to 100 tokens of prose, and `rag/contextual` enforces the ceiling in
+    # characters as well. Two mechanisms for one bound, deliberately: the
+    # vendor ceiling stops the bill, ours stops an over-long prefix reaching
+    # the index.
+    "context_prefix": 256,
     # Seven short fields from one email reply.
     "bgv_reply_extraction": 1024,
+    # Up to MAX_EVALUATE_HITS judged cards, each with a company, two URLs and a
+    # contact block. The old ceiling was `extraction`'s 8192 and it was reached:
+    # a truncated JSON array parses as nothing, which is one of the ways the
+    # page came back empty.
+    "bd_reach_evaluate": 16384,
+    # Three sections at the top of their word range, plus the sources list.
+    "company_profile_research": 8192,
     "project_evidence": 4096,
     "format_composition": 4096,
     "answer_evaluation": 4096,
@@ -512,9 +573,17 @@ TASK_TEMPERATURE: dict[str, float] = {
     "dimension_evaluation": 0.0,    # THE grade. Never above zero.
     "triangulation": 0.0,
     "situation_classification": 0.0,
+    # Deterministic, and it is a RE-INDEX argument rather than a grading one:
+    # the same chunk of the same document must situate the same way on every
+    # pass, or a re-index silently moves every vector in the corpus.
+    "context_prefix": 0.0,
     "project_evidence": 0.0,        # judges claims against evidence
     "answer_evaluation": 0.0,       # judges an answer against its rubric
     "fill_blank_equivalence": 0.0,  # classifies two strings as equivalent or not
+    # Judges retrieved pages for truthfulness and relevance and drops what it
+    # cannot support. A judging task, so deterministic: two runs over the same
+    # search results must not disagree about which companies are real.
+    "bd_reach_evaluate": 0.0,
 
     # ── Generative: these write. ────────────────────────────────────────────
     "competency_transformation": 0.2,
@@ -527,7 +596,11 @@ TASK_TEMPERATURE: dict[str, float] = {
     "swot_analysis": 0.5,
     "email_composition": 0.5,
     "swot_intake": 0.5,
-    "company_dna_intake": 0.5,
+    # Writes three sections of prose from retrieved content. Low rather than
+    # zero: every sentence must stay anchored to what was retrieved, and the
+    # deterministic guards (word range, no invented number, no generic phrase)
+    # are what enforce that rather than the sampling temperature.
+    "company_profile_research": 0.3,
     # The unified candidate conversation. The highest in the product, and the
     # only place where sounding different to different people is the point.
     "conversation_turn": 0.7,
@@ -562,7 +635,6 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "swot_analysis": 3,
     "email_composition": 3,
     "swot_intake": 3,
-    "company_dna_intake": 3,
     "rerank": 3,
     "technical_questions": 3,
     "competency_transformation": 3,
@@ -578,6 +650,16 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "format_composition": 3,
     "answer_evaluation": 3,
     "fill_blank_equivalence": 2,
+    # TWO, NOT THREE, and both are interactive. Measured on the live pilot
+    # 2026-09-08: the judge timed out at 25 seconds, the router spent a second
+    # full attempt on it, and the retry alone consumed more than the remaining
+    # search budget -- so a search that had fetched 36 real pages returned a
+    # timeout and no cards at all. A third attempt on a request somebody is
+    # watching cannot finish inside the budget the caller wraps it in, and the
+    # router's own deadline rule (never start an attempt that cannot finish)
+    # is what makes two the honest number rather than three.
+    "bd_reach_evaluate": 2,
+    "company_profile_research": 2,
 }
 
 DEFAULT_RETRY_BUDGET = 3
@@ -603,6 +685,35 @@ def backoff_seconds(attempt: int) -> float:
     if attempt <= 1:
         return 0.0
     return float(min(BACKOFF_BASE_SECONDS * (2 ** (attempt - 2)), BACKOFF_MAX_SECONDS))
+
+
+#: How far either side of the curve a jittered delay may land, as a fraction.
+#:
+#: RPN-AI-UP-001 W4.1 asks for "bounded exponential backoff with jitter" on the
+#: provider-error class. Jitter is what stops a fleet of workers that all failed
+#: on the same 5xx from retrying in the same millisecond and reproducing the
+#: burst that caused it.
+BACKOFF_JITTER_RATIO = 0.25
+
+
+def jittered_backoff_seconds(attempt: int, jitter_unit: float) -> float:
+    """`backoff_seconds` spread symmetrically around the curve.
+
+    `jitter_unit` is the caller's random draw in [0, 1), passed IN rather than
+    drawn here so this module stays what its docstring says it is: data and pure
+    functions, with no state and nothing to stub. A draw of exactly 0.5 returns
+    the unjittered curve, which is what makes a test able to assert the curve
+    and the spread separately.
+
+    Bounded on both sides. The upper bound is the same `BACKOFF_MAX_SECONDS` the
+    curve carries, because a jitter that could exceed the cap would quietly
+    raise it; the lower bound is zero because a negative delay is not a delay.
+    """
+    base = backoff_seconds(attempt)
+    if base <= 0.0:
+        return 0.0
+    spread = base * BACKOFF_JITTER_RATIO * (2.0 * jitter_unit - 1.0)
+    return float(min(max(0.0, base + spread), BACKOFF_MAX_SECONDS))
 
 
 # ── Failure classification (spec-doc5 §B.4) ──────────────────────────────────
@@ -643,6 +754,230 @@ def classify_status(status: int) -> str:
 def is_retryable_status(status: int) -> bool:
     """A 4xx that is not 429 is our bug and will fail identically on retry."""
     return status == RATE_LIMIT_STATUS or is_provider_error(status)
+
+
+# ── Semantic recovery (RPN-AI-UP-001 W4.1) ───────────────────────────────────
+#
+# Classification used to answer ONE question: retry, or do not. That is the
+# right answer for a 429 and the wrong answer for three failures this platform
+# can actually receive, because each of them has a recovery that is not "the
+# same request again":
+#
+#   a context overflow is fixed by sending LESS, and an identical retry burns
+#   the budget reproducing the same 400;
+#   a refusal is not a transport failure at all, so retrying it asks a model
+#   that has already declined to decline again;
+#   a schema violation is the one class where the next attempt should carry a
+#   DIFFERENT prompt, because the validator has already written the instruction
+#   that fixes it.
+#
+# The mapping is DATA here rather than a branch in `llm_router` for the reason
+# every other table in this file is: a recovery policy that lives inside a retry
+# loop can only be reviewed by reading the retry loop.
+
+#: The failure classes. The first four are the strings `classify_status` has
+#: always returned and are unchanged, because they are written into log lines,
+#: into error text and into `_Stats` keys that operators already read.
+FAILURE_CREDENTIAL = "credential"
+FAILURE_RATE_LIMIT = "rate_limit"
+FAILURE_PROVIDER_ERROR = "provider_error"
+FAILURE_CLIENT_ERROR = "client_error"
+#: A transport failure that is not a timeout: a refused connection, a reset, a
+#: DNS failure. The request demonstrably did not reach the vendor.
+FAILURE_TRANSPORT = "transport"
+#: A timeout, which is NOT the same thing and must not be folded into it. The
+#: request may have been received and served; we simply did not hear the answer.
+FAILURE_TIMEOUT = "timeout"
+FAILURE_CONTEXT_OVERFLOW = "context_overflow"
+FAILURE_REFUSAL = "refusal"
+FAILURE_SCHEMA_VIOLATION = "schema_violation"
+#: Anything this router cannot place. A `VendorContractViolation` is the live
+#: example: it is not an HTTP status, not a timeout and not a transport error,
+#: and it must not be retried. Naming it is what stops it inheriting the
+#: transport class's retry by accident.
+FAILURE_UNCLASSIFIED = "unclassified"
+
+#: The recovery strategies, named rather than numbered so a log line and a trace
+#: say what was done rather than which branch ran.
+STRATEGY_TRIP_BREAKER = "trip_breaker_immediately"
+STRATEGY_BACKOFF_RETRY_AFTER = "backoff_honouring_retry_after"
+STRATEGY_BACKOFF_JITTER = "bounded_exponential_backoff_with_jitter"
+STRATEGY_RETRY_OUTCOME_UNKNOWN = "retry_treating_the_outcome_as_unknown"
+STRATEGY_SURFACE_HAZARDS = "surface_request_hazards"
+STRATEGY_COMPRESS_AND_RETRY = "compress_context_and_retry"
+STRATEGY_ROUTE_TO_HUMAN = "route_to_human"
+STRATEGY_REPROMPT_WITH_VALIDATOR_MESSAGE = "reprompt_with_the_validator_message"
+STRATEGY_SURFACE_UNCLASSIFIED = "surface_an_unclassified_failure"
+
+
+@dataclass(frozen=True)
+class Recovery:
+    """What to do about one failure class, and why.
+
+    Frozen, and every field is a fact the router acts on rather than a hint:
+    there is no "severity" and no "priority" here, because a number nothing
+    reads is a number that drifts.
+    """
+
+    strategy: str
+    #: Whether another attempt is worth making at all.
+    retry: bool
+    #: A revoked key does not become valid by waiting, so its breaker opens on
+    #: the first occurrence rather than after `_FAILURE_THRESHOLD`.
+    trips_breaker_immediately: bool = False
+    #: The vendor's own `Retry-After` is strictly better information than any
+    #: local curve, and this is the only class that carries one.
+    honours_retry_after: bool = False
+    #: The next attempt sends something DIFFERENT. Only two classes do, and both
+    #: change the request rather than the schedule.
+    rewrites_the_request: bool = False
+    #: The call may have taken effect at the vendor. A side-effecting caller
+    #: must treat this as UNKNOWN rather than as "it did not happen".
+    outcome_is_unknown: bool = False
+    #: A person has to look. Not a transport problem and not retriable away.
+    needs_human: bool = False
+    why: str = ""
+
+
+#: FAILURE CLASS TO RECOVERY. The table W4.1 specifies, transcribed.
+RECOVERY_FOR_FAILURE: dict[str, Recovery] = {
+    FAILURE_CREDENTIAL: Recovery(
+        strategy=STRATEGY_TRIP_BREAKER,
+        retry=False,
+        trips_breaker_immediately=True,
+        why=(
+            "no amount of waiting fixes a revoked key, and the caller's "
+            "deterministic fallback should start one attempt sooner rather "
+            "than three"
+        ),
+    ),
+    FAILURE_RATE_LIMIT: Recovery(
+        strategy=STRATEGY_BACKOFF_RETRY_AFTER,
+        retry=True,
+        honours_retry_after=True,
+        why="the only class where waiting is what fixes it",
+    ),
+    FAILURE_PROVIDER_ERROR: Recovery(
+        strategy=STRATEGY_BACKOFF_JITTER,
+        retry=True,
+        why=(
+            "the vendor failed and will probably not fail again immediately; "
+            "the jitter stops a fleet retrying in one millisecond"
+        ),
+    ),
+    FAILURE_TIMEOUT: Recovery(
+        strategy=STRATEGY_RETRY_OUTCOME_UNKNOWN,
+        retry=True,
+        outcome_is_unknown=True,
+        why=(
+            "the request may have been served and the answer lost, so the "
+            "outcome is UNKNOWN rather than absent; the attempt's duration "
+            "counts toward the deadline because a timeout is the slowest and "
+            "most informative attempt that can happen"
+        ),
+    ),
+    FAILURE_TRANSPORT: Recovery(
+        strategy=STRATEGY_BACKOFF_JITTER,
+        retry=True,
+        why=(
+            "a refused connection or a reset demonstrably did not reach the "
+            "vendor, which is what separates it from a timeout"
+        ),
+    ),
+    FAILURE_CLIENT_ERROR: Recovery(
+        strategy=STRATEGY_SURFACE_HAZARDS,
+        retry=False,
+        why=(
+            "a non-429 4xx is OUR bug and fails identically on retry, so the "
+            "budget is better spent telling somebody which published "
+            "constraint the request did not satisfy"
+        ),
+    ),
+    FAILURE_CONTEXT_OVERFLOW: Recovery(
+        strategy=STRATEGY_COMPRESS_AND_RETRY,
+        retry=True,
+        rewrites_the_request=True,
+        why=(
+            "the request was too long, so the only attempt worth making is a "
+            "shorter one; retrying identically reproduces the same 400"
+        ),
+    ),
+    FAILURE_REFUSAL: Recovery(
+        strategy=STRATEGY_ROUTE_TO_HUMAN,
+        retry=False,
+        needs_human=True,
+        why=(
+            "the vendor answered and declined. That is not a transport "
+            "failure, and asking a model that has already declined to decline "
+            "again spends the budget on nothing"
+        ),
+    ),
+    FAILURE_SCHEMA_VIOLATION: Recovery(
+        strategy=STRATEGY_REPROMPT_WITH_VALIDATOR_MESSAGE,
+        retry=True,
+        rewrites_the_request=True,
+        why=(
+            "the validator has already written the instruction that fixes it, "
+            "and this is the only class whose retry carries a different prompt"
+        ),
+    ),
+    FAILURE_UNCLASSIFIED: Recovery(
+        strategy=STRATEGY_SURFACE_UNCLASSIFIED,
+        retry=False,
+        needs_human=True,
+        why=(
+            "an exception this router cannot place is not evidence of a "
+            "transient, and retrying one would spend a budget on a guess"
+        ),
+    ),
+}
+
+
+def recovery_for(failure_class: str) -> Recovery:
+    """The recovery for one failure class. Raises for an unknown one.
+
+    No default, for the same reason `model_for` has none: a class nobody mapped
+    would silently inherit whatever the default happened to be, and the two
+    plausible defaults are "retry forever" and "never retry", both of which are
+    wrong for some real failure.
+    """
+    try:
+        return RECOVERY_FOR_FAILURE[failure_class]
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown failure class {failure_class!r}; expected one of "
+            f"{sorted(RECOVERY_FOR_FAILURE)}"
+        ) from exc
+
+
+#: The vendor error codes that mean "the request was too long".
+#:
+#: Read from `error.code` on a 400 body. ONLY that field and `error.type` are
+#: ever read (`VENDOR_ERROR_ALLOWED_FIELDS`), and the reason is the rule the
+#: router already keeps: `error.message` can echo the request, and the request
+#: carries a real candidate's answers. A code is a short vendor-controlled
+#: enum; a message is content.
+CONTEXT_OVERFLOW_ERROR_CODES: frozenset[str] = frozenset(
+    {"context_length_exceeded", "string_above_max_length"}
+)
+
+#: The only fields this platform reads out of a vendor error body. An allowlist,
+#: never a denylist, so the next person adding "and the message, for debugging"
+#: has to change this line rather than discovering it in a log a month later.
+VENDOR_ERROR_ALLOWED_FIELDS: tuple[str, ...] = ("code", "type")
+
+#: `finish_reason` values that mean the model declined rather than answered.
+#: The published API also carries a non-null `message.refusal` on a structured
+#: refusal, and the router checks both because either can arrive alone.
+REFUSAL_FINISH_REASONS: frozenset[str] = frozenset({"refusal", "content_filter"})
+
+
+def is_context_overflow_code(code: str | None) -> bool:
+    return bool(code) and str(code) in CONTEXT_OVERFLOW_ERROR_CODES
+
+
+def is_refusal_finish_reason(finish_reason: str | None) -> bool:
+    return bool(finish_reason) and str(finish_reason) in REFUSAL_FINISH_REASONS
 
 
 # ── Cost attribution ─────────────────────────────────────────────────────────
@@ -693,6 +1028,82 @@ def estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) ->
 def is_priced(model: str) -> bool:
     """True when a price is on file, so a 0.0 can be read correctly."""
     return model in TOKEN_PRICES_USD_PER_MILLION
+
+
+# ── Cost ceilings (RPN-AI-UP-001 W4.7) ───────────────────────────────────────
+#
+# The platform already refuses BEFORE the work on latency: `TASK_TIMEOUTS` caps
+# one attempt and `TASK_TOTAL_BUDGET` caps the chain. There was no equivalent on
+# COST, so a single call whose prompt had grown by an order of magnitude, or a
+# retry chain over a very large context, was bounded only by the clock.
+#
+# This is the same ceiling in the other unit, and the same discipline: checked
+# before the call, against the worst case the request can produce rather than
+# the cost of a typical one. `estimate_cost_usd` is what prices it, so these
+# numbers inherit that function's honest caveat -- the per-token rates carry
+# forward the previous roster's tiers and have not been read off a price sheet
+# for these two ids, so what the table encodes reliably is the RATIO between
+# tasks rather than an absolute.
+#
+# THE NUMBERS ARE DELIBERATELY GENEROUS, for the reason `reliability/budget.py`
+# already gives: a ceiling set near the median converts an unusually long
+# document into a failure, which is worse than the overspend it prevents. Every
+# row is at least twice the worst case a request that fits the context budget
+# can produce, and `tests/test_router_recovery.py` asserts that floor rather
+# than trusting it, so a ceiling can never be tightened below what a legitimate
+# maximal call actually costs.
+#
+# THIS IS NOT `reliability.budget.COST_BUDGET_USD` AND DOES NOT REPLACE IT. That
+# table is per TASK in the product sense -- one report, one ranking run, several
+# loops and many calls. This one is per LLM task type, which is one logical call
+# and its retries. The two ceilings answer different questions and neither
+# bounds the other.
+TASK_COST_CEILING_USD: dict[str, float] = {
+    # Interactive, short output. A candidate is waiting; a call here that could
+    # cost a fifth of a dollar has a prompt that has gone wrong.
+    "conversation_turn": 0.20,
+    "situation_classification": 0.05,
+    "email_composition": 0.15,
+    "rerank": 0.06,
+    "swot_intake": 0.15,
+    "fill_blank_equivalence": 0.05,
+    # Interactive, document output.
+    "jd_generation": 0.25,
+    # Judged over a pack of retrieved web pages, and carrying the largest output
+    # ceiling in the product at 16384 tokens. The highest row here for that
+    # reason alone, not because the task is more valuable.
+    "bd_reach_evaluate": 0.60,
+    "company_profile_research": 0.40,
+    # Background.
+    "technical_questions": 0.40,
+    "competency_transformation": 0.40,
+    "behavioral_assessment": 0.25,
+    "claim_extraction": 0.12,
+    "evidence_tiering": 0.08,
+    "dimension_evaluation": 0.25,
+    "triangulation": 0.25,
+    # Seven report sections in one response, on the reasoning tier.
+    "report_synthesis": 0.40,
+    "extraction": 0.12,
+    "bgv_reply_extraction": 0.05,
+    "project_evidence": 0.25,
+    "format_composition": 0.25,
+    "answer_evaluation": 0.25,
+}
+
+#: An unlisted task gets this rather than a raise, and that is the opposite of
+#: `model_for`'s rule on purpose. An unroutable task cannot run at all, so
+#: raising is the only honest answer; an unpriced task can run perfectly well,
+#: and refusing every call for a new task type because nobody wrote a dollar
+#: figure would turn this ceiling into an outage generator. The default sits at
+#: or above every row in the table, so the fallback is never TIGHTER than a
+#: reviewed one.
+DEFAULT_COST_CEILING_USD = 0.60
+
+
+def cost_ceiling_for(task_type: str) -> float:
+    """The most one logical call of `task_type` may be ESTIMATED to cost."""
+    return TASK_COST_CEILING_USD.get(task_type, DEFAULT_COST_CEILING_USD)
 
 
 # ── Credentials ──────────────────────────────────────────────────────────────

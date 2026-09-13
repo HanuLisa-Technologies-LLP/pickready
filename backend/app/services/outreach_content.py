@@ -10,6 +10,22 @@ rule 9). The model is asked for a plain-text subject + body; this module builds
 the HTML itself and HTML-escapes every interpolated value, so a model that
 emits stray markup can never inject unescaped HTML. If the provider chain is
 unavailable, a clean deterministic templated email is returned  -  never raises.
+
+SUFFICIENCY IS DECIDED BEFORE THE PROMPT RUNS (2026-09-09)
+---------------------------------------------------------
+`ai-upgrade-spec-doc.md` "case 2". `_candidate_evidence` used to return the
+sentence "No specific evidence was recorded for this category." for any of the
+four ranking comments the ranking had not produced, and that sentence went two
+places: into the prompt under the heading "Candidate's Strengths (from AI
+review)", where the model was asked to highlight it, and straight into the
+deterministic template's own body, which read "Our review highlighted that No
+specific evidence was recorded for this category."
+
+It is now gone in both directions. `generation_sufficiency.outreach_evidence`
+passes only the categories that HAVE a comment, so an absent one is invisible
+rather than announced, and `generation_sufficiency.outreach_state` refuses to
+run the prompt at all when none of the four is recorded, sending the fixed
+template that makes no claim instead.
 """
 from __future__ import annotations
 
@@ -17,12 +33,12 @@ import html
 import json
 import logging
 import re
-from pathlib import Path
 from typing import Any
 
 from langchain_core.prompts import PromptTemplate
 
-from app.services import llm_router
+from app import prompts
+from app.services import generation_sufficiency, llm_router
 from app.prompts import registry
 
 logger = logging.getLogger(__name__)
@@ -40,8 +56,12 @@ _ROLE_HINT = "email_composition"
 WORD_MIN = 150
 WORD_MAX = 200
 
-_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "email_generation.txt"
-_EMAIL_PROMPT = PromptTemplate.from_template(_PROMPT_PATH.read_text(encoding="utf-8"))
+#: Loaded through the prompt package rather than by re-resolving the path here.
+#: Two readers of one file is two answers to "what is in this prompt", and the
+#: one this module had did not strip the file's leading comment block, so a
+#: version header added to it would have been sent to the model as the first
+#: line of the user turn.
+_EMAIL_PROMPT = PromptTemplate.from_template(prompts.load("email_generation"))
 
 #: Text in `app/prompts/outreach_email_system.txt`, loaded through the registry so a
 #: wording change is a versioned diff in a prompt file rather than a string
@@ -86,9 +106,25 @@ def _company_name(company: dict) -> str:
     return "our company"
 
 
-def _candidate_evidence(candidate: dict, key: str) -> str:
-    value = str(candidate.get(key) or "").strip()
-    return value or "No specific evidence was recorded for this category."
+#: How each recorded ranking comment is labelled for the model. Only the keys
+#: that HAVE a comment are rendered, so a missing category leaves no trace in
+#: the prompt at all. The sentence this replaced is now in the banned corpus.
+_EVIDENCE_LABELS: dict[str, str] = {
+    "skills_comment": "Skills",
+    "experience_comment": "Experience",
+    "role_comment": "Role alignment",
+    "education_comment": "Education",
+}
+
+
+def _evidence_block(candidate: dict) -> str:
+    """The recorded evidence, as labelled lines, with the absent ones omitted."""
+    recorded = generation_sufficiency.outreach_evidence(candidate)
+    return "\n".join(
+        f"- {_EVIDENCE_LABELS[key]}: {recorded[key]}"
+        for key in _EVIDENCE_LABELS
+        if key in recorded
+    )
 
 
 def _apply_link(job: dict, candidate: dict) -> str | None:
@@ -234,6 +270,32 @@ def _within_word_range(body: str) -> bool:
     return WORD_MIN <= _word_count(body) <= WORD_MAX
 
 
+def _draft_text(draft: tuple[str, str]) -> str:
+    """Subject and body as one string, for a check that must cover both.
+
+    A subject line reaches an inbox list before anything else does, so a hedge
+    there is the first thing a candidate sees.
+    """
+    return "\n".join(draft)
+
+
+def _is_usable(subject: str, body: str) -> bool:
+    """Whether a drafted email may be sent as it stands.
+
+    Two deterministic conditions, and the second is the one this release added:
+    an email that describes the review rather than the candidate is not a
+    shorter or a longer email, it is the wrong email, and the recruiter has the
+    compose modal open in front of it. A failure here spends the ONE corrective
+    regeneration the module already budgets rather than adding a second retry
+    path beside it.
+    """
+    if not _within_word_range(body):
+        return False
+    return not generation_sufficiency.meta_commentary_defects(
+        _draft_text((subject, body))
+    )
+
+
 # ── Deterministic fallback ───────────────────────────────────────────────────
 
 
@@ -250,16 +312,24 @@ def _template_content(
     Values are interpolated into a plain-text body; `_build_html` escapes them
     when constructing the HTML (claude.md rule 9: degrade, never crash)."""
     if kind == "next_round":
-        skills = _candidate_evidence(candidate, "skills_comment")
-        experience = _candidate_evidence(candidate, "experience_comment")
+        recorded = generation_sufficiency.outreach_evidence(candidate)
+        # ONE SENTENCE PER RECORDED CATEGORY, and none for a category with
+        # nothing behind it. The previous version interpolated a placeholder
+        # sentence unconditionally and produced "Our review highlighted that No
+        # specific evidence was recorded for this category." in a real email.
+        openers = ("Our review highlighted", "We also noted")
+        highlights = " ".join(
+            f"{opener} {recorded[key].rstrip('.')}."
+            for opener, key in zip(
+                openers, [k for k in ("skills_comment", "experience_comment") if k in recorded]
+            )
+        )
         subject = f"Next steps for the {role} role at {company}"
         body = (
             f"Hi {name},\n\n"
             f"Thank you for your interest in the {role} position at {company}. "
-            f"Our review highlighted that {skills} We also noted that "
-            f"{experience} Together, those strengths give us useful evidence "
-            "that your background could translate well to this opportunity. "
-            "We would like to invite you to the next round of our selection "
+            + (f"{highlights} " if highlights else "")
+            + "We would like to invite you to the next round of our selection "
             "process.\n\n"
             f"The next round is a focused conversation about the {role} remit "
             f"at {company}: the scope of the work, the people you would "
@@ -363,25 +433,34 @@ async def generate_outreach_email(
     company_name = _company_name(company)
     apply_link = _apply_link(job, candidate)
 
+    def _fallback() -> dict:
+        return _template_content(
+            name, role, company_name, apply_link, kind, candidate
+        )
+
+    # THE GATE, BEFORE THE PROMPT. With no ranking comment on any of the four
+    # categories there is nothing to personalise from, and the prompt's own
+    # instruction is to highlight the candidate's strengths. A model asked to do
+    # that from nothing writes about the absence.
+    state = generation_sufficiency.outreach_state(candidate)
+    if not state.sufficient:
+        logger.info(
+            "outreach_content.insufficient_evidence reason=%s empty_state=%s",
+            state.reason, state.empty_state_key,
+        )
+        return _fallback()
+
     user_prompt = _EMAIL_PROMPT.format(
         candidate_name=name,
         job_title=role,
         company_name=company_name,
         company_culture=str(company.get("culture") or "Not provided").strip(),
-        skills_comment=_candidate_evidence(candidate, "skills_comment"),
-        experience_comment=_candidate_evidence(candidate, "experience_comment"),
-        role_comment=_candidate_evidence(candidate, "role_comment"),
-        education_comment=_candidate_evidence(candidate, "education_comment"),
+        evidence_block=_evidence_block(candidate),
     )
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
     ]
-
-    def _fallback() -> dict:
-        return _template_content(
-            name, role, company_name, apply_link, kind, candidate
-        )
 
     try:
         raw = await llm_router.chat_completion(
@@ -395,23 +474,41 @@ async def generate_outreach_email(
         return _fallback()
 
     parsed = _parse_subject_body(raw)
-    if parsed is not None and _within_word_range(parsed[1]):
+    if parsed is not None and _is_usable(parsed[0], parsed[1]):
         return _assemble(parsed[0], parsed[1], apply_link)
 
-    # ONE corrective regeneration  -  for a broken JSON shape OR a body outside
-    # the 150–200 word band. Whichever failed, this is the only retry.
+    # ONE corrective regeneration  -  for a broken JSON shape, a body outside the
+    # 150 to 200 word band, or a body that described the review instead of the
+    # candidate. Whichever failed, this is the only retry.
     if parsed is None:
         corrective = (
             "Your previous response was not valid JSON in the required shape. "
             'Re-emit ONLY a JSON object: {"subject": "<line>", "body": "<plain '
             'text, no HTML, no signature omitted>"}. No prose, no markdown.'
         )
-    else:
+    elif not _within_word_range(parsed[1]):
         corrective = (
             f"Your previous body was {_word_count(parsed[1])} words. Rewrite the "
             f"email so the body is between {WORD_MIN} and {WORD_MAX} words, "
             "keeping it personalized to the same candidate, role and company. "
             'Re-emit ONLY the JSON object {"subject": ..., "body": ...}.'
+        )
+    else:
+        # VERBATIM, like every other corrective in this codebase: "remove 'no
+        # information was found'" is a defect a model fixes when told, and a
+        # vague "be more confident" is not.
+        corrective = (
+            "Your previous email described the review and its evidence instead "
+            "of describing the candidate: "
+            + "; ".join(
+                defect.detail
+                for defect in generation_sufficiency.meta_commentary_defects(
+                    _draft_text(parsed)
+                )
+            )
+            + ". Rewrite it so every sentence is about the candidate, the role "
+            "or the next round. Re-emit ONLY the JSON object "
+            '{"subject": ..., "body": ...}.'
         )
     retry_messages = messages + [
         {"role": "assistant", "content": raw},
@@ -436,7 +533,16 @@ async def generate_outreach_email(
 
     retried = _parse_subject_body(raw_retry)
     if retried is not None:
-        # Retry budget spent: whatever came back is trimmed/padded to spec.
+        # Retry budget spent. A mis-sized body is trimmed or padded to spec,
+        # which is a cosmetic repair. Meta-commentary is NOT repairable by
+        # trimming, so a second offending draft is discarded for the
+        # deterministic template: sending a candidate a paragraph about the
+        # state of our own records is worse than sending them plainer prose.
+        if generation_sufficiency.meta_commentary_defects(_draft_text(retried)):
+            logger.warning(
+                "outreach_content.meta_commentary_after_retry  -  template email"
+            )
+            return _fallback()
         if not _within_word_range(retried[1]):
             logger.info(
                 "outreach_content.word_count_adjusted words=%d",

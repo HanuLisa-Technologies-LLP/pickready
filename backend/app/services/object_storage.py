@@ -116,10 +116,34 @@ def client() -> Any:
         with _client_lock:
             if _client is None:
                 import boto3  # noqa: PLC0415 -- optional at import time
+                from botocore.config import Config  # noqa: PLC0415
 
                 settings = get_settings()
                 _client = boto3.client(
                     "s3",
+                    # EXPLICIT TIMEOUTS AND A BOUNDED RETRY COUNT, the rule
+                    # every other boto3 client in this tree already follows
+                    # (workers/dispatch, ses_service, video/processing,
+                    # email_senders/eligibility, the assessment trigger). This
+                    # client was the exception, and it is the one reached from
+                    # REQUEST HANDLERS: the resume viewer, document storage,
+                    # project intake and the video routes.
+                    #
+                    # botocore's defaults are 60s connect and 60s read under
+                    # standard retry mode, so an endpoint that accepts the
+                    # connection and then stops answering blocks a request
+                    # handler for up to three minutes. The ALB gives up at 65
+                    # seconds, so the caller already has a 504 while the worker
+                    # is still held -- and with four uvicorn workers a handful
+                    # of resume downloads is enough to stop the API answering
+                    # anything. That is the same shape as the broker publish
+                    # timeout: an unreachable endpoint that HANGS defeats every
+                    # try/except around the call, because nothing is raised.
+                    config=Config(
+                        connect_timeout=5,
+                        read_timeout=20,
+                        retries={"max_attempts": 2, "mode": "standard"},
+                    ),
                     region_name=settings.aws_region or None,
                     # `endpoint_url` exists for localstack and for the test
                     # suite. It is None in every real environment, and boto3

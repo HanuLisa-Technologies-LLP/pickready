@@ -12,3 +12,8 @@ output "services" {
   description = "Every service that has a scoped policy. Used by the ecs module to fail loudly on a service with no grant, rather than silently running with none."
   value       = local.service_names
 }
+
+output "writer_policy_arns" {
+  description = "{service -> the IAM policy granting PutSecretValue on exactly that service's writable secrets}. Attached to the TASK role in the ecs module, because the application's own SDK makes the call; the read policy goes on the execution role."
+  value       = { for service, policy in aws_iam_policy.service_writer : service => policy.arn }
+}

@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from app.services.tools.policy import PolicyVerdict, ToolContext
+
 logger = logging.getLogger(__name__)
 
 STATUS_OK = "ok"
@@ -124,6 +126,49 @@ def record(
         status,
         attempts,
         elapsed_ms,
+    )
+
+
+def record_policy(
+    *, tool: str, agent: str, verdict: PolicyVerdict, context: ToolContext
+) -> None:
+    """The policy ledger line. Identifiers and rule names, never payloads.
+
+    WHAT IS RECORDED AND WHEN
+    -------------------------
+    Every refusal, and every call whose risk class is ledgered (anything that
+    changes something). An allowed READ is already counted by `record` above,
+    and writing a second line for each one would bury the lines that matter in
+    the ones that do not.
+
+    WHY THIS IS A LOG LINE AND NOT A TABLE
+    --------------------------------------
+    A ledger has to be written by the thing it describes, and today every
+    registered tool is a read: a `agent_tool_invocations` table would have no
+    writer, and a table with no writer proves nothing while looking like proof.
+    The product's durable audit trail is `audit_log`, which is written by the
+    request that authorised the action; an agent write lands there through the
+    route that authorised it, on the human principal this line names.
+
+    `objects` carries kinds and ids. Those are identifiers, which traces
+    already carry; what never crosses this module is a payload.
+    """
+    if verdict.allowed and not verdict.ledgered:
+        return
+    log = logger.info if verdict.allowed else logger.warning
+    log(
+        "tool_policy=%s agent=%s decision=%s reason=%s risk=%s tenant=%s "
+        "principal=%s stage=%s objects=%s approved_by=%s",
+        tool,
+        agent,
+        verdict.decision.value,
+        verdict.reason,
+        verdict.risk.value,
+        context.tenant_id,
+        context.principal_user_id,
+        context.stage,
+        ",".join(f"{obj.kind}:{obj.object_id}" for obj in context.objects),
+        context.approval.approved_by if context.approval else None,
     )
 
 

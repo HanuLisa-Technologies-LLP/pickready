@@ -118,6 +118,40 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "which is the platform's current posture."
         ),
     ),
+    ScheduledTask(
+        rule="readypick-reconcile-context-index",
+        task="pickready.reconcile_context_index",
+        interval_minutes=60,
+        why=(
+            "Finds documents that have text and no chunk rows, and indexes "
+            "them. Asks the TABLE with a NOT EXISTS, never a timestamp. It "
+            "covers the one failure the call sites cannot: a dispatch that "
+            "never arrived leaves no trace, and an unindexed resume is "
+            "invisible to retrieval forever because nothing would ever ask "
+            "again."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-release-held-assessments",
+        task="pickready.release_held_assessments",
+        interval_minutes=60,
+        why=(
+            "A completed conversation with no report is a candidate who did "
+            "the work and a customer who was charged for it, with nothing to "
+            "show. The task was REGISTERED and dispatched only from the two "
+            "credit-grant call sites, so it repaired a hold that a top-up "
+            "cleared and nothing else: a dispatch that never arrived, a "
+            "container killed mid-scoring, or a run that raised past its "
+            "attempts left the report missing permanently, because the only "
+            "thing that would ever have asked again was the top-up that had "
+            "already happened. It asks the TABLE with an outer join, never a "
+            "status column. Scheduling it was UNSAFE until the scoring lock "
+            "existed: with no tenant argument the sweep also matches "
+            "conversations that finished seconds ago and are being scored "
+            "right now, and dispatching those would have manufactured the "
+            "duplicate scoring run it is supposed to repair."
+        ),
+    ),
 )
 
 RULE_NAMES: tuple[str, ...] = tuple(entry.rule for entry in SCHEDULE)

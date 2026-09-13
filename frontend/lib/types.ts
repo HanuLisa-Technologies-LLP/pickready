@@ -1412,22 +1412,35 @@ export interface BgvList {
 
 export type EmailSenderStatus =
   | "pending_verification"
-  | "email_verified"
   | "active"
-  | "verification_expired"
   | "disabled"
-  | "revoked";
+  | "revoked"
+  | "rejected"
+  // Retired with the mailbox OTP on 2026-09-08 and KEPT IN THE UNION, because
+  // rows written before it still carry them. A union missing a value the API
+  // can return makes every consumer of that row a type error or, worse, an
+  // empty render.
+  | "email_verified"
+  | "verification_expired";
 
 export interface EmailSender {
   id: string;
   name: string;
   email: string;
   status: EmailSenderStatus;
+  // Retained for rows verified under the withdrawn mailbox check. Nothing
+  // sets it any more; the provider's own identity verification is the
+  // ownership check now.
   email_verified: boolean;
-  authorized_by: string | null;
   authorized_at: string | null;
   created_at: string;
-  updated_at: string;
+  /** Whether mail would actually leave for this address, asked of the
+   *  provider at read time. Never a stored copy: the answer changes without
+   *  this product being told. */
+  can_send: boolean;
+  /** One plain sentence for the Super Admin. Deliberately carries no AWS
+   *  vocabulary: not SES, not an identity, not DKIM. */
+  sending_detail: string;
 }
 
 export interface EmailSenderList {
@@ -1437,19 +1450,9 @@ export interface EmailSenderList {
 }
 
 /** The code itself is never in a response; it travels only to the mailbox. */
-export interface EmailSenderOtpIssue {
-  sender_id: string;
-  status: EmailSenderStatus;
-  resend_cooldown_seconds: number;
-  expires_in_seconds: number;
-}
+// EmailSenderOtpIssue was REMOVED on 2026-09-08 with the sender mailbox OTP.
 
-export interface EmailSenderVerifyResult {
-  verified: boolean;
-  reason: string;
-  attempts_remaining: number;
-  status: EmailSenderStatus;
-}
+// EmailSenderVerifyResult went with it: nothing verifies a code any more.
 
 // ── Dual-mode assessment (2026-09-05 spec) ──────────────────────────────────
 
@@ -1534,6 +1537,81 @@ export interface VideoDelivery {
   expires_in_seconds: number;
   disposition: "inline" | "attachment";
   filename: string | null;
+}
+
+// ── In-product support (2026-09-10) ─────────────────────────────────────────
+//
+// Two audiences, one conversation. `SupportThread` is what a customer sees of
+// their own thread; `ProviderSupportThread` adds the fact ReadyPick staff need
+// and the customer already knows, which is WHOSE thread it is.
+//
+// The status names WHO OWES THE NEXT MOVE, which is the only thing a support
+// queue is ever sorted by. "awaiting_customer" rather than "pending" so a
+// reader cannot get the direction backwards.
+
+export type SupportThreadStatus = "open" | "awaiting_customer" | "resolved";
+
+export type SupportMessageSide = "customer" | "staff";
+
+export interface SupportMessage {
+  id: string;
+  /** Stored at write time, never re-derived from the author's current role. */
+  author_side: SupportMessageSide;
+  /** Null once the author's account is gone. Rendered as an absence, never as
+   *  "Deleted user", which is a claim about what happened to them. */
+  author_name: string | null;
+  body: string;
+  created_at: string;
+}
+
+export interface SupportThread {
+  id: string;
+  subject: string;
+  status: SupportThreadStatus;
+  created_at: string;
+  last_message_at: string;
+  /** Operational: about a queue, never about a person. */
+  message_count: number;
+}
+
+export interface SupportThreadDetail extends SupportThread {
+  messages: SupportMessage[];
+}
+
+export interface ProviderSupportThread extends SupportThread {
+  tenant_id: string;
+  tenant_name: string;
+  /** The first staff member who replied. Claimed by replying; there is no
+   *  separate claim action. */
+  assigned_to: string | null;
+  assigned_to_name: string | null;
+}
+
+export interface ProviderSupportThreadDetail extends ProviderSupportThread {
+  messages: SupportMessage[];
+}
+
+export interface SupportThreadPage {
+  items: SupportThread[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+}
+
+export interface ProviderSupportThreadPage {
+  items: ProviderSupportThread[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+  /** Threads waiting on ReadyPick across every customer, UNNARROWED by the
+   *  page filters: it answers how much is owed, not how much is on screen. */
+  open_total: number;
 }
 
 // ---- The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ----

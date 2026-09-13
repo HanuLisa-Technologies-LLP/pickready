@@ -32,6 +32,34 @@ class MatchingStageOut(BaseModel):
     status: str
 
 
+class ActivityLineOut(BaseModel):
+    """One AI activity sentence, rendered by `services/activity` from a typed
+    event the workflow actually reached. Never model narration, and never a
+    number the pipeline did not compute."""
+
+    operation_id: str
+    task: str
+    kind: str
+    sequence: int
+    text: str
+    #: The workflow's own statement of what it found, or "" when it had none.
+    detail: str = ""
+    #: `event` | `task_default` | `generic`. Serialised so a FALLBACK is
+    #: visible in the payload rather than reading as a real milestone.
+    source: str = "event"
+    terminal: bool = False
+
+
+class ActivityOut(BaseModel):
+    operation_id: str
+    task: str
+    label: str
+    state: str
+    line: ActivityLineOut | None = None
+    log: list[ActivityLineOut] = []
+    dropped_after_terminal: int = 0
+
+
 class MatchingTaskStatusOut(BaseModel):
     task_id: str
     state: str
@@ -43,6 +71,10 @@ class MatchingTaskStatusOut(BaseModel):
     #: Counts of rows, not ratings: no score, grade or rank is implied.
     candidate_count: int = 0
     scored_count: int = 0
+    #: What the run is doing, in one sentence, for the AI activity
+    #: indicator. OPTIONAL so an older worker mid-deploy simply reports no
+    #: activity rather than 500ing the page that polls it.
+    activity: ActivityOut | None = None
 
 
 class MatchResultOut(BaseModel):

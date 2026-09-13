@@ -186,8 +186,8 @@ Credit-ledger mutations, Razorpay webhooks, batch work, and task completion path
 - derived project evidence (`candidate_projects`), carrying evidence
   dimensions, evidence units, the AI interpretation in its own column, and the
   deletion ledger for temporary originals;
-- the compiled Company DNA artifact and the per-job binding recording which
-  version a scorecard was frozen against;
+- the append-only per-job binding recording which scorecard version was
+  frozen and when (`job_scorecard_bindings`);
 - the shared evidence ledger (`evidence_items`, `evidence_claims`,
   `evidence_claim_links`), which stores a REFERENCE to where a sentence lives
   and never the sentence;
@@ -580,12 +580,12 @@ Assessment completion deducts one credit synchronously and queues report generat
 ### 12.4 The hiring intelligence layer
 
 Five stages, each a package under `app/services/`, wired into the live path
-through `api/assessments.py`, `api/jobs.py`, `api/dashboard.py`,
-`api/company_dna.py` and `workers/tasks.py`.
+through `api/assessments.py`, `api/jobs.py`, `api/dashboard.py` and
+`workers/tasks.py`.
 
 | Stage | Package | Boundary it enforces |
 |---|---|---|
-| Bodha | `services/hiring` (SWOT, `company_dna`) | Situation classification is read back with its consequence and confirmed by a human before the session closes |
+| Bodha | `services/hiring` (SWOT) | Situation classification is read back with its consequence and confirmed by a human before the session closes |
 | Sutra | `services/hiring/scorecard`, `transformation` | Seven stages per item; `Item.is_complete` refuses at build, not later |
 | Yukti | `services/hiring/prescreen`, `services/matching` | Resume-only grading; never sees conversation content |
 | Miti | `services/miti` | Five evaluators over a frozen input; the aggregator imports no router |

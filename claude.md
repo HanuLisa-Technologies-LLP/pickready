@@ -21,6 +21,11 @@ phase sections above them are where the sharp edges are.
 | Section | What it governs |
 |---|---|
 | Permission-aware UX + occupational STEM + Job SWOT (2026-09-13) | The one read-only sentence, capability-first UI, occupational classification, the AI-drafted Job SWOT |
+| BGV and conversations (2026-09-12) | The employment declaration, the offer gate, native chat, the reply address, SES inbound |
+| The rotated credential (2026-09-11) | The database credential split, TLS on the DSN, the primary-contact carve-out, the AI Reach contact harvest |
+| Native support + runtime completions (2026-09-10) | The Support surface, the vendor sync removal, the RDS proxy refusal, W6.5, W6.6, report provenance, the golden set at 60 |
+| AI runtime upgrade (2026-09-09) | The retrieval index, the tool firewall, the action ledger, the eval OS, the sufficiency gate, AI activity |
+| Company DNA removed (2026-09-09) | Gate 1 on the Company Profile, the two-layer framework, the surviving detector |
 | The add-features release (2026-09-06) | Corporate senders + OTP, dual-mode assessment, video access, retention consents, BGV, employer pages, intelligence dashboards |
 | Background work without Celery (2026-09-05) | Dispatch, the four functions, the on-demand agent, the schedule |
 | End-to-end hiring workflow (2026-09-04) | The eight gates, the sourced stage, the final ranking, the Updates feed, job closure |
@@ -63,7 +68,7 @@ phase sections above them are where the sharp edges are.
 
 ## Current hard rules, permission-aware UX + occupational STEM + Job SWOT (2026-09-13)
 
-Migrations 0086 and 0087. Three pieces of one specification: make the
+Migrations 0096 and 0097. Three pieces of one specification: make the
 authorization model reach the whole interface, classify the OCCUPATION rather
 than the keywords, and give a job an AI-drafted SWOT the recruitment team owns.
 
@@ -120,13 +125,13 @@ Scientist, Electronics Engineer, Research Scientist, Cloud Engineer.
 - **It is three vocabularies, not a list of job titles.** A title nobody has
   seen resolves from the head noun and the domain that compose it. Do not
   "fix" a misclassification by adding the title.
-- **Migration 0086 re-ran the engine over historical jobs**, skipping any job
+- **Migration 0096 re-ran the engine over historical jobs**, skipping any job
   that is `classification_locked` (a report has been billed against its rate)
   or `classification_overridden` (a Provider admin already ruled on it).
 
 ### The Job SWOT Analysis is AI-drafted and human-owned
 
-`job_swot_analyses` (migration 0087) is a DOCUMENT. `job_swot_intakes`
+`job_swot_analyses` (migration 0097) is a DOCUMENT. `job_swot_intakes`
 (migration 0049) is the reporting authority's TRANSCRIPT and feeds Sutra. They
 are different tables on purpose: editing the document is the feature, and
 rewriting the transcript would launder the evidence the Tatva matrix is
@@ -149,6 +154,662 @@ derived from.
   deterministic SWOT is ever presented as generated output (rule 6).
 - **`swot_analysis` is the second and last member of the generative
   interactive LLM tier.** `tests/test_platform_audit.py` caps the list at two.
+
+## Current hard rules, BGV and conversations (2026-09-12)
+
+Two features, built together because one is the other's first real user: the
+BGV Agent drafts an email to a previous employer, and the employer's reply has
+to land somewhere. Migration 0095.
+
+### THE OFFER GATE IS IN `apply_transition`, AND THAT IS THE WHOLE ENFORCEMENT
+
+`hiring_pipeline.apply_transition` is the single chokepoint all six pipeline
+callers reach, and the gate sits there, after `assert_transition` and BEFORE the
+first write. A candidate who declared previous employment cannot be moved to
+`offer_extended` or `offered` until every employer they submitted is marked
+verified by a person.
+
+- **REJECTION IS NEVER BLOCKED, and a fresher is never blocked.** A gate that
+  could stop a rejection would trap somebody in a pipeline over paperwork, and a
+  fresher has no previous employer to verify: `derive_status` answers
+  `not_required` and the gate never fires.
+- **THE STATUS IS DERIVED, NEVER STORED**, like `profile_age` and
+  `posting_status`. `bgv_workflow.derive_status` is a pure function of the
+  declared background, the employer count and the per-employer statuses, so a
+  stored value can never disagree with the rows it was computed from.
+- **ONE `not_verified` DOMINATES.** Checked before anything else, including
+  before "no verifications exist yet": an employer the team has actively refused
+  is a stronger fact than an incomplete process.
+- **The screen renders the SERVER's refusal sentence verbatim**
+  (`offer_blocked_reason`). It is the exact string `apply_transition` would
+  refuse with, so the UI can never promise something the pipeline then refuses,
+  which is the specific way a gate becomes infuriating.
+
+### THE EMPLOYMENT HISTORY IS THE CANDIDATE'S, ONCE, AND IT IS FINAL
+
+Owner decision: one history, per-tenant verification. The candidate submits
+employers ONCE; each hiring tenant runs its own `bgv_verifications` records
+against that one list. `candidate_employments` is deliberately TENANT-FREE.
+
+- **Immutability is a TRIGGER, not a code path.**
+  `candidate_employment_is_final` raises on any INSERT, UPDATE or DELETE once
+  `candidates.employment_history_finalized_at` is set. A rule enforced in a
+  service is a rule the next writer of that table does not know about.
+- **The warning the candidate reads is SERVED BY THE SERVER**
+  (`SUBMISSION_WARNING`), so the sentence describing the rule and the rule
+  itself cannot drift.
+- **The HR contact's address reaches the recruiter running the verification and
+  nobody else.** It is on no list endpoint and no cross-tenant response: it is a
+  third party's personal contact detail a candidate handed over for one purpose.
+
+### THE BGV AGENT WRITES FROM A FACT BLOCK, AND GROUNDING IS CHECKED
+
+`bgv_agent.FactBlock` is a frozen dataclass with seven fields and no free-form
+escape hatch, so a prompt cannot be handed anything the candidate did not
+submit. `verify_grounding` runs inside the existing `agent_loop`, and a failure
+returns the DETERMINISTIC template with `generated_by_ai=False`, which the
+recruiter is told, because template output presented as generation is a lie
+about how the text was produced.
+
+**Nothing infers a verdict from the reply.** A person reads the employer's
+answer and presses Verified or Not verified.
+`tests/test_inbound_conversation_reply.py` asserts that an arriving reply stamps
+`responded_at` and changes no status, no `decided_by` and no `decided_at`,
+because an inferred "verified" would be an automated hiring decision wearing a
+convenience feature's clothes.
+
+### CONVERSATIONS: THE SOCKET IS A NOTIFICATION, THE DATABASE IS THE RECORD
+
+A message is written to Postgres FIRST and announced SECOND. A dropped frame, a
+sleeping background tab, a network change and a deploy that moves a connection
+to another API task are all the same event, and none of them can lose a message
+because the message was never only in flight. Every (re)connect refetches.
+
+- **`BackgroundTasks` DOES NOT GIVE YOU "AFTER THE COMMIT", AND BELIEVING IT
+  DOES IS THE TRAP.** FastAPI sends the response, and therefore runs background
+  tasks, INSIDE the dependency exit stack, so a background publish fires before
+  `get_tenant_db` commits. `realtime.publish_after_commit` hangs off
+  SQLAlchemy's `after_commit` instead, which is the one event that means what it
+  says. `tests/test_conversations_api.py` asserts the ordering from a SECOND
+  connection and is what caught it. A rolled-back request now publishes nothing
+  at all, which is the half that matters: a notification for a message that was
+  never stored would have every listening tab render one that does not exist.
+- **The room is keyed by TENANT and conversation.** Keyed on the conversation
+  alone it would be a cross-tenant broadcast waiting for an id collision, and
+  nothing would report it. The same rule every cache key already follows.
+- **The queue is BOUNDED and overflow is dropped**, which is safe ONLY because
+  the message is already in Postgres. A hub that awaited `queue.put` would let
+  one asleep background tab stall the fan-out for every other browser on the
+  instance.
+- **THE SOCKET ACCEPTS NO FRAME THAT WRITES.** It authenticates from the same
+  cookie, resolves `USE_CONVERSATIONS` live rather than trusting the token, and
+  authorises the same row. Sending is a POST, which is where idempotency, the
+  audit trail and the email bridge live; a socket that could write would be a
+  second send path with none of them.
+- **A BGV thread REFUSES a chat send**, 409 with the reason. An employer message
+  is a verification act with its own capability and its own status transition,
+  so chat must not become an unaudited way to contact a former employer.
+- **The candidate's side is a SECOND ROUTER on the candidate audience.** A
+  candidate has no tenant, so RLS by tenant cannot apply and `get_candidate_db`
+  runs in the bypass scope: every candidate handler filters by the candidate id
+  resolved from their own session. The recruiter's handlers are NOT reused with
+  a different dependency, because that would be one function with two security
+  models and the weaker one would be invisible in the code.
+- **A candidate cannot reach the BGV thread about themselves.** It carries their
+  `candidate_id`, so the lookup checks the KIND as well as the owner. Pinned by
+  a test, because "is this yours" is the obvious simplification and it would
+  hand the candidate their former employer's words about them.
+- **Idempotency is a client token the CLIENT mints.** The server cannot derive
+  it: a double click, a retry after a lost response and a reconnect that replays
+  the send all arrive as distinct requests with identical content, and a content
+  hash would refuse a candidate who legitimately wrote "yes" twice.
+
+### THE REPLY ADDRESS IS THE ROUTING, AND A SUBJECT LINE IS NOT
+
+Every verification request carries
+`Reply-To: conversations+<thread token>@<inbound domain>`. The inbound webhook
+reads the token from the ADDRESS, which is the one part of a message every mail
+system on the path reproduces verbatim. Matching on a subject loses to
+`Re: Fwd: Re:`, to a translated prefix, to a client that rewrites the subject,
+and to a recruiter forwarding the thread, and every one of those failures is
+silent.
+
+- **`INBOUND_EMAIL_DOMAIN` EMPTY IS A REAL STATE.** The deployment still sends;
+  the reply arrives in the sending mailbox rather than in the thread, and
+  `conversations.reply_address` logs that once rather than producing a thread
+  that can never receive anything.
+- **Idempotent on the sender's Message-ID.** SNS delivers AT LEAST ONCE, so a
+  redelivery is the default behaviour unless something prevents it.
+- **The inbound parser is a SECOND ZIP LAMBDA**, standard library and boto3
+  only, for the reason the ECS trigger gives: anything that can send mail to the
+  reply domain reaches it. It holds no database credential and no model key. S3
+  plus SNS rather than a direct Lambda action, because that path caps a message
+  at 256KB and a reply with a scanned letter attached is routinely larger.
+- **A SUBDOMAIN, never the apex.** Receiving mail means owning the MX record,
+  and the apex's MX belongs to whatever mailbox the company actually reads.
+  `reply_domain` validates that it carries at least three labels.
+- **ONE ACTIVE SES RECEIPT RULE SET PER REGION PER ACCOUNT.**
+  `activate_rule_set` defaults to false so an environment has to say it is the
+  one receiving, and a second environment claiming it is then a merge conflict
+  rather than an outage nobody can see.
+
+### PILOT CAN BE PLANNED OFFLINE NOW, AND COULD NOT BEFORE
+
+Three `data "aws_caller_identity"` lookups and two missing
+`offline-plan.tfvars` entries meant `infra/plan-offline.sh` stopped before it
+reached anything in that environment. The data source calls STS, and the
+planning profile runs against account 000000000000 in a region that does not
+exist. **The account id was already a required variable in every environment**,
+so this is the same fact read from the input rather than from the network, and
+`scheduler` already took it that way. Staging and production were failing on the
+same lookup inside the `lambda` module and now plan clean.
+
+**A pre-apply check that cannot run is a check nobody reads**, which is the same
+argument the impeccable gate makes about a detector that only prints warnings.
+That gate also stopped judging gitignored build output: it was failing on the
+graphify knowledge-graph viewer, generated HTML nobody wrote and nobody can fix
+without changing a third-party renderer. Asked of `git check-ignore` rather than
+hardcoded, so it cannot drift, and it excludes nothing that ships, because an
+ignored file is by definition one nobody reviews in a diff.
+
+### The candidate nav is FIVE entries now
+
+Messages joins New Jobs, Applied Jobs, Updates and My Profile, which AMENDS the
+2026-07-27 rule that the nav is exactly three. That rule was written when every
+word from a company arrived by email. A candidate can now be WRITTEN TO inside
+the product, and a reply box they cannot find is an outbox rather than a
+conversation.
+
+## Current hard rules, the rotated credential (2026-09-11)
+
+The product was DOWN for part of this day and nothing had been deployed. It is
+the most useful outage this project has had, because the cause was a sentence
+in this repository that had described the right design since the day it was
+written, and had never been true.
+
+### THE APPLICATION'S DATABASE CREDENTIAL IS ITS OWN, AND NOTHING ELSE ROTATES IT
+
+`infra/modules/rds`'s header has always read "THE APPLICATION DOES NOT USE THE
+MASTER CREDENTIAL. `DATABASE_URL` is a separate secret holding a
+least-privileged application role; the master exists to create that role and to
+run migrations." **That role had never been created.** `DATABASE_URL` was
+hand-composed with the RDS master username and a COPY of its password, and
+`manage_master_user_password = true` hands that password to Secrets Manager to
+rotate on a schedule. Seven days after the pilot instance was created, AWS
+rotated it. Every connection in the product failed at once: the API, `/health`,
+and therefore sign-in.
+
+- **A copy of a credential something else rotates is an outage with a date on
+  it.** Not a risk, a schedule. The only durable fix is to stop holding the
+  copy, and `pickready_app` already existed for exactly this: migration 0001
+  created it and every migration since has maintained its grants. It was
+  NOLOGIN, which is the one thing missing.
+  `app.scripts.provision_app_db_role` gives it LOGIN and a password ReadyPick
+  owns, and `scripts/rotate-app-db-credential.sh` runs it again to rotate. The
+  password is minted INSIDE the task and written straight to Secrets Manager,
+  so it is never an argument, never in a RunTask call, never in CloudTrail and
+  never in a shell history.
+- **It PROVES the new credential before it writes the secret.** Opening a second
+  connection with it and reading through the policies, then writing. The other
+  order would end this outage by causing it.
+- **NOINHERIT, and the migration job is the only thing that escalates.** The
+  login role is a member of the object owner, so `alembic/env.py` can
+  `SET ROLE` for DDL; NOINHERIT means an ordinary session holds none of the
+  owner's privileges until it asks. `POSTGRES_MIGRATION_ROLE` is set on the
+  `migrate` container and on nothing that serves a request, and
+  `test_app_db_credential.py` sweeps every environment's Terraform to keep it
+  that way. Two consequences fall out and both are improvements: the app can no
+  longer run DDL at all, and `REVOKE UPDATE, DELETE ON audit_log` finally binds,
+  because it never bound while the app connected as the owner.
+- **`PutSecretValue` is a grant, and it is one service over one secret.**
+  `service_secret_writers` in `infra/modules/secrets`, enumerated like the read
+  map, with a precondition that refuses a writer naming a service that has no
+  read entry -- the policies are built with `for_each = var.service_secrets`, so
+  that entry would otherwise be dropped in silence and the rotation would fail
+  after it had already changed the password.
+
+### THE DSN CARRIES `ssl=require`, AND THE REASON IS THE ERROR MESSAGE
+
+asyncpg's default `prefer` mode retries a refused connection WITHOUT TLS. So the
+traceback said
+
+    no pg_hba.conf entry for host "10.0.11.22", user "readypick_admin",
+    database "readypick", no encryption
+
+which reads as a network or TLS fault and sent the first hour of the
+investigation in the wrong direction. The database's own log had the answer one
+line earlier: `password authentication failed`, on a connection that had matched
+the `hostssl` rule perfectly. **A fallback that changes the error message is
+worse than no fallback**, and this one also meant the product was willing to
+carry a tenant's data across the VPC in the clear. `?ssl=require` removes both.
+`_compose_dsn` carries the query string across verbatim so a rotation cannot
+drop it, and a test asserts that.
+
+- **READ THE DATABASE'S LOG, NOT ONLY THE APPLICATION'S.** `log_connections = 1`
+  is on in the pilot parameter group and it is what settled this in one minute
+  after an hour of reading tracebacks.
+
+### The Provider may set a customer's primary contact. One route, and it is named
+
+Read-only-by-absence stands. The carve-out is `PUT
+/provider/customers/{id}/primary-contact` and its justification is that the
+primary contact is not the customer's own data in the sense the rule protects:
+it is the DOOR into the tenant. Onboarding collected the address once, so a typo,
+an expired invitation, or a tenant seeded without one left a customer
+permanently unreachable and no route anywhere could repair it.
+
+- **`test_provider_portal.PROVIDER_WRITES` now pins the EXACT set of writes.**
+  An inequality only forbids the shapes somebody thought of; the exact set
+  makes a second carve-out a test change with a justification attached.
+- **Changing a bound account's email is a REBIND, never a field write.** Auth
+  resolves an identity by `firebase_uid` OR email, so an account that kept its
+  uid while its email moved would leave the ORIGINAL person signed in under the
+  NEW address. The uid is cleared, the row returns to `invited`, the prior
+  pending invite is revoked, a fresh one is sent, and `rebound` is both audited
+  and serialized so the screen can say what happened before it happens. The
+  same applies to a BD account: `PATCH /admin/bd-users/{id}` now accepts an
+  email and rebinds identically.
+
+### AI Reach: a published mailbox is READ, never inferred
+
+Every card reported no contact, for every company. Two defects wore one symptom,
+which is why "it cannot find a single usual company site" was both true and not
+about finding sites.
+
+- **The evaluator is forbidden from inferring a contact, and a search snippet
+  almost never prints one.** So the model correctly reported nothing, forever.
+  `web_research.harvest_contacts` re-reads pages ALREADY FETCHED and can only
+  find what a page actually published, which meets the never-infer bar by
+  construction instead of by instruction. Three guards: the address's
+  registrable domain must be the company's own (a job board's mailbox is never
+  attributed to the employer it lists), the local part must be on a role-mailbox
+  allowlist (a named person's address on a page is not a hiring contact, and
+  publishing it would be scraping), and `contact_source_url` is always the page
+  it appeared on. An evaluator-verified contact is never overwritten.
+- **The official-site link existed the whole time, in `text-brand-700` on a
+  dark surface.** Dark navy on dark navy. A link nobody can see and a link that
+  does not exist are the same bug report, and no amount of work on the retrieval
+  half would have fixed it.
+
+## Current hard rules, native support and the runtime completions (2026-09-10)
+
+Owner decisions this day: the Intercom integration is DELETED and replaced by
+an in-product Support surface; EEO reporting and impact ratios are REFUSED
+rather than deferred; the pilot RDS proxy is NOT built, with the vendor's
+pinning documentation as the reason. Migrations 0093 and 0094.
+
+- **Support is native, and the candidate boundary moved from a payload
+  allowlist to a schema.** `support_threads` and `support_messages` (0093),
+  `services/support` owns the FSM, `api/support.py` carries both routers.
+  The thread status is DERIVED from who wrote (`status_after_message` takes
+  the author's side and nothing else), so "waiting on ReadyPick" can never
+  mean "threads somebody remembered to mark". `open | awaiting_customer |
+  resolved`, named for who owes the next move; `resolved` reopens on a
+  customer reply. `author_side` is denormalised at write time so a later role
+  change cannot rewrite who said what. RLS is plain tenant equality in BOTH
+  directions, and the message row carries its own tenant_id because a policy
+  that joins to the parent evaluates against rows the session cannot see.
+  No candidate identifier, score, grade or evaluation detail may reach a
+  support message; enforced structurally (the write path imports no candidate
+  model, neither table has a candidate-shaped column, the notification email
+  carries no message body), swept by `test_support_candidate_boundary.py`.
+  `tests/test_intercom_removed.py` keeps the vendor gone, absolutely: live
+  source does not name it, per the c718694 precedent.
+- **`handle_support_threads` is a PLATFORM capability outside
+  `DEFAULT_PERMISSION_MATRIX`,** seeded as a global row by 0093, because the
+  matrix is copied into per-tenant rows for every new customer and the role
+  holding it has no tenant. It is the notification ROUTING list, not a route
+  gate; the Provider routes stay behind `get_superadmin_db`.
+  `open_support_threads` sits in the matrix AND in the interview_manager
+  entry, and the second half is load-bearing: `seed_dev_data` RECONCILES
+  global rows to the matrix, so a grant living only in a migration is flipped
+  to False the first time the dev seed runs. The full suite caught exactly
+  that; a targeted run structurally could not have.
+- **The pilot RDS proxy was evaluated against the vendor's documentation and
+  refused.** RDS Proxy for PostgreSQL pins a session on any SET command, on
+  `set_config()`, and on named prepared statements; only transaction-level
+  advisory locks are exempt. This application issues `SET LOCAL ROLE` in
+  every tenant transaction, a session-level `set_config` on every worker
+  connection, and asyncpg caches prepared statements, so effectively every
+  session pins: no multiplexing, and the "instance connections stay flat"
+  acceptance test is unpassable by documented behaviour. The instance went
+  `db.t4g.micro` to `db.t4g.medium` instead (pgvector HNSW working memory,
+  and the max_connections ceiling scales with instance memory), the storage
+  CEILING to 200GB with the floor kept at 50, and `multi_az = false` now
+  says in place that it must flip before any real tenant's data arrives.
+- **W6.5 lives at ACQUISITION, not in the sufficiency gates.**
+  `rag/acquisition.acquire`: one broadened retry (section filter dropped,
+  pool doubled and capped), bounded by STRUCTURE (two attempts exist in
+  straight-line code, no loop) and by the predictive deadline rule. Scope is
+  never broadened: tenant, source type, source ids and version pin stay
+  exactly as asked, because a widened scope is an isolation bug wearing a
+  recall improvement's clothes. The gates' EMPTY_STATE_COPY contract is
+  untouched and the module imports neither the gates nor anything that
+  scores.
+- **W6.6: the ledger's `contradicts` stance finally has a writer.** The read
+  side existed end to end (CLAIM_CONTRADICTED grades MATERIAL and routes to
+  `needs_human_review`); nothing had ever written the stance, so "I have not
+  used Kafka" was filed as SUPPORT for the Kafka claim.
+  `evidence/negative.py` detects first-person disclaimers deterministically,
+  a denial's reach ends at the first clause boundary, and the stance is
+  decided per answer inside the one existing recording loop. Negative
+  evidence is NOT absent evidence: non-answers never reach the loop and keep
+  costing confidence, not score. No flag auto-rejects, by import graph.
+- **Reports carry `model_id` and `prompt_version` (0094).** Written only for
+  a model-backed run, resolved at write time; a deterministic-fallback report
+  carries NULL for both because naming a model would claim work that never
+  happened, and old rows are never backfilled for the same reason.
+  `prompt_version` states its own limit: the remark system prompt is inline
+  in `bounded_remark` and versioned by the image, not by the registry labels
+  the column carries.
+- **EEO reporting and impact ratios are REFUSED, not deferred** (owner,
+  2026-09-10). No jurisdiction was ever named and the customers are Indian
+  entities, so a US-schema EEO surface is wrong work; impact ratios require
+  collecting exactly the protected-attribute data `hiring/layers.INVARIANTS`
+  refuses, and the invariant stands. Recorded in AI_RUNTIME.md as published
+  positions.
+
+## Current hard rules, the AI runtime upgrade (2026-09-09)
+
+`ai-upgrade-spec-doc.md` (RPN-AI-UP-001) is the brief, at precedence rank 3a.
+[docs/verification/AI_UPGRADE_BASELINE.md](docs/verification/AI_UPGRADE_BASELINE.md)
+is the measurement everything in it is scored against, and it is a
+MEASUREMENT: it records what was true on the day it was taken and is never
+edited to match new behaviour.
+
+### The brief's own audit was wrong, and that is the most useful thing in it
+
+Section 1.1 concluded from a grep that 19,000 lines of Part A were unreachable,
+and scoped a wiring workstream on it. **They were already wired.** That grep
+cannot match an import statement at all and never looked past one hop. Building
+W1 as written would have produced a second scoring path.
+
+**So `pytest tests/test_ai_reachability.py` is the check, not a grep.** It walks
+the import graph transitively from `app/api` and `app/workers`, follows
+function-level imports, and fails in BOTH directions. It separates IMPORTABLE
+from EXERCISED, and `REQUIRED_CALLERS` asserts that a function which must have
+a caller still has one -- the assertion that would have caught `index_document`
+sitting uncalled for its entire existence.
+
+### Retrieval is real now, and four defects found it
+
+`context_chunks` had never held a row in any environment.
+`pickready.index_document` (Route.LAMBDA) is dispatched from a parsed resume, a
+published JD and a completed assessment; `pickready.reconcile_context_index`
+sweeps hourly and asks the TABLE with a NOT EXISTS, never a timestamp. Verified
+in pilot: the sweep queued 1, six chunks were written and embedded, the next
+sweep queued 0.
+
+All four were invisible to a local test, and each is worth remembering as a
+CLASS rather than as an instance:
+
+- **A column name written from inference.** `assessment_conversations.link_id`
+  does not exist; it is `job_candidate_link_id`.
+- **Two definitions of "has text" that disagreed.** The sweep asked SQL
+  `btrim(col)`, the loader asked Python `.strip()`, and `btrim` with no second
+  argument strips SPACES ONLY. A JD holding two newlines was queued forever and
+  no-opped forever, with a bill as the only symptom. The test now lives in SQL
+  once and the loaders ASK for it.
+- **A dangling tenant reference is a poison pill.** `profiles.source_tenant_id`
+  is a plain nullable UUID with NO foreign key, because a profile is shared
+  across tenants via the databank; `context_chunks.tenant_id` HAS one. Checking
+  only for NULL meant that one document burned three attempts every hour,
+  forever. Both `pending` and `load` now require the tenant to EXIST.
+- **A Lambda could not invoke a Lambda.** `reconcile_context_index` is the
+  first task in the product that dispatches Route.LAMBDA work from Route.LAMBDA
+  work, and one function serves every short task, so it is the worker invoking
+  ITSELF. Every earlier sweep dispatched to Route.ECS, a different grant. Not a
+  regression: a capability the architecture had never exercised.
+  `invokable_function_keys` names functions by KEY, never by ARN, because a
+  `for_each` keyed on an ARN cannot be planned.
+
+**`dispatch` RAISING rather than swallowing is the only reason any of it was
+visible.** A dispatcher that degraded would have reported a queue it never
+wrote to, above an index that stayed empty.
+
+### The new hard rules, one line each
+
+- **A degradation is RECORDED, never silent.** When the cross-encoder is
+  unavailable, retrieval falls back to the deterministic lexical pass and the
+  run records `reranker: "lexical", degraded: true`. Pretending a cross-encoder
+  ran is the same failure as presenting template output as generation.
+- **The sufficiency signal is a ranking and acquisition prior ONLY.** It may
+  never lower a score, move a band, or reach the aggregator.
+  `tests/test_retrieval_scoring_isolation.py` asserts the import graph the way
+  the proctoring isolation test does.
+- **EVERY cache key contains the tenant id.** This is the most common place
+  tenant isolation silently disappears, and it disappears when somebody adds a
+  cache later for a performance fix. `tests/test_cache_tenant_keying.py` greps
+  every key builder and fails on one that lacks it.
+- **The judge is OUTSIDE the closed model mapping, structurally.** The jury
+  lives in `app/evaluation/judges/`, never `app/services/`;
+  `tests/test_judge_isolation.py` asserts by AST that nothing under
+  `app/services/` imports `app/evaluation/`, and that no route or worker can
+  reach the judges. `MODEL_FOR_TASK` stays a closed mapping onto two ids, and
+  the grep exemption for `app/evaluation/` carries its reason inside the test.
+- **A judge result reports MCC, Cohen's kappa, the confusion matrix and the
+  protocol, or it is not reported.** Raw agreement overstates chance-corrected
+  agreement by a mean of 38.6 points. An abstaining judge produces an INTERVAL
+  or `unavailable`, never 0.0.
+- **UNKNOWN is a third outcome, not a rounding of failure.** A timeout on a
+  side-effecting call means the request MAY have succeeded. Retrying a FAILED
+  action is correct; retrying an UNKNOWN one is a duplicate side effect, and it
+  is resolved by READING BACK. `agent_actions` has no UNKNOWN to RUNNING edge,
+  and that absence is the enforcement.
+- **An idempotency key comes from stable logical inputs**, never a timestamp
+  and never a per-attempt UUID, the same shape the Razorpay path already uses.
+- **An `agent_learnings` row is scoped to ONE tenant.** A learning derived from
+  candidate-authored text in tenant A must not influence grading in tenant B,
+  and per-tenant scoping is enforceable structurally where an approval step is
+  a process somebody performs under deadline.
+- **A hidden-text hit is PROVENANCE, never a rejection.** A resume carrying
+  invisible instructions is signal: it is recorded as a limitation, the model
+  sees the normalised text, and a human decides. Roughly 1% of real resumes
+  carry an injection attempt, so this is not hypothetical.
+- **Embeddings are PII at rest.** Published inversion work recovers 50 to 70%
+  of input words, so an erasure that deletes rows and leaves vectors leaves the
+  resume recoverable. `pickready.cascade_erasure` reaches vectors and caches.
+- **No generation prompt may let the model describe its own confidence,
+  sourcing or sufficiency in output text.** That is decided deterministically
+  BEFORE the prompt runs (`services/generation_sufficiency`), per field, and an
+  insufficient verdict SKIPS generation and returns a fixed key from
+  `EMPTY_STATE_COPY` -- never freeform text. Every generation prompt carries a
+  good, a fenced bad and an edge-case example. An empty state states a fact
+  about the RECORD; meta-commentary states the MODEL's uncertainty.
+- **AI activity status is derived from events the workflow actually reached**,
+  rendered from a fixed catalogue in `services/activity`, never from a timer
+  and never from an extra model call. No chain of thought, no invented count,
+  and a failure terminates the line rather than leaving it spinning.
+- **ONE SCORING RUN PER APPLICATION, AND THE LOCK IS ACROSS PROCESSES.**
+  `pg_advisory_lock`, `FOR UPDATE` and `with_for_update` appeared NOWHERE in
+  this tree before 2026-09-09: every concurrency guarantee rested on a UNIQUE
+  constraint refusing the second write, or on nothing. `services/locks` is the
+  one implementation. `run_functional_assessment` takes
+  `pg_try_advisory_xact_lock` BEFORE the credit check and the model chain, and
+  a second run RETURNS rather than waiting -- the first run is doing exactly
+  what the second came to do. `uq_functional_report_link` is not a substitute:
+  it fires at COMMIT, after both runs have paid for Miti's five evaluators and
+  Siddhi's synthesis, and the loser's retry then finds the row EXISTS and
+  rewrites a report that may already have been delivered, which is the
+  immutability rule failing without a sound. `services/coalescing` is not a
+  substitute either and says so itself: it is in-process, and `Route.ECS`
+  gives every dispatch its own container.
+- **The lock key comes from BLAKE2b, never `hash()`.** Python salts `hash()`
+  per process, so two Fargate containers would compute different keys, each
+  would take a lock nobody held, and both would score.
+  `test_the_key_is_stable_across_processes` runs a SUBPROCESS with a different
+  `PYTHONHASHSEED`, because an in-process assertion cannot see this at all.
+- **`release_held_assessments` is SCHEDULED now, and scheduling it was unsafe
+  until the lock existed.** It was registered and dispatched only from the two
+  credit-grant call sites, so a report lost to a dispatch that never arrived or
+  a container killed mid-scoring stayed lost, for a candidate who had done the
+  work and a customer who had been charged. With no tenant argument the sweep
+  also matches conversations that finished seconds ago and are being scored
+  right now: without the lock it would have MANUFACTURED the duplicate it
+  exists to repair.
+- ~~**Intercom holds CUSTOMER data and never candidate data, by
+  construction.**~~ **SUPERSEDED 2026-09-10, owner decision: THE INTERCOM
+  INTEGRATION IS DELETED**, not finished and not disabled.
+  `services/intercom.py`, its test, the `pickready.sync_intercom_companies`
+  task, its schedule entry, the EventBridge rule in all three environments and
+  `INTERCOM_ACCESS_TOKEN` are gone; `tests/test_intercom_removed.py` sweeps the
+  tree and fails on a hit. **THE RULE IT CARRIED SURVIVES INTACT AND NOW BINDS
+  `services/support`**, the native in-product replacement: a support thread is
+  about the CUSTOMER, and no candidate identifier, score, grade or evaluation
+  detail may ever reach `support_messages`. What changed is that the boundary
+  is now a SCHEMA boundary rather than a vendor payload allowlist, which is
+  strictly stronger: there is no outbound projection left to widen. The reason
+  the allowlist existed is the reason the sweep in
+  `tests/test_support_candidate_boundary.py` exists, and it is the same reason:
+  the failure mode of every support integration ever written is that somebody
+  helpfully pastes the record they were looking at into the ticket. See the
+  2026-09-10 section for what replaced it.
+- **A URL is an address, not a sentence about a candidate.**
+  `contains_forbidden_number` masks URL-like tokens before its patterns run.
+  Before that fix it read `.../assessments/d7be...` as an assessment word beside
+  a number, so `lifecycle_email` rejected EVERY AI-drafted invitation and
+  reminder, and both went out from the deterministic template with
+  `generated_by_ai=False`, silently, on every send.
+
+### What is NOT proven, and must not be described as if it were
+
+- ~~**No live rerank call has ever been made.**~~ **SUPERSEDED 2026-09-09.**
+  `rerank-2.5` IS real, resolved against the endpoint and then exercised
+  through the shipped module, so the SDK's real response shape is what
+  `_voyage_order` reads. Over four chunks whose FUSED order put an irrelevant
+  retail chunk first at 0.9, the cross-encoder returned both Kafka chunks
+  (0.5 and 0.4) above it, and the run recorded `reranker="voyage",
+  degraded=False`; blanking the credential recorded `reranker="lexical",
+  degraded=True, reason="credential_not_configured"`. Evidence in
+  `VERIFICATION_RESULTS.md`. **`VOYAGE_RERANK_2_5` holds the same Voyage
+  ACCOUNT key as `VOYAGE_CONTEXT_4`** -- one account serves both endpoints --
+  and the two names stay separate because a credential is named after the
+  model it unlocks, so an absent key names the missing capability rather than
+  a vendor. **The context prefix is still unproven**: that prompt has never
+  been sent to Luna.
+- ~~**No Gemini credential exists**~~ ~~**W7.2 is still not measured**~~
+  **SUPERSEDED 2026-09-09. W7.2 IS MEASURED, ON GROQ.** Gemini's free tier
+  exhausted its daily allowance at a third of 600 calls; the Groq keys already
+  in `.env` completed the run. Six arms, five cases, twenty calls each,
+  `usable_share` 1.00 throughout. Worst pooled self-disagreement 0.0300
+  (`gpt-oss-120b` unseeded), worst single case 0.150.
+  **A SEED IS NOT DETERMINISM**: it took `gpt-oss-120b` from 0.0300 to 0.0000
+  and left `gpt-oss-20b` at 0.0100, so reproducibility rests on REPEATS WITH
+  REPORTED DISPERSION, never a seed alone. **All dispersion sat at band
+  boundaries**; every obvious case was 20 for 20 on every model, so a probe of
+  easy cases would have reported 0.0000 and calibrated the gate on the wrong
+  distribution.
+  This unblocked W8: `app/evaluation/release_gate.py` derives
+  `NOISE_BAND = 0.03 x 3 = 0.09` from the measurement rather than guessing it,
+  and **UNAVAILABLE IS NOT A PASS** -- with the human-labelled sets empty the
+  gate returns `releasable=False`, because a metric that could not be computed
+  must block or a broken harness releases everything while showing green.
+  The jury itself is wired and proven end to end (MCC 0.627, kappa 0.556) over
+  SYNTHETIC cases that live in the probe script and never in `datasets/`.
+  Evidence in `VERIFICATION_RESULTS.md`.
+- **The judge vendor is Groq, and that does not reopen the product mapping.**
+  spec-doc5 deleted Groq as a PRODUCT vendor and that stands: `MODEL_FOR_TASK`
+  is still closed onto `gpt-5.6-terra` and `gpt-5.6-luna` with no fallback
+  chain. A JUDGE has the opposite requirement, because a model scoring its own
+  family's output is worth roughly +10% to +25% in win rate. Two of the three
+  jurors share a publisher with the product's models and that is a real
+  weakness of the panel, recorded rather than glossed: `qwen/qwen3.8-27b` is
+  the only fully independent leg.
+- **Retrieval QUALITY is unmeasured.** ~~The golden retrieval set is 24
+  hand-authored cases against a floor of 300~~ **AMENDED 2026-09-10: 60 cases
+  now, version 2026.Q3.2, Q3.1 frozen.** Still 0% production sample, 0 of 60
+  human verified, and the shipped run is a `reference_fixture` rather than a
+  `recorded` one, so it is explicitly not gate-eligible for quality. What DOES
+  gate is the harness self check.
+- **The only deployed environment holds no candidate data.** Three demo
+  tenants, thirty jobs, and zero candidates, profiles, applications, reports,
+  evaluations and matrices. Every acceptance criterion phrased against
+  production volume needs a seeded worked example rather than traffic, and that
+  substitution must stay visible rather than implied.
+
+
+## Current hard rules, Company DNA removed (2026-09-09)
+
+Owner decision. The Company DNA questionnaire is GONE and the **Company
+Profile** replaces it. Five modules, four frontend files, six test modules, one
+YAML data file and Runbook Part IV plus Appendix A were deleted; migration 0088
+drops the tables. **A client must not be able to tell it ever existed.**
+`tests/test_company_dna_removed.py` sweeps `app/`, `tests/` and `scripts/` for
+the name and fails on a hit, so this is enforced over the tree rather than at a
+call site.
+
+### Gate 1 now asks the Company Profile, and it is the same shape
+
+`hiring/company_requirements.creation_blocked` still runs at the top of
+`POST /jobs` and still returns a MESSAGE or None, so no caller can invent its
+own wording. What changed is the table: it reads `companies.about_company`,
+stripped.
+
+- **`about_company` only.** Work Life and Benefits are fields a company may
+  legitimately leave empty; refusing job creation over a section whose absence
+  costs nothing downstream is a gate nobody could defend.
+- **Whitespace is not content.** A profile holding three spaces would seed a
+  job's About section with three spaces.
+- **Still the TABLE, never a stamp**, and still at CREATE and not at publish. A
+  job created before the client wrote their profile stays created.
+
+### The three-layer framework is now TWO layers, and nothing pretends otherwise
+
+Layer 2 was the compiled Company DNA artifact. It is gone, so a weight is
+`baseline (L1) x situation (L3) x role (L3)` and `Weight` no longer carries a
+`company` term. `transformation.derive_threshold(category)` takes the category
+alone. `scorecard._layer2` and `_candidates_from_layer2` are DELETED, which
+removes a refusal as well as a term: a tenant with no artifact could not freeze
+a matrix at all, and now can.
+
+- **`layers.py` is UNCHANGED and `LAYER_COMPANY` stays.** It is the Runbook's
+  own bounds and precedence engine (3.5, 11.2, 11.4), its rows are DATA pinned
+  by `test_runbook_parity`, and 11.2's bounds table is cited by
+  `dimensions.yaml`. Gutting the middle layer would be a hiring-mechanic change
+  this removal does not authorise. What it has today is no live supplier, and
+  `test_hiring_layers` asserts the `evidence_threshold` bound stays ASYMMETRIC
+  for exactly that reason: an asymmetry with no caller is the one most likely
+  to be "simplified" by somebody who cannot see what it was protecting.
+
+### Two things survived deliberately, and both would have been easy to lose
+
+- **`services/hiring/observable.py`.** `is_observable`, `rejection_message` and
+  `prohibited_in` were defined inside the instrument and are not Company DNA
+  concepts: one is Runbook 18.5 rule 3's bar for a SWOT requirement, the other
+  is 12.3. `swot_quality` holds a hiring manager to them and `scorecard` holds
+  the MODEL that names a competency to the same bar, so the two cannot come
+  apart. Moved byte-for-byte; `tests/test_observable_detector.py` is now the
+  one place the behaviour is pinned, in both directions -- "Must hold a valid
+  CA licence" is not a protected-attribute disqualifier.
+- **`job_company_dna_bindings` became `job_scorecard_bindings`, rows intact.**
+  It was never only about Company DNA: it is the append-only record of WHEN a
+  job's scorecard was frozen and at what version, and
+  `orchestration/versioning.resolve_for_application` reads it to answer "what
+  was this job built on when I applied" for every candidate already assessed.
+  Dropping it would delete that answer. Renamed with `ALTER TABLE ... RENAME`
+  rather than left carrying a dead feature's name, and its two `company_dna_*`
+  columns dropped BEFORE the table they referenced.
+
+### The Runbook is v1.4, and section numbers were NOT renumbered
+
+Part IV (15, 16, 17) and Appendix A are removed in full; 61's SOP-01 is
+rewritten around the Company Profile. **15 to 17 are absent rather than
+reused**, because `runbook_data/` carries 103 citations by section number and
+renumbering would repoint every one of them silently. The YAML mirror lost
+`company_dna_instrument.yaml` and one duplicate rule in `disqualifiers.yaml`
+(18.5 already carried it, cited correctly), and every meta moved to 1.4 in the
+same change -- `test_runbook_parity` compares the two directions and would have
+failed either half alone.
+
+### Two names that look removable and are not
+
+- **`dna` stays in `provenance.CORRELATION_KINDS`** with no issuer. Traces and
+  audit rows written before today carry `dna-<hex>` ids, and dropping the kind
+  would make `is_correlation_id` answer False for a stored value that is
+  perfectly well formed -- a reader silently deciding history is corrupt.
+- **`docs/history/` and `docs/operations/TEST_BASELINE.md` still name it.**
+  Both are dated provenance. They record what was true when they were written
+  and are not updated to match current behaviour.
 
 
 ## Current hard rules, the add-features release (2026-09-06)
@@ -709,13 +1370,14 @@ items 9 to 20 and its seven-module Terraform list.
 
 ### THE THREE MISSING DOCUMENTS ALL EXIST NOW. Read them, do not re-derive them.
 
-- **`docs/product/Readypick Hiring Philosophy.md`** (RPN-PHIL-001, now **v1.1**).
+- **`docs/product/Readypick Hiring Philosophy.md`** (RPN-PHIL-001, now **v1.4**
+  -- this line read v1.1 and was stale for two releases).
   It sat at the repository root until the 2026-09-01 documentation
   consolidation. Note the filename uses SPACES; every document writes it with
-  underscores. Three call sites resolve this path on disk, so moving it again
-  means changing them: `services/hiring/dna_compilation.RUNBOOK_MARKDOWN`,
-  `tests/test_runbook_parity.RUNBOOK_GLOB` and
-  `tests/test_runbook_reconciliation.RUNBOOK_PATH`. It was absent for the whole
+  underscores. TWO call sites resolve this path on disk (the third,
+  `dna_compilation.RUNBOOK_MARKDOWN`, went with Company DNA on 2026-09-09), so
+  moving it again means changing them: `tests/test_runbook_parity.RUNBOOK_GLOB`
+  and `tests/test_runbook_reconciliation.RUNBOOK_PATH`. It was absent for the whole
   of spec-doc5, which is why nine sites carried guesses. It is authoritative
   for evaluation mechanics.
 - **`docs/spec/RBAC_SPECIFICATION.md`** is **precedence rank 1**, above the
@@ -819,17 +1481,48 @@ route or worker imported. **spec-doc6 D2's "gate G1 already blocks
 evaluation... Use it" was therefore false**, and anything written against it was
 relying on nothing.
 
-That grep now returns hits in `api/assessments.py`, `api/jobs.py`,
-`api/dashboard.py`, `api/company_dna.py` and `workers/tasks.py`. Job setup runs
-Bodha's SWOT and Sutra's seven stages and freezes a matrix behind G1; Yukti
-grades a resume on the evidence model and the ontology; Miti's five isolated
-evaluators score live with a model-free aggregator; Siddhi composes the PRISM
-report through a citation chokepoint with no bypass parameter. The old
-single-pass generators are DELETED, not flagged off.
+Part A IS live now. Job setup runs Bodha's SWOT and Sutra's seven stages and
+freezes a matrix behind G1; Yukti grades a resume on the evidence model and the
+ontology; Miti's five isolated evaluators score live with a model-free
+aggregator; Siddhi composes the PRISM report through a citation chokepoint with
+no bypass parameter. The old single-pass generators are DELETED, not flagged
+off.
 
-**Keep that grep as the check.** It is the cheapest honest answer to "is the
-framework actually reachable", and it is the one that was quietly false for a
-whole phase while every module was green in isolation.
+~~**Keep that grep as the check.**~~ **SUPERSEDED 2026-09-09, and the
+supersession is the interesting part.** This paragraph used to read "that grep
+now returns hits in `api/assessments.py`, `api/jobs.py`, `api/dashboard.py`,
+`api/company_dna.py` and `workers/tasks.py`". **Run it today and it returns two
+hits, both comments in `workers/tasks.py`** -- and Part A is live anyway. The
+sentence was wrong about the METHOD while being right about the SUBSTANCE, and
+both halves of that matter:
+
+- **The grep never could have worked.** `hiring\.` does not match `from
+  app.services.hiring import scorecard`, because there is no dot after the
+  package name. It matches attribute access like `hiring.scorecard.freeze`,
+  which is what a COMMENT tends to contain and what an import statement does
+  not. The check this file called "the cheapest honest answer" was measuring
+  prose.
+- **And it only ever looked one hop deep.** Miti and Siddhi are reached at
+  depth two, through `services/functional_assessment`, and `from
+  app.services.miti import live` is written INSIDE `synthesis_node` on purpose,
+  to break a real import cycle. Nothing that reads module-level imports in two
+  directories can see either fact.
+
+RPN-AI-UP-001 section 1.1 ran exactly this grep, got the two comment hits, and
+concluded that 19,000 lines of Part A were unreachable and needed wiring. They
+were already wired. **A bad detector does not fail safe: it manufactured a
+phantom workstream, and the next thing built on top of it would have been a
+second scoring path.**
+
+**The check is now `backend/tests/test_ai_reachability.py`**, which walks the
+real import graph transitively from every module under `app/api` and
+`app/workers`, follows function-level imports, and fails in BOTH directions --
+when a package that is supposed to be live loses its last route, and when a
+package recorded as dead quietly acquires one. It also separates *importable*
+from *exercised*, because `services/rag` is importable from a route and has
+never run: `index_document` has no caller, and `context_chunks` held zero rows
+in pilot on 2026-09-09. The evidence is in
+[docs/verification/AI_UPGRADE_BASELINE.md](docs/verification/AI_UPGRADE_BASELINE.md).
 
 ### A test-isolation trap that hid nineteen failures
 
@@ -1175,8 +1868,9 @@ exemptions. Anthropic is REMOVED, not kept as a fallback, and
   integrity" and modifies no weight), and observable-evidence questions in
   section 3 that REJECT an adjective and ask again. "ownership mindset" is
   refused; "has taken a project from an unclear brief to a shipped outcome" is
-  accepted. One detector, `company_dna.is_observable`, used by both the DNA
-  instrument and the SWOT quality rules -- two copies would drift invisibly.
+  accepted. One detector, now `observable.is_observable`, used by the SWOT
+  quality rules and by Sutra -- two copies would drift invisibly. The DNA half
+  of Bodha's dual mandate was withdrawn on 2026-09-09; the detector was not.
 - **A disqualifier is matched on WORD BOUNDARIES and includes numeric age
   bars.** The first version matched substrings and refused "Must hold a valid CA
   licence" because "hold" contains "old", while accepting "No candidates over
@@ -2515,15 +3209,28 @@ change actually needs.
 | A proctoring threshold | `core/config.py` (`proctoring_*`) | It is served to the browser from `services/proctoring/config.py`; no literal in the pipeline |
 | A proctoring event type | `services/proctoring/catalog.py` | Its path (A, B, C), its group, its phrasing in `phrasing.py`; internal identifiers never reach a recruiter |
 | A question format | `services/assessment_formats/types.py` | The payload model, the answer model, `candidate_view`, the migration CHECK, the frontend component behind the one dispatcher |
+| A retrieval change | `services/rag/` | `tests/test_retrieval_tenant_recall.py` measures RECALL against a known set, never "rows came back"; a degraded reranker is RECORDED |
+| A judge or eval change | `app/evaluation/` ONLY | Never `app/services/`; `tests/test_judge_isolation.py` asserts it by AST, and the judge reports MCC, kappa and its protocol or reports nothing |
+| A tool capability | `services/tools/permissions.py` + `policy.py` | Risk class stays a Python constant; only tenant approval is data; the refusal runs BEFORE the handler |
+| An agent action with a side effect | `services/agent_actions/` | A ledger row BEFORE the call, an idempotency key from stable logical inputs, and UNKNOWN resolved by reading back |
+| A generation prompt | `app/prompts/*.txt` + `services/generation_sufficiency.py` | Sufficiency is decided deterministically FIRST; the prompt carries good, bad and edge-case examples; bump `# version:` |
+| An AI activity message | `services/activity/phrasing.py` | A fixed catalogue keyed by (task, event), never a timer, never a number the workflow did not compute |
 
 ### Before you claim it works
 
 - A green pipeline means the service answers HTTP. Verify against the thing a
   user touches: a row count, an actual API response, a grep of the DEPLOYED
   image. Never against the source tree.
-- `grep -rn "hiring\.\|miti\.\|siddhi\." backend/app/api backend/app/workers`
-  is the cheapest honest answer to "is the framework actually reachable". It
-  returned nothing for a whole phase while every module was green in isolation.
+- `pytest tests/test_ai_reachability.py` answers "is the framework actually
+  reachable", transitively and in both directions. **It replaces the grep this
+  line used to recommend** (`grep -rn "hiring\.\|miti\.\|siddhi\."
+  backend/app/api backend/app/workers`), which could not match an import
+  statement at all and never looked past one hop. See the 2026-08-29 section
+  above: that grep returns two comment hits today, against a framework that is
+  live.
+- A package being IMPORTABLE is not the same as it being EXERCISED, and the
+  test keeps the two apart. `services/rag` is reachable from a route and has
+  never run once.
 - Run `./scripts/test.sh` (fresh database, flushed cache) rather than pytest
   against a reused one. A suite that only passes on a warm database is telling
   you something.
@@ -2533,3 +3240,13 @@ change actually needs.
 ## 8. When Unsure
 
 If a requirement in PRD.md is ambiguous and the ESD doesn't resolve it, don't guess silently — implement the most defensible interpretation, leave a clear `# ASSUMPTION:` comment at the point of implementation, and surface it back to the user rather than letting it drift into an undocumented behavior.
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

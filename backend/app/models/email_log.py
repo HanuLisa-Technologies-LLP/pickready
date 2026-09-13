@@ -148,6 +148,21 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     bounced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     complained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: SES REJECT and RENDERING_FAILURE: the message never reached a receiver
+    #: at all. Deliberately separate from `bounced_at`, which means a receiver
+    #: took it and refused it. The two have different causes and different
+    #: fixes, and one column would make them indistinguishable afterwards.
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: WHICH TRANSPORT ACTUALLY CARRIED THIS MESSAGE, recorded per row rather
+    #: than inferred from today's `settings.email_transport`. A deployment that
+    #: switches from smtp to ses would otherwise silently relabel every
+    #: historical row, and `sent` means something different under each: Gmail
+    #: reports no delivery outcome at all, so under smtp `sent` is terminal.
+    transport: Mapped[str | None] = mapped_column(String(20))
+    #: The template this body was rendered from. Stored so a bounce traces back
+    #: to the copy that produced it without re-deriving it from `email_type`,
+    #: which is a coarser thing: several templates share one type.
+    template_id: Mapped[str | None] = mapped_column(String(120))
     #: The corporate sender this message was queued under, when the recruiter
     #: chose one. SET NULL so revoking-then-deleting a sender never erases the
     #: delivery record; the send-time chokepoint in workers/tasks.py re-loads

@@ -1,7 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { BellRing, Briefcase, ListChecks, UserRound } from "lucide-react";
+import {
+  BellRing,
+  Briefcase,
+  ListChecks,
+  MessagesSquare,
+  UserRound,
+} from "lucide-react";
 
 import { apiGet } from "@/lib/api";
 import { AppShell } from "@/components/app-shell";
@@ -50,6 +56,19 @@ export default function PortalLayout({
           label: "Updates",
           icon: BellRing,
           badge: unread,
+        },
+        // MESSAGES IS A FIFTH ENTRY, and it amends the 2026-07-27 rule that the
+        // candidate nav is exactly New Jobs, Applied Jobs and My Profile. That
+        // rule was written when every word from a company arrived by email.
+        // Native conversations mean a candidate can now be WRITTEN TO inside
+        // the product, and a reply box they cannot find is an outbox rather
+        // than a conversation. It sits beside Updates because both answer
+        // "what has happened to me", and Updates is the one that tells a
+        // candidate something arrived when the email did not.
+        {
+          href: "/portal/messages",
+          label: "Messages",
+          icon: MessagesSquare,
         },
         { href: "/portal/profile", label: "My Profile", icon: UserRound },
       ]}

@@ -1,0 +1,16 @@
+{
+ "set": "reasoning",
+ "version": "2026.Q3.2",
+ "artefact": "cases",
+ "question": "did the model interpret the evidence correctly",
+ "ground_truth_shape": "evidence pack to expected band, where the band is one of the four grades in services/rating.py",
+ "judge_free": false,
+ "cases": [],
+ "why_empty": "MUST BE HUMAN LABELLED, and no human labels exist. W7.1: 'The reasoning and decision sets must be human labelled. The standing rule holds without exception: ground truth produced by the same class of model being evaluated measures agreement with that model, not quality. Budget the human hours; do not synthesise around them.' The same rule is already load bearing in app/evaluation/dataset.py and in app/scripts/eval_agents.py, which reports quality metrics as UNAVAILABLE for exactly this reason.",
+ "why_not_drawn_from_production": "A reasoning case is an evidence pack drawn from a real assessment. The only deployed environment, readypick-pilot, holds ZERO candidates, profiles, applications, reports and evaluations (docs/verification/AI_UPGRADE_BASELINE.md, taken 2026-09-09). There is no evidence pack to draw, so the 60% stratified production sample W7.1 specifies cannot be sampled at all, let alone labelled.",
+ "what_would_unblock_it": [
+  "Candidate data in a deployed environment, so an evidence pack can be drawn rather than invented.",
+  "Expert recruiter hours to label the drawn packs. W7.1 open question 4 asks how many are available; that is an owner decision, not a search.",
+  "Five to ten cases per populated cell of job grade x dimension category x evidence tier, 300 at the floor."
+ ]
+}

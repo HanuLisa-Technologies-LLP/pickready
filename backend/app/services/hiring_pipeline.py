@@ -73,6 +73,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services import bgv_workflow
+
 SOURCED = "sourced"
 APPLIED = "applied"
 ASSESSMENT_INVITED = "assessment_invited"
@@ -88,6 +90,11 @@ HOLD = "hold"
 
 #: Legacy synonym retained so historic rows stay readable. Normalised on read.
 OFFERED = "offered"
+
+#: The stages that ARE a selection. Both, because `offered` is a legacy synonym
+#: that historic rows still carry and a gate that knew only the canonical name
+#: would be a gate with a documented way around it.
+OFFER_STAGES: frozenset[str] = frozenset({OFFER_EXTENDED, OFFERED})
 
 #: Display order — the pipeline view groups candidates by this sequence.
 PIPELINE_ORDER: tuple[str, ...] = (
@@ -329,6 +336,38 @@ async def apply_transition(
 
     previous = normalize(row["status"])
     status = assert_transition(previous, target)
+
+    # ── THE BACKGROUND-VERIFICATION GATE ─────────────────────────────────────
+    #
+    # Here, and not in a route, for the reason the Updates feed row is written
+    # here: this function has six callers and a rule enforced at one of them is
+    # a rule the other five do not have. A recruiter can reach an offer from
+    # the pipeline board, the dashboard, the job page and the portal, and every
+    # one of those paths arrives at this line.
+    #
+    # BEFORE ANY WRITE. A refusal that had already moved the status would have
+    # blocked the email while recording the promotion, which is the worst of
+    # both: the candidate reads as offered and never hears from anyone.
+    #
+    # Only the offer stages. Rejection is deliberately NOT gated: refusing to
+    # let a recruiter reject somebody until their previous employers have
+    # replied would hold a candidacy open for a decision that has been made,
+    # and BGV exists to check a hire, not to prolong one.
+    if status in OFFER_STAGES:
+        blocked = await bgv_workflow.offer_blocked(
+            session,
+            tenant_id=tenant_id,
+            candidate_id=uuid.UUID(str(row["candidate_id"])),
+        )
+        if blocked is not None:
+            raise bgv_workflow.BGVIncomplete(
+                blocked,
+                await bgv_workflow.candidate_status(
+                    session,
+                    tenant_id=tenant_id,
+                    candidate_id=uuid.UUID(str(row["candidate_id"])),
+                ),
+            )
     label = STAGE_LABELS.get(status, status.replace("_", " ").title())
 
     await session.execute(

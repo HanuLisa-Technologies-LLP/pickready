@@ -71,6 +71,26 @@ class Candidate(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True
     )
 
+    # Background verification (migration 0095). Two columns rather than a
+    # table, because they are one answer and one stamp about THIS person and
+    # they are read on every profile load.
+    #
+    # `employment_background` is the candidate's own declaration, in their own
+    # words: fresher or experienced. It is never inferred from a parsed resume,
+    # because a parsed history is evidence and this answer decides whether an
+    # offer can be blocked. NULL means the question has not been answered yet,
+    # which is distinct from either answer and never blocks anything.
+    employment_background: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    #: THE IMMUTABILITY GATE. Once stamped, `candidate_employments` is closed
+    #: to writes: the service layer refuses, and a Postgres trigger refuses
+    #: independently so a future route or a psql session cannot quietly rewrite
+    #: what an employer is being asked to confirm. Read through
+    #: `models/employment.finalized` so no caller invents a second definition
+    #: of "submitted".
+    employment_history_finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
 
 class Profile(Base, UUIDPKMixin, CreatedAtMixin):
     """The Profile (PRD glossary): resume + 40-aspect responses + employer
@@ -100,6 +120,18 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
     resume_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
     resume_metadata_json: Mapped[dict | None] = mapped_column(JSONB)
     resume_text: Mapped[str | None] = mapped_column(Text)  # extracted; tsvector col in migration
+    #: The intake scan for hidden content (migration 0092, W9.2). Shape is
+    #: `services/projects/invisible_text.IntakeScan.as_json()`: which techniques
+    #: were found, how often, a bounded sample, and the recruiter-facing
+    #: sentence. It hangs off the PROFILE and not off `candidates`, because a
+    #: profile IS one resume and a candidate with three resumes needs three
+    #: answers; "has this person ever submitted a flagged file" is one join.
+    #: NULL means the resume predates the scan, which is a different fact from
+    #: a clean scan and is deliberately not backfilled to one.
+    #: IT AUTHORISES NOTHING. Nothing in the product may read it as a reason to
+    #: reject, rank or filter; it exists so a human can look and so a challenged
+    #: decision has a record.
+    intake_scan_json: Mapped[dict | None] = mapped_column(JSONB)
     aspects_json: Mapped[dict | None] = mapped_column(JSONB)  # {"1": {...}, ..., "40": {...}}
     parsed_fields_json: Mapped[dict | None] = mapped_column(JSONB)  # skills, experience, education, employment_history
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))  # voyage-4, EMBEDDING_DIM

@@ -39,7 +39,24 @@ set -euo pipefail
 ENVIRONMENT="${1:-}"
 IMAGE_URI="${2:-}"
 PROJECT="${PROJECT:-readypick}"
-REGION="${AWS_REGION:-ap-south-2}"
+# THE REGION IS RESOLVED, NEVER ASSUMED.
+#
+# This script defaulted to a hardcoded region, and on 2026-09-09 that cost a
+# release step: the pilot lives in ap-south-2, the default said ap-south-1, and
+# the failure surfaced as "TaskDefinition not found" -- which reads as a broken
+# deploy rather than as a lookup in an empty region. spec-doc6 D5 removes the
+# assumption by name: "Region assumption `ap-south-1` is removed as an
+# assumption and becomes a required variable. Do not hardcode it anywhere."
+#
+# So the order is AWS_REGION, then AWS_DEFAULT_REGION, then whatever the CLI
+# itself is configured with -- and then a REFUSAL naming the variable. A
+# default here is a silent answer to a question only the operator can answer,
+# and the wrong answer looks identical to an outage.
+REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-$(aws configure get region 2>/dev/null || true)}}"
+if [ -z "$REGION" ]; then
+  echo "No AWS region. Set AWS_REGION (this project's pilot is ap-south-2)." >&2
+  exit 2
+fi
 TIMEOUT_SECONDS="${LAMBDA_UPDATE_TIMEOUT:-300}"
 
 usage() {

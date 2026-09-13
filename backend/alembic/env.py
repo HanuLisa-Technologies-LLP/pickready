@@ -13,6 +13,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.config import get_settings
+from app.core.db import SQL_IDENTIFIER_RE  # the one guard, not a second copy
 from app.models import Base  # noqa: F401 — imports every model into metadata
 
 config = context.config
@@ -54,9 +55,50 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _migration_role() -> str | None:
+    """The object-owner role migrations run as, or None when unset.
+
+    THE MIGRATION JOB IS THE ONLY THING THAT ESCALATES, AND ONLY HERE.
+    ------------------------------------------------------------------
+    `DATABASE_URL` carries the least privileged application role, because the
+    credential the whole product connects with must not be one a managed
+    service rotates underneath it (see `core/config.postgres_migration_role`
+    for the outage that settled this). That role has DML on every table and no
+    DDL on any of them, so `alembic upgrade` needs the owner's rights and
+    nothing else does.
+
+    `SET ROLE` is what grants them, which works because the login role is a
+    NOINHERIT member of the owner: membership permits the switch, NOINHERIT
+    means no ordinary session ever holds the owner's privileges by accident.
+    The setting is absent in the API, the agent and the Lambda worker, so the
+    escalation is reachable from one container role rather than from a route.
+
+    Unset is the normal local case: the compose Postgres connects as its own
+    superuser, which already owns everything.
+    """
+    role = get_settings().postgres_migration_role.strip()
+    if not role:
+        return None
+    if not SQL_IDENTIFIER_RE.match(role):
+        # Refused rather than quoted and hoped. A role name arrives from
+        # deployment configuration; one that is not a plain identifier is a
+        # misconfiguration, and continuing as whatever the app role happens to
+        # be would fail later with a permission error that names neither this
+        # setting nor its value.
+        raise ValueError(
+            f"POSTGRES_MIGRATION_ROLE is not a plain SQL identifier: {role!r}"
+        )
+    return role
+
+
 def _do_run_migrations(connection: Connection) -> None:
     context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
+        # FIRST, before the GUCs and before any migration runs: everything
+        # below this line needs the owner's rights.
+        role = _migration_role()
+        if role is not None:
+            connection.exec_driver_sql(f'SET ROLE "{role}"')
         # Migrations are a trusted, tenant-agnostic maintenance context — the
         # same standing the app already grants Celery workers and the Super
         # Admin console — so they reach through the SAME explicit escape hatch

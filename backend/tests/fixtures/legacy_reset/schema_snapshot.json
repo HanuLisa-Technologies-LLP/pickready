@@ -115,18 +115,6 @@
       "table": "candidate_questions"
     },
     {
-      "column": "main_profile_id",
-      "on_delete": "SET NULL",
-      "references": "profiles",
-      "table": "candidates"
-    },
-    {
-      "column": "user_id",
-      "on_delete": "SET NULL",
-      "references": "users",
-      "table": "candidates"
-    },
-    {
       "column": "job_candidate_link_id",
       "on_delete": "CASCADE",
       "references": "job_candidate_links",
@@ -163,22 +151,22 @@
       "table": "candidate_technical_questions"
     },
     {
+      "column": "main_profile_id",
+      "on_delete": "SET NULL",
+      "references": "profiles",
+      "table": "candidates"
+    },
+    {
+      "column": "user_id",
+      "on_delete": "SET NULL",
+      "references": "users",
+      "table": "candidates"
+    },
+    {
       "column": "tenant_id",
       "on_delete": "CASCADE",
       "references": "tenants",
       "table": "companies"
-    },
-    {
-      "column": "conducted_by",
-      "on_delete": "SET NULL",
-      "references": "users",
-      "table": "company_dna"
-    },
-    {
-      "column": "tenant_id",
-      "on_delete": "CASCADE",
-      "references": "tenants",
-      "table": "company_dna"
     },
     {
       "column": "tenant_id",
@@ -451,70 +439,46 @@
       "table": "job_candidate_links"
     },
     {
-      "column": "company_dna_id",
+      "column": "job_id",
       "on_delete": "CASCADE",
-      "references": "company_dna",
-      "table": "job_company_dna_bindings"
+      "references": "jobs",
+      "table": "job_competencies"
+    },
+    {
+      "column": "tenant_id",
+      "on_delete": "CASCADE",
+      "references": "tenants",
+      "table": "job_competencies"
+    },
+    {
+      "column": "job_id",
+      "on_delete": "CASCADE",
+      "references": "jobs",
+      "table": "job_matching_categories"
+    },
+    {
+      "column": "tenant_id",
+      "on_delete": "CASCADE",
+      "references": "tenants",
+      "table": "job_matching_categories"
     },
     {
       "column": "frozen_by",
       "on_delete": "SET NULL",
       "references": "users",
-      "table": "job_company_dna_bindings"
+      "table": "job_scorecard_bindings"
     },
     {
       "column": "job_id",
       "on_delete": "CASCADE",
       "references": "jobs",
-      "table": "job_company_dna_bindings"
+      "table": "job_scorecard_bindings"
     },
     {
       "column": "tenant_id",
       "on_delete": "CASCADE",
       "references": "tenants",
-      "table": "job_company_dna_bindings"
-    },
-    {
-      "column": "job_id",
-      "on_delete": "CASCADE",
-      "references": "jobs",
-      "table": "job_competencies"
-    },
-    {
-      "column": "tenant_id",
-      "on_delete": "CASCADE",
-      "references": "tenants",
-      "table": "job_competencies"
-    },
-    {
-      "column": "job_id",
-      "on_delete": "CASCADE",
-      "references": "jobs",
-      "table": "job_matching_categories"
-    },
-    {
-      "column": "tenant_id",
-      "on_delete": "CASCADE",
-      "references": "tenants",
-      "table": "job_matching_categories"
-    },
-    {
-      "column": "created_by",
-      "on_delete": "SET NULL",
-      "references": "users",
-      "table": "jobs"
-    },
-    {
-      "column": "finalized_by",
-      "on_delete": "SET NULL",
-      "references": "users",
-      "table": "jobs"
-    },
-    {
-      "column": "tenant_id",
-      "on_delete": "CASCADE",
-      "references": "tenants",
-      "table": "jobs"
+      "table": "job_scorecard_bindings"
     },
     {
       "column": "conducted_by",
@@ -533,6 +497,24 @@
       "on_delete": "CASCADE",
       "references": "tenants",
       "table": "job_swot_intakes"
+    },
+    {
+      "column": "created_by",
+      "on_delete": "SET NULL",
+      "references": "users",
+      "table": "jobs"
+    },
+    {
+      "column": "finalized_by",
+      "on_delete": "SET NULL",
+      "references": "users",
+      "table": "jobs"
+    },
+    {
+      "column": "tenant_id",
+      "on_delete": "CASCADE",
+      "references": "tenants",
+      "table": "jobs"
     },
     {
       "column": "job_candidate_link_id",
@@ -703,8 +685,8 @@
       "table": "verification_requests"
     }
   ],
-  "note": "Recorded from a database migrated to 0062_embedding_provenance. Regenerate with the command in the test module docstring.",
-  "revision": "0062_embedding_provenance",
+  "note": "Recorded from a database migrated to 0062_embedding_provenance, then amended by hand for 0088_remove_company_dna: the `company_dna` table and its inbound key are gone and `job_company_dna_bindings` is `job_scorecard_bindings`. THIS SNAPSHOT IS STALE BY DESIGN AND MORE STALE THAN IT LOOKS: a database at head carries 63 tables and 154 foreign keys against the 50 and 114 recorded here, so the cascade assertions below cover the graph as it stood at 0062 and not as it stands today. Regenerating it is a separate change: every table added since must also be classified in `legacy_reset.CLASSIFICATION` in the same commit, or `unclassified_tables` fails.",
+  "revision": "0062_embedding_provenance+0088_remove_company_dna",
   "tables": [
     "agent_execution_traces",
     "agent_learnings",
@@ -720,7 +702,6 @@
     "candidate_technical_questions",
     "candidates",
     "companies",
-    "company_dna",
     "compliance_documents",
     "context_chunks",
     "credit_ledger",
@@ -736,9 +717,9 @@
     "job_approvals",
     "job_assignments",
     "job_candidate_links",
-    "job_company_dna_bindings",
     "job_competencies",
     "job_matching_categories",
+    "job_scorecard_bindings",
     "job_swot_intakes",
     "jobs",
     "llm_provider_keys",

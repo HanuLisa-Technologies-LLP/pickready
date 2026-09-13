@@ -15,6 +15,8 @@ import {
   type FunctionalReport,
 } from "@/components/functional-skills-report";
 import { BgvResultsPanel } from "@/components/bgv-results-panel";
+import { BgvVerificationPanel } from "@/components/bgv-verification-panel";
+import { CandidateConversationCard } from "@/components/candidate-conversation-card";
 import { ProjectEvidencePanel } from "@/components/project-evidence-panel";
 import { ResumeViewer, describeResumeUrl } from "@/components/resume-viewer";
 import { SendOutreachModal } from "@/components/send-outreach-modal";
@@ -272,6 +274,7 @@ export function ProfileReview({
                   <TabsTrigger value="resume">Resume</TabsTrigger>
                   <TabsTrigger value="projects">Projects</TabsTrigger>
                   <TabsTrigger value="verification">Verification</TabsTrigger>
+                  <TabsTrigger value="messages">Messages</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="scores" className="mt-4">
@@ -369,7 +372,19 @@ export function ProfileReview({
                   {/* Consent-gated on the server: an inquiry the candidate
                       has not shared with this employer arrives as a bare
                       "Not shared by the candidate" marker. */}
+                  <BgvVerificationPanel candidateId={selected.candidate.id} />
                   <BgvResultsPanel candidateId={selected.candidate.id} />
+                </TabsContent>
+
+                <TabsContent value="messages" className="mt-4">
+                  {/* One thread per candidate per customer, opened on first
+                      view. Live over a socket where the load balancer routes
+                      the upgrade, and kept current by refetching where it does
+                      not, with the panel saying which. */}
+                  <CandidateConversationCard
+                    candidateId={selected.candidate.id}
+                    candidateName={selected.candidate.full_name}
+                  />
                 </TabsContent>
 
               </Tabs>

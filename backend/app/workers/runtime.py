@@ -82,7 +82,7 @@ class PermanentTaskFailure(Exception):
     """This will fail the same way every time. Do not spend a retry on it.
 
     Raised by a task that has determined the input is wrong rather than the
-    world being briefly unavailable: a missing Company DNA artifact, a row that
+    world being briefly unavailable: a missing SWOT artifact, a row that
     no longer exists, an argument that does not parse. The distinction matters
     because the alternative is five backoff attempts against a condition no
     amount of waiting changes, producing five log lines that read like a bug in

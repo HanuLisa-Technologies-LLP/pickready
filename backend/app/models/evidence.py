@@ -13,10 +13,10 @@ the migration's docstring.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -59,6 +59,34 @@ class EvidenceItemRow(Base, UUIDPKMixin, CreatedAtMixin):
     superseded_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("evidence_items.id", ondelete="SET NULL")
     )
+    # ── Temporal validity (migration 0091, RPN-AI-UP-001 W6.4) ───────────────
+    # A claim has a validity interval. These five columns are what let Miti
+    # distinguish "used Kafka five years ago" from "currently operates Kafka
+    # systems", which is what the Trajectory and Potential dimension needs and
+    # could not previously express.
+    #
+    # They are five columns on the ledger rather than a graph database: the
+    # ledger is already an entity-claim graph in relational form, and a second
+    # store would be a second answer to "where does evidence live".
+    #
+    # `event_date` and `source_date` are ROUTINELY DIFFERENT and live only
+    # here, on the row that references a source. When the thing happened is not
+    # when the document saying so was written, and conflating them is how a
+    # 2019 achievement described in a resume uploaded yesterday reads as
+    # recent. `freshness` above is derived from an `as_of` the caller passes;
+    # these are the stated facts it should be derived FROM.
+    #
+    # Dates, not timestamps, for the first four: they come from documents that
+    # state a month at best, and storing "March 2021" as a timestamptz invents
+    # a time of day and a zone that every later comparison then depends on.
+    event_date: Mapped[date | None] = mapped_column(Date)
+    source_date: Mapped[date | None] = mapped_column(Date)
+    valid_from: Mapped[date | None] = mapped_column(Date)
+    valid_until: Mapped[date | None] = mapped_column(Date)
+    #: An event in OUR system rather than in a document, so it is an instant.
+    last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
@@ -84,6 +112,23 @@ class EvidenceClaim(Base, UUIDPKMixin, CreatedAtMixin):
     subject: Mapped[str] = mapped_column(String(160), nullable=False)
     dimension: Mapped[str] = mapped_column(String(160), nullable=False)
     claim: Mapped[str] = mapped_column(Text, nullable=False)
+    # ── Temporal validity (migration 0091, RPN-AI-UP-001 W6.4) ───────────────
+    # THREE of the five, not all of them, and the omission is the point. A
+    # claim is an assertion the PRODUCT makes, so it has a validity interval
+    # and a last-checked stamp. It has no event and no source of its own:
+    # those belong to the `evidence_items` standing behind it. An `event_date`
+    # here would invite a reader to take the claim as authoritative over the
+    # items it summarises, and the two would then disagree with nothing able to
+    # say which was right.
+    #
+    # `evidence_claim_links` gets none of them. It records which SIDE of a
+    # claim an item sits on, and a stance has no validity interval; the item's
+    # does.
+    valid_from: Mapped[date | None] = mapped_column(Date)
+    valid_until: Mapped[date | None] = mapped_column(Date)
+    last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

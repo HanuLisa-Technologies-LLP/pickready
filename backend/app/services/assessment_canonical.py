@@ -16,9 +16,9 @@ The shape follows spec section 13:
       ]
     }
 
-The spec's optional `context` block (resume, JD, Company DNA) is deliberately
+The spec's optional `context` block (resume, JD) is deliberately
 NOT assembled here: the scorers already read those artifacts through their own
-governed paths (`services/rag`, the compiled Company DNA artifact), and a
+governed paths (`services/rag`), and a
 second copy inside this structure would be a second answer to what the
 evidence was. NO SCORE AND NO GRADE APPEARS HERE: this is the collection-side
 record, upstream of every judgement.

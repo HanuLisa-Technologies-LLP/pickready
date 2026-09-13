@@ -257,7 +257,6 @@ class ReadyPickProfileOut(BaseModel):
     under_integrity_review: bool = False
     needs_human_review: bool = False
     scorecard_version: int | None = None
-    company_dna_version: int | None = None
     evaluated_at: _dt.datetime | None = None
     scoring_mode: str | None = None
 
@@ -378,7 +377,6 @@ class CalibrationInternalsOut(BaseModel):
     artifact: Literal["calibration_internals"] = "calibration_internals"
     evaluation_id: uuid.UUID
     scorecard_version: int | None = None
-    company_dna_version: int | None = None
     situation_type: str | None = None
     scoring_mode: str | None = None
     dimensions: list[CalibrationDimensionOut]

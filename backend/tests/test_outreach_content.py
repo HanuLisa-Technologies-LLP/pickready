@@ -9,7 +9,15 @@ import pytest
 
 from app.services import outreach_content
 
-_CANDIDATE = {"name": "Ada Lovelace", "email": "ada@example.com"}
+# A RECORDED RANKING COMMENT, since 2026-09-09. `generation_sufficiency` refuses
+# to call a model for a candidate with nothing recorded on any of the four
+# categories, so a fixture without one exercises the deterministic template and
+# stops testing the generated path these tests are about.
+_CANDIDATE = {
+    "name": "Ada Lovelace",
+    "email": "ada@example.com",
+    "skills_comment": "Eight years of distributed systems work in Python",
+}
 _JOB = {"title": "Staff Engineer"}
 _COMPANY = {"name": "Hanulisa Technologies"}
 

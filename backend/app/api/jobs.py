@@ -358,10 +358,11 @@ async def create_job(
             ),
         )
 
-    # ── Gate 1: Company Hiring Requirements must exist (workflow §18) ───────
-    # The company-level artifact every job on this tenant is derived against.
+    # ── Gate 1: the Company Profile must say something (workflow §18) ──────
+    # The company-level statement every job on this tenant is derived from,
+    # and the one this job's own narrative sections are seeded from below.
     # Asked of the TABLE, and only at the moment of creation: a job created
-    # before the client completed theirs stays created.
+    # before the client wrote their profile stays created.
     from app.services.hiring import company_requirements  # noqa: PLC0415
 
     blocked = await company_requirements.creation_blocked(session, user.tenant_id)
@@ -508,9 +509,8 @@ async def create_job(
     # the technical-bank half that used to share this task -- the job was
     # silently unusable forever. Nineteen live jobs were in exactly that state.
     # NOT ENQUEUED HERE ANY MORE (2026-08-29). Sutra compiles the Tatva matrix
-    # from Bodha's completed SWOT session and the client's compiled Company DNA;
-    # at job creation neither exists, so a task fired here would refuse on every
-    # job the moment it ran. The compile is enqueued by the SWOT session's own
+    # from Bodha's completed SWOT session; at job creation that does not exist,
+    # so a task fired here would refuse on every job the moment it ran. The compile is enqueued by the SWOT session's own
     # completion (`api/assessments.respond_swot_intake`), which is the event
     # that actually produces its input, and `pickready.reconcile_job_setup`
     # sweeps for a job whose session finished and whose matrix never landed.
@@ -676,6 +676,12 @@ async def publish_job(
         },
     )
     dispatch("pickready.run_matching", args=[str(job.id)])
+    # The JD is public and final at this point, so it becomes retrievable
+    # (RPN-AI-UP-001 W2.1). At publish rather than at draft save: a draft is
+    # edited repeatedly, and indexing every intermediate state would re-embed a
+    # document nobody can apply to yet. `index_document` is incremental by
+    # content hash, so a later edit re-embeds only the paragraphs that moved.
+    dispatch("pickready.index_document", args=["jd", str(job.id)])
 
     out = PublishJobOut.model_validate(job)
     out.jd_markdown = jd_markdown_for(job) or None

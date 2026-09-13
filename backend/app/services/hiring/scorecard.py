@@ -7,7 +7,6 @@ The one place a job's Tatva matrix is BUILT, FROZEN and READ BACK. spec-doc6
 runs through:
 
     Bodha's validated SWOT artifact (Layer 3)
-  + the client's compiled Company DNA artifact (Layer 2)
   + the department model and its rubric anchors (Layer 1)
         -> `compile_matrix`   seven stages, one row per item, provenance stored
         -> `freeze`           the Hiring Manager's explicit finalisation
@@ -21,16 +20,16 @@ when the model was unavailable. Both halves are now deleted rather than flagged
 off, per spec-doc6 D1 and §4.1.
 
 The single-pass generator had no way to satisfy the requirement this phase is
-built around: "every item in the frozen matrix stores which Layer 1 / Layer 2 /
-Layer 3 input produced its weight and the multiplier each contributed". A weight
+built around: "every item in the frozen matrix stores which Layer 1 / Layer 3
+input produced its weight and the multiplier each contributed". A weight
 a model chose in one pass has no terms to store. The fallback was worse in a
 quieter way -- it produced a matrix that LOOKED like the real thing, was graded
 against for the life of the job, and rested on nothing but the JD's own words,
 which §18 says is "almost never an accurate specification of the hiring
 problem".
 
-So there is no fallback here. A missing Layer 2 artifact, a missing or rejected
-Layer 3 artifact, or a naming step that could not run are all refusals that
+So there is no fallback here. A missing or rejected Layer 3 artifact, or a
+naming step that could not run, are all refusals that
 name what is missing and what to do about it. That is spec-doc6 §4.1: "If
 retrieval returns nothing, if a required artifact is missing, if a gate fails:
 raise, audit, and surface an actionable message."
@@ -50,10 +49,7 @@ what each quadrant's emphasis is:
     Opportunities  "trajectory and adjacency signals to reward"        -> Nice-to-have
     Threats        "risk probes, thresholds, disqualifiers"            -> Behavioural
 
-and Layer 2 supplies the behavioural competencies directly: Runbook §17.1
-compiles the client's Section 3 observable-evidence answers into
-`behavioural_competencies`, which is exactly what this product's third aspect
-is. Where an aspect would otherwise be empty, the remaining competencies come
+Where an aspect would otherwise be empty, the remaining competencies come
 from the Layer 1 department menu with `swot_origin` NULL, which is an honest
 provenance ("Layer 1 only") rather than an invented Layer 3 input.
 
@@ -84,13 +80,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import JobCompetency
-from app.models.company_dna import JobCompanyDNABinding
+from app.models.job_scorecard_binding import JobScorecardBinding
 from app.models.job import Job
 from app.models.job_setup import SWOT_AREAS, JobSwotIntake
 from app.prompts import fragments, registry
 from app.services import agent_loop, llm_router, ppi, swot_intake
 from app.services.hiring import (
-    dna_compilation,
     gates,
     layers,
     pipeline_halt,
@@ -188,9 +183,8 @@ class ScorecardError(RuntimeError):
 class ScorecardInputMissing(ScorecardError):
     """A layer Sutra cannot compile without is absent or unusable.
 
-    RAISED, never worked around. spec-doc6 D3 is explicit that "Sutra cannot
-    compile a scorecard without a Layer 2 artifact", and §4.1 forbids a default
-    weight standing in for a failed retrieval. `detail` is written for the
+    RAISED, never worked around. spec-doc6 §4.1 forbids a default weight
+    standing in for a failed retrieval. `detail` is written for the
     person who has to act on it, because the actionable half of this refusal is
     always "go and complete the thing that is missing".
     """
@@ -286,10 +280,6 @@ class FrozenMatrix:
     #: The confirmed §18.4 situation type, or None for a job whose intake
     #: predates the classification step.
     situation_key: str | None
-    #: The Layer 2 version in force when this matrix was frozen (spec-doc6
-    #: §4.2: "every Role references the exact CompanyDNA version in force when
-    #: its scorecard was frozen").
-    company_dna_version: int | None
     #: spec-doc6 §4.1's one id per flow.
     correlation_id: str | None
     items: tuple[MatrixItem, ...]
@@ -308,7 +298,6 @@ class FrozenMatrix:
             "version": self.version,
             "approved_at": self.approved_at.isoformat(),
             "situation_key": self.situation_key,
-            "company_dna_version": self.company_dna_version,
             "correlation_id": self.correlation_id,
             "items": [
                 {
@@ -361,7 +350,7 @@ def item_from_row(row: JobCompetency) -> MatrixItem | None:
 
 async def _latest_binding(
     session: AsyncSession, job_id: uuid.UUID
-) -> JobCompanyDNABinding | None:
+) -> JobScorecardBinding | None:
     """The freeze in force: the highest `freeze_sequence` for this job.
 
     The bindings are append-only, so this reads the current one and the earlier
@@ -370,9 +359,9 @@ async def _latest_binding(
     """
     return (
         await session.execute(
-            select(JobCompanyDNABinding)
-            .where(JobCompanyDNABinding.job_id == job_id)
-            .order_by(JobCompanyDNABinding.freeze_sequence.desc())
+            select(JobScorecardBinding)
+            .where(JobScorecardBinding.job_id == job_id)
+            .order_by(JobScorecardBinding.freeze_sequence.desc())
             .limit(1)
         )
     ).scalars().first()
@@ -414,7 +403,6 @@ async def load_frozen_matrix(
         version=int(binding.scorecard_version) if binding else 1,
         approved_at=job.framework_approved_at,
         situation_key=intake.situation_key if intake else None,
-        company_dna_version=int(binding.company_dna_version) if binding else None,
         correlation_id=job.correlation_id,
         items=tuple(items),
     )
@@ -457,13 +445,13 @@ async def require_frozen_matrix(
                 "This job's criteria were written by the retired single-pass "
                 "generator and carry no derivation. They cannot be scored "
                 "against: reopen the job's setup and let Sutra rebuild the "
-                "matrix from the SWOT and the company's philosophy.",
+                "matrix from the SWOT.",
             ),
         )
     raise ScorecardNotFrozen(job_id, result)
 
 
-def scorecard_version(binding: JobCompanyDNABinding | None) -> int:
+def scorecard_version(binding: JobScorecardBinding | None) -> int:
     """The version the NEXT freeze will carry. 1 when there has been none."""
     return int(binding.scorecard_version) + 1 if binding else 1
 
@@ -485,7 +473,6 @@ class CompileResult:
     items: list[JobCompetency]
     rejections: list[dict[str, Any]]
     situation_key: str | None
-    company_dna_version: int
     department: str
     correlation_id: str | None
     degraded_naming: bool = False
@@ -495,7 +482,6 @@ class CompileResult:
             "items": len(self.items),
             "rejections": list(self.rejections),
             "situation_key": self.situation_key,
-            "company_dna_version": self.company_dna_version,
             "department": self.department,
             "correlation_id": self.correlation_id,
         }
@@ -564,27 +550,6 @@ async def _layer3(
     )
 
 
-async def _layer2(session: AsyncSession, job: Job) -> dna_compilation.CompiledDNA:
-    """The client's compiled Company DNA, or a refusal naming what to do.
-
-    spec-doc6 D3: "A client with no Company DNA artifact can still create jobs
-    and draft JDs, but Sutra cannot compile a scorecard without a Layer 2
-    artifact ... Surface that as an explicit, actionable block in the UI
-    ('Company DNA required before this job's scorecard can be locked'), not as
-    a mysterious failure."
-    """
-    compiled = await dna_compilation.load_compiled(session, job.tenant_id)
-    if compiled is None:
-        raise ScorecardInputMissing(
-            "layer2",
-            "Company DNA is required before this job's scorecard can be locked. "
-            "It is what tells the assessment how this organisation weighs "
-            "evidence, and every weight on the matrix is derived from it. Your "
-            "HR Manager completes it once, in the company profile.",
-        )
-    return compiled
-
-
 def _candidates_from_swot(
     captured: Mapping[str, Sequence[str]],
 ) -> list[_Candidate]:
@@ -604,30 +569,6 @@ def _candidates_from_swot(
                     )
                 )
     return out
-
-
-def _candidates_from_layer2(
-    compiled: dna_compilation.CompiledDNA,
-) -> list[_Candidate]:
-    """Runbook §17.1's `behavioural_competencies`, as matrix candidates.
-
-    The client's Section 3 answers have already passed the instrument's
-    observable-evidence bar, so each one IS a stage 2 statement and arrives with
-    `observable` already set. That is not a shortcut past the stage: it is the
-    stage, satisfied by the layer that owns the answer.
-    """
-    engine = compiled.engine_view()
-    return [
-        _Candidate(
-            phrase=str(signal),
-            category=ppi.CATEGORY_BEHAVIOURAL,
-            quadrant=None,
-            swot_origin=None,
-            observable=str(signal),
-        )
-        for signal in (engine.get("observable_signals") or [])
-        if str(signal or "").strip()
-    ]
 
 
 def _candidates_from_menu(
@@ -732,7 +673,9 @@ async def _name_unanchored(
         used on both, so the bar the hiring manager is held to is the bar the
         model is held to.
         """
-        from app.services.hiring import company_dna  # noqa: PLC0415
+        from app.services.hiring import (  # noqa: PLC0415
+            observable as observable_detector,
+        )
 
         named = candidate.get("named")
         if not isinstance(named, list):
@@ -749,7 +692,7 @@ async def _name_unanchored(
                     f"{name!r} is not a short competency name; give a capability "
                     f"of at most {_MAX_NAME_WORDS} words, not a sentence"
                 )
-            if not observable or not company_dna.is_observable(observable):
+            if not observable or not observable_detector.is_observable(observable):
                 return agent_loop.reject(
                     f"the observable statement for {name!r} is not something "
                     f"anyone could have watched happen; state an action taken, "
@@ -832,8 +775,8 @@ def _rank_and_normalise(
     SOURCE: RPN-PHIL-001 §20.3. §20.3 says "weights derive from the ranking, not
     from free assignment" and gives a default distribution for counts of four,
     five and six. Read literally, that would replace the derived weight with a
-    figure that depends only on POSITION -- at which point Layer 1's baseline and
-    Layer 2's philosophy stop being observable in the output at all, and the
+    figure that depends only on POSITION -- at which point Layer 1's baseline
+    and Layer 3's emphasis stop being observable in the output at all, and the
     §11 layering the rest of the Runbook specifies has nowhere to land.
 
     What §20.3 is guarding against is stated in its own next sentence: "Weight
@@ -938,7 +881,6 @@ async def compile_matrix(
             items=list(active),
             rejections=[],
             situation_key=intake.situation_key if intake else None,
-            company_dna_version=int(binding.company_dna_version) if binding else 0,
             department=job.department or "",
             correlation_id=correlation_id or job.correlation_id,
         )
@@ -951,14 +893,12 @@ async def compile_matrix(
         )
 
     captured, intake = await _layer3(session, job)
-    compiled = await _layer2(session, job)
-    company = dna_compilation.engine_object(compiled)
     model = department_for(job.department, job.title, (job.jd_markdown or "")[:400])
     seniority = job.assessment_grade
     situation_key = intake.situation_key
 
     # ── Assemble the candidate set ──────────────────────────────────────────
-    candidates = _candidates_from_swot(captured) + _candidates_from_layer2(compiled)
+    candidates = _candidates_from_swot(captured)
 
     # Stages 1 and 2 for whatever the Layer 1 menu cannot anchor.
     from app.services.hiring.department_models import match_competency  # noqa: PLC0415
@@ -1000,7 +940,6 @@ async def compile_matrix(
         usable,
         model=model,
         seniority=seniority,
-        company=company,
         situation_key=situation_key,
         emphasis=emphasis,
     )
@@ -1020,7 +959,6 @@ async def compile_matrix(
             ),
             model=model,
             seniority=seniority,
-            company=company,
             situation_key=situation_key,
             emphasis=emphasis,
         )
@@ -1073,7 +1011,6 @@ async def compile_matrix(
         provenance["raw_value"] = round(item.weight.value, 6)
         provenance["normalised_share"] = round(share, 6)
         provenance["quadrant"] = quadrant
-        provenance["company_dna_version"] = compiled.version
         provenance["situation_key"] = situation_key
         provenance["department_model"] = model.key
         provenance["unreachable_sources"] = list(item.unreachable_sources)
@@ -1118,12 +1055,11 @@ async def compile_matrix(
     await session.flush()
     logger.info(
         "scorecard.compiled job_id=%s items=%d rejected=%d situation=%s "
-        "dna_version=%d department=%s correlation_id=%s",
+        "department=%s correlation_id=%s",
         job.id,
         len(created),
         len(refusals),
         situation_key,
-        compiled.version,
         model.key,
         correlation_id or job.correlation_id,
     )
@@ -1143,7 +1079,6 @@ async def compile_matrix(
         items=created,
         rejections=refusals,
         situation_key=situation_key,
-        company_dna_version=compiled.version,
         department=model.key,
         correlation_id=correlation_id or job.correlation_id,
         degraded_naming=degraded,
@@ -1155,7 +1090,6 @@ def _build_all(
     *,
     model: DepartmentModel,
     seniority: str,
-    company: Any,
     situation_key: str | None,
     emphasis: Mapping[str, float],
 ) -> tuple[list[tuple[transformation.Item, str | None]], list[dict[str, Any]]]:
@@ -1205,7 +1139,6 @@ def _build_all(
             payload,
             department=model,
             seniority=seniority,
-            company=company,
             situation_key=situation_key,
             role_emphasis=role_emphasis,
         )
@@ -1331,7 +1264,6 @@ async def freeze(
             + ", ".join(underived[:5])
             + ". Rebuild the matrix so every item completes all seven stages.",
         )
-    compiled = await _layer2(session, job)
     previous = await _latest_binding(session, job.id)
     version = scorecard_version(previous)
 
@@ -1340,11 +1272,9 @@ async def freeze(
         job.assessment_grade, len(rows), job.role_classification
     )
     session.add(
-        JobCompanyDNABinding(
+        JobScorecardBinding(
             tenant_id=job.tenant_id,
             job_id=job.id,
-            company_dna_id=await _company_dna_id(session, job, compiled.version),
-            company_dna_version=compiled.version,
             freeze_sequence=(int(previous.freeze_sequence) + 1) if previous else 1,
             scorecard_version=version,
             frozen_by=actor_user_id,
@@ -1370,36 +1300,13 @@ async def freeze(
             "scored against it until that is resolved.",
         )
     logger.info(
-        "scorecard.frozen job_id=%s version=%d dna_version=%d items=%d by=%s",
+        "scorecard.frozen job_id=%s version=%d items=%d by=%s",
         job.id,
         version,
-        compiled.version,
         len(rows),
         actor_user_id,
     )
     return matrix
-
-
-async def _company_dna_id(
-    session: AsyncSession, job: Job, version: int
-) -> uuid.UUID:
-    """The `company_dna` row id for a version, for the binding's foreign key."""
-    from app.models.hiring import CompanyDNA  # noqa: PLC0415
-
-    row_id = (
-        await session.execute(
-            select(CompanyDNA.id).where(
-                CompanyDNA.tenant_id == job.tenant_id, CompanyDNA.version == version
-            )
-        )
-    ).scalar_one_or_none()
-    if row_id is None:  # pragma: no cover - `_layer2` has already loaded it
-        raise ScorecardInputMissing(
-            "layer2",
-            f"Company DNA version {version} could not be read back. The "
-            f"scorecard is not frozen against a philosophy nobody can find.",
-        )
-    return row_id
 
 
 # ── What the Hiring Manager reads before finalising ──────────────────────────
@@ -1430,13 +1337,6 @@ def plain_provenance(item: MatrixItem) -> list[str]:
         lines.append(
             "This is specific to your role rather than something the department "
             "model already knew about, so it starts from a neutral baseline."
-        )
-
-    company = _direction(terms.get("company_layer2"))
-    if company:
-        lines.append(
-            f"Your organisation's hiring philosophy weighs this kind of evidence "
-            f"{company} than average, and that has been applied."
         )
 
     situation = _direction(terms.get("situation_layer3"))

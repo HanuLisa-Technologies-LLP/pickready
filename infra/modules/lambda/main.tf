@@ -47,9 +47,22 @@ locals {
   runtask_functions = {
     for name, fn in var.functions : name => fn if length(fn.run_task_role_arns) > 0
   }
+
+  # Functions that dispatch to another Lambda. Empty for every function that
+  # does not, so the grant and its policy simply do not exist for them.
+  invoking_functions = {
+    for name, fn in var.functions : name => fn
+    if length(fn.invokable_function_keys) > 0
+  }
   # KEYED ON A LITERAL, not on an ARN. `secret_policy_key` is a static string
   # in the composition, so this map's key set is known at plan time; a filter on
   # the ARN itself would be a for_each Terraform cannot evaluate until apply.
+  # Functions that read objects from a bucket. Empty for every function that
+  # does not, so neither the grant nor its policy exists for them.
+  s3_reading_functions = {
+    for name, fn in var.functions : name => fn
+    if length(fn.s3_read_object_arns) > 0
+  }
   secret_functions = {
     for name, fn in var.functions :
     name => fn.secret_policy_key if fn.secret_policy_key != null
@@ -232,6 +245,71 @@ resource "aws_iam_role_policy" "run_task" {
   name   = "run-task"
   role   = aws_iam_role.this[each.key].id
   policy = data.aws_iam_policy_document.run_task[each.key].json
+}
+
+# ── Lambda invoking Lambda ───────────────────────────────────────────────────
+#
+# A `Route.LAMBDA` task that dispatches another `Route.LAMBDA` task is one
+# function invoking another, and because one function serves every short task,
+# it is `readypick-task-worker` invoking ITSELF.
+#
+# Nothing in this product needed that until `pickready.reconcile_context_index`
+# had to queue one `pickready.index_document` per unindexed document. Every
+# earlier sweep dispatched to `Route.ECS`, which goes through the `ecs:RunTask`
+# grant above -- a different permission -- so the gap stayed invisible until
+# the sweep ran in production and came back with AccessDeniedException.
+#
+# `dispatch` RAISING rather than swallowing is what made it visible at all: the
+# sweep failed loudly instead of reporting a queue it had not written to.
+#
+# The ARN is composed from `local.function_names` rather than read off
+# `aws_lambda_function.this[...].arn`, which keeps this a pure local and avoids
+# a graph cycle. It is deliberately NOT added to the function's `depends_on`
+# for the same reason: the ROLE must exist before the function, the policy on
+# it need not.
+data "aws_partition" "current" {}
+
+
+data "aws_iam_policy_document" "invoke_function" {
+  for_each = local.invoking_functions
+
+  statement {
+    sid     = "InvokeOnlyTheNamedFunctions"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      for key in each.value.invokable_function_keys :
+      "arn:${data.aws_partition.current.partition}:lambda:${var.region}:${var.account_id}:function:${local.function_names[key]}"
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "invoke_function" {
+  for_each = local.invoking_functions
+
+  name   = "invoke-function"
+  role   = aws_iam_role.this[each.key].id
+  policy = data.aws_iam_policy_document.invoke_function[each.key].json
+}
+
+# Reading one object out of a named bucket, by prefix.
+data "aws_iam_policy_document" "read_objects" {
+  for_each = local.s3_reading_functions
+
+  statement {
+    sid       = "ReadOnlyTheNamedObjects"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = each.value.s3_read_object_arns
+  }
+}
+
+resource "aws_iam_role_policy" "read_objects" {
+  for_each = local.s3_reading_functions
+
+  name   = "read-objects"
+  role   = aws_iam_role.this[each.key].id
+  policy = data.aws_iam_policy_document.read_objects[each.key].json
 }
 
 # Publishing a permanently failed asynchronous invocation.

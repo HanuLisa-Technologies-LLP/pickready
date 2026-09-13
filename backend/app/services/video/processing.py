@@ -182,22 +182,46 @@ def compress(src: Path, dst: Path) -> None:
 # ── Amazon Transcribe ────────────────────────────────────────────────────────
 
 
-def _transcribe_client() -> Any:
-    """A Transcribe client with explicit timeouts and bounded retries, the
-    same lesson every boto3 client here carries: an unreachable endpoint that
-    HANGS defeats every try/except around the call."""
-    import boto3  # noqa: PLC0415 -- optional at import time
+def _boto_config() -> Any:
+    """Explicit timeouts and bounded retries, the same lesson every boto3
+    client here carries: an unreachable endpoint that HANGS defeats every
+    try/except around the call."""
     from botocore.config import Config  # noqa: PLC0415
 
-    settings = get_settings()
+    return Config(
+        connect_timeout=10,
+        read_timeout=30,
+        retries={"max_attempts": 2, "mode": "standard"},
+    )
+
+
+def _transcribe_client() -> Any:
+    """A Transcribe client in the TRANSCRIBE region, which is not necessarily
+    the deployment region: ap-south-2 has no Transcribe endpoint at all, so a
+    pilot deployed there calls ap-south-1."""
+    import boto3  # noqa: PLC0415 -- optional at import time
+
     return boto3.client(
         "transcribe",
-        region_name=settings.aws_region or None,
-        config=Config(
-            connect_timeout=10,
-            read_timeout=30,
-            retries={"max_attempts": 2, "mode": "standard"},
-        ),
+        region_name=get_settings().effective_transcribe_region or None,
+        config=_boto_config(),
+    )
+
+
+def _transcribe_s3_client() -> Any:
+    """An S3 client bound to the TRANSCRIBE region, for the working bucket.
+
+    Deliberately separate from `object_storage.client()`: that one is the
+    single transport for this product's own bucket and must stay pointed at
+    the deployment region. This one exists only for the working objects a
+    cross-region Transcribe job needs, and touches nothing else.
+    """
+    import boto3  # noqa: PLC0415 -- optional at import time
+
+    return boto3.client(
+        "s3",
+        region_name=get_settings().effective_transcribe_region or None,
+        config=_boto_config(),
     )
 
 
@@ -214,43 +238,97 @@ def run_transcription(
     settings = get_settings()
     if not settings.transcribe_enabled:
         raise TranscriptionError(TRANSCRIBE_DISABLED_DETAIL)
-    bucket = (settings.s3_bucket or "").strip()
+    home_bucket = (settings.s3_bucket or "").strip()
+    work_bucket = settings.effective_transcribe_bucket
+    # A Transcribe job is region-local over S3: it reads and writes a bucket in
+    # its OWN region. Where Transcribe runs in a region the product's bucket
+    # does not live in, the audio makes a bounded round trip through a working
+    # bucket there and both working objects are deleted below, so the only
+    # lasting copy stays in `s3_bucket` exactly as it did before.
+    remote = bool(work_bucket) and work_bucket != home_bucket
     client = _transcribe_client()
-    client.start_transcription_job(
-        TranscriptionJobName=job_name,
-        LanguageCode=settings.transcribe_language_code,
-        Media={"MediaFileUri": f"s3://{bucket}/{audio_key}"},
-        MediaFormat="wav",
-        OutputBucketName=bucket,
-        OutputKey=output_key,
-    )
-    deadline = time.monotonic() + settings.video_transcribe_timeout_seconds
-    while True:
-        job = client.get_transcription_job(TranscriptionJobName=job_name)[
-            "TranscriptionJob"
-        ]
-        job_status = job["TranscriptionJobStatus"]
-        if job_status == "COMPLETED":
-            break
-        if job_status == "FAILED":
-            raise TranscriptionError(
-                "Amazon Transcribe reported the job failed: "
-                + str(job.get("FailureReason") or "no reason given")
+    try:
+        if remote:
+            # A server-side copy: the bytes never pass through this process,
+            # which is what keeps a two-hour recording's audio off the heap.
+            _transcribe_s3_client().copy_object(
+                Bucket=work_bucket,
+                Key=audio_key,
+                CopySource={"Bucket": home_bucket, "Key": audio_key},
+                ServerSideEncryption="AES256",
             )
-        if time.monotonic() >= deadline:
-            raise TranscriptionError(
-                "Amazon Transcribe did not finish within "
-                f"video_transcribe_timeout_seconds "
-                f"({settings.video_transcribe_timeout_seconds}s)."
+        client.start_transcription_job(
+            TranscriptionJobName=job_name,
+            LanguageCode=settings.transcribe_language_code,
+            Media={"MediaFileUri": f"s3://{work_bucket}/{audio_key}"},
+            MediaFormat="wav",
+            OutputBucketName=work_bucket,
+            OutputKey=output_key,
+        )
+        deadline = time.monotonic() + settings.video_transcribe_timeout_seconds
+        while True:
+            job = client.get_transcription_job(TranscriptionJobName=job_name)[
+                "TranscriptionJob"
+            ]
+            job_status = job["TranscriptionJobStatus"]
+            if job_status == "COMPLETED":
+                break
+            if job_status == "FAILED":
+                raise TranscriptionError(
+                    "Amazon Transcribe reported the job failed: "
+                    + str(job.get("FailureReason") or "no reason given")
+                )
+            if time.monotonic() >= deadline:
+                raise TranscriptionError(
+                    "Amazon Transcribe did not finish within "
+                    f"video_transcribe_timeout_seconds "
+                    f"({settings.video_transcribe_timeout_seconds}s)."
+                )
+            time.sleep(settings.video_transcribe_poll_seconds)
+        if remote:
+            # Bring the transcript home, so the caller's HEAD-confirmed
+            # deletion of `output_key` still has an object to confirm and
+            # every reader downstream stays on the one transport.
+            raw = (
+                _transcribe_s3_client()
+                .get_object(Bucket=work_bucket, Key=output_key)["Body"]
+                .read()
             )
-        time.sleep(settings.video_transcribe_poll_seconds)
-    payload = json.loads(storage.get_bytes(output_key).decode("utf-8"))
+            storage.put(key=output_key, data=raw, content_type="application/json")
+        else:
+            raw = storage.get_bytes(output_key)
+    finally:
+        if remote:
+            _delete_transcribe_working_objects(
+                work_bucket, (audio_key, output_key), job_name
+            )
+    payload = json.loads(raw.decode("utf-8"))
     items = payload.get("results", {}).get("items", [])
     if not isinstance(items, list):
         raise TranscriptionError(
             "Amazon Transcribe returned a transcript with no item list."
         )
     return items
+
+
+def _delete_transcribe_working_objects(
+    bucket: str, object_keys: tuple[str, ...], job_name: str
+) -> None:
+    """Clear the working copies out of the Transcribe region.
+
+    A failure here is LOGGED, never raised: it must not turn a transcription
+    that succeeded into one that failed. The working bucket's own expiry rule
+    is the backstop for exactly this case.
+    """
+    client = _transcribe_s3_client()
+    for key in object_keys:
+        try:
+            client.delete_object(Bucket=bucket, Key=key)
+        except Exception:  # noqa: BLE001 -- logged, never fails the transcript
+            logger.warning(
+                "video_processing.transcribe_working_delete_failed job=%s key=%s",
+                job_name, key,
+            )
 
 
 # ── Transcript structuring (spec section 7) ──────────────────────────────────

@@ -23,6 +23,24 @@ from functools import lru_cache
 from app.prompts import registry
 
 
+#: The name every other memory layer uses when it records that a prompt is what
+#: produced something. Written once here so a revocation naming a prompt
+#: version (`revoke_learnings_from_source`) and the write that recorded it
+#: cannot spell the source differently.
+SOURCE = "prompt"
+
+
+def source_version(name: str) -> str:
+    """The `source_version` a caller records for output written by this prompt.
+
+    This is the provenance half of W3.5 that this layer supplies: a learning or
+    a cached fact derived from a prompt records WHICH TEXT wrote it, so when a
+    prompt version turns out to have taught the wrong lesson, everything it
+    produced is identifiable by exactly this string.
+    """
+    return f"{name}:{fingerprint(name)}"
+
+
 @lru_cache(maxsize=64)
 def fingerprint(name: str) -> str:
     """A short, stable hash of a prompt's text.

@@ -57,6 +57,8 @@ document.
 | File | What it holds |
 |---|---|
 | [ESD.md](architecture/ESD.md) | Engineering and system design, implementation-aligned |
+| [AI_RUNTIME.md](architecture/AI_RUNTIME.md) | The AI runtime AS BUILT: retrieval, the reranker, the scoring lock, the eval layer and the release gate. Names what is NOT built, in the same document |
+| [ENGINEERING_AUDIT_2026-09-11.md](architecture/ENGINEERING_AUDIT_2026-09-11.md) | The LLD brief's seventeen audit deliverables, measured against this tree: three real gaps found and fixed, the refusals with reasons, and the honest debt inventory |
 | [adr/](architecture/adr/) | Architecture decision records |
 
 ### `spec/` — normative specifications
@@ -64,6 +66,7 @@ document.
 |---|---|
 | [RBAC_SPECIFICATION.md](spec/RBAC_SPECIFICATION.md) | Precedence rank 1. Roles, capabilities, isolation, lifecycle |
 | [HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) | The end-to-end candidate and client journeys, and the eight gates that hold them together |
+| [AI_RUNTIME_UPGRADE.md](spec/AI_RUNTIME_UPGRADE.md) | RPN-AI-UP-001, precedence rank 3a. The AI runtime, retrieval, evaluation and AI security. **Read it beside [verification/AI_UPGRADE_BASELINE.md](verification/AI_UPGRADE_BASELINE.md)**, which records where its own section 2 audit turned out to be wrong |
 | [CANDIDATE_DASHBOARD_SPECIFICATION.md](spec/CANDIDATE_DASHBOARD_SPECIFICATION.md) | The candidate list surface |
 | [PROJECT_EVIDENCE_INTELLIGENCE.md](spec/PROJECT_EVIDENCE_INTELLIGENCE.md) | Project evidence: pipeline, security, retention |
 | [PROCTORING.md](spec/PROCTORING.md) | Mandatory assessment monitoring: principles, paths, the report, retention |
@@ -91,6 +94,7 @@ document.
 | [VERIFICATION_RESULTS.md](verification/VERIFICATION_RESULTS.md) | Live vendor runs that succeeded, with dates |
 | [VERIFICATION_PENDING.md](verification/VERIFICATION_PENDING.md) | What remains unproven, stated plainly |
 | [PROCTORING_AND_FORMATS_VERIFICATION.md](verification/PROCTORING_AND_FORMATS_VERIFICATION.md) | What was executed for proctoring and question formats, and what was not |
+| [AI_UPGRADE_BASELINE.md](verification/AI_UPGRADE_BASELINE.md) | RPN-AI-UP-001 W0. What was reachable, what was exercised, and the live pilot row counts on 2026-09-09. A measurement, not a description: never edit it to match new behaviour |
 
 These two are load-bearing: `backend/tests/test_no_live_vendor_claims.py`
 reads them, so a claim about a live call must be evidenced in

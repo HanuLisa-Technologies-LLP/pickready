@@ -31,6 +31,14 @@ variable "secret_names" {
     "OPENAI_GPT_TERRA",
     "OPENAI_GPT_LUNA",
     "VOYAGE_CONTEXT_4",
+    # The RERANKER's credential, named after the model it unlocks (rerank-2.5),
+    # the same convention as the line above. It holds the same Voyage ACCOUNT
+    # key as VOYAGE_CONTEXT_4, because one account serves both /v1/embeddings
+    # and /v1/rerank, and the names stay separate anyway: an absent key must
+    # name the missing CAPABILITY, so "the reranker is not configured" is a
+    # recorded degradation rather than an embedding outage wearing a
+    # reranker's name.
+    "VOYAGE_RERANK_2_5",
     "DATABASE_URL",
     "REDIS_URL",
     "JWT_SECRET",
@@ -90,9 +98,23 @@ variable "service_secrets" {
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
+      "VOYAGE_RERANK_2_5",
       "FIREBASE_SERVICE_ACCOUNT_JSON",
       "RAZORPAY_KEY_SECRET",
       "LLM_KEY_ENCRYPTION_SECRET",
+      # THE BD PORTAL'S AI REACH RUNS IN THE REQUEST HANDLER, and this key is
+      # why it returned nothing on the live site. The search is deliberately
+      # NOT dispatched -- it is user-initiated, interactive and bounded by
+      # `web_research.SEARCH_BUDGET_SECONDS` -- so the API is the process that
+      # calls Tavily, and it was the one runtime identity without the key.
+      #
+      # It failed silently by design: an absent key is a supported state that
+      # answers `status="unconfigured"` so the customer-database segment keeps
+      # working. That graceful path is right, and it is exactly what made this
+      # invisible. The task worker and the company-profile function have held
+      # the key since the roster was written; only the caller that needed it
+      # most did not.
+      "TAVILY_API_KEY",
     ]
     "task-worker" = [
       "DATABASE_URL",
@@ -100,6 +122,7 @@ variable "service_secrets" {
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
+      "VOYAGE_RERANK_2_5",
       "SMTP_PASSWORD",
       "TAVILY_API_KEY",
       "MSG91_API_KEY",
@@ -111,6 +134,7 @@ variable "service_secrets" {
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
+      "VOYAGE_RERANK_2_5",
       "LLM_KEY_ENCRYPTION_SECRET",
     ]
     "jd-gen" = [
@@ -154,6 +178,36 @@ variable "placeholder_value" {
   EOT
   type        = string
   default     = "PLACEHOLDER_NOT_CONFIGURED"
+}
+
+variable "service_secret_writers" {
+  description = <<-EOT
+    {service -> the exact secrets it may WRITE}. Almost always empty.
+
+    Reading a secret and replacing it are different powers, and this module has
+    only ever granted the first. One thing needs the second, and the reason it
+    does is the 2026-09-11 outage: `DATABASE_URL` held a hand-copied snapshot
+    of the RDS MASTER password, `manage_master_user_password` had Secrets
+    Manager rotating that password on a schedule, and seven days after the
+    instance was created the copy went stale and every database connection in
+    the product failed at once.
+
+    The fix is the design the `rds` module has documented from the start: the
+    DSN carries a least-privileged application role whose password nothing else
+    rotates. `app.scripts.provision_app_db_role` mints that password INSIDE the
+    VPC and writes it here, so it is never an argument, never in a RunTask call,
+    never in CloudTrail and never in a shell history. Rotating it later is the
+    same script run again.
+
+    Scoped the same way the read grant is: one service, an enumerated list of
+    secret names, never a prefix. A service absent from this map can read what
+    `service_secrets` allows and write nothing, which is the correct answer for
+    every service except the one-shot migration task.
+  EOT
+  type        = map(list(string))
+  default = {
+    "migrate" = ["DATABASE_URL"]
+  }
 }
 
 variable "kms_key_id" {

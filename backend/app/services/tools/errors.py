@@ -25,12 +25,52 @@ class ToolNotFound(ToolError):
     """No tool is registered under that name."""
 
 
-class ToolPermissionError(ToolError):
+class ToolPolicyError(ToolError):
+    """Refused by the policy engine, before the handler was reached.
+
+    Carries the status a caller surfacing the refusal must answer with, so the
+    SHAPE of the refusal is decided by the rule that made it rather than by
+    whichever route renders it. Getting that backwards is how a cross-tenant
+    probe learns, from a 403, that the row it named exists.
+    """
+
+    #: 403 unless a subclass says otherwise.
+    http_status = 403
+
+    def __init__(self, tool: str, detail: str, *, reason: str = "") -> None:
+        super().__init__(tool, detail)
+        #: The policy rule that refused, by name. Same token the verdict and
+        #: the ledger line carry.
+        self.reason = reason
+
+
+class ToolPermissionError(ToolPolicyError):
     """The calling agent does not hold this tool.
 
     Never retried and never downgraded to a warning. An agent reaching for a
     tool it was not granted is a wiring defect or an injection succeeding, and
     both want to be loud.
+    """
+
+
+class ToolScopeError(ToolPolicyError):
+    """The call named an object belonging to another tenant.
+
+    404, never 403, and the detail names no identifier. RBAC 4 forbids one
+    client from INFERRING another client's resources, and a refusal that
+    distinguishes "forbidden" from "absent" is an existence oracle with a
+    prompt in front of it.
+    """
+
+    http_status = 404
+
+
+class ToolApprovalRequired(ToolPolicyError):
+    """The call is irreversible and no current human approval was presented.
+
+    Raised INSTEAD of running the handler, which is what "gated at the adapter
+    until commit" has to mean in code. An outbound effect issued speculatively
+    and compensated afterwards is an email the candidate has already read.
     """
 
 

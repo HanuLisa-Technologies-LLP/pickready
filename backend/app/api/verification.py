@@ -7,12 +7,13 @@
   (secrets.token_urlsafe(32)), single-use: any status other than `pending`
   rejects re-submission.
 """
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -40,9 +41,13 @@ from app.schemas.verification import (
     ProfileVerificationOut,
     VerificationRequestOut,
 )
+from app.models.conversation import CHANNEL_EMAIL, PARTY_EMPLOYER_HR
 from app.services import capabilities as caps
+from app.services import conversations, realtime
 from app.services.audit import audit
 from app.workers.dispatch import dispatch
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -247,6 +252,17 @@ async def inbound_email_webhook(
     instead of using the form, enqueue LLM extraction as the fallback path
     (FR-5.3). Always returns 200 so the provider does not retry storms."""
     recipients = body.to if isinstance(body.to, list) else [body.to or ""]
+    recipients += body.cc if isinstance(body.cc, list) else [body.cc or ""]
+
+    # CONVERSATIONS FIRST, because its token is read from the ADDRESS and is
+    # therefore exact. The two older paths below match on a URL or a reference
+    # string in the BODY, which depends on the employer's mail client quoting
+    # the original; asking the precise question first means a thread reply is
+    # never mistaken for one of them.
+    routed = await _match_conversation_reply(session, body, recipients)
+    if routed is not None:
+        return routed
+
     token: str | None = None
     for addr in recipients:
         match = _TOKEN_IN_ADDRESS.search(addr or "")
@@ -270,6 +286,98 @@ async def inbound_email_webhook(
             return InboundEmailOut(matched=True)
 
     return await _match_bgv_reply(session, body.text or "")
+
+
+async def _match_conversation_reply(
+    session: AsyncSession, body: InboundEmailIn, recipients: list[str]
+) -> InboundEmailOut | None:
+    """Post an employer's reply into the conversation its address names.
+
+    THE ADDRESS IS THE ROUTING. `conversations+<thread_token>@<inbound domain>`
+    is set as the Reply-To on every verification request, so the answer lands
+    in the right employer's thread whatever the employer does to the subject
+    line and however little of the original their client quotes. Matching on a
+    subject was considered and refused: "Re: Fwd: Re:" prefixes, translated
+    prefixes and a recruiter forwarding a thread all break it, and the failure
+    is silent.
+
+    THE TOKEN IS THE AUTHORIZATION, exactly as the employer form's token is.
+    This handler runs under the bypass scope (the tenant is unknown until the
+    row is found), so it reads ONE row by its unguessable token and writes only
+    inside that row's tenant.
+
+    Returns None when nothing matched, so the caller falls through to the two
+    older reply paths rather than swallowing their mail.
+    """
+    token = conversations.token_from_address(*recipients)
+    if token is None:
+        return None
+    row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT id, tenant_id, bgv_verification_id "
+                    "FROM conversations WHERE thread_token = :tok"
+                ),
+                {"tok": token},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        # A well-formed token nobody holds. Recorded without the token itself,
+        # which is a live routing secret for whichever thread does hold it.
+        logger.warning("conversations.inbound_unknown_thread")
+        return InboundEmailOut(matched=False)
+
+    tenant_id = uuid.UUID(str(row["tenant_id"]))
+    conversation_id = uuid.UUID(str(row["id"]))
+    reply_text = (body.text or "").strip()
+    if not reply_text:
+        # An empty reply is a real thing (an attachment with no words, an
+        # HTML-only client). Recorded as arriving rather than dropped, because
+        # "the employer has answered" is the fact the recruiter is waiting for.
+        reply_text = "The employer replied with no message text."
+
+    try:
+        message = await conversations.post_message(
+            session,
+            conversation_id=conversation_id,
+            tenant_id=tenant_id,
+            author_party=PARTY_EMPLOYER_HR,
+            body=reply_text,
+            channel=CHANNEL_EMAIL,
+            author_email=body.from_,
+            inbound_message_id=body.message_id,
+        )
+    except conversations.ConversationRefused as exc:
+        logger.warning("conversations.inbound_refused reason=%s", exc)
+        return InboundEmailOut(matched=False)
+
+    if row["bgv_verification_id"] is not None:
+        # `responded_at` is stamped, and the STATUS is not. A person decides
+        # verified or not verified after reading this; inferring either from
+        # the arrival of a reply would be the automated hiring decision the
+        # brief refuses.
+        await session.execute(
+            text(
+                "UPDATE bgv_verifications SET responded_at = now(), "
+                " updated_at = now() "
+                "WHERE id = :vid AND responded_at IS NULL"
+            ),
+            {"vid": str(row["bgv_verification_id"])},
+        )
+
+    realtime.publish_after_commit(
+        session,
+        realtime.message_event(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            message=message,
+        ),
+    )
+    return InboundEmailOut(matched=True)
 
 
 async def _match_bgv_reply(

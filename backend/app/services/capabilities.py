@@ -54,6 +54,35 @@ MANAGE_COMPLIANCE_DOCUMENTS = "manage_compliance_documents"
 MANAGE_BILLING = "manage_billing"
 VIEW_BILLING = "view_billing"
 
+# ── In-product support (2026-09-10) ──────────────────────────────────────────
+#
+# A third-party customer-success sync was deleted (claude.md, 2026-09-10) and
+# the surface it served moved inside the product. Two capabilities, and the
+# split is by WHICH SIDE of the conversation somebody is on, not by seniority.
+#
+# OPEN_SUPPORT_THREADS is held by every customer role including the Interview
+# Manager, who otherwise holds the narrowest set in the product. Raising a
+# ticket is not a recruitment capability: somebody locked out of a screen has
+# to be able to say so, and a role that could not would have to relay it
+# through a colleague, which is how a bug report loses the detail that made it
+# actionable.
+OPEN_SUPPORT_THREADS = "open_support_threads"
+
+# HANDLE_SUPPORT_THREADS is the PLATFORM side, and it is deliberately absent
+# from DEFAULT_PERMISSION_MATRIX below. That dict is copied into per-tenant
+# rows for every customer the Owner console creates, and the role that holds
+# this one has no tenant. It is seeded as a GLOBAL row by migration 0093.
+#
+# It is also NOT a route gate, and saying so here is the point: the Provider
+# routes are gated by `get_superadmin_db`, which already enforces the owner
+# audience and audit-logs every cross-tenant read, and `require_capability`
+# structurally cannot serve them because it resolves through `get_tenant_db`
+# and a platform user has no tenant to resolve against. What this capability
+# IS is the notification ROUTING list, asked of the permission rows rather
+# than branched on by role name, so a future ReadyPick support role is a
+# seeded row instead of an edit to a background task.
+HANDLE_SUPPORT_THREADS = "handle_support_threads"
+
 # ── RBAC_SPECIFICATION.md 24: the capabilities that specification names and
 #    this codebase did not have ────────────────────────────────────────────
 #
@@ -145,9 +174,41 @@ HIRING_MANAGER_CONTROLLED: frozenset[str] = frozenset(
 # capability constant is only half a change (claude.md).
 VIEW_INTELLIGENCE_DASHBOARDS = "view_intelligence_dashboards"
 
+#: RPN-AI-UP-001 W3.6. Revoking every agent learning traceable to one source:
+#: a poisoned document, a prompt version that taught the wrong lesson, a parser
+#: that misread a whole batch. Granted to the client Super Admin (Role.client)
+#: and to nobody else by default, because revoking memory changes how every
+#: future generation behaves for the whole tenant. That is closer to
+#: EDIT_ROLE_PERMISSIONS than to recruitment work, and it is not something a
+#: recruiter should be able to do while working one job. Learnings are scoped
+#: per tenant (services/memory/provenance.py), so the only rows this can ever
+#: reach are the tenant's own. Seeded by migration 0089, because a capability
+#: constant is only half a change (claude.md).
+REVOKE_AGENT_LEARNINGS = "revoke_agent_learnings"
+
 # Business Development Portal (the fourth portal, /bd). Three grants, one per
 # area of the console, so a BD lead can be given the customer database and the
 # AI Reach search without the ability to edit anyone's pipeline.
+# Background verification (2026-09-12). SPLIT INTO READ AND DECIDE, which is
+# the only split that matters here: seeing that an employer is unverified is
+# ordinary pipeline information, while marking one verified is a diligence
+# decision that unblocks an offer. One capability covering both would mean
+# anybody who can read the dashboard can open the gate.
+#
+# Both sit in the flat customer set, like DECIDE_PROFILE, because the four
+# customer roles are functionally identical by product decision. A tenant that
+# wants to narrow the decision to one person does it through the per-user
+# overlay (users.permissions_json) rather than by asking for a fifth role.
+VIEW_BGV = "view_bgv"
+MANAGE_BGV = "manage_bgv"
+
+# Conversations (2026-09-12). One capability for the whole surface: a recruiter
+# who may work a candidate may talk to them, and splitting read from write
+# would produce a screen that renders a thread with no way to answer it.
+# Sending to an employer HR contact additionally requires MANAGE_BGV, because
+# that message is a verification act rather than a conversation.
+USE_CONVERSATIONS = "use_conversations"
+
 MANAGE_BD_LEADS = "manage_bd_leads"        # Personal Reach + Social Reach
 VIEW_BD_CUSTOMERS = "view_bd_customers"    # Customers page + CSV export
 USE_AI_REACH = "use_ai_reach"              # AI Reach search
@@ -161,6 +222,7 @@ ALL_CAPABILITIES = [
     MANAGE_EMAIL_TEMPLATES, EDIT_COMPANY_PROFILE, PUBLISH_JOB,
     MANAGE_COMPLIANCE_DOCUMENTS,
     MANAGE_BD_LEADS, VIEW_BD_CUSTOMERS, USE_AI_REACH,
+    VIEW_BGV, MANAGE_BGV, USE_CONVERSATIONS,
     MANAGE_BILLING, VIEW_BILLING,
     # RBAC_SPECIFICATION.md 24, appended 2026-08-29. Appended rather than
     # interleaved because resolve_capability_set returns capabilities in THIS
@@ -174,6 +236,14 @@ ALL_CAPABILITIES = [
     # Talent Intelligence dashboards (2026-09-05 spec). Appended, same rule
     # as above: response field order must not shuffle.
     VIEW_INTELLIGENCE_DASHBOARDS,
+    # RPN-AI-UP-001 W3.6, appended for the same reason.
+    REVOKE_AGENT_LEARNINGS,
+    # In-product support (2026-09-10). APPENDED, same rule again: the response
+    # field order must not shuffle. Only the customer-side one is listed here.
+    # HANDLE_SUPPORT_THREADS is a PLATFORM capability and this list is what
+    # /auth/me returns to a customer's browser, so a platform-only name here
+    # would advertise a surface no customer can reach.
+    OPEN_SUPPORT_THREADS,
 ]
 
 # Flattened staff model (PRD v1.0 §4, FINAL — 2026-07-24). HR Manager,
@@ -202,6 +272,14 @@ _STAFF_OPERATIONAL: dict[str, bool] = {
     # Read-only. A recruiter whose invitations stop sending must be able to see
     # that the credit pool is in deficit; they still cannot change the plan.
     VIEW_BILLING: True,
+    # Raising a support ticket. See the constant for why every customer
+    # role holds it.
+    OPEN_SUPPORT_THREADS: True,
+    # Background verification and conversations. Seeded by migration 0095;
+    # a capability constant is only half a change.
+    VIEW_BGV: True,
+    MANAGE_BGV: True,
+    USE_CONVERSATIONS: True,
 }
 
 # The customer-side grant set, shared by all four customer roles.
@@ -240,8 +318,14 @@ DEFAULT_PERMISSION_MATRIX: dict[Role, dict[str, bool]] = {
     Role.recruiter: dict(_CUSTOMER_FULL_ACCESS),
     # Bottom of the hierarchy: there is no subordinate role to manage.
     Role.hiring_manager: {**_CUSTOMER_FULL_ACCESS, MANAGE_STAFF: False},
-    # Company Admin: the same functional access, on the account they own.
-    Role.client: dict(_CUSTOMER_FULL_ACCESS),
+    # Company Admin: the same functional access, on the account they own, plus
+    # the one capability that is theirs alone. Revoking agent learnings is not
+    # part of _CUSTOMER_FULL_ACCESS deliberately: the other three staff roles
+    # are functionally identical to this one by product decision, and this is
+    # the second place (after MANAGE_COMPLIANCE_DOCUMENTS and MANAGE_BILLING)
+    # where the flat model does not flatten, because the act is about the
+    # tenant's own configuration rather than about running its hiring.
+    Role.client: {**_CUSTOMER_FULL_ACCESS, REVOKE_AGENT_LEARNINGS: True},
     # Business Development. Deliberately NOT given any recruitment capability:
     # a BD rep sells the platform, they do not run a customer's hiring. The set
     # here must match migration 0023's seeded rows exactly, or the engine (which
@@ -646,6 +730,15 @@ DEFAULT_PERMISSION_MATRIX[Role.hiring_manager].update(_SPEC_GRANTS_HIRING_MANAGE
 DEFAULT_PERMISSION_MATRIX[Role.interview_manager] = {
     **_INTERVIEW_MANAGER_ACCESS,
     **_SPEC_GRANTS_INTERVIEW_MANAGER,
+    # Support (2026-09-10, migration 0093). Stated HERE as well as in the
+    # migration, because `seed_dev_data._seed_permission_template` RECONCILES
+    # existing global rows to this matrix: a grant that lived only in the
+    # migration was flipped back to False the first time the dev seed ran,
+    # which is precisely the dev/migrated divergence 0075's docstring warns
+    # about, and it was caught by the full suite ordering rather than by a
+    # targeted run. The narrowest role in the product still gets to say a
+    # screen is broken.
+    OPEN_SUPPORT_THREADS: True,
 }
 
 # ── Corporate email senders (Corporate Email System spec, 2026-09-05) ────────

@@ -34,8 +34,8 @@ their own hiring process actually produces when nothing pushes back:
     matrix that grades every imperfect candidate the same, which is the same as
     not grading.
   * TRAITS RATHER THAN EVIDENCE. "Ownership mindset" produces a competency
-    nobody can evidence, which produces a grade nobody can defend. Identical
-    argument to the Company DNA instrument's Section 3, and it uses the same
+    nobody can evidence, which produces a grade nobody can defend. The same
+    bar Sutra holds its own generated statements to, through the same
     detector -- one rule, one implementation.
   * A PROHIBITED DISQUALIFIER. Unlawful, and it must be refused at the moment
     it is typed rather than at compilation, because by then the sentence the
@@ -69,7 +69,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
-from app.services.hiring import company_dna, situations
+from app.services.hiring import observable, situations
 
 __all__ = [
     "HIGH_VALUE_PROBES",
@@ -507,18 +507,18 @@ def review(
 
     # ── Rule 4: traits rather than evidence ─────────────────────────────────
     #
-    # Uses the SAME detector as the Company DNA instrument's Section 3. One rule,
+    # Uses the SAME detector Sutra holds its own generated statements to. One rule,
     # one implementation: two copies of "is this an adjective" would drift, and
     # the drift would be invisible -- one intake accepting what the other refuses.
     for area, points in captured.items():
         for point in points or ():
             text = str(point or "").strip()
-            if text and not company_dna.is_observable(text):
+            if text and not observable.is_observable(text):
                 report.rejections.append(
                     Rejection(
                         rule="trait_not_evidence",
                         area=area,
-                        say=company_dna.rejection_message(text),
+                        say=observable.rejection_message(text),
                     )
                 )
                 # ONE per area. A manager handed six refusals at once stops
@@ -527,7 +527,7 @@ def review(
 
     # ── Rule 5a: a prohibited disqualifier ──────────────────────────────────
     for entry in disqualifiers:
-        offending = company_dna.prohibited_in(str(entry or ""))
+        offending = observable.prohibited_in(str(entry or ""))
         if offending:
             report.rejections.append(
                 Rejection(

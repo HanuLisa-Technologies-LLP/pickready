@@ -37,7 +37,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.embeddings import EmbeddingError, embed
-from app.services.rag import chunking
+from app.services.rag import chunking, contextual
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +56,16 @@ class IndexResult:
     unchanged: int = 0
     deleted: int = 0
     embedded: int = 0
+    #: Chunks written with a generated situating prefix (W6.2).
+    prefixed: int = 0
     #: True when text was indexed with no vector because embedding failed. The
     #: chunk is searchable by keyword; it is not searchable semantically until a
     #: backfill runs. Counted rather than raised, and never silent.
     degraded: bool = False
+    #: True when a prefix was wanted and not produced. SEPARATE from
+    #: `degraded`, which is about vectors: a chunk can have a vector and no
+    #: prefix, and one count reporting both would hide which happened.
+    prefix_degraded: bool = False
 
     @property
     def total(self) -> int:
@@ -138,22 +144,43 @@ async def index_document(
     unchanged = len(pieces) - len(changed)
 
     vectors: list[list[float] | None] = []
+    prefixes: list[contextual.PrefixResult] = []
     degraded = False
+    prefix_degraded = False
     if changed:
-        vectors, degraded = await _embed_batched([piece.content for piece in changed])
+        # PREFIXES FIRST. The embedding input is the joined form, and joining
+        # after embedding would index the chunk without the situating context
+        # that is the whole point of W6.2.
+        prefixes = await contextual.generate_prefixes(
+            document=document,
+            chunk_contents=[piece.content for piece in changed],
+            source_type=source_type,
+        )
+        prefix_degraded = any(result.degraded for result in prefixes)
+        vectors, degraded = await _embed_batched(
+            [
+                contextual.embedding_input(result.prefix, piece.content)
+                for piece, result in zip(changed, prefixes)
+            ]
+        )
 
-    for piece, vector in zip(changed, vectors or [None] * len(changed)):
+    for piece, vector, prefix in zip(
+        changed,
+        vectors or [None] * len(changed),
+        prefixes or [contextual.PrefixResult()] * len(changed),
+    ):
         await session.execute(
             text(
                 """
                 INSERT INTO context_chunks (
                     tenant_id, source_type, source_id, source_version,
                     section_type, ordinal, content, content_sha256, embedding,
-                    updated_at
+                    context_prefix, prefix_model, prefix_generated_at, updated_at
                 ) VALUES (
                     :tenant_id, :source_type, :source_id, :source_version,
                     :section_type, :ordinal, :content, :content_sha256,
-                    CAST(:embedding AS vector), now()
+                    CAST(:embedding AS vector),
+                    :context_prefix, :prefix_model, :prefix_generated_at, now()
                 )
                 ON CONFLICT (source_type, source_id, ordinal) DO UPDATE SET
                     source_version = EXCLUDED.source_version,
@@ -161,6 +188,9 @@ async def index_document(
                     content        = EXCLUDED.content,
                     content_sha256 = EXCLUDED.content_sha256,
                     embedding      = EXCLUDED.embedding,
+                    context_prefix = EXCLUDED.context_prefix,
+                    prefix_model   = EXCLUDED.prefix_model,
+                    prefix_generated_at = EXCLUDED.prefix_generated_at,
                     updated_at     = now()
                 """
             ),
@@ -174,6 +204,9 @@ async def index_document(
                 "content": piece.content,
                 "content_sha256": piece.content_sha256,
                 "embedding": _vector_literal(vector) if vector else None,
+                "context_prefix": prefix.prefix,
+                "prefix_model": prefix.model,
+                "prefix_generated_at": prefix.generated_at,
             },
         )
 
@@ -226,7 +259,9 @@ async def index_document(
         unchanged=unchanged,
         deleted=deleted,
         embedded=sum(1 for vector in vectors if vector),
+        prefixed=sum(1 for result in prefixes if result.has_prefix),
         degraded=degraded,
+        prefix_degraded=prefix_degraded,
     )
 
 

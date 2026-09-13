@@ -1,6 +1,6 @@
 """One candidate's whole journey, once per situation type (spec-doc6 11.1).
 
-    "End-to-end journey tests: client onboarding -> Company DNA -> job creation
+    "End-to-end journey tests: client onboarding -> Company Profile -> job creation
      -> SWOT -> matrix -> publish -> apply -> conversation -> scoring ->
      integrity flag -> human disposition -> report delivery -> dashboard
      render. At least one full journey per situation type."
@@ -124,7 +124,7 @@ class _Journey:
         self.situation_key = situation_key
         self.tenant_id = uuid.uuid4()
         self.job_id = uuid.uuid4()
-        self.dna_id = uuid.uuid4()
+        self.company_id = uuid.uuid4()
         self.hr_manager_id = uuid.uuid4()
         self.candidate_id = uuid.uuid4()
         self.link_id = uuid.uuid4()
@@ -196,13 +196,18 @@ class _Journey:
             },
         )
 
-    async def complete_company_dna(self, session) -> None:
+    async def write_company_profile(self, session) -> None:
+        """Gate 1's precondition: the client says what the company does."""
         await session.execute(
             text(
-                "INSERT INTO company_dna (id, tenant_id, version, status, is_current) "
-                "VALUES (:id, :t, 1, 'complete', false)"
+                "INSERT INTO companies (id, tenant_id, about_company, created_at) "
+                "VALUES (:id, :t, :about, now())"
             ),
-            {"id": self.dna_id, "t": self.tenant_id},
+            {
+                "id": self.company_id,
+                "t": self.tenant_id,
+                "about": "We build payments infrastructure for Indian SMEs.",
+            },
         )
 
     async def create_job(self, session) -> None:
@@ -222,17 +227,15 @@ class _Journey:
     async def freeze_matrix(self, session) -> None:
         await session.execute(
             text(
-                "INSERT INTO job_company_dna_bindings "
-                "(id, tenant_id, job_id, company_dna_id, company_dna_version, "
-                " freeze_sequence, scorecard_version, correlation_id, frozen_at, "
-                " frozen_by) "
-                "VALUES (:id, :t, :j, :d, 1, 1, 1, :c, :at, :by)"
+                "INSERT INTO job_scorecard_bindings "
+                "(id, tenant_id, job_id, freeze_sequence, scorecard_version, "
+                " correlation_id, frozen_at, frozen_by) "
+                "VALUES (:id, :t, :j, 1, 1, :c, :at, :by)"
             ),
             {
                 "id": uuid.uuid4(),
                 "t": self.tenant_id,
                 "j": self.job_id,
-                "d": self.dna_id,
                 "c": self.correlation_id,
                 "at": FROZEN_AT,
                 "by": None,
@@ -269,10 +272,10 @@ class _Journey:
         await session.execute(
             text(
                 "INSERT INTO evaluations (id, tenant_id, job_id, link_id, "
-                " scorecard_version, company_dna_version, situation_type, "
+                " scorecard_version, situation_type, "
                 " dimension_scores, gate_results_json, needs_human_review, "
                 " scoring_mode) "
-                "VALUES (:id, :t, :j, :l, 1, 1, :s, CAST(:dims AS jsonb), "
+                "VALUES (:id, :t, :j, :l, 1, :s, CAST(:dims AS jsonb), "
                 "        CAST(:gates AS jsonb), true, 'full')"
             ),
             {
@@ -400,14 +403,14 @@ async def test_one_full_journey_per_situation_type(situation_key: str) -> None:
                     journey.tenant_id,
                 ) == 1
 
-                # 2. COMPANY DNA (Layer 2), completed and versioned
-                await journey.complete_company_dna(session)
+                # 2. COMPANY PROFILE, which is what Gate 1 asks for
+                await journey.write_company_profile(session)
                 await session.flush()
                 assert await _scalar(
                     session,
-                    "SELECT count(*) FROM company_dna WHERE id = :v "
-                    "AND status = 'complete'",
-                    journey.dna_id,
+                    "SELECT count(*) FROM companies WHERE id = :v "
+                    "AND coalesce(btrim(about_company), '') <> ''",
+                    journey.company_id,
                 ) == 1
 
                 # 3. JOB CREATION, which is where the correlation id is issued
@@ -462,7 +465,7 @@ async def test_one_full_journey_per_situation_type(situation_key: str) -> None:
                 await session.flush()
                 assert await _scalar(
                     session,
-                    "SELECT count(*) FROM job_company_dna_bindings WHERE job_id = :v",
+                    "SELECT count(*) FROM job_scorecard_bindings WHERE job_id = :v",
                     journey.job_id,
                 ) == 1
 

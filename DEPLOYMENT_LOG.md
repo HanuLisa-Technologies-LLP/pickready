@@ -708,3 +708,266 @@ standing rules.
   Git Bash on Windows (curl.exe and MSYS disagree about `/tmp`); run it from
   Linux/CI, or verify the openapi and `/auth/me` shapes directly as this
   release's verification did.
+
+---
+
+## 2026-09-09 — Company DNA removed, pilot (ap-south-2)
+
+Commit `9dd2d95` (the images) on `feat/ses-sns-delivery-tracking`. Every commit
+after it in this release changes only tests, fixtures and one frontend comment;
+`git diff --stat 9dd2d95 HEAD -- backend/app backend/alembic frontend/app
+frontend/components frontend/lib` is two lines of comment, so the running bytes
+are the tested bytes.
+
+### What was deployed, and how it was proven
+
+| | |
+|---|---|
+| Backend image | `backend:sha-9dd2d95958d2` @ `sha256:297e34c9c3ea3881b26d79539e9fcac7093d6613f7d6cb02551936d80f593b1b` |
+| Lambda sibling | `backend:sha-9dd2d95958d2-fn` @ `sha256:d4f171300831cebfc27003642c2b124ae749d3355bd053e9fc765f302681d20f` |
+| Frontend image | `frontend:sha-9dd2d95958d2` @ `sha256:386739abe4cf785a0ac7146b405f1219186dfc0265f412ca8833410c22e33946` |
+| Task definitions | api:21, frontend:13, migrate:18, analysis re-registered on its pinned `93ebfcb` |
+| Migration | 0088_remove_company_dna, one-shot task `683a5df5909c4bfc91ac41b44d460050`, exit 0 |
+
+`verify-deployment.sh` per-service lines: api 4 containers all on the backend
+digest, frontend 2 on the frontend digest, analysis NO RUNNING TASKS. Its exit
+code is still FAILED and still for the standing reason: the account's Fargate
+vCPU quota is 4 and analysis wants 2 vCPU per task. Read the lines, not the
+exit code. Both ALB target groups: all targets healthy.
+
+### The check that actually proves the release
+
+The OpenAPI document, before and after, against the live site:
+
+    before: 284 paths, 6 of them /api/v1/clients/{client_id}/company-dna*
+    after:  278 paths, zero
+
+and `GET /api/v1/clients/<uuid>/company-dna/status`, a live route an hour
+earlier, now answers 404. `POST /jobs` and `GET /companies/me/profile` both
+answer 401 unauthenticated, which is reachable-and-gated rather than gone.
+
+### THE REGION DEFAULT COST A STEP, AND IT IS FIXED
+
+`run-migration.sh` defaulted to `AWS_REGION=ap-south-1` while the pilot lives
+in ap-south-2, so the migration answered **"TaskDefinition not found"** -- which
+reads as a broken deploy rather than as a lookup in an empty region.
+`verify-deployment.sh` carried the same default; `deploy-services.sh` and
+`update-lambda-code.sh` carried the opposite one. All four now read
+`AWS_REGION`, then `AWS_DEFAULT_REGION`, then the CLI's own configured region,
+and REFUSE by name when none of them says. spec-doc6 D5 removes the assumption
+by name; a default here was that assumption, hardcoded in four places, in two
+directions.
+
+### THE FRONTEND IMAGE NEEDS BUILD ARGS THAT THIS FILE DID NOT RECORD
+
+`frontend/Dockerfile` refuses without `NEXT_PUBLIC_FIREBASE_API_KEY` and
+`NEXT_PUBLIC_FIREBASE_PROJECT_ID`, and the values live in
+`frontend/.env.local`. A build without them fails inside `npm run build`
+rather than at the guard, because buildx serves the guard's RUN layer from
+cache. The working command:
+
+    set -a; . frontend/.env.local; set +a
+    docker buildx build --platform linux/arm64 --provenance=false --sbom=false --push \
+      --build-arg NEXT_PUBLIC_FIREBASE_API_KEY="$NEXT_PUBLIC_FIREBASE_API_KEY" \
+      --build-arg NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN="$NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN" \
+      --build-arg NEXT_PUBLIC_FIREBASE_PROJECT_ID="$NEXT_PUBLIC_FIREBASE_PROJECT_ID" \
+      --build-arg NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET="$NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET" \
+      --build-arg NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID="$NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID" \
+      --build-arg NEXT_PUBLIC_FIREBASE_APP_ID="$NEXT_PUBLIC_FIREBASE_APP_ID" \
+      -t "<registry>/readypick-pilot/frontend:$TAG" frontend
+
+A stale `frontend/.next-dev/` also fails the build's type check against routes
+that no longer exist. `.dockerignore` excludes it from the image, but it fails
+a LOCAL `npm run build`, which is where the deleted page surfaced first.
+
+### Things this release did NOT do
+
+- No `terraform apply` outside the two `-target`ed resources.
+- `analysis_image_tag` stayed pinned at `93ebfcb`; nothing rebuilt it.
+- The vCPU quota case is still open; analysis still has no running task.
+
+## 2026-09-10 — Native support, RDS bump, runtime completions, pilot (ap-south-2)
+
+Commit `3b27abb` on `feat/ai-upgrade-rpn-ai-up-001`. One tag for backend and
+frontend (`sha-3b27abb`), plain manifests, one digest per image for both
+runtimes. Suite on the deployed commit: 6132 passed, 1 skipped, 0 failed.
+
+- Migrations 0093 (support_threads + support_messages + RLS + capability
+  seeds) and 0094 (report `model_id`/`prompt_version`) applied; schema read
+  back `0094_report_provenance`.
+- `terraform apply -var image_tag=sha-3b27abb -var frontend_image_tag=sha-3b27abb`:
+  the tfvars pin `bootstrap`, and applying WITHOUT the overrides registers
+  task-definition revisions pointing at the bootstrap image, which the next
+  deploy-services.sh would then faithfully roll out. Worth restating every
+  release until a wrapper owns it.
+- RDS: `db.t4g.micro -> db.t4g.medium` in place, storage ceiling 100 -> 200,
+  floor kept at 50, `multi_az` still false with the must-flip note now in the
+  file. Terraform waited out the modify; `describe-db-instances` read back
+  medium/available/no-pending before the migration ran. NO RDS PROXY, owner
+  decision: the vendor's own pinning documentation says PostgreSQL sessions
+  pin on SET, set_config() and named prepared statements, and this
+  application does all three on effectively every session, so the proxy
+  would multiplex nothing. Reasoning beside the instance_class line.
+- The vendor-sync EventBridge rule (`readypick-sync-intercom-companies`) was
+  destroyed with the integration; the scheduler listing no longer names it.
+- Services api 26->27, frontend 14->15; analysis untouched on 12; all three
+  verified by digest against RUNNING tasks. Lambdas all on `sha-3b27abb`.
+- Support routes answer 401 unauthenticated at the apex: mounted and gated.
+  Zero API errors in the ten minutes after rollout.
+
+## 2026-09-11 — The engineering-audit close-out, pilot (ap-south-2)
+
+Commit `bf74fc1` on `feat/ai-upgrade-rpn-ai-up-001`. Backend `sha-bf74fc1`
+(single plain manifest, one digest for ECS and Lambda); frontend deliberately
+kept on yesterday's `sha-3b27abb` because no frontend file changed. Suite on
+the deployed commit: 6135 passed, 1 skipped, 0 failed.
+
+- The LLD audit's three fixes ship: the per-job matching lock, the support
+  queue N+1 removal, and the pilot resize to one task per service at rest
+  with autoscaling ceilings kept.
+- The resize was PROVEN, not assumed: after the apply, target tracking
+  scaled api, frontend and analysis in, and `describe-services` read back
+  desired 1 / running 1 for all three. Roughly 40% of steady-state Fargate
+  spend, gone, with rolling deploys and load behaviour unchanged.
+- One operational lesson worth keeping: `MSYS_NO_PATHCONV=1` (required for
+  AWS CLI ARNs on Git Bash) BREAKS docker compose's path conversion, so a
+  shell that exports it for a build cannot also launch `scripts/test.sh`.
+  The suite "failed" instantly with a mangled compose path; the fix is a
+  clean environment per concern, and the gate caught it because a suite
+  that did not run reports nothing that looks like a pass.
+- Audit deliverables: `docs/architecture/ENGINEERING_AUDIT_2026-09-11.md`.
+
+## 2026-09-12 — BGV and conversations go live, pilot (ap-south-2)
+
+Commit `ce139c3` on `feat/ai-upgrade-rpn-ai-up-001`. Images `sha-1af3d00` for
+backend and frontend; the three commits after the build touched only Terraform,
+so no application byte changed between the tag and HEAD. Clean full suite on the
+deployed code: **6245 passed, 1 failed, 1 skipped**, and the one failure is the
+hardcoded-region sweep that `ce139c3` answers.
+
+- **No migration.** 0095 went out with the previous release, so the schema was
+  already in place and the tables were empty: conversations 0, employments 0,
+  verifications 0, read back from the database rather than assumed.
+- Task definitions api 29 to 30, frontend 16 to 17, analysis 12 to 13, migrate
+  and agent to 27. All three image-backed Lambdas moved to the same backend
+  image by `update-lambda-code.sh`, which is how they move: the module sets
+  `ignore_changes = [image_uri, ...]` so Terraform owns the shape and a script
+  owns the code.
+- **Verified by digest against RUNNING tasks**, not against the service
+  definition: api 2 tasks and frontend 1 task on the digests this build
+  produced. `verify-deployment.sh` REFUSED the first attempt because no expected
+  digests were supplied, which is the script working: a skipped check is not a
+  passed check.
+- Site 200, login 200, api target group healthy, every new route answering 401
+  unauthenticated and an unknown path answering 404. **Zero tracebacks, zero
+  exceptions and zero 5xx** in the 35 minutes around the rollout.
+- The three new capabilities are seeded, 5 rows each, one per customer role.
+  Read from `role_permissions`, because a capability constant is half a change.
+
+### THE APPLY WAS TARGETED, AND WHAT WAS EXCLUDED IS THE INTERESTING PART
+
+The plan also wanted to change `module.network.aws_security_group.{rds,redis}`:
+adding an egress rule with an EMPTY destination set, which in AWS replaces the
+default allow-all egress on the DATABASE's security group. That is pre-existing
+drift between the code and the account, it has nothing to do with this feature,
+and this product had a full outage from a database-connectivity change the day
+before. Folding it into a feature release is how an outage gets attributed to
+the wrong change. It is still drift and it still wants applying, deliberately,
+on its own.
+
+### SES INBOUND IS BUILT AND NOT APPLIED, BECAUSE THE REGION CANNOT RECEIVE
+
+`ap-south-2` SENDS perfectly well and cannot receive:
+`aws ses describe-active-receipt-rule-set` answers `InvalidAction` there because
+the API is absent from the region, and `inbound-smtp.ap-south-2.amazonaws.com`
+does not resolve at all. The module as first wired would have published an MX
+record pointing at a hostname with no address. Every employer's reply would have
+bounced at their own mail server and nothing in this account would have logged
+it, which is the exact failure the reply-address design exists to prevent,
+arriving through the infrastructure instead of through the parser.
+
+So `INBOUND_EMAIL_DOMAIN` is empty on every container, the product sets no
+Reply-To, and `conversations.reply_address` records that once rather than
+producing a thread that can never receive anything. An employer's reply arrives
+in the sending mailbox instead of the thread. Everything else in BGV and
+conversations works.
+
+**What remains**: move receiving to `ap-south-1`, which is verified to resolve
+and holds no active rule set, through a provider alias and a second `lambda`
+instance in that region. The module refuses a non-receiving region by
+validation and pilot's `has_inbound` requires one, so this cannot be turned on
+by editing a boolean.
+
+### Two repairs this deployment needed before it could be trusted
+
+- **Pilot could not be planned offline AT ALL**, and had never been. Three
+  `data "aws_caller_identity"` lookups and two missing `offline-plan.tfvars`
+  entries stopped the plan before it reached anything. The data source calls
+  STS; the planning profile runs against account 000000000000 in a region that
+  does not exist. The account id was already a required variable everywhere, so
+  this reads the same fact from the input rather than the network. Staging and
+  production were failing on the same lookup inside the `lambda` module.
+- **The impeccable gate was failing on generated output** it cannot fix: the
+  graphify knowledge-graph viewer, HTML nobody wrote. Now asked of
+  `git check-ignore` rather than a hardcoded list.
+
+### The Sarkar Corp accounts, read from the table
+
+Four users on the tenant. The client Super Admin is `active` and Firebase-bound.
+Two recruiters and one hiring manager are present; their `firebase_uid` is NULL
+and binds on first proven sign-in, which is the designed flow rather than a gap.
+
+---
+
+## 2026-09-12 — The application's own database credential, pilot (ap-south-2)
+
+Commit `a36cd00` on `feat/ai-upgrade-rpn-ai-up-001`. Backend and frontend both
+`sha-a36cd00`. Suite on the deployed commit: 6203 passed, 1 skipped, 0 failed.
+
+**The product no longer holds the RDS master credential.** `DATABASE_URL` now
+carries `pickready_app` with a password ReadyPick owns, object ownership sits on
+a dedicated `readypick_owner` role, and the master is unused. AWS rotates that
+master again on 2026-09-19; on 2026-09-11 that rotation took the whole site
+down, and it now cannot.
+
+- `rotate-app-db-credential.sh` ran BEFORE the migration, which is the required
+  order: `POSTGRES_MIGRATION_ROLE` is set on the migrate container and the role
+  it names did not exist yet.
+- The migration then ran AS `pickready_app`, escalating with `SET ROLE`, and
+  applied 0095. That is the escalation design proven in production rather than
+  in a rehearsal.
+- Services api 28 -> 29, frontend 15 -> 16; analysis untouched on 12. All three
+  verified by digest against RUNNING tasks. All 3 image-backed Lambdas recycled
+  onto the same backend image, which is what makes them pick up the new DSN
+  (`secrets_bootstrap` fetches once per execution environment).
+- Site 200, login 200, API 200, `/health` 200 with real SQL, and ZERO 500s in
+  the fifteen minutes around the rollout.
+
+### One real defect this deployment found, before it did any damage
+
+The first rotation attempt FAILED with `AccessDeniedException` on
+`PutSecretValue`. The write grant had been added to the per-service secrets
+policy, which is attached to the EXECUTION role; the script writes the secret
+with the application's own boto3 client, which runs as the TASK role. A grant on
+the execution role is a grant the code can never use.
+
+It failed SAFELY, which was the design: the script proves the new credential
+before writing the secret, so the existing DSN stayed in place and the site
+never noticed. The fix splits the write into its own policy attached to the task
+role, the same split `task_s3` already makes and for the same stated reason.
+
+The ownership DDL had already committed at that point, and the site stayed up
+throughout: the master inherits `readypick_owner`, so moving ownership was
+transparent to the running API.
+
+### What this deployment carries besides the credential fix
+
+Migration 0095: `candidate_employments`, `bgv_verifications`, `conversations`,
+`conversation_participants`, `conversation_messages`, `conversation_attachments`,
+RLS on all five tenant tables, the employment-history immutability trigger, and
+three seeded capabilities. The BGV offer gate is live at `apply_transition` and
+is INERT today by construction: it blocks only an explicit `experienced`
+declaration, and no candidate has one yet.
+
+There is no user-facing BGV or conversation surface in this build. The APIs,
+the realtime layer, the SES bridge and the frontend are not written yet.

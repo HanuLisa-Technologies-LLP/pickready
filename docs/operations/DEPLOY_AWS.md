@@ -402,6 +402,37 @@ aws route53 get-hosted-zone --id <hosted_zone_id> --query 'DelegationSet.NameSer
 **Expect:** the two lists to match. If they do not, the zone Terraform is writing
 into is not the zone the internet asks.
 
+### The application's database credential, once per environment
+
+**Before the first migration in a NEW environment, and again only to rotate:**
+
+```bash
+./scripts/rotate-app-db-credential.sh staging
+```
+
+This is what stops the product depending on a password AWS rotates. Until it
+has run, `DATABASE_URL` carries the RDS master credential, which
+`manage_master_user_password = true` hands to Secrets Manager to rotate every
+seven days. On 2026-09-11 that rotation took the pilot down: the API, the health
+probe and therefore sign-in, all at once, with nothing deployed.
+
+The script creates the least-privileged application role the `rds` module has
+always documented, moves object ownership onto a dedicated owner role so the
+master is never needed again, mints a password inside the VPC and writes the DSN
+to Secrets Manager. It proves the new credential works BEFORE writing it, so a
+failure leaves the existing DSN in place and usable.
+
+**It runs BEFORE `run-migration.sh`, not after.** The migrate container carries
+`POSTGRES_MIGRATION_ROLE` and `alembic/env.py` escalates to that role for DDL;
+the role does not exist until this has run, so the other order fails at
+`SET ROLE` with the schema untouched.
+
+**Re-running it is a rotation**, which is the supported way to change the
+application's password. The services keep their pooled connections until they
+restart, so roll them afterwards, Lambdas included:
+`app/workers/secrets_bootstrap.py` fetches once per execution environment, so a
+warm function keeps the old DSN until `update-lambda-code.sh` recycles it.
+
 Then, in this order:
 
 ```bash

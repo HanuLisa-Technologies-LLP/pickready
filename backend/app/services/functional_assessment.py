@@ -83,6 +83,7 @@ from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELD
 from app.services.assessment_formats import evaluation as format_evaluation
 from app.services.assessment_formats import rendering as format_rendering
 from app.services.assessment_formats import types as question_types
+from app.config import llm_providers
 from app.prompts import registry
 from app.services.rating import (
     GRADES,
@@ -389,6 +390,13 @@ async def infer_grade(job: Job, session: AsyncSession) -> str:
 
 # ── Scoring primitives ──────────────────────────────────────────────────────
 
+#: The one scoring mode that does NOT force human review: a real rubric, scored
+#: by a model, against the candidate's real answers. Named rather than spelled
+#: at each site because `needs_human_review` compares against it, and a typo in
+#: a string literal there would silently stop flagging every fallback report.
+MODE_LLM_RUBRIC = "llm_rubric"
+
+
 def _stable_score(seed: str, low: int = 45, high: int = 94) -> int:
     """DETERMINISTIC LAST-RESORT ONLY (claude.md rule 9: degrade, never crash).
 
@@ -559,6 +567,7 @@ async def _record_answer_evidence(
     # a single test file went red, because pytest happened to initialise the
     # other side first.
     from app.services.evidence import ledger
+    from app.services.evidence import negative as negative_evidence
     from app.services.miti import claims as claim_model
 
     session = state.get("session")
@@ -612,6 +621,20 @@ async def _record_answer_evidence(
                     },
                     freshness_payload=ledger.freshness(ref.answered_at),
                 )
+                # W6.6: WHICH SIDE of the claim this answer sits on, decided
+                # while the text is in hand. "I have not used Kafka" is a
+                # substantive answer (answer_classification has said so since
+                # 2026-08-05) AND it is counter-evidence, and until 2026-09-10
+                # it was filed as SUPPORT for the claim it explicitly denies.
+                # The detector is deterministic and conservative; its one
+                # consumer is the contradiction report that routes the report
+                # to a person, so a false positive costs a human one look and
+                # never a candidate a grade. Insufficient evidence is NOT
+                # negative evidence: a non-answer never reaches this loop and
+                # keeps costing confidence, not score, exactly as before.
+                disclaimed = negative_evidence.disclaimed_terms(
+                    ref.content, competency.name
+                )
                 if claim_id is None:
                     claim_id = await ledger.record_claim(
                         session,
@@ -634,8 +657,18 @@ async def _record_answer_evidence(
                     tenant_id=job.tenant_id,
                     claim_id=claim_id,
                     evidence_id=evidence_id,
-                    stance=ledger.STANCE_SUPPORTS,
+                    stance=(
+                        ledger.STANCE_CONTRADICTS
+                        if disclaimed
+                        else ledger.STANCE_SUPPORTS
+                    ),
                 )
+                if disclaimed:
+                    logger.info(
+                        "functional_assessment.negative_evidence link_id=%s "
+                        "competency_id=%s terms=%s",
+                        link.id, competency.id, disclaimed,
+                    )
     except Exception:  # noqa: BLE001 -- see the docstring
         logger.warning(
             "functional_assessment.evidence_not_recorded link_id=%s competency_id=%s",
@@ -1047,6 +1080,21 @@ def invented_terms(value: str, *, evidence: str, name: str) -> list[str]:
     return sorted(set(invented))
 
 
+def _report_prompt_versions() -> str:
+    """The registry labels of the versioned prompts a model-backed run uses.
+
+    `name@declared+digest`, semicolon separated, resolved at WRITE time so the
+    stored value describes the prompt files in the running image rather than
+    whatever is on disk when somebody later asks. The remark system prompt is
+    inline in `bounded_remark` and therefore versioned by the image, not here;
+    the column's own docstring says so, because a provenance field that
+    silently claimed completeness would be worse than one that states its
+    limit.
+    """
+    names = ("assessment_answer_scoring", "report_gap_probes")
+    return "; ".join(f"{name}@{registry.version(name)}" for name in names)
+
+
 async def bounded_remark(
     session: AsyncSession | None,
     name: str,
@@ -1413,8 +1461,21 @@ async def _score_item(
             # unanswered one, and deliberately never reaches `_llm_score`.
             # Letting it through is what produced a passing grade for
             # `ewidjverip`: on an LLM failure the caller falls back to
-            # `_stable_score`, whose 45..94 floor cannot express Not Matching.
-            # See services/answer_quality for the full mechanism.
+            # `_stable_score`, which hashes into 45..94.
+            #
+            # THIS COMMENT USED TO SAY THAT RANGE "cannot express Not
+            # Matching", AND THAT IS FALSE on the current four-grade scale.
+            # Measured over 20,000 seeds against `rating.grade_for_percent`
+            # (90 / 75 / 60): Not Matching 30.0%, Moderately Matching 30.4%,
+            # Matching 29.6%, Highly Matching 10.1%. It was true of an earlier
+            # scale and survived the 2026-07-30 consolidation unread.
+            #
+            # The defect it was describing is real and unchanged, and the
+            # measured numbers state it better than the wrong claim did:
+            # 70.0% of hashed inputs grade Moderately Matching or better, so
+            # keyboard mash reaching this path is far more likely to pass than
+            # to fail. What is wrong is not that the hash cannot fail somebody,
+            # it is that a HASH decides. See services/answer_quality.
             verdict = answer_quality.assess(answer)
             if not verdict.substantive:
                 if answer:
@@ -1987,8 +2048,8 @@ async def synthesis_node(state: AssessmentState) -> dict:
         validation=validation,
     )
 
-    scoring_mode = state.get("ppi_mode", "llm_rubric")
-    if scoring_mode != "llm_rubric":
+    scoring_mode = state.get("ppi_mode", MODE_LLM_RUBRIC)
+    if scoring_mode != MODE_LLM_RUBRIC:
         logger.warning(
             "functional_assessment.scoring_mode link_id=%s mode=%s",
             state["link"].id, scoring_mode,
@@ -2062,11 +2123,47 @@ async def synthesis_node(state: AssessmentState) -> dict:
         # release needs no data restore. Reports written before today keep
         # theirs and still render it.
         "synthesized_at": datetime.now(timezone.utc),
+        # PROVENANCE (0094). Written only for a model-backed run, resolved at
+        # THIS moment rather than reconstructed later from deploy timestamps.
+        # A deterministic-fallback report carries NULL for both, because no
+        # model and no versioned prompt produced it, and recording one would
+        # claim work that never happened -- the same honesty rule that flags
+        # the fallback for human review five lines below.
+        "model_id": (
+            llm_providers.model_for("report_synthesis")
+            if scoring_mode == MODE_LLM_RUBRIC
+            else None
+        ),
+        "prompt_version": (
+            _report_prompt_versions() if scoring_mode == MODE_LLM_RUBRIC else None
+        ),
         "needs_human_review": (
             not gate_verdict.passed
             or uncertainty_review
             or aggregate.needs_human_review
             or bool(evaluation.unresolved_evidence)
+            # A HASH-SCORED REPORT IS ALWAYS REVIEWED, and until 2026-09-09 it
+            # was not. `scoring_mode` was computed twenty lines above, logged,
+            # and STORED on the row, and none of that reached this flag.
+            #
+            # `claude.md` has stated the rule since the agent framework landed:
+            # "A stub is always flagged for human review ... what makes that
+            # honest rather than misleading is `needs_human_review`, never a
+            # stub that reads like a result." A deterministic fallback is that
+            # stub. `_stable_score` hashes into 45..94, which cannot express
+            # Not Matching at all, and measured over 20,000 seeds it graded
+            # 69.6% of inputs Moderately Matching or better.
+            #
+            # So the failure mode was a provider outage producing a report that
+            # looked exactly like a scored one, carried a plausible grade, and
+            # went to a client with nothing asking a person to look. The column
+            # recording that it happened was written and read by nobody.
+            #
+            # Compared against the ONE known-good mode rather than against a
+            # list of bad ones: a future third mode is unreviewed by default
+            # under `!= fallback`, and reviewed by default here. Review is the
+            # safe direction.
+            or scoring_mode != MODE_LLM_RUBRIC
         ),
         # Issue, location and severity only. A finding's `detail` can quote the
         # report prose, and this column is read from far more places than the
@@ -2157,7 +2254,6 @@ async def _write_evaluation(
             link_id=state["link"].id,
             report_id=report.id,
             scorecard_version=int(getattr(matrix, "version", 1) or 1),
-            company_dna_version=getattr(matrix, "company_dna_version", None),
             situation_type=getattr(matrix, "situation_key", None),
             dimension_scores={
                 result.dimension: result.as_dict() for result in outcome.results

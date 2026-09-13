@@ -12,6 +12,7 @@
 
 import { SettingsPage } from "@/components/settings-page";
 import { BackgroundVerificationCard } from "@/components/background-verification-card";
+import { EmploymentHistoryCard } from "@/components/employment-history-card";
 import { CandidateProfileForm } from "@/components/candidate-profile-form";
 import { DataRetentionCard } from "@/components/data-retention-card";
 import { MainResumeCard } from "@/components/main-resume-card";
@@ -28,6 +29,7 @@ export default function CandidateProfilePage() {
     >
       <MainResumeCard />
       <DataRetentionCard />
+      <EmploymentHistoryCard />
       <BackgroundVerificationCard />
       <ProjectsSection />
       <CandidateProfileForm />

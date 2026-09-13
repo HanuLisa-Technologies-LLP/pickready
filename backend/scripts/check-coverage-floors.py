@@ -2,7 +2,7 @@
 """Enforce per-package line AND branch coverage floors (spec-doc6 §11.1).
 
     "Unit tests for every new module, at >=90% line and branch coverage for
-     app/hiring/, app/miti/, app/siddhi/, the Company DNA package and the RBAC
+     app/hiring/, app/miti/, app/siddhi/ and the RBAC
      authorization layer. Coverage floors enforced in CI, per-package, not
      global."
 
@@ -72,19 +72,12 @@ PACKAGES: tuple[Package, ...] = (
         why="architectural citation enforcement and the no-numbers rule",
     ),
     Package(
-        name="company_dna",
-        # The Company DNA package is not one directory in this repository. The
-        # instrument and the compiler sit under `hiring/`, the route and the
-        # schema beside their peers. Naming all four here is what makes the
-        # floor a floor on the FEATURE rather than on whichever directory
-        # happened to be created for it.
-        prefixes=(
-            "app/services/hiring/company_dna.py",
-            "app/services/hiring/dna_compilation.py",
-            "app/api/company_dna.py",
-            "app/schemas/company_dna.py",
-        ),
-        why="the twelve-section intake, the observable-evidence detector and the compiler",
+        name="observable",
+        # One file, named rather than globbed: this is the detector two live
+        # callers share, and a floor on the directory would let it fall while
+        # its neighbours carried the number.
+        prefixes=("app/services/hiring/observable.py",),
+        why="the observable-evidence bar and the protected-attribute bar",
     ),
     Package(
         name="rbac",

@@ -254,6 +254,7 @@ async def research_company_profile(
         sources=draft.sources,
         degraded=draft.degraded,
         message=draft.message,
+        empty_state_keys=draft.empty_state_keys,
     )
 
 

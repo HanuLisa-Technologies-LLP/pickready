@@ -43,11 +43,22 @@ from app.models.agent import (
     STATUS_SUCCESS,
     AgentExecutionTrace,
     AgentLearning,
+    AgentToolApprovalRule,
 )
+from app.models.agent_action import AgentAction
 from app.models.context import ContextChunk
 from app.models.evidence import EvidenceClaim, EvidenceClaimLink, EvidenceItemRow
 from app.models.candidate_update import CandidateUpdate
+from app.models.support import SupportMessage, SupportThread
 from app.models.bgv import BGVInquiry, BGVShareConsent
+from app.models.bgv_verification import BGVVerification
+from app.models.conversation import (
+    Conversation,
+    ConversationAttachment,
+    ConversationMessage,
+    ConversationParticipant,
+)
+from app.models.employment import CandidateEmployment
 from app.models.dual_mode import AssessmentConsent, VideoRecording
 from app.models.project import CandidateProject
 from app.models.candidate import (
@@ -108,15 +119,13 @@ from app.models.telemetry import TelemetryEvent
 from app.models.tenant import AuditLog, LLMProviderKey, RolePermission, Tenant
 from app.models.hiring import (
     CalibrationRecord,
-    CompanyDNA,
     Evaluation,
     ReviewDisposition,
 )
-# The `company_dna` TABLE is mapped in app.models.hiring (migration 0059).
-# This is the Layer 2 binding that records which version a job's scorecard was
-# frozen against (migration 0060); it is a separate table, not a second
-# mapping of that one.
-from app.models.company_dna import JobCompanyDNABinding
+# The append-only record of which scorecard version a job was frozen against,
+# and when. Read by `orchestration/versioning` to answer what a candidate
+# applied under.
+from app.models.job_scorecard_binding import JobScorecardBinding
 from app.models.user import OTPChallenge, User
 
 __all__ = [
@@ -137,6 +146,8 @@ __all__ = [
     "Candidate",
     "CandidateProject",
     "CandidateUpdate",
+    "SupportMessage",
+    "SupportThread",
     "CandidateQuestion",
     "CandidateTeamReview",
     "CandidateTechnicalQuestion",
@@ -201,13 +212,14 @@ __all__ = [
     "RolePermission",
     "SubmittedVia",
     "TAX_DOCUMENT_TYPES",
+    "AgentAction",
     "AgentExecutionTrace",
     "CalibrationRecord",
-    "CompanyDNA",
     "Evaluation",
     "ReviewDisposition",
-    "JobCompanyDNABinding",
+    "JobScorecardBinding",
     "AgentLearning",
+    "AgentToolApprovalRule",
     "ContextChunk",
     "EvidenceClaim",
     "EvidenceClaimLink",
@@ -225,4 +237,10 @@ __all__ = [
     "User",
     "UserStatus",
     "VerificationRequest",
+    "CandidateEmployment",
+    "BGVVerification",
+    "Conversation",
+    "ConversationParticipant",
+    "ConversationMessage",
+    "ConversationAttachment",
 ]

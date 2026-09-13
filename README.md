@@ -32,7 +32,7 @@ leads.
 **The hiring flow.** A customer creates a job as one markdown JD; the platform
 derives a per-job **Tatva Assessment** matrix (Must-have, Nice-to-have,
 Behavioural) from that job's own description, informed by a SWOT intake and the
-client's compiled Company DNA. A human reviews and freezes the matrix, and that
+department model. A human reviews and freezes the matrix, and that
 freeze is the only comparability guarantee the product has. Candidates apply,
 every applicant is ranked, and the recruiter selects who is assessed.
 

@@ -857,7 +857,7 @@ from app.services.tools import permissions
 #: confidence, and the enforcement is the absence of the capability, which is
 #: the same rule this codebase already applies to write tools.
 AGENT_CAPABILITIES: dict[str, frozenset[str]] = {
-    # Bodha runs the SWOT session and the Company DNA intake, both of which
+    # Bodha runs the SWOT session, which
     # feed Hiring-Manager-controlled fields. It may write them only when the
     # human it acts for may: a Recruiter running a SWOT session gets a
     # refusal, which is 34's worked example almost verbatim.
@@ -867,7 +867,7 @@ AGENT_CAPABILITIES: dict[str, frozenset[str]] = {
             capabilities_mod.EDIT_JOB_PHILOSOPHY,
         }
     ),
-    # Sutra compiles the matrix from the SWOT and the Company DNA, which means
+    # Sutra compiles the matrix from the SWOT, which means
     # writing the four criteria fields. Same rule: only under a principal who
     # holds them.
     permissions.AGENT_SUTRA: frozenset(

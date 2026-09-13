@@ -143,8 +143,8 @@ export default function CreateJobPage() {
   } | null>(null);
 
   // Gate 1 (workflow section 18): a client cannot create a job until its
-  // Company Hiring Requirements exist. The SERVER refuses the create call; this
-  // reads the same status so the recruiter is told before they write a JD
+  // Company Profile says what the company does. The SERVER refuses the create
+  // call; this reads the same field so the recruiter is told before they write a JD
   // rather than after. `null` means "not answered yet" and blocks nothing --
   // an unreadable status must not lock the form, because the server is the
   // gate and it will refuse honestly on submit.
@@ -194,11 +194,14 @@ export default function CreateJobPage() {
     const tenantId = user?.tenant_id;
     if (!tenantId) return;
     let cancelled = false;
-    apiGet<{ status: string }>(
-      `/clients/${tenantId}/company-dna/status`,
-    )
+    // The same question Gate 1 asks server-side: has this organisation said
+    // what it does. Read off the profile the page already serves rather than
+    // through a second endpoint, so the banner and the refusal cannot disagree.
+    apiGet<{ about_company: string | null }>("/companies/me/profile")
       .then((res) => {
-        if (!cancelled) setRequirementsComplete(res.status === "complete");
+        if (!cancelled) {
+          setRequirementsComplete(Boolean((res.about_company ?? "").trim()));
+        }
       })
       .catch(() => {
         if (!cancelled) setRequirementsComplete(null);
@@ -376,16 +379,16 @@ export default function CreateJobPage() {
         <Card className="mb-6 border-navy-200 bg-navy-50">
           <CardContent className="space-y-3 pt-6">
             <h2 className="text-base font-semibold">
-              Complete your Company Hiring Requirements first
+              Fill in your Company Profile first
             </h2>
             <p className="text-sm">
-              Every job this organisation posts is evaluated against what your
-              company considers a strong hire. Until that is on record there is
-              nothing for this role to be assessed against, so job creation
-              waits for it.
+              Every job this organisation posts is built on what your company
+              does and what working there is like. Until that is on record
+              there is nothing for this role to be drafted from, so job
+              creation waits for it.
             </p>
             <Button asChild>
-              <Link href="/org/company-dna">Open Company Hiring Requirements</Link>
+              <Link href="/org/profile">Open Company Profile</Link>
             </Button>
           </CardContent>
         </Card>

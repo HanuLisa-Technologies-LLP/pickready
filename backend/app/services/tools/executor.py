@@ -3,8 +3,11 @@
 ORDER IS PART OF THE CONTRACT
 -----------------------------
   1. resolve      an unknown name fails before anything else happens
-  2. permit       refused BEFORE the payload is even parsed, so a tool an agent
-                  does not hold cannot be probed for its schema
+  2. permit       the POLICY ENGINE: agent capability, tenant scope, object
+                  scope, workflow stage, risk class. Refused BEFORE the payload
+                  is even parsed, so a tool an agent does not hold cannot be
+                  probed for its schema, and an object another tenant owns
+                  cannot be probed for its existence
   3. validate in  a bad payload never reaches a handler
   4. cache read   idempotent tools only
   5. attempt      bounded per attempt AND in total; the deadline PREDICTS
@@ -37,21 +40,24 @@ import asyncio
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import cache
-from app.services.tools import permissions, registry, telemetry
+from app.services.tools import approvals, policy, registry, telemetry
 from app.services.tools.errors import (
+    ToolApprovalRequired,
     ToolError,
     ToolExecutionError,
     ToolInputError,
     ToolNotFound,
     ToolOutputError,
     ToolPermissionError,
+    ToolPolicyError,
+    ToolScopeError,
     ToolTimeout,
     is_retryable,
 )
@@ -98,14 +104,52 @@ def _cache_key(tool: str, payload: BaseModel) -> str:
     return cache.key("tool", tool, digest)
 
 
+#: Which refusal each policy reason becomes. DATA, so the error class a rule
+#: produces is decided beside the rule rather than by a chain of `if reason
+#: ==` in the executor, and an unmapped reason raises the generic policy error
+#: rather than quietly becoming a permission error.
+_REFUSALS: dict[str, type[ToolPolicyError]] = {
+    "agent_does_not_hold_tool": ToolPermissionError,
+}
+
+
+def _refusal_for(tool: str, verdict: policy.PolicyVerdict) -> ToolPolicyError:
+    """Turn a verdict into the exception the caller sees.
+
+    Cross-tenant is keyed on the STATUS rather than on the reason string,
+    because the reason names the object kind and a future rule that also
+    answers 404 must get the 404-shaped error without anybody remembering to
+    add it here.
+    """
+    if verdict.decision is policy.PolicyDecision.REQUIRE_APPROVAL:
+        return ToolApprovalRequired(
+            tool, "a human approval is required for this call", reason=verdict.reason
+        )
+    if verdict.http_status == 404:
+        # No identifier, and no admission that anything was found.
+        return ToolScopeError(tool, "no such object", reason=verdict.reason)
+    return _REFUSALS.get(verdict.reason, ToolPolicyError)(
+        tool, verdict.reason, reason=verdict.reason
+    )
+
+
 async def execute(
     tool: str,
     agent: str,
     payload: dict[str, Any] | BaseModel | None = None,
     *,
     session: AsyncSession | None = None,
+    context: policy.ToolContext = policy.UNSCOPED,
 ) -> ToolResult:
-    """Call `tool` as `agent`. Raises a `ToolError` subclass on any failure."""
+    """Call `tool` as `agent`, for the tenant and objects `context` names.
+
+    Raises a `ToolError` subclass on any failure. `context` defaults to
+    `policy.UNSCOPED`, which names no tenant and no object: a caller that
+    declares nothing reaches nothing THROUGH THIS LAYER, and the handler still
+    reads through the RLS-aware session that is the real boundary. It is a
+    module singleton rather than a None with a branch behind it, because two
+    paths through one decision is how the second one stops being checked.
+    """
     started = time.monotonic()
 
     def elapsed_ms() -> int:
@@ -124,10 +168,39 @@ async def execute(
     if spec is None:
         raise refuse(ToolNotFound(tool, "no tool is registered under this name"))
 
-    if not permissions.is_granted(agent, tool):
-        raise refuse(
-            ToolPermissionError(tool, f"agent {agent!r} does not hold this tool")
+    # ── The policy engine, before anything reads anything ────────────────────
+    #
+    # The tenant's own approval rules are resolved first, because `evaluate` is
+    # pure and the caller does the one database read. That read is about the
+    # TENANT and never about the object, so it leaks nothing an unauthorised
+    # caller could not already state.
+    if session is not None and context.tenant_id is not None:
+        context = replace(
+            context,
+            tenant_approval_required=await approvals.required_risk_classes(
+                session, context.tenant_id
+            ),
         )
+    elif spec.risk is not policy.RiskClass.READ and context.tenant_id is not None:
+        # A call that changes something, for a tenant whose configured approval
+        # requirements cannot be read. Refused rather than run on the baseline:
+        # a policy input that could not be read is not a policy decision.
+        raise refuse(
+            ToolPolicyError(
+                tool,
+                "tenant approval rules cannot be resolved without a session",
+                reason="approval_rules_unresolvable",
+            )
+        )
+
+    verdict = policy.evaluate(
+        tool=tool, agent=agent, risk=spec.risk, context=context
+    )
+    telemetry.record_policy(
+        tool=tool, agent=agent, verdict=verdict, context=context
+    )
+    if not verdict.allowed:
+        raise refuse(_refusal_for(tool, verdict))
 
     try:
         parsed = (
