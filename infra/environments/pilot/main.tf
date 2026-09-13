@@ -699,23 +699,32 @@ resource "aws_iam_role_policy" "agent_transcribe" {
 # dispatched: the corporate-sender ownership code, which a person is waiting on
 # in the browser.
 data "aws_iam_policy_document" "ses_send" {
+  # Scoped to the "identity" resource type SES defines for both of these
+  # actions (a verified email address or domain, account- and region-bound),
+  # rather than the account-wide "*": AWS's own IAM reference lists
+  # `SendRawEmail` and `GetIdentityVerificationAttributes` among the actions
+  # that support it. The sending domain is not a fixed literal -- a corporate
+  # sender's own domain is verified dynamically -- so the identity NAME stays
+  # wildcarded while the partition, service, region and account do not.
   statement {
     sid       = "SendRawEmail"
     actions   = ["ses:SendRawEmail"]
-    resources = ["*"]
+    resources = ["arn:aws:ses:${var.region}:${var.account_id}:identity/*"]
   }
 
-  # READ-ONLY IDENTITY LOOKUP, which is what replaced the sender OTP. A
-  # corporate sender is eligible when the ACCOUNT holds a verified SES identity
-  # covering it -- the address itself, or its domain. Asking SES is the honest
-  # check; a mailbox round trip of our own only proved the same thing twice.
-  # Nothing here creates or deletes an identity from application code.
   statement {
-    sid = "ReadSendingIdentities"
-    actions = [
-      "ses:GetIdentityVerificationAttributes",
-      "ses:ListIdentities",
-    ]
+    sid       = "ReadSendingIdentityStatus"
+    actions   = ["ses:GetIdentityVerificationAttributes"]
+    resources = ["arn:aws:ses:${var.region}:${var.account_id}:identity/*"]
+  }
+
+  # `ListIdentities` enumerates every identity on the ACCOUNT and genuinely
+  # has no resource type in SES's API -- unlike its two neighbours above, an
+  # ARN here would not narrow the grant, it would make the call fail. See
+  # `check-no-wildcard-iam.py`'s `RESOURCELESS_ACTIONS`.
+  statement {
+    sid       = "ListSendingIdentities"
+    actions   = ["ses:ListIdentities"]
     resources = ["*"]
   }
 }

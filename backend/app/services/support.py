@@ -140,14 +140,3 @@ def assert_transition(current: str, target: str) -> str:
             f"allowed from {current!r}: {sorted(MANUAL_TRANSITIONS[current])}"
         )
     return target
-
-
-def side_for_role(role: str) -> str:
-    """Which side of the conversation a role writes on.
-
-    A single mapping so the two routers cannot disagree about it. Anything that
-    is not the platform's own staff role is the CUSTOMER side, which is the
-    restrictive direction: a role invented later is treated as a customer and
-    therefore reaches nothing a customer could not already reach.
-    """
-    return SIDE_STAFF if str(role) == "super_admin" else SIDE_CUSTOMER
