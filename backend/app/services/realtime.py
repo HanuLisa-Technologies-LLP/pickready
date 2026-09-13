@@ -56,6 +56,12 @@ logger = logging.getLogger(__name__)
 #: alone, and never global.
 CHANNEL_PREFIX = "readypick:conv"
 
+#: How long shutdown will wait for the reader and its connection to let go.
+#: Deliberately short: this runs while the process is already leaving, and the
+#: cost of giving up is an abandoned socket the kernel reaps, while the cost of
+#: waiting is a deploy that appears to stall for no visible reason.
+SHUTDOWN_TIMEOUT_SECONDS = 5.0
+
 
 def channel_for(tenant_id: uuid.UUID | str) -> str:
     return f"{CHANNEL_PREFIX}:{tenant_id}"
@@ -77,7 +83,49 @@ class Hub:
         self._rooms: dict[str, dict[str, set[asyncio.Queue]]] = {}
         self._reader: asyncio.Task | None = None
         self._pubsub: Any = None
-        self._lock = asyncio.Lock()
+        # THE LOOP THE READER, THE PUBSUB CONNECTION AND THE LOCK BELONG TO.
+        #
+        # This hub is a module-level singleton, and an asyncio task is not a
+        # portable object: it belongs to the loop that created it, and so do a
+        # lock and a redis connection. One process normally has exactly one
+        # loop, so this is set once and never changes again.
+        #
+        # It is recorded anyway, because the failure when it DOES change is
+        # silent in the worst way. `_ensure_reader` guarded with "is there a
+        # task, and is it not done" -- and a task belonging to a CLOSED loop is
+        # never done. So the hub would decide it was still subscribed, never
+        # resubscribe, and quietly stop delivering to every socket on the
+        # instance for the rest of the process's life, with nothing logged
+        # because nothing failed.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock: asyncio.Lock | None = None
+
+    # ── Loop binding ────────────────────────────────────────────────────────
+
+    def _bind(self) -> asyncio.Lock:
+        """Return this loop's lock, discarding state left by a previous loop.
+
+        A lock, like a task, belongs to one loop. Reusing the one a dead loop
+        was waiting on is how a singleton turns into a deadlock, so a new loop
+        gets a new lock and inherits no reader.
+
+        The stale reader is DROPPED rather than cancelled, and that asymmetry
+        is deliberate: cancelling a task means touching its loop, and this path
+        exists precisely for the case where that loop is gone. Dropping leaks
+        the task on a loop nobody is running, which is inert; reaching into a
+        closed loop raises. The path that matters in production is
+        `shutdown()`, which cancels properly while the loop is still alive.
+        """
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            self._loop = loop
+            self._lock = asyncio.Lock()
+            self._reader = None
+            self._pubsub = None
+            self._rooms.clear()
+        elif self._lock is None:  # pragma: no cover - set together with _loop
+            self._lock = asyncio.Lock()
+        return self._lock
 
     # ── Membership ──────────────────────────────────────────────────────────
 
@@ -85,7 +133,7 @@ class Hub:
         self, *, tenant_id: uuid.UUID, conversation_id: uuid.UUID
     ) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-        async with self._lock:
+        async with self._bind():
             room = self._rooms.setdefault(str(tenant_id), {}).setdefault(
                 str(conversation_id), set()
             )
@@ -100,7 +148,7 @@ class Hub:
         conversation_id: uuid.UUID,
         queue: asyncio.Queue,
     ) -> None:
-        async with self._lock:
+        async with self._bind():
             tenant = self._rooms.get(str(tenant_id))
             if not tenant:
                 return
@@ -197,16 +245,63 @@ class Hub:
         except Exception as exc:  # noqa: BLE001
             logger.warning("realtime.reader_stopped error=%s", type(exc).__name__)
 
+    async def shutdown(self) -> None:
+        """Stop the subscription. Called from the app's lifespan on the way out.
+
+        WHY THE LIFESPAN HAS TO DO THIS, RATHER THAN `leave()` ALONE
+        ------------------------------------------------------------
+        `leave()` stops the reader when the LAST socket goes, which covers the
+        quiet case and not the real one. A deploy stops a task while sockets
+        are still open, so the reader and its redis connection were simply
+        never closed: the loop was torn down underneath a task still awaiting a
+        socket.
+
+        On Linux that is untidy. On Windows it HANGS, and that is how this was
+        found: `ProactorEventLoop.close()` waits on outstanding overlapped I/O,
+        so `TestClient.__exit__` blocked forever joining its portal thread and
+        took the whole test suite with it, with no failure and no output.
+
+        Idempotent, and safe to call when nothing ever subscribed.
+        """
+        if self._loop is not None and self._loop is not asyncio.get_running_loop():
+            # A different loop's reader is not ours to await. `_bind` will
+            # discard it; saying so is better than pretending we stopped it.
+            logger.warning("realtime.shutdown_skipped_foreign_loop")
+            return
+        await self._stop_reader()
+        self._rooms.clear()
+
     async def _stop_reader(self) -> None:
+        """Cancel the reader and close the subscription, in BOUNDED time.
+
+        Both awaits carry a deadline, because this runs on the way out and a
+        shutdown step that can block forever is the bug this whole change is
+        about. A redis connection that was opened on a different loop, or whose
+        server has gone away, can leave `close()` waiting on a socket nobody is
+        going to answer; that must cost a logged second, not the process.
+
+        Giving up is safe here and nowhere else: the process is going away, so
+        an abandoned connection is reaped by the kernel. It is recorded rather
+        than passed over, because a shutdown that regularly times out means the
+        reader is wedged and that is worth seeing.
+        """
         reader, pubsub = self._reader, self._pubsub
         self._reader, self._pubsub = None, None
         if reader is not None:
             reader.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
-                await reader
+                await asyncio.wait_for(reader, timeout=SHUTDOWN_TIMEOUT_SECONDS)
         if pubsub is not None:
-            with contextlib.suppress(Exception):
-                await pubsub.close()
+            try:
+                await asyncio.wait_for(
+                    pubsub.close(), timeout=SHUTDOWN_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError:
+                logger.warning("realtime.pubsub_close_timed_out")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "realtime.pubsub_close_failed error=%s", type(exc).__name__
+                )
 
 
 #: One hub per process.

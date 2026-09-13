@@ -63,6 +63,17 @@ async def lifespan(app: FastAPI):
     if missing:
         log.warning("delivery.preflight_missing_keys", missing=missing)
     yield
+    # Stop the realtime subscription BEFORE disposing the engine, so the loop
+    # is torn down with nothing still awaiting a socket on it. `leave()` only
+    # stops the reader when the last socket goes, which is not what a deploy
+    # does: a deploy stops a task with sockets still open, so the reader and its
+    # redis connection were never closed at all. On Windows that is not untidy
+    # but fatal -- `ProactorEventLoop.close()` waits on outstanding overlapped
+    # I/O, which hung `TestClient.__exit__` and with it the whole test suite,
+    # silently and with no failing test to point at.
+    from app.services import realtime
+
+    await realtime.hub.shutdown()
     from app.core.db import get_engine
     await get_engine().dispose()
 

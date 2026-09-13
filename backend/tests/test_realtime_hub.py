@@ -16,6 +16,7 @@ customer sees another customer's message.
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 
 import pytest
@@ -211,3 +212,74 @@ async def test_the_wire_shape_carries_no_internal_identifier() -> None:
         "delivery_status",
         "created_at",
     }
+
+
+# ── Shutdown, and the loop the hub is bound to ───────────────────────────────
+#
+# These pin the 2026-09-14 fix. The defect was not a wrong answer, it was a
+# suite that stopped: `TestClient.__exit__` closed its portal's event loop while
+# the hub's reader task was still awaiting a redis socket, and on Windows
+# `ProactorEventLoop.close()` waits on outstanding overlapped I/O, so the join
+# never returned. No test failed. The run simply hung, with the last thing
+# printed being a passing dot.
+#
+# The product half of the same bug is worse and platform-independent: nothing
+# ever stopped the reader on shutdown, and `_ensure_reader` treated a task
+# belonging to a CLOSED loop as a live subscription, so a hub that outlived its
+# loop went quiet for good without logging anything.
+
+
+async def test_shutdown_is_safe_when_nothing_ever_subscribed(
+    hub: realtime.Hub,
+) -> None:
+    """The lifespan calls this on every shutdown, including a process that
+    never opened a socket. It must not raise, or every clean exit becomes an
+    error in the log."""
+    await hub.shutdown()
+
+
+async def test_shutdown_releases_the_room_registry(hub: realtime.Hub) -> None:
+    tenant, conversation = uuid.uuid4(), uuid.uuid4()
+    await hub.join(tenant_id=tenant, conversation_id=conversation)
+    assert hub.local_listeners(tenant_id=tenant, conversation_id=conversation) == 1
+
+    await hub.shutdown()
+
+    # A socket cannot survive the loop it was accepted on, so a room that
+    # outlived shutdown would be a queue nobody will ever read from, counted
+    # as a live listener for the rest of the process.
+    assert hub.local_listeners(tenant_id=tenant, conversation_id=conversation) == 0
+
+
+async def test_a_new_loop_does_not_inherit_the_previous_loop_s_rooms(
+    hub: realtime.Hub,
+) -> None:
+    """The regression, reproduced the way the suite hit it: a second event loop
+    in one process, which is what every `TestClient` in this suite creates.
+
+    The old code kept one lock, one reader and one room registry across every
+    loop the process ever ran. A queue created on a closed loop can never be
+    drained, so counting it as a live listener means the hub reports delivery
+    to a socket that is gone; and the reader it refused to replace (a task on a
+    dead loop never reports done) meant nothing arrived for the sockets that
+    were still real.
+    """
+    tenant, conversation = uuid.uuid4(), uuid.uuid4()
+
+    # A whole separate loop, on its own thread, opened and closed before this
+    # test's loop asks the hub anything.
+    def on_another_loop() -> None:
+        asyncio.run(hub.join(tenant_id=tenant, conversation_id=conversation))
+
+    thread = threading.Thread(target=on_another_loop)
+    thread.start()
+    thread.join()
+
+    await hub.join(tenant_id=tenant, conversation_id=conversation)
+    try:
+        # One: ours. The queue from the dead loop is discarded rather than
+        # counted, which is what stops the hub reporting a listener that can
+        # never receive anything.
+        assert hub.local_listeners(tenant_id=tenant, conversation_id=conversation) == 1
+    finally:
+        await hub.shutdown()
