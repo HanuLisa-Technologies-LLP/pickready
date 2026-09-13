@@ -255,7 +255,13 @@ def test_confidence_uses_the_runbook_coefficients_and_labels():
         conf["terms"][term]["coefficient"]
         for term in ("evidence_coverage", "evidence_depth", "independence", "consistency")
     ]
-    assert sum(coefficients) == conf["coefficient_sum"]
+    # `approx`, because the runbook's four coefficients are exact decimals and
+    # their IEEE-754 sum is not: 0.35 + 0.3 + 0.2 + 0.15 evaluates to
+    # 0.9999999999999999, so an exact comparison failed against a correct
+    # runbook. The assertion being made is "these add up to the declared
+    # total", which is a statement about the numbers, not about binary
+    # floating point.
+    assert sum(coefficients) == pytest.approx(conf["coefficient_sum"])
     assert prescreen.confidence_label(conf["high_threshold"]) == "High"
     assert prescreen.confidence_label(conf["moderate_threshold"]) == "Moderate"
     assert prescreen.confidence_label(conf["low_threshold"]) == "Low"

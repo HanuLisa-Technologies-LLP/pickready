@@ -28,7 +28,11 @@ import Link from "next/link";
 
 import { apiGet, apiPost } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { buildJobCreatePayload, type JobFormValues, skillsToArray } from "@/lib/job-payload";
+import {
+  buildJdGeneratePayload,
+  buildJobCreatePayload,
+  type JobFormValues,
+} from "@/lib/job-payload";
 import { apiErrorMessage } from "@/lib/validation-errors";
 import { JOB_GRADES, type JobGrade } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
@@ -264,18 +268,21 @@ export default function CreateJobPage() {
       });
       return;
     }
+    // The experience band is REQUIRED by this endpoint, so check it here the
+    // way Publish already does. Without it an incomplete or inverted band went
+    // to the server and came back a 422, which the catch below then announced
+    // as "AI drafting is unavailable right now" -- blaming an outage for a
+    // form the recruiter can fix, and burying the reason in a field name.
+    if (!validateExperience()) {
+      document.getElementById("experience_min_years")?.scrollIntoView({ block: "center" });
+      return;
+    }
     setGenerating(true);
     try {
-      const res = await apiPost<unknown>("/jobs/generate-jd", {
-        title: form.title,
-        department: form.department || null,
-        grade: form.grade || null,
-        skills: skillsToArray(form.skills),
-        key_requirements: brief,
-        reporting_to: form.reporting_to || null,
-        experience_min_years: Number(form.experience_min_years) || null,
-        experience_max_years: Number(form.experience_max_years) || null,
-      });
+      const res = await apiPost<unknown>(
+        "/jobs/generate-jd",
+        buildJdGeneratePayload(form, brief),
+      );
       const jd = pick<GeneratedJd>(res, "jd");
       const markdown =
         (res as GeneratedJd)?.jd_markdown ?? jd.jd_markdown ?? "";

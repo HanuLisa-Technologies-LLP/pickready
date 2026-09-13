@@ -234,9 +234,17 @@ async def create_tenant(
     session.add(client_user)
     _seed_permissions(session, tenant.id)
     await session.flush()
-    await rbac.invalidate_role_permissions(
-        body.tenant_id, list({Role(entry.role) for entry in body.entries})
-    )
+    # `body` here is a TENANT payload: it carries neither `tenant_id` nor
+    # `entries`, so the previous form of this call raised AttributeError on
+    # every customer creation, rolled the transaction back, and meant no
+    # customer could be onboarded at all. It was written for
+    # `update_permissions` below and landed in the wrong handler — which is
+    # also why that endpoint, the one that actually needs it, had none.
+    #
+    # The rows just seeded are this tenant's, so this is the tenant and these
+    # are its roles. Cheap and defensive rather than strictly required: a
+    # brand-new tenant id has nothing cached under it yet.
+    await rbac.invalidate_role_permissions(tenant.id, list(DEFAULT_PERMISSION_MATRIX))
 
     await audit(
         session, tenant_id=tenant.id, actor_user_id=user.user_id,
@@ -927,6 +935,23 @@ async def update_permissions(
             row.allowed = entry.allowed
         out.append(row)
     await session.flush()
+
+    # The rows are only half the change: `rbac._permission_rows` caches the
+    # (tenant, role) row set for 120 seconds, so without this every capability
+    # check keeps answering from the PREVIOUS matrix for up to two minutes —
+    # an admin toggles a permission, reloads, and sees no effect. The tenant
+    # creation path at `_seed_permissions` already invalidates; this one did
+    # not, which is the whole bug.
+    #
+    # A GLOBAL template edit (tenant_id None) reaches every tenant's cache
+    # entry, because each entry holds that tenant's rows AND the global rows
+    # together — so it clears the lot rather than one key.
+    if body.tenant_id is None:
+        await rbac.invalidate_role_permissions(None)
+    else:
+        await rbac.invalidate_role_permissions(
+            body.tenant_id, sorted({e.role for e in body.entries}, key=lambda r: r.value)
+        )
 
     await audit(
         session, tenant_id=body.tenant_id, actor_user_id=user.user_id,
