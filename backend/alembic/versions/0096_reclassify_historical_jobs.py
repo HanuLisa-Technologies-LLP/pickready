@@ -1,7 +1,7 @@
 """Re-run STEM classification over historical jobs (2026-09-13 spec, section 20).
 
-Revision ID: 0086_reclassify_historical_jobs
-Revises: 0085_bgv_inquiries
+Revision ID: 0096_reclassify_historical_jobs
+Revises: 0095_bgv_and_conversations
 
 WHAT WAS WRONG WITH THE ROWS THIS MIGRATION REWRITES
 -----------------------------------------------------
@@ -66,8 +66,8 @@ import json
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0086_reclassify_historical_jobs"
-down_revision = "0085_bgv_inquiries"
+revision = "0096_reclassify_historical_jobs"
+down_revision = "0095_bgv_and_conversations"
 branch_labels = None
 depends_on = None
 

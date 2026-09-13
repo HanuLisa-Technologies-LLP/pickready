@@ -1,7 +1,7 @@
 """The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33).
 
-Revision ID: 0087_job_swot_analysis
-Revises: 0086_reclassify_historical_jobs
+Revision ID: 0097_job_swot_analysis
+Revises: 0096_reclassify_historical_jobs
 
 ONE TABLE, AND IT IS NOT `job_swot_intakes`
 --------------------------------------------
@@ -29,8 +29,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = "0087_job_swot_analysis"
-down_revision = "0086_reclassify_historical_jobs"
+revision = "0097_job_swot_analysis"
+down_revision = "0096_reclassify_historical_jobs"
 branch_labels = None
 depends_on = None
 
