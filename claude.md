@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| Permission-aware UX + occupational STEM + Job SWOT (2026-09-13) | The one read-only sentence, capability-first UI, occupational classification, the AI-drafted Job SWOT |
 | The add-features release (2026-09-06) | Corporate senders + OTP, dual-mode assessment, video access, retention consents, BGV, employer pages, intelligence dashboards |
 | Background work without Celery (2026-09-05) | Dispatch, the four functions, the on-demand agent, the schedule |
 | End-to-end hiring workflow (2026-09-04) | The eight gates, the sourced stage, the final ranking, the Updates feed, job closure |
@@ -58,6 +59,96 @@ phase sections above them are where the sharp edges are.
    failed retrieval, no template output presented as generation.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
+
+
+## Current hard rules, permission-aware UX + occupational STEM + Job SWOT (2026-09-13)
+
+Migrations 0086 and 0087. Three pieces of one specification: make the
+authorization model reach the whole interface, classify the OCCUPATION rather
+than the keywords, and give a job an AI-drafted SWOT the recruitment team owns.
+
+### The read-only sentence has exactly one author
+
+A restriction message may appear when a user can view a resource and genuinely
+cannot edit it, and at no other time. It is rendered by
+`components/permission-notice.tsx` and by nothing else, because that component
+returns null when `canEdit` is true and therefore cannot contradict the server.
+
+The bug this replaces was not a permission bug. The company profile page
+computed `canEdit` correctly and then wrote
+
+```tsx
+{canEdit && editing ? <Save/> : <p>You have read-only access...</p>}
+```
+
+so a user who HELD `edit_company_profile` and had simply not clicked Edit was
+told they did not hold it. `lib/read-only-messaging.test.ts` walks the source
+tree and fails on any screen that writes restriction copy of its own.
+
+- **Ask `can(...)`, never the role.** `lib/permissions.ts` (pure: the capability
+  constants, the wording, `resolvePermission`) and `lib/use-permissions.ts`
+  (the hook) are the interface's whole permission vocabulary. Import `CAP.x`
+  rather than a string literal.
+- **A resource-scoped answer from the server beats the capability list.** A
+  capability can say "may edit SWOTs"; it cannot say "on THIS job", because
+  assignment scope and lifecycle state belong to the job. Endpoints that know
+  return it on the payload (`can_edit`), resolved by the SAME `rbac.authorize`
+  call the write route enforces with, and the component combines the two
+  through `resolvePermission`. Neither is a security boundary; both routes
+  re-authorize.
+- **A 403 refreshes the capability snapshot.** `api.onForbidden` tells the auth
+  context that its copy is stale, and a navigation revalidates it at most once
+  a minute. The server was never stale; the client was.
+
+### STEM classification reads the occupation, not the keywords
+
+`services/stem_classification` now has two layers. The BODY pass is unchanged.
+The OCCUPATIONAL layer parses the job title into a head noun and its domain
+qualifiers and applies the verdict as a floor (`TITLE_STEM_FLOOR`) or a ceiling
+(`TITLE_NON_STEM_CEILING`) on the body score.
+
+Before it, every one of these was stored and billed as Non-STEM whenever the
+job description was thin: Software Engineer, Software Developer, Data
+Scientist, Electronics Engineer, Research Scientist, Cloud Engineer.
+
+- **A recognised Non-STEM domain decides the title outright**, before the head
+  noun is read. An HR Manager, a Finance Manager and a Sales Engineer are
+  Non-STEM whatever technology sits around them.
+- **`analyst` is never decided by the title alone** unless its qualifier names
+  a mathematical practice. A Data Analyst writing marketing reports is
+  Non-STEM, and the body pass is what says so.
+- **It is three vocabularies, not a list of job titles.** A title nobody has
+  seen resolves from the head noun and the domain that compose it. Do not
+  "fix" a misclassification by adding the title.
+- **Migration 0086 re-ran the engine over historical jobs**, skipping any job
+  that is `classification_locked` (a report has been billed against its rate)
+  or `classification_overridden` (a Provider admin already ruled on it).
+
+### The Job SWOT Analysis is AI-drafted and human-owned
+
+`job_swot_analyses` (migration 0087) is a DOCUMENT. `job_swot_intakes`
+(migration 0049) is the reporting authority's TRANSCRIPT and feeds Sutra. They
+are different tables on purpose: editing the document is the feature, and
+rewriting the transcript would launder the evidence the Tatva matrix is
+derived from.
+
+- **No new capability.** Writing takes `edit_swot`, which RBAC 24 already
+  governs; reading takes `view_company_jobs`. The three WRITES go through
+  `rbac.require_authorized`, so tenant, ceiling, grant, assignment scope and
+  lifecycle state all run. The READ uses `require_capability`, because
+  `view_company_jobs` is SCOPED for three roles and nothing in this product
+  writes `job_assignments` yet: a scope check there would refuse a Recruiter
+  the SWOT of a job whose JD is on the same page. Tighten it the day
+  assignments are written.
+- **A regeneration over human-edited content is refused** unless the caller
+  confirms it, the refusal happens BEFORE the model call, and a confirmed
+  replacement snapshots what it replaced into `previous_json` so it can be put
+  back. `human_edited` latches and is never cleared.
+- **A failed generation is a STATE**, not a template. It writes
+  `status=failed` with the reason and leaves existing content alone. No
+  deterministic SWOT is ever presented as generated output (rule 6).
+- **`swot_analysis` is the second and last member of the generative
+  interactive LLM tier.** `tests/test_platform_audit.py` caps the list at two.
 
 
 ## Current hard rules, the add-features release (2026-09-06)

@@ -423,7 +423,7 @@ async def create_job(
         classified = stem_classification.classify_safe(document, body.title)
         role_classification = classified.classification
         classification_confidence = classified.confidence
-        classification_signals = classified.signals
+        classification_signals = classified.explanation
         classification_tentative = bool(classified.tentative or classified.engine_error)
         raw_jd_text = document or None
 
@@ -1527,7 +1527,7 @@ async def generate_jd(
         role_classification=result.classification,
         classification_confidence=result.confidence,
         stem_score=result.stem_score,
-        classification_signals=result.signals,
+        classification_signals=result.explanation,
         tentative=result.tentative,
         engine_error=result.engine_error,
     )

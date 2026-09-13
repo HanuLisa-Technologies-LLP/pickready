@@ -163,6 +163,7 @@ TaskType = Literal[
     "jd_generation",
     "technical_questions",
     "swot_intake",
+    "swot_analysis",
     "company_dna_intake",
     "situation_classification",
     "competency_transformation",
@@ -216,6 +217,8 @@ MODEL_FOR_TASK: dict[str, str] = {
     "technical_questions": MODEL_TERRA,
     # Bodha, both mandates: structured interview judgment and probe selection.
     "swot_intake": MODEL_TERRA,
+    # The recruitment-facing SWOT document: writing, and evidence-bounded.
+    "swot_analysis": MODEL_TERRA,
     "company_dna_intake": MODEL_TERRA,
     # Sutra: competency naming, observable-evidence authoring, weight
     # derivation. Judgment-heavy.
@@ -360,6 +363,10 @@ TASK_TIMEOUTS: dict[str, float] = {
     #    down. `tests/test_platform_audit.py` encodes both tiers so the
     #    exception is a reviewed rule rather than a drifted number.
     "jd_generation": 25.0,
+    # The second and last member of this tier. Its output is a four-section
+    # document a recruiter waits on, exactly like Generate JD, and it is
+    # smaller, so it sits under the same cap rather than beside it.
+    "swot_analysis": 25.0,
     # Background.
     "technical_questions": 90.0,
     "competency_transformation": 90.0,
@@ -405,6 +412,7 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "company_dna_intake": 30.0,
     # The generative-interactive exception. See TASK_TIMEOUTS above.
     "jd_generation": 50.0,
+    "swot_analysis": 50.0,
     "technical_questions": 200.0,
     "competency_transformation": 200.0,
     "behavioral_assessment": 140.0,
@@ -445,6 +453,7 @@ def total_budget_for(task_type: str) -> float:
 TASK_MAX_TOKENS: dict[str, int] = {
     "conversation_turn": 2048,
     "jd_generation": 4096,
+    "swot_analysis": 1536,
     "email_composition": 1024,
     "swot_intake": 1024,
     "company_dna_intake": 1024,
@@ -515,6 +524,7 @@ TASK_TEMPERATURE: dict[str, float] = {
     # bank writer it sits beside; what is asked is fixed by the matrix.
     "format_composition": 0.4,
     "jd_generation": 0.5,
+    "swot_analysis": 0.5,
     "email_composition": 0.5,
     "swot_intake": 0.5,
     "company_dna_intake": 0.5,
@@ -549,6 +559,7 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "conversation_turn": 2,
     "situation_classification": 2,
     "jd_generation": 3,
+    "swot_analysis": 3,
     "email_composition": 3,
     "swot_intake": 3,
     "company_dna_intake": 3,
