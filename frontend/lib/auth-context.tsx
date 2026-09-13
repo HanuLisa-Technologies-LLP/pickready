@@ -1,11 +1,13 @@
 "use client";
 
 import * as React from "react";
+import { usePathname } from "next/navigation";
 import {
   apiGet,
   apiPost,
   isAuthError,
   isNetworkError,
+  onForbidden,
   resetRefreshBackoff,
   tryRefresh,
 } from "@/lib/api";
@@ -22,6 +24,19 @@ import type { Capability, Role, User } from "@/lib/types";
  * the cookie rotated for as long as the tab is actually being used.
  */
 const SESSION_POLL_MS = 10 * 60 * 1000;
+
+/**
+ * The shortest gap between two capability revalidations triggered by
+ * NAVIGATION rather than by the timer.
+ *
+ * Section 36 of the 2026-09-13 spec asks for permission refresh to be
+ * reliable, and the ten-minute timer alone is not: an administrator who grants
+ * somebody edit access and says "try it now" should not be met with "wait ten
+ * minutes or reload". Revalidating when the person navigates covers that,
+ * because the first thing they do is go to the page. Throttling it stops a
+ * tab-happy user issuing one /auth/me per click.
+ */
+const NAVIGATION_REVALIDATE_MS = 60 * 1000;
 
 /**
  * Routes that render signed-out. A dead session on one of these is normal and
@@ -126,6 +141,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     void refreshRef.current();
   }, []);
+
+  // ── Keeping the capability snapshot honest (spec section 36) ─────────────
+  //
+  // The server resolves permissions per request, so it is never stale. The
+  // CLIENT's copy is, between polls, and the two disagreeing is what produces
+  // a control that is offered and then refused. Two cheap triggers close most
+  // of that window: a navigation (the upgrade direction, where somebody has
+  // just been granted access and goes to use it) and a 403 (the revocation
+  // direction, where the server has just told us we are out of date).
+  const lastRevalidateRef = React.useRef(0);
+  const revalidateCapabilities = React.useCallback((force: boolean) => {
+    if (!userRef.current) return;
+    const now = Date.now();
+    if (!force && now - lastRevalidateRef.current < NAVIGATION_REVALIDATE_MS) {
+      return;
+    }
+    lastRevalidateRef.current = now;
+    void refreshRef.current();
+  }, []);
+
+  const pathname = usePathname();
+  React.useEffect(() => {
+    revalidateCapabilities(false);
+  }, [pathname, revalidateCapabilities]);
+
+  React.useEffect(
+    () => onForbidden(() => revalidateCapabilities(true)),
+    [revalidateCapabilities]
+  );
 
   // Keep a live tab's session fresh: rotate on a timer, and again whenever the
   // tab is brought back to the foreground (a laptop that slept through the

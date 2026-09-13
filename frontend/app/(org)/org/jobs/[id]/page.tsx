@@ -27,7 +27,8 @@ import {
   type MatchingTaskStatus,
   type RankedCandidate,
 } from "@/lib/types";
-import { useAuth } from "@/lib/auth-context";
+import { CAP } from "@/lib/permissions";
+import { usePermissions } from "@/lib/use-permissions";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
@@ -40,6 +41,7 @@ import { PipelineFunnel } from "@/components/pipeline-status";
 import { PostingWindowBanner } from "@/components/posting-window";
 import { EmailCompositionModal } from "@/components/email-composition-modal";
 import { JobSetupReview } from "@/components/job-setup-review";
+import { JobSwotAnalysisPanel } from "@/components/job-swot-analysis";
 import { PPIReportModal } from "@/components/ppi-report-modal";
 import {
   MatchingReasoning,
@@ -181,14 +183,14 @@ export default function OrgJobDetailPage() {
   const params = useParams<{ id: string }>();
   const jobId = params.id;
   const { toast } = useToast();
-  const { hasCapability } = useAuth();
+  const { can: hasCapability } = usePermissions();
 
-  const canEditJd = hasCapability("edit_job_description");
-  const canRunMatching = hasCapability("trigger_matching");
-  const canEmail = hasCapability("send_outreach");
-  const canDecide = hasCapability("decide_profile");
-  const canUploadDatabank = hasCapability("upload_resumes");
-  const canRenew = hasCapability("publish_job");
+  const canEditJd = hasCapability(CAP.editJobDescription);
+  const canRunMatching = hasCapability(CAP.triggerMatching);
+  const canEmail = hasCapability(CAP.sendOutreach);
+  const canDecide = hasCapability(CAP.decideProfile);
+  const canUploadDatabank = hasCapability(CAP.uploadResumes);
+  const canRenew = hasCapability(CAP.publishJob);
 
   // Which of the two top-level screens is showing. The JD opens first: a
   // recruiter arriving at a job usually wants to check the posting before the
@@ -892,6 +894,16 @@ export default function OrgJobDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* The SWOT analysis sits under the JD because that is what it is about:
+          this role's hiring position, drafted from this JD. It renders its own
+          permission-aware states, so there is no capability check here. */}
+      {job ? (
+        <JobSwotAnalysisPanel
+          jobId={job.id}
+          className={cn(tab !== "jd" && "hidden")}
+        />
+      ) : null}
 
       {/* Everything below is the Candidates screen. Hidden rather than
           unmounted so switching tabs does not refetch the table or lose a

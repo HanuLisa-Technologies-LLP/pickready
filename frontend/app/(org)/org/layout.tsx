@@ -21,7 +21,8 @@ import {
   AlertTriangle,
 } from "lucide-react";
 
-import { useAuth } from "@/lib/auth-context";
+import { CAP } from "@/lib/permissions";
+import { usePermissions } from "@/lib/use-permissions";
 import { apiGet } from "@/lib/api";
 import type { BillingOverview } from "@/lib/types";
 import { AppShell, type NavItem } from "@/components/app-shell";
@@ -36,9 +37,9 @@ import {
 } from "@/components/ui/dialog";
 
 function CreditStatusAlert() {
-  const { hasCapability } = useAuth();
-  const canView = hasCapability("view_billing");
-  const canPurchase = hasCapability("manage_billing");
+  const { can } = usePermissions();
+  const canView = can(CAP.viewBilling);
+  const canPurchase = can(CAP.manageBilling);
   const [credits, setCredits] = React.useState<BillingOverview["credits"] | null>(null);
   const [acknowledged, setAcknowledged] = React.useState(false);
 
@@ -110,17 +111,17 @@ export default function OrgLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const { hasCapability } = useAuth();
+  const { can: hasCapability } = usePermissions();
 
   const nav = [
-    hasCapability("manage_staff")
+    hasCapability(CAP.manageStaff)
       ? { href: "/org/staff", label: "Staff", icon: Users }
       : null,
     // Compliance & legal records (Provider Portal spec §3). Capability-gated
     // to the Company Admin by default, a GSTIN certificate and a signed
     // agreement are the company's legal instruments, not recruitment data, so
     // this is the one surface the flat staff model deliberately does not share.
-    hasCapability("manage_compliance_documents")
+    hasCapability(CAP.manageComplianceDocuments)
       ? { href: "/org/compliance", label: "Compliance", icon: ShieldCheck }
       : null,
     // Shared staff surface, identical for every staff role (flat).
@@ -143,7 +144,7 @@ export default function OrgLayout({
     // Gated on view_intelligence_dashboards, which the RBAC engine resolves
     // server-side and /auth/me returns because the capability is in
     // ALL_CAPABILITIES (seeded by migration 0082).
-    hasCapability("view_intelligence_dashboards")
+    hasCapability(CAP.viewIntelligenceDashboards)
       ? { href: "/org/intelligence", label: "Intelligence", icon: Gauge }
       : null,
     // The AI Dashboard was REMOVED from the customer portal (spec 30, client
@@ -154,7 +155,7 @@ export default function OrgLayout({
     // read-only: a recruiter whose assessment invitations have stopped sending
     // has to be able to SEE that the credit pool is in deficit. Only the
     // Company Admin also holds `manage_billing` and can change the plan.
-    hasCapability("view_billing")
+    hasCapability(CAP.viewBilling)
       ? { href: "/org/billing", label: "Billing", icon: CreditCard }
       : null,
     // Settings keeps ONLY the theme toggle and account controls (claude.md

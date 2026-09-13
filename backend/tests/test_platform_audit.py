@@ -354,7 +354,7 @@ IMMEDIATE_INTERACTIVE_TASKS = (
 #: already accepts for report_synthesis, one tier down. It is a NAMED, BOUNDED
 #: list rather than a raised global cap, so a future task cannot join it by
 #: accident.
-GENERATIVE_INTERACTIVE_TASKS = ("jd_generation",)
+GENERATIVE_INTERACTIVE_TASKS = ("jd_generation", "swot_analysis")
 
 GENERATIVE_INTERACTIVE_ATTEMPT_CAP = 30.0
 GENERATIVE_INTERACTIVE_BUDGET_CAP = 60.0

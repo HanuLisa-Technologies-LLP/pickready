@@ -35,7 +35,12 @@ from app.models.assessment import (
 )
 from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
-from app.models.job_setup import SWOT_AREAS, JobSwotIntake
+from app.models.job_setup import (
+    SWOT_ANALYSIS_SECTIONS,
+    SWOT_AREAS,
+    JobSwotAnalysis,
+    JobSwotIntake,
+)
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.assessments import (
@@ -61,6 +66,9 @@ from app.schemas.assessments import (
     MatrixReorderIn,
     QuestionOut,
     RadarChartOut,
+    SwotAnalysisGenerateIn,
+    SwotAnalysisOut,
+    SwotAnalysisSectionsIn,
     SwotAnswerIn,
     SwotIntakeOut,
     TranscriptAnswerDetailOut,
@@ -85,6 +93,7 @@ from app.services import (
     reference_code,
     retake,
     retention_consent,
+    swot_analysis,
     swot_intake,
     telemetry_events,
     tenant_cache,
@@ -868,6 +877,238 @@ async def respond_swot_intake(
                 intake.situation_key,
             )
     return _swot_out(job, intake, prompt)
+
+
+# ── The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ──
+#
+# FOUR ROUTES, ONE AUTHORIZATION MODEL, NO NEW PERMISSION SYSTEM (section 27)
+# ---------------------------------------------------------------------------
+# Reading takes `view_company_jobs`, which is what every other read of a job
+# already takes. Writing takes `edit_swot`, which RBAC 24 already defines as a
+# Hiring-Manager-controlled field and which the intake routes above already
+# use. Both go through `rbac.require_authorized`, so the whole RBAC 3 chain
+# runs on every one of them: tenant, then the 24 ceiling, then the grant, then
+# assignment scope, then lifecycle state. There is deliberately no SWOT-only
+# authorization anywhere in this block.
+#
+# THE GET IS SEPARATELY AUTHORIZED FROM THE WRITES, AND THAT IS THE FEATURE
+# --------------------------------------------------------------------------
+# Section 27 asks for a real VIEW / EDIT split: a user with view access sees
+# the SWOT and no edit controls, and a user with edit access sees the controls
+# and no read-only notice. Two different capabilities on two different routes
+# is what makes that split true at the API rather than only in the interface.
+#
+# WHY THE READ USES `require_capability` AND THE WRITES USE `require_authorized`
+# ------------------------------------------------------------------------------
+# `require_authorized` adds resource SCOPE to the capability question, and for
+# three of the five client roles RBAC 24 marks `view_company_jobs` SCOPED,
+# meaning "the jobs you are assigned to". This product does not yet write
+# `job_assignments` rows from any workflow, so a scope check on the READ would
+# refuse a Recruiter the SWOT of a job whose JD they are looking at on the same
+# page, which is a stricter answer than the job itself gives and a worse one
+# than no answer.
+#
+# So the read asks the flat question every sibling read in this router asks
+# ("may this person work on jobs at all"), with the tenant boundary enforced by
+# RLS and by `_staff_job`. The WRITES keep the full chain, because a wrong
+# answer there is a wrong answer in the direction that matters: it changes the
+# document. The day assignments are written, the read can tighten to the same
+# gate with no other change; the writes will already be correct.
+
+
+async def _swot_analysis_out(
+    session: AsyncSession,
+    user: CurrentUser,
+    job: Job,
+    row: JobSwotAnalysis,
+) -> SwotAnalysisOut:
+    """Serialize one analysis, resolving `can_edit` on this job for this user.
+
+    The answer is computed with the SAME call the write routes enforce with
+    (`rbac.authorize` over `edit_swot` and this job's resource facts), which is
+    what stops the interface and the API disagreeing: there is one rule, asked
+    twice, not two rules that happen to match today.
+    """
+    editor_name = None
+    if row.last_modified_by is not None:
+        editor = await session.get(User, row.last_modified_by)
+        editor_name = editor.full_name if editor is not None else None
+
+    resource = await rbac.load_job_resource(session, job.id)
+    decision = await rbac.authorize(
+        session,
+        rbac.Principal(
+            user_id=user.user_id, tenant_id=user.tenant_id, role=user.role
+        ),
+        caps.EDIT_SWOT,
+        resource,
+    )
+
+    previous = dict(row.previous_json or {})
+    return SwotAnalysisOut(
+        job_id=job.id,
+        status=row.status,
+        strengths=row.strengths,
+        weaknesses=row.weaknesses,
+        opportunities=row.opportunities,
+        threats=row.threats,
+        generated_by=row.generated_by,
+        last_generated_at=row.last_generated_at,
+        generation_error=row.generation_error,
+        human_edited=row.human_edited,
+        last_modified_at=row.last_modified_at,
+        last_modified_by_name=editor_name,
+        version=row.version,
+        can_restore_previous=any(
+            str(previous.get(name) or "").strip()
+            for name in SWOT_ANALYSIS_SECTIONS
+        ),
+        can_edit=decision.allowed,
+    )
+
+
+@router.get("/jobs/{job_id}/swot-analysis", response_model=SwotAnalysisOut)
+async def get_swot_analysis(
+    job_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_COMPANY_JOBS)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> SwotAnalysisOut:
+    """The SWOT document, in whatever state it is in.
+
+    An empty document is the `not_generated` STATE and not a 404: the tab
+    exists for every job, and a reader who may see the job must see the empty
+    state rather than an error that reads as "this job is broken".
+    """
+    job = await _staff_job(session, user, job_id)
+    row = await swot_analysis.get_or_create(session, job)
+    return await _swot_analysis_out(session, user, job, row)
+
+
+@router.post("/jobs/{job_id}/swot-analysis/generate", response_model=SwotAnalysisOut)
+async def generate_swot_analysis(
+    job_id: uuid.UUID,
+    body: SwotAnalysisGenerateIn,
+    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> SwotAnalysisOut:
+    """Draft the SWOT with the model. Section 28: generation is the same
+    authority as editing, because both decide what the document says."""
+    job = await _staff_job(session, user, job_id)
+    try:
+        row = await swot_analysis.generate(
+            session, job, confirm_overwrite=body.confirm_overwrite
+        )
+    except swot_analysis.HumanEditsWouldBeLost as exc:
+        # 409, not 403: the caller is authorized and the request is well
+        # formed. What is wrong is the STATE, and the client resolves it by
+        # confirming rather than by acquiring a permission.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except swot_analysis.SwotAnalysisError as exc:
+        # The row now carries `status=failed` and the reason; that write is
+        # part of this transaction and must survive the error response, so the
+        # failure is returned as a document rather than raised past it.
+        failed = await swot_analysis.get_or_create(session, job)
+        out = await _swot_analysis_out(session, user, job, failed)
+        await audit(
+            session,
+            tenant_id=user.tenant_id,
+            actor_user_id=user.user_id,
+            action="job_swot_analysis_generation_failed",
+            target_type="job",
+            target_id=job.id,
+            metadata={"reason": str(exc)},
+        )
+        return out
+
+    row_out = await _swot_analysis_out(session, user, job, row)
+    entry = await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="job_swot_analysis_generated",
+        target_type="job",
+        target_id=job.id,
+        metadata={
+            "version": row.version,
+            "replaced_human_edits": bool(body.confirm_overwrite and row.human_edited),
+        },
+    )
+    entry.job_id = job.id
+    entry.actor_role = user.role.value
+    entry.correlation_id = job.correlation_id
+    # RBAC 34: an AI-initiated mutation is attributable to BOTH the human who
+    # asked for it and the agent that executed it. `actor_user_id` stays the
+    # human, always.
+    entry.agent_name = "bodha"
+    return row_out
+
+
+@router.put("/jobs/{job_id}/swot-analysis", response_model=SwotAnalysisOut)
+async def save_swot_analysis(
+    job_id: uuid.UUID,
+    body: SwotAnalysisSectionsIn,
+    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> SwotAnalysisOut:
+    """Persist the team's edits. This is the write the whole feature exists for."""
+    job = await _staff_job(session, user, job_id)
+    try:
+        row = await swot_analysis.save(
+            session,
+            job,
+            {
+                "strengths": body.strengths,
+                "weaknesses": body.weaknesses,
+                "opportunities": body.opportunities,
+                "threats": body.threats,
+            },
+            editor_id=user.user_id,
+            expected_version=body.expected_version,
+        )
+    except swot_analysis.VersionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    entry = await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="job_swot_analysis_edited",
+        target_type="job",
+        target_id=job.id,
+        metadata={"version": row.version},
+    )
+    entry.job_id = job.id
+    entry.actor_role = user.role.value
+    entry.correlation_id = job.correlation_id
+    return await _swot_analysis_out(session, user, job, row)
+
+
+@router.post("/jobs/{job_id}/swot-analysis/restore", response_model=SwotAnalysisOut)
+async def restore_swot_analysis(
+    job_id: uuid.UUID,
+    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> SwotAnalysisOut:
+    """Undo the one destructive action in this feature (section 32)."""
+    job = await _staff_job(session, user, job_id)
+    try:
+        row = await swot_analysis.restore_previous(session, job)
+    except swot_analysis.SwotAnalysisError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    entry = await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="job_swot_analysis_restored",
+        target_type="job",
+        target_id=job.id,
+        metadata={"version": row.version},
+    )
+    entry.job_id = job.id
+    entry.actor_role = user.role.value
+    entry.correlation_id = job.correlation_id
+    return await _swot_analysis_out(session, user, job, row)
+
 
 
 # ── The PPI Assessment Report (spec §9) ──────────────────────────────────────

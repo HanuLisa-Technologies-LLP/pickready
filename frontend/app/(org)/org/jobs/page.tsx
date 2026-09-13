@@ -11,7 +11,8 @@ import { Archive, Briefcase, Plus, RotateCcw } from "lucide-react";
 
 import { apiGet, apiPost } from "@/lib/api";
 import type { Job } from "@/lib/types";
-import { useAuth } from "@/lib/auth-context";
+import { CAP } from "@/lib/permissions";
+import { usePermissions } from "@/lib/use-permissions";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
 import {
@@ -34,8 +35,8 @@ import {
 
 export default function OrgJobsPage() {
   const { toast } = useToast();
-  const { hasCapability } = useAuth();
-  const canCreate = hasCapability("create_job");
+  const { can } = usePermissions();
+  const canCreate = can(CAP.createJob);
 
   const [jobs, setJobs] = React.useState<Job[]>([]);
   const [loading, setLoading] = React.useState(true);

@@ -9,11 +9,13 @@
 // now lives here in the source and the save toast states the consequence once.
 
 import * as React from "react";
-import { ExternalLink, Loader2, Pencil, Save, Search } from "lucide-react";
+import { ExternalLink, Loader2, Pencil, Save, Search, X } from "lucide-react";
 
 import { apiGet, apiPatch, apiPost } from "@/lib/api";
 import type { CompanyProfile, CompanyProfileResearch } from "@/lib/types";
-import { useAuth } from "@/lib/auth-context";
+import { CAP } from "@/lib/permissions";
+import { usePermissions } from "@/lib/use-permissions";
+import { ReadOnlyNotice } from "@/components/permission-notice";
 import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
@@ -53,8 +55,8 @@ const SECTIONS: {
 
 export default function CompanyProfilePage() {
   const { toast } = useToast();
-  const { hasCapability } = useAuth();
-  const canEdit = hasCapability("edit_company_profile");
+  const { can } = usePermissions();
+  const canEdit = can(CAP.editCompanyProfile);
 
   const [profile, setProfile] = React.useState<CompanyProfile | null>(null);
   const [draft, setDraft] = React.useState<Draft>(EMPTY);
@@ -88,6 +90,16 @@ export default function CompanyProfilePage() {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  /** Drop the in-progress edit and put the saved text back on screen. */
+  const cancelEditing = () => {
+    setDraft({
+      about_company: profile?.about_company ?? "",
+      work_life: profile?.work_life ?? "",
+      benefits: profile?.benefits ?? "",
+    });
+    setEditing(false);
+  };
 
   const save = async () => {
     setSaving(true);
@@ -172,6 +184,23 @@ export default function CompanyProfilePage() {
         title="Job description sections"
         className="max-w-3xl"
         contentClassName="space-y-6"
+        actions={
+          /* The Edit control belongs to the CAPABILITY, not to the research
+             flow. Before this it only appeared once a research run had
+             produced a draft, so a user who held edit_company_profile and did
+             not want the research had no way into the form at all and was
+             shown the read-only sentence instead. */
+          canEdit && !editing && !loading ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => setEditing(true)}
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit
+            </Button>
+          ) : null
+        }
       >
           {loading ? (
             <LoadingRows rows={3} label="Loading company profile" />
@@ -262,24 +291,34 @@ export default function CompanyProfilePage() {
               })}
 
               {canEdit && editing ? (
-                <Button
-                  className="gap-1.5"
-                  disabled={saving}
-                  onClick={() => void save()}
-                >
-                  {saving ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Save className="h-4 w-4" />
-                  )}
-                  {saving ? "Saving" : "Save profile"}
-                </Button>
-              ) : (
-                <p className="text-sm">
-                  You have read-only access to the company profile. Ask an
-                  administrator if you need to change it.
-                </p>
-              )}
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    className="gap-1.5"
+                    disabled={saving}
+                    onClick={() => void save()}
+                  >
+                    {saving ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Save className="h-4 w-4" />
+                    )}
+                    {saving ? "Saving" : "Save profile"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="gap-1.5"
+                    disabled={saving}
+                    onClick={cancelEditing}
+                  >
+                    <X className="h-4 w-4" aria-hidden="true" /> Cancel
+                  </Button>
+                </div>
+              ) : null}
+
+              {/* Renders nothing at all when this person may edit. That is the
+                  rule, and it is enforced by the component rather than by
+                  this condition. */}
+              <ReadOnlyNotice canEdit={canEdit} resource="the company profile" />
             </>
           )}
       </Section>

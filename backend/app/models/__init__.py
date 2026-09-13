@@ -98,10 +98,16 @@ from app.models.enums import (
 )
 from app.models.job import JDDraft, Job, JobApproval
 from app.models.job_setup import (
+    SWOT_ANALYSIS_EDITED,
+    SWOT_ANALYSIS_FAILED,
+    SWOT_ANALYSIS_GENERATED,
+    SWOT_ANALYSIS_NOT_GENERATED,
+    SWOT_ANALYSIS_SECTIONS,
     SWOT_AREAS,
     SWOT_STATUS_ACTIVE,
     SWOT_STATUS_COMPLETE,
     JobMatchingCategory,
+    JobSwotAnalysis,
     JobSwotIntake,
 )
 from app.models.proctoring import (
@@ -174,7 +180,13 @@ __all__ = [
     "Job",
     "JobApproval",
     "JobMatchingCategory",
+    "JobSwotAnalysis",
     "JobSwotIntake",
+    "SWOT_ANALYSIS_EDITED",
+    "SWOT_ANALYSIS_FAILED",
+    "SWOT_ANALYSIS_GENERATED",
+    "SWOT_ANALYSIS_NOT_GENERATED",
+    "SWOT_ANALYSIS_SECTIONS",
     "SWOT_AREAS",
     "SWOT_STATUS_ACTIVE",
     "SWOT_STATUS_COMPLETE",
