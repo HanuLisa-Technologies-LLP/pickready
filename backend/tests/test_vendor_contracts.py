@@ -866,3 +866,146 @@ async def test_a_four_hundred_with_no_hazard_still_fails_loudly(
     assert "known request hazard" not in str(excinfo.value)
     assert "client_error (400)" in str(excinfo.value)
     assert len(calls) == 1, "a 400 is our bug and is not retried"
+
+
+# ── `_check_shape`, one malformed response per guard ─────────────────────────
+#
+# Every branch in this module exists to behave correctly when a vendor stops
+# honouring its published schema, so an untested branch here is an untested
+# failure mode by definition -- which is why this package carries a coverage
+# floor at all. The guards below were the ones no test reached: each is a
+# distinct way a 200 OK can carry a body the parser downstream would read as
+# something it is not.
+#
+# They assert the DETAIL as well as the raise. A violation that named the wrong
+# thing would send whoever reads it at three in the morning to the wrong half
+# of the system, which is most of what this module is for.
+
+
+def _valid_openai_body() -> dict[str, Any]:
+    """The smallest body that satisfies the contract, to be broken one field at
+    a time. Built here rather than loaded so a test names the field it broke."""
+    return {
+        "object": vendor_contract.CHAT_COMPLETION_OBJECT,
+        "model": llm_providers.MODEL_TERRA,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "a reply"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 7},
+    }
+
+
+def test_the_minimal_body_this_file_builds_actually_satisfies_the_contract() -> None:
+    """The control. Without it, every test below could pass because the body was
+    malformed in some OTHER way than the one it meant to test."""
+    vendor_contract.check_openai_response(
+        _valid_openai_body(),
+        model=llm_providers.MODEL_TERRA,
+        json_mode=False,
+        force=True,
+    )
+
+
+def test_a_response_body_that_is_not_an_object_is_refused() -> None:
+    """A JSON array parses perfectly and then fails on the first subscript, so
+    it has to be refused here rather than reaching the caller."""
+    with pytest.raises(VendorContractViolation) as excinfo:
+        vendor_contract.check_openai_response(
+            [{"choices": []}],
+            model=llm_providers.MODEL_TERRA,
+            json_mode=False,
+            force=True,
+        )
+    assert "requires a JSON object" in str(excinfo.value)
+    assert "list" in str(excinfo.value)
+
+
+def test_a_missing_top_level_key_names_the_key() -> None:
+    payload = _valid_openai_body()
+    del payload["usage"]
+    with pytest.raises(VendorContractViolation) as excinfo:
+        vendor_contract.check_openai_response(
+            payload, model=llm_providers.MODEL_TERRA, json_mode=False, force=True
+        )
+    assert "no 'usage' key" in str(excinfo.value)
+
+
+def test_an_empty_element_list_is_refused_rather_than_read_as_no_answer() -> None:
+    """`choices[0]` on an empty list is an IndexError inside the parser. Refused
+    here, it is a violation that says the vendor returned nothing."""
+    payload = _valid_openai_body()
+    payload["choices"] = []
+    with pytest.raises(VendorContractViolation) as excinfo:
+        vendor_contract.check_openai_response(
+            payload, model=llm_providers.MODEL_TERRA, json_mode=False, force=True
+        )
+    assert "'choices' is empty" in str(excinfo.value)
+
+
+def test_an_element_that_is_not_an_object_names_its_position() -> None:
+    payload = _valid_openai_body()
+    payload["choices"] = ["a reply"]
+    with pytest.raises(VendorContractViolation) as excinfo:
+        vendor_contract.check_openai_response(
+            payload, model=llm_providers.MODEL_TERRA, json_mode=False, force=True
+        )
+    assert "'choices[0]' is a str" in str(excinfo.value)
+
+
+def test_an_element_missing_a_required_key_names_it() -> None:
+    payload = _valid_openai_body()
+    payload["choices"] = [{"index": 0, "finish_reason": "stop"}]
+    with pytest.raises(VendorContractViolation) as excinfo:
+        vendor_contract.check_openai_response(
+            payload, model=llm_providers.MODEL_TERRA, json_mode=False, force=True
+        )
+    assert "'choices[0]' has no 'message' key" in str(excinfo.value)
+
+
+def test_an_element_key_of_the_wrong_type_is_refused() -> None:
+    """The streaming shape in miniature: `message` present and not an object.
+    Read without this guard it yields an empty string rather than raising."""
+    payload = _valid_openai_body()
+    payload["choices"] = [{"index": 0, "message": "a reply", "finish_reason": "stop"}]
+    with pytest.raises(VendorContractViolation) as excinfo:
+        vendor_contract.check_openai_response(
+            payload, model=llm_providers.MODEL_TERRA, json_mode=False, force=True
+        )
+    detail = str(excinfo.value)
+    assert "'choices[0].message' is a str" in detail
+    assert "requires dict" in detail
+
+
+def test_usage_without_prompt_tokens_is_refused_because_billing_reads_it() -> None:
+    """The response is perfectly usable and the cost accounting is not: a call
+    that was billed would be recorded as free."""
+    payload = _valid_openai_body()
+    payload["usage"] = {"completion_tokens": 7}
+    with pytest.raises(VendorContractViolation) as excinfo:
+        vendor_contract.check_openai_response(
+            payload, model=llm_providers.MODEL_TERRA, json_mode=False, force=True
+        )
+    assert "prompt_tokens" in str(excinfo.value)
+
+
+def test_a_contract_with_no_element_list_checks_only_the_top_level() -> None:
+    """`element_list_key = None` is the branch for a contract whose response
+    carries no list, and it must STOP after the top-level keys rather than
+    reaching for a key the contract never declared."""
+    contract = vendor_contract.ResponseContract(
+        name="test.envelope_only",
+        vendor="Test",
+        fixture="none",
+        authored_from="a contract with no element list, for this test only",
+        required_top_level={"status": str},
+    )
+    # No raise: the one declared key is present and nothing else is inspected.
+    vendor_contract._check_shape(contract, "/v1/test", {"status": "ok", "rows": 3})
+
+    with pytest.raises(VendorContractViolation) as excinfo:
+        vendor_contract._check_shape(contract, "/v1/test", {"rows": 3})
+    assert "no 'status' key" in str(excinfo.value)
