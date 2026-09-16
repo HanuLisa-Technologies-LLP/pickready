@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| The singleton that outlived its loop (2026-09-16) | Hub shutdown, per-loop binding, a suite that hangs instead of failing |
 | Permission-aware UX + occupational STEM + Job SWOT (2026-09-13) | The one read-only sentence, capability-first UI, occupational classification, the AI-drafted Job SWOT |
 | BGV and conversations (2026-09-12) | The employment declaration, the offer gate, native chat, the reply address, SES inbound |
 | The rotated credential (2026-09-11) | The database credential split, TLS on the DSN, the primary-contact carve-out, the AI Reach contact harvest |
@@ -65,6 +66,68 @@ phase sections above them are where the sharp edges are.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
+
+## Current hard rules, the singleton that outlived its loop (2026-09-16)
+
+No migration. One module, `services/realtime`, and a class of bug this
+repository had not written down: a process-wide singleton holding asyncio state.
+
+### A SUITE THAT HANGS IS WORSE THAN ONE THAT FAILS, AND `py-spy` IS THE ANSWER
+
+The backend suite stopped at roughly a quarter with no failure and no output,
+and the last thing printed was a passing dot. Every instinct here is wrong:
+the percentage is unreliable (pytest block-buffers to a file, and a hard kill
+on Windows does NOT flush, so the log under-reports), the DB showed nothing
+blocked, and the file blamed by the arithmetic passed in four seconds alone.
+
+**`py-spy dump --pid <pid>` named it in one line**, from outside the process,
+with no rerun and no instrumentation. Reach for it FIRST when a run is quiet
+rather than red. `pytest --timeout=N --timeout-method=thread` (pytest-timeout)
+turns the hang into a failure with a stack; pytest 9 removed
+`--faulthandler-timeout`, so do not reach for that.
+
+### THE THREE RULES THE HUB NOW FOLLOWS
+
+- **A LONG-LIVED TASK IS STOPPED BY THE LIFESPAN, NEVER ONLY BY ITS LAST
+  USER.** `leave()` stopping the reader when the last socket goes covers the
+  quiet case and not the real one: a deploy stops a task with sockets still
+  open. `lifespan` calls `hub.shutdown()` BEFORE `get_engine().dispose()`, so
+  the loop is torn down with nothing still awaiting on it. On Linux, skipping
+  this is untidy; on Windows it HANGS, because `ProactorEventLoop.close()`
+  waits on outstanding overlapped I/O.
+- **A TASK ON A CLOSED LOOP IS NEVER `done()`, SO NEVER GUARD ON `done()`.**
+  That guard made the hub believe it was still subscribed and stop delivering
+  to every socket on the instance, permanently, with nothing logged because
+  nothing failed. The hub records the loop it is bound to and starts clean on a
+  new one; the lock is per-loop for the same reason, since reusing the one a
+  dead loop was waiting on is how a singleton becomes a deadlock.
+- **A SHUTDOWN PATH THAT CAN HANG MOVES THE BUG RATHER THAN FIXING IT.** Both
+  awaits in `_stop_reader` are bounded and a timeout is logged. Giving up is
+  safe HERE and nowhere else: the process is leaving, so an abandoned socket is
+  reaped by the kernel.
+
+### AN `after_commit` HANDLER RUNS INSIDE `commit()`, SO IT RAISES AT THE CALLER
+
+`hub.publish` already refused to fail a send it could not announce. The two
+lines that SCHEDULED it undid that: a RuntimeError from `loop.create_task` came
+out of `session.commit()` and 500'd the request AFTER the message was durably
+stored, so the sender was told their message failed while everyone else could
+already read it. Guard anything you schedule from a SQLAlchemy event the way
+you guard the work itself, and `close()` the coroutine you did not schedule --
+an un-awaited coroutine warns from whatever unrelated code the collector
+happens to be running, which is harder to trace than the failure behind it.
+
+### TWO PROBING MISTAKES THAT BOTH READ AS FACTS
+
+- **`set_config('app.bypass_rls','on',true)` IS TRANSACTION-LOCAL.** Passed
+  `true` outside an explicit transaction it is discarded immediately, every
+  later query runs under RLS, and the answer is zero rows -- which is
+  indistinguishable from an empty database. It reported "no jobs in pilot"; the
+  truth was 31. Pass `false` for a session-level setting when probing.
+- **NEVER RUN TWO `scripts/test.sh` INVOCATIONS AGAINST ONE DATABASE.** It DROPs
+  and recreates `readypick_test`, so a concurrent run reports
+  `UndefinedTableError` and "connection was closed in the middle of operation"
+  and looks exactly like 17 real failures.
 
 ## Current hard rules, permission-aware UX + occupational STEM + Job SWOT (2026-09-13)
 

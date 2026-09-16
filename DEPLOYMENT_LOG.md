@@ -971,3 +971,126 @@ declaration, and no candidate has one yet.
 
 There is no user-facing BGV or conversation surface in this build. The APIs,
 the realtime layer, the SES bridge and the frontend are not written yet.
+
+---
+
+## 2026-09-16 — RBAC UX, occupational STEM, AI Job SWOT, pilot (ap-south-2)
+
+Commit `1beebe6` on `integrate/pr6-rbac-stem-swot`. One tag for backend and
+frontend (`sha-1beebe6`). The RBAC / permission-aware UX / occupational STEM /
+Job SWOT specification had been BUILT (PR #6, merged to `origin/main`) and was
+never deployed: the running API was `sha-1af3d00`, and `swot-analysis` did not
+appear in the live `openapi.json`. That is what this release closes.
+
+### What it took to get a suite that could be believed
+
+The backend suite did not fail. It STOPPED, at roughly a quarter, with no
+failure and no output, and the last thing printed was a passing dot. A suite
+that hangs is worse than one that fails: there is nothing to read.
+
+`py-spy dump --pid` on the live process named it in one line. The main thread
+was in `TestClient.__exit__`, joining the anyio portal thread; the portal thread
+was inside `ProactorEventLoop.close()`, which on Windows waits on outstanding
+overlapped I/O. The realtime hub's reader task was still awaiting a redis socket
+on that loop, so the loop could not close and the join never returned.
+
+Three defects in one module-level singleton, all fixed in `1beebe6`/`29978fd`:
+
+- **Nothing stopped the reader on shutdown.** `leave()` stops it when the LAST
+  socket goes, which is the quiet case, not the real one: a deploy stops a task
+  with sockets still open. `lifespan` now calls `hub.shutdown()` before
+  disposing the engine.
+- **A hub that outlived its loop went quiet for good.** `_ensure_reader` guarded
+  with "is there a task, and is it not done", and a task on a CLOSED loop never
+  reports done -- so it decided it was still subscribed and stopped delivering
+  to every socket on the instance, with nothing logged because nothing failed.
+  This one is platform-independent and would have bitten production on any loop
+  restart.
+- **`publish_after_commit` could fail the send it was announcing.** Its
+  `after_commit` handler runs INSIDE `session.commit()`, so a RuntimeError from
+  `loop.create_task` came out of the commit and 500'd the request AFTER the
+  message was durably stored: the sender told it failed while everyone else can
+  already read it.
+
+Both shutdown awaits are now bounded, because a shutdown path that can hang
+moves the bug rather than fixing it.
+
+### The suite, measured twice
+
+- Host, Python 3.14: **6384 passed, 1 skipped, 0 failed** (18m04s).
+- Linux, Python 3.12 (the image's interpreter, in the backend image against an
+  isolated database): **6373 passed, 11 skipped, 0 failed**. The 11 skips are a
+  harness artifact: those tests read a hardcoded `localhost:55432`, which is not
+  reachable from inside a container.
+- Frontend: 261 vitest tests, `tsc --noEmit` clean, 19/19 contrast assertions,
+  impeccable gate clean.
+
+**One intermediate run was invalidated and is recorded rather than dropped.** A
+rerun reported 17 failures with `UndefinedTableError` and "connection was closed
+in the middle of operation". That was self-inflicted: `scripts/test.sh` DROPs and
+recreates `readypick_test`, and targeted runs were started beside a full one.
+Never run two `test.sh` invocations against the same database.
+
+### What was applied
+
+`terraform apply -var image_tag=sha-1beebe6 -var frontend_image_tag=sha-1beebe6`.
+Plan read 4 add / 5 change / 4 destroy, and every line was checked before
+applying, because "4 to destroy" on a live environment is not something to skim:
+
+- The 4 add/destroy pairs are ECS task-definition REVISIONS (agent, api,
+  frontend, migrate). Services keep running the old revision until rolled.
+- The RDS and Redis security-group changes read as "remove all egress" and are
+  a state reconciliation only: both already had `IpPermissionsEgress: []` live.
+- The SES IAM change NARROWS `Resource: "*"` to
+  `arn:aws:ses:ap-south-2:...:identity/*`, splitting `ses:ListIdentities` into
+  its own statement because that call cannot be scoped. It is the wildcard-IAM
+  fix from `f1116d6`.
+
+**Services were rolled ONE AT A TIME, by hand, rather than with
+`deploy-services.sh`.** That script rolls every service it finds at once. api
+and frontend are 0.5 vCPU each and analysis is 2.0, so with all three up the
+account's 4-vCPU Fargate quota leaves room for exactly one extra task: rolling
+api and frontend together lands on 4.0 exactly, and a third rollover fails
+placement. Rolled api, waited `services-stable`, then frontend.
+
+`analysis` was NOT rebuilt or rolled: nothing under `analysis-service/` changed
+since the deployed commit, and `analysis_image_tag` stays pinned at `93ebfcb`.
+
+### Verified, by digest and by table
+
+- `verify-deployment.sh` with all THREE expected digests: "Every running task is
+  the image this build produced." Supplying only two made it report
+  `analysis: SKIPPED` and exit 1, which is the script behaving correctly -- a
+  skipped check is not a passed check.
+- Schema read back from the pilot database itself: `0097_job_swot_analysis
+  (head)`. The migration script had reported "Migration did not finish within
+  900s ... NOT treating this as success"; the task's own CloudWatch log showed
+  0095 -> 0096 -> 0097 applied, and `alembic current` confirmed head. The
+  script was right to refuse; the timeout was slow task teardown.
+- `job_swot_analyses` exists with all 17 columns, 0 rows (nobody has generated
+  one yet, which is the correct `not_generated` state).
+- **31 historical jobs carry a re-derived classification: 28 STEM, 3 Non-STEM.**
+  The STEM side is Machine Learning Engineer, Data Engineer, DevOps / Cloud
+  Engineer, Java / Python Backend Developer, React Frontend Developer, MERN
+  Stack Developer, Full Stack Developer (.NET), AI / Generative AI Engineer and
+  AI architect. All three Non-STEM rows are **Data Analyst**, which is section
+  19's exact nuance: an `analyst` is not STEM on the title alone.
+- The four SWOT routes are in the live `openapi.json` and all four answer 401
+  unauthenticated.
+
+**A probe that reported an EMPTY database was wrong, and the reason is worth
+keeping.** `SELECT set_config('app.bypass_rls','on',true)` sets the value
+TRANSACTION-locally, so it was discarded with the implicit transaction around
+that one statement and every later query ran under RLS, returning zero rows.
+Zero rows and "no permission to see any rows" look identical. Pass `false` for
+a session-level setting when probing.
+
+### Not done, deliberately
+
+- No SWOT has been generated against a live model. The route is reachable and
+  authorized; the first real generation is a human action in the product.
+- No authenticated browser walkthrough. Sign-in is Firebase OAuth and cannot be
+  completed headless, so the permission-aware UX is proven by its unit tests,
+  the source sweep in `lib/read-only-messaging.test.ts` and the API's own
+  401/403 answers, and NOT by a visual pass. Saying so plainly rather than
+  implying otherwise.
