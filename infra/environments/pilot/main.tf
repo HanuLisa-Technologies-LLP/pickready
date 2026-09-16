@@ -1613,6 +1613,11 @@ module "ses_inbound" {
   lambda_function_arn  = module.lambda.function_arns["inbound-email"]
   lambda_function_name = module.lambda.function_names["inbound-email"]
 
+  # The environment's own CMK. Its policy already names both `sns` and `ses`
+  # with an account condition, which is what an encrypted topic SES publishes
+  # to needs, and why the module does not mint one.
+  kms_key_arn = aws_kms_key.this.arn
+
   # PILOT IS THE ONE RECEIVING IN THIS REGION. SES allows exactly one active
   # receipt rule set per region per account, so a second environment setting
   # this would silently take pilot's mail. Stated here so that change is a

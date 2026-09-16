@@ -146,3 +146,16 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "kms_key_arn" {
+  description = <<-DESC
+    The environment's CMK, used to encrypt the inbound-mail notification topic.
+
+    Taken as an input rather than minted here because the environment already
+    has a key whose policy names `sns.amazonaws.com` and `ses.amazonaws.com`
+    with an account condition. A key of this module's own would be a second
+    answer to "which key encrypts this environment's data at rest", with its
+    own policy to keep in step with that one.
+  DESC
+  type        = string
+}

@@ -203,71 +203,23 @@ resource "aws_s3_bucket_policy" "mail" {
 
 # ── The notification ─────────────────────────────────────────────────────────
 
-# A CUSTOMER-MANAGED KEY, AND `alias/aws/sns` WOULD NOT HAVE WORKED.
+# THE TOPIC IS ENCRYPTED WITH THE ENVIRONMENT'S OWN CMK, NOT A KEY OF ITS OWN.
 #
 # The notification carries who wrote to a verification thread and the S3 key of
-# their message, so it is encrypted at rest. The obvious way to do that is the
-# AWS-managed SNS key, and it is the wrong one: that key's policy cannot be
-# edited, and it grants no other service permission to use it. SES would then
-# fail to publish, and the failure mode is the one this module's own header
-# warns about, mail silently not arriving.
+# their message, so it is encrypted at rest. Two things decide WHICH key.
 #
-# So the key is ours, and its policy names SES explicitly. Both conditions are
-# load bearing: without `SourceAccount` any SES customer in the region could
-# ask this key to encrypt for them, which is the same hole the bucket policy
-# closes one resource earlier.
-resource "aws_kms_key" "topic" {
-  description             = "${var.project}-${var.environment} inbound mail notifications"
-  enable_key_rotation     = true
-  deletion_window_in_days = 30
-  policy                  = data.aws_iam_policy_document.topic_key.json
-  tags                    = var.tags
-}
-
-resource "aws_kms_alias" "topic" {
-  name          = "alias/${var.project}-${var.environment}-inbound-mail"
-  target_key_id = aws_kms_key.topic.key_id
-}
-
-data "aws_iam_policy_document" "topic_key" {
-  # Without this the key is unmanageable: a key whose policy grants the account
-  # nothing cannot be changed back by anyone, including its owner.
-  statement {
-    sid       = "AccountAdministers"
-    effect    = "Allow"
-    actions   = ["kms:*"]
-    resources = ["*"]
-
-    principals {
-      type        = "AWS"
-      identifiers = ["arn:aws:iam::${var.account_id}:root"]
-    }
-  }
-
-  statement {
-    sid    = "SesEncryptsNotifications"
-    effect = "Allow"
-    # GenerateDataKey as well as Encrypt: SNS envelope-encrypts, so the
-    # publisher needs a data key rather than a direct encrypt call.
-    actions   = ["kms:GenerateDataKey*", "kms:Decrypt"]
-    resources = ["*"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["ses.amazonaws.com"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "aws:SourceAccount"
-      values   = [var.account_id]
-    }
-  }
-}
-
+# It is not `alias/aws/sns`: an AWS-managed key has a fixed policy that cannot
+# be granted to another service, so SES could not publish and the symptom would
+# be this module's own stated nightmare, mail silently not arriving.
+#
+# And it is not a key minted here either. The environment already has a CMK
+# whose policy names `sns.amazonaws.com` and `ses.amazonaws.com` with an
+# account condition, for exactly this reason and in those words. A second key
+# would be a second answer to "which key encrypts this environment's data at
+# rest", with its own policy to keep in step. The caller passes the ARN.
 resource "aws_sns_topic" "received" {
   name              = "${var.project}-${var.environment}-inbound-mail"
-  kms_master_key_id = aws_kms_key.topic.id
+  kms_master_key_id = var.kms_key_arn
   tags              = var.tags
 }
 
