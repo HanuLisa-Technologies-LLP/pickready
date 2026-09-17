@@ -139,6 +139,17 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
+    // `robots.txt`, `sitemap.xml` and `opengraph-image` are EXCLUDED, and this
+    // was found in production rather than in a test. They are GENERATED routes
+    // rather than files under `public/`, so they fall inside the matcher, and
+    // this middleware is deny-by-default: anything outside PUBLIC_PREFIXES
+    // without a session is redirected to /login. Every one of them therefore
+    // answered a crawler with a 307 to the sign-in page.
+    //
+    // That is worse than not shipping them at all. `robots.txt` is the one file
+    // whose entire job is to be read by something that has no session and never
+    // will, so the disallow rules protecting /org, /portal, /admin and the
+    // tokenised links were never delivered to anybody.
     // All app routes except static assets and Next internals.
     //
     // `api` is excluded deliberately. Those paths are not pages: they are the
@@ -148,6 +159,6 @@ export const config = {
     // API call with a 307 to /login, so the browser would receive an HTML
     // redirect where it expected JSON and every 401-triggered silent refresh
     // would break instead of refreshing.
-    "/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    "/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|opengraph-image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };
