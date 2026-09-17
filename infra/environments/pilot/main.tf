@@ -1093,9 +1093,23 @@ module "alb" {
 
   routes = {
     api = {
-      priority      = 100
-      target_group  = "api"
-      path_patterns = ["/api/*", "/docs", "/openapi.json"]
+      priority     = 100
+      target_group = "api"
+      # `/docs` IS NOT HERE, AND THAT IS THE FIX RATHER THAN AN OMISSION.
+      #
+      # This rule used to send `/docs` to the API so FastAPI's Swagger UI would
+      # answer there. Two things were wrong with that and only the second was
+      # visible. The first: the frontend has a PUBLIC DOCUMENTATION PAGE at
+      # `app/(public)/docs/page.tsx`, and the site header and footer link to
+      # `/docs` from every public page, so that page was shadowed by Swagger and
+      # nobody could reach it. The second: once the interactive docs were closed
+      # on any TLS deployment, the same rule started answering a linked nav item
+      # with a 404, because the route it forwarded to no longer exists.
+      #
+      # `/openapi.json` STAYS. `scripts/smoke-test.sh` probes it unauthenticated
+      # after every deploy and fails the deploy if it is not 200, and the
+      # frontend has no page at that path to shadow.
+      path_patterns = ["/api/*", "/openapi.json"]
     }
   }
 
