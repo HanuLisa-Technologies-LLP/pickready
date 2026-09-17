@@ -50,6 +50,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+/**
+ * How many times the matching progress poll asks before giving up. Matches the
+ * cap in `app/(org)/org/jobs/[id]/page.tsx`, which polls the same endpoint: two
+ * screens watching one run should not disagree about when it has stalled.
+ */
+const MATCHING_POLL_ATTEMPTS = 240;
+
 export default function OrgReviewScreen() {
   const { toast } = useToast();
   const { can: hasCapability } = usePermissions();
@@ -92,7 +99,17 @@ export default function OrgReviewScreen() {
         setJobs(all);
         if (all.length > 0) setJobId(all[0].id);
       })
-      .catch(() => {});
+      // AN EMPTY CATCH HERE WAS INDISTINGUISHABLE FROM "THIS TENANT HAS NO
+      // JOBS". `jobs` starts as [], so a network failure, a 500 or an auth
+      // blip left the recruiter looking at an empty job selector with nothing
+      // saying anything had gone wrong and no way to retry. The state and its
+      // renderer already existed a few lines below and in the `loadLinks`
+      // catch; this fetch was the one path that did not use them.
+      .catch(() => {
+        setLoadError(
+          "The job list could not be loaded. Reload the page to try again."
+        );
+      });
   }, []);
 
   const loadLinks = React.useCallback(async () => {
@@ -122,7 +139,29 @@ export default function OrgReviewScreen() {
 
   React.useEffect(() => {
     if (!matchingTaskId) return;
+    // A CEILING, because "done never arrives" is a real state.
+    //
+    // This loop stopped on `done` and on a transport error, and on nothing
+    // else. A run-status row that never flips (an invocation lost without the
+    // status write, a container killed mid-scoring) left this polling every
+    // 1.5 seconds forever, with the progress panel sitting on the same stage,
+    // for as long as the tab stayed open. `app/(org)/org/jobs/[id]/page.tsx`
+    // already bounds the same poll at 240 attempts; matching that here rather
+    // than inventing a second number. At 1.5s that is six minutes, well past
+    // any real run.
+    let attempts = 0;
     const timer = window.setInterval(() => {
+      attempts += 1;
+      if (attempts > MATCHING_POLL_ATTEMPTS) {
+        window.clearInterval(timer);
+        setMatchingTaskId(null);
+        toast({
+          title: "Matching is taking longer than expected",
+          description:
+            "The run may still finish. Reload the page to see where it got to.",
+        });
+        return;
+      }
       void apiGet<MatchingTaskStatus>(`/matching/tasks/${matchingTaskId}`)
         .then((status) => {
           // The stage list, same source as the job page. Shown inline under the
