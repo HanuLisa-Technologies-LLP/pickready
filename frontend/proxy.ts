@@ -30,6 +30,29 @@ const PUBLIC_PREFIXES = [
   "/login",
   "/register", // candidate self sign-up (register first, log in later)
   "/docs", // public product and technical documentation
+  // THE REST OF THE PUBLIC SITE, WHICH WAS BEING REDIRECTED TO SIGN-IN.
+  //
+  // This list is a deny-by-default allowlist, and five genuinely public pages
+  // were missing from it, so a signed-out visitor asking for any of them got a
+  // 307 to /login. Two consequences, and the second is the serious one:
+  //
+  //  * The site footer links to /about and /insights on every public page, so
+  //    the marketing site dead-ended at a sign-in form.
+  //  * /privacy and /terms are LEGAL pages. A privacy policy nobody can read
+  //    without an account is not a published privacy policy.
+  //
+  // It was also about to get worse rather than better: `app/robots.ts` now
+  // allows all five and `app/sitemap.ts` lists them, so a crawler following the
+  // sitemap would have been handed a redirect to a login form for every URL it
+  // had just been invited to index.
+  //
+  // Found by probing the deployed site. Every route below was checked to exist
+  // under `app/(public)/`.
+  "/about",
+  "/insights",
+  "/privacy",
+  "/terms",
+  "/employers", // the public employer directory and each employer page
   "/join", // tokenized staff invitation acceptance
   // Public job application link. The JD must be readable WITHOUT an account
   // (FR-3.5); the page itself gates submission on a verified candidate
