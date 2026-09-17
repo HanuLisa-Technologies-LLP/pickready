@@ -77,7 +77,35 @@ Live checks against `https://readypick.ai` after deploy:
 | `/` | still `Site Under Construction`, as the owner requires |
 | `/about` | no robots meta, indexable |
 
-### A defect found ONLY by probing production
+### THREE defects found ONLY by probing production
+
+None of these could have been caught locally. In all three the build output was
+correct, every unit test passed, and each file was correct in isolation: the
+defect existed in the RELATIONSHIP between a file and something else, and only a
+request to the deployed site showed it. This is the strongest argument in this
+whole document for the project's standing rule that a green pipeline proves the
+tooling finished and nothing else.
+
+**1. Five public pages, including PRIVACY and TERMS, redirected to sign-in.**
+`proxy.ts` is a deny-by-default allowlist and `PUBLIC_PREFIXES` was missing
+`/about`, `/insights`, `/privacy`, `/terms` and `/employers`. The site footer
+links to `/about` and `/insights` from every public page, so the marketing site
+dead-ended at a login form, and a privacy policy that requires an account to read
+is not a published privacy policy. It was about to get worse: the new
+`robots.ts` invites crawlers to all five and `sitemap.ts` lists them, so a
+crawler following the sitemap would have been handed a redirect to a login form
+for every URL it had just been told to index. Fixed in `sha-9e7fdc3`, with
+`lib/public-routes.test.ts` asserting the sitemap and the allowlist agree in both
+directions, verified to fail with the prefixes removed.
+
+**2. `/docs` was routed to the API, shadowing the public documentation page.**
+An ALB listener rule sent `/docs` to the API target group for FastAPI's Swagger
+UI. The frontend has a public docs page that the header and footer link to from
+every public page, and it had never been reachable. Closing the interactive docs
+then turned that linked nav item into a 404. `/openapi.json` stays on the rule,
+because the smoke test probes it.
+
+**3. robots.txt, the sitemap and the OG image redirected to sign-in.**
 
 `robots.txt`, `sitemap.xml` and `opengraph-image` returned **307 to the sign-in
 page**. They are GENERATED routes rather than files under `public/`, so they fell
@@ -86,9 +114,14 @@ crawler got a redirect instead of the file, which defeated the entire indexing
 pass: the disallow rules protecting `/org`, `/portal`, `/admin` and the tokenised
 links were never delivered to anybody.
 
-No test caught this, and no test could have: the build output was correct and the
-middleware is correct in isolation. Only a request to the deployed site showed
-it. Fixed in `sha-4fc346c`, redeployed, and re-verified at 200.
+They are GENERATED routes rather than files under `public/`, so they fell inside
+the same matcher. Fixed in `sha-4fc346c`, redeployed, re-verified at 200.
+
+**Final state, all verified live:** thirteen public routes answer 200 (`/`,
+`/about`, `/insights`, `/docs`, `/privacy`, `/terms`, `/employers`,
+`/robots.txt`, `/sitemap.xml`, `/opengraph-image`, `/login`, `/register`,
+`/join`); `/org`, `/admin`, `/bd` and `/portal` answer 307; `/docs` serves the
+product page rather than Swagger; and the full smoke test passes.
 
 ### The backend failure that was cleared before deploying
 
