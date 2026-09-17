@@ -43,7 +43,7 @@ export function RoleTypeBadge({
       >
         {stem ? "STEM Role" : "Non-STEM Role"}
       </span>
-      <span className="text-2xs opacity-70">{costLine}</span>
+      <span className="text-2xs">{costLine}</span>
     </div>
   );
 }

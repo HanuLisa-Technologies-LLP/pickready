@@ -22,6 +22,7 @@ would deserialize into the wrong thing.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Awaitable, Callable
@@ -42,6 +43,7 @@ TTL_CANDIDATE_PROFILE = 3600   # 1 hour — static between the candidate's edits
 TTL_SHORT = 60
 
 _client: Any = None
+_client_loop: Any = None
 _unavailable = False
 
 
@@ -58,10 +60,26 @@ def _redis():
 
     `_unavailable` latches so a Redis outage costs one failed connection rather
     than one per request — the whole point is to never make things slower.
+
+    REBUILT ON A NEW EVENT LOOP, which is the same rule `proctoring/state.py`
+    follows and the same one the realtime hub was taught on 2026-09-16: a
+    process-wide singleton holding asyncio state is a bug class this repository
+    has already written down. A redis-py connection pool's connections belong
+    to the loop that opened them, so a client carried into a second loop fails
+    every call. One uvicorn process has one loop and never notices; a test
+    session and a worker that runs `asyncio.run` per task both do.
     """
-    global _client, _unavailable
+    global _client, _client_loop, _unavailable
     if _unavailable:
         return None
+    try:
+        loop: Any = asyncio.get_running_loop()
+    except RuntimeError:
+        # Called from synchronous code. There is no pool to mismatch yet, so
+        # the existing client is as good as a new one.
+        loop = _client_loop
+    if _client is not None and _client_loop is not loop:
+        _client = None
     if _client is None:
         try:
             import redis.asyncio as redis_asyncio
@@ -73,6 +91,7 @@ def _redis():
                 socket_connect_timeout=1,
                 socket_timeout=1,
             )
+            _client_loop = loop
         except Exception as exc:  # noqa: BLE001 — cache must never break a request
             log.warning("cache.unavailable %s", type(exc).__name__)
             _unavailable = True
@@ -127,6 +146,54 @@ async def invalidate(*cache_keys: str) -> None:
         log.debug("cache.invalidate_failed err=%s", type(exc).__name__)
 
 
+#: Upper bound on the keys one `invalidate_pattern` sweep will visit.
+#:
+#: `SCAN` is cursor based and returns a partial batch per round trip, so a
+#: pattern matching a large keyspace costs an unbounded number of them. The
+#: only caller is the RBAC role-permission flush, whose keyspace is
+#: (tenants x roles) and is nowhere near this, so the bound is a ceiling on a
+#: pathological pattern rather than a limit the product ever reaches. Stopping
+#: is safe for this data: every entry carries a TTL, so an unswept key expires
+#: on its own rather than serving a stale row for ever.
+_PATTERN_SCAN_LIMIT = 10_000
+_PATTERN_SCAN_BATCH = 100
+
+
+async def invalidate_pattern(pattern: str) -> None:
+    """Drop every key matching a glob, e.g. `pickready:tenant:*:role_permissions:*`.
+
+    Provenance: `services/tenant_cache.delete_pattern` before the 2026-09-17
+    consolidation; it is the flush `rbac.invalidate_role_permissions` uses when
+    a global capability row changes and every tenant's copy has to go.
+
+    SCAN rather than KEYS, because KEYS blocks the Redis event loop for the
+    whole keyspace and this is called from a request handler.
+    """
+    client = _redis()
+    if client is None:
+        return
+    seen = 0
+    try:
+        async for cache_key in client.scan_iter(
+            match=pattern, count=_PATTERN_SCAN_BATCH
+        ):
+            await client.delete(cache_key)
+            seen += 1
+            if seen >= _PATTERN_SCAN_LIMIT:
+                log.warning(
+                    "cache.invalidate_pattern_truncated pattern=%s visited=%s",
+                    pattern,
+                    seen,
+                )
+                return
+    except Exception as exc:  # noqa: BLE001
+        log.debug(
+            "cache.invalidate_pattern_failed pattern=%s err=%s",
+            pattern,
+            type(exc).__name__,
+        )
+
+
 async def get_or_set(
     cache_key: str, loader: Callable[[], Awaitable[Any]], ttl: int = TTL_SHORT
 ) -> Any:
@@ -148,7 +215,8 @@ async def get_or_set(
 
 async def close() -> None:
     """Release the connection pool at shutdown."""
-    global _client
+    global _client, _client_loop
+    _client_loop = None
     if _client is not None:
         try:
             await _client.aclose()

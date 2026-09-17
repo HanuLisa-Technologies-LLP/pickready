@@ -9,7 +9,10 @@ ORDER IS PART OF THE CONTRACT
                   probed for its schema, and an object another tenant owns
                   cannot be probed for its existence
   3. validate in  a bad payload never reaches a handler
-  4. cache read   idempotent tools only
+  4. cache read   idempotent tools only, and the key carries the TENANT: this
+                  read happens before the handler and therefore before the RLS
+                  session, so it is the one step that could hand tenant B a
+                  result computed for tenant A
   5. attempt      bounded per attempt AND in total; the deadline PREDICTS
   6. validate out a handler's bad shape is the tool's defect, not the caller's
   7. cache write  after validation, so a malformed result is never memoised
@@ -47,6 +50,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import cache
+from app.services.coalescing import TenantScopeMissing
 from app.services.tools import approvals, policy, registry, telemetry
 from app.services.tools.errors import (
     ToolApprovalRequired,
@@ -89,19 +93,51 @@ class ToolResult:
         return self.value.model_dump(mode="json")
 
 
-def _cache_key(tool: str, payload: BaseModel) -> str:
-    """Stable key over the VALIDATED input.
+def _cache_key(tool: str, payload: BaseModel, tenant_id: Any) -> str:
+    """Stable key over the TENANT and the VALIDATED input.
 
     Keyed on the validated model rather than the raw payload so two callers
     that spell the same call differently, a UUID object and its string, or a
     field left to its default, share one entry instead of quietly halving the
     hit rate.
+
+    THE TENANT IS PART OF THE KEY AND IS NOT OPTIONAL
+    -------------------------------------------------
+    The cache is read at step 4, BEFORE the handler and therefore before the
+    RLS-aware session that would have refused the row. That makes this the one
+    place in the layer where a call scoped to tenant B can be served tenant A's
+    result: the policy engine has already said yes, and nothing downstream ever
+    runs to disagree. Every cached tool today takes a globally unique primary
+    key, so a COLLISION was never the exposure; cross-tenant SERVING was, and
+    only for as long as two tenants shared an input shape.
+
+    The tenant appears twice on purpose. As a key SEGMENT so an operator
+    reading Redis can see whose entry an item is without decoding a digest, and
+    inside the DIGEST so the segment cannot be spoofed by a tool name that
+    carries the separator.
+
+    Refused rather than defaulted, and `coalescing.TenantScopeMissing` is
+    imported rather than restated because a second name for one failure is a
+    second thing to grep for. A builder that raises cannot be evaded by a
+    caller that forgot; a sweep over the source can.
+
+    Provenance: RPN-AI-UP-001 W4.3 ("every cache key contains the tenant id"),
+    recorded as a tracked gap in `tests/test_cache_tenant_keying.py` until now.
     """
+    scope = "" if tenant_id is None else str(tenant_id).strip()
+    if not scope:
+        raise TenantScopeMissing(
+            f"a tool result cache key for {tool!r} needs a tenant id; the "
+            f"cache is read before the RLS session, so a key without one can "
+            f"serve one tenant's result to another"
+        )
     canonical = json.dumps(
-        payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        {"tenant": scope, "input": payload.model_dump(mode="json")},
+        sort_keys=True,
+        separators=(",", ":"),
     )
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
-    return cache.key("tool", tool, digest)
+    return cache.key("tool", tool, scope, digest)
 
 
 #: Which refusal each policy reason becomes. DATA, so the error class a rule
@@ -214,9 +250,16 @@ async def execute(
     if spec.needs_session and session is None:
         raise refuse(ToolInputError(tool, "this tool requires a database session"))
 
+    # A call that declares NO tenant is not cached at all. The alternative is a
+    # bucket shared by every caller that declared nothing, which is the same
+    # cross-tenant serving one line down in a shape nobody would read as one.
+    # Declining to memoise is always correct; it costs the second call its
+    # handler and nothing else.
     cache_key = (
-        _cache_key(tool, parsed)
-        if spec.idempotent and spec.cache_ttl_seconds > 0
+        _cache_key(tool, parsed, context.tenant_id)
+        if spec.idempotent
+        and spec.cache_ttl_seconds > 0
+        and context.tenant_id is not None
         else None
     )
     if cache_key is not None:

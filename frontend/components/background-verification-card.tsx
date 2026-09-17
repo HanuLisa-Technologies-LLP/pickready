@@ -10,7 +10,8 @@
 // the card says so plainly. Every state is a word, never a number.
 
 import * as React from "react";
-import { MailCheck } from "lucide-react";
+import { MailCheck, ShieldQuestion } from "lucide-react";
+import { EmptyState } from "@/components/page-primitives";
 
 import { apiGet, apiPost, apiPut } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
@@ -276,10 +277,12 @@ export function BackgroundVerificationCard() {
               </div>
             ))}
             {data.inquiries.length === 0 ? (
-              <p className="text-sm">
-                No verification inquiries yet. Add a previous employer below to
-                start one.
-              </p>
+              <EmptyState
+                icon={ShieldQuestion}
+                title="No verification inquiries yet"
+                description="Add a previous employer below to start one."
+                className="py-10"
+              />
             ) : null}
             {data.can_add ? (
               <form

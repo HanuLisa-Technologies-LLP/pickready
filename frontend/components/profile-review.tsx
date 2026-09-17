@@ -5,15 +5,13 @@
 // per role via renderActions.
 
 import * as React from "react";
+import dynamic from "next/dynamic";
 import { FileText, Mail } from "lucide-react";
 
 import { apiGet } from "@/lib/api";
 import type { CandidateLink, CandidateProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import {
-  FunctionalSkillsReportView,
-  type FunctionalReport,
-} from "@/components/functional-skills-report";
+import type { FunctionalReport } from "@/components/functional-skills-report";
 import { BgvResultsPanel } from "@/components/bgv-results-panel";
 import { BgvVerificationPanel } from "@/components/bgv-verification-panel";
 import { CandidateConversationCard } from "@/components/candidate-conversation-card";
@@ -25,6 +23,20 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+// Recharts is sizeable and only needed once a report is actually open. Every
+// recruiter opens the Review Screen, and most of that time is spent on the
+// candidate list rather than on a rendered report, so a static import put the
+// charting library into the initial bundle of a screen that frequently never
+// draws a chart. Same treatment, same options, as `ppi-report-modal.tsx`: the
+// type import above is erased at build time and pulls nothing in.
+const FunctionalSkillsReportView = dynamic(
+  () =>
+    import("@/components/functional-skills-report").then(
+      (module) => module.FunctionalSkillsReportView
+    ),
+  { loading: () => <div className="h-64 animate-pulse rounded-lg bg-muted" /> }
+);
 
 export function ProfileReview({
   links,

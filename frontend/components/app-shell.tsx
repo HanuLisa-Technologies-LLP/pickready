@@ -118,7 +118,7 @@ function AccountBlock({ compact = false }: { compact?: boolean }) {
               <p className="truncate text-xs font-semibold">
                 {user.full_name || user.email}
               </p>
-              <p className="truncate text-xs opacity-80">{user.email}</p>
+              <p className="truncate text-xs">{user.email}</p>
             </div>
           </div>
           <WorkspaceSwitcher />
@@ -246,7 +246,7 @@ export function AppShell({
           ) : (
             <>
               <Logo variant="full" height={34} href="/" />
-              <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em] opacity-70">
+              <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em]">
                 {title}
               </p>
               {user ? (
@@ -323,7 +323,7 @@ export function AppShell({
               <SheetTitle className="sr-only">{title}</SheetTitle>
               <div className="px-5 py-6">
                 <Logo variant="full" height={32} />
-                <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em] opacity-70">
+                <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em]">
                   {title}
                 </p>
               </div>

@@ -72,6 +72,19 @@ MAX_BODY_CHARS = 20_000
 
 WEBHOOK_TIMEOUT_SECONDS = 15
 
+#: Proves to the API that this relay made the call.
+#:
+#: The webhook writes into verification requests, BGV threads and conversations,
+#: and before this it was reachable by anyone on the internet who knew a thread
+#: token. Tokens travel by email, so they exist in every mailbox that ever
+#: received or forwarded one of these threads.
+#:
+#: OPTIONAL HERE ON PURPOSE. An environment that has not been given the secret
+#: yet sends no header, and the API logs that it is running unauthenticated
+#: rather than refusing every genuine reply. Once both sides have the value the
+#: API refuses anything without it.
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+
 #: Bounded like every other boto3 client in this tree. An endpoint that accepts
 #: the connection and then stops answering would otherwise hold the invocation
 #: to its timeout with nothing raised for a caller to catch.
@@ -124,10 +137,13 @@ def _fetch(bucket: str, key: str) -> bytes:
 
 
 def _post(payload: dict) -> None:
+    headers = {"Content-Type": "application/json"}
+    if WEBHOOK_SECRET:
+        headers["X-ReadyPick-Webhook-Secret"] = WEBHOOK_SECRET
     request = urllib.request.Request(
         WEBHOOK_URL,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     try:

@@ -135,7 +135,7 @@ function Timeline({ events }: { events: StatusEvent[] }) {
           <span className="font-semibold">
             {PIPELINE_LABELS[event.status as PipelineStage] ?? event.label}
           </span>
-          <span className="ml-2 opacity-80">
+          <span className="ml-2">
             {new Date(event.at).toLocaleDateString(undefined, {
               day: "numeric",
               month: "short",

@@ -36,7 +36,7 @@ import { FormField } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/components/ui/toast";
-import { InlineError, Section } from "@/components/page-primitives";
+import { EmptyState, InlineError, Section } from "@/components/page-primitives";
 
 const STATUS_CHIP: Record<
   EmailSenderStatus,
@@ -133,13 +133,12 @@ export function EmailSendersCard() {
       {loadError ? <InlineError>{loadError}</InlineError> : null}
 
       {data && senders.length === 0 ? (
-        <div className="flex items-center gap-3 rounded-xl border border-border bg-secondary px-4 py-3 text-sm">
-          <Mail className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>
-            No senders yet. Add a business address like hr@yourcompany.com to
-            send automated email under your own identity.
-          </span>
-        </div>
+        <EmptyState
+          icon={Mail}
+          title="No senders yet"
+          description="Add a business address like hr@yourcompany.com to send automated email under your own identity."
+          className="py-10"
+        />
       ) : null}
 
       {senders.map((sender, index) => {

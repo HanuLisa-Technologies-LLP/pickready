@@ -9,6 +9,7 @@ export const metadata: Metadata = {
   title: "Employers",
   description:
     "Search companies hiring through ReadyPick and browse their open roles.",
+  alternates: { canonical: "/employers" },
 };
 
 export default function EmployersPage() {

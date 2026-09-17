@@ -79,7 +79,7 @@ function ToastViewport() {
           key={t.id}
           role="status"
           className={cn(
-            "pointer-events-auto relative flex w-full items-start gap-3 rounded-md border p-4 shadow-lg animate-in slide-in-from-bottom-2",
+            "pointer-events-auto relative flex w-full items-start gap-3 rounded-md border p-4 shadow-modal animate-in slide-in-from-bottom-2",
             t.variant === "destructive"
               ? "border-destructive bg-destructive text-destructive-foreground"
               : "border-border bg-background text-foreground"

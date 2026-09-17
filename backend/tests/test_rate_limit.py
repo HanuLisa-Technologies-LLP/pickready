@@ -22,6 +22,8 @@ from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from app.core import cache
+from app.core.security import AUDIENCE_CANDIDATE, AUDIENCE_ORG, create_access_token
+from app.models.enums import Role
 from app.services import rate_limit
 
 
@@ -180,12 +182,68 @@ def test_the_socket_address_is_used_when_there_is_no_proxy_header() -> None:
     assert rate_limit.client_identifier(_request()) == "ip:10.0.0.9"
 
 
+# ── The authenticated subject ───────────────────────────────────────────────
+#
+# THESE TESTS REPLACE ONE THAT PASSED WHILE THE FEATURE WAS ENTIRELY DEAD.
+# The previous version set `request.state.rate_limit_subject` by hand and
+# asserted the branch that read it. Nothing in the application ever wrote that
+# attribute, so every authenticated caller in production was limited by apparent
+# address alone, and the test reported the opposite. A test that supplies the
+# mechanism it is testing cannot fail when the mechanism is missing.
+#
+# So each of these builds a REAL signed token and puts it where a browser would,
+# and the negative cases below are the ones that matter most: the subject is
+# attacker-supplied unless the signature is checked, and an unverified `sub`
+# would let anyone name a stranger's bucket and exhaust their allowance.
+
+
+def _access_token(subject: str, audience: str = AUDIENCE_ORG) -> str:
+    return create_access_token(subject, Role.recruiter.value, None, audience)
+
+
 def test_an_authenticated_caller_is_limited_by_account_not_by_address() -> None:
     """Fairer and harder to escape: an office behind one NAT address is many
     people, and one account should not slip the limit by changing networks."""
-    request = _request({"x-forwarded-for": "203.0.113.7"})
-    request.state.rate_limit_subject = "user-123"
+    token = _access_token("user-123")
+    request = _request(
+        {"x-forwarded-for": "203.0.113.7", "cookie": f"pr_access={token}"}
+    )
     assert rate_limit.client_identifier(request) == "user:user-123"
+
+
+def test_a_bearer_token_is_read_the_same_way_as_the_cookie() -> None:
+    token = _access_token("user-456")
+    request = _request({"authorization": f"Bearer {token}"})
+    assert rate_limit.client_identifier(request) == "user:user-456"
+
+
+def test_a_candidate_token_also_gets_its_own_bucket() -> None:
+    """All three audiences are real sessions. A candidate limited by address
+    would share a bucket with everyone else on their office network."""
+    token = _access_token("cand-1", audience=AUDIENCE_CANDIDATE)
+    request = _request({"cookie": f"pr_access={token}"})
+    assert rate_limit.client_identifier(request) == "user:cand-1"
+
+
+def test_a_tampered_token_falls_back_to_the_address() -> None:
+    """THE ONE THAT MATTERS. If the signature were not checked, anyone could
+    forge `sub` and either escape their own limit or burn somebody else's."""
+    forged = _access_token("victim-user") + "tampered"
+    request = _request(
+        {"x-forwarded-for": "203.0.113.7", "cookie": f"pr_access={forged}"}
+    )
+    assert rate_limit.client_identifier(request) == "ip:203.0.113.7"
+
+
+def test_a_garbage_cookie_falls_back_to_the_address_and_does_not_raise() -> None:
+    """This runs in front of unauthenticated endpoints too, so a malformed
+    cookie must read as anonymous rather than 500 the sign-in path."""
+    request = _request({"cookie": "pr_access=not-a-jwt-at-all"})
+    assert rate_limit.client_identifier(request) == "ip:10.0.0.9"
+
+
+def test_an_anonymous_caller_still_falls_back_to_the_address() -> None:
+    assert rate_limit.client_identifier(_request()) == "ip:10.0.0.9"
 
 
 # ── The dependency, end to end ──────────────────────────────────────────────

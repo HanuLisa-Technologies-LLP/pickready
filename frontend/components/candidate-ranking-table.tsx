@@ -38,6 +38,7 @@ import {
   Mail,
   MessageSquareText,
   MessagesSquare,
+  Users,
 } from "lucide-react";
 
 import { apiGet, apiPost } from "@/lib/api";
@@ -50,6 +51,7 @@ import type {
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/page-primitives";
 import { BandLegend } from "@/components/rating-label";
 import { AiRatingCell, AiRatingReportModal } from "@/components/ai-rating-report-modal";
 import { ProcurementBadge } from "@/components/procurement-badge";
@@ -446,8 +448,16 @@ export function CandidateRankingTable({
               ))
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={columnCount} className="py-10 text-center">
-                  No candidates yet. Applications appear here as they arrive.
+                {/* Inside the cell, not instead of the table: the column
+                    headers name what will arrive, which is the useful half of
+                    an empty ranking table. */}
+                <TableCell colSpan={columnCount} className="p-0">
+                  <EmptyState
+                    icon={Users}
+                    title="No candidates yet"
+                    description="Applications appear here as they arrive."
+                    className="border-0"
+                  />
                 </TableCell>
               </TableRow>
             ) : (

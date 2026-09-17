@@ -1,54 +1,27 @@
 import Link from "next/link";
-import {
-  ArrowRight,
-  Building2,
-  FileSearch,
-  Fingerprint,
-  MapPin,
-  ScanSearch,
-  Send,
-  ShieldCheck,
-  UserRoundCheck,
-} from "lucide-react";
+import { ArrowRight, ShieldCheck } from "lucide-react";
 
-import {
-  HoverLift,
-  Reveal,
-  RevealStagger,
-  StaggerItem,
-} from "@/components/motion";
+import { Reveal, RevealStagger, StaggerItem } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
-const ROADMAP = [
-  { icon: Building2, label: "Role", detail: "One approved brief" },
-  { icon: ScanSearch, label: "Source", detail: "Applied, uploaded, databank" },
-  { icon: Fingerprint, label: "Match", detail: "Evidence against the job" },
-  { icon: UserRoundCheck, label: "Assess", detail: "Role-shaped questions" },
-  { icon: FileSearch, label: "PRISM", detail: "One complete profile" },
-  { icon: Send, label: "Decide", detail: "Human call, clear trail" },
-] as const;
-
-const TESTIMONIALS = [
-  {
-    quote:
-      "The report gave our panel a common language. We entered the interview knowing what to verify, not where to start.",
-    name: "HR leader",
-    company: "Technology services, Bengaluru",
-  },
-  {
-    quote:
-      "We could see why a profile matched. That transparency made the shortlist much easier to defend with the business.",
-    name: "Talent partner",
-    company: "Financial services, Hyderabad",
-  },
-  {
-    quote:
-      "The experience felt considered from the candidate side too. Every message was clear about the next step.",
-    name: "Candidate",
-    company: "Product engineering",
-  },
-] as const;
+/**
+ * The narrative sections between the product and the price.
+ *
+ * THREE EXPORTS WERE REMOVED HERE, AND THE REASONS ARE DIFFERENT:
+ *
+ *  - `Testimonials` carried three quotes attributed to an "HR leader", a
+ *    "Talent partner" and a "Candidate". Nobody said them. An invented
+ *    testimonial is the one kind of copy that cannot be repaired by editing,
+ *    and the landing brief for this pass forbids one outright.
+ *  - `Locations` claimed four offices. Nothing else in the repository, the
+ *    About page included, states where the company sits, so the page would
+ *    have been the only source for a fact it could not support.
+ *  - `ProcessRoadmap` told the same story as `HowItWorks`, one screen apart,
+ *    in six stages instead of three, on a rail that needed 900px of
+ *    horizontal scroll on a phone. One implementation per concept: the
+ *    sequence is told once, by `HowItWorks`.
+ */
 
 const INSIGHTS = [
   {
@@ -68,83 +41,58 @@ const INSIGHTS = [
   },
 ] as const;
 
-export function ProcessRoadmap() {
+/** The four client-facing grades, in order. Words, and only words. */
+const GRADES = [
+  { word: "Highly Matching", tone: "rating1" },
+  { word: "Matching", tone: "rating2" },
+  { word: "Moderately Matching", tone: "rating3" },
+  { word: "Not Matching", tone: "rating5" },
+] as const;
+
+/**
+ * The thesis section, next to the report section's contents: one says what is
+ * in the document, this one says why it is shaped that way.
+ */
+export function EvidenceProfile() {
   return (
     <section
-      className="border-y border-border bg-surface/55 py-20 lg:py-24"
-      aria-labelledby="roadmap-title"
+      className="border-y border-border bg-navy-50/60 py-20 lg:py-24"
+      aria-labelledby="evidence-title"
     >
       <div className="mx-auto max-w-6xl px-6 lg:px-10">
-        <Reveal className="max-w-2xl">
-          <p className="text-sm font-semibold uppercase tracking-[.16em] text-brand-600">
-            End-to-end roadmap
-          </p>
-          <h2
-            id="roadmap-title"
-            className="mt-3 text-balance text-2xl font-bold sm:text-3xl"
-          >
-            One evidence line, from role to decision
-          </h2>
-        </Reveal>
-        <div className="relative mt-10 overflow-x-auto pb-4 [scrollbar-width:thin]">
-          <div className="absolute left-12 right-12 top-8 hidden h-px bg-gradient-to-r from-transparent via-brand-600/45 to-transparent sm:block" />
-          <ol className="relative grid min-w-[900px] grid-cols-6 gap-4 sm:min-w-0">
-            {ROADMAP.map((item, index) => (
-              <li key={item.label} className="relative">
-                <HoverLift className="h-full rounded-2xl border border-border bg-canvas p-5 shadow-card transition-[border-color,box-shadow] duration-150 hover:border-field hover:shadow-pop">
-                  <span className="grid h-10 w-10 place-items-center rounded-xl bg-brand-100 text-accent-foreground">
-                    <item.icon className="h-5 w-5" aria-hidden="true" />
-                  </span>
-                  <p className="mt-5 text-xs font-semibold text-brand-600">
-                    0{index + 1}
-                  </p>
-                  <h3 className="mt-1 font-semibold">{item.label}</h3>
-                  <p className="mt-2 text-sm leading-6">{item.detail}</p>
-                </HoverLift>
-              </li>
-            ))}
-          </ol>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-export function PfiDifferentiator() {
-  return (
-    <section
-      className="mx-auto max-w-6xl px-6 py-20 lg:px-10 lg:py-28"
-      aria-labelledby="ppi-edge-title"
-    >
-      <div className="overflow-hidden rounded-3xl border border-border bg-[linear-gradient(135deg,hsl(var(--surface)),hsl(var(--brand-100)))] p-7 shadow-pop sm:p-10">
-        <div className="grid items-center gap-10 lg:grid-cols-[1.05fr_.95fr]">
+        <div className="grid items-start gap-12 lg:grid-cols-[1.05fr_.95fr] lg:gap-14">
           <Reveal>
-            <Badge variant="brand">ReadyPick intelligence</Badge>
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
+              ReadyPick intelligence
+            </p>
             <h2
-              id="ppi-edge-title"
-              className="mt-5 text-balance text-3xl font-bold"
+              id="evidence-title"
+              className="mt-4 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
             >
               AI can rank. A PRISM Report helps your team understand.
             </h2>
-            <p className="mt-5 text-pretty text-lg leading-8">
+            <p className="mt-4 text-pretty text-base leading-7">
               ReadyPick Profile Intelligence connects role match, behavioural
               evidence, technical depth and validation into one readable
               decision profile. It is our own framework, generated from your job
               description, not a generic score pasted onto a resume.
             </p>
-            <ul className="mt-7 grid gap-3 text-sm sm:grid-cols-2">
+            {/* Flat rows on a hairline grid, not four bordered boxes inside a
+                bordered panel. DESIGN.md section 4: no card inside a card. */}
+            <ul className="mt-8 grid gap-px border border-border bg-border sm:grid-cols-2">
               {[
-                "Four radar charts, and not one number on them",
+                "Three radar charts, and not one number on them",
                 "Remarks tied to what the candidate actually said",
                 "One conversation, not four separate bot threads",
                 "Interview probes aimed at what stayed uncertain",
               ].map((item) => (
                 <li
                   key={item}
-                  className="flex items-start gap-2 rounded-xl border border-border bg-canvas/70 p-3"
+                  className="flex items-start gap-2.5 bg-canvas p-4 text-sm leading-6"
                 >
                   <ShieldCheck
-                    className="mt-0.5 h-4 w-4 shrink-0 text-brand-600"
+                    className="mt-0.5 h-4 w-4 shrink-0 text-teal-700"
+                    strokeWidth={1.5}
                     aria-hidden="true"
                   />
                   {item}
@@ -152,58 +100,29 @@ export function PfiDifferentiator() {
               ))}
             </ul>
           </Reveal>
-          <Reveal delay={0.08} className="relative">
-            <div className="mx-auto aspect-square max-w-sm rounded-full border border-brand-600/20 bg-canvas/70 p-8 shadow-card">
-              <div className="grid h-full place-items-center rounded-full border border-dashed border-brand-600/30">
-                <div className="grid h-[72%] w-[72%] rotate-45 place-items-center rounded-none border border-brand-600/35 bg-brand-600/10">
-                  <div className="-rotate-45 text-center">
-                    <p className="text-5xl font-black text-gradient-brand">
-                      PRISM
-                    </p>
-                    <p className="mt-2 text-xs font-semibold uppercase tracking-[.2em]">
-                      Decision intelligence
-                    </p>
-                  </div>
-                </div>
-              </div>
+
+          <Reveal delay={0.08}>
+            {/* This replaces a rotated diamond inside two concentric circles
+                with the word PRISM set in gradient type across it. That was
+                ornament standing in for an explanation. The rating vocabulary
+                is the actual differentiator, so the panel now shows it. */}
+            <div className="border border-border bg-surface">
+              <h3 className="border-b border-border px-6 py-4 text-sm font-semibold">
+                Every rating, in four words
+              </h3>
+              <ul className="divide-y divide-border">
+                {GRADES.map((grade) => (
+                  <li key={grade.word} className="px-6 py-4">
+                    <Badge variant={grade.tone}>{grade.word}</Badge>
+                  </li>
+                ))}
+              </ul>
+              <p className="border-t border-border px-6 py-4 text-xs font-medium leading-5">
+                No percentage, no rank, no letter. The same four words on the
+                screen, in the PDF and in the email.
+              </p>
             </div>
           </Reveal>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-export function Testimonials() {
-  return (
-    <section
-      className="border-y border-border bg-surface/55 py-20"
-      aria-labelledby="voices-title"
-    >
-      <div className="mx-auto max-w-6xl px-6 lg:px-10">
-        <Reveal>
-          <p className="text-sm font-semibold uppercase tracking-[.16em] text-brand-600">
-            From the people doing the work
-          </p>
-          <h2 id="voices-title" className="mt-3 text-2xl font-bold sm:text-3xl">
-            Clearer inputs change the conversation
-          </h2>
-        </Reveal>
-        <div className="-mx-6 mt-10 flex snap-x snap-mandatory gap-5 overflow-x-auto px-6 pb-5 [scrollbar-width:thin] lg:mx-0 lg:px-0">
-          {TESTIMONIALS.map((item) => (
-            <HoverLift
-              key={item.quote}
-              className="min-w-[84vw] snap-start rounded-2xl border border-border bg-canvas p-7 shadow-card transition-[border-color,box-shadow] duration-150 hover:border-field hover:shadow-pop sm:min-w-[28rem] lg:min-w-[34rem]"
-            >
-              <article>
-                <p className="text-balance text-lg font-medium leading-8">
-                  &ldquo;{item.quote}&rdquo;
-                </p>
-                <p className="mt-6 text-sm font-semibold">{item.name}</p>
-                <p className="mt-1 text-sm">{item.company}</p>
-              </article>
-            </HoverLift>
-          ))}
         </div>
       </div>
     </section>
@@ -213,50 +132,54 @@ export function Testimonials() {
 export function AboutPreview() {
   return (
     <section
-      className="mx-auto max-w-6xl px-6 py-20 lg:px-10 lg:py-28"
+      className="mx-auto max-w-6xl px-6 py-20 lg:px-10 lg:py-24"
       aria-labelledby="about-preview-title"
     >
-      <div className="grid gap-10 lg:grid-cols-[.9fr_1.1fr] lg:items-center">
-        <Reveal className="relative min-h-72 overflow-hidden rounded-3xl bg-[#090b16] p-8 text-white shadow-pop">
-          <div
-            aria-hidden="true"
-            className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-teal-600/35 blur-3xl"
-          />
-          <p className="relative text-xs font-semibold uppercase tracking-[.2em] text-teal-400">
+      <div className="grid gap-10 lg:grid-cols-[.9fr_1.1fr] lg:items-center lg:gap-14">
+        {/* The dark panel carried a blurred teal circle in the corner, the
+            same ambient glow removed from the hero. A teal rule does the same
+            job of marking the panel as ours and holds still while doing it. */}
+        <Reveal className="relative flex min-h-72 flex-col justify-between border border-navy-700 bg-navy-900 p-8 text-white">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-400">
             Built from the inside
           </p>
-          <p className="relative mt-10 max-w-sm text-3xl font-bold leading-tight">
+          <span aria-hidden="true" className="mt-6 block h-px w-16 bg-teal-400" />
+          <p className="mt-6 max-w-sm text-balance text-2xl font-semibold leading-tight sm:text-3xl">
             Twenty-five years in HR. One conviction: technology should give the
             team time back.
           </p>
-          <p className="relative mt-8 text-sm text-white/55">
-            Manjunath · Founder &amp; CEO
+          <p className="mt-8 text-sm font-medium">
+            Manjunath, Founder and CEO
           </p>
         </Reveal>
+
         <Reveal delay={0.08}>
-          <p className="text-sm font-semibold uppercase tracking-[.16em] text-brand-600">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
             About ReadyPick
           </p>
           <h2
             id="about-preview-title"
-            className="mt-3 text-balance text-3xl font-bold"
+            className="mt-4 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
           >
             Experience became a different operating model
           </h2>
-          <p className="mt-5 text-pretty text-lg leading-8">
+          <p className="mt-4 text-pretty text-base leading-7">
             ReadyPick grew from years spent seeing where teams lose time:
             disconnected sourcing, repetitive screening, opaque scoring and
             systems that move the administrative load instead of removing it.
           </p>
-          <p className="mt-4 text-pretty leading-7">
+          <p className="mt-4 text-pretty text-base leading-7">
             We combine AI-driven discovery and assessment with human validation
             before a profile reaches the customer. The result is not more
-            activity - it is a profile the team can act on.
+            activity. It is a profile the team can act on.
           </p>
           <Button asChild variant="outline" className="group mt-7">
             <Link href="/about">
               Meet the idea and the team
-              <ArrowRight className="transition-transform group-hover:translate-x-0.5" />
+              <ArrowRight
+                className="transition-transform group-hover:translate-x-0.5"
+                aria-hidden="true"
+              />
             </Link>
           </Button>
         </Reveal>
@@ -267,16 +190,19 @@ export function AboutPreview() {
 
 export function InsightsPreview() {
   return (
-    <section className="bg-surface/55 py-20" aria-labelledby="insights-title">
+    <section
+      className="border-y border-border bg-surface/60 py-20 lg:py-24"
+      aria-labelledby="insights-title"
+    >
       <div className="mx-auto max-w-6xl px-6 lg:px-10">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
           <Reveal>
-            <p className="text-sm font-semibold uppercase tracking-[.16em] text-brand-600">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
               Insights
             </p>
             <h2
               id="insights-title"
-              className="mt-3 text-2xl font-bold sm:text-3xl"
+              className="mt-4 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
             >
               Ideas for evidence-led people decisions
             </h2>
@@ -287,61 +213,32 @@ export function InsightsPreview() {
             className="group self-start sm:self-auto"
           >
             <Link href="/insights">
-              Read all insights{" "}
-              <ArrowRight className="transition-transform group-hover:translate-x-0.5" />
+              Read all insights
+              <ArrowRight
+                className="transition-transform group-hover:translate-x-0.5"
+                aria-hidden="true"
+              />
             </Link>
           </Button>
         </div>
-        <RevealStagger className="-mx-6 mt-10 flex snap-x snap-mandatory gap-5 overflow-x-auto px-6 pb-5 [scrollbar-width:thin] lg:mx-0 lg:px-0">
+
+        {/* Three cards, stacked at 375px and side by side from `sm`. The
+            horizontal snap carousel this replaces put 82vw cards in a scroller
+            on the one viewport that can least afford a second scroll axis. */}
+        <RevealStagger className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {INSIGHTS.map((item) => (
-            <StaggerItem
-              key={item.title}
-              className="min-w-[82vw] snap-start sm:min-w-[23rem] lg:min-w-0 lg:flex-1"
-            >
-              <HoverLift className="h-full rounded-2xl border border-border bg-canvas p-6 shadow-card transition-[border-color,box-shadow] duration-150 hover:border-field hover:shadow-pop">
+            <StaggerItem key={item.title} className="h-full">
+              <article className="h-full border border-border bg-canvas p-6 transition-colors duration-150 hover:border-field-hover">
                 <Badge variant="outline">{item.tag}</Badge>
                 <h3 className="mt-5 text-lg font-semibold leading-7">
                   {item.title}
                 </h3>
                 <p className="mt-3 text-sm leading-6">{item.body}</p>
-              </HoverLift>
+              </article>
             </StaggerItem>
           ))}
         </RevealStagger>
       </div>
-    </section>
-  );
-}
-
-export function Locations() {
-  return (
-    <section
-      className="mx-auto max-w-6xl px-6 py-16 lg:px-10"
-      aria-labelledby="locations-title"
-    >
-      <Reveal className="rounded-2xl border border-border bg-canvas p-7 shadow-card sm:flex sm:items-center sm:justify-between sm:gap-8">
-        <div>
-          <p className="text-sm font-semibold uppercase tracking-[.16em] text-brand-600">
-            Our locations
-          </p>
-          <h2 id="locations-title" className="mt-2 text-2xl font-bold">
-            Close to the teams we serve
-          </h2>
-        </div>
-        <ul className="mt-6 flex flex-wrap gap-3 sm:mt-0">
-          {["Hyderabad", "Visakhapatnam", "Bengaluru", "Chennai"].map(
-            (city) => (
-              <li
-                key={city}
-                className="flex items-center gap-2 rounded-full border border-border bg-surface px-4 py-2 text-sm font-medium"
-              >
-                <MapPin className="h-4 w-4 text-brand-600" aria-hidden="true" />
-                {city}
-              </li>
-            ),
-          )}
-        </ul>
-      </Reveal>
     </section>
   );
 }

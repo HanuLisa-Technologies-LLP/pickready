@@ -260,6 +260,27 @@ locals {
   # keeps its own sizing and this block does not touch it.
   service_count = 1
 
+  # ── The Redis node ids, for the alarms that watch them ───────────────────
+  #
+  # COMPUTED HERE RATHER THAN READ BACK OFF THE MODULE, and that is a plan-time
+  # constraint rather than a preference. A replication group's member cluster
+  # list is a resource attribute that does not exist until apply, and a
+  # `for_each` over an unknown set cannot be planned at all. The same rule
+  # `enable_alb_alarms` follows, and the same rule that keeps
+  # `invokable_function_keys` naming functions by key.
+  #
+  # The ids are deterministic: ElastiCache names the members of a replication
+  # group `<group id>-001`, `-002`, and the group id is `<project>-<environment>`
+  # (see `infra/modules/elasticache`). The replica count is a local rather than
+  # a literal in the module block below so that the two cannot disagree, which
+  # would show up as an alarm on a node that does not exist sitting in
+  # INSUFFICIENT_DATA for ever and reading as quiet.
+  redis_replica_count = 0
+  redis_cluster_ids = toset([
+    for index in range(1 + local.redis_replica_count) :
+    format("%s-%03d", "${var.project}-${local.environment}", index + 1)
+  ])
+
   tags = {
     Project     = var.project
     Environment = local.environment
@@ -334,6 +355,54 @@ data "aws_iam_policy_document" "kms" {
       values   = [var.account_id]
     }
   }
+
+  # THE SERVICES THAT PUBLISH TO THE KMS-ENCRYPTED ALARM TOPIC.
+  #
+  # ADDED 2026-09-17, AND WITHOUT IT THE ALARMS ABOVE ARE DECORATIVE.
+  # `aws_sns_topic.alarms` sets `kms_master_key_id` to this key, so publishing
+  # to it is a KMS operation as well as an SNS one. The topic POLICY already
+  # allowed `cloudwatch.amazonaws.com` to publish; the KEY policy did not allow
+  # it to encrypt, so the publish is refused by KMS after passing the topic
+  # policy. Nothing about that is visible from the alarm: it transitions to
+  # ALARM exactly as it should and the notification is simply never delivered.
+  # An alarm nobody receives is indistinguishable from a healthy system.
+  #
+  # Two principals, enumerated, and deliberately NOT merged into the
+  # encrypt-at-rest statement above: these two encrypt a MESSAGE in transit
+  # through SNS, not this environment's stored data, and they need two actions
+  # rather than six. `budgets.amazonaws.com` is here for the same reason --
+  # `aws_budgets_budget.monthly` notifies through this same topic.
+  statement {
+    sid    = "ServicesThatPublishToTheEncryptedAlarmTopic"
+    effect = "Allow"
+    principals {
+      type = "Service"
+      identifiers = [
+        "cloudwatch.amazonaws.com",
+        "budgets.amazonaws.com",
+      ]
+    }
+    # GenerateDataKey to encrypt the notification, Decrypt because SNS reads it
+    # back on delivery. Nothing else: neither principal has any business
+    # creating a grant against this key.
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey*",
+    ]
+    resources = ["*"]
+
+    # The same account condition every other service principal in this file
+    # carries, and it is safe to rely on here for a concrete reason: the SNS
+    # topic policy ALREADY conditions the CloudWatch publish on
+    # `AWS:SourceAccount`. If that key were not populated on these calls,
+    # delivery would already be blocked one layer earlier, so this condition
+    # cannot be the thing that silently breaks it.
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
+    }
+  }
 }
 
 resource "aws_kms_key" "this" {
@@ -391,6 +460,32 @@ data "aws_iam_policy_document" "alarm_topic" {
       test     = "StringEquals"
       variable = "AWS:SourceAccount"
       values   = [var.account_id]
+    }
+  }
+
+  # THE BUDGET NOTIFIES THROUGH THIS TOPIC, so it needs to be allowed to
+  # publish to it. Same shape and same confused-deputy condition as the two
+  # statements above; `aws:SourceArn` is added because AWS's own documented
+  # example for a Budgets notification topic carries it, and a budget ARN is
+  # the one thing that can narrow this further.
+  statement {
+    sid     = "AllowBudgetNotifications"
+    effect  = "Allow"
+    actions = ["SNS:Publish"]
+    principals {
+      type        = "Service"
+      identifiers = ["budgets.amazonaws.com"]
+    }
+    resources = [aws_sns_topic.alarms.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceAccount"
+      values   = [var.account_id]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "AWS:SourceArn"
+      values   = ["arn:aws:budgets::${var.account_id}:budget/*"]
     }
   }
 }
@@ -529,6 +624,15 @@ module "rds" {
   multi_az              = false
   backup_retention_days = 7
 
+  # BOTH GUARDS STATED RATHER THAN INHERITED (2026-09-17). They default to the
+  # safe value in the module now, and stating them here is what makes turning
+  # one off a visible line in a diff rather than a default quietly changing.
+  #
+  # This environment is the only one that has ever been applied. It holds
+  # three demo tenants and a month of setup that exists nowhere else.
+  deletion_protection = true
+  skip_final_snapshot = false
+
   kms_key_id  = aws_kms_key.this.key_id
   kms_key_arn = aws_kms_key.this.arn
 
@@ -549,7 +653,7 @@ module "elasticache" {
   # and a proctoring warning counter that answers 503 rather than silently not
   # warning. The health check probes it, so a task that loses Redis leaves the
   # target group instead of serving assessments it cannot monitor.
-  replica_count = 0
+  replica_count = local.redis_replica_count
 
   kms_key_arn = aws_kms_key.this.arn
 
@@ -1197,6 +1301,18 @@ module "ecs" {
         # AI Reach calls Tavily from the request handler, so the API is the
         # process that needs this. See the IAM list in modules/secrets.
         TAVILY_API_KEY = module.secrets.secret_arns["TAVILY_API_KEY"]
+        # THE INBOUND WEBHOOK'S SHARED SECRET. `POST /verification/inbound-email`
+        # is a PUBLIC route that writes into verification requests, BGV threads
+        # and conversations, and its only protection was that a caller had to
+        # know a per-thread token -- which travels by email, so it exists in
+        # every mailbox that ever received or forwarded one of these threads.
+        #
+        # With this absent the route STAYS OPEN and logs
+        # `verification.inbound_unauthenticated` on every call, which is the
+        # right behaviour for a value that might legitimately be missing and the
+        # wrong state to leave an environment in. It is minted by the secrets
+        # module rather than by a human for exactly that reason.
+        INBOUND_WEBHOOK_SECRET = module.secrets.secret_arns["INBOUND_WEBHOOK_SECRET"]
       }
     }
 
@@ -1394,6 +1510,30 @@ module "lambda" {
   architecture = "arm64"
 
   secret_policy_arns = module.secrets.policy_arns
+
+  # THE OTHER HALF OF THE INBOUND WEBHOOK'S HANDSHAKE, and the one place in
+  # this composition where a credential is delivered as a plain environment
+  # variable rather than mounted.
+  #
+  # `handler.py` reads `os.environ.get("WEBHOOK_SECRET", "")` and sends the
+  # header only when it is non-empty. It CANNOT read Secrets Manager, and that
+  # is a property worth keeping rather than a gap to fill: this is the one
+  # function anything on the open internet can reach, by sending mail to the
+  # reply domain, so it is a zip of one file importing the standard library and
+  # boto3, with no database credential, no model key and no secret grant at all.
+  # Giving it a grant and a cold-start fetch to deliver a value whose whole job
+  # is to be shown to our own API would widen the narrowest thing here.
+  #
+  # The value is the SAME one the API mounts -- one `random_password`, two
+  # readers -- so the two sides cannot drift. Empty when `has_inbound` is false,
+  # which is the same ternary the function itself is gated on: a secret env var
+  # for a function that does not exist is refused by the module rather than
+  # dropped.
+  function_secret_environment = local.has_inbound ? {
+    "inbound-email" = {
+      WEBHOOK_SECRET = module.secrets.generated_secret_values["INBOUND_WEBHOOK_SECRET"]
+    }
+  } : {}
 
   kms_key_arn        = aws_kms_key.this.arn
   log_retention_days = 30
@@ -1723,6 +1863,106 @@ module "observability" {
   # RunTask was accepted, so this log line is the only report of the failure.
   agent_log_group_name = module.ecs.log_group_names["agent"]
 
+  # ADDED 2026-09-17. Both were visible on the dashboard and watched by
+  # nothing. See the module for what each alarm catches.
+  #
+  # The connection threshold is roughly 80 percent of what RDS derives from
+  # this instance class: db.t4g.medium (4 GiB, ~450 connections).
+  # It is stated per environment because the ceiling is a property of the
+  # instance and a shared default would be wrong everywhere but here.
+  db_connection_alarm_threshold = 360
+
+  # Computed in `locals` rather than read off the module, because a
+  # `for_each` over a resource attribute that is unknown until apply cannot
+  # be planned.
+  redis_cluster_ids = local.redis_cluster_ids
+
   kms_key_arn = aws_kms_key.this.arn
   tags        = local.tags
+}
+
+# ── The bill ────────────────────────────────────────────────────
+#
+# THERE WAS NO BUDGET AND NO BILLING ALARM ANYWHERE IN THIS REPOSITORY, in any
+# environment, before 2026-09-17.
+#
+# That gap is not the same shape as a missing operational alarm. Every alarm
+# above watches something that breaks loudly; cost does the opposite. A runaway
+# NAT gateway, a Fargate service that scaled up and never came back down, a
+# model-calling task retrying in a loop, an S3 prefix whose lifecycle rule does
+# not reach it -- all of them look exactly like a working system, for a whole
+# month, until an invoice arrives. This platform already runs several things
+# that cannot scale to zero (Fargate says so in its own module comment), so the
+# floor is real and the ceiling is unwatched.
+#
+# THE LIMIT IS A VARIABLE AND ITS DEFAULT IS NOT A JUDGEMENT ABOUT THIS
+# ENVIRONMENT. Read `var.monthly_budget_usd`: it is deliberately conservative
+# so that an unset value alerts EARLY and noisily rather than late and quietly,
+# and the owner is expected to replace it with a real number.
+#
+# NO COST FILTER, AND THAT IS DELIBERATE.
+#
+# The obvious refinement is to scope the budget to this environment's resources
+# with a `TagKeyValue` filter on `Environment`. It is not used, because a cost
+# allocation tag has to be ACTIVATED in the Billing console before it appears
+# in cost data at all, and Terraform cannot do that. A filter on an
+# unactivated tag matches nothing, so the budget reports a spend of zero and
+# never notifies -- a billing alarm that is silent because it is misconfigured
+# is worse than none, since it also stops anybody from looking.
+#
+# So this measures the ACCOUNT. If the three environments share one account,
+# all three budgets watch the same total and the owner will get duplicate
+# notifications at the lowest limit of the three: noisy, visible, and safe.
+# Separate accounts per environment is the real answer, and adding the tag
+# filter is correct the day somebody has activated the tag and can say so.
+resource "aws_budgets_budget" "monthly" {
+  name = "${var.project}-${local.environment}-monthly"
+
+  budget_type = "COST"
+  time_unit   = "MONTHLY"
+  # The provider takes this as a string. Converted here rather than declaring
+  # the variable as a string, so a non-numeric value fails in the variable and
+  # not in an API call.
+  limit_amount = tostring(var.monthly_budget_usd)
+  limit_unit   = "USD"
+
+  # `time_period_start` is deliberately omitted. The provider computes it, and
+  # a hardcoded date is a value that is wrong from the day after it is written
+  # and produces drift on every plan thereafter.
+
+  # THREE NOTIFICATIONS, AND THE FORECAST ONE IS THE ONLY USEFUL ONE.
+  #
+  # An ACTUAL notification arrives after the money is spent, which for a
+  # monthly budget can be three weeks after the thing that caused it started.
+  # FORECASTED fires when the run rate says the month will end over the limit,
+  # which is days rather than weeks, and it is the notification that can still
+  # change the outcome. The two actual thresholds are kept because a forecast
+  # is a prediction and a spend is a fact.
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 80
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [aws_sns_topic.alarms.arn]
+  }
+
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [aws_sns_topic.alarms.arn]
+  }
+
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "FORECASTED"
+    subscriber_sns_topic_arns = [aws_sns_topic.alarms.arn]
+  }
+
+  # The topic must be able to accept a publish from Budgets before a
+  # notification is created against it, and the key must be able to encrypt it.
+  depends_on = [aws_sns_topic_policy.alarms]
 }

@@ -705,7 +705,7 @@ export default function CustomersPage() {
 function MobileStat({ label, value }: { label: string; value: number }) {
   return (
     <div className="flex items-baseline justify-between gap-2">
-      <dt className="opacity-80">{label}</dt>
+      <dt className="font-normal">{label}</dt>
       <dd className="font-semibold [font-variant-numeric:tabular-nums]">
         {value}
       </dd>

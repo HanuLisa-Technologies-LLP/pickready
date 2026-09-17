@@ -223,7 +223,7 @@ export default function ClassificationAdminPage() {
                           {(row.classification_confidence * 100).toFixed(0)}%
                         </TableCell>
                         <TableCell className="max-w-[22rem]">
-                          <span className="line-clamp-2 text-xs opacity-80">
+                          <span className="line-clamp-2 text-xs">
                             {row.classification_signals.length
                               ? row.classification_signals.join(", ")
                               : "none"}
@@ -232,7 +232,7 @@ export default function ClassificationAdminPage() {
                         <TableCell>{formatDate(row.created_at)}</TableCell>
                         <TableCell className="text-right">
                           {row.classification_locked ? (
-                            <span className="text-xs font-medium opacity-70">
+                            <span className="text-xs font-medium">
                               Locked (assessments completed)
                             </span>
                           ) : (

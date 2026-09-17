@@ -50,6 +50,16 @@ variable "secret_names" {
     "TAVILY_API_KEY",
     "MSG91_API_KEY",
     "HUGGINGFACE_TOKEN",
+    # THE ONE SECRET IN THIS LIST NOBODY OUTSIDE THIS PLATFORM ISSUES, and
+    # therefore the one whose value IS created here. See
+    # `random_password.generated` in main.tf, and `generated_secret_names`
+    # below for the split.
+    #
+    # It proves to `POST /verification/inbound-email` that the call came from
+    # `readypick-inbound-email` and not from a stranger who knows a thread
+    # token. Those travel by email, so they exist in every mailbox that ever
+    # received or forwarded one of these threads.
+    "INBOUND_WEBHOOK_SECRET",
   ]
 }
 
@@ -115,6 +125,12 @@ variable "service_secrets" {
       # the key since the roster was written; only the caller that needed it
       # most did not.
       "TAVILY_API_KEY",
+      # THE API IS THE ROUTE'S SIDE OF THE SHARED SECRET. It is mounted rather
+      # than set as a plain env var because a task definition is readable by
+      # anyone holding ecs:DescribeTaskDefinition, which is the exact shape
+      # `test_deploy_secret_hygiene.py` refuses. The relay's own copy cannot be
+      # a mount: see the inbound function in the pilot composition.
+      "INBOUND_WEBHOOK_SECRET",
     ]
     "task-worker" = [
       "DATABASE_URL",
@@ -178,6 +194,32 @@ variable "placeholder_value" {
   EOT
   type        = string
   default     = "PLACEHOLDER_NOT_CONFIGURED"
+}
+
+variable "generated_secret_names" {
+  description = <<-EOT
+    The secrets this module MINTS, rather than waits for a human to supply.
+
+    Must be a subset of `secret_names`: the container is created there and the
+    value is written here. A name in both lists gets a real value and no
+    placeholder; a name in `secret_names` alone gets the sentinel and waits.
+
+    THE TEST FOR WHETHER A SECRET BELONGS HERE is whether anybody else issues
+    it. A Voyage key, a Razorpay secret and an SMTP app password all exist
+    before Terraform runs and Terraform cannot know them. A value one half of
+    this platform shows to the other half has no issuer, and leaving it to a
+    human means the control it enables ships disabled until somebody remembers
+    -- which for `INBOUND_WEBHOOK_SECRET` means a public write endpoint that
+    logs `verification.inbound_unauthenticated` on every call and admits
+    anybody.
+
+    The cost is that a generated value lives in the Terraform state file. That
+    is accepted here and is NOT a licence to move a vendor credential in: a
+    vendor key in state is a second copy of something that already has a safer
+    home, while this one would otherwise have no home at all.
+  EOT
+  type        = list(string)
+  default     = ["INBOUND_WEBHOOK_SECRET"]
 }
 
 variable "service_secret_writers" {

@@ -7,6 +7,7 @@ export const metadata: Metadata = {
   title: "About",
   description:
     "The experience, philosophy and people behind ReadyPick's evidence-led candidate profiles.",
+  alternates: { canonical: "/about" },
 };
 
 const PRINCIPLES = [

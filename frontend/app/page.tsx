@@ -1,15 +1,68 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = {
-  // This route sits directly under the root layout (no (public) group
-  // layout in between), so the root's "%s | ReadyPick" title template is
-  // spelled out here rather than relied on.
-  title: "Site Under Construction | ReadyPick",
-  description: "ReadyPick is preparing something new. Check back soon.",
-};
+import { LandingPage } from "./(public)/landing-page";
 
-export default function LandingPage() {
+/**
+ * THE LAUNCH GATE.
+ *
+ * Production serves the holding page. The optimised landing page is finished
+ * and composed in `app/(public)/landing-page.tsx`, and it goes live when this
+ * one variable is set to the string "true" at build time, and at no other
+ * moment. Anything else, unset included, keeps the holding page, so the
+ * default is the state the owner asked for rather than the state a missing
+ * variable happens to produce.
+ *
+ * THIS IS A LAUNCH GATE, NOT A DUAL CODE PATH. The distinction is the one the
+ * repository already draws with `AWS_DEPLOY_ENABLED` and
+ * `PILOT_DEPLOY_ENABLED`: there is exactly one landing page and exactly one
+ * holding page, neither is a variant of the other, and the flag selects which
+ * of the two is served rather than switching between two implementations of
+ * the same behaviour. It is a one-way door with a date on it: when the owner
+ * flips it, the holding page and this branch come out in the same change.
+ *
+ * `NEXT_PUBLIC_` is required because Next inlines the value at build time from
+ * a literal reference. A computed lookup would resolve to undefined in the
+ * browser bundle, which reads exactly like the flag being off.
+ *
+ * KNOWN AND ACCEPTED: the landing module is imported whichever way the flag
+ * falls, so the holding page's route carries chunks it never renders. A lazy
+ * import would remove that weight and add a loading state to a page whose
+ * whole job is to appear at once, for a page that is days from being deleted.
+ * The trade is recorded here rather than left for somebody to rediscover.
+ */
+const LANDING_LIVE = process.env.NEXT_PUBLIC_LANDING_LIVE === "true";
+
+export const metadata: Metadata = LANDING_LIVE
+  ? {
+      // This route sits directly under the root layout (no (public) group
+      // layout in between), so the root's "%s | ReadyPick" title template is
+      // spelled out here rather than relied on.
+      title: "ReadyPick, know every candidate before you meet them",
+      description:
+        "ReadyPick reads every applicant against the role, runs a structured assessment built from the job itself, and returns one readable report per candidate.",
+      alternates: { canonical: "/" },
+    }
+  : {
+      title: "Site Under Construction | ReadyPick",
+      description: "ReadyPick is preparing something new. Check back soon.",
+      // Relative, resolved against `metadataBase` in the root layout. Stating
+      // it is what stops a trailing slash, a query string or a preview host
+      // from becoming a second URL for the same page.
+      alternates: { canonical: "/" },
+    };
+
+export default function RootPage() {
+  return LANDING_LIVE ? <LandingPage /> : <SiteUnderConstruction />;
+}
+
+/**
+ * The holding page, byte for byte what production has been serving. It is
+ * deliberate work, not a placeholder, so it is moved rather than edited: the
+ * only change is that it is now a named component below the gate instead of
+ * the default export.
+ */
+function SiteUnderConstruction() {
   return (
     <div className="relative min-h-screen bg-canvas">
       {/* Faint structural grid, decorative only. */}

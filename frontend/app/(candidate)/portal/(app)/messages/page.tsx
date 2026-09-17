@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { InlineError, LoadingRows } from "@/components/page-primitives";
 
 interface CandidateThread {
   id: string;
@@ -132,10 +133,10 @@ export default function CandidateMessagesPage() {
         </p>
       </div>
 
-      {error ? <p className="rounded-md border p-3 text-sm">{error}</p> : null}
+      {error ? <InlineError>{error}</InlineError> : null}
 
       {threads === null ? (
-        <p className="text-sm">Loading your conversations.</p>
+        <LoadingRows rows={3} label="Loading your conversations" />
       ) : threads.length === 0 ? (
         <Card>
           <CardContent className="flex items-center gap-2 py-6">

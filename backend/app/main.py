@@ -41,6 +41,12 @@ from app.api import (
     videos,
 )
 from app.core.config import get_settings
+from app.core.logging import RequestIdMiddleware, configure_logging
+
+# Before anything logs. structlog was previously running unconfigured, beside
+# the stdlib rather than through it; `configure_logging` is the one place that
+# is settled. See app/core/logging.py.
+configure_logging()
 
 log = structlog.get_logger()
 
@@ -74,21 +80,72 @@ async def lifespan(app: FastAPI):
     from app.services import realtime
 
     await realtime.hub.shutdown()
+    # Same argument, applied to the cache's connection pool. It is a
+    # module-level client now that `tenant_cache` delegates to it, so the RBAC
+    # read on the last request before a deploy leaves a live socket on this
+    # loop. Closed BEFORE the engine for the same ordering reason, and the
+    # close itself is guarded inside `cache.close`.
+    from app.core import cache
+
+    await cache.close()
     from app.core.db import get_engine
     await get_engine().dispose()
 
+
+# THE INTERACTIVE DOCS ARE OFF ON ANY DEPLOYMENT A BROWSER CAN REACH.
+#
+# `/docs`, `/redoc` and `/openapi.json` were served unconditionally, so the full
+# API surface of a multi-tenant hiring platform, every route, every schema and
+# every field name, was published to anyone who typed the URL. That is not a
+# vulnerability by itself, since each route still authorizes, but it hands an
+# attacker the map for free and it is a one-line thing to stop.
+#
+# GATED ON `serves_over_https`, NOT ON `is_production`, AND THAT DISTINCTION IS
+# THE WHOLE POINT. `is_production` is `environment == "production"`, and the
+# deployment actually serving readypick.ai sets `ENVIRONMENT=pilot`. Gating on
+# `is_production` would therefore have left the docs exposed on the live site
+# while reading, in the diff, as though it had closed them.
+#
+# This repository has already been bitten by exactly that: `serves_over_https`
+# exists because the auth cookie's `Secure` flag was tied to `is_production`,
+# so pilot and staging issued cookies without it over genuine HTTPS origins.
+# The property means "a browser reaches this deployment over TLS", which is the
+# same question being asked here, so the two now agree by construction rather
+# than by somebody remembering.
+_settings = get_settings()
+_docs_enabled = not _settings.serves_over_https
 
 app = FastAPI(
     title="ReadyPick API",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url="/docs",
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    # `/openapi.json` DELIBERATELY STAYS OPEN, and this is the one place the
+    # rule is not carried all the way. `scripts/smoke-test.sh` probes it
+    # unauthenticated after every deploy and FAILS the deploy if it is not 200,
+    # because the registered route list is how this project verifies that the
+    # image it just shipped actually serves the contract it claims to. Closing
+    # it here would break deployment verification silently, which trades a real
+    # capability for a modest one: the schema names routes, and every one of
+    # them still authorizes, whereas `/docs` additionally hands over a
+    # point-and-click client for them.
+    #
+    # If the owner decides the schema should close too, `smoke-test.sh` around
+    # lines 169 to 174 has to change IN THE SAME COMMIT, or the next deploy
+    # fails for a reason nobody will connect to this line.
 )
 
 # ── Middleware ───────────────────────────────────────────────────────────────
 # Starlette wraps in reverse order of registration: the LAST one added is the
 # outermost. Registration order below is therefore CORS (innermost), then GZip,
-# then the perf timer (outermost) so the timer measures the whole stack.
+# then the perf timer, then the request id (outermost).
+#
+# The request id goes on LAST, and that placement is the point: it binds the
+# contextvar before anything downstream can log, so a line written by the perf
+# timer, by CORS, or by a handler all carry the same id. The perf timer is
+# consequently no longer the outermost middleware; what it stops measuring is
+# one dict copy and a uuid4, which is not the latency anybody is chasing.
 
 app.add_middleware(
     CORSMiddleware,
@@ -107,7 +164,9 @@ app.add_middleware(
     # this the browser caches the preflight for 10 minutes.
     max_age=600,
     # Diagnostics headers must be readable by the browser's network panel.
-    expose_headers=["Server-Timing", "X-Query-Count"],
+    # `X-Request-Id` is here for the same reason: the browser has to be able to
+    # read the id back to quote it in a bug report.
+    expose_headers=["Server-Timing", "X-Query-Count", "X-Request-Id"],
 )
 
 # JSON list payloads (the candidate table, the jobs board, the customers list)
@@ -121,6 +180,10 @@ if not get_settings().is_production:
 
     install_query_counter()
     app.add_middleware(BaseHTTPMiddleware, dispatch=timing_middleware)
+
+# Outermost. Registered after the conditional block above so the id is bound
+# first in every environment, production included, where the timer is absent.
+app.add_middleware(RequestIdMiddleware)
 
 API_PREFIX = "/api/v1"
 app.include_router(auth.router, prefix=f"{API_PREFIX}/auth", tags=["auth"])

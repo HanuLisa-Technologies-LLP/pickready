@@ -28,7 +28,7 @@ import type { EmailSender, EmailSenderList, EmailSenderStatus } from "@/lib/type
 import { useToast } from "@/components/ui/toast";
 import { Badge, type BadgeProps } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Section } from "@/components/page-primitives";
+import { InlineError, Section } from "@/components/page-primitives";
 import { Separator } from "@/components/ui/separator";
 
 // The states a decision is still outstanding on. The two OTP-era states are
@@ -118,7 +118,7 @@ export function SenderAuthorizationQueue() {
         title="Sender Authorization"
         description="Addresses your team has asked to send recruitment email from. Approving one authorizes it to write to candidates in your company's name."
       >
-        {loadError ? <p className="text-sm">{loadError}</p> : null}
+        {loadError ? <InlineError>{loadError}</InlineError> : null}
 
         {!loadError && pending.length === 0 ? (
           <p className="text-sm">

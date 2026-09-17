@@ -7,12 +7,13 @@
   (secrets.token_urlsafe(32)), single-use: any status other than `pending`
   rejects re-submission.
 """
+import hmac
 import logging
 import re
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -244,7 +245,43 @@ async def submit_employer_form(
     return FormSubmitOut(status=vr.status)
 
 
-@router.post("/inbound-email", response_model=InboundEmailOut)
+#: The header the inbound-mail Lambda presents. Named rather than reused from a
+#: standard auth header so a stray `Authorization` from a proxy cannot satisfy
+#: it by accident.
+INBOUND_SECRET_HEADER = "X-ReadyPick-Webhook-Secret"
+
+
+def _require_relay_secret(request: Request) -> None:
+    """Prove the caller is our own inbound-mail Lambda, when we can.
+
+    `hmac.compare_digest` rather than `==`, because a plain comparison returns
+    as soon as two bytes differ and leaks the secret's prefix to anyone willing
+    to time a few thousand requests.
+
+    A 403 rather than a 401: there is no authentication scheme to negotiate
+    here, so telling a caller to try again with credentials would be a lie.
+    """
+    expected = get_settings().inbound_webhook_secret
+    if not expected:
+        # See `Settings.inbound_webhook_secret`. Unconfigured is a real state,
+        # and it is logged every time rather than once so the line cannot be
+        # lost in a rotation of the log.
+        logger.warning(
+            "verification.inbound_unauthenticated "
+            "reason=no_inbound_webhook_secret_configured"
+        )
+        return
+    presented = request.headers.get(INBOUND_SECRET_HEADER, "")
+    if not hmac.compare_digest(presented, expected):
+        logger.warning("verification.inbound_refused reason=bad_relay_secret")
+        raise HTTPException(status_code=403, detail="Not permitted.")
+
+
+@router.post(
+    "/inbound-email",
+    response_model=InboundEmailOut,
+    dependencies=[Depends(_require_relay_secret)],
+)
 async def inbound_email_webhook(
     body: InboundEmailIn, session: AsyncSession = Depends(get_public_db)
 ) -> InboundEmailOut:

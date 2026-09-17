@@ -138,7 +138,7 @@ function ComplianceRow({
               on {new Date(document.uploaded_at).toLocaleDateString()}
             </p>
           ) : (
-            <p className="text-xs font-medium leading-5 opacity-80">
+            <p className="text-xs font-medium leading-5">
               Not Available Yet
             </p>
           )}

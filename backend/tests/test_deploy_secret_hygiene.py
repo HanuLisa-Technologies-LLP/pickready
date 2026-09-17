@@ -115,6 +115,19 @@ CREDENTIAL_NAMES = (
     # build needs it to fetch gated weights, which is exactly the situation
     # where a token ends up in a build ARG and then in a layer.
     "HUGGINGFACE_TOKEN",
+    # The inbound-mail relay's shared secret. It proves to the PUBLIC route
+    # `POST /verification/inbound-email` that the call came from
+    # `readypick-inbound-email`, so it is a credential in the only sense that
+    # matters here: anyone who reads it can write into verification requests,
+    # BGV threads and conversations. Swept like the rest, because the ECS task
+    # definition is readable by anyone holding `ecs:DescribeTaskDefinition`.
+    #
+    # The RELAY's own copy is a plain Lambda environment variable and cannot be
+    # anything else -- `lambda/inbound_email/handler.py` is standard library and
+    # boto3 with no secret grant at all, deliberately, because it is the one
+    # function anything on the open internet can reach. That copy is not in
+    # scope here: this sweep reads `common_environment` in the ECS composition.
+    "INBOUND_WEBHOOK_SECRET",
 )
 
 ENVIRONMENT_ROOTS = [STAGING, PRODUCTION]
@@ -989,7 +1002,20 @@ def test_no_account_id_region_or_domain_is_hardcoded() -> None:
                 "rule only because a backend block cannot take a variable. It "
                 "no longer contains one, so the exemption no longer applies."
             )
-            assert "resource " not in body and "module " not in body, (
+            # STRIP THE COMMENTS FIRST. This test's own docstring says
+            # "comments are exempt and code is not", and the loop below honours
+            # that; this branch did not, so it was asking whether the PROSE
+            # contained the word "resource". A backend.tf explaining what an
+            # empty-state apply costs ("Terraform would try to create every
+            # resource from scratch") failed a check about executable blocks.
+            # The same class of defect as the reachability grep that matched
+            # comments and manufactured a phantom workstream.
+            code = "\n".join(
+                line
+                for line in body.splitlines()
+                if not line.strip().startswith(("#", "*", "/*", "*/"))
+            )
+            assert "resource " not in code and "module " not in code, (
                 f"{path.relative_to(ROOT)} holds more than a backend block. The "
                 "exemption covers the one construct Terraform will not let take "
                 "a variable, not a file that happens to be called backend.tf."

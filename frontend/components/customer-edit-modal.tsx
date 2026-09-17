@@ -28,6 +28,7 @@ import { apiErrorMessage } from "@/lib/validation-errors";
 import type { Customer, PrimaryContact } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { InlineError } from "@/components/page-primitives";
 import { Textarea } from "@/components/ui/textarea";
 import { FormField } from "@/components/ui/form";
 import {
@@ -209,7 +210,7 @@ function PrimaryContactSection({
         </FormField>
       </div>
 
-      {error ? <p className="text-sm font-medium">{error}</p> : null}
+      {error ? <InlineError>{error}</InlineError> : null}
       <p className="text-xs">{consequence}</p>
 
       <Button

@@ -53,9 +53,16 @@ export function Logo({
         >
           {/* "Pick" carries the TEAL, and the split is the wordmark's own:
               navy Ready, teal Pick, exactly as the mark is drawn. `teal-700`
-              rather than `teal-600` because this is TEXT on a light surface and
-              the brand teal measures 4.30:1 -- below AA. See DESIGN.md §2. */}
-          Ready<span className="text-teal-700 dark:text-teal-600">Pick</span>
+              rather than `teal-600` because this is TEXT and the brand teal
+              measures 4.30:1 -- below AA. See DESIGN.md §2.
+
+              NO DARK OVERRIDE. The token itself inverts in `.dark`, so
+              `teal-700` is already the dark-theme teal text value, and
+              `scripts/check-contrast.mjs` asserts teal-700 at the 4.5:1 TEXT
+              bar in BOTH themes while asserting teal-600 only at the 3:1
+              non-text bar. The dark-mode override this replaces was the one
+              place in the product that printed words in the fill token. */}
+          Ready<span className="text-teal-700">Pick</span>
         </span>
       ) : null}
     </span>

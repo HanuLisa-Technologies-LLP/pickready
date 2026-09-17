@@ -190,6 +190,35 @@ variable "functions" {
   }
 }
 
+variable "function_secret_environment" {
+  description = <<-EOT
+    {function key -> {ENV_NAME -> value}} for values that are CREDENTIALS and
+    must still be delivered as plain Lambda environment variables.
+
+    ALMOST ALWAYS EMPTY, AND IT HAS TO STAY THAT WAY. `functions[*].secrets`
+    is the normal path: the ARNs go in the environment, the values do not, and
+    the function fetches them at cold start with the policy the `secrets`
+    module built. A Lambda environment variable is readable through
+    `GetFunctionConfiguration` by anything holding it, so a credential here is
+    a credential materialised where it did not need to be.
+
+    ONE FUNCTION NEEDS IT, and the reason is what that function IS.
+    `readypick-inbound-email` is a zip of one file importing the standard
+    library and boto3, because anything that can send mail to the reply domain
+    reaches it: it holds no database credential, no model key and no secret
+    grant at all, and what a stranger can reach is one file a reviewer reads in
+    full. Handing it a Secrets Manager grant and a fetch at cold start would
+    widen exactly the function this platform keeps narrowest, to deliver a
+    value whose entire job is to be shown to our own API.
+
+    The value is still minted by Terraform and still stored in Secrets Manager
+    -- this is a second delivery of the same value to the one consumer that
+    cannot read it from there, not a second source of truth.
+  EOT
+  type        = map(map(string))
+  default     = {}
+}
+
 variable "secret_policy_arns" {
   description = "{consumer -> the IAM policy from the `secrets` module}. Its keys are static, which is what lets a function's `secret_policy_key` drive a for_each."
   type        = map(string)

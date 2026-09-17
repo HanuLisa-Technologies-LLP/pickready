@@ -11,7 +11,8 @@
 // would be a dependency and an injection surface for no gain.
 
 import * as React from "react";
-import { Check, Pencil, X } from "lucide-react";
+import { Check, FileText, Pencil, X } from "lucide-react";
+import { EmptyState } from "@/components/page-primitives";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -67,9 +68,11 @@ export function JdDocument({ markdown }: { markdown: string }) {
 
   if (blocks.length === 0) {
     return (
-      <p className="py-8 text-center text-sm">
-        No job description yet. Draft one with AI, or write it yourself.
-      </p>
+      <EmptyState
+        icon={FileText}
+        title="No job description yet"
+        description="Draft one with AI, or write it yourself."
+      />
     );
   }
 

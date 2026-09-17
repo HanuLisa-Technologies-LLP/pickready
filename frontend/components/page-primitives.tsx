@@ -267,7 +267,7 @@ export function Field({
         ) : null}
       </label>
       {children}
-      {hint ? <p className="text-xs leading-5 opacity-80">{hint}</p> : null}
+      {hint ? <p className="text-xs leading-5">{hint}</p> : null}
     </div>
   );
 }
@@ -288,7 +288,7 @@ export function DetailItem({
 }) {
   return (
     <div className={cn("min-w-0 space-y-1", className)}>
-      <dt className="text-xs font-medium uppercase tracking-[0.08em] opacity-70">
+      <dt className="text-xs font-medium uppercase tracking-[0.08em]">
         {label}
       </dt>
       <dd className="break-words text-sm leading-6">{children}</dd>

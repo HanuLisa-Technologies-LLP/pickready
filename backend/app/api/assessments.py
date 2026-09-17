@@ -2199,7 +2199,26 @@ async def _ensure_conversation_ready(
     )
 
 
-@router.post("/conversations/links/{link_id}/start", response_model=ConversationOut)
+# Abuse control and COST control, not authorization (services/rate_limit).
+#
+# Every turn of an assessment conversation invokes a model, so this pair was the
+# most expensive unthrottled surface in the product: an authenticated candidate
+# session, or a stolen one, could drive unbounded model spend and exhaust the
+# shared per-credential rate limit at the provider, which starves OTHER tenants'
+# assessments because `llm_router`'s circuit breaker is keyed by credential.
+#
+# The numbers are set well above a real assessment and well below a flood. A
+# non-managerial assessment is 45 questions answered by a person typing prose,
+# so a handful of starts and a few dozen turns a minute cannot be reached by
+# somebody doing the assessment, and a candidate who legitimately retries a
+# failed send is nowhere near either ceiling. Now that `client_identifier`
+# resolves a verified subject, each candidate gets their own bucket rather than
+# sharing one with every other candidate behind the same office address.
+@router.post(
+    "/conversations/links/{link_id}/start",
+    response_model=ConversationOut,
+    dependencies=[Depends(rate_limit("assessment_start", limit=10, window=60))],
+)
 async def start_conversation(
     link_id: uuid.UUID,
     user: CurrentUser = Depends(get_current_candidate),
@@ -2495,7 +2514,13 @@ async def _transcript_rows(
     return [{"speaker": speaker, "content": content} for speaker, content in rows]
 
 
-@router.post("/conversations/{conversation_id}/respond", response_model=ConversationOut)
+# See the note on `start_conversation` above. This is the one that actually
+# costs money per call: one model invocation per turn.
+@router.post(
+    "/conversations/{conversation_id}/respond",
+    response_model=ConversationOut,
+    dependencies=[Depends(rate_limit("assessment_turn", limit=40, window=60))],
+)
 async def respond(
     conversation_id: uuid.UUID,
     body: ConversationMessageIn,

@@ -259,12 +259,21 @@ export function PipelineFunnel({
         {data.stages.map((stage) => (
           <li
             key={stage.status}
-            className={cn(
-              "min-w-[104px] flex-1 rounded-md border p-2",
-              stage.count === 0 && "opacity-55"
-            )}
+            className="min-w-[104px] flex-1 rounded-md border p-2"
           >
-            <p className="text-lg font-semibold tabular-nums">{stage.count}</p>
+            {/* An empty stage is de-emphasised by WEIGHT, not by opacity.
+                Dimming the tile greyed its words, which the token layer
+                deliberately refuses to do (`--muted-foreground` resolves to
+                `--ink`); a zero rendered at normal weight beside a filled
+                stage's semibold reads the same and stays fully legible. */}
+            <p
+              className={cn(
+                "text-lg tabular-nums",
+                stage.count === 0 ? "font-normal" : "font-semibold"
+              )}
+            >
+              {stage.count}
+            </p>
             <p className="text-[11px] leading-tight">
               {PIPELINE_SHORT_LABELS[stage.status] ?? stage.label}
             </p>

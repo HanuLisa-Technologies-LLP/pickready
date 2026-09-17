@@ -154,7 +154,7 @@ async def request_video_preview(
         logger.error(
             "video_preview.storage_unavailable recording_id=%s error=%s",
             recording.id,
-            exc,
+            type(exc).__name__,
         )
         raise HTTPException(
             status_code=503,
@@ -192,7 +192,7 @@ async def request_video_download(
         logger.error(
             "video_download.storage_unavailable recording_id=%s error=%s",
             recording.id,
-            exc,
+            type(exc).__name__,
         )
         raise HTTPException(
             status_code=503,

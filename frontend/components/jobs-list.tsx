@@ -6,10 +6,13 @@
 import * as React from "react";
 import Link from "next/link";
 
+import { Briefcase } from "lucide-react";
+
 import { apiGet } from "@/lib/api";
 import type { Job } from "@/lib/types";
 import { PageHeader } from "@/components/app-shell";
 import { StatusBadge } from "@/components/status-badge";
+import { EmptyState, LoadingRows } from "@/components/page-primitives";
 import {
   Table,
   TableBody,
@@ -39,6 +42,18 @@ export function JobsList({
   return (
     <div>
       <PageHeader title="Jobs" description={description} />
+      {/* Loading and empty live OUTSIDE the table: neither a block of skeletons
+          nor the shared empty state is valid markup as a child of TableBody,
+          and a table header over nothing is a frame around an absence. */}
+      {loading ? (
+        <LoadingRows rows={5} label="Loading jobs" />
+      ) : jobs.length === 0 ? (
+        <EmptyState
+          icon={Briefcase}
+          title="No ratified jobs yet"
+          description="A job appears here once it has been ratified."
+        />
+      ) : (
       <Table>
         <TableHeader>
           <TableRow>
@@ -50,20 +65,7 @@ export function JobsList({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {loading ? (
-            <TableRow>
-              <TableCell colSpan={5} className="text-center">
-                Loading
-              </TableCell>
-            </TableRow>
-          ) : jobs.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={5} className="text-center">
-                No ratified jobs yet.
-              </TableCell>
-            </TableRow>
-          ) : (
-            jobs.map((job) => (
+          {jobs.map((job) => (
               <TableRow key={job.id}>
                 <TableCell className="font-medium">
                   <Link
@@ -80,10 +82,10 @@ export function JobsList({
                   <StatusBadge status={job.status} />
                 </TableCell>
               </TableRow>
-            ))
-          )}
+          ))}
         </TableBody>
       </Table>
+      )}
     </div>
   );
 }

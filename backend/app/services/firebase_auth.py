@@ -20,6 +20,27 @@ class FirebaseIdentity:
     email_verified: bool
 
 
+# firebase-admin's default HTTP timeout is 120 SECONDS
+# (`firebase_admin._http_client.DEFAULT_TIMEOUT_SECONDS`), which on a sign-in
+# request is indistinguishable from no timeout at all. `verify_id_token` makes
+# up to two network calls the caller is blocked on: google-auth fetches
+# Google's JWT signing certificates (cached, but cold on a fresh task and after
+# every rotation), and `check_revoked=True` adds a user lookup against the
+# Identity Toolkit API. Every other vendor call in this repo bounds its attempt
+# explicitly, and an unreachable dependency that HANGS defeats the try/except
+# around it, because nothing is ever raised for the handler to catch.
+#
+# `httpTimeout` is the one knob firebase-admin exposes for this. It is a member
+# of `_CONFIG_VALID_KEYS`, and BOTH paths above read it: `_token_gen`'s
+# `CertificateFetchRequest` and `_auth_client`'s JSON client each resolve
+# `app.options.get('httpTimeout', DEFAULT_TIMEOUT_SECONDS)`. It is applied per
+# HTTP request, so the worst case is one timeout per call, not one for the pair.
+#
+# Ten seconds: a sign-in is interactive, and this sits inside the 15s
+# interactive ceiling the model router already holds itself to.
+HTTP_TIMEOUT_SECONDS = 10
+
+
 def firebase_client():
     try:
         import firebase_admin
@@ -28,7 +49,10 @@ def firebase_client():
             raw = get_settings().firebase_service_account_json
             if not raw:
                 raise RuntimeError("FIREBASE_SERVICE_ACCOUNT_JSON is not configured")
-            firebase_admin.initialize_app(credentials.Certificate(json.loads(raw)))
+            firebase_admin.initialize_app(
+                credentials.Certificate(json.loads(raw)),
+                options={"httpTimeout": HTTP_TIMEOUT_SECONDS},
+            )
         return auth
     except RuntimeError:
         raise

@@ -24,6 +24,7 @@
 
 import * as React from "react";
 import { Loader2, Paperclip, RefreshCw, Send, Wifi, WifiOff } from "lucide-react";
+import { InlineError } from "@/components/page-primitives";
 
 import {
   type Message,
@@ -212,7 +213,7 @@ export function ConversationPanel({
         </Button>
       </div>
 
-      {loadError ? <p className="rounded-md border p-3 text-sm">{loadError}</p> : null}
+      {loadError ? <InlineError>{loadError}</InlineError> : null}
 
       <div className="max-h-96 space-y-3 overflow-y-auto rounded-md border p-3">
         {hasMore ? (

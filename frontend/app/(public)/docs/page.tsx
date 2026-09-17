@@ -45,6 +45,7 @@ export const metadata: Metadata = {
   title: "Docs",
   description:
     "Implementation-aligned product and technical documentation for ReadyPick.",
+  alternates: { canonical: "/docs" },
 };
 
 const CONTENTS = [

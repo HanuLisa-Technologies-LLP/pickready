@@ -20,6 +20,9 @@ export async function generateMetadata({
   return {
     title: name || "Employer",
     description: `Company profile and open roles at ${name || "this employer"}.`,
+    // The slug IS the canonical path segment, so the canonical URL needs no
+    // fetch either. Relative, resolved against `metadataBase`.
+    alternates: { canonical: `/employers/${slug}` },
   };
 }
 

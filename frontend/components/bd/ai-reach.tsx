@@ -386,7 +386,7 @@ function JobCard({ job }: { job: BDJobCard }) {
             <a
               href={`mailto:${job.contact_email}`}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="mt-1 block text-brand-700 underline underline-offset-4 dark:text-brand-200"
             >
               {job.contact_email}
@@ -397,7 +397,7 @@ function JobCard({ job }: { job: BDJobCard }) {
             <a
               href={job.contact_source_url}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="mt-2 inline-flex items-center gap-1 text-xs underline underline-offset-4"
             >
               Verify source
@@ -425,7 +425,7 @@ function JobCard({ job }: { job: BDJobCard }) {
         <a
           href={job.company_url}
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
           className="flex items-center gap-1.5 text-xs font-semibold text-brand-700 underline underline-offset-4 dark:text-brand-200"
         >
           <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
@@ -435,7 +435,7 @@ function JobCard({ job }: { job: BDJobCard }) {
           <a
             href={job.job_url}
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs font-semibold text-brand-700 underline underline-offset-4 dark:text-brand-200"
           >
             <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />

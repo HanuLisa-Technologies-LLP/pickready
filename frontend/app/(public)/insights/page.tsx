@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 export const metadata: Metadata = {
   title: "Insights",
   description: "Practical thinking on evidence-led candidate decisions, assessment and trust.",
+  alternates: { canonical: "/insights" },
 };
 
 const ARTICLES = [

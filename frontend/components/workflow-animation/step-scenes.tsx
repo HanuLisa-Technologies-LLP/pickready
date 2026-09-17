@@ -22,11 +22,21 @@ import {
   TinyBadge,
 } from "./workflow-frame";
 
+// A NUMBER MUST NEVER SIT BESIDE A RATED PERSON, and this illustration used to
+// print "94%" next to a candidate's name. That breaks the product's hardest
+// rule, and on this page it also contradicted the headline three sections above
+// it, which promises "plain language, no scores to argue about". A prospect was
+// being shown the exact thing the copy said the product does not do.
+//
+// So each row carries the GRADE WORD the product actually delivers. `fill` is a
+// rendering coordinate for the bar's width and is never displayed, the same
+// carve-out the radar chart's band index has: a bar has no length without a
+// number, but nobody reads one off it.
 const CANDIDATES = [
-  { name: "Ananya Sharma", score: 94, label: "Top match" },
-  { name: "Rahul Verma", score: 89, label: "Strong" },
-  { name: "Meera Krishnan", score: 84, label: "Strong" },
-  { name: "Arjun Kumar", score: 76, label: "Potential" },
+  { name: "Ananya Sharma", grade: "Highly Matching", fill: 94 },
+  { name: "Rahul Verma", grade: "Matching", fill: 82 },
+  { name: "Meera Krishnan", grade: "Matching", fill: 74 },
+  { name: "Arjun Kumar", grade: "Moderately Matching", fill: 58 },
 ];
 
 export function Step1Login() {
@@ -297,23 +307,27 @@ export function Step6AiMatching() {
             >
               <div className="min-w-0">
                 <p className="truncate text-[9px] font-medium">{candidate.name}</p>
-                {index === 0 ? <span className="mt-0.5 flex items-center gap-1 text-[7px] text-amber-200"><Star className="h-2.5 w-2.5 fill-current" /> Top match</span> : null}
+                {index === 0 ? <span className="mt-0.5 flex items-center gap-1 text-[7px] text-teal-100"><Star className="h-2.5 w-2.5 fill-current" /> Top match</span> : null}
               </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+              {/* Square, and one hue. A pill track and a teal-to-emerald ramp
+                  were both off-system: radius is zero everywhere, and a
+                  gradient between two hues is the generated-interface tell the
+                  whole palette exists to avoid. */}
+              <div aria-hidden="true" className="h-1.5 overflow-hidden bg-white/10">
                 <motion.div
                   initial={{ width: 0 }}
-                  animate={{ width: `${candidate.score}%` }}
+                  animate={{ width: `${candidate.fill}%` }}
                   transition={{ delay: 0.35 + index * 0.13, duration: 1, ease: EASE }}
-                  className="h-full rounded-full bg-gradient-to-r from-teal-600 via-teal-400 to-emerald-400"
+                  className="h-full bg-teal-400"
                 />
               </div>
               <motion.span
                 initial={{ opacity: 0, scale: 0.6 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ delay: 0.8 + index * 0.12, ...SPRING }}
-                className="w-8 text-right text-[10px] font-bold text-teal-100"
+                className="w-[4.5rem] text-right text-[8px] font-semibold leading-tight text-teal-100"
               >
-                {candidate.score}%
+                {candidate.grade}
               </motion.span>
             </motion.div>
           ))}
@@ -364,7 +378,9 @@ export function Step7Invitations() {
                   ) : null}
                 </motion.span>
                 <span className="flex-1 text-[9px] font-medium">{candidate.name}</span>
-                <span className="text-[9px] text-white/45">{candidate.score}%</span>
+                {/* The grade word, not a percentage. Same rule as the ranking
+                    scene above: a number never sits beside a rated person. */}
+                <span className="text-[8px] font-semibold text-teal-100">{candidate.grade}</span>
               </motion.div>
             );
           })}

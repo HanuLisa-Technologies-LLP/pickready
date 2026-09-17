@@ -15,6 +15,7 @@ design tooling reads them from the project root).
 | Understand how it is built | [architecture/ESD.md](architecture/ESD.md) |
 | Run it locally | [operations/SETUP.md](operations/SETUP.md) |
 | Deploy it | [operations/DEPLOY_AWS.md](operations/DEPLOY_AWS.md) |
+| Get the data back | [operations/DISASTER_RECOVERY.md](operations/DISASTER_RECOVERY.md) |
 | Know who may do what | [spec/RBAC_SPECIFICATION.md](spec/RBAC_SPECIFICATION.md) |
 | Know how candidates are evaluated | [product/Readypick Hiring Philosophy.md](product/Readypick%20Hiring%20Philosophy.md) |
 | Follow a candidate or a job end to end | [spec/HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) |
@@ -79,6 +80,7 @@ document.
 |---|---|
 | [SETUP.md](operations/SETUP.md) | Local development from a clean clone |
 | [DEPLOY_AWS.md](operations/DEPLOY_AWS.md) | AWS deployment runbook |
+| [DISASTER_RECOVERY.md](operations/DISASTER_RECOVERY.md) | Restoring the database, and what Redis and S3 do not restore with it. Written, never rehearsed, and says so |
 | [DATABASE_CREDENTIAL_MIGRATION.md](operations/DATABASE_CREDENTIAL_MIGRATION.md) | Rotating database credentials |
 | [TEST_BASELINE.md](operations/TEST_BASELINE.md) | What the suite covers and the current numbers |
 | [SKIPS.md](operations/SKIPS.md) | The declared skip inventory, enforced by a test |
@@ -95,6 +97,10 @@ document.
 | [VERIFICATION_PENDING.md](verification/VERIFICATION_PENDING.md) | What remains unproven, stated plainly |
 | [PROCTORING_AND_FORMATS_VERIFICATION.md](verification/PROCTORING_AND_FORMATS_VERIFICATION.md) | What was executed for proctoring and question formats, and what was not |
 | [AI_UPGRADE_BASELINE.md](verification/AI_UPGRADE_BASELINE.md) | RPN-AI-UP-001 W0. What was reachable, what was exercised, and the live pilot row counts on 2026-09-09. A measurement, not a description: never edit it to match new behaviour |
+| [SECURITY_REPORT.md](verification/SECURITY_REPORT.md) | The 2026-09-17 production hardening pass. Nineteen findings by severity, each with its root cause, its fix and what was actually run to verify it, plus a closing list of what could NOT be verified |
+| [PRODUCTION_READINESS.md](verification/PRODUCTION_READINESS.md) | Whether this is safe to deploy and what is still owed. Read the go/no-go table first |
+| [PERFORMANCE_REPORT.md](verification/PERFORMANCE_REPORT.md) | Query patterns, indexes, caching and bundle cost. Reasoned from code and tests, not profiled: it says so at the top and again at the bottom |
+| [SEO_REPORT.md](verification/SEO_REPORT.md) | The public web surface, and the indexability of everything that must stay OUT of the index |
 
 These two are load-bearing: `backend/tests/test_no_live_vendor_claims.py`
 reads them, so a claim about a live call must be evidenced in

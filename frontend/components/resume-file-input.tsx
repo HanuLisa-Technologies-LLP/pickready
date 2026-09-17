@@ -4,6 +4,7 @@ import { FileCheck2, FileText, RotateCcw, UploadCloud } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { FormField } from "@/components/ui/form";
+import { InlineError } from "@/components/page-primitives";
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const ACCEPTED = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
@@ -65,7 +66,25 @@ export function ResumeFileInput({
           ) : progress === 100 && !error ? <div className="mt-2 flex items-center gap-1 text-xs text-foreground"><FileCheck2 className="h-3.5 w-3.5" />Uploaded and linked to this application.</div> : null}
         </div>
       ) : null}
-      {error ? <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive" role="alert"><span>{error}</span>{onRetry ? <button type="button" className="inline-flex items-center gap-1 underline" onClick={onRetry}><RotateCcw className="h-3.5 w-3.5" />Retry</button> : null}</div> : null}
+      {/* The frame, the alert role and the destructive tone come from the
+          shared primitive; only the retry affordance is local to this input. */}
+      {error ? (
+        <InlineError>
+          <span className="flex w-full flex-wrap items-center justify-between gap-3">
+            <span>{error}</span>
+            {onRetry ? (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 underline"
+                onClick={onRetry}
+              >
+                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                Retry
+              </button>
+            ) : null}
+          </span>
+        </InlineError>
+      ) : null}
     </div>
   );
 }

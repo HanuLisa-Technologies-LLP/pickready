@@ -89,6 +89,35 @@ resource "aws_s3_bucket_public_access_block" "mail" {
   restrict_public_buckets = true
 }
 
+# VERSIONING, BECAUSE THIS BUCKET IS A RECORD AND NOT A QUEUE.
+#
+# It looks like a queue: SES writes a message, the parser reads it, a lifecycle
+# rule expires it. Nothing in that description needs versioning, which is
+# presumably why it was never added.
+#
+# What the bucket actually holds is the only verbatim copy of an employer's
+# reply to a background verification request. `services/bgv` stores what a
+# person decided; the raw message is what they decided FROM, and the product
+# deliberately infers nothing from it (`test_inbound_conversation_reply.py`
+# asserts an arriving reply changes no status). If a recruiter's decision is
+# ever questioned, this object is the evidence, and until `retention_days`
+# expires it there is exactly one copy.
+#
+# Without versioning, one overwrite or one delete removes it with nothing left
+# behind. The overwrite case is not hypothetical: SES keys an object by the
+# message id, SNS delivers AT LEAST ONCE, and the inbound Lambda is idempotent
+# on the sender's Message-ID precisely because a redelivery is ordinary.
+#
+# The cost is bounded by the noncurrent-version rule added to the lifecycle
+# configuration below: a noncurrent version of a message is kept for the same
+# window as the message, and no longer.
+resource "aws_s3_bucket_versioning" "mail" {
+  bucket = aws_s3_bucket.mail.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 resource "aws_s3_bucket_server_side_encryption_configuration" "mail" {
   bucket = aws_s3_bucket.mail.id
 
@@ -107,6 +136,11 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "mail" {
 resource "aws_s3_bucket_lifecycle_configuration" "mail" {
   bucket = aws_s3_bucket.mail.id
 
+  # Versioning must exist before the noncurrent-version rule below, or the
+  # rule is written against a bucket that has no noncurrent versions and is
+  # accepted while reaching nothing. Same ordering the `s3` module states.
+  depends_on = [aws_s3_bucket_versioning.mail]
+
   rule {
     id     = "expire-raw-mail"
     status = "Enabled"
@@ -117,6 +151,18 @@ resource "aws_s3_bucket_lifecycle_configuration" "mail" {
 
     expiration {
       days = var.retention_days
+    }
+
+    # THE NONCURRENT VERSION EXPIRES TOO, AND IT HAS TO BE SAID.
+    #
+    # `expiration` on a versioned bucket does not delete anything: it writes a
+    # delete marker and the object stays, billed, for ever. A retention
+    # decision that silently stops deleting the moment versioning is enabled is
+    # the exact shape of a compliance claim nobody can support. Same window as
+    # the current version, because the reason for keeping a reply and the
+    # reason for keeping its previous copy are the same reason.
+    noncurrent_version_expiration {
+      noncurrent_days = var.retention_days
     }
 
     abort_incomplete_multipart_upload {

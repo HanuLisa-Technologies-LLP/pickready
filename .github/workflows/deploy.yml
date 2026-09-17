@@ -464,6 +464,53 @@ jobs:
         with:
           sarif_file: trivy.sarif
 
+      # ── THE HALF THAT ACTUALLY FAILS THE BUILD ───────────────────────────
+      #
+      # THE SCAN ABOVE GATES NOTHING, AND THAT IS NOT A BUG IN IT. A step with
+      # `format: sarif` and no `exit-code` exits 0 whatever it finds, by
+      # design: its job is to hand findings to the code-scanning tab, where
+      # they are triaged rather than blocking. What was wrong is that
+      # `security-scan` then sat in the `needs:` list of both build jobs and
+      # READ as a gate. A required job that cannot fail is the same shape as
+      # the check that reported success while three features did not work.
+      #
+      # So the two jobs are split rather than merged. Reporting is the step
+      # above; refusing is this one. It costs a second Trivy run: the action
+      # caches its vulnerability database between steps in one job, so the
+      # cost is the scan itself and not the download.
+      #
+      # `ignore-unfixed: true`, and the reason is the failure mode it avoids.
+      # A base-image CVE with no patched version available is not something any
+      # commit here can fix. Without this flag such a finding blocks EVERY
+      # deploy from the day it is published until the upstream distribution
+      # ships a fix, which trains whoever is on call to reach for the override
+      # and leaves it reached for. A finding that names a fixed version is
+      # actionable, and those are the ones that stop the build.
+      #
+      # `vuln,secret` and NOT `misconfig`, deliberately. A committed credential
+      # and a dependency with a published patch are both unambiguous. IaC
+      # misconfiguration already has a blocking authority in this pipeline --
+      # checkov, in the `terraform` job, with an exception list in
+      # `infra/.checkov.yml` where every skip carries its reason. Two blocking
+      # authorities over one subject, with two separate exception files, is how
+      # a suppression gets added to the wrong one and nobody notices.
+      - name: Fail the build on a fixable CRITICAL or HIGH finding
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: CRITICAL,HIGH
+          scanners: vuln,secret
+          ignore-unfixed: true
+          # NAMED EXPLICITLY for the same reason as the scan above: the YAML
+          # ignore file is only read when it is passed, and left to the default
+          # it sits in the tree looking authoritative while every finding it
+          # excuses is still reported.
+          trivyignores: .trivyignore.yaml
+          # THE LINE THAT MAKES THIS A GATE.
+          exit-code: '1'
+
   # ---------------------------------------------------------------------------
   # THE FIVE TERRAFORM GATES (spec-doc6 §11.3), all blocking, all offline.
   #
@@ -580,6 +627,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: github.event_name != 'pull_request'
+
+    # `administration: read`, AND WITHOUT IT THIS JOB CHECKED NOTHING.
+    #
+    # The workflow-level default is `contents: read`. Reading
+    # `/repos/{owner}/{repo}/environments/{name}` needs the administration
+    # scope, so the call came back 403 -- and the script treated an empty
+    # response as "the environment does not exist" and exited 1 with that
+    # message. It failed CLOSED, which is the safe direction, so nothing was
+    # ever deployed on a bad answer. But it had never once read a reviewer
+    # configuration, and the failure told whoever hit it to go and create an
+    # environment that was already there.
+    #
+    # Declaring any `permissions` block here replaces the default for this job
+    # rather than adding to it, so `contents: read` is restated: the job checks
+    # out the repository to run the script.
+    permissions:
+      contents: read
+      administration: read
 
     steps:
       - uses: actions/checkout@v4
@@ -969,7 +1034,20 @@ jobs:
 
   apply-staging:
     name: terraform apply (staging)
-    needs: plan-staging
+    # `build-and-push` IS IN THIS `needs` LIST BECAUSE THIS JOB READS ITS
+    # OUTPUTS, AND THE `needs` CONTEXT EXPOSES DIRECT DEPENDENCIES ONLY.
+    #
+    # It interpolates `image_tag` and all three image digests.
+    # With `needs` naming only `plan-staging`, every one of those expressions
+    # resolved to the EMPTY STRING. GitHub does not fail an interpolation of an
+    # undeclared `needs` entry; it substitutes "". So the step would have run
+    # `terraform apply -auto-approve -var="image_tag="` and the digest
+    # verification would have compared the running image against nothing.
+    #
+    # Adding it creates NO CYCLE and changes NO ORDERING. `plan-staging` already needs `build-and-push`, so this job
+    # was already sequenced after it; what changes is only that its outputs are
+    # now readable here.
+    needs: [build-and-push, plan-staging]
     if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -1024,7 +1102,20 @@ jobs:
 
   plan-production:
     name: terraform plan (production)
-    needs: apply-staging
+    # `build-and-push` IS IN THIS `needs` LIST BECAUSE THIS JOB READS ITS
+    # OUTPUTS, AND THE `needs` CONTEXT EXPOSES DIRECT DEPENDENCIES ONLY.
+    #
+    # It interpolates `image_tag` into the plan.
+    # With `needs` naming only `apply-staging`, every one of those expressions
+    # resolved to the EMPTY STRING. GitHub does not fail an interpolation of an
+    # undeclared `needs` entry; it substitutes "". So the step would have run
+    # `terraform apply -auto-approve -var="image_tag="` and the digest
+    # verification would have compared the running image against nothing.
+    #
+    # Adding it creates NO CYCLE and changes NO ORDERING. `apply-staging` already needs `build-and-push` transitively, so this job
+    # was already sequenced after it; what changes is only that its outputs are
+    # now readable here.
+    needs: [build-and-push, apply-staging]
     if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -1072,7 +1163,20 @@ jobs:
   # ═══════════════════════════════════════════════════════════════════════════
   apply-production:
     name: terraform apply (production) -- HUMAN APPROVAL REQUIRED
-    needs: [plan-production, verify-approval-gate]
+    # `build-and-push` IS IN THIS `needs` LIST BECAUSE THIS JOB READS ITS
+    # OUTPUTS, AND THE `needs` CONTEXT EXPOSES DIRECT DEPENDENCIES ONLY.
+    #
+    # It interpolates `image_tag` and all three image digests.
+    # With `needs` naming only `plan-production` and `verify-approval-gate`, every one of those expressions
+    # resolved to the EMPTY STRING. GitHub does not fail an interpolation of an
+    # undeclared `needs` entry; it substitutes "". So the step would have run
+    # `terraform apply -auto-approve -var="image_tag="` and the digest
+    # verification would have compared the running image against nothing.
+    #
+    # Adding it creates NO CYCLE and changes NO ORDERING. `plan-production` already needs `build-and-push` transitively, so this job
+    # was already sequenced after it; what changes is only that its outputs are
+    # now readable here.
+    needs: [build-and-push, plan-production, verify-approval-gate]
     if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60

@@ -4,6 +4,7 @@ import Link from "next/link";
 export const metadata: Metadata = {
   title: "Privacy",
   description: "How ReadyPick handles candidate, customer and visitor information.",
+  alternates: { canonical: "/privacy" },
 };
 
 const SECTIONS = [

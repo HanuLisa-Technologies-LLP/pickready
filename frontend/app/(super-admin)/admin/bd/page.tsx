@@ -47,6 +47,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { LoadingRows } from "@/components/page-primitives";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -269,6 +270,11 @@ export default function BusinessDevelopmentPage() {
             Try again
           </Button>
         </div>
+      ) : loading ? (
+        // The skeleton stands OUTSIDE the table rather than as a colSpan cell:
+        // a table row is not a valid place for a block of skeletons, and the
+        // shared primitive is what every other screen loads with.
+        <LoadingRows rows={5} label="Loading the Business Development team" />
       ) : (
         <div className="overflow-x-auto rounded-md border">
           <Table>
@@ -284,13 +290,7 @@ export default function BusinessDevelopmentPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-10 text-center">
-                    Loading the Business Development team…
-                  </TableCell>
-                </TableRow>
-              ) : users.length === 0 ? (
+              {users.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="py-10 text-center">
                     No Business Development accounts yet.

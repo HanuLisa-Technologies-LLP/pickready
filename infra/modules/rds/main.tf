@@ -144,13 +144,31 @@ resource "aws_db_instance" "this" {
   performance_insights_retention_period = var.environment == "production" ? 7 : null
   enabled_cloudwatch_logs_exports       = ["postgresql", "upgrade"]
 
-  # PRODUCTION REFUSES TO BE DESTROYED, AND SNAPSHOTS ON THE WAY OUT ANYWAY.
+  # EVERY DATABASE REFUSES TO BE DESTROYED, AND SNAPSHOTS ON THE WAY OUT ANYWAY.
   # Two independent guards, because they fail differently: deletion protection
   # stops the API call, and the final snapshot survives somebody disabling it
   # first.
-  deletion_protection       = var.environment == "production"
-  skip_final_snapshot       = var.environment != "production"
-  final_snapshot_identifier = var.environment == "production" ? "${local.name}-final-${var.snapshot_suffix}" : null
+  #
+  # BOTH USED TO BE KEYED ON `var.environment == "production"`, AND THAT WAS
+  # BACKWARDS IN PRACTICE (corrected 2026-09-17). Production has never been
+  # applied. Pilot is the only environment that has ever existed, it holds
+  # three demo tenants and a month of manual setup, and it had neither guard:
+  # one `terraform destroy` in the wrong directory, or one resource rename that
+  # Terraform decided needed replacement, and the database was gone with no
+  # snapshot to go back to. "This environment does not matter" is a judgement
+  # somebody makes before an incident, not during one.
+  #
+  # So both are now variables defaulting to the SAFE value, and an environment
+  # that genuinely wants a disposable database says so in its own root, where
+  # the decision is reviewable in a diff. See the variables for what each one
+  # costs when it is turned off.
+  deletion_protection = var.deletion_protection
+  skip_final_snapshot = var.skip_final_snapshot
+  # NAMED WHENEVER A SNAPSHOT WILL BE TAKEN, not only in production. RDS
+  # refuses the delete outright when `skip_final_snapshot` is false and no
+  # identifier is set, which would turn a careful teardown into an error
+  # somebody resolves by setting `skip_final_snapshot = true`.
+  final_snapshot_identifier = var.skip_final_snapshot ? null : "${local.name}-final-${var.snapshot_suffix}"
   copy_tags_to_snapshot     = true
 
   # `apply_immediately` false in production: a parameter change that forces a

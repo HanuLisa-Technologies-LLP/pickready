@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 export const metadata: Metadata = {
   title: "Terms",
   description: "Terms governing access to and use of ReadyPick.",
+  alternates: { canonical: "/terms" },
 };
 
 const TERMS = [

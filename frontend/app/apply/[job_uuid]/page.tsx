@@ -45,6 +45,7 @@ import {
 } from "@/components/resume-file-input";
 import { Card, CardContent } from "@/components/ui/card";
 import { PublicNotice, PublicShell } from "@/components/public-shell";
+import { JsonLd, compact } from "@/components/json-ld";
 import { InlineError, Section } from "@/components/page-primitives";
 import {
   Select,
@@ -122,6 +123,59 @@ function readTimeMinutes(jd: Record<string, unknown>): number {
     .split(/\s+/)
     .filter(Boolean).length;
   return Math.max(1, Math.round(words / 200));
+}
+
+/**
+ * The JobPosting payload for this role.
+ *
+ * EVERY FIELD COMES FROM THE FETCHED JOB, AND NOTHING IS INVENTED. No
+ * `baseSalary`, because compensation is stripped from every job fact this
+ * product carries. No `employmentType`, `jobLocation` or `validThrough`,
+ * because `GET /jobs/public/{id}` returns none of them, and a structured-data
+ * field asserting something the record does not say is worse than its absence:
+ * it is published, machine-read, and nobody on the hiring team ever sees it.
+ *
+ * `datePosted` is the job record's own creation timestamp, the only date in
+ * the payload. The posting window's start date is not exposed publicly.
+ *
+ * Returns null when the role has no usable description, so a half-empty
+ * posting is never published.
+ */
+function jobPostingSchema(
+  job: PublicJob,
+  jd: Record<string, unknown>,
+  companyName: string | undefined
+): Record<string, unknown> | null {
+  const description = [
+    jdText(jd.description),
+    jdText(jd.role),
+    jdText(jd.responsibilities),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  if (!description) return null;
+
+  return compact({
+    "@context": "https://schema.org",
+    "@type": "JobPosting",
+    title: job.title,
+    description,
+    identifier: {
+      "@type": "PropertyValue",
+      name: companyName ?? "ReadyPick",
+      value: job.id,
+    },
+    datePosted: job.created_at ?? undefined,
+    hiringOrganization: companyName
+      ? { "@type": "Organization", name: companyName }
+      : undefined,
+    occupationalCategory: job.department ?? undefined,
+    skills: asLines(jd.skills).join(", ") || undefined,
+    educationRequirements: jdText(jd.education) ?? undefined,
+    // The application is submitted on this page, not on a third-party board.
+    directApply: true,
+    url: `https://readypick.ai/apply/${job.id}`,
+  });
 }
 
 function JdBlock({ title, value }: { title: string; value: unknown }) {
@@ -468,6 +522,10 @@ export default function PublicApplyPage() {
 
   return (
     <PublicShell>
+        {/* Structured data for this role. Built from the fetched job in code
+            and serialised with JSON.stringify, so it is not an XSS vector. */}
+        <JsonLd data={jobPostingSchema(job, jd, companyName)} />
+
         {/* The role, stated before anything is asked of the candidate. */}
         <div className="mb-8">
           <div className="flex items-start gap-4">
@@ -518,6 +576,18 @@ export default function PublicApplyPage() {
           {/* forceMount keeps BOTH panels mounted: re-reading the JD mid-way
               through the questionnaire never discards entered answers. */}
           <TabsContent value="jd" forceMount hidden={tab !== "jd"} className="mt-4">
+            {/* HEADING LEVEL, NOT DECORATION. The h1 above is the role; the
+                next heading in the document was the card title, which
+                `Section` renders through `CardTitle`, which is an h3. That is
+                a skipped level, and the fix cannot be made in `CardTitle`
+                without changing every card in the product.
+
+                A tab panel is a section of the page and deserves a name at
+                level 2 regardless: the tab controls are buttons, so without
+                this a screen reader has no heading for either panel. Visually
+                hidden because the tab already labels it on screen, which is
+                why nothing here changes size or position. */}
+            <h2 className="sr-only">Job description</h2>
             <Section title="About this role" description={subtitle} contentClassName="space-y-7">
                 {hasJdContent ? (
                   <>
@@ -590,6 +660,9 @@ export default function PublicApplyPage() {
             hidden={tab !== "apply"}
             className="mt-4"
           >
+            {/* The second panel's level-2 heading. Same reasoning as the JD
+                panel above: it names the panel and closes the h1-to-h3 gap. */}
+            <h2 className="sr-only">Apply for this role</h2>
             {!candidateSessionVerified ? (
               <Section
                 title={
@@ -829,7 +902,7 @@ function Fact({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null;
   return (
     <div className="flex flex-wrap gap-x-2">
-      <dt className="opacity-80">{label}</dt>
+      <dt className="font-normal">{label}</dt>
       <dd className="font-semibold">{value}</dd>
     </div>
   );

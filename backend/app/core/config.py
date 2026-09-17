@@ -250,6 +250,27 @@ class Settings(BaseSettings):
     # the degradation once).
     inbound_email_domain: str = ""
 
+    # THE SHARED SECRET BETWEEN THE INBOUND-MAIL LAMBDA AND THIS API.
+    #
+    # `POST /verification/inbound-email` is a PUBLIC route that writes into
+    # verification requests, BGV threads and conversations. Its only protection
+    # was that a caller had to know a per-thread token, which travels by email
+    # and is therefore in every mailbox that ever received or forwarded one of
+    # these threads. Nothing stopped a POST straight at the API, bypassing SES,
+    # the DKIM and SPF checks, and the Lambda entirely.
+    #
+    # The sibling webhooks already do this properly: the SES event webhook
+    # verifies an SNS RSA signature, and the Razorpay webhook verifies an HMAC.
+    # This one is Lambda to API, so a shared secret is enough; it does not need
+    # to prove SES sent the mail, only that OUR relay made the call.
+    #
+    # EMPTY IS A REAL STATE and is not silently equivalent to configured. With
+    # no secret set the route stays open and SAYS SO in the log, which is the
+    # same shape `inbound_email_domain` already uses: a deployment that has not
+    # been given the value behaves as it did before rather than refusing every
+    # genuine reply, and the operator can see which of the two they are in.
+    inbound_webhook_secret: str = ""
+
     # ── Outbound email transport (Corporate Email System spec section 6) ────
     #
     # ONE transport per deployment, selected by DATA, never a fallback chain

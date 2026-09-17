@@ -590,6 +590,99 @@ def test_tenant_scope_is_decided_before_the_stage_and_the_risk_class() -> None:
     assert verdict.http_status == 404
 
 
+# ── The result cache is inside the tenant boundary ───────────────────────────
+
+
+@pytest.fixture
+def memory_cache(monkeypatch):
+    """A real cache, in a dict, so the hit path is actually exercised.
+
+    `core.cache` no-ops when Redis is unreachable, which is correct for a cache
+    and useless for a test about one: every assertion below would pass against
+    a cache that never stored anything, which is the shape of a test that
+    cannot fail.
+    """
+    from app.core import cache as core_cache
+
+    store: dict[str, object] = {}
+
+    async def fake_get(cache_key: str):
+        return store.get(cache_key)
+
+    async def fake_set(cache_key: str, value, ttl: int = 0) -> bool:
+        store[cache_key] = value
+        return True
+
+    async def fake_invalidate(*cache_keys: str) -> None:
+        for cache_key in cache_keys:
+            store.pop(cache_key, None)
+
+    monkeypatch.setattr(core_cache, "get", fake_get)
+    monkeypatch.setattr(core_cache, "set", fake_set)
+    monkeypatch.setattr(core_cache, "invalidate", fake_invalidate)
+    return store
+
+
+@pytest.mark.asyncio
+async def test_one_tenants_cached_result_is_never_served_to_another(
+    sandbox, memory_cache
+) -> None:
+    """The cache is read BEFORE the handler, and therefore before RLS.
+
+    Which makes it the one step in this layer where an authorised call for
+    tenant B can be answered with a value computed for tenant A: the policy
+    engine has already said yes, and nothing downstream ever runs to disagree.
+    The two calls here are identical in every declared way except the tenant,
+    which is exactly the case a key without a tenant cannot tell apart.
+    """
+    seen: list[str] = []
+
+    async def handler(payload: _In):
+        seen.append("ran")
+        return {"doubled": payload.value * 2}
+
+    _spec(handler=handler, idempotent=True, cache_ttl_seconds=60)
+
+    def scoped(tenant):
+        return policy.ToolContext(tenant_id=tenant, stage=policy.STAGE_REPORTING)
+
+    first = await executor.execute("probe", "tester", {"value": 2}, context=scoped(_TENANT_A))
+    assert first.cached is False
+    again = await executor.execute("probe", "tester", {"value": 2}, context=scoped(_TENANT_A))
+    assert again.cached is True, "the same tenant asking twice must hit"
+
+    other = await executor.execute("probe", "tester", {"value": 2}, context=scoped(_TENANT_B))
+    assert other.cached is False, "tenant B was served tenant A's cached result"
+    assert seen == ["ran", "ran"], "the second tenant's call never reached the handler"
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_declares_no_tenant_is_not_cached_at_all(
+    sandbox, memory_cache
+) -> None:
+    """`UNSCOPED` gets no cache rather than a shared one.
+
+    A bucket keyed on "nobody said" is the same cross-tenant serving one line
+    down, in a shape nobody would read as one. Declining to memoise costs the
+    second call its handler and nothing else.
+    """
+    calls: list[str] = []
+
+    async def handler(payload: _In):
+        calls.append("ran")
+        return {"doubled": 4}
+
+    _spec(handler=handler, idempotent=True, cache_ttl_seconds=60)
+    unscoped = policy.ToolContext(stage=policy.STAGE_REPORTING)
+
+    for _ in range(2):
+        result = await executor.execute("probe", "tester", {"value": 2}, context=unscoped)
+        assert result.cached is False
+
+    assert calls == ["ran", "ran"]
+    assert memory_cache == {}, "an unscoped call wrote a cache entry somebody can hit"
+
+
 # ── Audit over the REAL registry ─────────────────────────────────────────────
 
 

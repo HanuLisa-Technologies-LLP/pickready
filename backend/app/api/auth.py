@@ -596,7 +596,23 @@ def _dead_session(detail: str) -> JSONResponse:
     return dead
 
 
-@router.post("/refresh")
+# Abuse control, not authorization (services/rate_limit). A refresh token is a
+# long random JWT and is not brute forceable in practice, so this is not about
+# guessing one: it is that an unthrottled endpoint doing a database round trip
+# per call is a resource-exhaustion vector, and this was the one auth route the
+# sweep that added `auth_exchange` missed.
+#
+# The window is deliberately generous. A legitimate browser refreshes roughly
+# once per access-token lifetime (fifteen minutes), and several tabs of one
+# session can refresh at once after a laptop wakes, so a tight limit here would
+# sign real people out. Thirty per minute is far above that and far below a
+# useful flood. Now that `client_identifier` resolves a verified subject, an
+# authenticated caller gets their own bucket rather than sharing their office
+# address with every colleague.
+@router.post(
+    "/refresh",
+    dependencies=[Depends(rate_limit("auth_refresh", limit=30, window=60))],
+)
 async def refresh(
     request: Request,
     response: Response,

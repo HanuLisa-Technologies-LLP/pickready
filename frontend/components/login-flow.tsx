@@ -187,7 +187,7 @@ export function LoginFlow({
               <span className="block text-sm font-semibold">
                 {context.tenant_name ?? "ReadyPick"}
               </span>
-              <span className="mt-0.5 block text-xs opacity-80">
+              <span className="mt-0.5 block text-xs">
                 {ROLE_LABEL[context.role]}
               </span>
             </button>

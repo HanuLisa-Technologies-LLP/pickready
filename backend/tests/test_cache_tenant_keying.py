@@ -74,21 +74,17 @@ GLOBAL_BY_DESIGN: dict[str, str] = {
 
 #: Builders that should carry a tenant and do not. OPEN, not exempt.
 #:
-#: `tools/executor._cache_key` keys an idempotent tool's cached OUTPUT on the
-#: tool name and a digest of its validated input. Every cached tool today takes
-#: a globally unique primary key (a job id, a profile id), so a cross-tenant
-#: COLLISION is impossible; what remains possible is cross-tenant SERVING, since
-#: the cache is read before the handler and therefore before the RLS session
-#: that would have refused the row. The repair is one line in `_cache_key` plus
-#: a tenant on the executor's signature, and `app/services/tools/**` belongs to
-#: a different workstream. Recorded here so it is a tracked defect rather than a
-#: silent one.
-KNOWN_TENANT_GAPS: dict[str, str] = {
-    "services/tools/executor.py": (
-        "the tool result cache is keyed on the tool name and the validated "
-        "input digest; a tenant belongs in that key"
-    ),
-}
+#: EMPTY, and it was not always. `tools/executor._cache_key` keyed an
+#: idempotent tool's cached OUTPUT on the tool name and a digest of its
+#: validated input alone. Every cached tool takes a globally unique primary key
+#: (a job id, a profile id), so a cross-tenant COLLISION was impossible; what
+#: was possible is cross-tenant SERVING, because the cache is read before the
+#: handler and therefore before the RLS session that would have refused the
+#: row. Repaired 2026-09-17: the tenant is now a key segment and part of the
+#: digest, and a call that declares no tenant is not cached at all. The entry
+#: is DELETED rather than reworded, because the sweep below is what enforces it
+#: from here on and a ledger that outlives its defect is an exemption.
+KNOWN_TENANT_GAPS: dict[str, str] = {}
 
 
 #: The module that DEFINES the namespace rather than building a key with it.
@@ -220,7 +216,7 @@ def test_the_ledgers_do_not_grow() -> None:
         "api/jobs.py",
         "services/erasure.py",
     }
-    assert set(KNOWN_TENANT_GAPS) == {"services/tools/executor.py"}
+    assert set(KNOWN_TENANT_GAPS) == set()
     for reason in list(GLOBAL_BY_DESIGN.values()) + list(KNOWN_TENANT_GAPS.values()):
         assert len(reason.split()) >= 10, (
             "a one-word reason is an exemption nobody has to defend"
@@ -246,9 +242,11 @@ def test_every_ledger_entry_still_names_a_real_key_builder() -> None:
 def test_the_known_gap_is_still_a_gap_rather_than_a_forgotten_entry() -> None:
     """The other direction, and the one that turns a ledger into a to-do list.
 
-    The moment `tools/executor._cache_key` grows a tenant, this fails and the
-    entry has to be deleted. That is what stops a recorded defect becoming a
-    permanent exemption nobody rereads.
+    An entry whose builder HAS grown a tenant is a recorded defect that has
+    quietly become a permanent exemption, so it fails here until somebody
+    deletes it. The ledger is empty today (the tool result cache was repaired
+    on 2026-09-17), which makes this a guard on whatever is added next rather
+    than on nothing: the entry that joins the ledger has to be a real gap.
     """
     for module in KNOWN_TENANT_GAPS:
         path = BACKEND_APP / module
@@ -259,6 +257,47 @@ def test_the_known_gap_is_still_a_gap_rather_than_a_forgotten_entry() -> None:
             f"{module} now carries a tenant in its cache key. Delete its "
             f"KNOWN_TENANT_GAPS entry: the gap is closed."
         )
+
+
+def test_the_tool_result_cache_key_is_tenant_scoped() -> None:
+    """The repair the ledger used to record, asserted on the VALUES.
+
+    The sweep above reads source text, which is the net. This reads the key
+    itself, because the failure it guards against is two tenants issuing the
+    same tool call with the same input and the second being handed the first
+    one's answer out of Redis, before the handler and therefore before RLS.
+    """
+    import uuid
+
+    import pytest
+    from pydantic import BaseModel
+
+    from app.services.coalescing import TenantScopeMissing
+    from app.services.tools import executor
+
+    class _In(BaseModel):
+        job_id: str
+
+    payload = _In(job_id="7c0f6d9e-0000-0000-0000-000000000001")
+    tenant_a, tenant_b = uuid.uuid4(), uuid.uuid4()
+
+    key_a = executor._cache_key("extract_jd", payload, tenant_a)
+    key_b = executor._cache_key("extract_jd", payload, tenant_b)
+
+    assert key_a != key_b, "one input shape, two tenants, one cache entry"
+    assert str(tenant_a) in key_a, (
+        "the tenant is a visible segment so an operator can read whose entry "
+        "an item is without decoding the digest"
+    )
+    assert executor._cache_key("extract_jd", payload, tenant_a) == key_a, (
+        "the key must be stable, or nothing is ever a hit"
+    )
+
+    # Refused rather than defaulted: a global key is the failure this exists to
+    # make impossible, and the caller declines to cache instead.
+    for absent in (None, "", "   "):
+        with pytest.raises(TenantScopeMissing):
+            executor._cache_key("extract_jd", payload, absent)
 
 
 def test_the_shared_key_builder_cannot_be_called_without_a_tenant() -> None:
