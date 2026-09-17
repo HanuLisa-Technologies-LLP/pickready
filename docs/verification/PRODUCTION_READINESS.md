@@ -77,6 +77,43 @@ Live checks against `https://readypick.ai` after deploy:
 | `/` | still `Site Under Construction`, as the owner requires |
 | `/about` | no robots meta, indexable |
 
+### Post-deploy verification against the live account
+
+Run after the final rollout. Everything here is measured, not reasoned.
+
+| Check | Result |
+|---|---|
+| `POST /verification/inbound-email` with NO relay header | **403** |
+| the same with a WRONG header | **403** |
+| `INBOUND_WEBHOOK_SECRET` on the `api` container | mounted (revision 32) |
+| Secrets still on `PLACEHOLDER_NOT_CONFIGURED` | `SMTP_PASSWORD`, `MSG91_API_KEY`, both benign, see below |
+| CloudWatch alarms on the pilot | **16**, up from 5 |
+| `alarm_emails` SNS subscription | **PendingConfirmation** |
+| CSP against the live sign-in page | no violation; the Firebase popup to `pick-ready.firebaseapp.com` was attempted |
+
+**SEC-5 is now closed, not merely shipped.** The webhook refuses an
+unauthenticated caller in production. That is safe because no inbound-mail
+Lambda exists in this region (`has_inbound` is false for ap-south-2), confirmed
+by listing the account's functions: `jd-gen`, `assessment-trigger`,
+`company-profile`, `task-worker`, and nothing else. So the route had no
+legitimate caller to break.
+
+**The two placeholder secrets are both harmless, and were checked rather than
+assumed.** `EMAIL_TRANSPORT` is `ses` in this environment, so `SMTP_PASSWORD` is
+unused and is mounted on no task or function. `MSG91_API_KEY` is mounted only on
+`task-worker`, and `app.core.config` maps the sentinel back to `""` before any
+code reads it, so the retained SMS feature is simply off. Neither is the
+`FIREBASE_SERVICE_ACCOUNT_JSON` class of problem: that one IS configured.
+
+**On the CSP and Google sign-in, be exact about what was proven.** The live login
+page raises no CSP violation, and clicking the button made the SDK construct and
+attempt its popup to `pick-ready.firebaseapp.com`, which matches the
+`https://*.firebaseapp.com` entry in `connect-src` and `frame-src` exactly. Two
+caveats. `signInWithPopup` uses `window.open`, which CSP does not govern at all,
+so the popup opening proves nothing about the policy by itself. And the leg that
+the policy DOES govern, the token exchange after the popup returns, needs a real
+Google account and was not exercised. The risk is narrowed, not eliminated.
+
 ### THREE defects found ONLY by probing production
 
 None of these could have been caught locally. In all three the build output was
@@ -193,10 +230,10 @@ table beneath them.
 | # | Item | Why it matters |
 |---|---|---|
 | 1 | ~~Fix `test_placeholder_secret.py`.~~ **DONE** before deploy. | Was the deploy blocker. |
-| 2 | **Exercise Google sign-in and Razorpay checkout immediately after deploy.** | The CSP is new. Both flows need a live session or a live payment and could not be tested. A wrong directive breaks sign-in or payment in production rather than failing a test. This is the highest-risk unverified item in the whole pass. |
-| 3 | **Confirm the relay secret reached BOTH consumers.** | Until the API and the inbound Lambda hold the same value, `POST /verification/inbound-email` stays open and logs `verification.inbound_unauthenticated` on every call. |
-| 4 | **Check no secret still holds `PLACEHOLDER_NOT_CONFIGURED`.** | A secret container is not a configured secret. This repository has been burned by exactly that (`FIREBASE_SERVICE_ACCOUNT_JSON`, 2026-09-06). |
-| 5 | **Confirm the `alarm_emails` SNS subscription.** | Terraform reports a pending subscription as created. Unconfirmed means nobody is notified, which makes every alarm added in this pass decorative. |
+| 2 | **Complete one real Google sign-in and one Razorpay checkout.** PARTIALLY verified: no CSP violation on the live login page and the auth domain matches the allowlist, but the post-popup token exchange and the payment flow need a real account and a real payment. | Still the highest-risk unverified item: a wrong directive breaks sign-in or payment in production rather than failing a test. |
+| 3 | ~~Confirm the relay secret reached both consumers.~~ **DONE for the API**, verified by a live 403. The relay half activates automatically whenever an inbound-mail Lambda is created; none exists in ap-south-2 today. | The route is closed rather than open, which is the safe direction given it has no legitimate caller. |
+| 4 | ~~Check no secret still holds `PLACEHOLDER_NOT_CONFIGURED`.~~ **DONE.** Two do, both verified harmless (see the post-deploy table). | A secret container is not a configured secret. |
+| 5 | **Confirm the `alarm_emails` SNS subscription.** Measured: it is `PendingConfirmation`. Click the link AWS emailed to manjuchro@gmail.com. | Until then all 16 alarms are decorative: they will fire and notify nobody. |
 | 6 | **Set a real `monthly_budget_usd`.** | It defaults to a conservative placeholder with a description saying the owner must set it. |
 | 7 | **Rotate the keys in `secrets/api-keys.txt`.** | Live third-party keys for four vendors the architecture removed in 2026-08-28. Correctly gitignored and never committed; this is local-machine hygiene, not a leak. |
 | 8 | **`frontend/lib/api.ts` has no client-side fetch timeout.** Deliberately NOT changed: a blanket `AbortController` would also cut a large resume or project upload, and the backend's own interactive task timeouts (15 to 50 seconds) should resolve first. It is a missing backstop rather than a defect, and it needs a per-call budget rather than one global number. | A hung backend connection would hang the browser's fetch with no independent client-side ceiling. |
