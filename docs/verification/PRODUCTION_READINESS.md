@@ -199,7 +199,8 @@ table beneath them.
 | 5 | **Confirm the `alarm_emails` SNS subscription.** | Terraform reports a pending subscription as created. Unconfirmed means nobody is notified, which makes every alarm added in this pass decorative. |
 | 6 | **Set a real `monthly_budget_usd`.** | It defaults to a conservative placeholder with a description saying the owner must set it. |
 | 7 | **Rotate the keys in `secrets/api-keys.txt`.** | Live third-party keys for four vendors the architecture removed in 2026-08-28. Correctly gitignored and never committed; this is local-machine hygiene, not a leak. |
-| 8 | **Decide on the public contact address.** | The public site publishes a personal Gmail as the company contact. Pre-existing, and an owner decision rather than a bug. |
+| 8 | **`frontend/lib/api.ts` has no client-side fetch timeout.** Deliberately NOT changed: a blanket `AbortController` would also cut a large resume or project upload, and the backend's own interactive task timeouts (15 to 50 seconds) should resolve first. It is a missing backstop rather than a defect, and it needs a per-call budget rather than one global number. | A hung backend connection would hang the browser's fetch with no independent client-side ceiling. |
+| 9 | **Decide on the public contact address.** | The public site publishes a personal Gmail as the company contact. Pre-existing, and an owner decision rather than a bug. |
 
 ---
 
