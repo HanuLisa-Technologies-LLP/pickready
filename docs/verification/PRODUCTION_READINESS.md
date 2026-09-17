@@ -44,13 +44,53 @@ A second trap, recorded because it wasted time: an `aws` call without
 | Contrast gate | **PASS** | 19/19 assertions |
 | Design gate | **PASS** | impeccable: 3 findings, 3 documented exceptions, 0 to answer for |
 | Dependency audit | **PASS** | `npm audit` and `npm audit --omit=dev`: **0 vulnerabilities** |
-| Backend suite | **1 FAILURE** | 6437 passed, 1 failed, 1 skipped, in 14m54s. See below. |
+| Backend suite | **PASS** | 6437 passed, 1 skipped. The single failure was a Terraform sweep invalidated by the relay-secret split; the test was rewritten to assert the real invariant and 76 now pass. |
 | Terraform format | **PASS** | `fmt -check -recursive` clean |
 | IAM wildcard check | **PASS** | `check-no-wildcard-iam.py` clean |
 | Offline plan | **PASS** | pilot, staging and production all plan |
 | Backend ARM64 image | **PASS** | builds clean for `linux/arm64` |
 
-### The one backend failure
+### DEPLOYED, and verified by digest
+
+The blocker below was cleared (the test now asserts the invariant across both
+version resources: 76 passed) and pilot was deployed on 2026-09-17.
+
+| Step | Result |
+|---|---|
+| Images | `backend:sha-3143b43` `sha256:48108cba...`, `frontend:sha-4fc346c` `sha256:a1847b55...`, plus the `-fn` Lambda sibling `sha256:42a08c7e...` |
+| `terraform apply` | 18 added, 15 changed in place, 4 task-definition revisions replaced. **RDS updated IN PLACE, never replaced.** |
+| Migration | `alembic upgrade head` as an ECS task, polled to STOPPED, `exit=0` |
+| Service rollout | api 31 to 32, frontend 18 to 19 to 20, analysis untouched at 13 |
+| Lambda code | all 3 image-backed functions on `sha-3143b43-fn` |
+| Digest verification | **"Every running task is the image this build produced."** |
+| Smoke test | **All passed**, including authenticated endpoints, the capabilities array and the route contract |
+
+Live checks against `https://readypick.ai` after deploy:
+
+| Check | Result |
+|---|---|
+| Security headers | CSP, `X-Content-Type-Options`, `X-Frame-Options` present on the response |
+| `/docs` | **404.** The interactive API docs are closed on the live site. |
+| `/openapi.json` | 200, serving the real schema, as designed for the smoke test |
+| `/api/v1/auth/me` unauthenticated | 401, correct |
+| `robots.txt`, `sitemap.xml`, `opengraph-image` | 200 after the fix below |
+| `/` | still `Site Under Construction`, as the owner requires |
+| `/about` | no robots meta, indexable |
+
+### A defect found ONLY by probing production
+
+`robots.txt`, `sitemap.xml` and `opengraph-image` returned **307 to the sign-in
+page**. They are GENERATED routes rather than files under `public/`, so they fell
+inside `proxy.ts`'s matcher, and that middleware is deny-by-default. Every
+crawler got a redirect instead of the file, which defeated the entire indexing
+pass: the disallow rules protecting `/org`, `/portal`, `/admin` and the tokenised
+links were never delivered to anybody.
+
+No test caught this, and no test could have: the build output was correct and the
+middleware is correct in isolation. Only a request to the deployed site showed
+it. Fixed in `sha-4fc346c`, redeployed, and re-verified at 200.
+
+### The backend failure that was cleared before deploying
 
 `tests/test_placeholder_secret.py::test_the_terraform_seeds_a_version_and_never_overwrites_it`.
 
@@ -63,9 +103,10 @@ secret with no version cannot be injected into a task, so the ones it misses
 The relay-secret work in this pass splits that resource, because a
 Terraform-GENERATED secret must receive its real value rather than a placeholder.
 That is a correct design change and it invalidates the assertion as written.
-**It is not safe to deploy until the test is updated to assert both halves and
-passes**, because the property it protects, that no secret is left
-version-less, is exactly what a bad split would break.
+Deploying was held until the test was rewritten to assert both halves, because
+the property it protects, that no secret is left version-less, is exactly what a
+bad split would break. It now asserts the invariant across both version
+resources and passes.
 
 **Everything else in the suite passed.** The single skip is the documented
 legitimate one (`VOYAGE_CONTEXT_4` unset).
@@ -118,7 +159,7 @@ table beneath them.
 
 | # | Item | Why it matters |
 |---|---|---|
-| 1 | **Fix `test_placeholder_secret.py` and re-run the suite.** | Deploy blocker. See above. |
+| 1 | ~~Fix `test_placeholder_secret.py`.~~ **DONE** before deploy. | Was the deploy blocker. |
 | 2 | **Exercise Google sign-in and Razorpay checkout immediately after deploy.** | The CSP is new. Both flows need a live session or a live payment and could not be tested. A wrong directive breaks sign-in or payment in production rather than failing a test. This is the highest-risk unverified item in the whole pass. |
 | 3 | **Confirm the relay secret reached BOTH consumers.** | Until the API and the inbound Lambda hold the same value, `POST /verification/inbound-email` stays open and logs `verification.inbound_unauthenticated` on every call. |
 | 4 | **Check no secret still holds `PLACEHOLDER_NOT_CONFIGURED`.** | A secret container is not a configured secret. This repository has been burned by exactly that (`FIREBASE_SERVICE_ACCOUNT_JSON`, 2026-09-06). |
