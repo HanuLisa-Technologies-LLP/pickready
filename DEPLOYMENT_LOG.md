@@ -1327,3 +1327,46 @@ is still `PendingConfirmation`. It was found by listing alarms by hand.
 **Confirming that subscription is worth more than any single fix in these three
 releases**, because it is the difference between the next one being found in
 minutes and being found in a week.
+
+---
+
+## Release 4, consent lifecycle, 2026-09-18
+
+Backend `sha-3789d79`, frontend unchanged at `sha-b0ee2c3`, analysis unchanged.
+Migration 0100 applied BEFORE the service roll, confirmed from the migrate
+task's own log (`Running upgrade 0099 -> 0100`), exit 0.
+
+| Artifact | Tag | Digest |
+|---|---|---|
+| api | `sha-3789d79` | `sha256:953dbf432cee40b19295e788944d55da8125dc4cc49f90f57594a55893e94d42` |
+| lambdas | `sha-3789d79-fn` | `sha256:3face500f72d8b8a45737f35f583bf15bdf74e1f66ea58e6690ed09ffcc5e60a` |
+| frontend | unchanged | `sha256:6fc25a80e653aeba4793ce313ffe0463a7997fc59dfed5ab42edf46fac44a81f` |
+| analysis | unchanged | `sha256:e0c6d4880b94fe3531a904042ff932ab42e3caeb19b88c03dd9b58c0fc037ec1` |
+
+### What shipped
+
+- **Feature 8**: consent renewal, the final warning and the 24-month
+  inactivity rule. Four derived-stage stamps (0100), the daily
+  `pickready.sweep_consent_lifecycle`, its EventBridge rule in all three
+  environments, two letters, and engagement recording at the candidate
+  chokepoint. **The erasure half is GATED OFF** by
+  `consent_auto_deletion_enabled` and arming it is an owner decision.
+- The StaleDataError fix: the engagement stamp had broken Delete My Profile
+  (dirty ORM object flushed after a raw-SQL delete), caught by the full suite
+  and fixed with `session.expunge` before the cascade.
+
+### Verified, in one pass
+
+- Suite: **6577 passed, 1 skipped, 2 xfailed, zero failures** (a first attempt
+  reported 478 skips and was discarded: Docker Desktop had restarted and taken
+  the test database with it; the run proved the environment, not the code).
+- All three digests confirmed against the RUNNING tasks.
+- Smoke test: every check PASS.
+- Regressions re-probed: webhook 503, relay 403, deletion notice 401,
+  `Server-Timing` still absent, landing page still Under Construction.
+- `readypick-sweep-consent-lifecycle` is ENABLED at `rate(1440 minutes)`, and
+  the sweep was INVOKED ONCE against production rather than trusted to exist:
+  its own log line reads
+  `consent.sweep reminded=0 warned=0 erased=0 would_erase=0 deletion_armed=False`,
+  which is exactly right for a databank holding zero candidates with the
+  deletion gate shut.
