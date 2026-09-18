@@ -210,6 +210,51 @@ def test_the_sweep_writes_letters_and_erases_NOBODY_while_unarmed(
         _run(lambda f: _cleanup(f, w))
         
 
+def test_the_armed_sweep_erases_the_right_person_and_only_that_person(
+    monkeypatch,
+) -> None:
+    """The dangerous path, which the other tests deliberately never take.
+
+    Everything else here runs UNARMED, which proves the gate holds and proves
+    nothing about what happens when somebody opens it. This arms it once, in a
+    test, so the erasure is exercised before it is ever exercised by a
+    scheduler against real people.
+
+    Two assertions, and the second is the one that would catch a catastrophe:
+    the candidate past the threshold is gone, and the three who are not are
+    all still there. A sweep that erased everybody would satisfy the first on
+    its own.
+    """
+    from app.core.config import get_settings
+    from app.workers import tasks
+
+    _skip_without_database()
+    w = _World()
+
+    monkeypatch.setattr(tasks, "dispatch", lambda name, args=None, **kw: None)
+    monkeypatch.setattr(get_settings(), "consent_auto_deletion_enabled", True)
+
+    try:
+        _run(lambda f: _seed(f, w))
+        tasks.sweep_consent_lifecycle()
+
+        assert _run(lambda f: _row(f, w.deletion_due)) is None, (
+            "the armed sweep did not erase a candidate past the deletion "
+            "threshold, so the feature does not work when it is turned on"
+        )
+        for survivor, label in (
+            (w.fresh, "fresh"),
+            (w.reminder_due, "reminder_due"),
+            (w.warning_due, "warning_due"),
+        ):
+            assert _run(lambda f, s=survivor: _row(f, s)) is not None, (
+                f"the armed sweep erased the {label} candidate, who is not "
+                "past any deletion threshold"
+            )
+    finally:
+        _run(lambda f: _cleanup(f, w))
+
+
 def test_a_second_sweep_does_not_write_to_the_same_person_twice(
     monkeypatch,
 ) -> None:

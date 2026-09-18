@@ -921,6 +921,22 @@ async def delete_my_profile(
     # confirmation letter is the one thing that still has to reach the person.
     confirmation_address = candidate.email
 
+    # DETACH THE ROW BEFORE ERASING IT, or the erasure dies on its own audit
+    # write. `_candidate_for_user` stamps `last_engagement_at`, which leaves
+    # this object DIRTY in the session; `cascade_erasure` then deletes the row
+    # with raw SQL, and the first `flush()` after that (the audit entry, inside
+    # the erasure itself) emits an UPDATE against a row that no longer exists
+    # and raises StaleDataError: "expected to update 1 row(s); 0 were matched".
+    #
+    # Neither half is wrong on its own, which is why this only appeared when
+    # both existed: the engagement stamp is correct for every OTHER route that
+    # resolves a candidate, and the raw delete is correct because the cascade
+    # reaches tables the ORM has no mapping for. Expunging is the narrow fix,
+    # and it is honest about the ordering: after this line the object is a
+    # plain value holding an id and an address, which is all the rest of this
+    # handler needs.
+    session.expunge(candidate)
+
     receipt = await erasure.cascade_erasure(
         session,
         candidate_id,
