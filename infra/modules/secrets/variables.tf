@@ -183,10 +183,6 @@ variable "service_secrets" {
     "migrate" = [
       "DATABASE_URL",
     ]
-    "webhook" = [
-      "DATABASE_URL",
-      "RAZORPAY_WEBHOOK_SECRET",
-    ]
     "analysis" = [
       "HUGGINGFACE_TOKEN",
     ]

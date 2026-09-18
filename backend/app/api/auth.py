@@ -150,7 +150,22 @@ async def _finalize_single(
     #
     # So the refusal is not a dead end: an account whose Firebase identity
     # genuinely changed is recovered through that route.
-    if user.firebase_uid and user.firebase_uid != identity.uid:
+    # THE CONDITION IS "UNVERIFIED", NOT "DIFFERENT", AND THE DISTINCTION IS
+    # THE WHOLE FIX. A first draft refused every rebind, which is wrong twice:
+    # a Google identity always carries a verified email, and control of the
+    # address is exactly the proof the email match rests on, so refusing it
+    # buys nothing; and the platform OWNER is resolved from a configured email
+    # with no administrator above them, so a blanket refusal would lock them
+    # out permanently the first time their Firebase uid changed, with no
+    # recovery path at all.
+    #
+    # An UNVERIFIED password identity proves nothing about the address, and
+    # that is the case this exists to refuse.
+    if (
+        user.firebase_uid
+        and user.firebase_uid != identity.uid
+        and not identity.email_verified
+    ):
         await record_auth_event(
             session, action=AUTH_LOGIN_REFUSED, actor_user_id=user.id,
             tenant_id=user.tenant_id,

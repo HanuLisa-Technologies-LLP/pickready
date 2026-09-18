@@ -349,7 +349,13 @@ def test_the_webhook_path_is_the_only_holder_of_the_webhook_secret() -> None:
     """It verifies `X-Razorpay-Signature` and nothing else does."""
     services = _service_secrets()
     holders = [s for s, names in services.items() if "RAZORPAY_WEBHOOK_SECRET" in names]
-    assert holders == ["webhook"], f"the webhook secret is held by {holders}"
+    # `api`, NOT `webhook`. This asserted `["webhook"]` and was green while the
+    # secret was mounted on NOTHING: no environment has ever defined a service
+    # called `webhook`, and `POST /api/v1/billing/webhook/razorpay` is served by
+    # the api service from `api/billing.py`. The handler then treated the absent
+    # secret as "development" and processed unsigned events, so credit issuance
+    # was an anonymous POST on the live site. The phantom grant is deleted.
+    assert holders == ["api"], f"the webhook secret is held by {holders}"
 
 
 def test_the_secret_policy_enumerates_arns_rather_than_a_prefix() -> None:
@@ -470,6 +476,14 @@ _AUTH_DEPENDENCIES = frozenset({
 #: is a signed single-use token in the URL rather than a session. Adding to this
 #: list is adding to the product's unauthenticated surface.
 _PUBLIC_BY_DESIGN: dict[str, str] = {
+    "/health/live": (
+        "the ALB target group's liveness probe. Unauthenticated by necessity: a "
+        "load balancer cannot hold a credential, and the check runs before any "
+        "session exists. It returns a static status word, touches no dependency "
+        "and so discloses nothing. The DEEP probe is /health, which the listener "
+        "rules deliberately do NOT route to the API, because whether the "
+        "database and cache are up is not a fact this product owes the internet."
+    ),
     "/health": (
         "the load balancer's health check. It returns a status word and no data."
     ),
