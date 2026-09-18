@@ -170,6 +170,20 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "rather than inferred from silence."
         ),
     ),
+    ScheduledTask(
+        rule="readypick-sweep-bgv-reminders",
+        task="pickready.sweep_bgv_reminders",
+        interval_minutes=1440,
+        why=(
+            "Email 3 of the vivekium BGV flow: the day-3 chase for an "
+            "employer who has not answered a verification request. DAILY "
+            "because the window is measured in days; each row is chased "
+            "exactly once (reminder_sent_at is the latch), so running late "
+            "delays the letter rather than duplicating it. The candidate is "
+            "told with the HR address partially masked, because they are the "
+            "one who can nudge their own former employer."
+        ),
+    ),
 )
 
 RULE_NAMES: tuple[str, ...] = tuple(entry.rule for entry in SCHEDULE)

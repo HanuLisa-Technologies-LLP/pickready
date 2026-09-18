@@ -204,6 +204,39 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "Regards,\nReadyPick",
     ),
     "bgv_verification": ("{{subject}}", "{{body}}"),
+    # Vivekium feature 4, the three candidate-facing BGV letters. Email 2
+    # deliberately shares NO verification detail with the candidate (the
+    # brief's own rule); emails 3 and 4 carry the HR address PARTIALLY MASKED
+    # ({{masked_hr_email}} is produced by bgv_form.masked_email and no route
+    # ever passes the full address into a template context).
+    "bgv_completed": (
+        "Your employment verification is complete",
+        "Hello {{candidate_name}},\n\n"
+        "A previous employer has completed the employment verification we "
+        "requested as part of your application. There is nothing you need "
+        "to do.\n\n"
+        "Regards,\nReadyPick",
+    ),
+    "bgv_no_response": (
+        "Your previous employer has not responded yet",
+        "Hello {{candidate_name}},\n\n"
+        "We asked your previous employer's HR team ({{masked_hr_email}}) to "
+        "verify your employment three days ago and have not received a "
+        "response.\n\n"
+        "It may help to contact their HR team directly and ask them to "
+        "complete the verification link we sent. A verification that is not "
+        "completed can hold up an offer.\n\n"
+        "Regards,\nReadyPick",
+    ),
+    "bgv_bounced": (
+        "We could not reach your previous employer",
+        "Hello {{candidate_name}},\n\n"
+        "The verification email we sent to your previous employer's HR "
+        "address ({{masked_hr_email}}) could not be delivered.\n\n"
+        "Please sign in, open your employment history and correct the HR "
+        "email address so we can send the request again.\n\n"
+        "Regards,\nReadyPick",
+    ),
     "client_invite": (
         "Your {{tenant_name}} workspace on ReadyPick is ready",
         "Hello,\n\n"

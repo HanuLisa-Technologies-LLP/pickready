@@ -31,7 +31,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
@@ -153,3 +153,21 @@ class BGVVerification(Base, UUIDPKMixin, CreatedAtMixin):
     #: for whoever reads the candidate next.
     decision_note: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── The employer checkbox form (migration 0102, vivekium feature 4) ─────
+    # The token is the single-use credential in the employer's mailbox;
+    # expiry is DERIVED from `form_token_issued_at` by `bgv_form.expires_at`.
+    # `form_submitted_at` is the single-use latch, and `form_answers_json`
+    # holds exactly what the employer ticked. `reminder_sent_at` stamps the
+    # day-3 chase so it goes out once.
+    form_token: Mapped[str | None] = mapped_column(String(64), unique=True)
+    form_token_issued_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    form_submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    form_answers_json: Mapped[dict | None] = mapped_column(JSONB)
+    reminder_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )

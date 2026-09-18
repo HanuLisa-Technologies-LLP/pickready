@@ -998,6 +998,13 @@ module "scheduler" {
       task            = "pickready.sweep_consent_lifecycle"
       rate_expression = "rate(1440 minutes)"
     }
+    # Email 3 of the vivekium BGV flow (feature 4): the day-3 chase for an
+    # employer who has not answered. Daily; reminder_sent_at is the
+    # once-only latch, so running late delays the letter, never duplicates.
+    "readypick-sweep-bgv-reminders" = {
+      task            = "pickready.sweep_bgv_reminders"
+      rate_expression = "rate(1440 minutes)"
+    }
     # RPN-AI-UP-001 W2.2. The Terraform half of the entry in
     # app/workers/schedule.py. tests/test_schedule_parity.py fails on drift,
     # because an entry in Python with no rule here is the SILENT half: a sweep

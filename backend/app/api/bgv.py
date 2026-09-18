@@ -23,6 +23,7 @@ the route never offers it.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -34,9 +35,11 @@ from app.api.deps import (
     CurrentUser,
     get_candidate_db,
     get_current_user,
+    get_public_db,
     get_tenant_db,
     require_capability,
 )
+from app.core.config import get_settings
 from app.models.bgv_verification import (
     VERIFICATION_NOT_STARTED,
     VERIFICATION_NOT_VERIFIED,
@@ -55,7 +58,7 @@ from app.schemas.bgv_workflow import (
     SendIn,
     VerificationOut,
 )
-from app.services import bgv_agent, bgv_workflow, conversations
+from app.services import bgv_agent, bgv_form, bgv_workflow, conversations
 from app.services import capabilities as caps
 from app.services.audit import audit
 from app.workers.dispatch import dispatch
@@ -493,7 +496,8 @@ async def _verification_or_404(
             await session.execute(
                 text(
                     "SELECT v.id, v.tenant_id, v.status, v.conversation_id, "
-                    " v.candidate_id, v.first_sent_at, e.employer_name, "
+                    " v.candidate_id, v.first_sent_at, v.form_submitted_at, "
+                    " e.employer_name, "
                     " e.designation, e.started_on, e.ended_on, e.hr_name, "
                     " e.hr_email, c.full_name "
                     "FROM bgv_verifications v "
@@ -637,6 +641,23 @@ async def send(
         raise HTTPException(status_code=409, detail="This verification has no thread")
 
     now = datetime.now(timezone.utc)
+    # The employer checkbox form link (vivekium feature 4). A FRESH token on
+    # every send while unanswered: a re-send after the 3-day expiry has to
+    # carry a working link, and replacing the token retires the one already
+    # sitting in the mailbox rather than leaving two live credentials. Once
+    # the form is submitted the token is never reissued.
+    form_url = None
+    if row.get("form_submitted_at") is None:
+        token = bgv_form.mint_token()
+        await session.execute(
+            text(
+                "UPDATE bgv_verifications SET form_token = :tok, "
+                " form_token_issued_at = :at WHERE id = :vid"
+            ),
+            {"tok": token, "at": now, "vid": str(verification_id)},
+        )
+        frontend = get_settings().frontend_url.rstrip("/")
+        form_url = f"{frontend}/verify-employment/{token}"
     message = await conversations.post_message(
         session,
         conversation_id=uuid.UUID(str(row["conversation_id"])),
@@ -661,13 +682,25 @@ async def send(
         conversation_id=uuid.UUID(str(row["conversation_id"])),
         tenant_id=user.tenant_id,
     )
+    # The form link travels UNDER the recruiter's edited text, added
+    # server-side so no draft can drop it and no prompt can rewrite it. The
+    # sentence states the brief's contract: three days, single use.
+    outbound_body = body.body
+    if form_url:
+        outbound_body = (
+            f"{body.body}\n\n"
+            "To complete this verification in under two minutes, use the "
+            f"secure form below. The link is unique to this request, works "
+            f"once, and expires in "
+            f"{get_settings().verification_link_ttl_days} days:\n{form_url}"
+        )
     dispatch(
         "pickready.send_email",
         args=[
             str(user.tenant_id),
             row["hr_email"],
             "bgv_verification",
-            {"subject": body.subject, "body": body.body},
+            {"subject": body.subject, "body": outbound_body},
             None,
             conversations.reply_address(conversation["thread_token"]),
         ],
@@ -764,3 +797,137 @@ async def decide(
             metadata={"employer_count": result.employer_count},
         )
     return result
+
+
+# ── The employer checkbox form, public by token (vivekium feature 4) ─────────
+#
+# NO AUTHENTICATION: the token IS the credential, unguessable, unique to one
+# employer-candidate verification, single-use and 3-day expired. This is the
+# same trust model as the apply page, reached through `get_public_db`. The
+# form serves and accepts ONLY the seven fixed items; nothing free-text
+# crosses this boundary in either direction.
+
+
+async def _verification_by_form_token(session: AsyncSession, token: str) -> dict:
+    row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT v.id, v.tenant_id, v.candidate_id, v.status, "
+                    " v.form_token_issued_at, v.form_submitted_at, "
+                    " e.employer_name, e.hr_email, c.full_name, c.email "
+                    "FROM bgv_verifications v "
+                    "JOIN candidate_employments e "
+                    "  ON e.id = v.candidate_employment_id "
+                    "JOIN candidates c ON c.id = v.candidate_id "
+                    "WHERE v.form_token = :tok"
+                ),
+                {"tok": token},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="This link is not valid.")
+    if row["form_submitted_at"] is not None:
+        # A DIFFERENT answer from expiry, deliberately: the person clicking a
+        # used link most likely already answered, and telling them the link
+        # "expired" would send them chasing a new one for work that is done.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This verification has already been completed. Thank you; "
+                "nothing further is needed."
+            ),
+        )
+    issued = row["form_token_issued_at"]
+    if issued is None or bgv_form.is_expired(issued):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=(
+                "This verification link has expired. Links work for "
+                f"{get_settings().verification_link_ttl_days} days from "
+                "sending. The recruitment team can send a fresh one."
+            ),
+        )
+    return dict(row)
+
+
+@router.get("/form/{token}")
+async def get_employer_checkbox_form(
+    token: str, session: AsyncSession = Depends(get_public_db)
+) -> dict:
+    """What the employer's HR sees: who this is about, and the seven items."""
+    row = await _verification_by_form_token(session, token)
+    return {
+        "candidate_name": row["full_name"],
+        "employer_name": row["employer_name"],
+        "items": bgv_form.items_payload(),
+        "expires_at": bgv_form.expires_at(row["form_token_issued_at"]),
+    }
+
+
+@router.post("/form/{token}")
+async def submit_employer_checkbox_form(
+    token: str,
+    body: dict,
+    session: AsyncSession = Depends(get_public_db),
+) -> dict:
+    """The employer's submission: ticks in, status out, once.
+
+    C4's boundary, held exactly: an HR person ticking the boxes IS the human
+    decision, so THIS route may set the status. The model-parsed free-text
+    reply path still never does, and `decided_by` stays untouched here
+    because it names a platform user and the form's provenance is its own
+    stored answers.
+    """
+    row = await _verification_by_form_token(session, token)
+    answers = bgv_form.clean_answers(body.get("answers"))
+    missing = [key for key in bgv_form.ITEM_KEYS if key not in answers]
+    if missing:
+        # Every item must be ANSWERED (true or false), or an unticked box is
+        # indistinguishable from an unseen one.
+        raise HTTPException(
+            status_code=422,
+            detail="Every item must be answered before submitting.",
+        )
+    now = datetime.now(timezone.utc)
+    new_status = bgv_form.status_from_answers(answers)
+    await session.execute(
+        text(
+            "UPDATE bgv_verifications SET status = :st, "
+            " form_submitted_at = :at, form_answers_json = CAST(:ans AS jsonb), "
+            " responded_at = COALESCE(responded_at, :at), updated_at = :at "
+            "WHERE id = :vid"
+        ),
+        {
+            "st": new_status,
+            "at": now,
+            "ans": json.dumps(answers),
+            "vid": str(row["id"]),
+        },
+    )
+    await audit(
+        session,
+        tenant_id=uuid.UUID(str(row["tenant_id"])),
+        actor_user_id=None,
+        action=bgv_workflow.AUDIT_FORM_SUBMITTED,
+        target_type="bgv_verification",
+        target_id=uuid.UUID(str(row["id"])),
+        metadata={"status": new_status, "employer": row["employer_name"]},
+    )
+    # Email 2: the candidate is told it is DONE, with no verification detail
+    # shared, per the brief. Sent only on a fully confirmed submission; a
+    # partial confirmation goes to the recruiter's queue, not the candidate.
+    if new_status == VERIFICATION_VERIFIED and row["email"]:
+        dispatch(
+            "pickready.send_email",
+            args=[
+                str(row["tenant_id"]),
+                row["email"],
+                "bgv_completed",
+                {"candidate_name": row["full_name"] or "there"},
+            ],
+        )
+    return {"status": "recorded"}

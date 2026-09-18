@@ -1760,6 +1760,84 @@ def sweep_consent_lifecycle():
     _run(_task())
 
 
+@task(
+    name="pickready.sweep_bgv_reminders",
+    route=Route.LAMBDA,
+)
+def sweep_bgv_reminders():
+    """Email 3 of the vivekium BGV flow: the day-3 non-response chase.
+
+    Finds every verification whose request went out at least
+    `verification_link_ttl_days` ago with no response and no chase yet, tells
+    the CANDIDATE (with the HR address partially masked), and stamps
+    `reminder_sent_at` so the letter goes exactly once. Committing per row,
+    the consent sweep's rule: the stamp and its letter land together or
+    neither does.
+
+    The candidate is told rather than the recruiter because the candidate is
+    the one who can act: it is their former employer, and the brief's own
+    template asks them to contact that HR team directly.
+    """
+    from app.core.config import get_settings
+    from app.services import bgv_form
+
+    async def _task():
+        ttl_days = get_settings().verification_link_ttl_days
+        chased = 0
+        async with _worker_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT v.id, v.tenant_id, c.full_name, "
+                            " c.email AS candidate_email, e.hr_email "
+                            "FROM bgv_verifications v "
+                            "JOIN candidate_employments e "
+                            "  ON e.id = v.candidate_employment_id "
+                            "JOIN candidates c ON c.id = v.candidate_id "
+                            "WHERE v.responded_at IS NULL "
+                            "  AND v.reminder_sent_at IS NULL "
+                            "  AND v.first_sent_at IS NOT NULL "
+                            "  AND v.first_sent_at <= now() - make_interval("
+                            "      days => :days)"
+                        ),
+                        {"days": ttl_days},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            for row in rows:
+                if not row["candidate_email"]:
+                    continue
+                dispatch(
+                    "pickready.send_email",
+                    args=[
+                        str(row["tenant_id"]),
+                        row["candidate_email"],
+                        "bgv_no_response",
+                        {
+                            "candidate_name": row["full_name"] or "there",
+                            "masked_hr_email": bgv_form.masked_email(
+                                row["hr_email"]
+                            ),
+                        },
+                    ],
+                )
+                await session.execute(
+                    text(
+                        "UPDATE bgv_verifications SET reminder_sent_at = now() "
+                        "WHERE id = :vid"
+                    ),
+                    {"vid": str(row["id"])},
+                )
+                await session.commit()
+                chased += 1
+        logger.info("bgv.reminder_sweep chased=%d", chased)
+
+    _run(_task())
+
+
 # ── Erasure and learning revocation (RPN-AI-UP-001 W9.5, W3.6) ───────────────
 
 @task(

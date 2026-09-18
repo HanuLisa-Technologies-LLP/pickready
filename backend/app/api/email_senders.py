@@ -39,6 +39,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_public_db, get_tenant_db, require_capability
@@ -546,6 +547,54 @@ def _failure_reason(kind: str, message: dict) -> str | None:
     return None
 
 
+async def _alert_candidate_of_bgv_bounce(session: AsyncSession, row) -> None:
+    """Email 4 of the brief: the BGV request could not be delivered.
+
+    Correlates the bounced EmailLog row back to the verification through the
+    address it was sent to, scoped to the row's own tenant, and only while
+    the verification is still unanswered. The candidate is asked to correct
+    the HR address; the address itself travels PARTIALLY MASKED
+    (`bgv_form.masked_email`), never in full.
+    """
+    from app.services import bgv_form
+    from app.workers.dispatch import dispatch
+
+    match = (
+        (
+            await session.execute(
+                sa_text(
+                    "SELECT c.full_name, c.email AS candidate_email, "
+                    " e.hr_email "
+                    "FROM bgv_verifications v "
+                    "JOIN candidate_employments e "
+                    "  ON e.id = v.candidate_employment_id "
+                    "JOIN candidates c ON c.id = v.candidate_id "
+                    "WHERE v.tenant_id = :tid AND e.hr_email = :addr "
+                    "  AND v.responded_at IS NULL "
+                    "ORDER BY v.first_sent_at DESC NULLS LAST LIMIT 1"
+                ),
+                {"tid": str(row.tenant_id), "addr": row.recipient_email},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if match is None or not match["candidate_email"]:
+        return
+    dispatch(
+        "pickready.send_email",
+        args=[
+            str(row.tenant_id),
+            match["candidate_email"],
+            "bgv_bounced",
+            {
+                "candidate_name": match["full_name"] or "there",
+                "masked_hr_email": bgv_form.masked_email(match["hr_email"]),
+            },
+        ],
+    )
+
+
 @router.post(
     "/events/ses",
     status_code=status.HTTP_200_OK,
@@ -627,6 +676,13 @@ async def ses_event_webhook(
         row.delivered_at = row.delivered_at or now
         outcome = STATUS_DELIVERED
     elif kind == "bounce":
+        # Vivekium feature 4, bounce detection: a BGV inquiry that bounced is
+        # an address the candidate must fix NOW, not something to wait out
+        # for three days. Alerted on the FIRST bounce record only (the
+        # `bounced_at is None` gate), because SNS delivers at least once and
+        # a candidate does not need the same alert per redelivery.
+        if row.bounced_at is None and row.email_type == "bgv_verification":
+            await _alert_candidate_of_bgv_bounce(session, row)
         row.bounced_at = row.bounced_at or now
         outcome = STATUS_BOUNCED
     elif kind == "complaint":
