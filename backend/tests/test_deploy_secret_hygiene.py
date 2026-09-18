@@ -507,6 +507,15 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
     "/api/v2/companies/invites/{token}": "the same handler under the v2 prefix.",
     "/api/v1/portal/outreach/{token}": "an outreach token names one candidate link.",
     "/api/v1/verification/form/{token}": "an employer verification token names one request.",
+    "/api/v1/bgv/form/{token}": (
+        "the employer HR checkbox form (vivekium feature 4). The token is "
+        "minted per verification, single-use, and expires in "
+        "verification_link_ttl_days; the handler resolves only the row the "
+        "token names, serves the seven fixed items and accepts only booleans "
+        "over them. An HR contact at another company cannot hold a session "
+        "here, which is the same reason the retiring "
+        "/verification/form/{token} was public."
+    ),
     "/api/v2/assessments/invitations/{token}": (
         "an assessment invitation token names one job_candidate_link."
     ),
