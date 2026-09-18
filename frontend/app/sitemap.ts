@@ -1,5 +1,7 @@
 import type { MetadataRoute } from "next";
 
+import { SITE_URL } from "@/lib/site";
+
 /**
  * The sitemap lists ONLY the genuinely public marketing and legal pages.
  *
@@ -17,7 +19,6 @@ import type { MetadataRoute } from "next";
  * URLs for as long as the deployment stands. Crawlers reach them through the
  * employer pages, which are generated live.
  */
-const SITE_URL = "https://readypick.ai";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   // One timestamp for the whole build. These pages are edited in the source

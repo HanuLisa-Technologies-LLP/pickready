@@ -17,6 +17,7 @@ import { apiPost } from "@/lib/api";
 import type { RankedCandidate } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
+import { ConfirmButton } from "@/components/confirm-button";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
@@ -85,15 +86,21 @@ export function CandidateDecisionActions({
         >
           <PauseCircle className="h-3.5 w-3.5" /> Hold
         </Button>
-        <Button
+        {/* Hold already opened a dialog because it needs a remark, so the
+            LESS final of the two acts was the guarded one and ending a
+            candidacy was a single click on the button beside it. */}
+        <ConfirmButton
           variant="outline"
           size="sm"
           className="justify-start gap-1"
           disabled={busy || Boolean(row.archived_at)}
-          onClick={() => void decide("rejected")}
+          title={`Reject ${row.full_name}?`}
+          description="This moves them out of the pipeline for this role and they are told. It is not a stage you can step back from."
+          confirmLabel="Reject"
+          onConfirm={() => void decide("rejected")}
         >
-          <ThumbsDown className="h-3.5 w-3.5" /> Reject
-        </Button>
+          <ThumbsDown className="h-3.5 w-3.5" aria-hidden="true" /> Reject
+        </ConfirmButton>
       </div>
 
       <Dialog open={holdOpen} onOpenChange={setHoldOpen}>

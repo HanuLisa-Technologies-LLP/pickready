@@ -15,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
 import { Logo } from "@/components/brand";
+import { MAIN_CONTENT_ID, SkipToContent } from "@/components/page-primitives";
 import { WorkspaceContentBoundary } from "@/components/workspace-boundary";
 import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import { Button } from "@/components/ui/button";
@@ -232,6 +233,7 @@ export function AppShell({
 
   return (
     <div className="flex min-h-screen bg-canvas text-foreground">
+      <SkipToContent />
       <aside
         className={cn(
           "fixed inset-y-0 left-0 hidden shrink-0 flex-col border-r border-border bg-surface transition-[width] duration-150 md:flex",
@@ -348,7 +350,11 @@ export function AppShell({
           </Button>
         </header>
 
-        <main className="mx-auto w-full max-w-[1400px] flex-1 px-6 py-6 md:px-10 md:py-8">
+        <main
+          id={MAIN_CONTENT_ID}
+          tabIndex={-1}
+          className="mx-auto w-full max-w-[1400px] flex-1 px-6 py-6 outline-none md:px-10 md:py-8"
+        >
           <WorkspaceContentBoundary user={user}>
             {loading && !user ? <ShellSkeleton /> : children}
           </WorkspaceContentBoundary>

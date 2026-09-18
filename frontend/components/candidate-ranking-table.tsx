@@ -379,7 +379,7 @@ export function CandidateRankingTable({
       {/* Horizontal scroll on narrow screens (spec §10), the page body itself
           must never scroll sideways. */}
       <div className="overflow-x-auto rounded-lg border">
-        <Table className="min-w-[1020px]">
+        <Table label="Candidate ranking" className="min-w-[1020px]">
           <TableHeader>
             <TableRow>
               {selectable ? (

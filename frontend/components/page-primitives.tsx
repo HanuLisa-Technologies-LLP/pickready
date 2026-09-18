@@ -22,6 +22,39 @@ import { Skeleton } from "@/components/ui/skeleton";
  */
 
 /* -------------------------------------------------------------------------- */
+/*  SkipToContent                                                              */
+/* -------------------------------------------------------------------------- */
+
+/** The id every shell puts on its `<main>`, and the target of the skip link. */
+export const MAIN_CONTENT_ID = "main";
+
+/**
+ * The first focusable thing on the page: hidden until it takes focus, then a
+ * solid brand chip in the top left that jumps past the chrome.
+ *
+ * ONE IMPLEMENTATION, FOUR SHELLS. The public layout had this inline and the
+ * signed-in shell had nothing, which is the wrong way round: the marketing
+ * header is one row of links, while `AppShell` puts a whole navigation rail,
+ * a workspace switcher and a sign-out button in front of the content on every
+ * single route. A keyboard user tabbed through all of it to reach the page,
+ * again, on every navigation.
+ *
+ * `tabIndex={-1}` on the target is the other half and it is not optional:
+ * without it the browser scrolls to the anchor and leaves the focus ring
+ * behind on the skip link, so the next Tab goes back into the navigation.
+ */
+export function SkipToContent({ children = "Skip to content" }: { children?: React.ReactNode }) {
+  return (
+    <a
+      href={`#${MAIN_CONTENT_ID}`}
+      className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[60] focus:bg-brand-600 focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white"
+    >
+      {children}
+    </a>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Section                                                                    */
 /* -------------------------------------------------------------------------- */
 

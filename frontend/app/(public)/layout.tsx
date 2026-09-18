@@ -1,3 +1,5 @@
+import { SiteJsonLd } from "@/components/site-json-ld";
+
 import { SiteFooter } from "./site-footer";
 import { SiteHeader } from "./site-header";
 
@@ -22,6 +24,7 @@ export default function PublicLayout({
 }>) {
   return (
     <div className="flex min-h-screen flex-col overflow-x-clip bg-canvas text-ink">
+      <SiteJsonLd />
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[60] focus:bg-brand-600 focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white"

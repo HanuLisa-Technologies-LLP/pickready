@@ -2,12 +2,14 @@ import type { Metadata } from "next";
 
 import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
 import { Badge } from "@/components/ui/badge";
+import { publicPageMetadata } from "@/lib/site";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = publicPageMetadata({
+  path: "/insights",
   title: "Insights",
-  description: "Practical thinking on evidence-led candidate decisions, assessment and trust.",
-  alternates: { canonical: "/insights" },
-};
+  description:
+    "Practical thinking on evidence-led candidate decisions, assessment and trust.",
+});
 
 const ARTICLES = [
   ["Decision quality", "Why a shortlist needs evidence, not another score", "A score compresses uncertainty. A good decision profile names it, connects it to evidence and gives the interviewer a useful next question."],

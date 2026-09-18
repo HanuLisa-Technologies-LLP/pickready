@@ -52,7 +52,7 @@ export function CandidateCell({ row }: { row: DashboardRow }) {
     <div className="min-w-0">
       <p className="truncate text-[13.5px] font-bold leading-5">{row.full_name}</p>
       <span className="group inline-flex items-center gap-1">
-        <span className="select-all font-mono text-[11px] leading-4 text-foreground/80">
+        <span className="select-all font-mono text-[11px] leading-4">
           {row.system_id}
         </span>
         <button
@@ -69,7 +69,7 @@ export function CandidateCell({ row }: { row: DashboardRow }) {
           {copied ? "Candidate code copied" : ""}
         </span>
       </span>
-      <p className="truncate text-[11px] leading-4 text-foreground/80">
+      <p className="truncate text-[11px] leading-4">
         {row.job_title}
       </p>
     </div>

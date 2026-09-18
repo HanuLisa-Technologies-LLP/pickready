@@ -220,7 +220,7 @@ export function SupportProviderQueue() {
                       </span>
                       <span className="mt-2 flex flex-wrap items-center gap-2">
                         <SupportStatusBadge status={thread.status} staff />
-                        <span className="text-xs text-ink/70">
+                        <span className="text-xs">
                           {formatSupportTime(thread.last_message_at)}
                         </span>
                       </span>

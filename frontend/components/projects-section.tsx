@@ -15,6 +15,7 @@ import { apiDelete, apiGet, apiPost, apiUploadWithProgress } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
+import { ConfirmButton } from "@/components/confirm-button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -309,16 +310,19 @@ export function ProjectsSection() {
                       Retry analysis
                     </Button>
                   ) : null}
-                  <Button
+                  <ConfirmButton
                     type="button"
                     size="sm"
                     variant="ghost"
                     className="gap-1 text-destructive"
-                    onClick={() => void remove(project)}
+                    title={`Remove ${project.name}?`}
+                    description="The evidence drawn from this project is deleted and cannot be rebuilt: the files you submitted were removed once the analysis finished. You would have to submit the project again."
+                    confirmLabel="Remove"
+                    onConfirm={() => void remove(project)}
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                     Remove
-                  </Button>
+                  </ConfirmButton>
                 </div>
               </div>
             ))}

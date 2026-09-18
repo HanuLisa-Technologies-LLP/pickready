@@ -18,6 +18,7 @@ import { Download, Eye, FileText, Trash2, Upload } from "lucide-react";
 
 import type { ComplianceDocumentType, ComplianceSlot } from "@/lib/types";
 import { Button } from "@/components/ui/button";
+import { ConfirmButton } from "@/components/confirm-button";
 
 /** Matches services/document_storage.ALLOWED_DOCUMENT_EXTENSIONS. */
 const ACCEPT = ".pdf,.jpg,.jpeg,.png";
@@ -189,15 +190,17 @@ function ComplianceRow({
         ) : null}
 
         {document && onRemove ? (
-          <Button
+          <ConfirmButton
             variant="outline"
             size="sm"
-            
             disabled={busy}
-            onClick={() => void onRemove(slot.document_type)}
+            title={`Remove the ${slot.label}?`}
+            description="The uploaded file is deleted and the slot goes back to Not Available Yet. You would need the original document to put it back."
+            confirmLabel="Remove"
+            onConfirm={() => void onRemove(slot.document_type)}
           >
-            <Trash2 className="h-3.5 w-3.5" /> Remove
-          </Button>
+            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> Remove
+          </ConfirmButton>
         ) : null}
       </div>
     </li>

@@ -6,6 +6,7 @@ import { ChunkRecovery } from "@/components/chunk-recovery";
 import { AuthProvider } from "@/lib/auth-context";
 import { ThemeProvider } from "@/lib/theme-provider";
 import { ToastProvider } from "@/components/ui/toast";
+import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
 
 /**
  * Three faces, each with one job (DESIGN.md section 3).
@@ -58,14 +59,13 @@ export const metadata: Metadata = {
    * readypick.ai (RBAC section 15); picready.com and pickready.app are not the
    * product's address and both have appeared in this tree before.
    */
-  metadataBase: new URL("https://readypick.ai"),
+  metadataBase: new URL(SITE_URL),
   title: {
     default: "ReadyPick, know every candidate before you meet them",
     template: "%s | ReadyPick",
   },
-  description:
-    "ReadyPick ranks every applicant against the role, runs a structured AI assessment, and hands your team one readable PPI Assessment Report per candidate.",
-  applicationName: "ReadyPick",
+  description: SITE_DESCRIPTION,
+  applicationName: SITE_NAME,
   icons: {
     icon: [
       { url: "/favicon.ico", sizes: "32x32" },
@@ -75,7 +75,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     type: "website",
-    siteName: "ReadyPick",
+    siteName: SITE_NAME,
     url: "/",
     title: "ReadyPick, know every candidate before you meet them",
     description:

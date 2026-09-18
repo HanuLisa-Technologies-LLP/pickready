@@ -312,16 +312,30 @@ export default function CreateJobPage() {
     }
   };
 
+  /**
+   * SCROLLING IS NOT THE SAME AS MOVING. Both of these refusals used to
+   * `scrollIntoView` and stop, which repairs the sighted mouse user's
+   * experience and nobody else's: the keyboard caret stayed on the Publish
+   * button at the bottom of a long form, and a screen reader was told
+   * nothing at all. Focus is what carries the error message, because the
+   * field now points at it through `aria-describedby`.
+   */
+  const focusInvalid = (id: string) => {
+    const el = document.getElementById(id);
+    el?.scrollIntoView({ block: "center" });
+    el?.focus();
+  };
+
   const publish = async () => {
     // Radix Select is not a native control, so `required` cannot gate it.
     if (!form.grade) {
       setGradeError("Select a grade. It decides which assessment the candidate receives.");
-      document.getElementById("grade")?.scrollIntoView({ block: "center" });
+      focusInvalid("grade");
       return;
     }
     setGradeError(null);
     if (!validateExperience()) {
-      document.getElementById("experience_min_years")?.scrollIntoView({ block: "center" });
+      focusInvalid("experience_min_years");
       return;
     }
     setBusy(true);
@@ -701,10 +715,26 @@ export default function CreateJobPage() {
 
           {publishedLink ? (
             <div className="flex flex-col gap-2 sm:flex-row">
-              <Input readOnly value={publishedLink} className="font-mono text-sm" />
+              <Input
+                id="published-link"
+                aria-label="Application link"
+                readOnly
+                value={publishedLink}
+                className="font-mono text-sm"
+              />
               <Button type="button" onClick={() => void copyLink()} className="gap-2">
-                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                {copied ? (
+                  <Check className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <Copy className="h-4 w-4" aria-hidden="true" />
+                )}
                 {copied ? "Copied" : "Copy link"}
+                {/* The label swap is the confirmation for anyone watching it.
+                    A reader is not watching it, and the button keeps focus
+                    after the click, so the change has to be announced. */}
+                <span role="status" className="sr-only">
+                  {copied ? "Link copied to clipboard" : ""}
+                </span>
               </Button>
             </div>
           ) : (

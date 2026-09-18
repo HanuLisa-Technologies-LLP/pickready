@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { SiteJsonLd } from "@/components/site-json-ld";
+import { SITE_NAME } from "@/lib/site";
+
 import { LandingPage } from "./(public)/landing-page";
 
 /**
@@ -33,27 +36,77 @@ import { LandingPage } from "./(public)/landing-page";
  */
 const LANDING_LIVE = process.env.NEXT_PUBLIC_LANDING_LIVE === "true";
 
+/**
+ * THE ROOT SEGMENT DOES NOT GET ITS OWN TITLE TEMPLATE, which is why every
+ * title below spells out the product name. `title.template` in `app/layout.tsx`
+ * applies to CHILD segments; `app/page.tsx` is the same segment as that layout,
+ * so it resolves against `title.default` instead and a bare "Site Under
+ * Construction" would ship with no product name at all.
+ *
+ * `openGraph` and `twitter` are stated rather than inherited for the reason
+ * `lib/site.ts` records: Next replaces the parent's Open Graph object rather
+ * than merging into it, so a page that leaves them out serves the root
+ * layout's card, and the root layout's card names the landing page. Here that
+ * happens to be the same page, but the holding page's card was advertising a
+ * product tour that is not what `/` is currently serving.
+ */
+const HOLDING_TITLE = `Site Under Construction | ${SITE_NAME}`;
+const HOLDING_DESCRIPTION = "ReadyPick is preparing something new. Check back soon.";
+const LANDING_TITLE = "ReadyPick, know every candidate before you meet them";
+const LANDING_DESCRIPTION =
+  "ReadyPick reads every applicant against the role, runs a structured assessment built from the job itself, and returns one readable report per candidate.";
+
 export const metadata: Metadata = LANDING_LIVE
   ? {
-      // This route sits directly under the root layout (no (public) group
-      // layout in between), so the root's "%s | ReadyPick" title template is
-      // spelled out here rather than relied on.
-      title: "ReadyPick, know every candidate before you meet them",
-      description:
-        "ReadyPick reads every applicant against the role, runs a structured assessment built from the job itself, and returns one readable report per candidate.",
+      title: LANDING_TITLE,
+      description: LANDING_DESCRIPTION,
       alternates: { canonical: "/" },
+      openGraph: {
+        type: "website",
+        siteName: SITE_NAME,
+        url: "/",
+        title: LANDING_TITLE,
+        description: LANDING_DESCRIPTION,
+      },
+      twitter: {
+        card: "summary_large_image",
+        title: LANDING_TITLE,
+        description: LANDING_DESCRIPTION,
+      },
     }
   : {
-      title: "Site Under Construction | ReadyPick",
-      description: "ReadyPick is preparing something new. Check back soon.",
+      title: HOLDING_TITLE,
+      description: HOLDING_DESCRIPTION,
       // Relative, resolved against `metadataBase` in the root layout. Stating
       // it is what stops a trailing slash, a query string or a preview host
       // from becoming a second URL for the same page.
       alternates: { canonical: "/" },
+      openGraph: {
+        type: "website",
+        siteName: SITE_NAME,
+        url: "/",
+        title: HOLDING_TITLE,
+        description: HOLDING_DESCRIPTION,
+      },
+      twitter: {
+        card: "summary_large_image",
+        title: HOLDING_TITLE,
+        description: HOLDING_DESCRIPTION,
+      },
     };
 
 export default function RootPage() {
-  return LANDING_LIVE ? <LandingPage /> : <SiteUnderConstruction />;
+  // Site-level structured data belongs on the home page whichever of the
+  // two it is serving: the holding page is still readypick.ai, and it is the
+  // page a crawler reaches first. `app/(public)/layout.tsx` carries it for
+  // every other public page, and this route does not use that layout, so
+  // nothing renders it twice.
+  return (
+    <>
+      <SiteJsonLd />
+      {LANDING_LIVE ? <LandingPage /> : <SiteUnderConstruction />}
+    </>
+  );
 }
 
 /**

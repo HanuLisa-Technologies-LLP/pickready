@@ -400,7 +400,7 @@ export function DashboardSummaryView() {
             </div>
 
             <div className="hidden overflow-x-auto md:block">
-              <Table>
+              <Table label="Per job volumes">
                 <TableHeader>
                   <TableRow>
                     {COLUMNS.map((col) => (

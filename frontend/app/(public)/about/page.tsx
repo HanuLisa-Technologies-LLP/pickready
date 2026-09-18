@@ -2,13 +2,14 @@ import type { Metadata } from "next";
 import { BrainCircuit, Handshake, History, UsersRound } from "lucide-react";
 
 import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
+import { publicPageMetadata } from "@/lib/site";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = publicPageMetadata({
+  path: "/about",
   title: "About",
   description:
     "The experience, philosophy and people behind ReadyPick's evidence-led candidate profiles.",
-  alternates: { canonical: "/about" },
-};
+});
 
 const PRINCIPLES = [
   {

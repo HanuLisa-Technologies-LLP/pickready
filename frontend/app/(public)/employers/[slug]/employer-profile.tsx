@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { EmptyState, ErrorState, LoadingCards } from "@/components/page-primitives";
 import { JsonLd, compact } from "@/components/json-ld";
+import { SITE_URL } from "@/lib/site";
 import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
 
 /** Mirrors `schemas.employer_pages.EmployerOpenRoleOut`. */
@@ -62,6 +63,14 @@ interface EmployerPageData {
  * no `industry` property and an undefined key is an unread key. `knowsAbout`
  * is the defined field closest in meaning, and it is honest about being a
  * subject rather than a classification code.
+ *
+ * IT CARRIES AN `@id`, AND THAT IS NOT DECORATION. This page sits inside the
+ * (public) group, so `app/(public)/layout.tsx` also emits ReadyPick's own
+ * Organization node on it. Two Organization nodes on one page, one the
+ * platform and one the hiring company, is an ambiguity a consumer resolves by
+ * guessing unless each one is named. ReadyPick's node is
+ * `<site>/#organization` and is what the WebSite node points at as its
+ * publisher; the employer's is its own page, so they cannot be merged.
  */
 function organizationSchema(
   data: EmployerPageData
@@ -70,6 +79,7 @@ function organizationSchema(
   return compact({
     "@context": "https://schema.org",
     "@type": "Organization",
+    "@id": `${SITE_URL}/employers/${data.slug}#organization`,
     name: data.name,
     url: data.website_domain ? `https://${data.website_domain}` : undefined,
     description: data.about_company ?? undefined,

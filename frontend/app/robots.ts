@@ -1,8 +1,12 @@
 import type { MetadataRoute } from "next";
 
+import { SITE_URL } from "@/lib/site";
+
 /**
  * robots.txt, generated rather than kept as a static file so the canonical
  * host is stated once in code and cannot drift from the sitemap beside it.
+ * That host is `SITE_URL` in `lib/site.ts`, which this file, the sitemap, the
+ * root layout's `metadataBase` and the site-level structured data all read.
  *
  * The canonical domain is readypick.ai (RBAC section 15). Neither picready.com
  * nor pickready.app is the product's address, and both have appeared in this
@@ -21,7 +25,6 @@ import type { MetadataRoute } from "next";
  * invitation, an employment verification, an outreach link), which is exactly
  * what must never be crawled.
  */
-const SITE_URL = "https://readypick.ai";
 
 export default function robots(): MetadataRoute.Robots {
   return {

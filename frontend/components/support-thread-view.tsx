@@ -99,9 +99,7 @@ export function SupportMessageBubble({
     >
       <div className="flex items-baseline gap-2 text-xs">
         <span className="font-medium text-ink">{who}</span>
-        <span className="text-ink/70">
-          {formatSupportTime(message.created_at)}
-        </span>
+        <span>{formatSupportTime(message.created_at)}</span>
       </div>
       <div
         className={cn(

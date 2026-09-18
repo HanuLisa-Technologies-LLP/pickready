@@ -182,6 +182,11 @@ export const config = {
     // API call with a 307 to /login, so the browser would receive an HTML
     // redirect where it expected JSON and every 401-triggered silent refresh
     // would break instead of refreshing.
-    "/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|opengraph-image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    //
+    // `llms.txt` is excluded for exactly the same reason and was added with
+    // the same care: it is a generated route, so it sits inside the matcher,
+    // and a file whose only reader is an unauthenticated agent must never be
+    // answered with a redirect to a sign-in form.
+    "/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|llms.txt|opengraph-image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

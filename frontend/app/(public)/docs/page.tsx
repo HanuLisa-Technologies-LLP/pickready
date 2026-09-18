@@ -40,13 +40,14 @@ import {
 } from "lucide-react";
 
 import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
+import { publicPageMetadata } from "@/lib/site";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = publicPageMetadata({
+  path: "/docs",
   title: "Docs",
   description:
     "Implementation-aligned product and technical documentation for ReadyPick.",
-  alternates: { canonical: "/docs" },
-};
+});
 
 const CONTENTS = [
   { href: "#product", label: "Product overview" },

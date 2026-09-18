@@ -41,7 +41,12 @@ export function AuthShell({
         className="pointer-events-none absolute -top-28 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-brand-500/20 blur-3xl"
       />
 
-      <div className={cn("relative z-10 w-full max-w-md", className)}>
+      {/* A LANDMARK, BECAUSE THIS PAGE IS ALL CONTENT AND HAD NONE. Sign in,
+          register and join rendered the `h1` and the whole form inside plain
+          divs, so a screen reader's landmark list was empty and "jump to main"
+          had nowhere to go. There is no navigation to skip past here, so the
+          landmark is the whole fix; no skip link is added. */}
+      <main className={cn("relative z-10 w-full max-w-md", className)}>
         {/* Master directive §0 removed the Three.js logomark from every
             surface. The flat lockup is the brand mark, full stop. */}
         <div className="mb-7 flex justify-center">
@@ -65,7 +70,7 @@ export function AuthShell({
         {footer ? (
           <div className="mt-6 text-center text-sm leading-6">{footer}</div>
         ) : null}
-      </div>
+      </main>
     </div>
   );
 }

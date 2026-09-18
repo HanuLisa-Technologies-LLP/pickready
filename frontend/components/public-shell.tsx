@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 import { Logo } from "@/components/brand";
+import { MAIN_CONTENT_ID } from "@/components/page-primitives";
 
 /**
  * The frame for pages a person reaches without an account: the public job
@@ -36,8 +37,10 @@ export function PublicShell({
       </header>
 
       <main
+        id={MAIN_CONTENT_ID}
+        tabIndex={-1}
         className={cn(
-          "mx-auto w-full flex-1 px-6 py-8 sm:py-12",
+          "mx-auto w-full flex-1 px-6 py-8 outline-none sm:py-12",
           width === "wide" ? "max-w-5xl" : "max-w-3xl",
           className
         )}

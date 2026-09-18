@@ -30,6 +30,7 @@
  * the outside world as "these are our public URLs".
  */
 import { describe, expect, it } from "vitest";
+import { llmsTxt } from "../app/llms.txt/route";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -106,6 +107,69 @@ describe("the public routes the product advertises", () => {
         isAdmitted(portal, prefixes),
         `${portal} must NOT be reachable without a session`,
       ).toBe(false);
+    }
+  });
+});
+
+/**
+ * `llms.txt` is a SECOND published list of this site's public URLs, and a
+ * second list is how the first one starts lying. It is derived from the
+ * sitemap in code rather than typed out, and these assertions are what keep it
+ * derived: they fail if somebody replaces the derivation with a literal list
+ * and then adds a page to only one of the two.
+ */
+describe("llms.txt", () => {
+  const body = llmsTxt();
+
+  it("lists exactly the URLs the sitemap publishes", () => {
+    const listed = [...body.matchAll(/^- \[(\/[^\]]*)\]/gm)]
+      .map((m) => m[1])
+      .filter((path) => path !== "/robots.txt" && path !== "/sitemap.xml");
+    expect([...listed].sort()).toEqual([...sitemapRoutes()].sort());
+  });
+
+  it("describes every page it lists", () => {
+    // A bare link is allowed by the route handler on purpose, so that a
+    // forgotten sentence cannot drop a page off the list. This is where the
+    // forgotten sentence becomes visible instead.
+    const bare = [...body.matchAll(/^- \[(\/[^\]]*)\]\([^)]*\)$/gm)].map(
+      (m) => m[1],
+    );
+    expect(bare, `these llms.txt entries carry no description: ${bare.join(", ")}`).toEqual([]);
+  });
+
+  it("names nothing that sits behind a sign-in or a token", () => {
+    for (const secret of [
+      "/org",
+      "/portal",
+      "/admin",
+      "/bd",
+      "/assessments",
+      "/verify-employment",
+      "/api",
+      "/login",
+      "/register",
+      "/join",
+    ]) {
+      expect(body, `llms.txt must not name ${secret}`).not.toContain(
+        `(https://readypick.ai${secret}`,
+      );
+    }
+  });
+
+  it("is excluded from the middleware matcher, like robots.txt", () => {
+    // The generated text routes sit INSIDE the matcher's path space, so an
+    // omission here does not fail loudly: the file simply answers every
+    // crawler and every agent with a 307 to /login, which is what robots.txt
+    // and sitemap.xml did in production until it was found by probing the
+    // deployed site.
+    const source = readFileSync(resolve(here, "..", "proxy.ts"), "utf8");
+    const matcher = source.slice(source.indexOf("matcher: ["));
+    for (const generated of ["robots.txt", "sitemap.xml", "llms.txt", "opengraph-image"]) {
+      expect(
+        matcher.includes(`|${generated}|`) || matcher.includes(`?!${generated}|`),
+        `${generated} is a generated route and must be excluded from the proxy matcher`,
+      ).toBe(true);
     }
   });
 });
