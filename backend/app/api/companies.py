@@ -444,7 +444,14 @@ async def _issue_invite(
 
     link = build_invite_link(get_settings().frontend_url, token)
     await _ensure_invite_template(session, actor.tenant_id)
-    dispatch = _email_dispatch_state()
+    # `dispatch_state`, NOT `dispatch`. This local was called `dispatch` and it
+    # SHADOWED THE IMPORTED FUNCTION on the next line: `_email_dispatch_state()`
+    # returns a str, so `dispatch(...)` below raised
+    # `TypeError: 'str' object is not callable` and POST /companies/me/staff
+    # answered 500 unconditionally. Staff invitation has been completely broken
+    # since 2026-09-05, and no test ever issued the request, so nothing caught
+    # it. The third return value is the STATE, which is what the caller wants.
+    dispatch_state = _email_dispatch_state()
     # Rule 4: delivery is ALWAYS a dispatched task, never inline in the handler.
     dispatch(
         "pickready.send_email",
@@ -463,7 +470,7 @@ async def _issue_invite(
             },
         ],
     )
-    return invite, link, dispatch
+    return invite, link, dispatch_state
 
 
 async def _tenant_name(session: AsyncSession, tenant_id: uuid.UUID | None) -> str:
