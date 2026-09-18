@@ -98,12 +98,30 @@ by listing the account's functions: `jd-gen`, `assessment-trigger`,
 `company-profile`, `task-worker`, and nothing else. So the route had no
 legitimate caller to break.
 
-**The two placeholder secrets are both harmless, and were checked rather than
-assumed.** `EMAIL_TRANSPORT` is `ses` in this environment, so `SMTP_PASSWORD` is
-unused and is mounted on no task or function. `MSG91_API_KEY` is mounted only on
-`task-worker`, and `app.core.config` maps the sentinel back to `""` before any
-code reads it, so the retained SMS feature is simply off. Neither is the
-`FIREBASE_SERVICE_ACCOUNT_JSON` class of problem: that one IS configured.
+**There are THREE placeholder secrets, not two, and the third one disables a
+control.** This paragraph read "the two placeholder secrets are both harmless"
+and was wrong, for a reason worth keeping: the scan behind it enumerated only 9
+of the 16 secrets. `aws secretsmanager list-secrets` PAGINATES, and a truncated
+listing is indistinguishable from a complete one because both are a list of
+secrets with no error on it. Re-run over all 16, reading each value and
+comparing it to the sentinel:
+
+| Secret | State | Consequence |
+|---|---|---|
+| `SMTP_PASSWORD` | placeholder | Harmless. `EMAIL_TRANSPORT` is `ses` here, so it is mounted on no task or function |
+| `MSG91_API_KEY` | placeholder | Harmless. Mounted only on `task-worker`; `app.core.config` maps the sentinel back to `""`, so the retained SMS feature is simply off |
+| `RAZORPAY_WEBHOOK_SECRET` | placeholder | **NOT harmless. Every Razorpay webhook is refused with 503 until a real value is set** |
+
+The third one is the deliberate consequence of the fix in this release and not a
+regression. The handler used to treat an absent secret as "development" and
+PROCESS the unsigned event, so an anonymous POST could grant credits on the live
+site; it now refuses outright. **Refusing every webhook is the correct failure
+direction and it is still a failure**: a real subscription payment will not
+credit the customer's account until the owner sets the value. It is listed in
+the owner actions below.
+
+None of the three is the `FIREBASE_SERVICE_ACCOUNT_JSON` class of problem: that
+one IS configured.
 
 **On the CSP and Google sign-in, be exact about what was proven.** The live login
 page raises no CSP violation, and clicking the button made the SDK construct and
@@ -232,7 +250,8 @@ table beneath them.
 | 1 | ~~Fix `test_placeholder_secret.py`.~~ **DONE** before deploy. | Was the deploy blocker. |
 | 2 | **Complete one real Google sign-in and one Razorpay checkout.** PARTIALLY verified: no CSP violation on the live login page and the auth domain matches the allowlist, but the post-popup token exchange and the payment flow need a real account and a real payment. | Still the highest-risk unverified item: a wrong directive breaks sign-in or payment in production rather than failing a test. |
 | 3 | ~~Confirm the relay secret reached both consumers.~~ **DONE for the API**, verified by a live 403. The relay half activates automatically whenever an inbound-mail Lambda is created; none exists in ap-south-2 today. | The route is closed rather than open, which is the safe direction given it has no legitimate caller. |
-| 4 | ~~Check no secret still holds `PLACEHOLDER_NOT_CONFIGURED`.~~ **DONE.** Two do, both verified harmless (see the post-deploy table). | A secret container is not a configured secret. |
+| 4 | ~~Check no secret still holds `PLACEHOLDER_NOT_CONFIGURED`.~~ **DONE, and the first answer was wrong.** THREE do, not two: the listing behind the first pass was paginated at 9 of 16. See the corrected table above. | A secret container is not a configured secret, and a truncated listing looks exactly like a complete one. |
+| 4b | **Set a real `RAZORPAY_WEBHOOK_SECRET`** (`readypick-pilot/RAZORPAY_WEBHOOK_SECRET`, still the sentinel, created 2026-09-05 and never given a value). Copy it from the Razorpay dashboard's webhook configuration, then roll the `api` service so the new version is mounted. | **Every webhook is refused with 503 until this is set**, so a real subscription payment will not credit the customer. This is the deliberate safe direction of the fix that closed the unsigned-webhook hole, not a regression, and it is the highest-priority owner action in this table. |
 | 5 | **Confirm the `alarm_emails` SNS subscription.** Measured: it is `PendingConfirmation`. Click the link AWS emailed to manjuchro@gmail.com. | Until then all 16 alarms are decorative: they will fire and notify nobody. |
 | 6 | **Set a real `monthly_budget_usd`.** | It defaults to a conservative placeholder with a description saying the owner must set it. |
 | 7 | **Rotate the keys in `secrets/api-keys.txt`.** | Live third-party keys for four vendors the architecture removed in 2026-08-28. Correctly gitignored and never committed; this is local-machine hygiene, not a leak. |

@@ -1094,3 +1094,100 @@ a session-level setting when probing.
   the source sweep in `lib/read-only-messaging.test.ts` and the API's own
   401/403 answers, and NOT by a visual pass. Saying so plainly rather than
   implying otherwise.
+
+---
+
+## The production-hardening release, 2026-09-18
+
+Backend `sha-a74dfa9`, frontend `sha-3a60eba`, analysis unchanged at the
+`93ebfcb` pin. Verified by digest, by smoke test, and by probing the two holes
+this release exists to close.
+
+| Artifact | Tag | Digest |
+|---|---|---|
+| api | `sha-a74dfa9` | `sha256:4641f285f661a440e046e497589b8293652dcf8139678b6b33c18fb436bd9d05` |
+| lambdas | `sha-a74dfa9-fn` | `sha256:6360a587dc08848f443a81c42d2d54b802718be514f74da3051eebfab673ed86` |
+| frontend | `sha-3a60eba` | `sha256:4269b9bfd85229f1a95aaa0911af37ca39d52ffa2faebb7e24e0e0bebcaaa272` |
+| analysis | unchanged | `sha256:e0c6d4880b94fe3531a904042ff932ab42e3caeb19b88c03dd9b58c0fc037ec1` |
+
+`terraform apply` registered `readypick-pilot-api:34` and
+`readypick-pilot-frontend:23`; `deploy-services.sh pilot` rolled both and
+waited for stable; `update-lambda-code.sh` moved all three image-backed
+functions. `verify-deployment.sh pilot` with all THREE expected digests: "Every
+running task is the image this build produced."
+
+### The two remote holes, probed on the live site AFTER the roll
+
+Both were reachable by an anonymous caller before this release.
+
+- **`POST /api/v1/billing/webhook/razorpay` now answers 503** to an unsigned
+  POST and to one carrying a bogus `X-Razorpay-Signature`, with the body
+  `{"detail":"Webhook verification is not configured"}`. It previously treated
+  an absent webhook secret as "development" and PROCESSED the unsigned event,
+  so an anonymous POST could grant subscription credits on the live site.
+- **`POST /api/v1/verification/inbound-email` now answers 403** with no secret
+  header and with a wrong one. It previously logged
+  `verification.inbound_unauthenticated` and admitted anybody who knew a thread
+  token, and thread tokens travel by email.
+
+### Two probe mistakes worth keeping, because both read as findings
+
+Neither was a defect in the product; both would have gone into a report as one.
+
+- **`update-lambda-code.sh` reported "Source image does not exist" for all
+  three functions**, which reads exactly like a missed push. The image was
+  there. The repository is `readypick-pilot/backend`, not `readypick-backend`,
+  and an ECR path that does not exist and an image that does not exist produce
+  the same sentence. `describe-repositories` settled it in one call.
+- **The webhook answered 404 to the first probe.** The route is
+  `/api/v1/billing/webhook/razorpay`, not `/api/v1/billing/webhook`. A 404 from
+  a wrong URL and a 404 from a deleted route are indistinguishable from
+  outside, and the live `openapi.json` is what told them apart. Read the route
+  table before concluding anything from a 404.
+
+`verify-deployment.sh` also refused a first run that supplied
+`EXPECTED_API_DIGEST`: the variable is `EXPECTED_BACKEND_DIGEST`, and rather
+than silently checking two of three it reported `api: SKIPPED` and exited 1.
+That is the script working: a skipped check is not a passed check.
+
+### Verified on the live site
+
+- `scripts/smoke-test.sh https://readypick.ai`: every check PASS, including
+  `/health/live 200`, the three authenticated endpoints, the capabilities array
+  and all four route-contract assertions.
+- **Twelve public routes, all 200**: `/`, `/about`, `/insights`, `/privacy`,
+  `/terms`, `/employers`, `/docs`, `/login`, `/robots.txt`, `/sitemap.xml`,
+  `/llms.txt`, `/opengraph-image`. Every one of the three defects the previous
+  release found by probing production is closed, and the sweep was done in ONE
+  pass rather than one route per deploy cycle.
+- The full security header set is present on a live response: CSP with
+  `frame-ancestors 'none'` and `object-src 'none'`, HSTS at two years with
+  `includeSubDomains`, `X-Frame-Options: DENY`, `X-Content-Type-Options`,
+  `Referrer-Policy` and a Permissions-Policy that grants camera, microphone and
+  display-capture to self (proctoring needs all three) and denies the rest.
+- Backend suite before the build: **6552 passed, 1 skipped, 2 xfailed, zero
+  failures**, on a fresh database. The four failures the previous run carried
+  were all mine and all fixed; one xfail became a pass when
+  `"disregard the rubric"` was correctly classified as an injection.
+
+### Still owed, and the first one is new
+
+1. **`RAZORPAY_WEBHOOK_SECRET` is still `PLACEHOLDER_NOT_CONFIGURED`**, so the
+   503 above applies to REAL webhooks too and a genuine subscription payment
+   will not credit the customer. This is the deliberate safe direction of the
+   fix, not a regression, and it is the highest-priority owner action.
+   Enumerating all 16 secrets found THREE placeholders, not the two a
+   previously paginated listing reported: `SMTP_PASSWORD` and `MSG91_API_KEY`
+   are both genuinely harmless, and this one is not.
+2. The `alarm_emails` SNS subscription is still `PendingConfirmation`, so all
+   16 alarms notify nobody.
+3. One real Google sign-in and one real Razorpay checkout against the new CSP.
+
+**`/health` answers 307 on the live site and that is by design.** The ALB api
+route patterns are `/api/*`, `/openapi.json` and `/health/live`, so the
+readiness probe (which checks the database and Redis) is not routed to the API
+and the request reaches the frontend, where `proxy.ts` is deny-by-default.
+The target group health check uses `/health/live` deliberately: a readiness
+check that fails on a Redis blip would kill tasks that are serving traffic
+perfectly well. RDS and ElastiCache are watched by their own CloudWatch alarms
+rather than through this path. Recorded so the 307 is not read as a fault.
