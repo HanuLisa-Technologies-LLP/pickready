@@ -1061,12 +1061,29 @@ module "alb" {
 
   target_groups = {
     api = {
-      # DEEP, NOT A STATIC 200. `/health` resolves a pooled database session
-      # AND pings Redis, so a task with a wrong DSN or an unreachable cache
-      # fails this check and the ECS circuit breaker rolls the deploy back. A
-      # static 200 would promote that same task.
+      # LIVENESS, NOT READINESS, AND THE CHANGE IS DELIBERATE.
+      #
+      # This was `/health`, which is DEEP: it resolves a pooled database
+      # session and pings Redis. The reasoning for that was sound as a DEPLOY
+      # gate, and wrong as an ongoing rotation check, because the two questions
+      # have opposite failure preferences.
+      #
+      # Redis is a single shared ElastiCache. An outage there did not make one
+      # task unhealthy, it made every task unhealthy at once: the target group
+      # emptied and the ALB answered 503 for the whole product, including jobs,
+      # candidates, billing and reports, all of which would otherwise have kept
+      # working. ECS then replaced the tasks and the replacements failed the
+      # same check, which is a restart loop that also discards every warm
+      # connection pool. There was nothing to route around TO.
+      #
+      # The deploy gate is not lost. `scripts/smoke-test.sh` runs after the
+      # rollout and its AUTHENTICATED probes (/api/v1/auth/me, /api/v1/jobs)
+      # require the database and Redis to answer, so a release with a broken
+      # dependency still fails. That gate is now real in a way the old
+      # `/health` probe in that script was not: it followed redirects, so it
+      # had been passing by loading the login page.
       port                    = 8000
-      health_path             = "/health"
+      health_path             = "/health/live"
       health_interval_seconds = 30
       health_timeout_seconds  = 10
     }
@@ -1109,7 +1126,12 @@ module "alb" {
       # `/openapi.json` STAYS. `scripts/smoke-test.sh` probes it unauthenticated
       # after every deploy and fails the deploy if it is not 200, and the
       # frontend has no page at that path to shadow.
-      path_patterns = ["/api/*", "/openapi.json"]
+      # `/health/live` is routed to the API so the post-deploy smoke test can
+      # actually reach it. `/health` is deliberately NOT: it is the deep
+      # readiness probe and reports whether the database and cache are up,
+      # which is not a fact this product owes the internet. The target group
+      # reaches it directly regardless of listener rules.
+      path_patterns = ["/api/*", "/openapi.json", "/health/live"]
     }
   }
 

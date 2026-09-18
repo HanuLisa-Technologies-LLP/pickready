@@ -50,7 +50,19 @@ FRONTEND_TARGET="${FRONTEND_TARGET%/}"
 # The liveness probe. NOTE the path: the health route is mounted on the app
 # root (backend/app/main.py), NOT under the /api/v1 prefix, so /api/v1/health
 # is a 404 and would fail every deploy.
-HEALTH_PATH="${HEALTH_PATH:-/health}"
+# `/health/live`, NOT `/health`, AND THE REASON IS THAT THIS CHECK WAS LYING.
+#
+# `probe()` passes `--location`. The apex only routes `/api/*` and a short
+# allowlist to the API, so `https://<host>/health` reached the FRONTEND, which
+# is deny-by-default and answered 307 to /login, which answered 200. This
+# script then printed "PASS /health 200" while never touching the API at all.
+# A liveness gate that passes by successfully loading a login page is worse
+# than no gate, because it is believed.
+#
+# Two changes fix it and both are needed: this path is now routed to the API by
+# the load balancer, and the probe below refuses a redirect instead of chasing
+# one.
+HEALTH_PATH="${HEALTH_PATH:-/health/live}"
 
 # Authenticated endpoints, probed with TEST_BEARER_TOKEN. The capabilities
 # endpoint is /api/v1/auth/me: it returns {user, capabilities[]} and there is
@@ -78,12 +90,15 @@ trap 'rm -f "$BODY_FILE"' EXIT
 probe() {
   local path="$1" auth="${2:-}"
   local args=(
-    --silent --show-error --location
+    --silent --show-error
     --max-time "$CURL_TIMEOUT"
     --output "$BODY_FILE"
     --write-out '%{http_code}'
     --header 'Accept: application/json'
   )
+  # Following a redirect is right for most probes here and wrong for liveness:
+  # a 307 to a login page that answers 200 is not the API being up.
+  [ -z "${NO_REDIRECT:-}" ] && args+=( --location )
   # The token is passed via -H from a shell variable and never appears in the
   # URL: a query-string token lands in every access log between here and the
   # container.
@@ -104,7 +119,9 @@ log "Liveness"
 code=""
 attempt=1
 while [ "$attempt" -le "$HEALTH_RETRIES" ]; do
-  code="$(probe "$HEALTH_PATH")"
+  # NO_REDIRECT: a 3xx here means the request never reached the API, which is
+  # exactly the failure this check exists to catch.
+  code="$(NO_REDIRECT=1 probe "$HEALTH_PATH")"
   if [ "$code" = "200" ]; then
     pass "${HEALTH_PATH} 200"
     break
