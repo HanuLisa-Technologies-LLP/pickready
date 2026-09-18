@@ -850,17 +850,43 @@ async def razorpay_webhook(
     """
     raw = await request.body()
     signature = request.headers.get("X-Razorpay-Signature", "")
-    settings = get_settings()
-    if not razorpay.verify_webhook_signature(raw_body=raw, signature=signature):
-        if settings.is_production or razorpay.config().webhook_secret:
-            # A configured secret that does not match is a forgery, not a
-            # misconfiguration.
-            raise HTTPException(status_code=400, detail="Invalid webhook signature")
-        # Local development with no RAZORPAY_WEBHOOK_SECRET: accept, loudly.
-        log.warning(
-            "billing.webhook_unverified, RAZORPAY_WEBHOOK_SECRET is not set. "
-            "This is accepted in development ONLY."
+    # THE SIGNATURE IS CHECKED UNCONDITIONALLY. THERE IS NO DEVELOPMENT BYPASS.
+    #
+    # There used to be one, and it was open on the live site. It read
+    # `if settings.is_production or razorpay.config().webhook_secret: raise`,
+    # and fell through to PROCESS the event otherwise. Both halves were false in
+    # the deployment serving readypick.ai:
+    #
+    #   * `is_production` is `environment == "production"` and the live
+    #     environment sets `ENVIRONMENT=pilot`, so it is False in production;
+    #   * `RAZORPAY_WEBHOOK_SECRET` was never mounted on the api service, so
+    #     `webhook_secret` was empty.
+    #
+    # So an anonymous POST of a forged `subscription.charged` was accepted and
+    # granted credits, repeatably, because the attacker mints the idempotency
+    # keys too. Unauthenticated, remote, and it issues the thing this product
+    # sells.
+    #
+    # AN ABSENT SECRET NOW REFUSES, and that is deliberately the OPPOSITE of the
+    # inbound-email relay, where an unset secret leaves the route open. The two
+    # differ because the cost of being wrong differs. Refusing an employer's
+    # reply loses a message the product can ask for again; accepting an unsigned
+    # payment event grants money and cannot be taken back. A signature check
+    # that cannot be performed has failed, not passed.
+    #
+    # 503 rather than 400 when the secret is missing: that is our
+    # misconfiguration, not the caller's bad request, and Razorpay retries a
+    # 5xx, so a genuine event survives the window while the secret is wired.
+    if not razorpay.config().webhook_secret:
+        log.error(
+            "billing.webhook_secret_missing, refusing every webhook. "
+            "RAZORPAY_WEBHOOK_SECRET must be configured for this environment."
         )
+        raise HTTPException(
+            status_code=503, detail="Webhook verification is not configured"
+        )
+    if not razorpay.verify_webhook_signature(raw_body=raw, signature=signature):
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
 
     try:
         body = await request.json()

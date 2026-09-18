@@ -599,7 +599,14 @@ module "ecs" {
         VOYAGE_RERANK_2_5             = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
         FIREBASE_SERVICE_ACCOUNT_JSON = module.secrets.secret_arns["FIREBASE_SERVICE_ACCOUNT_JSON"]
         RAZORPAY_KEY_SECRET           = module.secrets.secret_arns["RAZORPAY_KEY_SECRET"]
-        LLM_KEY_ENCRYPTION_SECRET     = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        # WITHOUT THIS THE BILLING WEBHOOK CANNOT VERIFY A SIGNATURE.
+        # The secret existed in `module.secrets` and was mounted on nothing,
+        # and the handler used to fall through and PROCESS an unsigned event
+        # when it was absent, which made credit issuance an unauthenticated
+        # POST. The handler now refuses when it is missing, so the absence is
+        # loud instead of silent, and this line is what makes it present.
+        RAZORPAY_WEBHOOK_SECRET   = module.secrets.secret_arns["RAZORPAY_WEBHOOK_SECRET"]
+        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
         # THE INBOUND WEBHOOK'S SHARED SECRET. `POST /verification/inbound-email`
         # is a PUBLIC route that writes into verification requests, BGV threads
         # and conversations, and its only protection was that a caller had to

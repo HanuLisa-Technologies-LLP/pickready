@@ -53,6 +53,7 @@ from app.services import rbac
 from app.services.rate_limit import rate_limit
 from app.services.audit import (
     AUTH_CONTEXT_SELECTED,
+    AUTH_LOGIN_REFUSED,
     AUTH_LOGIN_SUCCEEDED,
     AUTH_OTP_FAILED,
     record_auth_event,
@@ -127,6 +128,43 @@ async def _finalize_single(
     database role/permissions stay authoritative (claude.md rule 2)."""
     if user.status == UserStatus.disabled:
         raise HTTPException(status_code=403, detail="Account unavailable")
+
+    # A BOUND ACCOUNT IS NEVER SILENTLY REBOUND TO A DIFFERENT IDENTITY.
+    #
+    # This line used to be an unconditional `user.firebase_uid = identity.uid`,
+    # and that was account takeover. The caller resolves a user by EMAIL as well
+    # as by uid (see the match filters in `firebase_session`), and Firebase
+    # email/password signup does not verify the address, so anyone who knew a
+    # staff member's email could register it with Firebase, sign in, present the
+    # token here, and have this line hand them that person's role and tenant.
+    # The victim's uid was overwritten in the same statement, so they lost the
+    # account at the moment the attacker gained it.
+    #
+    # Binding a NULL uid is the legitimate first-login path and still happens.
+    # Rebinding a uid that is already set to a different one is not a login, it
+    # is a change of who owns the account, and this product already has a
+    # deliberate, audited route for that: the Provider's primary-contact rebind,
+    # which CLEARS the uid, returns the row to `invited`, revokes the pending
+    # invite and sends a fresh one. A silent rebind here bypassed all four of
+    # those steps.
+    #
+    # So the refusal is not a dead end: an account whose Firebase identity
+    # genuinely changed is recovered through that route.
+    if user.firebase_uid and user.firebase_uid != identity.uid:
+        await record_auth_event(
+            session, action=AUTH_LOGIN_REFUSED, actor_user_id=user.id,
+            tenant_id=user.tenant_id,
+            metadata={"reason": "firebase_uid_rebind_refused",
+                      "provider": identity.provider},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This account is already linked to a different sign-in. "
+                "Ask your administrator to re-issue your invitation."
+            ),
+        )
+
     user.firebase_uid = identity.uid
     user.auth_providers = sorted(set((user.auth_providers or []) + [identity.provider]))
     if identity.email_verified:

@@ -111,6 +111,20 @@ variable "service_secrets" {
       "VOYAGE_RERANK_2_5",
       "FIREBASE_SERVICE_ACCOUNT_JSON",
       "RAZORPAY_KEY_SECRET",
+      # THE WEBHOOK HANDLER RUNS IN THIS SERVICE, NOT IN A "webhook" ONE.
+      #
+      # `RAZORPAY_WEBHOOK_SECRET` was granted only to a `webhook` entry below,
+      # and no environment has ever defined a service by that name: the running
+      # services are api, frontend and analysis. So the secret was created,
+      # granted to a service that does not exist, and mounted on nothing, while
+      # `POST /api/v1/billing/webhook` is served here by `api/billing.py`.
+      #
+      # That is why the missing secret was invisible. The handler used to treat
+      # an absent secret as "development" and PROCESS the unsigned event, so an
+      # anonymous POST could grant credits on the live site. The handler now
+      # refuses outright when it is absent; this grant is what lets it verify
+      # instead of refusing forever.
+      "RAZORPAY_WEBHOOK_SECRET",
       "LLM_KEY_ENCRYPTION_SECRET",
       # THE BD PORTAL'S AI REACH RUNS IN THE REQUEST HANDLER, and this key is
       # why it returned nothing on the live site. The search is deliberately
