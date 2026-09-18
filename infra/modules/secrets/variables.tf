@@ -149,6 +149,10 @@ variable "service_secrets" {
     "task-worker" = [
       "DATABASE_URL",
       "REDIS_URL",
+      # The worker mints assessment invite links, which are signed material
+      # (workers/tasks.py); under REQUIRE_JWT_SECRET it refuses to boot in
+      # production without this rather than sign with an empty string.
+      "JWT_SECRET",
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
