@@ -2232,9 +2232,27 @@ def refresh_dashboard_views():
                         " '00000000-0000-0000-0000-000000000000', false)"
                     )
                 )
-                await conn.execute(
-                    text("REFRESH MATERIALIZED VIEW CONCURRENTLY dashboard_job_metrics")
-                )
+                # THROUGH THE FUNCTION, NEVER THE STATEMENT. `REFRESH
+                # MATERIALIZED VIEW` requires OWNERSHIP, and since the
+                # 2026-09-11 credential split this connection is
+                # `pickready_app`, a least-privileged NOINHERIT role that
+                # deliberately owns nothing. Issued directly it raised
+                # "must be owner of materialized view dashboard_job_metrics"
+                # on every run for a week, and the only symptom was a
+                # CloudWatch alarm whose SNS subscription was unconfirmed.
+                #
+                # Migration 0099 defines `refresh_dashboard_job_metrics()` as
+                # SECURITY DEFINER, owned by the object owner, with EXECUTE
+                # granted to this role and to nothing else. One capability,
+                # rather than the `SET ROLE` that would have handed a scheduled
+                # background task everything the owner can do.
+                #
+                # The function sets the two GUCs above itself, so a caller
+                # cannot forget the bypass and silently rebuild the view empty.
+                # Setting them here as well is deliberate redundancy: this task
+                # must keep working against a database where 0099 has not been
+                # applied yet, which during a rolling deploy is every database.
+                await conn.execute(text("SELECT refresh_dashboard_job_metrics()"))
         finally:
             await engine.dispose()
     _run(_task())
