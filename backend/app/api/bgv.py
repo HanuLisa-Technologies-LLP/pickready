@@ -20,6 +20,13 @@ There is also no DELETE for an employment row and no PUT after finalisation.
 The immutability is enforced three times over, on purpose: the database refuses
 the write, the service refuses it with a sentence the candidate can act on, and
 the route never offers it.
+
+NARROWED 2026-09-18 (vivekium feature 5, owner-ruled final): after
+finalisation the candidate may APPEND their newest employer through
+`POST /bgv/me/employers`, and the last-two cap auto-drops the oldest row
+under the one sanctioned escape (`services/bgv_maintenance`, the 0103
+trigger). No edit of an existing row and no chosen deletion exists anywhere,
+which is the half of the finality that survives.
 """
 from __future__ import annotations
 
@@ -50,6 +57,7 @@ from app.models.conversation import CHANNEL_EMAIL, DELIVERY_SENT, PARTY_RECRUITE
 from app.models.employment import BACKGROUND_EXPERIENCED, EMPLOYMENT_BACKGROUNDS
 from app.schemas.bgv_workflow import (
     CandidateBGVOut,
+    EmploymentIn,
     DecisionIn,
     DraftOut,
     EmploymentHistoryIn,
@@ -58,7 +66,13 @@ from app.schemas.bgv_workflow import (
     SendIn,
     VerificationOut,
 )
-from app.services import bgv_agent, bgv_form, bgv_workflow, conversations
+from app.services import (
+    bgv_agent,
+    bgv_form,
+    bgv_maintenance,
+    bgv_workflow,
+    conversations,
+)
 from app.services import capabilities as caps
 from app.services.audit import audit
 from app.workers.dispatch import dispatch
@@ -238,6 +252,76 @@ async def save_employment_history(
             },
         )
     await session.flush()
+    return await _history_out(session, candidate_id)
+
+
+@router.post("/me/employers", response_model=EmploymentHistoryOut)
+async def append_employer_route(
+    body: EmploymentIn,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> EmploymentHistoryOut:
+    """Add the candidate's NEWEST employer to a finalised history.
+
+    Vivekium feature 5, which narrows the 2026-09-12 finality: the BGV
+    record is permanent and portable and holds the LAST TWO employers, so a
+    candidate whose career moved on may APPEND, and only append. The cap
+    auto-drops the oldest row (its verifications go with it, the consent
+    item's own words), and auto-maintenance fires the new employer's
+    verification for every tenant already verifying this candidate, with no
+    manual trigger and no admin action.
+
+    BEFORE finalisation this route refuses: the ordinary save screen owns
+    the draft list, and two writers for one list is how a row the candidate
+    deleted comes back.
+    """
+    candidate_id = await _candidate_id_for(session, user)
+    finalized_at = (
+        await session.execute(
+            text(
+                "SELECT employment_history_finalized_at FROM candidates "
+                "WHERE id = :cid"
+            ),
+            {"cid": str(candidate_id)},
+        )
+    ).scalar()
+    if finalized_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Your employment details have not been submitted yet. Edit "
+                "and submit the list on this page instead."
+            ),
+        )
+    result = await bgv_maintenance.append_employer(
+        session,
+        candidate_id=candidate_id,
+        employer_name=body.employer_name,
+        designation=body.designation,
+        started_on=body.started_on,
+        ended_on=body.ended_on,
+        hr_name=body.hr_name,
+        hr_email=str(body.hr_email),
+    )
+    await audit(
+        session,
+        tenant_id=None,
+        actor_user_id=user.user_id,
+        action=bgv_workflow.AUDIT_HISTORY_APPENDED,
+        target_type="candidate",
+        target_id=candidate_id,
+        metadata={
+            "employer": body.employer_name.strip(),
+            "dropped": result["dropped"],
+        },
+    )
+    await session.flush()
+    # The auto-maintenance is DISPATCHED (rule 4): it emails employers, and
+    # a candidate's save must not block on a mail merge.
+    dispatch(
+        "pickready.bgv_auto_maintenance",
+        args=[str(candidate_id), result["added_id"]],
+    )
     return await _history_out(session, candidate_id)
 
 

@@ -1838,6 +1838,39 @@ def sweep_bgv_reminders():
     _run(_task())
 
 
+@task(
+    name="pickready.bgv_auto_maintenance",
+    route=Route.LAMBDA,
+)
+def bgv_auto_maintenance(candidate_id: str, employment_id: str):
+    """Feature 5's wiring: an appended employer fires its own verification.
+
+    Dispatched by `POST /bgv/me/employers`. For every tenant already
+    verifying this candidate, opens the new employer's verification and
+    sends the deterministic inquiry with its form link. Seconds of SQL and
+    dispatches, so Lambda; `_worker_session` because the tenants involved
+    span the candidate's whole databank reach.
+    """
+    from app.services import bgv_maintenance
+
+    async def _task():
+        async with _worker_session() as session:
+            opened = await bgv_maintenance.auto_open_verifications(
+                session,
+                candidate_id=uuid.UUID(candidate_id),
+                employment_id=uuid.UUID(employment_id),
+            )
+            await session.commit()
+        logger.info(
+            "bgv.auto_maintenance candidate=%s employment=%s opened=%d",
+            candidate_id,
+            employment_id,
+            opened,
+        )
+
+    _run(_task())
+
+
 # ── Erasure and learning revocation (RPN-AI-UP-001 W9.5, W3.6) ───────────────
 
 @task(

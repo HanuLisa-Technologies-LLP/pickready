@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi import HTTPException
@@ -399,6 +399,151 @@ def test_a_bounced_inquiry_alerts_the_candidate_with_a_masked_address(
             async with factory() as session:
                 async with session.begin():
                     async with superadmin_scope(session):
+                        await _cleanup(session, w)
+
+    _run(_flow)
+
+
+def test_append_enforces_the_last_two_and_fires_auto_maintenance(
+    monkeypatch,
+) -> None:
+    """Feature 5 end to end at the service layer: the append lands, the
+    OLDEST row (by start date) is auto-dropped taking its verification with
+    it, the 0103 trigger admits only that delete, and auto-maintenance opens
+    and sends the new employer's verification for the tenant already
+    verifying."""
+    from app.core.db import superadmin_scope
+    from app.services import bgv_maintenance
+
+    _skip_without_database()
+    w = _World()
+    sent: list[tuple] = []
+    monkeypatch.setattr(
+        "app.services.bgv_maintenance.dispatch",
+        lambda name, args=None, **kw: sent.append((name, args)),
+        raising=False,
+    )
+    import app.workers.dispatch as dispatch_mod
+
+    monkeypatch.setattr(
+        dispatch_mod, "dispatch",
+        lambda name, args=None, **kw: sent.append((name, args)),
+    )
+
+    async def _flow(factory):
+        # Seed the standard world (one employer 2021-2023, one pending
+        # verification for the tenant), then FINALISE the history and add a
+        # second, OLDER employer so the drop target is unambiguous.
+        async with factory() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await _seed(session, w, issued_at=datetime.now(timezone.utc))
+                    await session.execute(
+                        text(
+                            "UPDATE candidates SET "
+                            "employment_history_finalized_at = now() "
+                            "WHERE id = :c"
+                        ),
+                        {"c": str(w.candidate)},
+                    )
+        oldest = uuid.uuid4()
+        async with factory() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    # INSERT is allowed post-finalisation (append semantics).
+                    await session.execute(
+                        text(
+                            "INSERT INTO candidate_employments (id, "
+                            "candidate_id, employer_name, designation, "
+                            "started_on, ended_on, hr_name, hr_email, "
+                            "created_at) VALUES (:i, :c, 'Ancient Corp', "
+                            "'Intern', '2015-01-01', '2017-01-01', 'HR', "
+                            "'hr@ancient.example', now())"
+                        ),
+                        {"i": str(oldest), "c": str(w.candidate)},
+                    )
+        try:
+            # The trigger still refuses an UNSANCTIONED delete.
+            async with factory() as session:
+                async with session.begin():
+                    async with superadmin_scope(session):
+                        with pytest.raises(Exception) as refused:
+                            await session.execute(
+                                text(
+                                    "DELETE FROM candidate_employments "
+                                    "WHERE id = :i"
+                                ),
+                                {"i": str(oldest)},
+                            )
+            assert "final" in str(refused.value)
+
+            # The sanctioned append: caps at two, dropping Ancient Corp.
+            async with factory() as session:
+                async with session.begin():
+                    async with superadmin_scope(session):
+                        result = await bgv_maintenance.append_employer(
+                            session,
+                            candidate_id=w.candidate,
+                            employer_name="Newest Corp",
+                            designation="Staff Engineer",
+                            started_on=date(2024, 1, 1),
+                            ended_on=date(2026, 1, 1),
+                            hr_name="HR Desk",
+                            hr_email="people@newest.example",
+                        )
+            assert result["dropped"] == [str(oldest)]
+
+            async with factory() as session:
+                async with superadmin_scope(session):
+                    names = [
+                        r[0]
+                        for r in (
+                            await session.execute(
+                                text(
+                                    "SELECT employer_name FROM "
+                                    "candidate_employments WHERE "
+                                    "candidate_id = :c ORDER BY started_on"
+                                ),
+                                {"c": str(w.candidate)},
+                            )
+                        ).all()
+                    ]
+            assert names == ["Prior Corp", "Newest Corp"]
+
+            # Auto-maintenance: the tenant already verifying gets the new
+            # employer's verification, pending, with a form link sent.
+            async with factory() as session:
+                async with session.begin():
+                    async with superadmin_scope(session):
+                        opened = await bgv_maintenance.auto_open_verifications(
+                            session,
+                            candidate_id=w.candidate,
+                            employment_id=uuid.UUID(result["added_id"]),
+                        )
+            assert opened == 1
+            assert sent and sent[-1][1][2] == "bgv_verification"
+            assert sent[-1][1][1] == "people@newest.example"
+            assert "/verify-employment/" in sent[-1][1][3]["body"]
+            # Idempotent: a second run opens nothing.
+            async with factory() as session:
+                async with session.begin():
+                    async with superadmin_scope(session):
+                        again = await bgv_maintenance.auto_open_verifications(
+                            session,
+                            candidate_id=w.candidate,
+                            employment_id=uuid.UUID(result["added_id"]),
+                        )
+            assert again == 0
+        finally:
+            async with factory() as session:
+                async with session.begin():
+                    async with superadmin_scope(session):
+                        await session.execute(
+                            text(
+                                "SELECT set_config("
+                                "'app.bgv_maintenance', 'on', true)"
+                            )
+                        )
                         await _cleanup(session, w)
 
     _run(_flow)
