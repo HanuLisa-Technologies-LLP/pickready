@@ -6,8 +6,8 @@
 
 THE TENANT-OWNED EMPLOYER-VERIFICATION SYSTEM IS RETIRED (vivekium C8,
 owner-ruled 2026-09-18). Its routes (/profile, /requests/{id}/override, the
-ten-field /form/{token}) and its tasks are gone the way Company DNA and
-Intercom went; the `verification_requests` TABLE survives unread, because
+ten-field /form/{token}) and its tasks are gone the way the 2026-09-09
+and 2026-09-10 removals went; the `verification_requests` TABLE survives unread, because
 rows already written are history. The surviving system is the
 candidate-owned one: candidate_employments, bgv_verifications and the
 seven-item checkbox form at /bgv/form/{token}.

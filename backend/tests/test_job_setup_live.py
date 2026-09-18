@@ -880,9 +880,12 @@ def test_every_weight_traces_to_a_named_layer_one_and_three_source(
     assert rows
     for row in rows:
         terms = (row.provenance_json or {}).get("terms") or {}
-        # Every term of `baseline x situation x role`, stored.
+        # Every term of `baseline x company x situation x role`, stored.
+        # company_layer2 RESTORED 2026-09-19 (vivekium C3): Drishti supplies
+        # LAYER_COMPANY again; 1.0 when the function has no profile.
         assert set(terms) == {
             "baseline_layer1",
+            "company_layer2",
             "situation_layer3",
             "role_layer3",
         }, row.name

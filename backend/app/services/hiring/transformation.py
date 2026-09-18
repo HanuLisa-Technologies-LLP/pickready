@@ -199,7 +199,7 @@ class Weight:
 
     The company term returned on 2026-09-19: Drishti is LAYER_COMPANY's live
     supplier (vivekium C3, owner-ruled), reversing exactly the half of the
-    Company DNA removal the removal itself said it would not defend forever
+    2026-09-09 removal that removal itself said it would not defend forever
     ("what it has today is no live supplier"). It defaults to 1.0, so every
     matrix frozen without a Drishti profile is byte-identical to before.
 

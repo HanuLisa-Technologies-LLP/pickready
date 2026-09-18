@@ -98,8 +98,6 @@ def configure_logging(*, production: bool | None = None) -> None:
         # secrets simply have not arrived yet. That took every Lambda task
         # down on 2026-09-19, at import, on the first production roll. A log
         # format decision needs one string, so it reads the one string.
-        import os
-
         production = (
             os.environ.get("ENVIRONMENT", "").strip().lower() == "production"
         )

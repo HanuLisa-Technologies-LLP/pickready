@@ -15,7 +15,7 @@ a job uncreatable until a CXO finishes an interview, and Gate 1 was
 narrowed for exactly that reason. Absent, every matrix freezes byte-for-
 byte as before.
 
-THE TWO PROPERTIES THE COMPANY DNA REMOVAL DEMANDED, held here:
+THE TWO PROPERTIES THE 2026-09-09 REMOVAL DEMANDED, held here:
 
 * Sutra and the scorecard read the COMPILED artifact, never the client's
   free text. An unbounded client-authored string in the prompt that decides

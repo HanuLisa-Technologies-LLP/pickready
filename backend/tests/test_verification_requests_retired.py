@@ -2,7 +2,8 @@
 
 Owner-ruled 2026-09-18: the brief describes the candidate-owned system
 (candidate_employments, bgv_verifications, the seven-item checkbox form),
-so the older tenant-owned one goes the way Company DNA and Intercom went,
+so the older tenant-owned one goes the way the 2026-09-09 and
+2026-09-10 removals went,
 with a sweep rather than a memory. The TABLE stays: rows already written
 are history, and dropping them would delete the answer to "what did this
 employer actually say" for verifications that really ran.

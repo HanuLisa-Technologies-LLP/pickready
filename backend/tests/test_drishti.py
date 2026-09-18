@@ -75,7 +75,7 @@ def test_absent_profile_changes_no_weight():
 
 
 def test_emphasis_moves_the_weight_through_the_bounds_and_is_named():
-    """The acceptance criterion the Company DNA layer always carried: a
+    """The acceptance criterion the old Layer 2 always carried: a
     Layer 2 change must demonstrably MOVE a weight, within bounds, with
     provenance naming the layer."""
     plain = transformation.derive_weight(
