@@ -1427,11 +1427,6 @@ module "ecs" {
       secrets = {
         DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
         REDIS_URL                 = module.secrets.secret_arns["REDIS_URL"]
-        # The worker MINTS assessment invite links (workers/tasks.py, the
-        # invitation email), which are signed material: it needs the real
-        # key, and REQUIRE_JWT_SECRET below makes it refuse to boot in
-        # production without it rather than sign with an empty string.
-        JWT_SECRET                = module.secrets.secret_arns["JWT_SECRET"]
         OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
@@ -1639,6 +1634,11 @@ module "lambda" {
       # policy below. Only the ARNs are here.
       secrets = {
         DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
+        # The worker MINTS assessment invite links (workers/tasks.py, the
+        # invitation email), which are signed material: it needs the real
+        # key, and REQUIRE_JWT_SECRET below makes it refuse to boot in
+        # production without it rather than sign with an empty string.
+        JWT_SECRET                = module.secrets.secret_arns["JWT_SECRET"]
         REDIS_URL                 = module.secrets.secret_arns["REDIS_URL"]
         OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]

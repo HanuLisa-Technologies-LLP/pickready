@@ -462,13 +462,12 @@ a rule if built as written.
    logs what it WOULD erase. Mutation-checked: removing the gate erases a
    candidate and the test says so.
 
-**Needs an owner decision first**
+**Owner decisions, all RULED 2026-09-18 and BUILT 2026-09-19**
 
-6. Column 2 as a percentage (C1).
-7. The question ceiling versus fixed counts (C2).
-8. Job-closure deletion and the billing-record retention window (C5).
-9. Drishti as a gate versus an enhancement layer (C3). The enhancement-layer
-   build does not need the decision; making it a hard requirement does.
+6. ~~Column 2 as a percentage (C1).~~ BUILT (release 5).
+7. ~~The question ceiling versus fixed counts (C2).~~ BUILT (release 6): services/resume_prefill, migration 0104.
+8. ~~Job-closure deletion (C5).~~ BUILT (release 5): erasure.job_closure_erasure, billing rows retained.
+9. ~~Drishti (C3).~~ BUILT (release 6) as the enhancement layer: hiring/drishti, migration 0105, the company term restored to Weight through layers.resolve.
 
 **C8, added 2026-09-18: there are TWO background-verification systems**
 

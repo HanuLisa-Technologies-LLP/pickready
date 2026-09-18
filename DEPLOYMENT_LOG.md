@@ -1427,3 +1427,40 @@ sweeps INVOKED live rather than trusted:
 `consent.sweep reminded=0 warned=0 erased=0 would_erase=0
 deletion_armed=False`, each correct for a databank with zero candidates.
 `readypick-sweep-bgv-reminders` ENABLED daily in the scheduler.
+
+---
+
+## Release 6, the vivekium brief complete, 2026-09-19
+
+Backend and frontend both `sha-fe791e8`, analysis unchanged. Migrations 0104
+and 0105 applied BEFORE the roll, confirmed from the migrate task's own log.
+
+| Artifact | Digest |
+|---|---|
+| api | `sha256:79334cd2911c3f189e76cc8ceaf8e73a5b4a9d5ec4232b3f211d96277cae03a7` |
+| frontend | `sha256:1151a247db7377507783a07037da50a5fd0732175b47fd7180a8427a12e459b6` |
+| analysis | `sha256:e0c6d4880b94fe3531a904042ff932ab42e3caeb19b88c03dd9b58c0fc037ec1` |
+
+### What shipped, closing the brief
+
+- **Feature 1, Drishti** (C3): one strategic profile per function per
+  functional head, five sections behind the observable-evidence critique
+  loop, compiled deterministically, feeding weights ONLY through
+  layers.resolve under the restored company term. Enhancement layer:
+  absent, every matrix freezes byte-identically, pinned.
+- **Feature 2** (C2): resume-aware pre-fill with the 40-question ceiling.
+  Both signals required, exercises never pre-filled, the transcript labels
+  every pre-filled exchange, billing and completion unchanged chokepoints.
+- **C8 retirement**: the tenant-owned verification system is gone from live
+  source with its sweep test; the table stays as history; the checkbox form
+  serves at the retired system's own URL path.
+
+### Verified
+
+Suite green after the gate's five findings were fixed (the removal sweeps
+catching their own history being quoted, an os shadow in the logging fix,
+and two pins learning the restored company_layer2 term). All three digests
+against RUNNING tasks. Smoke ten for ten. Live probes: Drishti 401
+unauthenticated, the new form serving, the RETIRED form 404 in production,
+webhook still 503 pending its secret, and the worker invoked live on the
+new image.
