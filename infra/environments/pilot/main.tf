@@ -1309,6 +1309,11 @@ module "ecs" {
       target_group_arn = local.has_public_entry ? module.alb[0].target_group_arns["api"] : null
       needs_s3         = true
       environment = {
+        # THIS CONTAINER SIGNS (sessions, OTP hashes, signed links), so
+        # in production it must refuse to boot without its key. The
+        # guard is opt-in per container because secrets are enumerated
+        # per service and most containers rightly hold no signing key.
+        REQUIRE_JWT_SECRET = "1"
         PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
         # PUBLIC BY DESIGN, and a plain variable rather than a secret for that
         # reason: the browser reads it from GET /billing/config at runtime.
@@ -1422,6 +1427,11 @@ module "ecs" {
       secrets = {
         DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
         REDIS_URL                 = module.secrets.secret_arns["REDIS_URL"]
+        # The worker MINTS assessment invite links (workers/tasks.py, the
+        # invitation email), which are signed material: it needs the real
+        # key, and REQUIRE_JWT_SECRET below makes it refuse to boot in
+        # production without it rather than sign with an empty string.
+        JWT_SECRET                = module.secrets.secret_arns["JWT_SECRET"]
         OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
@@ -1485,12 +1495,6 @@ module "ecs" {
       environment = {
         POSTGRES_MIGRATION_ROLE = local.db_owner_role
         APP_DSN_SECRET_ID       = module.secrets.secret_arns["DATABASE_URL"]
-        # THE ONE JWT-GUARD OPT-OUT (SEC-24 follow-up, 2026-09-19). Under
-        # ENVIRONMENT=production the boot guard refuses an unconfigured
-        # JWT_SECRET, and this container is deliberately granted none: a
-        # migration signs nothing. It runs alembic and exits, and cannot
-        # serve a request. On no other container, ever.
-        ALLOW_MISSING_JWT_SECRET = "1"
       }
     }
 
@@ -1656,6 +1660,7 @@ module "lambda" {
         # `Settings.aws_region` reads that same variable, so boto3 and the
         # application agree with the platform rather than with a literal.
         ENVIRONMENT                   = local.app_environment
+        REQUIRE_JWT_SECRET            = "1"
         S3_BUCKET                     = module.s3.bucket_name
         FRONTEND_URL                  = local.frontend_url
         EMBEDDING_DIMENSIONS          = "1024"

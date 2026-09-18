@@ -738,8 +738,9 @@ class Settings(BaseSettings):
 
     # App
     environment: str = "development"
-    #: MIGRATE-CONTAINER ONLY. See `_refuse_an_unconfigured_jwt_secret`.
-    allow_missing_jwt_secret: bool = False
+    #: Set by terraform on the containers that SIGN (the API service and the
+    #: task worker). See `_refuse_an_unconfigured_jwt_secret`.
+    require_jwt_secret: bool = False
 
     @model_validator(mode="after")
     def _refuse_an_unconfigured_jwt_secret(self) -> "Settings":
@@ -766,15 +767,19 @@ class Settings(BaseSettings):
         """
         if (self.environment or "").strip().lower() != "production":
             return self
-        # THE ONE OPT-OUT, and it is for a container that cannot serve. The
-        # MIGRATE task runs `alembic upgrade head` and exits; it is granted
-        # no JWT_SECRET because a migration signs nothing, and under
-        # ENVIRONMENT=production (SEC-24) this guard would otherwise refuse
-        # to boot the one process whose whole job is DDL. Terraform sets
-        # ALLOW_MISSING_JWT_SECRET on the migrate container ONLY, and
-        # tests/test_app_db_credential.py sweeps every environment to keep
-        # it off anything that serves a request.
-        if self.allow_missing_jwt_secret:
+        # FIRES ONLY WHERE THE PROCESS DECLARES IT SIGNS. The first
+        # production roll (SEC-24, 2026-09-19) proved the unconditional form
+        # wrong twice in one day: it refused the MIGRATE one-shot, which
+        # signs nothing, and then took every Lambda down, because secrets
+        # are enumerated PER SERVICE and the drafting lambdas hold no
+        # signing key by design. A guard that assumes every container holds
+        # every secret is a guard against the least-privilege model itself.
+        # Terraform sets REQUIRE_JWT_SECRET on the containers that mint or
+        # verify signed material (the API service, and the task worker,
+        # which signs assessment invite links); a signer that boots without
+        # its key still refuses, which is the original guarantee, held where
+        # it is true.
+        if not self.require_jwt_secret:
             return self
         value = (self.jwt_secret or "").strip()
         if not value or value == PLACEHOLDER_SECRET or value == DEV_JWT_SECRET:

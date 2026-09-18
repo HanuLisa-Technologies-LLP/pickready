@@ -331,48 +331,61 @@ def test_the_write_grant_is_put_secret_value_and_nothing_else() -> None:
     }, actions
 
 
-def test_the_jwt_guard_optout_is_migrate_only() -> None:
-    """ALLOW_MISSING_JWT_SECRET exists for exactly one container per
-    environment: the migrate one-shot, which signs nothing and cannot serve.
-    Anywhere else it would let a SERVING process boot unsigned in
-    production, which is the compromise the guard exists to refuse."""
+def test_the_jwt_guard_is_declared_by_the_signers() -> None:
+    """REQUIRE_JWT_SECRET is set on exactly the containers that SIGN.
+
+    The guard is opt-in per container because secrets are enumerated per
+    service: the drafting lambdas and the migrate one-shot rightly hold no
+    signing key, and the first production roll proved an unconditional guard
+    refuses them at boot. The API service signs sessions and links; the task
+    worker mints assessment invite links. Both must declare, both must hold
+    the key, and nothing else may declare.
+    """
     import re
     from pathlib import Path
 
     infra = Path(__file__).resolve().parents[2] / "infra" / "environments"
-    for env_dir in sorted(p for p in infra.iterdir() if p.is_dir()):
-        main_tf = env_dir / "main.tf"
-        if not main_tf.exists():
-            continue
-        text_ = main_tf.read_text(encoding="utf-8")
-        hits = text_.count("ALLOW_MISSING_JWT_SECRET")
-        if hits == 0:
-            continue
-        # Comment lines may explain it; ASSIGNMENTS must sit in the migrate
-        # block only. Count assignments, then check each sits after the
-        # nearest 'migrate = {' opener before any other service opener.
-        assignments = [
-            m.start() for m in re.finditer(r"ALLOW_MISSING_JWT_SECRET\s*=", text_)
-        ]
-        assert len(assignments) == 1, (
-            f"{main_tf}: ALLOW_MISSING_JWT_SECRET assigned "
-            f"{len(assignments)} times; it belongs on the migrate container only"
-        )
-        migrate_at = text_.find("migrate = {")
-        next_service = text_.find("frontend = {", migrate_at)
-        assert migrate_at != -1 and migrate_at < assignments[0] < next_service, (
-            f"{main_tf}: ALLOW_MISSING_JWT_SECRET is assigned outside the "
-            f"migrate container block"
-        )
+    pilot = (infra / "pilot" / "main.tf").read_text(encoding="utf-8")
+
+    assignments = [
+        m.start() for m in re.finditer(r"REQUIRE_JWT_SECRET\s*=\s*\"1\"", pilot)
+    ]
+    assert len(assignments) == 2, (
+        f"REQUIRE_JWT_SECRET is assigned {len(assignments)} times in pilot; "
+        "exactly the api service and the task worker sign"
+    )
+    api_at = pilot.index("api = {")
+    worker_at = pilot.index('"task-worker" = {')
+    assert any(api_at < a < worker_at for a in assignments), "api must declare"
+    assert any(a > worker_at for a in assignments), "task worker must declare"
+    # A declarer must HOLD the key: the worker secrets map includes it.
+    worker_block = pilot[worker_at : worker_at + 4000]
+    assert 'JWT_SECRET' in worker_block, (
+        "the task worker declares REQUIRE_JWT_SECRET but is granted no "
+        "JWT_SECRET; it would refuse to boot in production"
+    )
+    # The old opt-out is gone everywhere.
+    for env_dir in sorted(q for q in infra.iterdir() if q.is_dir()):
+        tf = env_dir / "main.tf"
+        if tf.exists():
+            assert "ALLOW_MISSING_JWT_SECRET" not in tf.read_text(encoding="utf-8")
 
 
-def test_the_jwt_guard_optout_lets_only_the_migration_boot() -> None:
-    """The Settings validator half of the same rule, in both directions."""
+def test_the_jwt_guard_fires_only_for_declared_signers() -> None:
+    """The Settings validator half, in both directions."""
     import pytest as _pytest
 
     from app.core.config import Settings
 
-    base = dict(environment="production", jwt_secret="")
+    # A non-signer (no declaration) boots without the key in production.
+    assert Settings(environment="production", jwt_secret="").is_production
+    # A declared signer without its key refuses, which is the original
+    # guarantee, held where it is true.
     with _pytest.raises(Exception):
-        Settings(**base)
-    assert Settings(**base, allow_missing_jwt_secret=True).is_production
+        Settings(environment="production", jwt_secret="", require_jwt_secret=True)
+    # A declared signer WITH its key boots.
+    assert Settings(
+        environment="production",
+        jwt_secret="k" * 64,
+        require_jwt_secret=True,
+    ).is_production
