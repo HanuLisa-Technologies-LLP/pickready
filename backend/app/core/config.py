@@ -107,6 +107,32 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     technical_review_reminder_hours: int = 48
 
+    # Whether to install the per-request timing and query-count middleware.
+    #
+    # OPT IN, DEFAULT OFF, AND NOT DERIVED FROM `is_production`. It used to be
+    # `if not get_settings().is_production`, and `instrumentation.py` still
+    # said in place that the middleware was "unreachable in production because
+    # [it] is not installed there". It was installed there. `is_production` is
+    # `environment == "production"` and the live deployment runs
+    # `ENVIRONMENT=pilot`, so the gate was open on the one environment it was
+    # written to close. That is the same root cause as the unsigned-webhook
+    # hole and the exposed API docs, which is why this one is not fixed by
+    # swapping in another derived property.
+    #
+    # `serves_over_https` would be wrong too: it is true of staging, where
+    # these diagnostics are wanted. So this is DEPLOYMENT DATA, the shape
+    # `email_transport` and `task_dispatch_backend` already use, with the
+    # default chosen so an environment nobody has thought about is safe.
+    #
+    # What it exposes when on: `Server-Timing` carrying an app and a SQL
+    # duration, `X-Query-Count`, and an `X-Debug-SQL: 1` request header that
+    # makes the server log every statement the request ran. The statement text
+    # only, never its bound parameters, so no candidate value reaches the log;
+    # the timing is the sharper half, because this codebase uses
+    # `hmac.compare_digest` precisely to deny the measurement that a
+    # server-computed `sql;dur` hands out with the network jitter removed.
+    expose_request_diagnostics: bool = False
+
     # How long an employer's verification form link stays usable, counted from
     # when the request row was written (which is the same request that
     # dispatches the email, so it is the send date).

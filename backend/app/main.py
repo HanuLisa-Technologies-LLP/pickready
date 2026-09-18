@@ -173,9 +173,23 @@ app.add_middleware(
 # compress roughly 5:1. Below 1 KB compression costs more than it saves.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
-# Per-request timing + SQL query count. Diagnostics only, and only outside
-# production (see app/core/instrumentation.py).
-if not get_settings().is_production:
+# Per-request timing + SQL query count (see app/core/instrumentation.py).
+#
+# GATED ON AN EXPLICIT OPT-IN, NOT ON `is_production`, AND THE REASON IS THAT
+# THE OLD GATE WAS OPEN ON THE LIVE SITE. This read `if not
+# get_settings().is_production`, `is_production` is `environment ==
+# "production"`, and the deployment serving readypick.ai runs
+# `ENVIRONMENT=pilot`. So the middleware was installed in production while
+# `instrumentation.py` stated in its own docstring that it could not be:
+# `Server-Timing` carrying a SQL duration on every response, and
+# `X-Debug-SQL: 1` accepted from an anonymous caller.
+#
+# This is the third defect from that one root cause, after the unsigned
+# Razorpay webhook and the exposed API docs, so it is deliberately NOT fixed by
+# reaching for another derived property. `serves_over_https` would be wrong
+# here as well, because it is true of staging where these diagnostics are
+# wanted. See `Settings.expose_request_diagnostics`.
+if get_settings().expose_request_diagnostics:
     from app.core.instrumentation import install_query_counter, timing_middleware
 
     install_query_counter()
