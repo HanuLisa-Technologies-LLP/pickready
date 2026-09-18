@@ -416,17 +416,40 @@ a rule if built as written.
    authoring none of its own copy. The erasure also takes the sign-in `users`
    row, without which the person keeps a working identity against a profile
    that no longer exists and every route answers 404 for ever.
-2. **BGV** (feature 4, per C4). Partly done.
-   - ~~the 3-day link expiry~~ **BUILT 2026-09-18**, and it turned out to be a
-     security finding rather than a feature: the employer form link was
-     single-use and had NO expiry, so one nobody ever used stayed valid for
-     ever in a third party's mailbox. SEC-20.
-   - The 2-employer cap already exists as
-     `bgv.MAX_INQUIRIES_PER_CANDIDATE = 2`.
-   - **Still open: bounce detection, the PAN/PF/ESI consent tick, and the HR
-     checkbox form.** The last of these needs the decision in C8 below first.
-3. **Recruiter columns 5, 6 and 7** (feature 3), with column 2 as the word.
-4. **The six consent items with per-item timestamps** (feature 6).
+2. ~~**BGV** (feature 4, per C4).~~ **BUILT 2026-09-18** on the surviving
+   system (C8 ruling): the seven-item HR checkbox form at
+   `/verify-employment/{token}` (`services/bgv_form`, migration 0102), a
+   fresh single-use 3-day token per send, the C4 boundary held exactly (the
+   employer's submission sets the status, the parsed reply never does,
+   `decided_by` stays a platform user's field), the day-3 chase
+   (`pickready.sweep_bgv_reminders`, daily, all three environments), bounce
+   detection off the SES events webhook with an immediate candidate alert,
+   and the PAN/PF/ESI tick as a consent item that collects and stores NO
+   numbers. The HR address travels partially masked in every candidate
+   letter. The earlier 3-day expiry (SEC-20) remains on the retiring system
+   until C8's retirement lands.
+3. ~~**Recruiter columns 5, 6 and 7** (feature 3).~~ **BUILT 2026-09-18**,
+   with column 2 AS THE PERCENTAGE per the ruling: `match_percent` is the
+   one sanctioned number (claude.md rule 1 amended in the same commit,
+   pinned at exactly one field), and CTC / Notice / Education / BGV are
+   derived words in `services/recruiter_columns` where None always renders
+   "Not stated".
+4. ~~**The six consent items with per-item timestamps** (feature 6).~~
+   **BUILT 2026-09-18**: `services/consent_catalog` (seven items, the
+   brief's six plus the statutory tick), `candidate_consents` (0101,
+   re-affirmation moves the stamp), Stage A at both registration capture
+   sites, Stage B inside `assessment_consent.record_consent` in ONE
+   transaction, and the three destinations are three READERS of the one
+   table. C7's forbidden terms are swept platform-wide beside the em dash.
+4b. ~~**Job-closure deletion** (C5).~~ **BUILT 2026-09-18**: closing a job
+   permanently erases its PRISM reports, evaluations, transcripts, question
+   sets and assessment chunks in the close transaction
+   (`erasure.job_closure_erasure`), keeps the links, billing and consent
+   records, and the confirmation dialog says so before the click.
+4c. ~~**Last-two auto-maintenance** (feature 5).~~ **BUILT 2026-09-18**:
+   `POST /bgv/me/employers` appends after finalisation, the 0103 trigger
+   admits only the cap's auto-drop, and `pickready.bgv_auto_maintenance`
+   fires the new employer's verification for every tenant already verifying.
 5. ~~**Consent renewal and the inactivity sweep** (feature 8, per C6).~~
    **BUILT 2026-09-18.** `services/consent_lifecycle` derives the stage from
    four nullable stamps (migration 0100) and stores no status;
