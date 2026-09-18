@@ -217,6 +217,10 @@ class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
     payload_json: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+    # Resume pre-fill (migration 0104, vivekium feature 2 under C2): the
+    # answer recorded instead of asking, and its provenance. NULL = asked.
+    prefilled_answer: Mapped[str | None] = mapped_column(Text)
+    prefill_source: Mapped[str | None] = mapped_column(String(30))
     resume_anchor: Mapped[str | None] = mapped_column(Text)
     #: Suggested time, in seconds. Bounds the assessment's total length per
     #: role (composition rule 6); shown to the candidate as guidance only.

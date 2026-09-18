@@ -2278,6 +2278,10 @@ async def start_conversation(
                 target=hiring_pipeline.ASSESSMENT_IN_PROGRESS,
             )
     prompts = await _conversation_prompts(session, job, link)
+    # Pre-filled questions are consumed BEFORE anything is served, so the
+    # first thing this candidate ever sees is a question the resume could
+    # not answer for them (feature 2, C2).
+    await _consume_prefilled_questions(session, job, conversation, prompts)
     index = min(conversation.next_question_index, len(prompts))
 
     # THE FIRST QUESTION IS WRITTEN HERE, and it has to be.
@@ -2350,6 +2354,76 @@ async def _resume_excerpt(session: AsyncSession, link: JobCandidateLink) -> str:
             select(Profile.resume_text).where(Profile.id == link.profile_id)
         )
     ).scalar_one_or_none() or ""
+
+
+async def _consume_prefilled_questions(
+    session: AsyncSession,
+    job: Job,
+    conversation: AssessmentConversation,
+    prompts: list[tuple[str, str, str, CandidateQuestion]],
+) -> int:
+    """Record every consecutive pre-filled question instead of asking it.
+
+    Feature 2 (C2, owner-ruled): a question whose criterion the resume
+    already evidences carries `prefilled_answer`, and the conversation
+    writes that exchange, agent prompt, then the labelled answer, exactly
+    where a typed answer would land (`answer_label="resume_prefill"`, so the
+    transcript says where the words came from), advances the index and moves
+    on. The scorer reads the same rows it always reads; billing and
+    completion fire at the same chokepoints, because the index moves through
+    the same gate.
+    """
+    from app.services import resume_prefill
+
+    consumed = 0
+    while (
+        conversation.pending_prompt is None
+        and conversation.completed_at is None
+        and conversation.next_question_index < len(prompts)
+    ):
+        aspect, key, prompt_text, row = prompts[conversation.next_question_index]
+        prefilled = getattr(row, "prefilled_answer", None)
+        if not prefilled:
+            break
+        ordinal = (
+            await session.execute(
+                select(func.count()).select_from(AssessmentMessage).where(
+                    AssessmentMessage.conversation_id == conversation.id
+                )
+            )
+        ).scalar_one()
+        candidate_message = AssessmentMessage(
+            tenant_id=job.tenant_id,
+            conversation_id=conversation.id,
+            ordinal=ordinal + 2,
+            speaker="candidate",
+            domain=aspect,
+            question_key=key,
+            content=prefilled,
+            answer_label=resume_prefill.ANSWER_LABEL,
+        )
+        session.add_all([
+            AssessmentMessage(
+                tenant_id=job.tenant_id, conversation_id=conversation.id,
+                ordinal=ordinal + 1, speaker="agent", domain=aspect,
+                question_key=key, content=prompt_text,
+            ),
+            candidate_message,
+        ])
+        await session.flush()
+        await _write_answer_record(
+            session, job, conversation, row.id, candidate_message,
+            answer_json={"text": prefilled, "source": row.prefill_source or "resume"},
+            auto_score=None, evaluation=None,
+            now=datetime.now(timezone.utc), paused_ms=0,
+            question_type=row.question_type,
+        )
+        conversation.delivered_prompt = None
+        conversation.next_question_index += 1
+        consumed += 1
+    if consumed:
+        await session.flush()
+    return consumed
 
 
 async def _write_next_question(
@@ -2920,6 +2994,11 @@ async def respond(
             interviewer.STOP_NO_CONFLICT_OUTSTANDING in coverage.stop_conditions
         )
 
+    # Consume any pre-filled questions the advance just reached (feature 2,
+    # C2): recorded, never asked, and if the tail of the interview is all
+    # pre-filled this walks the index to the end so completion and the
+    # charge fire in the same block below, on the same request.
+    await _consume_prefilled_questions(session, job, conversation, prompts)
     if (
         conversation.next_question_index >= len(prompts) or evidence_complete
     ) and not conversation.pending_prompt:

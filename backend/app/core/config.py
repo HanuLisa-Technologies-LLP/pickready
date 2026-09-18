@@ -174,6 +174,10 @@ class Settings(BaseSettings):
     # response", and it takes a reason and writes an audit row. Without that an
     # expiry would convert a stale-credential risk into a dead end for a
     # candidate who did nothing wrong, which is the worse failure.
+    #: Vivekium feature 2 (C2, owner-ruled): the ceiling on questions a
+    #: candidate is ASKED in one assessment. Pre-filled questions cost
+    #: nothing against it; the trim drops lowest-weight items past it.
+    assessment_question_ceiling: int = 40
     verification_link_ttl_days: int = 3
 
     # -- Background task dispatch --------------------------------------------
