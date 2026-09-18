@@ -317,8 +317,13 @@ pins all of it and is mutation-checked in two directions: making the function
 SECURITY INVOKER fails two of its tests, and granting EXECUTE back to PUBLIC
 fails the third.
 
-**It reaches production when migration 0099 is applied**, which is part of the
-next deploy rather than something already live.
+**LIVE AND VERIFIED, 2026-09-18.** Migration 0099 was applied to pilot as a
+one-shot ECS task (exit 0, and the task's own log read back to confirm which
+revision ran, because an exit code does not say that). The proof the outage is
+over is a timestamp rather than an argument: eleven consecutive failures at
+five-minute intervals from 19:35:10 to 20:25:10, then the first scheduled run
+after the Lambda was updated, **20:30:08, succeeded in 0.3 seconds**.
+`readypick-pilot-task-worker-error-rate` has gone from ALARM to OK.
 
 **Evidence.** Alarm `readypick-pilot-task-worker-error-rate`, state ALARM,
 "Threshold Crossed: 2 datapoints [100.0, 50.0] were greater than the threshold

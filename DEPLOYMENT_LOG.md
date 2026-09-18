@@ -1258,3 +1258,72 @@ separates the two: ask whether a CHILD process exists and is `active`.
 1660s against an 853s baseline, and why per-module fresh-interpreter imports
 cost about twelve seconds each. Worth checking `MaxClockSpeed` before
 concluding anything is wrong with a slow run.
+
+---
+
+## Release 3, the week-long outage, 2026-09-18
+
+Backend `sha-da4b5f1`, frontend unchanged at `sha-b0ee2c3`, analysis unchanged.
+**The first deploy in this sequence that carried a migration.**
+
+| Artifact | Tag | Digest |
+|---|---|---|
+| api | `sha-da4b5f1` | `sha256:10bdaed5f0089a842c12176b2c184c189ac218607af735ec755772e6baf0d6cc` |
+| lambdas | `sha-da4b5f1-fn` | `sha256:4dd1e589b5d052802688ce811c5c1ced3fcbe60f2f46db2483c2c46ff24b2692` |
+| frontend | unchanged | `sha256:6fc25a80e653aeba4793ce313ffe0463a7997fc59dfed5ab42edf46fac44a81f` |
+| analysis | unchanged | `sha256:e0c6d4880b94fe3531a904042ff932ab42e3caeb19b88c03dd9b58c0fc037ec1` |
+
+Order: `terraform apply`, then **`run-migration.sh` BEFORE the service roll**,
+then the roll, then the Lambdas. That order is required rather than tidy: the
+new code calls a function migration 0099 creates, so the function has to exist
+first. The old code never calls it, which is what makes migrating first safe.
+
+### THE OUTAGE IS OVER, AND THE PROOF IS A TIMESTAMP
+
+`pickready.refresh_dashboard_views` is scheduled every five minutes and had
+failed on every run since the 2026-09-11 credential split, with
+"must be owner of materialized view dashboard_job_metrics". Read from the
+task's own log:
+
+```
+19:35:10 failed        20:10:10 failed
+19:40:14 failed        20:15:10 failed
+19:45:10 failed        20:20:10 failed
+19:50:10 failed        20:25:10 failed
+19:55:10 failed
+20:00:10 failed        20:30:08 SUCCEEDED
+20:05:10 failed
+```
+
+Eleven consecutive failures at five-minute intervals, then the first scheduled
+run after the Lambda was updated succeeded, in 0.3 seconds.
+`readypick-pilot-task-worker-error-rate` has gone from ALARM to **OK**.
+
+### Verified, in one pass
+
+- Backend suite before the build: **6566 passed, 1 skipped, 2 xfailed, zero
+  failures**. Exactly +5 over release 2, matching the five tests added.
+- Migration: run as a one-shot ECS task, polled to STOPPED, `exit=0`, and the
+  task's own log read back to confirm
+  `Running upgrade 0098_jobs_embedding_hnsw_index -> 0099_dashboard_refresh_grant`.
+  Exit zero alone would not have proven which revision ran.
+- `verify-deployment.sh` with all THREE digests: "Every running task is the
+  image this build produced."
+- `smoke-test.sh`: every check PASS.
+- **SEC-23 confirmed closed on the live site**: `Server-Timing` and
+  `X-Query-Count` are GONE from API responses, and `X-Debug-SQL: 1` is no
+  longer honoured.
+- **No regression in the earlier fixes**, re-probed rather than assumed: the
+  Razorpay webhook still 503s, the inbound relay still 403s, and
+  `GET /portal/me/deletion-notice` still 401s for an anonymous caller.
+
+### What this release says about the alarm nobody receives
+
+The defect it fixes ran for a week in production, was reported correctly by the
+code (it retried three times and re-raised), was measured correctly by
+CloudWatch, and fired an alarm that reached nobody because the SNS subscription
+is still `PendingConfirmation`. It was found by listing alarms by hand.
+
+**Confirming that subscription is worth more than any single fix in these three
+releases**, because it is the difference between the next one being found in
+minutes and being found in a week.
