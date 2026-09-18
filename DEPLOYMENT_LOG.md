@@ -1191,3 +1191,70 @@ The target group health check uses `/health/live` deliberately: a readiness
 check that fails on a Redis blip would kill tasks that are serving traffic
 perfectly well. RDS and ElastiCache are watched by their own CloudWatch alarms
 rather than through this path. Recorded so the 307 is not read as a fault.
+
+---
+
+## Release 2, the candidate's right to erasure, 2026-09-18
+
+Backend and frontend both `sha-b0ee2c3`, analysis unchanged. The DEPLOYED CODE
+is `b0ee2c3`; later commits on this branch are documentation only.
+
+| Artifact | Tag | Digest |
+|---|---|---|
+| api | `sha-b0ee2c3` | `sha256:e039f1f0ccd795f81334c00180e7b8f9e67aca942ee91a11db471f88cc90b350` |
+| lambdas | `sha-b0ee2c3-fn` | `sha256:57c84ef20d1a5a7d5b1eb8bec70126075de00ac621aa2e3e86b84cb9553f54eb` |
+| frontend | `sha-b0ee2c3` | `sha256:6fc25a80e653aeba4793ce313ffe0463a7997fc59dfed5ab42edf46fac44a81f` |
+| analysis | unchanged | `sha256:e0c6d4880b94fe3531a904042ff932ab42e3caeb19b88c03dd9b58c0fc037ec1` |
+
+No migration: this release adds no alembic revision.
+
+### What shipped
+
+- **Delete My Profile.** `services/erasure` had been complete since the AI
+  runtime upgrade and reachable by nobody: no route on any portal could ask for
+  an erasure. `DELETE /portal/me` with a server-checked typed phrase, and
+  `GET /portal/me/deletion-notice` serving the warning verbatim so a screen
+  cannot author its own copy about an irreversible rule. The erasure also takes
+  the sign-in `users` row, without which the person keeps a working identity
+  against a profile that no longer exists.
+- **The employer verification link expires**, at three days, derived from the
+  send date. It was single-use and had NO expiry, so one nobody ever used
+  stayed valid for ever in a third party's mailbox. SEC-20.
+- **`linkedin.com` excluded at the search provider.** SEC-21. Found by sweeping
+  the tree for `if False` after a subagent left one earlier in this work.
+
+Every one of the three is mutation-checked: disabling the fix fails its test.
+
+### Verified, in one pass
+
+- Backend suite before the build: **6561 passed, 1 skipped, 2 xfailed, zero
+  failures**, on a fresh database. Exactly +9 over the previous run, matching
+  the nine tests added.
+- `verify-deployment.sh` with all THREE expected digests: "Every running task is
+  the image this build produced."
+- `smoke-test.sh https://readypick.ai`: every check PASS.
+- **Both new routes live and refusing an anonymous caller**: 401 on
+  `GET /portal/me/deletion-notice` and on `DELETE /portal/me`, and both present
+  in the live `openapi.json`.
+- **Twelve public routes, all 200.**
+- **The two CRITICAL holes are still closed after the roll**: the Razorpay
+  webhook answers 503 to an unsigned POST and to a bogus signature, and the
+  inbound relay answers 403 with no secret header. Re-probed rather than
+  assumed, because a deploy is exactly when a fix silently reverts.
+- `/` still serves `Site Under Construction`, as the owner requires.
+
+### Two process notes, both of which cost time
+
+**The authoritative suite ran twice because the first run was killed on a wrong
+diagnosis.** `py-spy` correctly named `test_import_graph` blocked in
+`subprocess.run`, and the conclusion drawn from it was wrong twice over: first
+that CPU contention from two concurrent emulated ARM64 builds caused it, then
+that flat parent CPU meant "frozen". A parent blocked in `communicate` while
+its child works burns no CPU, so flat CPU is that test's NORMAL state. The run
+was slow, not hung. `claude.md` now carries the diagnostic that actually
+separates the two: ask whether a CHILD process exists and is `active`.
+
+**The machine is clock-throttled to 1200MHz**, which is why the second run took
+1660s against an 853s baseline, and why per-module fresh-interpreter imports
+cost about twelve seconds each. Worth checking `MaxClockSpeed` before
+concluding anything is wrong with a slow run.
