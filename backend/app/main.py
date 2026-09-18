@@ -290,9 +290,56 @@ app.include_router(provider.router, prefix="/api/v2/provider", tags=["provider-v
 app.include_router(bd.router, prefix="/api/v2/bd", tags=["bd-v2"])
 
 
+@app.get("/health/live")
+async def health_live() -> dict:
+    """LIVENESS. Is this process able to serve? No dependency is touched.
+
+    WHY THIS EXISTS, AND WHY IT IS NOT A WEAKER `/health`.
+    ------------------------------------------------------
+    `/health` below is a READINESS probe: it fails when Redis or the database
+    is unreachable, and the reasoning for that is sound and is written out in
+    `app/api/health.py`. A task with no Redis answers every assessment turn
+    with a 503, and promoting it on a deploy would ship a broken release.
+
+    The mistake was using that one endpoint to answer a SECOND question it is
+    wrong for. The ALB target group polls it every thirty seconds with
+    `unhealthy_threshold = 3`, and ECS replaces a task that fails its load
+    balancer check. Redis is a single shared ElastiCache, so an outage there
+    does not make ONE task unhealthy, it makes EVERY task unhealthy at once:
+
+      * the target group empties, so the ALB answers 503 for the whole
+        product, including jobs, candidates, billing and reports, all of
+        which would otherwise have kept working;
+      * ECS then kills the tasks, and the replacements fail the same check
+        because Redis is still down, so it becomes a restart loop that also
+        throws away every warm connection pool;
+      * and there is nothing to route around TO, because the dependency is
+        shared. Removing the tasks buys nothing and costs everything.
+
+    A degraded assessment surface is strictly better than that.
+
+    SO THE DEPLOY GATE IS NOT LOST, IT MOVED. `scripts/smoke-test.sh` runs
+    after the rollout, probes `/health` (the deep one), and FAILS THE DEPLOY
+    when it is not 200. The property the authors of `/health` cared about,
+    that a release with a broken dependency does not ship, still holds. What
+    no longer holds is that a dependency blip can take the running product
+    down with it.
+
+    Nothing here may grow a dependency. The moment this touches the database,
+    Redis, or anything over a socket, it stops being a liveness probe and the
+    restart loop above comes back.
+    """
+    return {"status": "ok"}
+
+
 @app.get("/health")
 async def health() -> dict:
-    """The ALB target group's health check, and therefore the deploy gate.
+    """READINESS, and the deploy gate. Fails when a dependency is unreachable.
+
+    NOT the ALB target group's ongoing health check any more; `/health/live`
+    above is, and that docstring explains why. This one is what
+    `scripts/smoke-test.sh` probes after a rollout, which is where a release
+    with a broken dependency is now stopped.
 
     The probes live in `app/api/health.py`; read the module docstring there for
     why the broker is checked alongside the database. In short: an unreachable
