@@ -868,11 +868,48 @@ def test_the_candidate_pool_is_larger_than_the_display_ceiling() -> None:
 
 def test_job_boards_are_excluded_at_the_provider_not_after() -> None:
     """A board fetched and then dropped has still consumed a result slot. The
-    exclusion has to reach Tavily, not just the post-filter."""
+    exclusion has to reach Tavily, not just the post-filter.
+
+    THIS TEST SPENT ITS LIFE NOT CHECKING THE ONE HOST IT WAS ABOUT. The loop
+    read `"linkedin.com" if False else "shine.com"`, which is a construct with
+    exactly one effect: it drops `linkedin.com` and tests `shine.com` twice.
+    `linkedin` was in `_AGGREGATOR_HOSTS` and absent from
+    `EXCLUDED_SEARCH_DOMAINS` the whole time, so every LinkedIn result was
+    fetched, counted against the budget and then discarded. A disabled
+    assertion does not fail; it reports success about something nobody
+    measured.
+    """
     from app.services import web_research
 
-    for host in ("indeed.com", "naukri.com", "linkedin.com" if False else "shine.com"):
+    for host in ("indeed.com", "naukri.com", "linkedin.com", "shine.com"):
         assert host in web_research.EXCLUDED_SEARCH_DOMAINS
+
+
+def test_the_two_exclusion_lists_express_the_same_judgement() -> None:
+    """`EXCLUDED_SEARCH_DOMAINS` says it is `_AGGREGATOR_HOSTS` as registrable
+    domains. Where they disagree, a host is paid for and then thrown away.
+
+    The mapping is NOT one to one and asserting equality would be wrong:
+    `jobsearch` is a subdomain pattern rather than a domain, `angel` is
+    `angel.co`, and `x.com` is caught by the post-filter's minimum-length rule
+    rather than by name. So this pins the DIRECTION that costs money (a host
+    the post-filter will discard should never have been fetched) and names the
+    remaining divergence explicitly, so it is a recorded decision rather than
+    something nobody has looked at.
+    """
+    from app.services import web_research
+
+    labels = {
+        domain.split(".")[0] for domain in web_research.EXCLUDED_SEARCH_DOMAINS
+    }
+    # Known and accepted: each is either not a registrable domain, or a host
+    # whose cost is negligible because it never appears in a hiring search.
+    accepted_gaps = {"jobsearch", "angel", "google", "bing", "wikipedia", "medium"}
+    unpaid_for = set(web_research._AGGREGATOR_HOSTS) - labels - accepted_gaps
+    assert unpaid_for == set(), (
+        "these hosts are dropped by the post-filter after being fetched, so "
+        f"each one burns a result slot for nothing: {sorted(unpaid_for)}"
+    )
 
 
 def test_every_planned_and_widened_query_names_the_role() -> None:

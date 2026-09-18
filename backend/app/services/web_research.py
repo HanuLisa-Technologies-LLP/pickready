@@ -1141,6 +1141,20 @@ _AGGREGATOR_HOSTS: frozenset[str] = frozenset(
 #: with a company name, and collapsing the two would tie a search-cost decision
 #: to a labelling decision.
 EXCLUDED_SEARCH_DOMAINS: tuple[str, ...] = (
+    # ADDED 2026-09-18. `linkedin` was in `_AGGREGATOR_HOSTS` and missing here,
+    # so a LinkedIn hit was fetched, counted against the bounded result budget,
+    # and THEN dropped by the post-filter for being a board. That is precisely
+    # the waste `test_job_boards_are_excluded_at_the_provider_not_after` was
+    # written to prevent, and that test could not see it: its assertion read
+    # `"linkedin.com" if False else "shine.com"`, so the one host it existed to
+    # check was the one host it never checked.
+    #
+    # THIS DOES NOT TOUCH COMPANY-PROFILE RESEARCH, where spec v4 makes
+    # LinkedIn a PREFERRED source. `services/company_research` calls
+    # `_tavily_search` with no `exclude_domains` at all and enforces its own
+    # `PREFERRED_HOSTS`; this constant reaches only AI Reach's lead search and
+    # the official-site lookup, where a LinkedIn page is never the answer.
+    "linkedin.com",
     "indeed.com", "naukri.com", "glassdoor.com", "monster.com", "shine.com",
     "timesjobs.com", "foundit.in", "simplyhired.com", "ziprecruiter.com",
     "cutshort.io", "instahyre.com", "hirist.com", "iimjobs.com", "apna.co",
