@@ -90,9 +90,19 @@ def configure_logging(*, production: bool | None = None) -> None:
     rather than appended to: calling this twice leaves one handler, not two.
     """
     if production is None:
-        from app.core.config import get_settings
+        # THE ENVIRONMENT VARIABLE, NEVER the settings accessor. The Lambda entry
+        # points configure logging BEFORE the secret bootstrap has loaded
+        # this function's secrets (deliberately, so a failed secret fetch is
+        # readable), and constructing a full validated Settings at that
+        # moment trips the production JWT boot refusal on a process whose
+        # secrets simply have not arrived yet. That took every Lambda task
+        # down on 2026-09-19, at import, on the first production roll. A log
+        # format decision needs one string, so it reads the one string.
+        import os
 
-        production = get_settings().is_production
+        production = (
+            os.environ.get("ENVIRONMENT", "").strip().lower() == "production"
+        )
 
     shared = _shared_processors()
     renderer: Any = (
