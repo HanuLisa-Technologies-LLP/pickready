@@ -329,3 +329,50 @@ def test_the_write_grant_is_put_secret_value_and_nothing_else() -> None:
         "DescribeSecret",
         "PutSecretValue",
     }, actions
+
+
+def test_the_jwt_guard_optout_is_migrate_only() -> None:
+    """ALLOW_MISSING_JWT_SECRET exists for exactly one container per
+    environment: the migrate one-shot, which signs nothing and cannot serve.
+    Anywhere else it would let a SERVING process boot unsigned in
+    production, which is the compromise the guard exists to refuse."""
+    import re
+    from pathlib import Path
+
+    infra = Path(__file__).resolve().parents[2] / "infra" / "environments"
+    for env_dir in sorted(p for p in infra.iterdir() if p.is_dir()):
+        main_tf = env_dir / "main.tf"
+        if not main_tf.exists():
+            continue
+        text_ = main_tf.read_text(encoding="utf-8")
+        hits = text_.count("ALLOW_MISSING_JWT_SECRET")
+        if hits == 0:
+            continue
+        # Comment lines may explain it; ASSIGNMENTS must sit in the migrate
+        # block only. Count assignments, then check each sits after the
+        # nearest 'migrate = {' opener before any other service opener.
+        assignments = [
+            m.start() for m in re.finditer(r"ALLOW_MISSING_JWT_SECRET\s*=", text_)
+        ]
+        assert len(assignments) == 1, (
+            f"{main_tf}: ALLOW_MISSING_JWT_SECRET assigned "
+            f"{len(assignments)} times; it belongs on the migrate container only"
+        )
+        migrate_at = text_.find("migrate = {")
+        next_service = text_.find("frontend = {", migrate_at)
+        assert migrate_at != -1 and migrate_at < assignments[0] < next_service, (
+            f"{main_tf}: ALLOW_MISSING_JWT_SECRET is assigned outside the "
+            f"migrate container block"
+        )
+
+
+def test_the_jwt_guard_optout_lets_only_the_migration_boot() -> None:
+    """The Settings validator half of the same rule, in both directions."""
+    import pytest as _pytest
+
+    from app.core.config import Settings
+
+    base = dict(environment="production", jwt_secret="")
+    with _pytest.raises(Exception):
+        Settings(**base)
+    assert Settings(**base, allow_missing_jwt_secret=True).is_production

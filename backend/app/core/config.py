@@ -738,6 +738,8 @@ class Settings(BaseSettings):
 
     # App
     environment: str = "development"
+    #: MIGRATE-CONTAINER ONLY. See `_refuse_an_unconfigured_jwt_secret`.
+    allow_missing_jwt_secret: bool = False
 
     @model_validator(mode="after")
     def _refuse_an_unconfigured_jwt_secret(self) -> "Settings":
@@ -763,6 +765,16 @@ class Settings(BaseSettings):
         default is what lets a fresh clone run.
         """
         if (self.environment or "").strip().lower() != "production":
+            return self
+        # THE ONE OPT-OUT, and it is for a container that cannot serve. The
+        # MIGRATE task runs `alembic upgrade head` and exits; it is granted
+        # no JWT_SECRET because a migration signs nothing, and under
+        # ENVIRONMENT=production (SEC-24) this guard would otherwise refuse
+        # to boot the one process whose whole job is DDL. Terraform sets
+        # ALLOW_MISSING_JWT_SECRET on the migrate container ONLY, and
+        # tests/test_app_db_credential.py sweeps every environment to keep
+        # it off anything that serves a request.
+        if self.allow_missing_jwt_secret:
             return self
         value = (self.jwt_secret or "").strip()
         if not value or value == PLACEHOLDER_SECRET or value == DEV_JWT_SECRET:

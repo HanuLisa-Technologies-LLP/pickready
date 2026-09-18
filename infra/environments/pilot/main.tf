@@ -1485,6 +1485,12 @@ module "ecs" {
       environment = {
         POSTGRES_MIGRATION_ROLE = local.db_owner_role
         APP_DSN_SECRET_ID       = module.secrets.secret_arns["DATABASE_URL"]
+        # THE ONE JWT-GUARD OPT-OUT (SEC-24 follow-up, 2026-09-19). Under
+        # ENVIRONMENT=production the boot guard refuses an unconfigured
+        # JWT_SECRET, and this container is deliberately granted none: a
+        # migration signs nothing. It runs alembic and exits, and cannot
+        # serve a request. On no other container, ever.
+        ALLOW_MISSING_JWT_SECRET = "1"
       }
     }
 
