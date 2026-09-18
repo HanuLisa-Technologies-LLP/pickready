@@ -626,6 +626,10 @@ class ConsentTermsOut(BaseModel):
     consent_version: str
     privacy_policy_version: str
     terms_version: str
+    #: The Stage B per-item catalogue (vivekium feature 6), server-authored:
+    #: {key, stage, text} each. The screen renders these VERBATIM beside the
+    #: mode text; acceptance stamps each item individually server-side.
+    items: list[dict] = []
 
 
 class ModeStateOut(BaseModel):

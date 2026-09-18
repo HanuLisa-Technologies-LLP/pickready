@@ -247,6 +247,33 @@ Four, reproduced in the brief in full:
 Seven items. Each is a place where the brief and a rule this repository
 enforces with a test cannot both hold. None is built.
 
+**RULED 2026-09-18, owner, verbatim: "whatever is given in vivekium is
+ultimate final source of truth."** That sentence resolves every decision this
+register was waiting on, in the brief's favour. Where the brief contradicts
+ITSELF (C3's enhancement-layer sentence versus the event map's "all three
+required"), the feature table's own explicit statement wins over the wiring
+summary. The resolutions:
+
+- **C1**: column 2 IS the percentage. Rule 1 is amended in `claude.md` in the
+  same commit that builds it, with `tests/test_platform_audit.py` changed
+  beside it, exactly as this register required. The amendment is NARROW: the
+  Executive Profile Match Score on recruiter surfaces is the one sanctioned
+  number; grades everywhere else stay words.
+- **C2**: the 40-question ceiling and resume-driven count stand. The owner has
+  traded fixed-count comparability for speed; a criterion the resume already
+  evidences is pre-filled and skipped rather than asked.
+- **C3**: Drishti is built as the ENHANCEMENT LAYER the feature table states
+  ("If absent: the platform still works"), supplying `LAYER_COMPANY` through a
+  compiled artifact, never free text.
+- **C5**: job closure deletes the candidate-identifying assessment artifacts
+  immediately, as the brief says ("No manual action from anyone"); the billing
+  fact, which names no candidate content, is retained because the brief is
+  silent about it and the credit ledger is append-only.
+- **C8**: the brief describes the candidate-owned system (candidate-level,
+  portable, two employers, checkbox form), so `bgv_inquiries` wins and
+  `verification_requests` is retired the way Company DNA and Intercom were,
+  with a sweep test.
+
 ### C1. "Executive Profile Match Score, % match for this specific job"
 
 **Conflicts with hard rule 1**, the oldest and most-enforced rule here: *no

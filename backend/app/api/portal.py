@@ -63,6 +63,7 @@ from app.services import account_deletion
 from app.services import application_validation
 from app.services import candidate_updates
 from app.services import candidate_profile_form as profile_form
+from app.services import consent_catalog
 from app.services import employer_pages
 from app.services import erasure
 from app.services import hiring_pipeline
@@ -223,6 +224,17 @@ async def outreach_submit(
     # Aspect 40 is the Databank consent (PRD §10 / FR-4.2).
     consent = aspects_data.get("40")
     candidate.consent_databank = bool(consent) and str(consent).lower() not in ("false", "no", "0")
+    if candidate.consent_databank:
+        # Stage A of the per-item catalogue (vivekium feature 6): the
+        # registration-time items, individually stamped. Recorded only on an
+        # actual acceptance; a decline stores nothing, the same rule the
+        # assessment consent follows.
+        await consent_catalog.record_items(
+            session,
+            candidate_id=candidate.id,
+            keys=consent_catalog.STAGE_A_KEYS,
+            source=consent_catalog.SOURCE_REGISTRATION,
+        )
 
     asset = await store_resume(resume)
     apply_resume_asset(profile, asset)
@@ -796,6 +808,21 @@ def _retention_consents_out(candidate: Candidate) -> RetentionConsentsOut:
         retain_video=candidate.retain_video_consent,
         retain_video_updated_at=candidate.retain_video_consented_at,
     )
+
+
+@router.get("/me/consents")
+async def get_my_consents(
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> dict:
+    """The full consent catalogue with this candidate's per-item stamps.
+
+    Destination one of the brief's three (vivekium feature 6): the candidate
+    record. Always the WHOLE catalogue, given or not, the compliance-slots
+    pattern, so an item never asked cannot hide.
+    """
+    candidate = await _candidate_for_user(session, user)
+    return {"items": await consent_catalog.items_for(session, candidate.id)}
 
 
 @router.get("/me/retention-consents", response_model=RetentionConsentsOut)
@@ -1565,6 +1592,15 @@ async def apply_to_job(
     # carries it now; legacy aspect 40 remains the fallback for old payloads.
     consent = aspects_data.get("declaration_accepted", aspects_data.get("40"))
     candidate.consent_databank = bool(consent) and str(consent).lower() not in ("false", "no", "0")
+    if candidate.consent_databank:
+        # Stage A items (vivekium feature 6), same rule as the profile route:
+        # stamped on acceptance only.
+        await consent_catalog.record_items(
+            session,
+            candidate_id=candidate.id,
+            keys=consent_catalog.STAGE_A_KEYS,
+            source=consent_catalog.SOURCE_REGISTRATION,
+        )
 
     profile = Profile(
         candidate_id=candidate.id, source_tenant_id=job.tenant_id,

@@ -49,9 +49,24 @@ export function AssessmentConsentScreen({
         </CardHeader>
         <CardContent className="space-y-5">
           <p className="whitespace-pre-line text-sm leading-7">{terms.text}</p>
+          {terms.items && terms.items.length > 0 ? (
+            // The Stage B per-item catalogue (vivekium feature 6). Rendered
+            // VERBATIM from the server, which stamps each item individually
+            // when the candidate agrees; this screen authors none of it.
+            <ul className="space-y-2 rounded-md border border-border bg-muted/40 p-4">
+              {terms.items.map((item) => (
+                <li key={item.key} className="flex gap-2 text-sm leading-6">
+                  <span aria-hidden="true" className="select-none">
+                    {"•"}
+                  </span>
+                  <span>{item.text}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           <p className="text-sm leading-6">
-            Agreeing records the time you agreed and the version of these terms.
-            The assessment cannot begin without it.
+            Agreeing records the time you agreed to each item above and the
+            version of these terms. The assessment cannot begin without it.
           </p>
           {error ? (
             <p role="alert" className="text-sm leading-6 font-medium">

@@ -232,6 +232,50 @@ def test_the_legacy_otp_input_is_not_wired_into_any_page() -> None:
     assert not importers, f"otp-input is imported by: {importers}"
 
 
+# ── The vivekium forbidden terms (C7, owner-ruled final 2026-09-18) ─────────
+
+#: Built from parts so this file's own sweep cannot read its pattern as a
+#: violation, the same trick chr(8212) plays for the em dash. The brief,
+#: verbatim: do not use these anywhere on the platform, in consent text,
+#: emails or any system copy. The sanctioned phrasing is "employer clients
+#: registered on the platform".
+FORBIDDEN_TERMS = ("direct " + "employer", "manpower " + "agency")
+
+
+def test_no_forbidden_relationship_terms_anywhere() -> None:
+    """Frontend source, backend STRINGS, prompts and templates, one sweep.
+
+    Case-insensitive, because a toast and an email template capitalise
+    differently and the rule is about the words, not the casing.
+    """
+    offenders: list[str] = []
+    for path in _frontend_sources():
+        text = path.read_text(encoding="utf-8").lower()
+        for term in FORBIDDEN_TERMS:
+            if term in text:
+                offenders.append(f"{path.relative_to(FRONTEND)}: {term}")
+    for path in _python_sources():
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            lowered = line.lower()
+            for term in FORBIDDEN_TERMS:
+                if term not in lowered:
+                    continue
+                for match in PY_LITERAL.finditer(line):
+                    if term in match.group(0).lower():
+                        offenders.append(f"{path.name}:{n}: {term}")
+                        break
+    for folder in ("prompts", "templates"):
+        root = BACKEND_APP / folder
+        if not root.exists():
+            continue
+        for path in root.rglob("*.txt"):
+            text = path.read_text(encoding="utf-8", errors="replace").lower()
+            for term in FORBIDDEN_TERMS:
+                if term in text:
+                    offenders.append(f"{path.name}: {term}")
+    assert not offenders, f"forbidden relationship terms: {offenders}"
+
+
 # ── No em dash in user-visible text ────────────────────────────────────────
 
 def test_no_em_dash_in_frontend_source() -> None:
@@ -299,6 +343,29 @@ def test_client_facing_ranking_payload_carries_no_score() -> None:
         flat = repr(payload)
         for score in ("91", "74", "83"):
             assert score not in flat, f"score {score} leaked in {flat[:200]}"
+
+
+def test_match_percent_is_the_one_sanctioned_number() -> None:
+    """Rule 1's single amendment (owner-ruled 2026-09-18, vivekium brief).
+
+    The Executive Profile Match Score, `match_percent` on the recruiter
+    candidate table, is the ONE number that reaches a client. This pins the
+    exception at exactly that field: the serializer source names it once,
+    and the per-parameter breakdown projections still leak nothing (the
+    test above this one proves that with values).
+    """
+    import inspect
+
+    from app.services import job_candidates
+
+    source = inspect.getsource(job_candidates._row_payload)
+    assert source.count('"match_percent"') == 1, (
+        "match_percent must be defined exactly once in the row serializer"
+    )
+    # The word-label fields stay words: the amendment did not widen.
+    for field in ("ctc_match_label", "notice_period_label",
+                  "education_match_label", "bgv_status_label"):
+        assert f'"{field}"' in source, f"{field} missing from the row payload"
 
 
 def test_report_ratings_are_words_not_numbers() -> None:

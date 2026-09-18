@@ -1117,4 +1117,15 @@ async def get_bgv_results(
             items.append(
                 {"shared": False, "note": "Not shared by the candidate"}
             )
-    return {"inquiries": items}
+    # Destinations two and three of the brief's "three destinations"
+    # (vivekium feature 6): the BGV record and the candidate page in the
+    # Executive Profile both read the SAME candidate_consents table the
+    # candidate's own portal reads, so the three surfaces cannot disagree.
+    # Stamps and server-authored wording only; no free text of the
+    # candidate's crosses here.
+    from app.services import consent_catalog
+
+    return {
+        "inquiries": items,
+        "consent_items": await consent_catalog.items_for(session, candidate_id),
+    }

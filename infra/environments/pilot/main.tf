@@ -101,6 +101,19 @@ provider "aws" {
 locals {
   environment = "pilot"
 
+  # SEC-24, decided 2026-09-18 (owner delegated the call). The application's
+  # ENVIRONMENT is "production" even though this composition is named pilot,
+  # because readypick.ai serves real users from here and the five
+  # `is_production` guards exist for exactly this deployment: the `record`
+  # dispatch backend is refused, a missing Voyage key RAISES instead of
+  # returning pseudo-random vectors, the seed scripts refuse the live
+  # database, logs are structured, and the debug instrumentation cannot be
+  # enabled. `local.environment` stays "pilot" because it names RESOURCES,
+  # and renaming every resource is a migration, not a setting. Verified
+  # before the flip: JWT_SECRET in Secrets Manager is a real 64-character
+  # value, so the production boot refusal passes.
+  app_environment = "production"
+
   # The role that OWNS every database object. Not the RDS master: the master's
   # password is rotated by Secrets Manager on a seven-day schedule, and on
   # 2026-09-11 that rotation took the whole product down because `DATABASE_URL`
@@ -1217,7 +1230,7 @@ module "ecs" {
     # nothing has ever read. With it set, every deployed service believed it
     # was in `development` -- the default -- which is what the pilot's first
     # agent run reported in its own log.
-    ENVIRONMENT                   = local.environment
+    ENVIRONMENT                   = local.app_environment
     AWS_REGION                    = var.region
     S3_BUCKET                     = module.s3.bucket_name
     EMBEDDING_DIMENSIONS          = "1024"
@@ -1636,7 +1649,7 @@ module "lambda" {
         # answers 400 for any request that also supplies it. Nothing is lost --
         # `Settings.aws_region` reads that same variable, so boto3 and the
         # application agree with the platform rather than with a literal.
-        ENVIRONMENT                   = local.environment
+        ENVIRONMENT                   = local.app_environment
         S3_BUCKET                     = module.s3.bucket_name
         FRONTEND_URL                  = local.frontend_url
         EMBEDDING_DIMENSIONS          = "1024"
@@ -1693,7 +1706,7 @@ module "lambda" {
         # answers 400 for any request that also supplies it. Nothing is lost --
         # `Settings.aws_region` reads that same variable, so boto3 and the
         # application agree with the platform rather than with a literal.
-        ENVIRONMENT           = local.environment
+        ENVIRONMENT           = local.app_environment
         TASK_DISPATCH_BACKEND = "aws"
       }
     }
@@ -1725,7 +1738,7 @@ module "lambda" {
         # answers 400 for any request that also supplies it. Nothing is lost --
         # `Settings.aws_region` reads that same variable, so boto3 and the
         # application agree with the platform rather than with a literal.
-        ENVIRONMENT           = local.environment
+        ENVIRONMENT           = local.app_environment
         TASK_DISPATCH_BACKEND = "aws"
       }
     }

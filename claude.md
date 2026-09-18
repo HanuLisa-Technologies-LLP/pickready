@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| The vivekium ruling (2026-09-18) | The brief is final; the match_percent exception to rule 1, the derived seven-column words, the C2/C8 supersessions |
 | The singleton that outlived its loop (2026-09-16) | Hub shutdown, per-loop binding, a suite that hangs instead of failing |
 | Permission-aware UX + occupational STEM + Job SWOT (2026-09-13) | The one read-only sentence, capability-first UI, occupational classification, the AI-drafted Job SWOT |
 | BGV and conversations (2026-09-12) | The employment declaration, the offer gate, native chat, the reply address, SES inbound |
@@ -52,7 +53,13 @@ phase sections above them are where the sharp edges are.
 ### The rules that break the most builds
 
 1. **No number ever reaches a client.** Scores are internal; conversion to one
-   of four words happens server-side at the serializer.
+   of four words happens server-side at the serializer. **ONE AMENDMENT,
+   owner-ruled 2026-09-18 (vivekium brief is final): the Executive Profile
+   Match Score, `match_percent` on the recruiter candidate table, is the one
+   sanctioned number.** It is `job_candidate_links.match_score` rounded to an
+   integer at the serializer and it is the WHOLE exception: grades everywhere
+   else stay words, the per-parameter scores stay internal, and
+   `test_platform_audit.py` pins the exception at exactly one field.
 2. **Permissions are data, never a role branch.** `require_capability(...)`,
    and a new capability constant is only HALF a change -- the seeding migration
    is the other half.
@@ -66,6 +73,35 @@ phase sections above them are where the sharp edges are.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
+
+## Current hard rules, the vivekium ruling (2026-09-18)
+
+The owner ruled, verbatim: "whatever is given in vivekium is ultimate final
+source of truth." `docs/spec/VIVEKIUM_SPRINT_FEATURES.md` section 3 carries
+each conflict's resolution in place. The ones that amend standing rules:
+
+- **Rule 1 is amended, narrowly.** `match_percent` (the Executive Profile
+  Match Score on the recruiter candidate table) is the ONE number that
+  reaches a client. It is `match_score` rounded at the serializer in
+  `job_candidates._row_payload`, and nothing else moved: parameter scores,
+  grades and every other surface stay words. Pinned at exactly one field by
+  `test_platform_audit.py`.
+- **The seven-column words are DERIVED, never stored**
+  (`services/recruiter_columns.py`): CTC Match against
+  `compensation_json.ctc_min/ctc_max` (inclusive boundaries, rule 8), the
+  notice-period bucket keyed by the form's own options, Education Match as a
+  five-rung ladder where Partial is exactly one rung short, and BGV Status as
+  a re-wording of `bgv_workflow.derive_status`. **None means "Not stated"**:
+  an absent or unparseable input renders no comparison, because a fabricated
+  word beside a hiring decision is worse than an honest blank. Nothing here
+  scores, ranks, or gates anything.
+- **The question ceiling (C2) will make the coverage plan resume-dependent**
+  when feature 2 lands, superseding "the coverage plan stays deterministic"
+  for COUNT while keeping it for criteria ORDER; a criterion the resume
+  already evidences is pre-filled, not silently dropped.
+- **`verification_requests` is the retiring BGV system (C8)**;
+  `bgv_inquiries`/`bgv_verifications`/`candidate_employments` is the one the
+  brief describes and the one that survives.
 
 ## Current hard rules, the singleton that outlived its loop (2026-09-16)
 

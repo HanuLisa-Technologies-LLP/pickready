@@ -393,6 +393,33 @@ async def ranked_candidates(
                     l.archived_at           AS archived_at,
                     l.match_breakdown_json  AS breakdown,
                     l.validation_json       AS validation,
+                    -- The Executive Profile Match Score (vivekium feature 3,
+                    -- column 2). The ONE sanctioned number on a client
+                    -- surface, under the 2026-09-18 owner amendment to rule 1
+                    -- recorded in claude.md. Everything else on this row
+                    -- stays words.
+                    l.match_score           AS match_score,
+                    -- The comparison inputs for the derived columns
+                    -- (services/recruiter_columns): the job's declared CTC
+                    -- range and its JD education sentence.
+                    j.compensation_json     AS compensation,
+                    j.jd_json->>'education' AS jd_education,
+                    -- BGV Status (column 7): the three inputs
+                    -- bgv_workflow.derive_status counts. candidate_employments
+                    -- is tenant-free by design (0095); bgv_verifications is
+                    -- filtered to THIS job's tenant, the same scope
+                    -- bgv_workflow.candidate_status reads.
+                    c.employment_background AS employment_background,
+                    (
+                        SELECT COUNT(*) FROM candidate_employments ce
+                         WHERE ce.candidate_id = c.id
+                    )                       AS bgv_employer_count,
+                    (
+                        SELECT COALESCE(array_agg(bv.status), '{{}}')
+                          FROM bgv_verifications bv
+                         WHERE bv.candidate_id = c.id
+                           AND bv.tenant_id = j.tenant_id
+                    )                       AS bgv_statuses,
                     -- The tenant, for the reference code. Selected rather than
                     -- taken from the session so the code is derived from the
                     -- row's own owner and cannot be built from a caller's
@@ -488,9 +515,25 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
     "not scored" instead of rendering a silent blank.
     """
     from app.models.candidate import SOURCE_TYPE_APPLIED, source_type_label
-    from app.services import hiring_pipeline, reference_code
+    from app.services import (
+        bgv_workflow,
+        hiring_pipeline,
+        recruiter_columns,
+        reference_code,
+    )
 
     status = hiring_pipeline.normalize(row["status"])
+    # Column 7's input, derived once per row from the same three counts the
+    # offer gate reads (bgv_workflow.candidate_status), fetched in the page
+    # query rather than per candidate.
+    # `.get()` rather than indexing, the file's own precedent: a caller
+    # holding a pre-existing row shape (test fixtures, notably) reads the
+    # honest empty state rather than crashing.
+    bgv_status = bgv_workflow.derive_status(
+        background=row.get("employment_background"),
+        employer_count=int(row.get("bgv_employer_count") or 0),
+        statuses=list(row.get("bgv_statuses") or []),
+    )
     source_type = row["source_type"] or SOURCE_TYPE_APPLIED
     return {
         "link_id": row["link_id"],
@@ -583,6 +626,36 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
         # of the 38 profile answers a candidate fills in once and reuses across
         # every job must be visible here too).
         "validation_answers": validation_answers(row["validation"], row["profile_form"]),
+        # ── The seven-column additions (vivekium feature 3, 2026-09-18) ──────
+        # Column 2: the Executive Profile Match Score, a percentage. The ONE
+        # exception to "no number reaches a client", amended by the owner in
+        # claude.md on 2026-09-18 with test_platform_audit changed in the same
+        # commit. Rendered as an integer; a link the matching pipeline has not
+        # reached yet is None and renders "Not scored".
+        "match_percent": (
+            int(round(row.get("match_score")))
+            if row.get("match_score") is not None
+            else None
+        ),
+        # Columns 3, 4, 5 and 7: derived words, never stored, all from
+        # services/recruiter_columns. None means "Not stated": no comparison
+        # exists, and pretending one does would sit a fabricated word beside a
+        # hiring decision. Column 6 (Resume Link) needs no new field: the
+        # frontend opens /candidates/profiles/{profile_id}/resume-file.
+        "ctc_match_label": recruiter_columns.ctc_match(
+            row["validation"].get("expected_ctc")
+            if isinstance(row.get("validation"), dict) else None,
+            row.get("compensation"),
+        ),
+        "notice_period_label": recruiter_columns.notice_period_bucket(
+            row["validation"].get("notice_period")
+            if isinstance(row.get("validation"), dict) else None,
+        ),
+        "education_match_label": recruiter_columns.education_match(
+            row.get("profile_form"), row.get("jd_education")
+        ),
+        "bgv_status": bgv_status,
+        "bgv_status_label": recruiter_columns.bgv_status_word(bgv_status),
         **ranking_payload(row["breakdown"]),
     }
 

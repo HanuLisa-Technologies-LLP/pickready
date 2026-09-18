@@ -650,6 +650,24 @@ export interface RankedCandidate {
   /** "Ready" / "Processing" / "Failed" / "No recording". Metadata only; the
    *  words come from the server so the table never invents a state. */
   video_status?: string;
+  /** The Executive Profile Match Score (vivekium feature 3, column 2). The
+   *  ONE number a client surface may show, per the 2026-09-18 rule-1
+   *  amendment; null until the matching pipeline has scored the link. */
+  match_percent?: number | null;
+  /** "Within range" / "Above range" / "Below range", or null for "Not
+   *  stated". Derived server-side; nothing here computes a comparison. */
+  ctc_match_label?: string | null;
+  /** The brief's notice bucket ("Immediate", "Within 30 days", ...), or
+   *  null when the candidate stated none. */
+  notice_period_label?: string | null;
+  /** "Match" / "Partial match" / "No match", or null when either the JD or
+   *  the candidate is silent about education. */
+  education_match_label?: string | null;
+  /** Raw derived BGV status ('verified' | 'pending' | ...), for logic. */
+  bgv_status?: string;
+  /** "Done" / "Pending" / "Not Started" / "Not Required" / "Not Verified",
+   *  server-worded; detail lives inside the candidate's profile only. */
+  bgv_status_label?: string;
 }
 
 export interface RankedCandidatesResponse {
@@ -1458,6 +1476,13 @@ export interface EmailSenderList {
 
 export type AssessmentMode = "conversational" | "video_interview";
 
+/** One Stage B consent item, server-authored (vivekium feature 6). */
+export interface ConsentCatalogueItem {
+  key: string;
+  stage: string;
+  text: string;
+}
+
 /** One mode's consent terms, exactly as the server will stamp them. */
 export interface AssessmentConsentTerms {
   assessment_mode: AssessmentMode;
@@ -1465,6 +1490,9 @@ export interface AssessmentConsentTerms {
   consent_version: string;
   privacy_policy_version: string;
   terms_version: string;
+  /** The Stage B per-item catalogue, rendered verbatim on the screen;
+   *  acceptance stamps each item individually server-side. */
+  items?: ConsentCatalogueItem[];
 }
 
 /** Where the session stands in the mode/consent flow. */

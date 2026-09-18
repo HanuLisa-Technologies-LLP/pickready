@@ -82,6 +82,7 @@ from app.services import (
     answer_classification,
     assessment_consent,
     assessment_invite,
+    consent_catalog,
     conversation_guardrails,
     credit_reconciliation,
     hiring_pipeline,
@@ -3189,6 +3190,13 @@ async def _mode_state(
             consent_version=terms.consent_version,
             privacy_policy_version=terms.privacy_policy_version,
             terms_version=terms.terms_version,
+            # Stage B items (vivekium feature 6), served so the screen never
+            # authors consent copy of its own.
+            items=[
+                item
+                for item in consent_catalog.catalogue_payload()
+                if item["stage"] == consent_catalog.STAGE_ASSESSMENT
+            ],
         ),
     )
 
