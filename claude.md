@@ -102,11 +102,29 @@ dot.
 
 This is the same lesson as "never run two `scripts/test.sh` invocations against
 one database", with CPU as the contended resource instead of Postgres. **Do not
-run the authoritative suite beside a container build.** Two diagnostics settle
-it in seconds and both are worth reaching for before suspecting the code: read
-the process's CPU twice (frozen means blocked, climbing means slow), and
-`py-spy dump`, where `active` in `get_data` is an import grinding through disk
-and `idle` in `join` is the subprocess deadlock above it.
+run the authoritative suite beside a container build**, or beside the graphify
+rebuild the commit hook launches.
+
+**AND THE OBVIOUS DIAGNOSTIC IS A TRAP, WHICH COST A SECOND WRONG CONCLUSION
+HERE.** Sampling the PARENT's CPU twice and seeing it flat reads as "frozen",
+and that reading is wrong: a parent blocked in `communicate` while its child
+works legitimately burns no CPU, so flat CPU is the NORMAL state of this test
+rather than evidence of anything. `py-spy dump` on the parent is equally
+uninformative for the same reason, because it always shows `join
+(threading.py)` under `_communicate`.
+
+**ASK ABOUT THE CHILD.** `Get-CimInstance Win32_Process -Filter
+"ParentProcessId=<pid>"` answers it in one call, and the answer separates the
+two states cleanly:
+
+- **A live child, `active` in `get_data`**, is an import grinding through disk.
+  The run is SLOW and will finish. Sample the child's command line a few times
+  and watch the module name advance.
+- **No child at all, parent still in `join`**, is the real hang: the timeout
+  fired, `subprocess.run` called `kill()` and then `communicate()` AGAIN with
+  no timeout, and on Windows that second call can block for ever.
+
+Only the second is worth killing, and one command tells them apart.
 
 ### THE THREE RULES THE HUB NOW FOLLOWS
 

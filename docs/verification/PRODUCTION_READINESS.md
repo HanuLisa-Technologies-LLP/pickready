@@ -304,6 +304,34 @@ engineering item.
 `schedule.py` sets `interval_minutes=5`. One materialised view exists in the
 schema, `dashboard_job_metrics`, created in 0001 and redefined in 0018.
 
+**The fix was PROVEN on a scratch database before being written down**, because
+a `SECURITY DEFINER` function carries two questions that are not worth
+guessing: whether `REFRESH MATERIALIZED VIEW CONCURRENTLY` is permitted inside
+a function body (which runs in a transaction), and whether the grant really is
+as narrow as the argument for it claims. A throwaway database with the same
+shape as production, an owner role owning the view and a NOINHERIT member app
+role, answered all of it and was then removed:
+
+| Probe | Result |
+|---|---|
+| App role refreshes DIRECTLY | `ERROR: must be owner of materialized view mv`, **the exact production error, reproduced** |
+| App role calls the `SECURITY DEFINER` function | **Succeeds** |
+| The same inside an explicit `BEGIN ... COMMIT` | **Succeeds**, so the transaction a session already holds is not an obstacle |
+| App role tries to remove the materialised view | refused, must be owner |
+| App role tries `ALTER TABLE ... ADD COLUMN` | refused, must be owner |
+| App role tries to remove the source table | refused, must be owner |
+| App role tries `ALTER ... OWNER TO` itself | refused, must be owner |
+| App role runs `SET ROLE <owner>` | **Succeeds** |
+
+The last two rows together are the whole argument for choosing the harder fix.
+`SET ROLE` works, so the one-line version is genuinely available; and it would
+hand a scheduled background task every one of the four operations the rows
+above it refuse. The function grants the refresh and nothing else.
+
+`REFRESH ... CONCURRENTLY` also needs a unique index, and
+`ux_dashboard_job_metrics_job` already exists (0001, recreated in 0018), so
+ownership is the only blocker.
+
 ---
 
 ## What is owed before this is genuinely finished
