@@ -916,23 +916,6 @@ export interface AspectResponse {
   answer: string | number | boolean | null;
 }
 
-export interface VerificationRequest {
-  id: string;
-  employer_email: string;
-  status: string;
-  designation?: string | null;
-  doj?: string | null;
-  doe?: string | null;
-  last_drawn_ctc?: string | null;
-  last_drawn_gross?: string | null;
-  noc_status?: string | null;
-  exit_formalities_complete?: boolean | null;
-  bgv_status?: string | null;
-  proofs_details?: string | null;
-  prior_experience_details?: string | null;
-  overridden?: boolean;
-  override_reason?: string | null;
-}
 
 export interface CandidateProfile {
   id?: string;
@@ -952,13 +935,11 @@ export interface CandidateProfile {
     gender?: string;
   } | null;
   aspects?: AspectResponse[] | null;
-  verification?: VerificationRequest[] | null;
   resume_url?: string | null;
   resume_original_filename?: string | null;
   resume_mime_type?: string | null;
   parsed_fields_json?: CandidateProfile["resume_fields"];
   aspects_json?: Record<string, string | number | boolean | null> | null;
-  verification_requests?: VerificationRequest[] | null;
 }
 
 // ---- Portal ----
@@ -1006,23 +987,7 @@ export interface PortalApplication {
 
 // ---- Verification form (public) ----
 
-export interface VerificationFormInfo {
-  candidate_name: string;
-  fields?: string[];
-}
 
-export interface VerificationFormSubmission {
-  designation: string;
-  doj: string;
-  doe: string;
-  last_drawn_ctc: string;
-  last_drawn_gross: string;
-  noc_status: string;
-  exit_formalities_complete: boolean;
-  bgv_status: string;
-  proofs_details: string;
-  prior_experience_details: string;
-}
 
 // ---- Dashboard ----
 

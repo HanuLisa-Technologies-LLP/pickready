@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.enums import LinkSource, PipelineStatus, Tier, VerificationStatus
+from app.models.enums import LinkSource, PipelineStatus, Tier
 
 from app.schemas.pagination import PageMeta
 
@@ -23,15 +23,6 @@ class CandidateOut(BaseModel):
     consent_databank: bool
 
 
-class VerificationRequestSummary(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    employer_seq: int
-    employer_email: str
-    employer_name: str | None
-    status: VerificationStatus
-    responded_at: datetime | None
 
 
 class ProfileOut(BaseModel):
@@ -50,7 +41,6 @@ class ProfileOut(BaseModel):
     aspects_json: dict | None
     parsed_fields_json: dict | None
     aspects_completed_at: datetime | None
-    verification_requests: list[VerificationRequestSummary] = []
 
 
 class UploadResumeOut(BaseModel):

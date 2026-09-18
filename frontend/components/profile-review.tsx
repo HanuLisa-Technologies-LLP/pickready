@@ -116,7 +116,6 @@ export function ProfileReview({
           profile_id: p.profile_id ?? p.id,
           resume_fields: p.resume_fields ?? p.parsed_fields_json,
           aspects,
-          verification: p.verification ?? p.verification_requests,
         });
       })
       .catch(() => {

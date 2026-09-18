@@ -68,7 +68,6 @@ from app.models.candidate import (
     JobCandidateLink,
     PipelineStatusEntry,
     Profile,
-    VerificationRequest,
 )
 from app.models.company import Company, EmailTemplate, HiringManager
 from app.models.compliance import (
@@ -91,10 +90,8 @@ from app.models.enums import (
     OTPChannel,
     PipelineStatus,
     Role,
-    SubmittedVia,
     Tier,
     UserStatus,
-    VerificationStatus,
 )
 from app.models.job import JDDraft, Job, JobApproval
 from app.models.job_setup import (
@@ -210,7 +207,6 @@ __all__ = [
     "ReportDimension",
     "ReportSkillEvidence",
     "RolePermission",
-    "SubmittedVia",
     "TAX_DOCUMENT_TYPES",
     "AgentAction",
     "AgentExecutionTrace",
@@ -236,7 +232,6 @@ __all__ = [
     "Tier",
     "User",
     "UserStatus",
-    "VerificationRequest",
     "CandidateEmployment",
     "BGVVerification",
     "Conversation",

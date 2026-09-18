@@ -30,11 +30,10 @@ from app.models.candidate import (
     JobCandidateLink,
     PipelineStatusEntry,
     Profile,
-    VerificationRequest,
 )
 from app.models.assessment import AssessmentConversation, FunctionalSkillsReport
 from app.models.company import Company
-from app.models.enums import LinkSource, PipelineStatus, VerificationStatus
+from app.models.enums import LinkSource, PipelineStatus
 from app.models.job import Job
 from app.models.candidate_update import CandidateUpdate
 from app.models.tenant import Tenant
@@ -79,7 +78,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-MAX_EMPLOYER_EMAILS = 3  # FR-5.2
+# RETIRED intake, kept only as the served constant (0) so the outreach info
+# payload's shape survives for older clients; the field is gone from the form
+# and the form data is never read. Vivekium C8.
+MAX_EMPLOYER_EMAILS = 0
 
 
 # ── Apply-context response models (FR-6.2 resume reuse / FR-9.2) ────────────
@@ -192,20 +194,16 @@ async def outreach_submit(
     city: str | None = Form(default=None),
     age: int | None = Form(default=None),
     gender: str | None = Form(default=None),
-    employer_emails: list[str] = Form(default=[]),
     session: AsyncSession = Depends(get_public_db),
 ) -> OutreachSubmitOut:
     """Candidate completes the outreach (FR-6.1): personal fields, the
-    40-aspect questionnaire, a fresh resume, and up to 3 previous-employer
-    HR emails. Single-use: a completed profile rejects re-submission."""
+    40-aspect questionnaire and a fresh resume. Single-use: a completed
+    profile rejects re-submission. Employer HR emails are no longer taken
+    here (vivekium C8): the candidate declares employment ONCE at /bgv/me,
+    under the finality warning, and that is the one intake."""
     profile, candidate, job = await _outreach_context(session, token)
     if profile.aspects_completed_at is not None:
         raise HTTPException(status_code=409, detail="This outreach was already completed")
-    if len(employer_emails) > MAX_EMPLOYER_EMAILS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"At most {MAX_EMPLOYER_EMAILS} previous employers (FR-5.2)",
-        )
     try:
         aspects_data = json.loads(aspects)
         if not isinstance(aspects_data, dict):
@@ -241,30 +239,16 @@ async def outreach_submit(
     profile.aspects_json = aspects_data
     profile.aspects_completed_at = datetime.now(timezone.utc)
 
-    created = 0
-    for seq, employer_email in enumerate(employer_emails, start=1):
-        if not employer_email.strip():
-            continue
-        session.add(VerificationRequest(
-            tenant_id=job.tenant_id,
-            profile_id=profile.id,
-            employer_seq=seq,
-            employer_email=employer_email.strip(),
-            token=secrets.token_urlsafe(32),  # single-use employer form token
-            status=VerificationStatus.pending,
-        ))
-        created += 1
-    await session.flush()
-
+    # RETIRED (vivekium C8): this handler used to mint tenant-owned
+    # verification_requests rows from employer emails typed into the outreach
+    # form and dispatch the ten-field employer form. The surviving system is
+    # candidate-owned (/bgv/me), where the candidate declares employers ONCE
+    # under the finality warning, so the intake here creates nothing.
     dispatch("pickready.parse_resume", args=[str(profile.id)])
-    if created:
-        dispatch(
-            "pickready.send_verification_requests", args=[str(profile.id)]
-        )
     return OutreachSubmitOut(
         profile_id=profile.id,
         aspects_received=len(aspects_data),
-        verification_requests_created=created,
+        verification_requests_created=0,
     )
 
 

@@ -4,8 +4,6 @@
   pickready.send_sms(phone, message)
   pickready.run_matching(job_id)
   pickready.parse_resume(profile_id)
-  pickready.send_verification_requests(profile_id)
-  pickready.parse_verification_reply(verification_request_id, raw_email_text)
   pickready.refresh_dashboard_views()
 
 All slow work happens here, never inline in a request handler (claude.md rule
@@ -53,10 +51,7 @@ from app.services.sms_service import (
 from app.models import (
     Candidate,
     Profile,
-    SubmittedVia,
     Tenant,
-    VerificationRequest,
-    VerificationStatus,
 )
 from app.workers.dispatch import dispatch
 from app.workers.registry import Route, task
@@ -2113,103 +2108,6 @@ def reconcile_project_intake():
 
 
 # ── Employer verification (ESD §10) ─────────────────────────────────────────
-
-@task(
-    name="pickready.send_verification_requests",
-    route=Route.LAMBDA,
-    max_attempts=3,
-)
-def send_verification_requests(profile_id: str):
-    """Send tokenized verification-form links to the (up to 3) previous
-    employers. VerificationRequest rows with tokens must already exist."""
-    async def _task():
-        settings = get_settings()
-        async with _worker_session() as session:
-            profile = await session.get(Profile, uuid.UUID(str(profile_id)))
-            if profile is None:
-                raise ValueError(f"Profile {profile_id} not found")
-            candidate = await session.get(Candidate, profile.candidate_id)
-            candidate_name = (candidate.full_name or candidate.email) if candidate else ""
-
-            requests = (
-                (
-                    await session.execute(
-                        select(VerificationRequest).where(
-                            VerificationRequest.profile_id == profile.id,
-                            VerificationRequest.status == VerificationStatus.pending,
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            if not requests:
-                logger.info(
-                    "verification.no_pending_requests profile_id=%s", profile_id
-                )
-                return
-
-            for vr in requests:
-                link = f"{settings.frontend_url}/verify-employment/{vr.token}"
-                await _send_email_async(
-                    session,
-                    str(vr.tenant_id),
-                    vr.employer_email,
-                    "verification",
-                    {
-                        "candidate_name": candidate_name,
-                        "employer_name": vr.employer_name or "",
-                        "verification_link": link,
-                    },
-                )
-    _run(_task())
-
-
-@task(
-    name="pickready.parse_verification_reply",
-    route=Route.LAMBDA,
-    max_attempts=3,
-)
-def parse_verification_reply(verification_request_id: str, raw_email_text: str):
-    """Fallback path: employer replied by email instead of using the form  - 
-    LLM-extract the reply into the same structured schema (ESD §10.2)."""
-    from app.services import verification_parsing
-
-    async def _task():
-        async with _worker_session() as session:
-            vr = await session.get(
-                VerificationRequest, uuid.UUID(str(verification_request_id))
-            )
-            if vr is None:
-                raise ValueError(
-                    f"VerificationRequest {verification_request_id} not found"
-                )
-            if vr.status != VerificationStatus.pending:
-                # Already submitted via form or overridden  -  form wins, don't clobber.
-                logger.info(
-                    "verification.reply_ignored id=%s status=%s",
-                    verification_request_id, vr.status.value,
-                )
-                return
-
-            parsed = await verification_parsing.parse_reply(raw_email_text, session=session)
-            vr.response_json = parsed
-            vr.status = VerificationStatus.submitted
-            vr.submitted_via = SubmittedVia.email_reply
-            vr.responded_at = datetime.now(timezone.utc)
-            await session.commit()
-            await _audit(
-                session,
-                str(vr.tenant_id),
-                "verification.reply_parsed",
-                "verification_request",
-                str(vr.id),
-                {"submitted_via": "email_reply"},
-            )
-    _run(_task())
-
-
-# ── Billing + credits (killer-spec Parts 2 and 3) ───────────────────────────
 
 @task(
     name="pickready.reconcile_assessment_credits",

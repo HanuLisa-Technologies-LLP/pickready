@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
 from app.models.enums import (
-    LinkSource, PipelineStatus, SubmittedVia, Tier, VerificationStatus,
+    LinkSource, PipelineStatus, Tier,
 )
 
 
@@ -324,35 +324,6 @@ def _derive_source_type(mapper, connection, target: "JobCandidateLink") -> None:
         target.source_type = SOURCE_TYPE_APPLIED
 
 
-class VerificationRequest(Base, UUIDPKMixin, CreatedAtMixin):
-    """One per previous employer (max 3, employer_seq 1–3). Fresh candidates
-    only — Databank profiles never re-enter this flow (claude.md rule 7)."""
-    __tablename__ = "verification_requests"
-    __table_args__ = (
-        UniqueConstraint("profile_id", "employer_seq", name="uq_verification_employer_seq"),
-    )
-
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
-    )
-    profile_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
-    )
-    employer_seq: Mapped[int] = mapped_column(Integer, nullable=False)  # 1..3
-    employer_email: Mapped[str] = mapped_column(String(320), nullable=False)
-    employer_name: Mapped[str | None] = mapped_column(String(255))
-    token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)  # single-use, signed
-    status: Mapped[VerificationStatus] = mapped_column(
-        Enum(VerificationStatus, native_enum=False, length=20),
-        nullable=False, default=VerificationStatus.pending,
-    )
-    submitted_via: Mapped[SubmittedVia | None] = mapped_column(
-        Enum(SubmittedVia, native_enum=False, length=15)
-    )
-    # Designation, DOJ, DOE, CTC, gross, NOC, exit formalities, BGV, proofs…
-    response_json: Mapped[dict | None] = mapped_column(JSONB)
-    override_reason: Mapped[str | None] = mapped_column(Text)  # HR override path, audit-logged
-    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Interview(Base, UUIDPKMixin, CreatedAtMixin):
