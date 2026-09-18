@@ -25,8 +25,17 @@ Two consequences that must not be lost:
    site.** Any hardening gated on `is_production` is therefore OFF in production.
    This already bit this repository once (the auth cookie's `Secure` flag), and
    it is why the API documentation fix in this pass is gated on
-   `serves_over_https` instead. **Audit every remaining `is_production` branch
-   against this fact.**
+   `serves_over_https` instead. ~~**Audit every remaining `is_production` branch
+   against this fact.**~~ **DONE, 2026-09-18, and it found three more.** All
+   five consumers are enumerated in **SEC-24** of `SECURITY_REPORT.md`. One was
+   live and is now fixed (the request-diagnostics middleware, SEC-23); two are
+   load-bearing guards that are inert on the live site and masked ONLY by
+   correct configuration rather than by the guard, so the product is one
+   environment-variable edit away from serving retrieval over pseudo-random
+   vectors or accepting every background task and running none. Settling those
+   two is an owner decision, because the obvious move, setting
+   `ENVIRONMENT=production`, flips all five at once and two of them change
+   behaviour on the next request rather than at the next mistake.
 
 A second trap, recorded because it wasted time: an `aws` call without
 `--region ap-south-2` returns empty and reads as "nothing is deployed".
@@ -293,10 +302,23 @@ in a log rather than a request anybody makes.
   DEFINER` function with a mutable `search_path` is a privilege-escalation
   primitive rather than a fix.
 
-**NOT DONE in this release, deliberately.** It has been broken for a week and
-an hour changes nothing, whereas a hastily written `SECURITY DEFINER` function
-is a new attack surface in the one role that owns every object. It is the top
-engineering item.
+**FIXED, in migration 0099**, after the design was proven on a scratch
+database rather than argued. `refresh_dashboard_job_metrics()` is SECURITY
+DEFINER, owned by the object owner, `search_path` pinned in the definition,
+EXECUTE revoked from PUBLIC and granted to `pickready_app` alone. The two
+`set_config` calls that bypass RLS live INSIDE the function, so a caller cannot
+omit them and silently rebuild the view empty.
+
+Verified against the real schema and the real role: `SET ROLE pickready_app`
+can CALL it and is still refused the raw statement with "must be owner", and
+the refresh took the view from 30 stale rows to 32, matching the base table, so
+the bypass works and it did not rebuild empty. `tests/test_dashboard_refresh_privilege.py`
+pins all of it and is mutation-checked in two directions: making the function
+SECURITY INVOKER fails two of its tests, and granting EXECUTE back to PUBLIC
+fails the third.
+
+**It reaches production when migration 0099 is applied**, which is part of the
+next deploy rather than something already live.
 
 **Evidence.** Alarm `readypick-pilot-task-worker-error-rate`, state ALARM,
 "Threshold Crossed: 2 datapoints [100.0, 50.0] were greater than the threshold
