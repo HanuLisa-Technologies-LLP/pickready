@@ -400,8 +400,17 @@ a rule if built as written.
      checkbox form.** The last of these needs the decision in C8 below first.
 3. **Recruiter columns 5, 6 and 7** (feature 3), with column 2 as the word.
 4. **The six consent items with per-item timestamps** (feature 6).
-5. **Consent renewal and the inactivity sweep** (feature 8, per C6), with its
-   schedule-parity entry in every environment.
+5. ~~**Consent renewal and the inactivity sweep** (feature 8, per C6).~~
+   **BUILT 2026-09-18.** `services/consent_lifecycle` derives the stage from
+   four nullable stamps (migration 0100) and stores no status;
+   `pickready.sweep_consent_lifecycle` runs daily with its rule in all three
+   environments. THE ERASURE IS GATED on `consent_auto_deletion_enabled`,
+   which defaults to OFF and is an owner decision, because until
+   `last_engagement_at` has been recording for longer than the inactivity
+   window every dormancy answer is computed from registration and an active
+   candidate reads as dormant. Unarmed, the sweep still sends the letters and
+   logs what it WOULD erase. Mutation-checked: removing the gate erases a
+   candidate and the test says so.
 
 **Needs an owner decision first**
 
