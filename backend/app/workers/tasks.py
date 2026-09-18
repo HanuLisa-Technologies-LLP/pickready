@@ -1619,6 +1619,147 @@ def index_document(source_type: str, source_id: str):
     _run(_task())
 
 
+@task(
+    name="pickready.sweep_consent_lifecycle",
+    route=Route.LAMBDA,
+)
+def sweep_consent_lifecycle():
+    """Consent renewal, the final warning, and the inactivity rule (feature 8).
+
+    THE LETTERS ALWAYS GO OUT. THE ERASURE IS GATED, AND THE SPLIT IS THE WHOLE
+    DESIGN. A reminder is reversible and is in the candidate's own interest;
+    permanent erasure is neither, so it runs only when
+    `consent_auto_deletion_enabled` is set. Off, this task still computes who
+    WOULD be erased and logs the count, which is the same shape
+    `purge_proctoring_events` uses: an operator reading the worker log can see
+    the policy in force rather than inferring it from silence.
+
+    That default is not timidity. Until `last_engagement_at` has been recorded
+    for longer than `consent_inactivity_months`, every dormancy answer is
+    computed from REGISTRATION, so a genuinely active candidate reads as
+    dormant. The measurement is safe from day one; the deletion is not.
+
+    ONE ROW AT A TIME, COMMITTING AS IT GOES, and never one bulk statement. A
+    sweep over the whole databank that failed half way through a single
+    transaction would roll back the letters it had already sent, and the next
+    run would send them again to everybody who had received one. Per candidate,
+    the stamp and its letter land together or neither does.
+
+    Both clocks are evaluated INDEPENDENTLY (C6): consent expiry and dormancy
+    are different facts, and the erasure records WHICH applied, so a complaint
+    can always be answered with the reason.
+    """
+    from app.core.config import get_settings
+    from app.models.candidate import Candidate
+    from app.services import consent_lifecycle as cl
+    from app.services import erasure
+
+    async def _task():
+        settings = get_settings()
+        thresholds = cl.Thresholds(
+            renewal_months=settings.consent_renewal_months,
+            grace_days=settings.consent_grace_days,
+            inactivity_months=settings.consent_inactivity_months,
+        )
+        deletion_armed = settings.consent_auto_deletion_enabled
+        now = cl.utcnow()
+        reminded = warned = erased = would_erase = 0
+
+        async with _worker_session() as session:
+            candidates = (
+                await session.execute(select(Candidate))
+            ).scalars().all()
+
+            for candidate in candidates:
+                consented_at = cl.consented_at_for(
+                    created_at=candidate.created_at,
+                    renewed_at=candidate.consent_renewed_at,
+                )
+                stage = cl.stage_for(
+                    now=now,
+                    consented_at=consented_at,
+                    reminder_sent_at=candidate.consent_reminder_sent_at,
+                    final_warning_sent_at=candidate.consent_final_warning_at,
+                    thresholds=thresholds,
+                )
+                dormant = cl.is_dormant(
+                    now=now,
+                    last_engagement_at=cl.engagement_at_for(
+                        created_at=candidate.created_at,
+                        last_engagement_at=candidate.last_engagement_at,
+                    ),
+                    thresholds=thresholds,
+                )
+
+                reason = None
+                if dormant:
+                    reason = cl.REASON_DORMANT
+                elif stage == cl.STAGE_DELETION_DUE:
+                    reason = cl.REASON_CONSENT_EXPIRED
+
+                if reason is not None:
+                    if not deletion_armed:
+                        would_erase += 1
+                        continue
+                    receipt = await erasure.cascade_erasure(
+                        session, candidate.id, actor_role=reason
+                    )
+                    await session.commit()
+                    erased += 1
+                    logger.info(
+                        "consent.erased candidate_id=%s reason=%s "
+                        "sign_in_accounts=%d",
+                        receipt.candidate_id,
+                        reason,
+                        receipt.sign_in_accounts_deleted,
+                    )
+                    continue
+
+                # THE STAMP IS WRITTEN BEFORE THE LETTER IS DISPATCHED, and
+                # that ordering is deliberate. `dispatch` RAISES, so a failed
+                # enqueue leaves a stamp and no letter: the candidate keeps the
+                # full window and is simply not written to, which costs them
+                # nothing. The other order risks a letter with no stamp, and
+                # the next sweep would send it again, and the one after that,
+                # for ever.
+                if stage == cl.STAGE_REMINDER_DUE and candidate.email:
+                    candidate.consent_reminder_sent_at = now
+                    await session.commit()
+                    dispatch(
+                        "pickready.send_email",
+                        args=[None, candidate.email, "consent_renewal_reminder", {}],
+                    )
+                    reminded += 1
+                elif stage == cl.STAGE_FINAL_WARNING_DUE and candidate.email:
+                    candidate.consent_final_warning_at = now
+                    await session.commit()
+                    dispatch(
+                        "pickready.send_email",
+                        args=[None, candidate.email, "consent_final_warning", {}],
+                    )
+                    warned += 1
+
+        logger.info(
+            "consent.sweep reminded=%d warned=%d erased=%d would_erase=%d "
+            "deletion_armed=%s",
+            reminded,
+            warned,
+            erased,
+            would_erase,
+            deletion_armed,
+        )
+        if would_erase and not deletion_armed:
+            logger.warning(
+                "consent.sweep_not_armed %d candidate(s) meet a deletion "
+                "threshold and NONE were erased. Set "
+                "CONSENT_AUTO_DELETION_ENABLED once last_engagement_at has "
+                "been recorded for longer than the inactivity window.",
+                would_erase,
+            )
+
+    _run(_task())
+
+
 # ── Erasure and learning revocation (RPN-AI-UP-001 W9.5, W3.6) ───────────────
 
 @task(

@@ -5,7 +5,7 @@ import json
 import logging
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator
 
 from fastapi import (
@@ -278,7 +278,36 @@ async def _candidate_for_user(
         )
     if candidate.user_id is None:
         candidate.user_id = user.user_id  # link portal login to the candidate record
+    _record_engagement(candidate)
     return candidate
+
+
+#: How stale the engagement stamp has to be before it is rewritten. A day,
+#: because the clock it feeds is measured in MONTHS: writing on every request
+#: would add an UPDATE to every authenticated candidate page load to sharpen a
+#: number nothing reads at that resolution.
+_ENGAGEMENT_DEBOUNCE = timedelta(days=1)
+
+
+def _record_engagement(candidate: Candidate) -> None:
+    """Note that this candidate is still using the platform (feature 8).
+
+    HERE, BECAUSE THIS IS THE CHOKEPOINT. Every authenticated candidate route
+    resolves through `_candidate_for_user`, so one call covers signing in,
+    reading the board, applying and editing the profile. Scattering it over
+    individual handlers is how a future route silently stops counting, and the
+    consequence of not counting is that `sweep_consent_lifecycle` eventually
+    reads an active candidate as dormant.
+
+    NOT A COMMIT. The caller's session owns the transaction, so this stamp
+    lands with whatever the request was already doing, or with nothing if the
+    request fails. That is the right coupling: a request that rolled back did
+    not happen, and should not leave evidence that it did.
+    """
+    now = datetime.now(timezone.utc)
+    previous = candidate.last_engagement_at
+    if previous is None or now - previous >= _ENGAGEMENT_DEBOUNCE:
+        candidate.last_engagement_at = now
 
 
 def _portal_job_out(

@@ -1002,6 +1002,10 @@ module "scheduler" {
       task            = "pickready.purge_proctoring_events"
       rate_expression = "rate(60 minutes)"
     }
+    "readypick-sweep-consent-lifecycle" = {
+      task            = "pickready.sweep_consent_lifecycle"
+      rate_expression = "rate(1440 minutes)"
+    }
     # RPN-AI-UP-001 W2.2. The Terraform half of the entry in
     # app/workers/schedule.py. tests/test_schedule_parity.py fails on drift,
     # because an entry in Python with no rule here is the SILENT half: a sweep

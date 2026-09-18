@@ -107,6 +107,31 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     technical_review_reminder_hours: int = 48
 
+    # -- Consent renewal and the inactivity rule (feature 8) ------------------
+    #
+    # The windows. `services/consent_lifecycle` REFUSES a non-positive value,
+    # because a zero window puts every candidate past every threshold the
+    # instant they register, and the thing on the other side of these numbers
+    # is the permanent erasure of a real person's profile.
+    consent_renewal_months: int = 6
+    consent_grace_days: int = 15
+    consent_inactivity_months: int = 24
+
+    # THE SWEEP WRITES TO PEOPLE BY DEFAULT AND ERASES THEM ONLY WHEN THIS IS
+    # ON, and the split is deliberate. Reminders are reversible and are the
+    # candidate's own interest; deletion is neither.
+    #
+    # Same shape as `proctoring_event_retention_days`, which is zero by default
+    # and whose sweep LOGS that it is deleting nothing so an operator can see
+    # the policy in force rather than inferring it from silence. Off here means
+    # the lifecycle runs, the letters go out, and the erasure step reports what
+    # it WOULD have erased. Turning it on is an owner decision, and it should
+    # not be taken until `last_engagement_at` has been recording for longer
+    # than `consent_inactivity_months`: before that, every dormancy answer is
+    # computed from registration, which is the safe direction for the
+    # measurement and the wrong direction for the deletion.
+    consent_auto_deletion_enabled: bool = False
+
     # Whether to install the per-request timing and query-count middleware.
     #
     # OPT IN, DEFAULT OFF, AND NOT DERIVED FROM `is_production`. It used to be

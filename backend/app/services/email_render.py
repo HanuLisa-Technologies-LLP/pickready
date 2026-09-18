@@ -170,6 +170,39 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "If you did not ask for this, reply to this message immediately.\n\n"
         "Regards,\nReadyPick",
     ),
+    # Feature 8, the six-month renewal. BOTH of these carry no context for the
+    # same reason `account_deleted` does: the sweep that sends them iterates
+    # every candidate, and a template with a name slot in it is a template that
+    # will eventually be handed the wrong person's name by a loop variable.
+    # The recipient address is the only personal datum involved and it is
+    # already the thing being written to.
+    "consent_renewal_reminder": (
+        "Confirm you would like to stay on ReadyPick",
+        "It has been six months since you joined or last confirmed your "
+        "details, so we are checking that you would still like your profile "
+        "kept on the platform.\n\n"
+        "Sign in and confirm to stay visible to employer clients registered "
+        "on the platform. If we do not hear from you we will write once more "
+        "before removing your profile.\n\n"
+        "Regards,\nReadyPick",
+    ),
+    # THE SENTENCE THIS LETTER HAS TO EARN. It says deletion has not happened
+    # yet, so the sweep opens a second window after sending it rather than
+    # erasing in the same pass. See the ASSUMPTION in
+    # services/consent_lifecycle: read literally the brief puts this letter and
+    # the deletion at the same instant, which would warn somebody about
+    # something already done.
+    "consent_final_warning": (
+        "Action needed to keep your ReadyPick profile",
+        "We wrote recently asking you to confirm that you would like to stay "
+        "on the platform, and we have not heard back.\n\n"
+        "If you do not confirm, your profile will be permanently deleted. "
+        "That removes your background verification record, which would have "
+        "to be obtained again from the beginning, and takes you out of job "
+        "matching entirely.\n\n"
+        "Sign in and confirm to keep your profile.\n\n"
+        "Regards,\nReadyPick",
+    ),
     "bgv_verification": ("{{subject}}", "{{body}}"),
     "client_invite": (
         "Your {{tenant_name}} workspace on ReadyPick is ready",

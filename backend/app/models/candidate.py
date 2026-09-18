@@ -57,6 +57,33 @@ class Candidate(Base, UUIDPKMixin, CreatedAtMixin):
         DateTime(timezone=True), nullable=True
     )
 
+    # ── Consent renewal and the inactivity clock (migration 0100, feature 8) ─
+    # FOUR STAMPS AND NO STATUS COLUMN. The stage is derived by
+    # `services/consent_lifecycle.stage_for`, because a stored stage is a
+    # second copy of what these columns already determine, and the sweep would
+    # then erase people on the strength of a value nothing has re-checked.
+    #
+    # NULL is a real state for all four and each means one thing. The two
+    # "sent" stamps are what make the sweep safe to run LATE: a grace window
+    # starts when a letter was actually sent, so a scheduler outage delays the
+    # cycle rather than skipping somebody straight to deletion.
+    consent_renewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    consent_reminder_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    consent_final_warning_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: Anything the candidate DID, or was sent, that means the platform is
+    #: still working for them. Read through
+    #: `consent_lifecycle.engagement_at_for` so the NULL rule cannot drift
+    #: between the sweep and anything else.
+    last_engagement_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # ── Unified candidate profile (migration 0015) ───────────────────────────
     # The 40 validation aspects, answered ONCE here as a structured form rather
     # than re-asked inside every job's assessment conversation (client decision,

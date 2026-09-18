@@ -152,6 +152,24 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "duplicate scoring run it is supposed to repair."
         ),
     ),
+    ScheduledTask(
+        rule="readypick-sweep-consent-lifecycle",
+        task="pickready.sweep_consent_lifecycle",
+        interval_minutes=1440,
+        why=(
+            "Consent renewal, the final warning and the inactivity rule "
+            "(feature 8). DAILY rather than hourly because every window it "
+            "measures is counted in days or months, so twenty four more runs "
+            "a day would change nobody's outcome and would only widen the "
+            "blast radius of a mistake in a task that can erase a profile. "
+            "Running LATE is safe by construction: a grace window starts when "
+            "a letter was actually sent, so an outage delays the cycle rather "
+            "than skipping somebody to deletion. The erasure half is gated on "
+            "`consent_auto_deletion_enabled`, which defaults to off, and the "
+            "sweep LOGS what it would have erased so the posture is visible "
+            "rather than inferred from silence."
+        ),
+    ),
 )
 
 RULE_NAMES: tuple[str, ...] = tuple(entry.rule for entry in SCHEDULE)
