@@ -605,8 +605,13 @@ export default function OrgJobDetailPage() {
             <DialogTitle>Close this job?</DialogTitle>
             <DialogDescription>
               New applications stop immediately and the public link stops
-              working. Every candidate already in your pipeline stays, including
-              anyone part-way through an assessment. This cannot be undone.
+              working. Every candidate already in your pipeline stays, but the
+              assessment data for this job, the PRISM Reports, the assessment
+              scores and the interview transcripts, is permanently deleted the
+              moment you close it: candidates consented to their assessment
+              data on the basis that it lives only as long as this position.
+              Your ranked list, pipeline stages and billing records remain.
+              This cannot be undone and there is no reopen.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">

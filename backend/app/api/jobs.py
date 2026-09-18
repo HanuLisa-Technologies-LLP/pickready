@@ -67,6 +67,7 @@ from uuid import uuid4 as _uuid4
 from app.services import approval_fsm as fsm
 from app.services import capabilities as caps
 from app.services import credits
+from app.services import erasure
 from app.services import job_candidates
 from app.services import job_posting
 from app.services import candidate_updates
@@ -858,9 +859,17 @@ async def close_job(
     The 30 days are the LONGEST a posting runs, never the shortest. A client
     who fills the role on day 18 says so here, and from that instant the public
     link 404s, the job leaves every candidate's board and no new application is
-    accepted. Everything the hiring team already has is untouched: the ranked
-    list, the reports, the pipeline stages and the candidates mid-assessment
-    all continue exactly as before, which is why this is not `archive`.
+    accepted.
+
+    SUPERSEDED IN PART, 2026-09-18 (vivekium C5, owner-ruled final): this
+    docstring used to promise "the reports ... continue exactly as before".
+    They do not. Closing the job now PERMANENTLY ERASES its assessment data,
+    the PRISM reports, the Tatva scores and the transcripts, because Stage B
+    consent item 3 told every assessed candidate exactly that would happen.
+    `erasure.job_closure_erasure` says precisely what goes and what stays
+    (the ranked list, the pipeline history, the billing record and the
+    consent records all remain). THERE IS NO REOPEN, so this deletion is as
+    final as the closure itself; the confirmation UI must say so.
 
     WHY IT IS `publish_job` AND NOT A NEW CAPABILITY. Opening a posting to the
     public and closing it again are the same authority over the same thing, and
@@ -896,7 +905,20 @@ async def close_job(
     # reason publication writes PUBLISHED: a derived state records no actor.
     job.lifecycle_state = hiring_pipeline.JobLifecycleState.CLOSED_ARCHIVED.value
     await session.flush()
+    # Vivekium C5: the closure IS the deletion trigger, in the same
+    # transaction, so a failed close erases nothing and a successful close
+    # never leaves the data its consent item promised was gone.
+    receipt = await erasure.job_closure_erasure(session, job_id=job.id)
     await _invalidate_public_job(job.id)
+    await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action=erasure.ACTION_JOB_ASSESSMENT_ERASED,
+        target_type="job",
+        target_id=job.id,
+        metadata=receipt.as_json(),
+    )
     await audit(
         session,
         tenant_id=user.tenant_id,

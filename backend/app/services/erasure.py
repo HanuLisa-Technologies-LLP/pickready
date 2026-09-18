@@ -194,6 +194,139 @@ class ErasureReceipt:
         }
 
 
+#: The audit action written when a job closure erases its assessment data.
+ACTION_JOB_ASSESSMENT_ERASED = "job_assessment_data_erased"
+
+
+@dataclass(frozen=True)
+class JobClosureReceipt:
+    """What closing a job erased. Counts, never content."""
+
+    job_id: uuid.UUID
+    erased_at: datetime
+    reports_deleted: int
+    evaluations_deleted: int
+    conversations_deleted: int
+    questions_deleted: int
+    chunks_deleted: int
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "job_id": str(self.job_id),
+            "erased_at": self.erased_at.isoformat(),
+            "reports_deleted": self.reports_deleted,
+            "evaluations_deleted": self.evaluations_deleted,
+            "conversations_deleted": self.conversations_deleted,
+            "questions_deleted": self.questions_deleted,
+            "chunks_deleted": self.chunks_deleted,
+        }
+
+
+async def job_closure_erasure(
+    session: AsyncSession, *, job_id: uuid.UUID
+) -> JobClosureReceipt:
+    """Erase a closed job's assessment data (vivekium C5, owner-ruled final).
+
+    Stage B consent item 3 is the sentence this function makes true: "the
+    assessment report for this job ... when the employer closes the position
+    it is automatically and permanently removed." It deletes exactly what
+    that item names, the PRISM reports, the Tatva scores and the transcripts,
+    for every candidate on the job:
+
+    * `functional_skills_reports` by job (report_dimensions and
+      report_skill_evidence CASCADE from it),
+    * `evaluations` by job (the working the report was composed from),
+    * `assessment_conversations` by link (assessment_messages,
+      assessment_answers and the proctoring rows CASCADE from it),
+    * the per-candidate question sets, which carry the rubrics the answers
+      were scored against,
+    * `context_chunks` with source_type='assessment', whose source_id is the
+      LINK id and which no foreign key reaches, the same orphan-vector trap
+      `cascade_erasure` exists for.
+
+    WHAT IT DELIBERATELY KEEPS. The `job_candidate_links` rows and their
+    pipeline history (the process happened; consent item 3 scopes the
+    deletion to the assessment ARTIFACTS), the `credit_ledger` rows (the
+    billing fact names no candidate content, and deleting the answer to a
+    billing dispute was the half of C5 the register refused), the
+    `assessment_consents` rows (a consent record is the LEGITIMACY of this
+    very deletion), and video recordings, which the brief's own Stage A item
+    2 places under the candidate's retention consents rather than under the
+    job's lifetime.
+
+    Runs INLINE in the close transaction, the Delete My Profile precedent:
+    pure SQL against one job, and an irreversible mass delete must not race
+    a rollback of the close that authorised it.
+    """
+    links_sql = "SELECT id FROM job_candidate_links WHERE job_id = :job_id"
+
+    chunks = (
+        await session.execute(
+            text(
+                "DELETE FROM context_chunks WHERE source_type = 'assessment' "
+                f"AND source_id IN ({links_sql}) RETURNING id"
+            ),
+            {"job_id": str(job_id)},
+        )
+    ).rowcount
+    reports = (
+        await session.execute(
+            text(
+                "DELETE FROM functional_skills_reports WHERE job_id = :job_id "
+                "RETURNING id"
+            ),
+            {"job_id": str(job_id)},
+        )
+    ).rowcount
+    evaluations = (
+        await session.execute(
+            text("DELETE FROM evaluations WHERE job_id = :job_id RETURNING id"),
+            {"job_id": str(job_id)},
+        )
+    ).rowcount
+    conversations = (
+        await session.execute(
+            text(
+                "DELETE FROM assessment_conversations "
+                f"WHERE job_candidate_link_id IN ({links_sql}) RETURNING id"
+            ),
+            {"job_id": str(job_id)},
+        )
+    ).rowcount
+    questions = 0
+    for table in ("candidate_questions", "candidate_technical_questions"):
+        questions += (
+            await session.execute(
+                text(
+                    f"DELETE FROM {table} "
+                    f"WHERE job_candidate_link_id IN ({links_sql}) RETURNING id"
+                ),
+                {"job_id": str(job_id)},
+            )
+        ).rowcount
+
+    receipt = JobClosureReceipt(
+        job_id=job_id,
+        erased_at=datetime.now(timezone.utc),
+        reports_deleted=int(reports or 0),
+        evaluations_deleted=int(evaluations or 0),
+        conversations_deleted=int(conversations or 0),
+        questions_deleted=int(questions or 0),
+        chunks_deleted=int(chunks or 0),
+    )
+    logger.info(
+        "erasure.job_closure job_id=%s reports=%d evaluations=%d "
+        "conversations=%d questions=%d chunks=%d",
+        job_id,
+        receipt.reports_deleted,
+        receipt.evaluations_deleted,
+        receipt.conversations_deleted,
+        receipt.questions_deleted,
+        receipt.chunks_deleted,
+    )
+    return receipt
+
+
 def candidate_cache_patterns(candidate_id: uuid.UUID | str) -> tuple[str, ...]:
     """Every Redis key pattern that may hold this candidate's data."""
     scoped = cache.key(CANDIDATE_CACHE_NAMESPACE, str(candidate_id))
