@@ -86,7 +86,7 @@ Run after the final rollout. Everything here is measured, not reasoned.
 | `POST /verification/inbound-email` with NO relay header | **403** |
 | the same with a WRONG header | **403** |
 | `INBOUND_WEBHOOK_SECRET` on the `api` container | mounted (revision 32) |
-| Secrets still on `PLACEHOLDER_NOT_CONFIGURED` | `SMTP_PASSWORD`, `MSG91_API_KEY`, both benign, see below |
+| Secrets still on `PLACEHOLDER_NOT_CONFIGURED` | **THREE**, not the two this row first claimed: `SMTP_PASSWORD`, `MSG91_API_KEY` and `RAZORPAY_WEBHOOK_SECRET`. Only the first two are benign, see below |
 | CloudWatch alarms on the pilot | **16**, up from 5 |
 | `alarm_emails` SNS subscription | **PendingConfirmation** |
 | CSP against the live sign-in page | no violation; the Firebase popup to `pick-ready.firebaseapp.com` was attempted |
@@ -240,6 +240,69 @@ error boundaries in the entire app, so any render throw blanked the page; every
 loading spinner froze under `prefers-reduced-motion`, making a pending request
 look hung; and the dashboard was six equal-weight metric tiles restating the
 table beneath them.
+
+---
+
+## A LIVE DEFECT, found on 2026-09-18 by following an alarm nobody receives
+
+**`pickready.refresh_dashboard_views` has failed on every run since the
+database credential was split on 2026-09-11.** The dashboard's materialised
+view has not refreshed once in that week, so every surface reading it has been
+serving a snapshot frozen at the moment of the rotation.
+
+```
+asyncpg.exceptions.InsufficientPrivilegeError:
+    must be owner of materialized view dashboard_job_metrics
+```
+
+**How it was found is the point.** `readypick-pilot-task-worker-error-rate` is
+in ALARM and has been, and the SNS subscription for every alarm in this account
+is still `PendingConfirmation`, so the alarm fired into nothing. Nothing else
+surfaced it: the task is scheduled every five minutes, it retries three times,
+it re-raises correctly, and all of that lands in CloudWatch where nobody was
+looking. It was found by listing the alarms, not by any part of the product
+reporting a problem.
+
+**Root cause, and it is a correct change interacting badly with another correct
+change.** The 2026-09-11 work moved the application off the rotating RDS master
+onto `pickready_app`, a least-privileged NOINHERIT role, and that fix was right
+and stands. `REFRESH MATERIALIZED VIEW` requires OWNERSHIP, which
+`pickready_app` deliberately does not have, and `tasks.py` issues it directly.
+Nothing in the credential work was wrong; this one statement needed a companion
+change nobody looked for, because the failure it produces is a background task
+in a log rather than a request anybody makes.
+
+**Two fixes, and the easy one is the wrong one.**
+
+- `SET ROLE readypick_owner` before the refresh WOULD work with no migration:
+  `provision_app_db_role` makes `pickready_app` a member of the owner
+  precisely so `alembic/env.py` can escalate for DDL, and NOINHERIT only means
+  it must ask. It is rejected anyway, because it hands a scheduled background
+  task the FULL rights of the object owner for that transaction to buy one
+  statement, and because `POSTGRES_MIGRATION_ROLE` is deliberately set on the
+  migrate container and on nothing that serves a request, with
+  `test_app_db_credential.py` sweeping every environment's Terraform to keep it
+  that way.
+- **The right fix is a `SECURITY DEFINER` function owned by
+  `readypick_owner`** that performs the `REFRESH MATERIALIZED VIEW
+  CONCURRENTLY`, with `EXECUTE` granted to `pickready_app` and nothing else.
+  That is the enumerated minimal grant this repository already argues for
+  everywhere it talks about IAM: one capability, named, rather than a role
+  change that carries everything. It needs a migration, and it needs its
+  `search_path` pinned in the function definition, because a `SECURITY
+  DEFINER` function with a mutable `search_path` is a privilege-escalation
+  primitive rather than a fix.
+
+**NOT DONE in this release, deliberately.** It has been broken for a week and
+an hour changes nothing, whereas a hastily written `SECURITY DEFINER` function
+is a new attack surface in the one role that owns every object. It is the top
+engineering item.
+
+**Evidence.** Alarm `readypick-pilot-task-worker-error-rate`, state ALARM,
+"Threshold Crossed: 2 datapoints [100.0, 50.0] were greater than the threshold
+(1.0)". The traceback above read from `/aws/lambda/readypick-task-worker`.
+`schedule.py` sets `interval_minutes=5`. One materialised view exists in the
+schema, `dashboard_job_metrics`, created in 0001 and redefined in 0018.
 
 ---
 
