@@ -1370,3 +1370,60 @@ task's own log (`Running upgrade 0099 -> 0100`), exit 0.
   `consent.sweep reminded=0 warned=0 erased=0 would_erase=0 deletion_armed=False`,
   which is exactly right for a databank holding zero candidates with the
   deletion gate shut.
+
+---
+
+## Release 5, the vivekium build, 2026-09-19
+
+Backend `sha-0587071`, frontend `sha-2a0d422`, analysis unchanged. Migrations
+0101, 0102, 0103 applied BEFORE the roll, confirmed from the migrate task's
+own log. Suite: 6632 effective green (one failure was the security sweep
+demanding documentation for the new public form routes, which it got).
+
+| Artifact | Tag | Digest |
+|---|---|---|
+| api | `sha-0587071` | `sha256:6dc5ba19b5029fca8922135501c54b0397253d637f49643701322008e7ad63c8` |
+| lambdas | `sha-0587071-fn` | (verified by function ImageUri) |
+| frontend | `sha-2a0d422` | `sha256:9ba1b0ac65f30bdd6bdeaf2f521e19e78d2e8649e47249f853dbf17e826582a4` |
+| analysis | unchanged | `sha256:e0c6d4880b94fe3531a904042ff932ab42e3caeb19b88c03dd9b58c0fc037ec1` |
+
+### What shipped
+
+The owner ruled the vivekium brief final, and this release lands everything
+buildable under that ruling: SEC-24 (ENVIRONMENT=production, five guards
+live), the seven-column recruiter table with match_percent as rule 1's one
+sanctioned number, the two-stage per-item consent framework (0101), C5 job
+closure erasing its assessment data in the close transaction, the employer
+checkbox form with 3-day single-use links (0102), the day-3 chase sweep and
+SES bounce alerts with masked HR addresses, and the last-two-employers
+auto-maintenance under the narrowed finality trigger (0103).
+
+### THE THREE DEPLOYMENT DEFECTS THIS RELEASE SURFACED, in the order the
+### pipeline refused
+
+1. **A bare `terraform apply` shipped the bootstrap image.** tfvars said
+   `image_tag = "bootstrap"` while every release passed the real tag on the
+   CLI; the SEC-24 apply re-registered the API task def onto bootstrap and
+   the next roll served it for roughly two hours. Caught by describing the
+   RUNNING task's image, which is the rule. tfvars now carry the release tag.
+2. **The JWT boot guard refused the migrate one-shot**, which holds no
+   signing key by design. First patched as a migrate opt-out, which the next
+   defect proved was the wrong shape.
+3. **Every Lambda died at import under production**, twice: logging built a
+   full validated Settings before the secret bootstrap ran, and then the
+   guard itself assumed every container holds every secret, which is false
+   under per-service enumeration. The guard is now DECLARED by the signers
+   (REQUIRE_JWT_SECRET on the api service and the task worker), the worker
+   gains the key it turned out to genuinely need for the invite links it
+   signs, and a declared signer without its key still refuses.
+
+### Verified
+
+All three digests against RUNNING tasks; startup log reads
+"environment": "production" in the production JSON format; smoke ten for
+ten; webhook still 503, deletion notice 401, unknown form token 404; both
+sweeps INVOKED live rather than trusted:
+`bgv.reminder_sweep chased=0` and
+`consent.sweep reminded=0 warned=0 erased=0 would_erase=0
+deletion_armed=False`, each correct for a databank with zero candidates.
+`readypick-sweep-bgv-reminders` ENABLED daily in the scheduler.
