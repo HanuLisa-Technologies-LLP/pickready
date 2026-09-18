@@ -55,6 +55,11 @@ class EmployerFormOut(BaseModel):
     candidate_name: str | None
     employer_name: str | None
     fields: list[EmployerFormField]
+    #: When this link stops working. SERVED rather than left to the page to
+    #: calculate, so the deadline an employer reads and the check that refuses
+    #: them are the same arithmetic. A page that computed its own would keep
+    #: showing whatever the TTL was on the day it was written.
+    expires_at: datetime
 
 
 class EmployerFormIn(BaseModel):

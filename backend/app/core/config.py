@@ -107,6 +107,24 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     technical_review_reminder_hours: int = 48
 
+    # How long an employer's verification form link stays usable, counted from
+    # when the request row was written (which is the same request that
+    # dispatches the email, so it is the send date).
+    #
+    # IT HAD NO EXPIRY AT ALL. The link was single-use, and that is a different
+    # property: a link nobody ever used stayed valid for ever, in a third
+    # party's mailbox, in every mailbox that message was ever forwarded to, and
+    # in whatever archive that mail system keeps. The same argument
+    # `INBOUND_WEBHOOK_SECRET` already makes about thread tokens.
+    #
+    # THREE DAYS IS SAFE HERE ONLY BECAUSE THERE IS A DOCUMENTED WAY OUT.
+    # `POST /verification/requests/{id}/override` is, in its own docstring,
+    # "the only way a fresh candidate moves forward without an employer
+    # response", and it takes a reason and writes an audit row. Without that an
+    # expiry would convert a stale-credential risk into a dead end for a
+    # candidate who did nothing wrong, which is the worse failure.
+    verification_link_ttl_days: int = 3
+
     # -- Background task dispatch --------------------------------------------
     #
     # Three real deployments, never a fallback chain (see workers/dispatch):

@@ -11,7 +11,7 @@ import hmac
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, text
@@ -197,6 +197,26 @@ async def override_verification(
 
 # ── PUBLIC tokenized employer form (no auth; the token is the auth) ─────────
 
+
+def link_expires_at(vr: VerificationRequest) -> datetime:
+    """When this employer's link stops working. DERIVED, never stored.
+
+    Same discipline as `posting_status` and `profile_age`: a stored expiry can
+    disagree with the row it was computed from, and this one would be computed
+    once and then read by three places. `created_at` is the send date, because
+    the request row and the `pickready.send_verification_requests` dispatch
+    happen in the same handler.
+
+    Public rather than private because the form response SERVES this value, so
+    the page telling an employer when their link dies and the check that kills
+    it are the same arithmetic. That is the whole reason it is a function
+    instead of a comparison written inline at the one place that refuses.
+    """
+    return vr.created_at + timedelta(
+        days=get_settings().verification_link_ttl_days
+    )
+
+
 async def _pending_request_by_token(
     session: AsyncSession, token: str
 ) -> VerificationRequest:
@@ -210,6 +230,20 @@ async def _pending_request_by_token(
     if vr.status != VerificationStatus.pending:
         # Single-use: any resolved state rejects the link.
         raise HTTPException(status_code=410, detail="This link has already been used")
+    if link_expires_at(vr) <= datetime.now(timezone.utc):
+        # A DIFFERENT SENTENCE FROM "already used", deliberately. They are
+        # different facts and the next move differs: a used link means an
+        # employer answered and the response is on file; an expired one means
+        # nobody did and somebody has to decide whether to override. One message
+        # for both would make them indistinguishable from the only place either
+        # is ever read, which is a support email.
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "This verification link has expired. Ask the person who "
+                "requested it to arrange a new one."
+            ),
+        )
     return vr
 
 
@@ -224,6 +258,7 @@ async def get_employer_form(
         candidate_name=candidate.full_name if candidate else None,
         employer_name=vr.employer_name,
         fields=EMPLOYER_FORM_FIELDS,
+        expires_at=link_expires_at(vr),
     )
 
 
