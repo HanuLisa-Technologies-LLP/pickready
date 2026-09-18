@@ -381,6 +381,9 @@ def test_the_weight_records_every_term() -> None:
     terms = item.weight.as_dict()["terms"]
     assert set(terms) == {
         "baseline_layer1",
+        # RESTORED 2026-09-19 (vivekium C3): Drishti is LAYER_COMPANY's live
+        # supplier, so the company term is stored again, 1.0 when absent.
+        "company_layer2",
         "situation_layer3",
         "role_layer3",
     }

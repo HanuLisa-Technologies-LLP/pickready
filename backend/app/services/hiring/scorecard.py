@@ -920,6 +920,15 @@ async def compile_matrix(
     refused_phrases = {row["phrase"] for row in refusals}
 
     emphasis = _quadrant_emphasis()
+    # Layer 2, Drishti (vivekium C3): the function's COMPILED strategic
+    # profile, matched on the job's own department. Empty when the function
+    # has no profile, and then every weight below is exactly what it was
+    # before this layer had a live supplier.
+    from app.services.hiring import drishti
+
+    company_compiled, drishti_context = await drishti.compiled_for(
+        session, tenant_id=job.tenant_id, department=job.department
+    )
     usable = [
         _Candidate(
             phrase=resolved.get(
@@ -942,6 +951,7 @@ async def compile_matrix(
         seniority=seniority,
         situation_key=situation_key,
         emphasis=emphasis,
+        company_compiled=company_compiled,
     )
     refusals.extend(build_rejections)
 
@@ -961,6 +971,7 @@ async def compile_matrix(
             seniority=seniority,
             situation_key=situation_key,
             emphasis=emphasis,
+            company_compiled=company_compiled,
         )
         refusals.extend(extra_rejections)
         built.extend(extra)
@@ -1013,6 +1024,12 @@ async def compile_matrix(
         provenance["quadrant"] = quadrant
         provenance["situation_key"] = situation_key
         provenance["department_model"] = model.key
+        # Drishti (C3): the compiled context lines this matrix was built
+        # under, and nothing else of the profile. Recorded so "what was this
+        # job built on" includes the function's strategic profile version in
+        # force at freeze, the same reason raw_value is recorded.
+        if drishti_context:
+            provenance["drishti_context"] = list(drishti_context)
         provenance["unreachable_sources"] = list(item.unreachable_sources)
         name = item.name[:_MAX_NAME]
         key = (item.category, name.casefold())
@@ -1092,6 +1109,7 @@ def _build_all(
     seniority: str,
     situation_key: str | None,
     emphasis: Mapping[str, float],
+    company_compiled: Mapping[str, Any] | None = None,
 ) -> tuple[list[tuple[transformation.Item, str | None]], list[dict[str, Any]]]:
     """Run the seven stages over a batch, one emphasis per §18.1 quadrant.
 
@@ -1135,12 +1153,21 @@ def _build_all(
                     "swot_origin": candidate.swot_origin,
                 }
             )
+        # Layer 2, resolved HERE against the names stage 1 will use, for the
+        # same reason role_emphasis is keyed on the resolved name above: an
+        # emphasis keyed on anything else silently reaches nothing.
+        from app.services.hiring import drishti as _drishti
+
+        company_emphasis = _drishti.emphasis_map(
+            company_compiled, list(role_emphasis.keys())
+        )
         built, refused = transformation.build(
             payload,
             department=model,
             seniority=seniority,
             situation_key=situation_key,
             role_emphasis=role_emphasis,
+            company_emphasis=company_emphasis,
         )
         rejections.extend(refused)
         for item in built:

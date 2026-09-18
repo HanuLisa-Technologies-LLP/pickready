@@ -61,6 +61,7 @@ from app.models.conversation import (
 from app.models.employment import CandidateEmployment
 from app.models.dual_mode import AssessmentConsent, VideoRecording
 from app.models.project import CandidateProject
+from app.models.drishti import DrishtiProfile
 from app.models.candidate import (
     Candidate,
     CandidateTeamReview,
@@ -126,6 +127,7 @@ from app.models.job_scorecard_binding import JobScorecardBinding
 from app.models.user import OTPChallenge, User
 
 __all__ = [
+    "DrishtiProfile",
     "Base",
     "APPROVAL_CHAIN",
     "ApprovalDecision",

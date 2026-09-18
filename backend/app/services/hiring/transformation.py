@@ -195,7 +195,13 @@ def _method_for(sources: Sequence[str]) -> tuple[str, list[str]]:
 class Weight:
     """A weight and the layers that produced it.
 
-        value = baseline (L1) x situation (L3) x role (L3)
+        value = baseline (L1) x company (L2) x situation (L3) x role (L3)
+
+    The company term returned on 2026-09-19: Drishti is LAYER_COMPANY's live
+    supplier (vivekium C3, owner-ruled), reversing exactly the half of the
+    Company DNA removal the removal itself said it would not defend forever
+    ("what it has today is no live supplier"). It defaults to 1.0, so every
+    matrix frozen without a Drishti profile is byte-identical to before.
 
     Every term is stored, so "why is this weighted 1.62" is answered by reading
     the row rather than by rerunning the pipeline. That is the acceptance
@@ -218,12 +224,15 @@ class Weight:
     dimension: str
     #: Every `layers.Adjustment` that contributed, as dicts.
     provenance: list[dict[str, Any]] = field(default_factory=list)
+    #: Layer 2, Drishti. 1.0 when the function has no profile (C3).
+    company: float = 1.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "value": round(self.value, 4),
             "terms": {
                 "baseline_layer1": round(self.baseline, 4),
+                "company_layer2": round(self.company, 4),
                 "situation_layer3": round(self.situation, 4),
                 "role_layer3": round(self.role, 4),
             },
@@ -247,13 +256,26 @@ def derive_weight(
     dimension: str,
     situation_key: str | None,
     role_emphasis: Mapping[str, float] | None = None,
+    company_emphasis: Mapping[str, float] | None = None,
     subject: str,
 ) -> Weight:
-    """Stage 5, in full. Pure arithmetic over two declared layers."""
+    """Stage 5, in full. Pure arithmetic over the declared layers."""
     baseline = anchor.baseline_weight if anchor else NEUTRAL_BASELINE
     baseline_source = anchor.key if anchor else None
 
     provenance: list[dict[str, Any]] = []
+
+    # Layer 2. Drishti, the function's strategic profile, acting through the
+    # COMPILED artifact only (C3): the same layers.resolve bounds and refusal
+    # recording every other layer is held to, so Drishti can TUNE and can
+    # never SUSPEND.
+    company_multiplier = 1.0
+    if company_emphasis and subject in company_emphasis:
+        resolution = layers.resolve(
+            "competency_weight", company={subject: company_emphasis[subject]}
+        )
+        company_multiplier = resolution.multiplier_for(subject)
+        provenance.extend(a.as_dict() for a in resolution.adjustments)
 
     # Layer 3a. The situation type, acting through the dimension.
     _, situation_multiplier = situations.apply_to(1.0, dimension, situation_key)
@@ -269,12 +291,13 @@ def derive_weight(
         role_multiplier = resolution.multiplier_for(subject)
         provenance.extend(a.as_dict() for a in resolution.adjustments)
 
-    value = baseline * situation_multiplier * role_multiplier
+    value = baseline * company_multiplier * situation_multiplier * role_multiplier
     return Weight(
         value=value,
         baseline=baseline,
         situation=situation_multiplier,
         role=role_multiplier,
+        company=company_multiplier,
         baseline_source=baseline_source,
         dimension=dimension,
         provenance=provenance,
@@ -414,6 +437,7 @@ def build_item(
     seniority: str,
     situation_key: str | None = None,
     role_emphasis: Mapping[str, float] | None = None,
+    company_emphasis: Mapping[str, float] | None = None,
     observable_evidence: str | None = None,
     disqualifier: str | None = None,
     swot_origin: str | None = None,
@@ -469,6 +493,7 @@ def build_item(
         dimension=dimension,
         situation_key=situation_key,
         role_emphasis=role_emphasis,
+        company_emphasis=company_emphasis,
         subject=name,
     )
 
@@ -525,6 +550,7 @@ def build(
     seniority: str,
     situation_key: str | None = None,
     role_emphasis: Mapping[str, float] | None = None,
+    company_emphasis: Mapping[str, float] | None = None,
 ) -> tuple[list[Item], list[dict[str, Any]]]:
     """(items, rejections). Never raises for one bad input.
 
@@ -549,6 +575,7 @@ def build(
                 seniority=seniority,
                 situation_key=situation_key,
                 role_emphasis=role_emphasis,
+                company_emphasis=company_emphasis,
                 observable_evidence=raw.get("observable_evidence"),
                 disqualifier=raw.get("disqualifier"),
                 swot_origin=raw.get("swot_origin") or phrase,
