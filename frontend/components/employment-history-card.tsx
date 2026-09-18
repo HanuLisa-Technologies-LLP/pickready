@@ -24,7 +24,7 @@
 import * as React from "react";
 import { Lock, Plus, ShieldCheck, Trash2, TriangleAlert } from "lucide-react";
 
-import { apiGet, apiPut } from "@/lib/api";
+import { apiGet, apiPost, apiPut } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
 import { Button } from "@/components/ui/button";
 import {
@@ -174,6 +174,11 @@ export function EmploymentHistoryCard() {
             conversation with them. They can record a correction; the submitted
             record itself does not change.
           </p>
+          {history.background === "experienced" ? (
+            <AppendEmployerSection
+              onAdded={(updated) => setHistory(updated)}
+            />
+          ) : null}
         </CardContent>
       </Card>
     );
@@ -446,5 +451,143 @@ export function EmploymentHistoryCard() {
         ) : null}
       </CardContent>
     </Card>
+  );
+}
+
+// ── Add the newest employer after submission (vivekium feature 5) ────────────
+//
+// The submitted record stays final row by row; what a candidate MAY do is
+// append the job they have since moved to. The platform keeps the last two
+// employers only, so adding a third automatically and permanently replaces
+// the oldest, verifications included, and a new verification for the added
+// employer starts on its own. All of that is said BEFORE the button works.
+
+function AppendEmployerSection({
+  onAdded,
+}: {
+  onAdded: (updated: HistoryOut) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const [row, setRow] = React.useState<EmploymentRow>(emptyRow());
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const problems = rowProblems(row);
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await apiPost<HistoryOut>("/bgv/me/employers", {
+        employer_name: row.employer_name,
+        designation: row.designation,
+        started_on: row.started_on,
+        ended_on: row.ended_on,
+        hr_name: row.hr_name,
+        hr_email: row.hr_email,
+      });
+      onAdded(updated);
+      setOpen(false);
+      setRow(emptyRow());
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "The employer could not be added right now."
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <div className="rounded-md border p-3">
+        <p className="text-sm font-medium">Moved to a new job since?</p>
+        <p className="mt-1 text-xs leading-5">
+          You can add your newest employer. Your record keeps your last two
+          employers only: adding one permanently replaces the oldest,
+          including any completed verification for it, and a verification
+          request for the new employer is sent automatically.
+        </p>
+        <Button
+          size="sm"
+          variant="outline"
+          className="mt-2"
+          onClick={() => setOpen(true)}
+        >
+          Add newest employer
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border p-3">
+      <p className="text-sm font-medium">Your newest employer</p>
+      <input
+        className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+        placeholder="Company name"
+        value={row.employer_name}
+        onChange={(e) => setRow({ ...row, employer_name: e.target.value })}
+      />
+      <input
+        className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+        placeholder="Your designation"
+        value={row.designation}
+        onChange={(e) => setRow({ ...row, designation: e.target.value })}
+      />
+      <div className="flex gap-2">
+        <input
+          type="date"
+          aria-label="Started on"
+          className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+          value={row.started_on}
+          onChange={(e) => setRow({ ...row, started_on: e.target.value })}
+        />
+        <input
+          type="date"
+          aria-label="Ended on"
+          className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+          value={row.ended_on}
+          onChange={(e) => setRow({ ...row, ended_on: e.target.value })}
+        />
+      </div>
+      <input
+        className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+        placeholder="HR contact name"
+        value={row.hr_name}
+        onChange={(e) => setRow({ ...row, hr_name: e.target.value })}
+      />
+      <input
+        type="email"
+        className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
+        placeholder="HR department email"
+        value={row.hr_email}
+        onChange={(e) => setRow({ ...row, hr_email: e.target.value })}
+      />
+      {error ? (
+        <p role="alert" className="text-xs font-medium">
+          {error}
+        </p>
+      ) : null}
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          disabled={busy || problems.length > 0}
+          onClick={() => void submit()}
+        >
+          {busy ? "Adding" : "Add and start verification"}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => setOpen(false)}
+        >
+          Cancel
+        </Button>
+      </div>
+    </div>
   );
 }
