@@ -290,6 +290,56 @@ class MarkUpdatesReadIn(BaseModel):
     ids: list[uuid.UUID] | None = None
 
 
+class DeletionNoticeOut(BaseModel):
+    """The smart warning screen, authored by the server (feature 7).
+
+    Every string here comes from `services/account_deletion`. The screen
+    renders them and writes none of its own, for the reason
+    `components/permission-notice.tsx` exists: a client that authors copy about
+    a server-side rule keeps promising whatever it promised on the day it was
+    written, and this particular rule is irreversible.
+    """
+
+    heading: str
+    warnings: list[str]
+    confirmation_phrase: str
+    instruction: str
+
+
+class DeleteMeIn(BaseModel):
+    """DELETE /portal/me. The typed confirmation, checked on the SERVER.
+
+    A confirmation only the browser checks is a speed bump: the route is
+    reachable by anything holding the session cookie. Same shape as the
+    Provider's tenant delete, where the operator retypes the company name.
+    """
+
+    confirmation: str = Field(
+        max_length=40,
+        description="Must be the phrase from GET /portal/me/deletion-notice.",
+    )
+
+
+class DeleteMeOut(BaseModel):
+    """What the erasure actually did. Counts, never content.
+
+    Mirrors `erasure.ErasureReceipt` rather than inventing a second vocabulary
+    for the same event, so the number the candidate is shown and the number in
+    the audit row are the same number.
+    """
+
+    deleted: bool
+    #: Echoed so a support conversation can be had about a specific erasure
+    #: without anybody needing to find the candidate row, which is gone.
+    candidate_id: uuid.UUID
+    erased_at: datetime
+    chunks_deleted: int
+    profile_vectors_cleared: int
+    projects_deleted: int
+    cache_keys_deleted: int
+    sign_in_accounts_deleted: int
+
+
 class ApplicationsOut(BaseModel):
     applications: list[ApplicationOut]
 

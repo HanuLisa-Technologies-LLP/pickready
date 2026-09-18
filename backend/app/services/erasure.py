@@ -177,6 +177,9 @@ class ErasureReceipt:
     cache_keys_deleted: int
     #: `table.column` for every entry in the data map this run acted on.
     vector_columns_handled: tuple[str, ...]
+    #: The `users` row that could still have signed in. 0 is a normal answer:
+    #: a databank candidate nobody ever invited has no sign-in account at all.
+    sign_in_accounts_deleted: int = 0
 
     def as_json(self) -> dict[str, object]:
         return {
@@ -187,6 +190,7 @@ class ErasureReceipt:
             "projects_deleted": self.projects_deleted,
             "cache_keys_deleted": self.cache_keys_deleted,
             "vector_columns_handled": list(self.vector_columns_handled),
+            "sign_in_accounts_deleted": self.sign_in_accounts_deleted,
         }
 
 
@@ -303,10 +307,54 @@ async def cascade_erasure(
     projects_deleted = len(projects.fetchall())
 
     # 4. The person. Every remaining reference cascades or is set null.
+    #
+    # Read the sign-in account BEFORE the delete, because `candidates.user_id`
+    # is the only thing that names it and the next statement removes the row
+    # holding it.
+    sign_in_account = (
+        await session.execute(
+            text("SELECT user_id FROM candidates WHERE id = :candidate_id"),
+            {"candidate_id": str(identifier)},
+        )
+    ).scalar_one_or_none()
+
     await session.execute(
         text("DELETE FROM candidates WHERE id = :candidate_id"),
         {"candidate_id": str(identifier)},
     )
+
+    # 4b. THE SIGN-IN ACCOUNT, OR THE ERASURE LEAVES A GHOST THAT CAN LOG IN.
+    #
+    # `candidates.user_id` is ON DELETE SET NULL, so the statement above leaves
+    # the `users` row untouched. Without this step the person still holds a
+    # working Firebase identity and a working `pr_access` cookie, signs in
+    # successfully, and every portal route answers 404 "No candidate record
+    # yet" forever: erased in substance, and visibly still an account holder.
+    # The right to erasure is not satisfied by a profile that still has a door.
+    #
+    # Deleting it is also what makes "start entirely from scratch" true rather
+    # than aspirational: `api/auth` provisions a fresh User AND a fresh
+    # Candidate on the first sign-in of an identity it does not recognise, so
+    # removing the row restores exactly the state before registration.
+    #
+    # ROLE-GUARDED, and the guard is not decoration. A staff account is reached
+    # by `users.id` from a dozen tables and two of them are ON DELETE RESTRICT
+    # (`review_dispositions.decided_by` and `bgv_verifications.decided_by`,
+    # both of which record that a HUMAN decided). A candidate is never written
+    # to either column, so this delete cannot hit a RESTRICT today; if that
+    # ever stops being true the statement RAISES and the whole transaction
+    # rolls back, which is the safe direction: the candidate is told the
+    # deletion failed rather than being handed a half-erasure.
+    sign_in_accounts_deleted = 0
+    if sign_in_account is not None:
+        deleted_users = await session.execute(
+            text(
+                "DELETE FROM users WHERE id = :user_id AND role = 'candidate' "
+                "RETURNING id"
+            ),
+            {"user_id": str(sign_in_account)},
+        )
+        sign_in_accounts_deleted = len(deleted_users.fetchall())
 
     # 5. Caches. After the rows, so nothing can repopulate a key from a row that
     # still exists.
@@ -325,6 +373,7 @@ async def cascade_erasure(
         projects_deleted=projects_deleted,
         cache_keys_deleted=cache_keys_deleted,
         vector_columns_handled=handled,
+        sign_in_accounts_deleted=sign_in_accounts_deleted,
     )
 
     # 6. The record that it happened. `audit_log.candidate_id` has no foreign
@@ -344,11 +393,12 @@ async def cascade_erasure(
     )
     logger.info(
         "erasure.cascade_complete candidate_id=%s chunks=%d profiles=%d "
-        "projects=%d cache_keys=%d",
+        "projects=%d cache_keys=%d sign_in_accounts=%d",
         identifier,
         chunks_deleted,
         profile_vectors_cleared,
         projects_deleted,
         cache_keys_deleted,
+        sign_in_accounts_deleted,
     )
     return receipt

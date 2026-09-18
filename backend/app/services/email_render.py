@@ -153,6 +153,23 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # email inherits everything the delivery path already guarantees: the
     # verified-sender selection, the SES transport, the `email_log` row, the
     # permanent-versus-transient failure taxonomy and the retry policy.
+    # The candidate asked for their own profile to be deleted and it has been
+    # (feature 7, DPDP Act 2023). DELIBERATELY EMPTY OF CONTEXT: it carries no
+    # name, no application, no verification and no count, because by the time
+    # this is dispatched there is no record left to describe and describing one
+    # would mean the erasure had kept a copy in order to write this letter.
+    # The recipient address is the only personal datum involved, and it is
+    # already the thing being written to.
+    "account_deleted": (
+        "Your ReadyPick profile has been deleted",
+        "Your profile and all of the data held with it have been permanently "
+        "deleted at your request. This cannot be undone.\n\n"
+        "You are no longer visible to employer clients registered on the "
+        "platform, and any assessment or shortlisting in progress has been "
+        "cancelled.\n\n"
+        "If you did not ask for this, reply to this message immediately.\n\n"
+        "Regards,\nReadyPick",
+    ),
     "bgv_verification": ("{{subject}}", "{{body}}"),
     "client_invite": (
         "Your {{tenant_name}} workspace on ReadyPick is ready",

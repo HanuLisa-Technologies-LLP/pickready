@@ -15,6 +15,7 @@ import { BackgroundVerificationCard } from "@/components/background-verification
 import { EmploymentHistoryCard } from "@/components/employment-history-card";
 import { CandidateProfileForm } from "@/components/candidate-profile-form";
 import { DataRetentionCard } from "@/components/data-retention-card";
+import { DeleteProfileCard } from "@/components/delete-profile-card";
 import { MainResumeCard } from "@/components/main-resume-card";
 import { ProjectsSection } from "@/components/projects-section";
 
@@ -33,6 +34,10 @@ export default function CandidateProfilePage() {
       <BackgroundVerificationCard />
       <ProjectsSection />
       <CandidateProfileForm />
+      {/* LAST, and that is the whole placement argument: a destructive
+          control above the things it destroys invites a mis-click from
+          somebody who came here to edit their resume. */}
+      <DeleteProfileCard />
     </SettingsPage>
   );
 }

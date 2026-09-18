@@ -8,13 +8,16 @@ import uuid
 from datetime import datetime, timezone
 from typing import AsyncIterator
 
-from fastapi import Query, APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import (
+    Query, APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status,
+)
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     CurrentUser,
+    clear_auth_cookies,
     decode_outreach_token,
     get_candidate_db,
     get_current_any,
@@ -41,6 +44,9 @@ from app.schemas.portal import (
     ApplicationsOut,
     ApplyOut,
     AspectOut,
+    DeleteMeIn,
+    DeleteMeOut,
+    DeletionNoticeOut,
     MarkUpdatesReadIn,
     MeOut,
     MeUpdateIn,
@@ -53,10 +59,12 @@ from app.schemas.portal import (
     UpdatesOut,
     UpdatesSummaryOut,
 )
+from app.services import account_deletion
 from app.services import application_validation
 from app.services import candidate_updates
 from app.services import candidate_profile_form as profile_form
 from app.services import employer_pages
+from app.services import erasure
 from app.services import hiring_pipeline
 from app.services import job_posting
 from app.services import job_relevance
@@ -818,6 +826,111 @@ async def set_retention_consents(
             metadata={"fields": changed},
         )
     return _retention_consents_out(candidate)
+
+
+@router.get("/me/deletion-notice", response_model=DeletionNoticeOut)
+async def get_deletion_notice(
+    _user: CurrentUser = Depends(get_current_candidate),
+) -> DeletionNoticeOut:
+    """The warning screen, authored by the server (feature 7).
+
+    Takes no session and reads no row: the warning is the same for everybody
+    and naming what a PARTICULAR candidate is about to lose would mean listing
+    their applications and verifications on a screen whose entire purpose is
+    that those things are about to stop existing.
+    """
+    return DeletionNoticeOut(**account_deletion.deletion_notice())
+
+
+@router.delete("/me", response_model=DeleteMeOut)
+async def delete_my_profile(
+    body: DeleteMeIn,
+    response: Response,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> DeleteMeOut:
+    """Erase this candidate, permanently, on their own authority (feature 7).
+
+    India's Digital Personal Data Protection Act, 2023 gives a data principal
+    the right to erasure. Until this route existed the product had the whole
+    machinery for it (`services/erasure`, `pickready.cascade_erasure`) and no
+    door: nothing, on any portal, could ask for it.
+
+    THE ERASURE RUNS IN THE REQUEST, AND THAT IS DELIBERATE, because rule 4
+    would otherwise say to dispatch it. Three reasons, and the third is the one
+    that decides it:
+
+      * It is a handful of statements and one Redis scan. The task that wraps
+        it is `Route.LAMBDA` precisely because it is seconds of work, and rule
+        4 is about work measured in minutes.
+      * A dispatch would return 200 to somebody whose data still exists. The
+        answer to "is my data gone" must not be "it has been scheduled".
+      * A dispatch that FAILED would be invisible here. `dispatch` raises, but
+        it raises about the enqueue, not about the erasure, and the candidate
+        would already have been told it was done and signed out. Running it
+        inline means the transaction either commits the erasure and its audit
+        row together or rolls both back and answers 500.
+
+    `get_candidate_db` is already a bypass scope, which `cascade_erasure`
+    requires: a candidate spans tenants through the databank and their chunks
+    sit under tenants this session is not scoped to, so a tenant-scoped session
+    would delete the subset it can see and report a complete erasure.
+
+    THE CONFIRMATION EMAIL IS DISPATCHED, and its address is read BEFORE the
+    rows go, because after the cascade there is no row left to read one from.
+    It is the one part of this that is genuinely slow and provider-dependent,
+    and a delivery failure must not roll back an erasure the person asked for
+    and is legally entitled to.
+    """
+    if not account_deletion.phrase_matches(body.confirmation):
+        raise HTTPException(
+            status_code=422, detail=account_deletion.WRONG_PHRASE_MESSAGE
+        )
+    candidate = await _candidate_for_user(session, user)
+    candidate_id = candidate.id
+    # Read the address now. In a few statements' time this row is gone, and the
+    # confirmation letter is the one thing that still has to reach the person.
+    confirmation_address = candidate.email
+
+    receipt = await erasure.cascade_erasure(
+        session,
+        candidate_id,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+    )
+    await session.flush()
+
+    # The session is now a credential for a user row that no longer exists.
+    # Clearing it here rather than making the client call /auth/logout means
+    # the cookie cannot outlive the account even if the browser never gets the
+    # chance to make a second request.
+    clear_auth_cookies(response)
+
+    if confirmation_address:
+        dispatch(
+            "pickready.send_email",
+            args=[
+                None,
+                confirmation_address,
+                account_deletion.CONFIRMATION_TEMPLATE,
+                {},
+            ],
+        )
+    logger.info(
+        "portal.account_deleted candidate_id=%s sign_in_accounts=%d",
+        candidate_id,
+        receipt.sign_in_accounts_deleted,
+    )
+    return DeleteMeOut(
+        deleted=True,
+        candidate_id=receipt.candidate_id,
+        erased_at=receipt.erased_at,
+        chunks_deleted=receipt.chunks_deleted,
+        profile_vectors_cleared=receipt.profile_vectors_cleared,
+        projects_deleted=receipt.projects_deleted,
+        cache_keys_deleted=receipt.cache_keys_deleted,
+        sign_in_accounts_deleted=receipt.sign_in_accounts_deleted,
+    )
 
 
 @router.put("/me/resume", response_model=StoredResumeOut)
