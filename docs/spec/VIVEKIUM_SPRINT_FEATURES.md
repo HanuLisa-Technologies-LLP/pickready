@@ -380,11 +380,24 @@ a rule if built as written.
 
 **Buildable now, no rule in tension, no decision needed**
 
-1. **Delete My Profile** (feature 7). The machinery exists and has no door.
-   Highest value per line of code in the whole brief, and the one item with a
-   statutory deadline attached (DPDP).
-2. **BGV: the 2-employer cap, the 3-day expiry, bounce detection, the PAN/PF/ESI
-   consent tick, the HR checkbox form** (feature 4, per C4).
+1. ~~**Delete My Profile** (feature 7).~~ **BUILT 2026-09-18.** The machinery
+   existed and had no door: `services/erasure` reaches rows, vectors and
+   caches, `pickready.cascade_erasure` has been registered since the AI runtime
+   upgrade, and NOTHING called either, on any portal. `DELETE /portal/me` with
+   a server-checked typed phrase, `GET /portal/me/deletion-notice` serving the
+   warning verbatim, and `components/delete-profile-card.tsx` rendering it and
+   authoring none of its own copy. The erasure also takes the sign-in `users`
+   row, without which the person keeps a working identity against a profile
+   that no longer exists and every route answers 404 for ever.
+2. **BGV** (feature 4, per C4). Partly done.
+   - ~~the 3-day link expiry~~ **BUILT 2026-09-18**, and it turned out to be a
+     security finding rather than a feature: the employer form link was
+     single-use and had NO expiry, so one nobody ever used stayed valid for
+     ever in a third party's mailbox. SEC-20.
+   - The 2-employer cap already exists as
+     `bgv.MAX_INQUIRIES_PER_CANDIDATE = 2`.
+   - **Still open: bounce detection, the PAN/PF/ESI consent tick, and the HR
+     checkbox form.** The last of these needs the decision in C8 below first.
 3. **Recruiter columns 5, 6 and 7** (feature 3), with column 2 as the word.
 4. **The six consent items with per-item timestamps** (feature 6).
 5. **Consent renewal and the inactivity sweep** (feature 8, per C6), with its
@@ -397,6 +410,31 @@ a rule if built as written.
 8. Job-closure deletion and the billing-record retention window (C5).
 9. Drishti as a gate versus an enhancement layer (C3). The enhancement-layer
    build does not need the decision; making it a hard requirement does.
+
+**C8, added 2026-09-18: there are TWO background-verification systems**
+
+Building feature 4 further means choosing between them, and that is an owner
+decision rather than an implementation detail, because rule 5 says one
+implementation per concept and this is the clearest live violation of it.
+
+- `bgv_inquiries` (migration 0085, 2026-09-05). CANDIDATE-owned, a departmental
+  HR mailbox, capped at two employers, an emailed inquiry whose FREE-TEXT reply
+  is parsed by a model, and an employer tenant reads a result only through a
+  `bgv_share_consents` row. This is the one the brief's feature 4 describes.
+- `verification_requests` (the original outreach flow). TENANT-owned, up to
+  three employers by `employer_seq`, a tokenised WEB FORM with ten structured
+  fields, and an HR override as the documented way past a silent employer. This
+  is the one that already has the checkbox-style form the brief asks for.
+
+The brief wants the first one's ownership model and the second one's form. They
+overlap enough that a recruiter could reasonably ask why a candidate is chased
+twice, and neither knows about the other. Whichever wins, the other should be
+retired the way Company DNA and Intercom were retired, with a sweep test, not
+left in place as a second path.
+
+The 3-day expiry landed on `verification_requests` because that is where the
+link lives; it is correct under either outcome and goes with that system if it
+is retired.
 
 **Needs a release plan, not a feature commit**
 

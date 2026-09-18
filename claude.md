@@ -86,6 +86,28 @@ rather than red. `pytest --timeout=N --timeout-method=thread` (pytest-timeout)
 turns the hang into a failure with a stack; pytest 9 removed
 `--faulthandler-timeout`, so do not reach for that.
 
+**A SECOND CAUSE, 2026-09-18, and it is not a deadlock in the product at all.**
+The suite went quiet at 36% and `py-spy` again named it in one line:
+`test_import_graph.py` blocked in `subprocess.run`. That test spawns a FRESH
+interpreter per module on purpose, 27 of them, and several import pandas, which
+costs about twelve seconds each on a cold interpreter on this machine. It has a
+`timeout=120` and passes in 342 seconds when run alone.
+
+**What broke it was running the suite CONCURRENTLY WITH TWO EMULATED ARM64
+DOCKER BUILDS.** Under that load a pandas import crossed 120 seconds, and once
+`subprocess.run` raises `TimeoutExpired` it calls `kill()` and then
+`communicate()` AGAIN WITH NO TIMEOUT, which on Windows can block for ever. So
+a slow import became a permanent hang, and the last thing printed was a passing
+dot.
+
+This is the same lesson as "never run two `scripts/test.sh` invocations against
+one database", with CPU as the contended resource instead of Postgres. **Do not
+run the authoritative suite beside a container build.** Two diagnostics settle
+it in seconds and both are worth reaching for before suspecting the code: read
+the process's CPU twice (frozen means blocked, climbing means slow), and
+`py-spy dump`, where `active` in `get_data` is an import grinding through disk
+and `idle` in `join` is the subprocess deadlock above it.
+
 ### THE THREE RULES THE HUB NOW FOLLOWS
 
 - **A LONG-LIVED TASK IS STOPPED BY THE LIFESPAN, NEVER ONLY BY ITS LAST

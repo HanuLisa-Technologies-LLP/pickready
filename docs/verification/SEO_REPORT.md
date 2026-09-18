@@ -148,13 +148,33 @@ sixth file, `components/bd/ai-reach.tsx`, had the same defect and was fixed too.
 `/login`, `/register`, `/join` now carry `robots: { index: false }`. `follow` is
 left alone so link equity still flows.
 
-### S11. Employer page title is derived from the slug, not the fetched record. DEFERRED
-`app/(public)/employers/[slug]/page.tsx` title-cases the slug in
-`generateMetadata` to avoid a second network call. If a company's stored `name`
-differs in casing or punctuation, the `<title>` and the on-page `<h1>` disagree
-in a search result. Deferred deliberately: fixing it costs a server-side fetch on
-every render of a public page, a real latency trade for a cosmetic
-inconsistency.
+### S11. Employer page title is derived from the slug, not the fetched record
+
+**AMENDED 2026-09-18, and the amendment RAISES it. This entry called the
+consequence "a cosmetic inconsistency" and that was wrong.**
+
+The original reading was right about the mechanism and wrong about what falls
+out of it. `app/(public)/employers/[slug]/page.tsx` title-cases the slug in
+`generateMetadata` to avoid a second network call, so a company whose stored
+`name` differs in casing or punctuation gets a `<title>` and an `<h1>` that
+disagree. True, and minor.
+
+What it misses is that NO SLUG IS EVER REJECTED. Probed against the deployed
+site: `/employers/definitely-not-a-real-company-xyz` answers **200**, with that
+phrase title-cased into `<title>`, a canonical pointing at itself, no
+`noindex`, and an explicit `Allow: /employers/*` in `robots.txt`. So this is
+not one company's title being slightly off. It is an unbounded supply of
+indexable pages on the apex domain whose title an outsider chooses, and a
+crawl budget that can be spent on as many of them as anybody cares to link.
+
+Still deferred, and the reason has changed from "not worth a fetch" to
+"the obvious fix is wrong and the correct one is blocked". Tracked as **SEC-22
+in SECURITY_REPORT.md**, which carries both: calling `notFound()` would turn
+the page into a company-existence oracle that
+`employer-profile.tsx` deliberately avoids being, and resolving the slug inside
+`generateMetadata` needs the Next.js server to reach the API, which it cannot
+today because `API_BASE` is the relative `/api/v1` and no public page has ever
+fetched server-side.
 
 ---
 

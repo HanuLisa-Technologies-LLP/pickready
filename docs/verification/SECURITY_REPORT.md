@@ -18,8 +18,8 @@ run to verify the fix.
 | Severity | Found | Fixed and verified | Fixed, activation pending | Documented, not changed |
 |---|---|---|---|---|
 | CRITICAL | 2 | 2 | 0 | 0 |
-| HIGH | 5 | 4 | 1 | 0 |
-| MEDIUM | 9 | 8 | 0 | 1 |
+| HIGH | 6 | 4 | 1 | 1 |
+| MEDIUM | 13 | 10 | 0 | 3 |
 | LOW | 3 | 0 | 0 | 3 |
 
 ---
@@ -220,6 +220,62 @@ scratch directory and re-running: 53 passed with it present.
 
 ---
 
+### SEC-24. `is_production` is FALSE on the production deployment, and five guards rest on it
+
+**Component.** `Settings.is_production`, and its five consumers.
+
+**Root cause.** `is_production` is `environment == "production"`. The live API
+container is `ENVIRONMENT=pilot`, confirmed by reading the running task
+definition. Pilot IS the production deployment: it serves readypick.ai to real
+users, and `FRONTEND_URL=https://readypick.ai` on that same container says so.
+
+**This is not a new discovery so much as the pattern behind three findings
+already in this report.** SEC-6 (the interactive docs served on the live site)
+and the CRITICAL Razorpay webhook bypass were both this, and both were fixed at
+the call site. SEC-23 is this. Fixing them one at a time treats the symptom, so
+here is the whole set, from `grep -rn "\.is_production" app/`:
+
+| Consumer | What it is supposed to do in production | What it does on the live site |
+|---|---|---|
+| `main.py:178` | Leave the request-diagnostics middleware uninstalled | Installs it. SEC-23 |
+| `workers/dispatch.py:119` | Refuse `task_dispatch_backend=record`, which "accepts work without running it" | Accepts it. Masked today only because `TASK_DISPATCH_BACKEND=aws` |
+| `services/embeddings.py:222` | Raise rather than serve pseudo-random vectors when `VOYAGE_CONTEXT_4` is absent | Would serve them. Masked today only because the key IS configured |
+| `core/logging.py:95` | Render logs as JSON | Renders `ConsoleRenderer`, so CloudWatch holds unstructured lines and any structured query or metric filter over them matches nothing |
+| `scripts/seed_resumes.py:160` | Refuse to seed the demo resume corpus without an explicit opt-in | Would seed without it |
+
+**Two of those five are load-bearing and are currently masked by correct
+configuration rather than by the guard.** That is the part worth acting on: the
+product is one environment-variable edit away from serving retrieval over
+pseudo-random vectors, or from accepting every background task and running
+none, with the guard that exists to prevent exactly that sitting inert. The
+dispatch guard's own comment asks for it to be unreachable "by a misread
+environment variable on a live service", and a misread environment variable on
+a live service is precisely what disables it.
+
+**NOT CHANGED, and this one is an owner decision rather than a patch.** The
+obvious move is to set `ENVIRONMENT=production` on the pilot task definition,
+and it would flip all five at once: log rendering, dispatch refusal, embedding
+refusal, the seeding guard and the middleware. That is the right end state and
+it is not something to do blind at the end of a release, because two of those
+five change behaviour on the next request rather than at the next mistake.
+
+The alternative, and probably the better one, is to stop overloading one word.
+`serves_over_https` already exists because somebody learned that the cookie's
+`Secure` flag is a property of the ORIGIN and not of a release channel; the same
+argument applies here. A deployment has at least two independent properties:
+whether real people use it, and which release channel it is. Guards about
+danger to real users should read the first, and only `seed_resumes` plausibly
+wants the second.
+
+**Verification.** `ENVIRONMENT=pilot` read live from
+`readypick-pilot-api`'s running task definition on 2026-09-18, alongside
+`TASK_DISPATCH_BACKEND=aws`, `EMAIL_TRANSPORT=ses` and
+`FRONTEND_URL=https://readypick.ai`. The middleware half is reproduced in
+SEC-23. The other four are read from source and are not individually exploitable
+today; they are guards that would not fire.
+
+---
+
 ## MEDIUM, all fixed unless noted
 
 | # | Finding | Fix | Verification |
@@ -233,6 +289,12 @@ scratch directory and re-running: 53 passed with it present.
 | SEC-14 | Two log lines passed a storage-signing exception OBJECT, whose string can carry the bucket, object key and credential query fragments. | Log the exception class name, matching every neighbouring line. | Changed; control flow untouched. |
 | SEC-15 | Pilot RDS had **no deletion protection and no final snapshot** (both were keyed on `environment == "production"`), and pilot is the only environment ever applied. Confirmed live: `DeletionProtection: False`. | Both are now independent variables defaulting to the safe value. | Confirmed in the offline plan. |
 | SEC-16 | `secrets/api-keys.txt` holds live-looking Groq, OpenRouter, Gemini, Cloudinary, Tavily, Resend and MSG91 keys. **NOT a repository leak**: the directory is correctly gitignored and nothing is tracked. | **OPERATIONAL, owner action.** Four of those vendors were removed from the architecture in 2026-08-28 and their keys are still live. | Confirmed gitignored via `git status --ignored`. Rotation is the owner's to do. |
+| SEC-20 | **The employer verification form link never expired.** `_pending_request_by_token` refused any non-`pending` status and the module called the token "single-use", which is a real property and NOT expiry: a link nobody ever used stayed `pending`, and therefore valid, for ever. It is a credential that writes an employment verification about a named person, and it lives in a third party's mailbox, in every mailbox the message was forwarded to, and in that mail system's archive. Same argument `INBOUND_WEBHOOK_SECRET` already makes about thread tokens. | Three days from the send date, `verification_link_ttl_days`, DERIVED from `created_at` rather than stored. Enforced at the ONE chokepoint both form routes use, so the POST that writes is covered and not only the GET that renders. The expired refusal is a different sentence from the already-used one, because the recruiter's next move differs. | VERIFIED, and mutation-checked: disabling the branch fails the test with DID NOT RAISE. Safe to impose because `POST /verification/requests/{id}/override` is documented as "the only way a fresh candidate moves forward without an employer response", so an expiry is not a dead end; and pilot holds zero profiles, so no live link was invalidated. |
+| SEC-21 | **A disabled assertion hid a real gap in AI Reach.** `test_job_boards_are_excluded_at_the_provider_not_after` looped over `("indeed.com", "naukri.com", "linkedin.com" if False else "shine.com")`, which drops `linkedin.com` and checks `shine.com` twice. Behind it, `linkedin` was in the `_AGGREGATOR_HOSTS` post-filter and absent from `EXCLUDED_SEARCH_DOMAINS`, so every LinkedIn hit was fetched, counted against a bounded result budget, and then discarded. Not an isolation or disclosure issue; a spend and quality one, listed here because the MECHANISM is a security-relevant class: an assertion that cannot fail reports success about something nobody measured. | `linkedin.com` added to the provider-level exclusion. Company-profile research is untouched, where spec v4 makes LinkedIn a PREFERRED source: `services/company_research` calls `_tavily_search` with no `exclude_domains` at all. A second test pins the direction that costs money and NAMES the six remaining divergences as accepted. | VERIFIED, 88 tests pass. Found by sweeping the whole tree for `if False` after a subagent left one in `api/deps.py` earlier in this work; it was the only other hit. |
+| SEC-22 | **The public employer page mints unlimited indexable pages whose title the visitor chooses.** `app/(public)/employers/[slug]/page.tsx` derives the tab title from the slug with NO fetch, by its own comment, so EVERY slug renders. Verified live: `/employers/definitely-not-a-real-company-xyz` answers **200** with that phrase title-cased into `<title>`, a canonical pointing at itself, and no `noindex`, while `robots.txt` carries an explicit `Allow: /employers/*`. Not XSS: React escapes the value into a text node. The issue is an unbounded supply of real-looking indexable pages on the brand's own apex domain whose title an outsider picks. | **NOT FIXED in this release, and the obvious fix is WRONG.** The 200-for-every-slug behaviour is DELIBERATE and `employer-profile.tsx` says why: "a hidden or unknown slug answers 404 and renders the same not-found state, so this page cannot be used to probe which companies exist on the platform". Calling `notFound()` for an unresolved slug would turn the page into a company-existence oracle, which is a worse trade. The fix that keeps both properties is to resolve the slug INSIDE `generateMetadata`, which runs server-side and carries no HTTP status for the page: a real employer keeps its name, its canonical and its indexability, and anything else gets the static title "Employer" plus `robots: {index: false}` while the PAGE still returns 200 with the identical body. That is a change to how a public page fetches, not a one-line patch, and shipping it into a frontend build already in flight would make it the least tested thing in the release. | Reproduced live on 2026-09-18 against the deployed site. `/apply/{unknown-uuid}` is the same soft-404 class and is milder: its title is the static "Apply", so nothing is reflected. Note that the enumeration resistance is PARTIAL either way, and that is worth knowing before anybody leans on it: the page's own `GET /employers/{slug}` call answers 404 for an unknown slug, so the oracle is already reachable by calling the API directly or by reading the browser's network panel. What the current design defeats is a naive crawler, not a determined prober. |
+| SEC-23 | **The request-diagnostics middleware is installed on the live site, and its own docstring says it is not.** `app/main.py` guards it with `if not get_settings().is_production:`, and `is_production` is `environment == "production"` while the live environment is `pilot`. **This is the THIRD finding with that one root cause**, after the Razorpay webhook bypass and the docs gate. Verified live: every API response carries `Server-Timing: app;dur=..., sql;dur=...` and `X-Query-Count`, and `X-Debug-SQL: 1` is accepted from an anonymous caller, which sets `collect=True` so every statement the request runs is captured and written to the application log by `log.info("perf   sql[%02d] %s", ...)`. `instrumentation.py` states the opposite in place: "unreachable in production because the middleware is not installed there." | **NOT FIXED in this release.** The fix is NOT to swap in `serves_over_https`, which is true for staging where these diagnostics are wanted. It is an explicit opt-IN setting defaulting to off, the same shape as `email_transport` and `TASK_DISPATCH_BACKEND`: deployment data, never a fallback chain, and a default that is safe when nobody has thought about it. | Reproduced live on 2026-09-18. **Be exact about the exposure, because the obvious reading overstates it.** SQLAlchemy hands the event hook the COMPILED statement with placeholders and its parameters separately, and this code logs only the statement, truncated to 200 characters. So no candidate value, no bound parameter and no row content reaches the log: what does is schema shape, plus log volume an anonymous caller can amplify on demand. The timing headers are the sharper half: this repository already uses `hmac.compare_digest` because "a plain comparison returns as soon as two bytes differ and leaks the secret's prefix to anyone willing to time a few thousand requests", and a server-measured `sql;dur` hands an attacker exactly that measurement with the network jitter already removed. |
+
+> **SEC-22, the blocker the fix actually runs into.** Resolving the slug inside `generateMetadata` needs the Next.js SERVER to reach the API, and today it cannot. `lib/api.ts` sets `API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api/v1"`, a RELATIVE path, which is correct for the browser (same origin through the ALB) and unusable from inside the container, where `fetch` needs an absolute URL. And `grep -rln "await fetch(" app/(public)` returns NOTHING: no public page has ever fetched server-side, so there is no precedent, no configured base URL and no caching convention to follow. Closing SEC-22 therefore means giving the frontend task an internal API base (an env var on the task definition, so a Terraform change) or hairpinning through the public ALB from inside the VPC, and then deciding the revalidation window for a cached `generateMetadata` result. That is why this is queued rather than patched: the one-line version of the fix does not exist.
 
 ---
 
