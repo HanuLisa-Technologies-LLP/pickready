@@ -333,7 +333,7 @@ export default function OrgReviewScreen() {
             >
               <div className="min-w-0">
                 <h2 className="text-base font-semibold">Source a candidate</h2>
-                <p className="mt-1 text-sm leading-6">
+                <p className="mt-1 text-sm">
                   Upload a resume against{" "}
                   {jobs.find((j) => j.id === jobId)?.title ?? "the selected job"}.
                 </p>
@@ -417,7 +417,7 @@ export default function OrgReviewScreen() {
                   </Button>
                 </form>
               ) : (
-                <p className="text-sm leading-6">
+                <p className="text-sm">
                   You can review sourced candidates here. Uploading a resume
                   needs the resume upload permission.
                 </p>

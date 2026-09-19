@@ -132,7 +132,7 @@ export default function OutreachCompletionPage() {
           Complete your profile
           {info?.job_title ? `: ${info.job_title}` : ""}
         </h1>
-        <p className="mt-2 text-pretty text-sm leading-6">
+        <p className="mt-2 text-pretty text-sm">
           Every section below is required before your profile moves forward.
         </p>
       </div>

@@ -37,7 +37,7 @@ export default function NotFound() {
         This page does not exist
       </h1>
 
-      <p className="mt-2 text-pretty text-sm leading-6">
+      <p className="mt-2 text-pretty text-sm">
         The address may be mistyped, or the link may have expired. Assessment
         and verification links are single use and stop working once they are
         finished.

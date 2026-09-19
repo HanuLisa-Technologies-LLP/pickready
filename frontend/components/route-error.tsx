@@ -84,7 +84,7 @@ export function RouteError({
 
       <h1 className="mt-5 text-xl font-semibold tracking-tight">{surface}</h1>
 
-      <p className="mt-2 text-pretty text-sm leading-6">
+      <p className="mt-2 text-pretty text-sm">
         {description ??
           "This section did not load. It is usually temporary, so trying again is the quickest fix."}
       </p>

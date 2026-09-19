@@ -88,7 +88,7 @@ export function EvidenceProfile() {
               ].map((item) => (
                 <li
                   key={item}
-                  className="flex items-start gap-2.5 bg-canvas p-4 text-sm leading-6"
+                  className="flex items-start gap-2.5 bg-canvas p-4 text-sm"
                 >
                   <ShieldCheck
                     className="mt-0.5 h-4 w-4 shrink-0 text-teal-700"
@@ -117,7 +117,7 @@ export function EvidenceProfile() {
                   </li>
                 ))}
               </ul>
-              <p className="border-t border-border px-6 py-4 text-xs font-medium leading-5">
+              <p className="border-t border-border px-6 py-4 text-xs font-medium">
                 No percentage, no rank, no letter. The same four words on the
                 screen, in the PDF and in the email.
               </p>
@@ -233,7 +233,7 @@ export function InsightsPreview() {
                 <h3 className="mt-5 text-lg font-semibold leading-7">
                   {item.title}
                 </h3>
-                <p className="mt-3 text-sm leading-6">{item.body}</p>
+                <p className="mt-3 text-sm">{item.body}</p>
               </article>
             </StaggerItem>
           ))}

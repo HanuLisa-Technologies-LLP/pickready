@@ -191,10 +191,10 @@ export function Pricing() {
                   + {pack.bonus} bonus credits free
                 </p>
               ) : (
-                <p className="mt-1 text-sm leading-6">{pack.note}</p>
+                <p className="mt-1 text-sm">{pack.note}</p>
               )}
 
-              <dl className="mt-5 space-y-2 text-sm leading-6">
+              <dl className="mt-5 space-y-2 text-sm">
                 <div className="flex items-baseline justify-between gap-3">
                   <dt>Price</dt>
                   <dd className="font-semibold">
@@ -234,7 +234,7 @@ export function Pricing() {
           ))}
         </div>
 
-        <Reveal delay={0.05} className="mt-5 text-sm leading-6">
+        <Reveal delay={0.05} className="mt-5 text-sm">
           <p>
             Prices exclude 18% GST. A one-time account setup fee of{" "}
             {formatInr(5000)} applies to your first purchase and is currently
@@ -289,7 +289,7 @@ export function Pricing() {
           >
             {INCLUDED.map((item) => (
               <StaggerItem as="li" key={item}>
-                <span className="flex items-start gap-2.5 text-sm leading-6">
+                <span className="flex items-start gap-2.5 text-sm">
                   <Check
                     className="mt-0.5 h-4 w-4 shrink-0 text-brand-600"
                     aria-hidden="true"

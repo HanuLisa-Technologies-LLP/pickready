@@ -130,7 +130,7 @@ function Funnel({ totals }: { totals: FunnelTotals }) {
         <h2 className="text-base font-semibold tracking-tight">
           Where your candidates are
         </h2>
-        <p className="text-sm leading-6">
+        <p className="text-sm">
           Everyone currently in the pipeline across the jobs assigned to you.
         </p>
       </div>
@@ -147,7 +147,7 @@ function Funnel({ totals }: { totals: FunnelTotals }) {
                   {value}
                 </p>
               </div>
-              <p className="mt-0.5 text-xs leading-5">{stage.hint}</p>
+              <p className="mt-0.5 text-xs">{stage.hint}</p>
               {/* The bar is presentation only. Its value is stated as text
                   directly above, so the track carries aria-hidden rather than a
                   progressbar role that would read the same number twice. */}
@@ -216,7 +216,7 @@ function AttentionList({ items }: { items: Attention[] }) {
         <h2 className="text-base font-semibold tracking-tight">
           Worth a look first
         </h2>
-        <p className="mt-1 text-sm leading-6">
+        <p className="mt-1 text-sm">
           Drawn from the same counts below. Nothing here is a judgement about a
           candidate.
         </p>
@@ -232,7 +232,7 @@ function AttentionList({ items }: { items: Attention[] }) {
                 <span className="block truncate text-sm font-semibold">
                   {job.title}
                 </span>
-                <span className="block text-xs leading-5">{reason}</span>
+                <span className="block text-xs">{reason}</span>
               </span>
               <span
                 aria-hidden="true"
@@ -379,7 +379,7 @@ export function DashboardSummaryView() {
                 <h2 className="text-base font-semibold tracking-tight">
                   Jobs worked
                 </h2>
-                <p className="mt-1 text-sm leading-6">
+                <p className="mt-1 text-sm">
                   Roles assigned to you across this period.
                 </p>
                 <p className="mt-2 text-3xl font-semibold [font-variant-numeric:tabular-nums]">

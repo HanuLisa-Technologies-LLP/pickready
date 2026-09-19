@@ -384,7 +384,7 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
               <Card className="shadow-card" data-testid="termination-notice">
                 <CardContent className="p-8 text-center">
                   <h2 className="text-base font-semibold">This assessment has ended</h2>
-                  <p className="mt-2 max-w-md text-pretty text-sm leading-6 sm:mx-auto">
+                  <p className="mt-2 max-w-md text-pretty text-sm sm:mx-auto">
                     {conversation.termination_message ??
                       "The assessment was ended before its final question. The answers you had already sent were kept."}
                   </p>
@@ -402,7 +402,7 @@ export function AssessmentConversation({ linkId }: { linkId: string }) {
                   <h2 className="mt-4 text-base font-semibold">
                     Assessment complete
                   </h2>
-                  <p className="mt-1 max-w-sm text-pretty text-sm leading-6">
+                  <p className="mt-1 max-w-sm text-pretty text-sm">
                     Your responses were saved and your report is being compiled.
                   </p>
                   <Button className="mt-5" variant="outline" asChild>

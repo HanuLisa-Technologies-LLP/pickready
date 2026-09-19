@@ -398,7 +398,7 @@ export default function BillingPage() {
                 <p className="mt-1 text-pretty leading-7">
                   {data.credits.deficit_message}
                 </p>
-                <p className="mt-1 text-sm leading-6">
+                <p className="mt-1 text-sm">
                   Assessments already in progress are unaffected, and every
                   candidate profile stays exactly where it is.
                 </p>
@@ -502,7 +502,7 @@ export default function BillingPage() {
                 {/* Directive Part 3 §7.3: projected assessments remaining,
                     split by role type. */}
                 {Number(data.credits.balance_credits) > 0 ? (
-                  <span className="mt-1 block text-sm leading-6">
+                  <span className="mt-1 block text-sm">
                     At 1.0 credit/report (Non-STEM): ~
                     {Math.floor(Number(data.credits.balance_credits))} more
                     reports. At 1.5 credits/report (STEM): ~
@@ -535,13 +535,13 @@ export default function BillingPage() {
                     key={event}
                     className="rounded-xl border border-border bg-surface p-4"
                   >
-                    <p className="text-sm font-medium leading-6">
+                    <p className="text-sm font-medium">
                       {EVENT_LABELS[event]}
                     </p>
                     <p className="mt-2 text-2xl font-bold">
                       {toCredits(subunits, data.credits.subunits_per_credit)}
                     </p>
-                    <p className="mt-1 text-xs leading-5">
+                    <p className="mt-1 text-xs">
                       credits used, at {EVENT_RATE[event]}
                     </p>
                   </div>
@@ -583,7 +583,7 @@ export default function BillingPage() {
               }
             >
               {/* Balance shown BEFORE the choice (directive Part 5 §7.2). */}
-              <p className="text-sm leading-6">
+              <p className="text-sm">
                 Current balance:{" "}
                 <span className="text-lg font-bold">
                   {data.credits.balance_credits}
@@ -593,7 +593,7 @@ export default function BillingPage() {
 
               {packsError ? (
                 <div className="mt-4 flex flex-wrap items-center gap-3">
-                  <p className="text-sm leading-6">
+                  <p className="text-sm">
                     Could not load credit packs. {packsError}
                   </p>
                   <Button variant="outline" onClick={() => void loadPacks()}>
@@ -636,7 +636,7 @@ export default function BillingPage() {
                             </p>
                           ) : null}
                           {pack.bonus_credits > 0 ? (
-                            <p className="mt-1 text-sm font-medium leading-6">
+                            <p className="mt-1 text-sm font-medium">
                               +{pack.bonus_credits} bonus credits free
                             </p>
                           ) : null}
@@ -644,7 +644,7 @@ export default function BillingPage() {
                           <p className="mt-3 font-semibold">
                             {formatInr(pack.total_inr)}
                           </p>
-                          <p className="text-xs leading-5">
+                          <p className="text-xs">
                             one-time, incl. GST
                           </p>
                         </button>
@@ -657,7 +657,7 @@ export default function BillingPage() {
                       className="flex flex-col rounded-xl border border-border p-5 transition-colors hover:border-brand-600/50"
                     >
                       <p className="text-2xl font-bold">Custom</p>
-                      <p className="mt-1 text-sm leading-6">
+                      <p className="mt-1 text-sm">
                         {packs.min_custom_credits}+ credits, priced by
                         agreement. No self-serve checkout.
                       </p>
@@ -678,7 +678,7 @@ export default function BillingPage() {
                   {selectedPack ? (
                     <div className="mt-6 max-w-md rounded-xl border border-border bg-surface p-5">
                       <p className="font-semibold">Order summary</p>
-                      <dl className="mt-3 space-y-2 text-sm leading-6">
+                      <dl className="mt-3 space-y-2 text-sm">
                         <div className="flex justify-between gap-4">
                           <dt>Credits</dt>
                           <dd className="font-medium">
@@ -741,7 +741,7 @@ export default function BillingPage() {
                         )}
                       </Button>
                       {!canManage ? (
-                        <p className="mt-2 text-xs leading-5">
+                        <p className="mt-2 text-xs">
                           Only your Company Admin can complete a purchase.
                         </p>
                       ) : null}
@@ -786,7 +786,7 @@ export default function BillingPage() {
                       {formatInr(plan.price_inr)}
                       <span className="ml-1 text-sm font-medium">/ month</span>
                     </p>
-                    <p className="mt-2 text-sm leading-6">
+                    <p className="mt-2 text-sm">
                       {plan.applications_per_month} applications, at{" "}
                       {formatInr(plan.rate_per_application_inr)} each
                     </p>
@@ -822,7 +822,7 @@ export default function BillingPage() {
                 );
               })}
             </div>
-            <p className="mt-5 text-sm leading-6">
+            <p className="mt-5 text-sm">
               Need more than 200 applications a month?{" "}
               <a
                 className="inline-flex items-center gap-1 underline"
@@ -882,7 +882,7 @@ export default function BillingPage() {
                         <p className="text-sm font-medium">
                           {EVENT_LABELS[entry.event_type] ?? entry.event_type}
                         </p>
-                        <p className="mt-1 text-xs leading-5">
+                        <p className="mt-1 text-xs">
                           {formatDate(entry.created_at)}
                         </p>
                       </div>
@@ -975,7 +975,7 @@ export default function BillingPage() {
                                 ? ` + ${row.bonus_credits} bonus`
                                 : ""}
                             </p>
-                            <p className="mt-1 text-xs leading-5">
+                            <p className="mt-1 text-xs">
                               {formatDate(row.created_at)},{" "}
                               {PURCHASE_STATUS_LABELS[row.status] ?? row.status}
                             </p>

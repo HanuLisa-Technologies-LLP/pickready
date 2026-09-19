@@ -547,7 +547,7 @@ export default function PublicApplyPage() {
               <h1 className="mt-1.5 text-balance text-2xl font-bold tracking-tight sm:text-3xl">
                 {job.title}
               </h1>
-              <p className="mt-2 text-sm leading-6">{subtitle}</p>
+              <p className="mt-2 text-sm">{subtitle}</p>
             </div>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-2 text-xs">
@@ -636,7 +636,7 @@ export default function PublicApplyPage() {
                     </section>
                   </>
                 ) : (
-                  <p className="text-sm leading-6">
+                  <p className="text-sm">
                     The employer has not published a detailed description for
                     this role yet. Reach out to them if you need more context
                     before applying.
@@ -644,7 +644,7 @@ export default function PublicApplyPage() {
                 )}
                 <Separator />
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <p className="text-sm leading-6">
+                  <p className="text-sm">
                     The application takes about 10 minutes.
                   </p>
                   <Button type="button" size="lg" onClick={() => setTab("apply")}>
@@ -700,7 +700,7 @@ export default function PublicApplyPage() {
                   <h2 className="mt-5 text-base font-semibold">
                     You have already applied to this role
                   </h2>
-                  <p className="mt-2 max-w-md text-pretty text-sm leading-6">
+                  <p className="mt-2 max-w-md text-pretty text-sm">
                     Your application for {job.title}
                     {appliedAt
                       ? ` was received on ${new Date(appliedAt).toLocaleDateString()}`
@@ -884,7 +884,7 @@ export default function PublicApplyPage() {
                             : "Submitting"
                           : "Submit application"}
                       </Button>
-                      <p className="text-center text-xs leading-5">
+                      <p className="text-center text-xs">
                         {progress.answered} of {progress.total} questionnaire
                         answers complete.
                       </p>

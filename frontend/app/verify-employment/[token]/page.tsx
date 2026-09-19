@@ -79,7 +79,7 @@ export default function VerifyEmploymentPage() {
             <CardTitle>Employment verification</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-sm leading-6">{blocked}</p>
+            <p className="text-sm">{blocked}</p>
           </CardContent>
         </Card>
       </main>
@@ -94,7 +94,7 @@ export default function VerifyEmploymentPage() {
             <CardTitle>Thank you</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-sm leading-6">
+            <p className="text-sm">
               Your response has been recorded. Nothing further is needed, and
               this link no longer works.
             </p>
@@ -125,7 +125,7 @@ export default function VerifyEmploymentPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
-          <p className="text-sm leading-6">
+          <p className="text-sm">
             {form.candidate_name ?? "This candidate"} has named{" "}
             {form.employer_name ?? "your organisation"} as a previous employer.
             Please confirm each statement below. This takes under two minutes,
@@ -134,7 +134,7 @@ export default function VerifyEmploymentPage() {
           <ul className="space-y-4">
             {form.items.map((item) => (
               <li key={item.key} className="space-y-1.5">
-                <p className="text-sm font-medium leading-6">
+                <p className="text-sm font-medium">
                   {item.label}
                   {item.required ? null : (
                     <span className="ml-2 text-xs font-normal">Optional</span>
@@ -166,7 +166,7 @@ export default function VerifyEmploymentPage() {
             ))}
           </ul>
           {error ? (
-            <p role="alert" className="text-sm font-medium leading-6">
+            <p role="alert" className="text-sm font-medium">
               {error}
             </p>
           ) : null}

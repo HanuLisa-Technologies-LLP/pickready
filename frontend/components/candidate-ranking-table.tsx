@@ -122,7 +122,7 @@ function ValidationAnswersModal({
                   {group.items.map((item) => (
                     <div key={item.key} className="p-4">
                       <dt className="text-sm font-semibold">{item.question}</dt>
-                      <dd className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                      <dd className="mt-2 whitespace-pre-wrap text-sm">
                         {item.answer?.trim() || "Not answered"}
                       </dd>
                     </div>
@@ -371,7 +371,7 @@ export function CandidateRankingTable({
         </div>
       </div>
       {profileAge === "old" ? (
-        <p className="mb-3 text-sm leading-6">
+        <p className="mb-3 text-sm">
           These people applied before this job was renewed. Their profiles stay
           yours to read, and opening one for the first time draws a twentieth of
           a credit from your pool.

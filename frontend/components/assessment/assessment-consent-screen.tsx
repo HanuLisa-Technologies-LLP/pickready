@@ -55,7 +55,7 @@ export function AssessmentConsentScreen({
             // when the candidate agrees; this screen authors none of it.
             <ul className="space-y-2 rounded-md border border-border bg-muted/40 p-4">
               {terms.items.map((item) => (
-                <li key={item.key} className="flex gap-2 text-sm leading-6">
+                <li key={item.key} className="flex gap-2 text-sm">
                   <span aria-hidden="true" className="select-none">
                     {"•"}
                   </span>
@@ -64,12 +64,12 @@ export function AssessmentConsentScreen({
               ))}
             </ul>
           ) : null}
-          <p className="text-sm leading-6">
+          <p className="text-sm">
             Agreeing records the time you agreed to each item above and the
             version of these terms. The assessment cannot begin without it.
           </p>
           {error ? (
-            <p role="alert" className="text-sm leading-6 font-medium">
+            <p role="alert" className="text-sm font-medium">
               {error}
             </p>
           ) : null}

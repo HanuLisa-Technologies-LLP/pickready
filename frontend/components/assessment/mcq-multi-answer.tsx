@@ -62,7 +62,7 @@ export function McqMultiAnswer({
         return (
           <label
             key={option.id}
-            className="flex cursor-pointer items-start gap-3 border border-input bg-surface p-3 text-sm leading-6 transition-[border-color,background-color] duration-150 hover:border-field-hover has-[[data-state=checked]]:border-navy-600 has-[[data-state=checked]]:bg-navy-50"
+            className="flex cursor-pointer items-start gap-3 border border-input bg-surface p-3 text-sm transition-[border-color,background-color] duration-150 hover:border-field-hover has-[[data-state=checked]]:border-navy-600 has-[[data-state=checked]]:bg-navy-50"
           >
             <Checkbox
               checked={checked}

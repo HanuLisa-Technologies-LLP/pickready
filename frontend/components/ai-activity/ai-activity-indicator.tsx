@@ -97,7 +97,7 @@ export function AiActivityIndicator({
   return (
     <div
       className={cn(
-        "flex min-h-5 items-start gap-2 text-xs leading-5",
+        "flex min-h-5 items-start gap-2 text-xs",
         className
       )}
       data-state={state}

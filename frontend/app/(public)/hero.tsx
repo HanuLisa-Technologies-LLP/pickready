@@ -139,7 +139,7 @@ export function Hero() {
             {CAPABILITIES.map((item) => (
               <li
                 key={item}
-                className="bg-canvas px-4 py-3 text-xs font-medium leading-5"
+                className="bg-canvas px-4 py-3 text-xs font-medium"
               >
                 {item}
               </li>

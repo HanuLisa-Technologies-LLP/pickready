@@ -192,7 +192,7 @@ export function AssessmentVideoSection({ linkId }: { linkId: string }) {
               </dd>
             </div>
           </dl>
-          <p className="text-sm leading-6">{access.video_status_detail}</p>
+          <p className="text-sm">{access.video_status_detail}</p>
 
           {access.preview_available ? (
             <div className="flex flex-wrap items-center gap-2">

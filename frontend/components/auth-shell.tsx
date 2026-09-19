@@ -60,7 +60,7 @@ export function AuthShell({
                 {title}
               </h1>
               {description ? (
-                <p className="text-pretty text-sm leading-6">{description}</p>
+                <p className="text-pretty text-sm">{description}</p>
               ) : null}
             </div>
             {children}
@@ -68,7 +68,7 @@ export function AuthShell({
         </Card>
 
         {footer ? (
-          <div className="mt-6 text-center text-sm leading-6">{footer}</div>
+          <div className="mt-6 text-center text-sm">{footer}</div>
         ) : null}
       </main>
     </div>

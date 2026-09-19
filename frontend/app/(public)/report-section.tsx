@@ -73,7 +73,7 @@ export function ReportSection() {
                   strokeWidth={1.5}
                   aria-hidden="true"
                 />
-                <span className="text-pretty text-sm leading-6">{point}</span>
+                <span className="text-pretty text-sm">{point}</span>
               </li>
             ))}
           </ul>
@@ -92,7 +92,7 @@ export function ReportSection() {
               <Badge variant="rating1">Highly Matching</Badge>
             </div>
 
-            <p className="text-pretty p-6 text-sm leading-6 sm:p-7 sm:pb-6">
+            <p className="text-pretty p-6 text-sm sm:p-7 sm:pb-6">
               Designs and operates batch and streaming pipelines end to end,
               reasons clearly about schema change, and brings analysts along
               with the design. Would benefit from more practice negotiating

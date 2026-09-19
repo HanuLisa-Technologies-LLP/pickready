@@ -59,7 +59,7 @@ export function ComplianceDocumentsSection({
 
   return (
     <section className="space-y-8">
-      <p className="text-sm leading-6">
+      <p className="text-sm">
         {editable
           ? `Filed by your company and visible to ReadyPick. ${UPLOAD_HINT}`
           : "Filed by the customer's HR Head. Read-only."}
@@ -132,14 +132,14 @@ function ComplianceRow({
         <div className="min-w-0">
           <p className="text-sm font-semibold">{slot.label}</p>
           {document ? (
-            <p className="truncate text-xs leading-5">
+            <p className="truncate text-xs">
               {document.file_name}
               {size ? ` · ${size}` : ""} · Uploaded
               {document.uploaded_by_name ? ` by ${document.uploaded_by_name}` : ""}{" "}
               on {new Date(document.uploaded_at).toLocaleDateString()}
             </p>
           ) : (
-            <p className="text-xs font-medium leading-5">
+            <p className="text-xs font-medium">
               Not Available Yet
             </p>
           )}

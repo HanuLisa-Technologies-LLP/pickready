@@ -84,7 +84,7 @@ export function Section({
           <div className="min-w-0 space-y-1">
             <CardTitle className="text-base">{title}</CardTitle>
             {description ? (
-              <p className="text-sm leading-6">{description}</p>
+              <p className="text-sm">{description}</p>
             ) : null}
           </div>
           {actions ? (
@@ -132,7 +132,7 @@ export function EmptyState({
       </span>
       <p className="mt-4 text-base font-semibold">{title}</p>
       {description ? (
-        <p className="mt-1 max-w-sm text-pretty text-sm leading-6">
+        <p className="mt-1 max-w-sm text-pretty text-sm">
           {description}
         </p>
       ) : null}
@@ -170,7 +170,7 @@ export function ErrorState({
       </span>
       <p className="mt-4 text-base font-semibold">{title}</p>
       {description ? (
-        <p className="mt-1 max-w-sm text-pretty text-sm leading-6">
+        <p className="mt-1 max-w-sm text-pretty text-sm">
           {description}
         </p>
       ) : null}
@@ -192,7 +192,7 @@ export function InlineError({
     <p
       role="alert"
       className={cn(
-        "flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm leading-6",
+        "flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm",
         className
       )}
     >
@@ -300,7 +300,7 @@ export function Field({
         ) : null}
       </label>
       {children}
-      {hint ? <p className="text-xs leading-5">{hint}</p> : null}
+      {hint ? <p className="text-xs">{hint}</p> : null}
     </div>
   );
 }
@@ -324,7 +324,7 @@ export function DetailItem({
       <dt className="text-xs font-medium uppercase tracking-[0.08em]">
         {label}
       </dt>
-      <dd className="break-words text-sm leading-6">{children}</dd>
+      <dd className="break-words text-sm">{children}</dd>
     </div>
   );
 }
@@ -367,7 +367,7 @@ export function RowCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{title}</p>
-          {meta ? <div className="mt-1 text-xs leading-5">{meta}</div> : null}
+          {meta ? <div className="mt-1 text-xs">{meta}</div> : null}
         </div>
         {actions ? (
           <div className="flex shrink-0 items-center gap-2">{actions}</div>

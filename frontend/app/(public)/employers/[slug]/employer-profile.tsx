@@ -300,7 +300,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
                         ) : null}
                       </div>
                       {band || role.level ? (
-                        <p className="text-sm leading-6">
+                        <p className="text-sm">
                           {[role.level, band].filter(Boolean).join(" · ")}
                         </p>
                       ) : null}

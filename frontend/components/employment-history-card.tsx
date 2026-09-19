@@ -504,7 +504,7 @@ function AppendEmployerSection({
     return (
       <div className="rounded-md border p-3">
         <p className="text-sm font-medium">Moved to a new job since?</p>
-        <p className="mt-1 text-xs leading-5">
+        <p className="mt-1 text-xs">
           You can add your newest employer. Your record keeps your last two
           employers only: adding one permanently replaces the oldest,
           including any completed verification for it, and a verification

@@ -164,7 +164,7 @@ export default function UpdatesPage() {
                         {update.company_name ? ` at ${update.company_name}` : ""}
                       </p>
                     ) : null}
-                    <p className="text-sm leading-6">{update.body}</p>
+                    <p className="text-sm">{update.body}</p>
                     <div className="flex flex-wrap items-center gap-4 pt-1">
                       {update.link_path ? (
                         <Button asChild size="sm" variant="outline">

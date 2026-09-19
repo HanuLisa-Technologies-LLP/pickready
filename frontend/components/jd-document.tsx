@@ -88,7 +88,7 @@ export function JdDocument({ markdown }: { markdown: string }) {
         }
         if (block.kind === "list") {
           return (
-            <ul key={i} className="list-disc space-y-1 pl-5 text-sm leading-6">
+            <ul key={i} className="list-disc space-y-1 pl-5 text-sm">
               {block.items.map((item, j) => (
                 <li key={j}>{item}</li>
               ))}
@@ -96,7 +96,7 @@ export function JdDocument({ markdown }: { markdown: string }) {
           );
         }
         return (
-          <p key={i} className="text-sm leading-6">
+          <p key={i} className="text-sm">
             {block.text}
           </p>
         );

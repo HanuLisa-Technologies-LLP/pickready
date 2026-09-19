@@ -217,7 +217,7 @@ function DimensionSection({
               ) : null}
             </CardHeader>
             <CardContent>
-              <p className="text-sm leading-6">{dimension.remark}</p>
+              <p className="text-sm">{dimension.remark}</p>
             </CardContent>
           </Card>
         ))}
@@ -447,7 +447,7 @@ function AiScoreSection({ report }: { report: FunctionalReport }) {
                 ) : null}
               </CardHeader>
               <CardContent>
-                <p className="text-sm leading-6">{dimension.remark}</p>
+                <p className="text-sm">{dimension.remark}</p>
               </CardContent>
             </Card>
           ))}

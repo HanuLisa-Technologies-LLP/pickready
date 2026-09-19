@@ -47,7 +47,7 @@ export default function PrivacyPage() {
           </p>
         </section>
       </div>
-      <p className="mt-12 border-t border-border pt-6 text-sm leading-6">
+      <p className="mt-12 border-t border-border pt-6 text-sm">
         Also read our <Link className="font-semibold text-brand-600 underline" href="/terms">Terms of Use</Link>.
       </p>
     </main>

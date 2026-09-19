@@ -124,7 +124,7 @@ export function BgvResultsPanel({ candidateId }: { candidateId: string }) {
         <p className="text-sm font-semibold">Consent record</p>
         <ul className="mt-2 space-y-2">
           {consents.map((entry) => (
-            <li key={entry.key} className="text-sm leading-6">
+            <li key={entry.key} className="text-sm">
               <span className="mr-2 text-xs font-medium">
                 {entry.consented_at
                   ? `Consented ${new Date(entry.consented_at).toLocaleDateString()}`

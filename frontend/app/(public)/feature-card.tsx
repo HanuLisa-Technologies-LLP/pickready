@@ -35,7 +35,7 @@ export function FeatureCard({
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <p className="text-pretty text-sm leading-6">{description}</p>
+        <p className="text-pretty text-sm">{description}</p>
       </CardContent>
     </Card>
   );

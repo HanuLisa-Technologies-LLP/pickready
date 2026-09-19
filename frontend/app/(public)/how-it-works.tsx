@@ -63,7 +63,7 @@ export function HowItWorks() {
                 </span>
               </div>
               <h3 className="mt-5 text-lg font-semibold">{step.title}</h3>
-              <p className="mt-2 text-pretty text-sm leading-6">{step.body}</p>
+              <p className="mt-2 text-pretty text-sm">{step.body}</p>
             </div>
           </StaggerItem>
         ))}

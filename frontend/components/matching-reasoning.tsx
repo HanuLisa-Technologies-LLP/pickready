@@ -107,7 +107,7 @@ export function MatchingReasoning({
         role="status"
         data-state={state}
         className={cn(
-          "text-xs leading-5",
+          "text-xs",
           state === "error" && "text-destructive",
           className
         )}
@@ -146,7 +146,7 @@ export function MatchingReasoning({
         {stages.map((stage) => (
           <li
             key={stage.key}
-            className="flex gap-2.5 text-xs leading-5"
+            className="flex gap-2.5 text-xs"
           >
             <span className="mt-0.5 shrink-0">
               <StatusMark status={stage.status} />
@@ -176,7 +176,7 @@ export function MatchingReasoning({
         <p
           role="status"
           className={cn(
-            "mt-3 border-t border-border pt-3 text-xs leading-5",
+            "mt-3 border-t border-border pt-3 text-xs",
             state === "error" && "text-destructive"
           )}
         >

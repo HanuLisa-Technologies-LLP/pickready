@@ -81,7 +81,7 @@ export default function AboutPage() {
                 <article className="h-full rounded-2xl border border-border bg-canvas p-6 shadow-card">
                   <principle.icon className="h-6 w-6 text-brand-600" aria-hidden="true" />
                   <h3 className="mt-5 text-lg font-semibold">{principle.title}</h3>
-                  <p className="mt-3 text-sm leading-6">{principle.body}</p>
+                  <p className="mt-3 text-sm">{principle.body}</p>
                 </article>
               </StaggerItem>
             ))}

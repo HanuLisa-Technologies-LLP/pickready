@@ -102,7 +102,7 @@ export function PublicNotice({
           {title}
         </h1>
         {description ? (
-          <p className="mt-2 text-pretty text-sm leading-6">{description}</p>
+          <p className="mt-2 text-pretty text-sm">{description}</p>
         ) : null}
         {action ? <div className="mt-6">{action}</div> : null}
       </div>

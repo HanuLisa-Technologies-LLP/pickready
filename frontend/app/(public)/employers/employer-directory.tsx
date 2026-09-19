@@ -180,10 +180,10 @@ export function EmployerDirectory() {
                           {employer.name}
                         </h2>
                         {employer.industry ? (
-                          <p className="text-sm leading-6">{employer.industry}</p>
+                          <p className="text-sm">{employer.industry}</p>
                         ) : null}
                         {employer.website_domain ? (
-                          <p className="mt-auto flex items-center gap-1.5 text-sm leading-6">
+                          <p className="mt-auto flex items-center gap-1.5 text-sm">
                             <Globe
                               className="h-3.5 w-3.5 shrink-0 opacity-70"
                               aria-hidden="true"

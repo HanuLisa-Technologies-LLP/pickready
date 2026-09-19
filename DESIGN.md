@@ -156,9 +156,21 @@ rather than drifting toward a generic blue.
 | Display | Fraunces | 600 | 40/44, −0.02em |
 | Page title | Inter Tight | 620 | 28/34, −0.015em |
 | Section | Inter Tight | 600 | 20/28 |
-| Body | Inter Tight | 400 | 15/24 |
-| Small / label | Inter Tight | 500 | 13/18, +0.01em |
-| Reference code, IDs | JetBrains Mono | 500 | 13/18 |
+| Body | Inter Tight | 400 | 15/26 |
+| Small / label | Inter Tight | 500 | 13/20, +0.01em |
+| Reference code, IDs | JetBrains Mono | 500 | 13/20 |
+
+**The leading lives in the scale, not at the call site (2026-09-19).** Body was
+15/24 and small 13/18, and read congested in anything longer than a label. The
+line heights moved up in `tailwind.config.ts` (sm 26px, xs 20px, base 28px, lg
+30px) and the explicit `leading-6` / `leading-5` utilities that had been pinning
+the old heights beside `text-sm` / `text-xs` were removed, so the scale is the
+one place the rhythm is stated. A `leading-*` that survives next to a size is
+DELIBERATE: it is tighter or looser than the scale on purpose, and the dense
+candidate tables keep their density. The same pass gave prose a little more
+air: the page-header description sits at `mt-3` and `CardHeader` at
+`space-y-2`. Letter spacing did not move, body copy nowhere used
+`tracking-tight`; it stays a heading treatment.
 
 **Not Inter-as-default.** Impeccable flags default Inter as a slop tell and it is
 right about the reason: it is the typeface a UI reaches for when nobody chose
