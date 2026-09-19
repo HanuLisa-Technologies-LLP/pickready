@@ -60,6 +60,12 @@ def test_all_auth_actions_registered() -> None:
         "otp_failed",
         "otp_rate_limited",
         "login_succeeded",
+        # Recorded when a proven Firebase identity is refused a session. Today
+        # the only reason is an attempt to rebind an account already linked to
+        # a different uid by an identity whose email is unverified, which is
+        # the shape of an account takeover and is worth a row rather than
+        # silence.
+        "login_refused",
         "context_selected",
         "logout",
         "email_send_failed",

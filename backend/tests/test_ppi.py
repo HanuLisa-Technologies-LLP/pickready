@@ -92,8 +92,8 @@ def test_the_retired_aspect_names_are_gone() -> None:
 # D1, "delete on activation"), along with the deterministic JD-derived fallback
 # that stood in for it during an outage. `hiring/scorecard.py` replaced both.
 #
-# The end-to-end path -- a real SWOT session, a real Company DNA artifact and a
-# real matrix, through the HTTP API -- is `tests/test_job_setup_live.py`, which
+# The end-to-end path -- a real SWOT session and a real matrix, through the
+# HTTP API -- is `tests/test_job_setup_live.py`, which
 # needs a database because the layers it composes are stored ones. What is
 # tested HERE is the arithmetic and the refusals, which need neither.
 
@@ -294,7 +294,6 @@ def test_the_provenance_a_hiring_manager_reads_carries_no_number() -> None:
         provenance={
             "terms": {
                 "baseline_layer1": 1.2,
-                "company_layer2": 1.1,
                 "situation_layer3": 1.25,
                 "role_layer3": 1.35,
             },
@@ -312,7 +311,6 @@ def test_the_provenance_a_hiring_manager_reads_carries_no_number() -> None:
     blob = " ".join(lines)
     assert not any(character.isdigit() for character in blob), blob
     # Every layer that moved the weight is accounted for by a sentence.
-    assert "philosophy" in blob
     assert "Turnaround" in blob
     assert "never owned anything in production" in blob
 

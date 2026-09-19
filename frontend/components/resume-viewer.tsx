@@ -140,7 +140,7 @@ function FallbackPanel({
         <Icon className="h-6 w-6 text-foreground" />
       </span>
       <h3 className="text-base font-semibold text-foreground">{title}</h3>
-      <p className="max-w-md text-sm leading-6">
+      <p className="max-w-md text-sm">
         {message}
       </p>
       <p className="max-w-md break-all font-mono text-xs">

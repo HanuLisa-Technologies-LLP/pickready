@@ -670,6 +670,27 @@ export default function CustomersPage() {
           saving={saving}
           onCancel={() => setEditing(null)}
           onSave={(values) => void saveEdit(values)}
+          // The contact saves itself, against its own endpoint. What is left
+          // here is keeping the rows on screen honest: the modal stays open so
+          // the operator can read the result, and both the list and the open
+          // detail pane are corrected in place rather than left showing the
+          // address that was just replaced.
+          onContactSaved={(contact, message) => {
+            setEditing((current) =>
+              current ? { ...current, primary_contact: contact } : current,
+            );
+            setDetail((current) =>
+              current ? { ...current, primary_contact: contact } : current,
+            );
+            setCustomers((current) =>
+              current.map((row) =>
+                row.id === editing.id
+                  ? { ...row, primary_contact: contact }
+                  : row,
+              ),
+            );
+            toast({ title: message });
+          }}
         />
       ) : null}
     </div>
@@ -684,7 +705,7 @@ export default function CustomersPage() {
 function MobileStat({ label, value }: { label: string; value: number }) {
   return (
     <div className="flex items-baseline justify-between gap-2">
-      <dt className="opacity-80">{label}</dt>
+      <dt className="font-normal">{label}</dt>
       <dd className="font-semibold [font-variant-numeric:tabular-nums]">
         {value}
       </dd>

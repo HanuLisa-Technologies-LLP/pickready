@@ -40,7 +40,7 @@ export function ConsentScreen({ onAgree }: { onAgree: () => void }) {
         <CardContent className="space-y-5">
           <ul className="space-y-3">
             {CONSENT_POINTS.map((point) => (
-              <li key={point} className="flex gap-3 text-sm leading-6">
+              <li key={point} className="flex gap-3 text-sm">
                 {/* Teal, because this is the evidence of what was disclosed.
                     A rule and not a word, so nothing here reads as a grade. */}
                 <span aria-hidden className="mt-2 h-1 w-4 shrink-0 bg-teal-600" />
@@ -48,7 +48,7 @@ export function ConsentScreen({ onAgree }: { onAgree: () => void }) {
               </li>
             ))}
           </ul>
-          <p className="text-sm leading-6">
+          <p className="text-sm">
             Agreeing records the time you agreed. The assessment cannot begin without it.
           </p>
           <Button size="lg" onClick={onAgree}>

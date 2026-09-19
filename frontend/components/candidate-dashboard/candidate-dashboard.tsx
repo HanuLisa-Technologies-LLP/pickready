@@ -279,7 +279,7 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
         {/* The horizontal scroll lives HERE, on the table's own container, so a
             wide table never makes the page scroll sideways. */}
         <div className="overflow-x-auto rounded-xl border">
-          <Table>
+          <Table label="Candidates">
             <TableHeader>
               <TableRow>
                 {HEADERS.map(([key, label, className]) => (

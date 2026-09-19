@@ -251,7 +251,7 @@ export default function CompanyProfilePage() {
                       <ul className="mt-2 space-y-1 text-xs">
                         {research.sources.map((source) => (
                           <li key={source}>
-                            <a className="inline-flex items-center gap-1 underline" href={source} target="_blank" rel="noreferrer">
+                            <a className="inline-flex items-center gap-1 underline" href={source} target="_blank" rel="noopener noreferrer">
                               {source} <ExternalLink className="h-3 w-3" aria-hidden="true" />
                             </a>
                           </li>

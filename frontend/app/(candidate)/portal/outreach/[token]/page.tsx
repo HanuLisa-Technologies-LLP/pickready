@@ -48,7 +48,6 @@ export default function OutreachCompletionPage() {
     gender: "",
   });
   const [answers, setAnswers] = React.useState<AspectAnswers>({});
-  const [employerEmails, setEmployerEmails] = React.useState(["", "", ""]);
   const [resume, setResume] = React.useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = React.useState(0);
   const [resumeError, setResumeError] = React.useState<string | null>(null);
@@ -84,9 +83,6 @@ export default function OutreachCompletionPage() {
           answers
         )
       );
-      for (const email of employerEmails.map((s) => s.trim()).filter(Boolean)) {
-        fd.append("employer_emails", email);
-      }
       fd.append("resume", resume);
       await apiUploadWithProgress(`/portal/outreach/${token}`, fd, setUploadProgress);
       setSubmitted(true);
@@ -136,7 +132,7 @@ export default function OutreachCompletionPage() {
           Complete your profile
           {info?.job_title ? `: ${info.job_title}` : ""}
         </h1>
-        <p className="mt-2 text-pretty text-sm leading-6">
+        <p className="mt-2 text-pretty text-sm">
           Every section below is required before your profile moves forward.
         </p>
       </div>
@@ -243,34 +239,10 @@ export default function OutreachCompletionPage() {
               />
             </FormSection>
 
-            <Separator />
-
-            <FormSection
-              title="Previous employer HR contacts"
-              description="Official HR email IDs of up to 3 previous employers (NOT your current employer). These are used for employment verification."
-            >
-              <div className="space-y-3">
-                {employerEmails.map((email, i) => (
-                  <FormField
-                    key={i}
-                    label={`Previous employer ${i + 1} HR email${i === 0 ? "" : " (optional)"}`}
-                    htmlFor={`emp-${i}`}
-                  >
-                    <Input
-                      id={`emp-${i}`}
-                      type="email"
-                      placeholder="hr@previous-company.com"
-                      value={email}
-                      onChange={(e) => {
-                        const next = employerEmails.slice();
-                        next[i] = e.target.value;
-                        setEmployerEmails(next);
-                      }}
-                    />
-                  </FormField>
-                ))}
-              </div>
-            </FormSection>
+            {/* The employer HR intake that used to sit here is RETIRED
+                (vivekium C8): employment is declared ONCE at the Employment
+                history card, under its finality warning, and verification
+                runs on that single declaration. */}
 
             <Button type="submit" size="lg" disabled={busy} className="w-full">
               {busy ? "Submitting" : "Submit profile"}

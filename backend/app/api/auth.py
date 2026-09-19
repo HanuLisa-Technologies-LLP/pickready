@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 
 import jwt as pyjwt
+from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, or_, select
 from fastapi.responses import JSONResponse
@@ -52,6 +53,7 @@ from app.services import rbac
 from app.services.rate_limit import rate_limit
 from app.services.audit import (
     AUTH_CONTEXT_SELECTED,
+    AUTH_LOGIN_REFUSED,
     AUTH_LOGIN_SUCCEEDED,
     AUTH_OTP_FAILED,
     record_auth_event,
@@ -126,6 +128,58 @@ async def _finalize_single(
     database role/permissions stay authoritative (claude.md rule 2)."""
     if user.status == UserStatus.disabled:
         raise HTTPException(status_code=403, detail="Account unavailable")
+
+    # A BOUND ACCOUNT IS NEVER SILENTLY REBOUND TO A DIFFERENT IDENTITY.
+    #
+    # This line used to be an unconditional `user.firebase_uid = identity.uid`,
+    # and that was account takeover. The caller resolves a user by EMAIL as well
+    # as by uid (see the match filters in `firebase_session`), and Firebase
+    # email/password signup does not verify the address, so anyone who knew a
+    # staff member's email could register it with Firebase, sign in, present the
+    # token here, and have this line hand them that person's role and tenant.
+    # The victim's uid was overwritten in the same statement, so they lost the
+    # account at the moment the attacker gained it.
+    #
+    # Binding a NULL uid is the legitimate first-login path and still happens.
+    # Rebinding a uid that is already set to a different one is not a login, it
+    # is a change of who owns the account, and this product already has a
+    # deliberate, audited route for that: the Provider's primary-contact rebind,
+    # which CLEARS the uid, returns the row to `invited`, revokes the pending
+    # invite and sends a fresh one. A silent rebind here bypassed all four of
+    # those steps.
+    #
+    # So the refusal is not a dead end: an account whose Firebase identity
+    # genuinely changed is recovered through that route.
+    # THE CONDITION IS "UNVERIFIED", NOT "DIFFERENT", AND THE DISTINCTION IS
+    # THE WHOLE FIX. A first draft refused every rebind, which is wrong twice:
+    # a Google identity always carries a verified email, and control of the
+    # address is exactly the proof the email match rests on, so refusing it
+    # buys nothing; and the platform OWNER is resolved from a configured email
+    # with no administrator above them, so a blanket refusal would lock them
+    # out permanently the first time their Firebase uid changed, with no
+    # recovery path at all.
+    #
+    # An UNVERIFIED password identity proves nothing about the address, and
+    # that is the case this exists to refuse.
+    if (
+        user.firebase_uid
+        and user.firebase_uid != identity.uid
+        and not identity.email_verified
+    ):
+        await record_auth_event(
+            session, action=AUTH_LOGIN_REFUSED, actor_user_id=user.id,
+            tenant_id=user.tenant_id,
+            metadata={"reason": "firebase_uid_rebind_refused",
+                      "provider": identity.provider},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This account is already linked to a different sign-in. "
+                "Ask your administrator to re-issue your invitation."
+            ),
+        )
+
     user.firebase_uid = identity.uid
     user.auth_providers = sorted(set((user.auth_providers or []) + [identity.provider]))
     if identity.email_verified:
@@ -194,7 +248,14 @@ async def firebase_session(
     Every failure is a clean 401/403/409/422 — never a 500.
     """
     settings = get_settings()
-    identity = firebase_auth.verify_id_token(body.id_token)
+    # `firebase_admin`'s client is SYNCHRONOUS and `check_revoked=True`
+    # forces a network round trip to the Firebase Admin API on every
+    # verification, so calling it directly blocked the event loop for the
+    # whole trip, on the busiest path in the product. Every other blocking
+    # vendor call in this tree is already offloaded (document_storage,
+    # ses_service, email_senders/eligibility); this was the one that was
+    # missed. `HTTPException` propagates out of the threadpool unchanged.
+    identity = await run_in_threadpool(firebase_auth.verify_id_token, body.id_token)
 
     # ── Owner invariant (claude.md rule 2 + services/owner.py) ──────────────
     # The platform-owner email resolves ONLY to the seeded super_admin. It is
@@ -588,7 +649,23 @@ def _dead_session(detail: str) -> JSONResponse:
     return dead
 
 
-@router.post("/refresh")
+# Abuse control, not authorization (services/rate_limit). A refresh token is a
+# long random JWT and is not brute forceable in practice, so this is not about
+# guessing one: it is that an unthrottled endpoint doing a database round trip
+# per call is a resource-exhaustion vector, and this was the one auth route the
+# sweep that added `auth_exchange` missed.
+#
+# The window is deliberately generous. A legitimate browser refreshes roughly
+# once per access-token lifetime (fifteen minutes), and several tabs of one
+# session can refresh at once after a laptop wakes, so a tight limit here would
+# sign real people out. Thirty per minute is far above that and far below a
+# useful flood. Now that `client_identifier` resolves a verified subject, an
+# authenticated caller gets their own bucket rather than sharing their office
+# address with every colleague.
+@router.post(
+    "/refresh",
+    dependencies=[Depends(rate_limit("auth_refresh", limit=30, window=60))],
+)
 async def refresh(
     request: Request,
     response: Response,

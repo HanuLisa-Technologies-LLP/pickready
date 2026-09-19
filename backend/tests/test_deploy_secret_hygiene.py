@@ -115,6 +115,19 @@ CREDENTIAL_NAMES = (
     # build needs it to fetch gated weights, which is exactly the situation
     # where a token ends up in a build ARG and then in a layer.
     "HUGGINGFACE_TOKEN",
+    # The inbound-mail relay's shared secret. It proves to the PUBLIC route
+    # `POST /verification/inbound-email` that the call came from
+    # `readypick-inbound-email`, so it is a credential in the only sense that
+    # matters here: anyone who reads it can write into verification requests,
+    # BGV threads and conversations. Swept like the rest, because the ECS task
+    # definition is readable by anyone holding `ecs:DescribeTaskDefinition`.
+    #
+    # The RELAY's own copy is a plain Lambda environment variable and cannot be
+    # anything else -- `lambda/inbound_email/handler.py` is standard library and
+    # boto3 with no secret grant at all, deliberately, because it is the one
+    # function anything on the open internet can reach. That copy is not in
+    # scope here: this sweep reads `common_environment` in the ECS composition.
+    "INBOUND_WEBHOOK_SECRET",
 )
 
 ENVIRONMENT_ROOTS = [STAGING, PRODUCTION]
@@ -336,7 +349,13 @@ def test_the_webhook_path_is_the_only_holder_of_the_webhook_secret() -> None:
     """It verifies `X-Razorpay-Signature` and nothing else does."""
     services = _service_secrets()
     holders = [s for s, names in services.items() if "RAZORPAY_WEBHOOK_SECRET" in names]
-    assert holders == ["webhook"], f"the webhook secret is held by {holders}"
+    # `api`, NOT `webhook`. This asserted `["webhook"]` and was green while the
+    # secret was mounted on NOTHING: no environment has ever defined a service
+    # called `webhook`, and `POST /api/v1/billing/webhook/razorpay` is served by
+    # the api service from `api/billing.py`. The handler then treated the absent
+    # secret as "development" and processed unsigned events, so credit issuance
+    # was an anonymous POST on the live site. The phantom grant is deleted.
+    assert holders == ["api"], f"the webhook secret is held by {holders}"
 
 
 def test_the_secret_policy_enumerates_arns_rather_than_a_prefix() -> None:
@@ -457,6 +476,14 @@ _AUTH_DEPENDENCIES = frozenset({
 #: is a signed single-use token in the URL rather than a session. Adding to this
 #: list is adding to the product's unauthenticated surface.
 _PUBLIC_BY_DESIGN: dict[str, str] = {
+    "/health/live": (
+        "the ALB target group's liveness probe. Unauthenticated by necessity: a "
+        "load balancer cannot hold a credential, and the check runs before any "
+        "session exists. It returns a static status word, touches no dependency "
+        "and so discloses nothing. The DEEP probe is /health, which the listener "
+        "rules deliberately do NOT route to the API, because whether the "
+        "database and cache are up is not a fact this product owes the internet."
+    ),
     "/health": (
         "the load balancer's health check. It returns a status word and no data."
     ),
@@ -479,7 +506,15 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
     "/api/v1/companies/invites/{token}": "an invite token names one pending invitation.",
     "/api/v2/companies/invites/{token}": "the same handler under the v2 prefix.",
     "/api/v1/portal/outreach/{token}": "an outreach token names one candidate link.",
-    "/api/v1/verification/form/{token}": "an employer verification token names one request.",
+    "/api/v1/bgv/form/{token}": (
+        "the employer HR checkbox form (vivekium feature 4). The token is "
+        "minted per verification, single-use, and expires in "
+        "verification_link_ttl_days; the handler resolves only the row the "
+        "token names, serves the seven fixed items and accepts only booleans "
+        "over them. An HR contact at another company cannot hold a session "
+        "here, which is the same reason the retiring "
+        "/verification/form/{token} was public."
+    ),
     "/api/v2/assessments/invitations/{token}": (
         "an assessment invitation token names one job_candidate_link."
     ),
@@ -989,7 +1024,20 @@ def test_no_account_id_region_or_domain_is_hardcoded() -> None:
                 "rule only because a backend block cannot take a variable. It "
                 "no longer contains one, so the exemption no longer applies."
             )
-            assert "resource " not in body and "module " not in body, (
+            # STRIP THE COMMENTS FIRST. This test's own docstring says
+            # "comments are exempt and code is not", and the loop below honours
+            # that; this branch did not, so it was asking whether the PROSE
+            # contained the word "resource". A backend.tf explaining what an
+            # empty-state apply costs ("Terraform would try to create every
+            # resource from scratch") failed a check about executable blocks.
+            # The same class of defect as the reachability grep that matched
+            # comments and manufactured a phantom workstream.
+            code = "\n".join(
+                line
+                for line in body.splitlines()
+                if not line.strip().startswith(("#", "*", "/*", "*/"))
+            )
+            assert "resource " not in code and "module " not in code, (
                 f"{path.relative_to(ROOT)} holds more than a backend block. The "
                 "exemption covers the one construct Terraform will not let take "
                 "a variable, not a file that happens to be called backend.tf."

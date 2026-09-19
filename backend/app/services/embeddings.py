@@ -2,7 +2,7 @@
 
 Every RAG surface in ReadyPick embeds through this module -- candidate profile
 vectors, job vectors, `context_chunks`, the department competency models, the
-Company DNA artifacts, the rubric anchors, the skills ontology and the
+The rubric anchors, the skills ontology and the
 validation probe bank. One model, one place, no per-surface choice, because two
 embedding models in one platform means two vector spaces that look
 interchangeable in the schema and are not: a cosine distance computed between a
@@ -94,6 +94,15 @@ def is_semantic() -> bool:
     embedded and this is the order".
     """
     return bool(get_settings().voyage_context_4)
+
+
+class EmbeddingUnavailable(RuntimeError):
+    """No embedding can be produced, and none will be invented.
+
+    Its own type so a caller can tell a missing credential from a transport
+    fault. It is never caught to substitute a default: a default vector is the
+    fallback this exception exists to end.
+    """
 
 
 def _dev_fallback_vector(text: str) -> list[float]:
@@ -188,9 +197,46 @@ async def embed(
 
     # VOYAGE_CONTEXT_4, named after the model it unlocks. See core/config.py
     # for why the name is pinned by a test rather than left to a rename.
-    api_key = (get_settings().voyage_context_4 or "").strip()
+    settings = get_settings()
+    api_key = (settings.voyage_context_4 or "").strip()
     if not api_key:
-        # ── DEV FALLBACK (no VOYAGE_CONTEXT_4 configured) ──
+        # ── REFUSED IN PRODUCTION, the same shape `dispatch` refuses
+        # `record`. Until 2026-09-09 this branch was guarded by PROSE only:
+        # the module docstring said "never rely on the fallback in
+        # production" and `validate_stack.py` REPORTED it, and neither of
+        # those is a refusal.
+        #
+        # THIS IS THE MECHANISM THAT HID `voyage-context-4` FOR A WHOLE
+        # PHASE. That model id was enshrined in `claude.md` as a hard rule,
+        # cited in nine modules and pinned by tests, and it did not exist.
+        # Nothing ever failed, because with no key this function returned
+        # pseudo-random unit vectors of the right width, with no exception
+        # and no log line, and there was never a key. A wrong model and a
+        # missing credential both produced plausible numbers.
+        #
+        # Retrieval over pseudo-random vectors is not degraded retrieval, it
+        # is retrieval of unrelated rows that looks exactly like the real
+        # thing: cosine distances come back, an ordering exists, and every
+        # count on the page is populated. There is no honest way to serve
+        # that, so the only correct production behaviour is to raise.
+        if settings.is_production:
+            raise EmbeddingUnavailable(
+                "VOYAGE_CONTEXT_4 is not configured. The deterministic dev "
+                "fallback returns pseudo-random vectors, which produce "
+                "retrieval results that are indistinguishable from real ones "
+                "and are unrelated to the query. It is refused in production."
+            )
+        # ── DEV FALLBACK (no VOYAGE_CONTEXT_4 configured, non-production) ──
+        # Logged EVERY call rather than once. A one-shot warning is read by
+        # whoever happened to tail the log at start-up and by nobody
+        # afterwards, and this is the state in which every stored vector is
+        # meaningless.
+        logger.warning(
+            "embeddings.dev_fallback VOYAGE_CONTEXT_4 unset: returning %d "
+            "pseudo-random vectors. Nothing embedded here is comparable to "
+            "anything embedded with a key.",
+            len(texts),
+        )
         return [_dev_fallback_vector(t) for t in texts]
 
     embeddings: list[list[float]] = []

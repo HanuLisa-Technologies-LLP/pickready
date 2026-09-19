@@ -175,4 +175,9 @@ async def research_company(
         sources=list(result.get("sources") or []),
         degraded=bool(result.get("degraded")),
         message=result.get("message"),
+        # `entrypoints/agents.py` returns this via `asdict`, so the Lambda side
+        # already carries it. Dropping it here would make one request answer
+        # differently under `aws` than under `local`, which is the one thing a
+        # three-backend dispatcher must never do.
+        empty_state_keys=dict(result.get("empty_state_keys") or {}),
     )

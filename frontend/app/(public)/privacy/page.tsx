@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { publicPageMetadata } from "@/lib/site";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = publicPageMetadata({
+  path: "/privacy",
   title: "Privacy",
-  description: "How ReadyPick handles candidate, customer and visitor information.",
-};
+  description:
+    "How ReadyPick handles candidate, customer and visitor information.",
+});
 
 const SECTIONS = [
   ["What we collect", "Account identifiers, profile and resume information, role applications, assessment responses, validation records, communications, customer workspace activity, billing records and security/audit events. We collect only what the relevant workflow requires."],
@@ -44,7 +47,7 @@ export default function PrivacyPage() {
           </p>
         </section>
       </div>
-      <p className="mt-12 border-t border-border pt-6 text-sm leading-6">
+      <p className="mt-12 border-t border-border pt-6 text-sm">
         Also read our <Link className="font-semibold text-brand-600 underline" href="/terms">Terms of Use</Link>.
       </p>
     </main>

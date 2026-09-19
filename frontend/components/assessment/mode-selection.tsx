@@ -61,7 +61,7 @@ export function ModeSelection({
   return (
     <div className="mx-auto max-w-3xl space-y-4">
       <h1 className="text-xl font-semibold">{MODE_TITLE}</h1>
-      <p className="text-sm leading-6">
+      <p className="text-sm">
         Both modes are assessed the same way, on the same criteria. Pick the
         one you are most comfortable in. You will see the consent terms for
         your choice before anything begins.
@@ -81,7 +81,7 @@ export function ModeSelection({
               <CardContent className="flex h-full flex-col gap-4">
                 <ul className="space-y-2">
                   {points.map((point) => (
-                    <li key={point} className="flex gap-3 text-sm leading-6">
+                    <li key={point} className="flex gap-3 text-sm">
                       <span aria-hidden className="mt-2 h-1 w-4 shrink-0 bg-teal-600" />
                       <span>{point}</span>
                     </li>
@@ -102,7 +102,7 @@ export function ModeSelection({
         })}
       </div>
       {frozenMode !== null ? (
-        <p className="text-sm leading-6">
+        <p className="text-sm">
           This assessment has already begun in one mode, so the other is no
           longer available.
         </p>

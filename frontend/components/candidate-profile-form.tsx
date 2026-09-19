@@ -104,12 +104,21 @@ function EducationTable({
     // Wide on desktop, horizontally scrollable on a phone, the page body must
     // never scroll sideways.
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[46rem] border-collapse text-sm">
+      <table
+        aria-label="Education history"
+        className="w-full min-w-[46rem] border-collapse text-sm"
+      >
         <thead>
           <tr>
-            <th className="border-b p-2 text-left font-semibold">Education Level</th>
+            <th scope="col" className="border-b p-2 text-left font-semibold">
+              Education Level
+            </th>
             {columns.map((column) => (
-              <th key={column.key} className="border-b p-2 text-left font-semibold">
+              <th
+                scope="col"
+                key={column.key}
+                className="border-b p-2 text-left font-semibold"
+              >
                 {column.label}
               </th>
             ))}
@@ -260,6 +269,21 @@ function Field({
     }
   })();
 
+  // The message was already announced; it was not ATTACHED. A reader that
+  // tabs back to the field afterwards heard the label and nothing about why
+  // the field is red, so the fix is the association rather than a second
+  // announcement. Cloning puts it on whichever control this branch built,
+  // including the `role="radiogroup"` wrapper, which is the element a reader
+  // treats as the field.
+  const described = React.isValidElement(body)
+    ? React.cloneElement(body as React.ReactElement<Record<string, unknown>>, {
+        ...(invalid
+          ? { "aria-invalid": true, "aria-describedby": `${id}-error` }
+          : {}),
+        ...(field.required ? { "aria-required": true } : {}),
+      })
+    : body;
+
   return (
     <div className="space-y-1.5">
       <Label id={`${id}-label`} htmlFor={id}>
@@ -267,9 +291,13 @@ function Field({
         {field.required ? " *" : ""}
       </Label>
       {field.hint ? <p className="text-xs">{field.hint}</p> : null}
-      {body}
+      {described}
       {invalid ? (
-        <p role="alert" className="text-sm font-medium text-destructive">
+        <p
+          id={`${id}-error`}
+          role="alert"
+          className="text-sm font-medium text-destructive"
+        >
           This answer is required.
         </p>
       ) : null}

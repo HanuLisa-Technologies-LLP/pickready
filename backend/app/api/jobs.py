@@ -67,6 +67,7 @@ from uuid import uuid4 as _uuid4
 from app.services import approval_fsm as fsm
 from app.services import capabilities as caps
 from app.services import credits
+from app.services import erasure
 from app.services import job_candidates
 from app.services import job_posting
 from app.services import candidate_updates
@@ -358,10 +359,11 @@ async def create_job(
             ),
         )
 
-    # ── Gate 1: Company Hiring Requirements must exist (workflow §18) ───────
-    # The company-level artifact every job on this tenant is derived against.
+    # ── Gate 1: the Company Profile must say something (workflow §18) ──────
+    # The company-level statement every job on this tenant is derived from,
+    # and the one this job's own narrative sections are seeded from below.
     # Asked of the TABLE, and only at the moment of creation: a job created
-    # before the client completed theirs stays created.
+    # before the client wrote their profile stays created.
     from app.services.hiring import company_requirements  # noqa: PLC0415
 
     blocked = await company_requirements.creation_blocked(session, user.tenant_id)
@@ -508,9 +510,8 @@ async def create_job(
     # the technical-bank half that used to share this task -- the job was
     # silently unusable forever. Nineteen live jobs were in exactly that state.
     # NOT ENQUEUED HERE ANY MORE (2026-08-29). Sutra compiles the Tatva matrix
-    # from Bodha's completed SWOT session and the client's compiled Company DNA;
-    # at job creation neither exists, so a task fired here would refuse on every
-    # job the moment it ran. The compile is enqueued by the SWOT session's own
+    # from Bodha's completed SWOT session; at job creation that does not exist,
+    # so a task fired here would refuse on every job the moment it ran. The compile is enqueued by the SWOT session's own
     # completion (`api/assessments.respond_swot_intake`), which is the event
     # that actually produces its input, and `pickready.reconcile_job_setup`
     # sweeps for a job whose session finished and whose matrix never landed.
@@ -676,6 +677,12 @@ async def publish_job(
         },
     )
     dispatch("pickready.run_matching", args=[str(job.id)])
+    # The JD is public and final at this point, so it becomes retrievable
+    # (RPN-AI-UP-001 W2.1). At publish rather than at draft save: a draft is
+    # edited repeatedly, and indexing every intermediate state would re-embed a
+    # document nobody can apply to yet. `index_document` is incremental by
+    # content hash, so a later edit re-embeds only the paragraphs that moved.
+    dispatch("pickready.index_document", args=["jd", str(job.id)])
 
     out = PublishJobOut.model_validate(job)
     out.jd_markdown = jd_markdown_for(job) or None
@@ -852,9 +859,17 @@ async def close_job(
     The 30 days are the LONGEST a posting runs, never the shortest. A client
     who fills the role on day 18 says so here, and from that instant the public
     link 404s, the job leaves every candidate's board and no new application is
-    accepted. Everything the hiring team already has is untouched: the ranked
-    list, the reports, the pipeline stages and the candidates mid-assessment
-    all continue exactly as before, which is why this is not `archive`.
+    accepted.
+
+    SUPERSEDED IN PART, 2026-09-18 (vivekium C5, owner-ruled final): this
+    docstring used to promise "the reports ... continue exactly as before".
+    They do not. Closing the job now PERMANENTLY ERASES its assessment data,
+    the PRISM reports, the Tatva scores and the transcripts, because Stage B
+    consent item 3 told every assessed candidate exactly that would happen.
+    `erasure.job_closure_erasure` says precisely what goes and what stays
+    (the ranked list, the pipeline history, the billing record and the
+    consent records all remain). THERE IS NO REOPEN, so this deletion is as
+    final as the closure itself; the confirmation UI must say so.
 
     WHY IT IS `publish_job` AND NOT A NEW CAPABILITY. Opening a posting to the
     public and closing it again are the same authority over the same thing, and
@@ -890,7 +905,20 @@ async def close_job(
     # reason publication writes PUBLISHED: a derived state records no actor.
     job.lifecycle_state = hiring_pipeline.JobLifecycleState.CLOSED_ARCHIVED.value
     await session.flush()
+    # Vivekium C5: the closure IS the deletion trigger, in the same
+    # transaction, so a failed close erases nothing and a successful close
+    # never leaves the data its consent item promised was gone.
+    receipt = await erasure.job_closure_erasure(session, job_id=job.id)
     await _invalidate_public_job(job.id)
+    await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action=erasure.ACTION_JOB_ASSESSMENT_ERASED,
+        target_type="job",
+        target_id=job.id,
+        metadata=receipt.as_json(),
+    )
     await audit(
         session,
         tenant_id=user.tenant_id,

@@ -77,9 +77,13 @@ function ToastViewport() {
       {toasts.map((t) => (
         <div
           key={t.id}
-          role="status"
+          // A failure interrupts, a confirmation does not. `status` is polite
+          // and waits for the reader to finish whatever it is saying, which is
+          // right for "Profile saved" and wrong for "Copy failed": by the time
+          // it is read the user has moved on believing the action worked.
+          role={t.variant === "destructive" ? "alert" : "status"}
           className={cn(
-            "pointer-events-auto relative flex w-full items-start gap-3 rounded-md border p-4 shadow-lg animate-in slide-in-from-bottom-2",
+            "pointer-events-auto relative flex w-full items-start gap-3 rounded-md border p-4 shadow-modal animate-in slide-in-from-bottom-2",
             t.variant === "destructive"
               ? "border-destructive bg-destructive text-destructive-foreground"
               : "border-border bg-background text-foreground"
@@ -87,13 +91,22 @@ function ToastViewport() {
         >
           <div className="flex-1 space-y-1">
             <p className="text-sm font-semibold leading-none">{t.title}</p>
-            {t.description ? (
-              <p className="text-sm opacity-90">{t.description}</p>
-            ) : null}
+            {/* House rule: hierarchy from weight, never from a dimmed text
+                colour. The title above is semibold, so this needs no opacity
+                to read as the secondary line. */}
+            {t.description ? <p className="text-sm">{t.description}</p> : null}
           </div>
           <button
+            type="button"
             onClick={() => dismiss(t.id)}
-            className="rounded-sm opacity-70 transition-opacity hover:opacity-100"
+            // This was the one control in the product a keyboard user could
+            // reach and not see: no ring, and the only affordance was an
+            // opacity change on hover, which a Tab never triggers.
+            // `ring-current` rather than `ring-ring`: this button sits on the
+            // page surface on a normal toast and on solid red on a destructive
+            // one, and the current text colour is the one value already chosen
+            // to contrast with whichever it is.
+            className="rounded-sm transition-opacity hover:opacity-70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
             aria-label="Dismiss notification"
           >
             <X className="h-4 w-4" />

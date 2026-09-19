@@ -135,27 +135,25 @@ The company dashboard provides operational summaries derived from job, candidate
 
 ## 7. Job creation and publishing
 
-### 7.0 Company DNA
+### 7.0 The Company Profile, and why job creation waits for it
 
-Before any job is graded well, the client tells the platform how it hires. The
-**Company DNA** intake is a one-time-per-client instrument of twelve sections.
-Two of its design rules are load-bearing:
+Before any job is drafted well, the client says what the organisation is. The
+**Company Profile** carries three sections a client authors once on Customer
+Portal -> Company Profile: what the company does, what working there is like,
+and what it offers. A company research agent can draft them from the web, and
+an explicit Edit action is what saves them, so no words reach a candidate
+without a person having read them.
 
-- Section 2 uses **forced trade-off scales**, not free text. Asked "what do you
-  value", every company answers "excellence and integrity", which modifies
-  nothing. A trade-off forces a real choice.
-- Section 3 accepts only **observable evidence** and rejects an adjective, then
-  asks again. "Ownership mindset" is refused; "has taken a project from an
-  unclear brief to a shipped outcome" is accepted.
+**Job creation is refused until the About section says something.** That is the
+useful place to refuse: the profile is what seeds each new job's own narrative
+sections and what the job description generator reads, so a job drafted without
+it has been drafted against nothing. The refusal names the page and what to
+write there. A job created before the client wrote their profile stays created:
+the gate is on the act of creation, never a sweep over jobs candidates may
+already be applying to.
 
-The intake is compiled DETERMINISTICALLY into a versioned artifact, with no
-model call, so it is reproducible, diffable between versions, and explainable
-without a provider. Job setup reads the COMPILED artifact and never the
-client's raw free text: an unbounded client-authored string in a prompt that
-decides what every candidate is graded on is both an injection surface and a
-way for a stray phrase to quietly become a hiring criterion.
-
-Each job records which Company DNA version its matrix was frozen against.
+Every new job SNAPSHOTS the profile at creation, so editing it later reaches
+future jobs only and never rewrites a role people are already applying to.
 
 ### 7.1 Required job information
 
@@ -486,7 +484,7 @@ boundary it may not cross:
 
 | Stage | Responsibility |
 |---|---|
-| **Bodha** | The per-job SWOT session and the one-time Company DNA intake. Reads back its situation classification with the consequence and the most-confused-with alternative, and a human confirms it before the session closes |
+| **Bodha** | The per-job SWOT session. Reads back its situation classification with the consequence and the most-confused-with alternative, and a human confirms it before the session closes |
 | **Sutra** | Turns the role into a scored matrix through seven stages: competency, observable evidence, evidence sources, assessment method, weight, threshold, and disqualifier where applicable. Nothing enters the matrix without completing all seven |
 | **Yukti** | Grades the resume before any conversation: the pre-screen grade and the AI Score snapshot |
 | **Miti** | Five dimension evaluators that score the completed conversation, structurally isolated from each other, plus triangulation of contradictions |

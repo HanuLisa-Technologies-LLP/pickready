@@ -298,7 +298,7 @@ export default function PortalJobsPage() {
                     <h2 className="text-balance text-base font-semibold">
                       {job.title}
                     </h2>
-                    <p className="flex items-center gap-1.5 text-sm leading-6">
+                    <p className="flex items-center gap-1.5 text-sm">
                       <MapPin
                         className="h-3.5 w-3.5 shrink-0 opacity-70"
                         aria-hidden="true"
@@ -353,7 +353,7 @@ export default function PortalJobsPage() {
         <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Apply: {dialogJob?.title}</DialogTitle>
-            {subtitle ? <p className="text-sm leading-6">{subtitle}</p> : null}
+            {subtitle ? <p className="text-sm">{subtitle}</p> : null}
           </DialogHeader>
 
           {/* The role AND the employer are stated in full before anything is
@@ -369,7 +369,7 @@ export default function PortalJobsPage() {
           <Separator />
 
           {context && !context.profile_complete ? (
-            <div className="rounded-xl border border-border bg-brand-100/50 p-4 text-sm leading-6">
+            <div className="rounded-xl border border-border bg-brand-100/50 p-4 text-sm">
               <p className="font-semibold">Your profile is not complete yet.</p>
               <p className="mt-1">
                 Employers see your profile answers alongside this application.

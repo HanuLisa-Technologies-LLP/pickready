@@ -89,8 +89,16 @@ function AspectControl({
   onChange: (v: string | number | boolean | null) => void;
   invalid?: boolean;
 }) {
+  // `aria-describedby` is set unconditionally rather than only when invalid:
+  // the id resolves to nothing while the message is absent, which is well
+  // defined, and a control whose description appears and disappears with the
+  // attribute is one some readers never re-announce.
   const flag = invalid
-    ? { "aria-invalid": true as const, className: "border-destructive" }
+    ? {
+        "aria-invalid": true as const,
+        "aria-describedby": `aspect-${aspect.id}-error`,
+        className: "border-destructive",
+      }
     : {};
   switch (aspect.type) {
     case "boolean":
@@ -264,7 +272,11 @@ export function AspectsForm({
                     invalid={isInvalid}
                   />
                   {isInvalid ? (
-                    <p className="text-xs font-medium text-destructive">
+                    <p
+                      id={`aspect-${aspect.id}-error`}
+                      role="alert"
+                      className="text-xs font-medium text-destructive"
+                    >
                       This answer is required.
                     </p>
                   ) : null}

@@ -118,6 +118,72 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "which is the platform's current posture."
         ),
     ),
+    ScheduledTask(
+        rule="readypick-reconcile-context-index",
+        task="pickready.reconcile_context_index",
+        interval_minutes=60,
+        why=(
+            "Finds documents that have text and no chunk rows, and indexes "
+            "them. Asks the TABLE with a NOT EXISTS, never a timestamp. It "
+            "covers the one failure the call sites cannot: a dispatch that "
+            "never arrived leaves no trace, and an unindexed resume is "
+            "invisible to retrieval forever because nothing would ever ask "
+            "again."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-release-held-assessments",
+        task="pickready.release_held_assessments",
+        interval_minutes=60,
+        why=(
+            "A completed conversation with no report is a candidate who did "
+            "the work and a customer who was charged for it, with nothing to "
+            "show. The task was REGISTERED and dispatched only from the two "
+            "credit-grant call sites, so it repaired a hold that a top-up "
+            "cleared and nothing else: a dispatch that never arrived, a "
+            "container killed mid-scoring, or a run that raised past its "
+            "attempts left the report missing permanently, because the only "
+            "thing that would ever have asked again was the top-up that had "
+            "already happened. It asks the TABLE with an outer join, never a "
+            "status column. Scheduling it was UNSAFE until the scoring lock "
+            "existed: with no tenant argument the sweep also matches "
+            "conversations that finished seconds ago and are being scored "
+            "right now, and dispatching those would have manufactured the "
+            "duplicate scoring run it is supposed to repair."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-sweep-consent-lifecycle",
+        task="pickready.sweep_consent_lifecycle",
+        interval_minutes=1440,
+        why=(
+            "Consent renewal, the final warning and the inactivity rule "
+            "(feature 8). DAILY rather than hourly because every window it "
+            "measures is counted in days or months, so twenty four more runs "
+            "a day would change nobody's outcome and would only widen the "
+            "blast radius of a mistake in a task that can erase a profile. "
+            "Running LATE is safe by construction: a grace window starts when "
+            "a letter was actually sent, so an outage delays the cycle rather "
+            "than skipping somebody to deletion. The erasure half is gated on "
+            "`consent_auto_deletion_enabled`, which defaults to off, and the "
+            "sweep LOGS what it would have erased so the posture is visible "
+            "rather than inferred from silence."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-sweep-bgv-reminders",
+        task="pickready.sweep_bgv_reminders",
+        interval_minutes=1440,
+        why=(
+            "Email 3 of the vivekium BGV flow: the day-3 chase for an "
+            "employer who has not answered a verification request. DAILY "
+            "because the window is measured in days; each row is chased "
+            "exactly once (reminder_sent_at is the latch), so running late "
+            "delays the letter rather than duplicating it. The candidate is "
+            "told with the HR address partially masked, because they are the "
+            "one who can nudge their own former employer."
+        ),
+    ),
 )
 
 RULE_NAMES: tuple[str, ...] = tuple(entry.rule for entry in SCHEDULE)

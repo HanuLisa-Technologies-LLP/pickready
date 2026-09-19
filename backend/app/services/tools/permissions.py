@@ -148,43 +148,32 @@ def agents_holding(tool: str) -> frozenset[str]:
 # would have had to re-derive all six and would have drifted on the first one
 # somebody forgot.
 #
-# THE SIX NAMED AGENTS
-# --------------------
-# specdoc5 and spec-doc6 name six agents by role. They map onto the tool-grant
-# names already in this module rather than replacing them: the tool grants are
-# about what an agent READS, and the capability declarations below are about
-# what a principal must be able to AUTHORISE. Both are needed and neither
-# subsumes the other.
-
-#: Bodha, the intake agent. Two mandates: the per-job SWOT session and the
-#: one-time-per-client Company DNA intake.
-AGENT_BODHA = "bodha"
-#: Sutra, the seven-stage matrix compiler.
-AGENT_SUTRA = "sutra"
-#: Yukti, resume-stage pre-screen grading.
-AGENT_YUKTI = "yukti"
-#: Vaada, evidence graphs.
-AGENT_VAADA = "vaada"
-#: Miti, the five-dimension scorer.
-AGENT_MITI = "miti"
-#: Siddhi, the PRISM report writer.
-AGENT_SIDDHI = "siddhi"
-
-NAMED_AGENTS: tuple[str, ...] = (
-    AGENT_BODHA,
-    AGENT_SUTRA,
-    AGENT_YUKTI,
-    AGENT_VAADA,
-    AGENT_MITI,
-    AGENT_SIDDHI,
-)
-
-
 # ── RBAC 34: the six named agents ────────────────────────────────────────────
 #
 # specdoc5 and spec-doc6 name six agents by role. They are recorded here beside
 # the runtime ids because both are agent IDENTITY, and `agents/identity.py`
 # already maps each name onto the runtime surface that executes it today.
+#
+# They map onto the tool-grant names above rather than replacing them: the tool
+# grants are about what an agent READS, and the capability declarations in
+# `services/rbac` are about what a principal must be able to AUTHORISE. Both
+# are needed and neither subsumes the other.
+#
+# THIS BLOCK WAS DECLARED TWICE, AND THE SECOND DECLARATION SILENTLY WON.
+# ----------------------------------------------------------------------
+# Until 2026-09-09 the six constants and `NAMED_AGENTS` appeared once here and
+# again forty lines above, so `AGENT_VAADA` carried the docstring "evidence
+# graphs" in one copy and "the candidate conversational agent" in the other --
+# two answers to what Vaada IS, inside the module that enforces what each agent
+# may reach, with Python's last-assignment-wins deciding which one a reader of
+# the source would be wrong about. Neither copy was wrong at runtime, which is
+# exactly why it survived: a duplicated constant block has no symptom until the
+# two copies disagree about a VALUE, and by then the disagreement is a
+# permission decision.
+#
+# One implementation per concept, applied inside the module that enforces
+# reach. `tests/test_tool_permissions_single_definition.py` now fails the build
+# on a second module-level assignment to any of these names.
 #
 # WHY THEIR CAPABILITY DECLARATIONS LIVE IN `services/rbac` AND NOT HERE
 # ----------------------------------------------------------------------
@@ -201,8 +190,7 @@ NAMED_AGENTS: tuple[str, ...] = (
 # agent may CAUSE is an authorization question and lives with the other
 # authorization questions.
 
-#: Bodha, the intake agent. Two mandates: the per-job SWOT session and the
-#: one-time-per-client Company DNA intake.
+#: Bodha, the per-job SWOT intake agent.
 AGENT_BODHA = "bodha"
 #: Sutra, the seven-stage matrix compiler.
 AGENT_SUTRA = "sutra"

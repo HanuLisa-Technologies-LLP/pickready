@@ -312,9 +312,18 @@ class BDUserUpdateIn(BaseModel):
     `status` accepts only the two values an operator can choose. Re-enabling is
     resolved server-side (back to active when the account has already signed
     in, back to invited when it has not), so disabling is always reversible.
-    Email is deliberately not editable: it IS the identity Firebase binds to.
+
+    EMAIL BECAME EDITABLE ON 2026-09-11, owner decision, with REBIND
+    semantics rather than a quiet field write: the email IS the identity
+    Firebase binds to, so changing it on a signed-in account clears the
+    binding and returns the row to `invited`. The next sign-in on the NEW
+    address binds fresh; the old address matches nothing and is out. A typo'd
+    reservation was previously permanent, which is the problem this repairs.
     """
 
+    #: Unset means unchanged. A provided email is normalised and, when it
+    #: differs from the stored one, triggers the rebind described above.
+    email: EmailStr | None = None
     full_name: str | None = None
     phone: str | None = None
     status: Literal["active", "disabled"] | None = None

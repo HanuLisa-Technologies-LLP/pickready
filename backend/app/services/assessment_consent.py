@@ -117,9 +117,22 @@ async def record_consent(
     Only acceptance is recorded. A decline collects nothing and stores
     nothing; the caller simply does not start the assessment.
     """
+    from app.services import consent_catalog
+
     existing = await find_consent(session, conversation.id, conversation.mode)
     if existing is not None:
         return existing
+    # Stage B of the per-item catalogue (vivekium feature 6), in the SAME
+    # transaction as the mode consent: the brief's "one operation" is a
+    # literal property of this function, not a convention three call sites
+    # follow. One table, read by the candidate record, the BGV response and
+    # the Executive Profile page, is what makes it three destinations.
+    await consent_catalog.record_items(
+        session,
+        candidate_id=candidate_id,
+        keys=consent_catalog.STAGE_B_KEYS,
+        source=consent_catalog.SOURCE_ASSESSMENT,
+    )
     terms = terms_for(conversation.mode)
     consent = AssessmentConsent(
         tenant_id=conversation.tenant_id,

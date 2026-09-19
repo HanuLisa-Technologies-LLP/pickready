@@ -9,6 +9,14 @@ the same fact arrives in two shapes at two call sites, and a guarantee that
 lives at one call site (strip compensation, never emit a number) is absent at
 the next one. These five tools are the single shape.
 
+EVERY ONE OF THEM IS `RiskClass.READ`, AND IT IS STATED RATHER THAN INHERITED
+-----------------------------------------------------------------------------
+`ToolSpec.risk` defaults to READ, which is the least privileged class, so
+writing it out on all six buys nothing at runtime. It buys the diff: the next
+tool added beside them is written by copying one of these, and a copy that
+carries `risk=RiskClass.READ` while its handler sends an email is a lie a
+reviewer can see, where an omitted field is a lie nobody looks for.
+
 NONE OF THEM CALL AN LLM, AND THAT IS THE POINT
 -----------------------------------------------
 A tool is the deterministic half of an agent. Keeping generation out of the
@@ -32,9 +40,10 @@ from app.models.assessment import (
 )
 from app.services import rating
 from app.services.rag import context as rag_context
-from app.services.rag import retrieval as rag_retrieval
+from app.services.rag import acquisition as rag_acquisition
 from app.services.tools import schemas
 from app.services.tools.errors import ToolExecutionError
+from app.services.tools.policy import RiskClass
 from app.services.tools.registry import ToolSpec, register
 
 # Compensation-shaped keys, dropped from anything a tool emits. Same markers
@@ -131,6 +140,7 @@ register(
         input_model=schemas.JobRef,
         output_model=schemas.JobFacts,
         description="A job's requirements as an agent may see them, without compensation.",
+        risk=RiskClass.READ,
         idempotent=True,
         # A JD changes when a recruiter edits it, which is rare and never
         # mid-assessment. Five minutes is short enough that an edit is visible
@@ -187,6 +197,7 @@ register(
         input_model=schemas.ProfileRef,
         output_model=schemas.ResumeFacts,
         description="A candidate's parsed resume, compensation-stripped and size-bounded.",
+        risk=RiskClass.READ,
         idempotent=True,
         # A profile is rewritten by an async parse that can land at any moment
         # after upload. Short enough that the row an agent reads is the row the
@@ -288,6 +299,7 @@ register(
         input_model=schemas.LinkRef,
         output_model=schemas.AssessmentFacts,
         description="What a candidate was actually asked and actually answered.",
+        risk=RiskClass.READ,
         # A live conversation grows between two reads by design, so this is not
         # idempotent and must never be cached: an agent scoring a transcript
         # that is two answers stale is scoring the wrong assessment.
@@ -351,6 +363,7 @@ register(
         input_model=schemas.JobRef,
         output_model=schemas.FrameworkFacts,
         description="The job's saved PPI criteria, with required levels as words.",
+        risk=RiskClass.READ,
         idempotent=True,
         # Frozen once anyone has been assessed, and edited only during setup.
         cache_ttl_seconds=300,
@@ -405,6 +418,7 @@ register(
         input_model=schemas.ValidationRequest,
         output_model=schemas.ValidationVerdict,
         description="Check a generated payload against a named schema.",
+        risk=RiskClass.READ,
         needs_session=False,
         # Pure computation. Retrying it would produce the identical verdict.
         max_attempts=1,
@@ -415,21 +429,36 @@ register(
 
 # ── retrieve_context ─────────────────────────────────────────────────────────
 
+#: The whole acquisition (first pass plus at most one broadened retry) must
+#: land inside the tool's declared 6-second ceiling with room for context
+#: assembly after it; two thirds of the ceiling is that room stated once.
+_ACQUISITION_DEADLINE_SECONDS = 4.0
+
 
 async def _retrieve_context(
     payload: schemas.RetrievalRequest, *, session: AsyncSession | None
 ) -> schemas.RetrievedContext:
     assert session is not None
-    chunks = await rag_retrieval.retrieve(
+    # W6.5: acquisition, not bare retrieval. When the first pass comes back
+    # empty, ONE broadened retry (section filter dropped, pool doubled) runs
+    # before this tool hands an agent a prompt built from nothing. Bounded by
+    # structure (two attempts exist, no loop) and by a deadline checked
+    # BEFORE the retry, inside this tool's own 6-second ceiling. The floor is
+    # 1: "sufficient for generation" stays the sufficiency gates' question;
+    # this layer only refuses to give up on an EMPTY result without one wider
+    # look. Scope (tenant, source type, source ids) is never broadened.
+    outcome = await rag_acquisition.acquire(
         session,
         payload.query,
+        min_chunks=1,
         source_type=payload.source_type,
         source_ids=list(payload.source_ids),
         section_types=list(payload.section_types) or None,
         top_k=payload.top_k,
+        deadline_seconds=_ACQUISITION_DEADLINE_SECONDS,
     )
     assembled = rag_context.assemble(
-        chunks, query=payload.query, max_tokens=payload.max_tokens
+        outcome.chunks, query=payload.query, max_tokens=payload.max_tokens
     )
     return schemas.RetrievedContext(
         query=payload.query,
@@ -458,6 +487,7 @@ register(
         input_model=schemas.RetrievalRequest,
         output_model=schemas.RetrievedContext,
         description="The pieces of a scoped document that bear on a query.",
+        risk=RiskClass.READ,
         # Two database round trips plus an embedding call to a GPU service. The
         # ceiling is generous because the alternative to slow retrieval is a
         # prompt built from nothing, and tight because a candidate is waiting.

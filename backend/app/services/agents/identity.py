@@ -140,19 +140,11 @@ AGENTS: dict[str, Agent] = {
         portal=PORTAL_CUSTOMER,
         skills=("collect_swot", "summarize_role_context", "validate_swot_completeness"),
         implemented_by=(
-            # Bodha has TWO mandates and they are at different stages of
-            # activation, which is why this list is mixed. The Company DNA half
-            # is live: `app/api/company_dna.py` imports both modules. The SWOT
-            # half still runs the pre-Part-A intake.
             "app.services.swot_intake",
-            "app.services.hiring.company_dna",
-            "app.services.hiring.dna_compilation",
             "app.services.hiring.swot_quality",
             "app.services.hiring.situations",
         ),
         activates_to=(
-            "app.services.hiring.company_dna",
-            "app.services.hiring.dna_compilation",
             "app.services.hiring.swot_quality",
             "app.services.hiring.situations",
         ),

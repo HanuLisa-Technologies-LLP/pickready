@@ -136,22 +136,107 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "{{outreach_url}}\n\n"
         "Regards,\n{{company_name}} People Team",
     ),
-    # api/email_senders.py: the corporate sender mailbox-ownership code
-    # (Corporate Email System spec sections 3 and 4). This is NOT a login OTP;
-    # it proves a client's POC controls the mailbox being registered as an
-    # automated sender. The code is in the context and is never logged.
-    "sender_verification": (
-        "Your ReadyPick sender verification code",
-        "Hello {{sender_name}},\n\n"
-        "{{company_name}} is registering this mailbox as an authorized sender "
-        "for automated recruitment email on ReadyPick.\n\n"
-        "Your verification code is {{otp_code}}. It is valid for "
-        "{{ttl_minutes}} minutes.\n\n"
-        "If you were not expecting this, you can ignore this email and "
-        "nothing will change.\n\n"
+    # The `sender_verification` template was REMOVED with the mailbox OTP on
+    # 2026-09-08. It was the only carrier of a six-digit code into a client
+    # mailbox, and nothing dispatches it any more. Left in place it would be
+    # a renderable OTP email one dispatch call away from coming back.
+    # api/admin.py, when the platform owner creates a customer.
+    # BACKGROUND VERIFICATION, and it is deliberately a PASS-THROUGH.
+    #
+    # Every other entry here is a template because the product writes the
+    # words. This one is not: the recruitment team reviews and EDITS the draft
+    # the BGV agent produced, and the whole point of that review step is that
+    # their version is what the employer receives. A template would silently
+    # rewrite it.
+    #
+    # It still routes through this module rather than around it, so the BGV
+    # email inherits everything the delivery path already guarantees: the
+    # verified-sender selection, the SES transport, the `email_log` row, the
+    # permanent-versus-transient failure taxonomy and the retry policy.
+    # The candidate asked for their own profile to be deleted and it has been
+    # (feature 7, DPDP Act 2023). DELIBERATELY EMPTY OF CONTEXT: it carries no
+    # name, no application, no verification and no count, because by the time
+    # this is dispatched there is no record left to describe and describing one
+    # would mean the erasure had kept a copy in order to write this letter.
+    # The recipient address is the only personal datum involved, and it is
+    # already the thing being written to.
+    "account_deleted": (
+        "Your ReadyPick profile has been deleted",
+        "Your profile and all of the data held with it have been permanently "
+        "deleted at your request. This cannot be undone.\n\n"
+        "You are no longer visible to employer clients registered on the "
+        "platform, and any assessment or shortlisting in progress has been "
+        "cancelled.\n\n"
+        "If you did not ask for this, reply to this message immediately.\n\n"
         "Regards,\nReadyPick",
     ),
-    # api/admin.py, when the platform owner creates a customer.
+    # Feature 8, the six-month renewal. BOTH of these carry no context for the
+    # same reason `account_deleted` does: the sweep that sends them iterates
+    # every candidate, and a template with a name slot in it is a template that
+    # will eventually be handed the wrong person's name by a loop variable.
+    # The recipient address is the only personal datum involved and it is
+    # already the thing being written to.
+    "consent_renewal_reminder": (
+        "Confirm you would like to stay on ReadyPick",
+        "It has been six months since you joined or last confirmed your "
+        "details, so we are checking that you would still like your profile "
+        "kept on the platform.\n\n"
+        "Sign in and confirm to stay visible to employer clients registered "
+        "on the platform. If we do not hear from you we will write once more "
+        "before removing your profile.\n\n"
+        "Regards,\nReadyPick",
+    ),
+    # THE SENTENCE THIS LETTER HAS TO EARN. It says deletion has not happened
+    # yet, so the sweep opens a second window after sending it rather than
+    # erasing in the same pass. See the ASSUMPTION in
+    # services/consent_lifecycle: read literally the brief puts this letter and
+    # the deletion at the same instant, which would warn somebody about
+    # something already done.
+    "consent_final_warning": (
+        "Action needed to keep your ReadyPick profile",
+        "We wrote recently asking you to confirm that you would like to stay "
+        "on the platform, and we have not heard back.\n\n"
+        "If you do not confirm, your profile will be permanently deleted. "
+        "That removes your background verification record, which would have "
+        "to be obtained again from the beginning, and takes you out of job "
+        "matching entirely.\n\n"
+        "Sign in and confirm to keep your profile.\n\n"
+        "Regards,\nReadyPick",
+    ),
+    "bgv_verification": ("{{subject}}", "{{body}}"),
+    # Vivekium feature 4, the three candidate-facing BGV letters. Email 2
+    # deliberately shares NO verification detail with the candidate (the
+    # brief's own rule); emails 3 and 4 carry the HR address PARTIALLY MASKED
+    # ({{masked_hr_email}} is produced by bgv_form.masked_email and no route
+    # ever passes the full address into a template context).
+    "bgv_completed": (
+        "Your employment verification is complete",
+        "Hello {{candidate_name}},\n\n"
+        "A previous employer has completed the employment verification we "
+        "requested as part of your application. There is nothing you need "
+        "to do.\n\n"
+        "Regards,\nReadyPick",
+    ),
+    "bgv_no_response": (
+        "Your previous employer has not responded yet",
+        "Hello {{candidate_name}},\n\n"
+        "We asked your previous employer's HR team ({{masked_hr_email}}) to "
+        "verify your employment three days ago and have not received a "
+        "response.\n\n"
+        "It may help to contact their HR team directly and ask them to "
+        "complete the verification link we sent. A verification that is not "
+        "completed can hold up an offer.\n\n"
+        "Regards,\nReadyPick",
+    ),
+    "bgv_bounced": (
+        "We could not reach your previous employer",
+        "Hello {{candidate_name}},\n\n"
+        "The verification email we sent to your previous employer's HR "
+        "address ({{masked_hr_email}}) could not be delivered.\n\n"
+        "Please sign in, open your employment history and correct the HR "
+        "email address so we can send the request again.\n\n"
+        "Regards,\nReadyPick",
+    ),
     "client_invite": (
         "Your {{tenant_name}} workspace on ReadyPick is ready",
         "Hello,\n\n"
@@ -204,6 +289,34 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "right contact, we would appreciate a forward to the appropriate "
         "team.\n\n"
         "Regards,\nReadyPick Verification",
+    ),
+    # ── In-product support (2026-09-10) ─────────────────────────────────────
+    #
+    # workers/tasks.py `pickready.notify_support_message`, both directions.
+    #
+    # NEITHER TEMPLATE CARRIES THE MESSAGE BODY, and that is deliberate rather
+    # than an omission. The body is free text a human typed, it may quote
+    # something a customer pasted out of the product, and an email is the one
+    # copy of it this product cannot recall. The notification says a message
+    # arrived and where to read it; the reader signs in for the rest. It is
+    # also what keeps the candidate boundary structural: there is no
+    # substitution here that could carry candidate material even if somebody
+    # had pasted some into the thread.
+    "support_reply_to_customer": (
+        "ReadyPick has replied about: {{subject_line}}",
+        "Hello,\n\n"
+        "A member of the ReadyPick team has replied to your support "
+        "conversation, {{subject_line}}.\n\n"
+        "Read the reply and respond here:\n\n{{support_url}}\n\n"
+        "Regards,\nReadyPick Support",
+    ),
+    "support_message_for_staff": (
+        "{{company_name}} is waiting on a reply: {{subject_line}}",
+        "Hello,\n\n"
+        "{{company_name}} has written in about {{subject_line}} and the "
+        "conversation is waiting on a reply.\n\n"
+        "Open it here:\n\n{{support_url}}\n\n"
+        "Regards,\nReadyPick",
     ),
 }
 

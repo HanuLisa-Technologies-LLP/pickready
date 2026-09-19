@@ -135,6 +135,14 @@ class CandidateProject(Base, UUIDPKMixin, CreatedAtMixin):
     #: A WORD, never a number: Strong | Moderate | Limited | Insufficient.
     evidence_strength: Mapped[str | None] = mapped_column(String(20))
 
+    #: The intake scan for hidden content across every submitted document
+    #: (migration 0092, W9.2): `{"flagged": bool, "documents": [{path, ...scan}]}`
+    #: built from `services/projects/invisible_text`. Recorded provenance, not a
+    #: decision: a flagged project is processed, scored on its visible content
+    #: and surfaced to a human, exactly like an archive that trips
+    #: `archive_safety` is recorded as `failed_security` rather than raising.
+    intake_scan_json: Mapped[dict | None] = mapped_column(JSONB)
+
     #: Processing telemetry: raw/extracted/final sizes, file counts,
     #: supported/unsupported counts, parser names, durations, retry count.
     #: Counts and labels only -- never candidate content.

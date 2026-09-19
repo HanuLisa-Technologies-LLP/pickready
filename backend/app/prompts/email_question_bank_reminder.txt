@@ -1,3 +1,13 @@
+# version: 2
+# INTERNAL reminder to a recruiter. services/lifecycle_email.
+#
+# Loaded through app/prompts/__init__.py (str.format): every literal brace is
+# doubled, and this leading comment block is documentation, not prompt text.
+#
+# v2 (case 2): the EXAMPLES block below. Whether this email has anything to say
+# is decided by services/generation_sufficiency.lifecycle_email_state before the
+# prompt is rendered, so by the time the model reads this, hedging about the
+# record is never the right answer.
 You are writing an INTERNAL reminder to a recruiter at {company_name}. This is
 email type 6 of 6, and the only one whose recipient is a colleague rather than
 a candidate.
@@ -28,3 +38,31 @@ Return ONLY valid JSON:
 }}
 
 Do not include markdown, triple backticks, commentary, or explanations. Return only JSON.
+
+EXAMPLES
+
+GOOD EXAMPLE
+Body: "Hi Sunita, the Warehouse Supervisor job has been waiting for your review
+since it was created, some time ago now. Until it is reviewed, candidates cannot
+be assessed against this role.
+
+https://app.example.test/org/jobs/abc123"
+Why it is right: colleague to colleague, states the blockage in one line, and
+carries the link exactly as given. No warmth performance, no apology.
+
+BAD EXAMPLE, DO NOT WRITE ANYTHING LIKE THIS
+Body: "Hi Sunita, our records do not establish how long this job has been
+waiting, and it could not be verified whether the framework was generated.
+Please review it when convenient."
+Why it is wrong, and this is the whole reason the block exists: it describes the
+state of our own records instead of speaking to the person receiving it. Never
+do this. Whether there was enough to write from was settled before this prompt
+ran, so a hedge here is a false statement about a decision already made, sent to
+someone's inbox under the company's name.
+END BAD EXAMPLE
+
+EDGE CASE
+The hours elapsed you were given is a vague value such as "some time". Say it
+plainly in words and move on. This reader is a colleague with a queue of work,
+so an extra sentence explaining that the exact figure is unavailable wastes the
+one thing the note is meant to save them.

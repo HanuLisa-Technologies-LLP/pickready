@@ -173,13 +173,27 @@ const config: Config = {
         "2xl": "0px",
         "3xl": "0px",
       },
+      // THREE FACES, ONE JOB EACH (DESIGN.md section 3). Each reads the CSS
+      // variable that `app/layout.tsx` binds via next/font, so the faces are
+      // self-hosted and subset at build time and nothing is fetched at runtime.
+      //
+      // `font-sans` is the default for all UI because `body` carries it, so a
+      // component gets Inter Tight without asking. `font-display` is opt-in and
+      // belongs on page titles and hero headlines only. `font-mono` already had
+      // twenty-five call sites carrying reference codes and JD source, and they
+      // were resolving to whatever the browser happened to ship.
+      fontFamily: {
+        sans: ["var(--font-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+        display: ["var(--font-display)", "var(--font-sans)", "Georgia", "serif"],
+        mono: ["var(--font-mono)", "ui-monospace", "SFMono-Regular", "monospace"],
+      },
       fontSize: {
         // The scale from the brief: 12 / 13 / 15 / 18 / 24 / 32 / 48 / 64.
         "2xs": ["0.75rem", { lineHeight: "1rem" }],
-        xs: ["0.8125rem", { lineHeight: "1.125rem" }],
-        sm: ["0.9375rem", { lineHeight: "1.5rem" }],
-        base: ["1rem", { lineHeight: "1.625rem" }],
-        lg: ["1.125rem", { lineHeight: "1.75rem" }],
+        xs: ["0.8125rem", { lineHeight: "1.25rem" }],
+        sm: ["0.9375rem", { lineHeight: "1.625rem" }],
+        base: ["1rem", { lineHeight: "1.75rem" }],
+        lg: ["1.125rem", { lineHeight: "1.875rem" }],
         xl: ["1.5rem", { lineHeight: "2rem" }],
         "2xl": ["2rem", { lineHeight: "2.375rem" }],
         "3xl": ["2.5rem", { lineHeight: "2.875rem" }],
@@ -187,15 +201,54 @@ const config: Config = {
         "5xl": ["4rem", { lineHeight: "4.25rem" }],
       },
       boxShadow: {
-        // VERY MINIMAL shadows (Master directive Part 1 §7): structure comes
-        // from borders, not elevation. `pop` and `brand` are kept as names so
-        // existing call sites keep compiling, but both now resolve to the
-        // same restrained values — no deep drops, no coloured glow.
-        card: "0 1px 2px hsl(var(--ink) / 0.04), 0 1px 3px hsl(var(--ink) / 0.03)",
+        // ELEVATION IS FOR THINGS THAT FLOAT, AND FOR NOTHING ELSE.
+        //
+        // Two rules were in tension here and both are kept. Master directive
+        // Part 1 section 7 says structure comes from BORDERS, not elevation,
+        // which is why a card still has effectively no shadow. DESIGN.md
+        // section 6 describes four levels, and the reason its upper levels
+        // exist is spatial rather than decorative: a dialog that carries the
+        // same shadow as the card behind it does not read as being ABOVE the
+        // page, and the flattening had given every overlay in the product the
+        // card's value.
+        //
+        // So: surfaces on the page stay flat, and only a surface that is
+        // genuinely detached from the page gets depth.
+        //
+        // EVERY SHADOW IS TINTED NAVY, NEVER BLACK. DESIGN.md section 6 states
+        // the reason and it is visible once you look: a neutral-black drop over
+        // a navy-tinted canvas reads as dirt rather than as depth. The overlay
+        // primitives had been using Tailwind's stock `shadow-lg` and
+        // `shadow-md`, which are exactly that neutral black.
+        //
+        // In DARK MODE these are close to invisible by design. A shadow on a
+        // near-black canvas cannot be seen, and turning it up produces a halo,
+        // so dark-theme elevation is carried by the lighter surface token
+        // instead. That is why the dark overlays read correctly with no
+        // per-theme shadow branch.
+        card: "0 1px 2px hsl(var(--navy-600) / 0.04), 0 1px 3px hsl(var(--navy-600) / 0.03)",
         "card-hover":
-          "0 2px 6px hsl(var(--ink) / 0.06), 0 1px 3px hsl(var(--ink) / 0.04)",
-        pop: "0 2px 6px hsl(var(--ink) / 0.06), 0 1px 3px hsl(var(--ink) / 0.04)",
-        brand: "0 1px 2px hsl(var(--ink) / 0.06)",
+          "0 2px 6px hsl(var(--navy-600) / 0.07), 0 1px 3px hsl(var(--navy-600) / 0.05)",
+
+        // Level 1. Attached to a trigger, a few pixels off the page: dropdown,
+        // popover, select menu, combobox.
+        overlay:
+          "0 2px 4px hsl(var(--navy-600) / 0.06), 0 4px 12px hsl(var(--navy-600) / 0.10)",
+
+        // Level 2. Detached and modal, with a scrim behind it: dialog, sheet,
+        // toast. Deeper because it has to win against the whole page.
+        modal:
+          "0 8px 24px hsl(var(--navy-600) / 0.12), 0 2px 6px hsl(var(--navy-600) / 0.08)",
+
+        // Level 3. The landing hero only. Documented so nobody invents a
+        // fourth value for it at a call site.
+        hero: "0 16px 48px hsl(var(--navy-600) / 0.16)",
+
+        // `pop` and `brand` are ALIASES kept so existing call sites keep
+        // compiling. `pop` names a floating menu, so it maps onto level 1
+        // rather than back onto the card value it had been flattened to.
+        pop: "0 2px 4px hsl(var(--navy-600) / 0.06), 0 4px 12px hsl(var(--navy-600) / 0.10)",
+        brand: "0 1px 2px hsl(var(--navy-600) / 0.06)",
       },
       keyframes: {
         "accordion-down": {

@@ -256,6 +256,7 @@ async def _close(monkeypatch, job, reason=None):
 
     async def _fake_audit(session, **kwargs):
         calls["audit"] = kwargs
+        calls.setdefault("audits", []).append(kwargs)
 
     async def _fake_visible(session, user, job_id):
         return job
@@ -263,9 +264,26 @@ async def _close(monkeypatch, job, reason=None):
     async def _fake_invalidate(job_id):
         calls["invalidated"] = job_id
 
+    async def _fake_closure_erasure(session, *, job_id):
+        from app.services import erasure
+
+        calls["erased_job"] = job_id
+        return erasure.JobClosureReceipt(
+            job_id=job_id,
+            erased_at=datetime.now(timezone.utc),
+            reports_deleted=0,
+            evaluations_deleted=0,
+            conversations_deleted=0,
+            questions_deleted=0,
+            chunks_deleted=0,
+        )
+
     monkeypatch.setattr(jobs_api, "audit", _fake_audit)
     monkeypatch.setattr(jobs_api, "_get_visible_job", _fake_visible)
     monkeypatch.setattr(jobs_api, "_invalidate_public_job", _fake_invalidate)
+    monkeypatch.setattr(
+        jobs_api.erasure, "job_closure_erasure", _fake_closure_erasure
+    )
     monkeypatch.setattr(
         jobs_api, "get_settings",
         lambda: SimpleNamespace(frontend_url="https://readypick.ai"),
@@ -303,6 +321,33 @@ async def test_closing_stamps_the_moment_and_records_the_reason(monkeypatch) -> 
     assert calls["audit"]["metadata"]["reason"] == "Requirement met."
     # The cached public payload is dropped, or the 404 would take minutes.
     assert calls["invalidated"] == job.id
+
+
+@pytest.mark.asyncio
+async def test_closing_erases_the_jobs_assessment_data(monkeypatch) -> None:
+    """Vivekium C5 (owner-ruled final): the closure IS the deletion trigger.
+
+    The erasure runs in the close transaction against THIS job, its receipt
+    is audited under its own action, and the job_closed audit still follows.
+    `test_job_closure_erasure.py` proves what the SQL actually deletes; this
+    proves the route cannot close without erasing.
+    """
+    from app.services import erasure
+
+    job = _closable_job()
+    out, calls = await _close(monkeypatch, job, reason="Filled.")
+
+    assert calls["erased_job"] == job.id
+    actions = [entry["action"] for entry in calls["audits"]]
+    assert erasure.ACTION_JOB_ASSESSMENT_ERASED in actions
+    assert actions.index(erasure.ACTION_JOB_ASSESSMENT_ERASED) < actions.index(
+        "job_closed"
+    )
+    erased = next(
+        entry for entry in calls["audits"]
+        if entry["action"] == erasure.ACTION_JOB_ASSESSMENT_ERASED
+    )
+    assert erased["metadata"]["job_id"] == str(job.id)
 
 
 @pytest.mark.asyncio

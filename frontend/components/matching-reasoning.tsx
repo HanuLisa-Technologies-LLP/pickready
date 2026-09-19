@@ -107,7 +107,7 @@ export function MatchingReasoning({
         role="status"
         data-state={state}
         className={cn(
-          "text-xs leading-5",
+          "text-xs",
           state === "error" && "text-destructive",
           className
         )}
@@ -146,16 +146,23 @@ export function MatchingReasoning({
         {stages.map((stage) => (
           <li
             key={stage.key}
-            className={cn(
-              "flex gap-2.5 text-xs leading-5",
-              stage.status === "pending" && "opacity-50"
-            )}
+            className="flex gap-2.5 text-xs"
           >
             <span className="mt-0.5 shrink-0">
               <StatusMark status={stage.status} />
             </span>
             <span>
-              <span className="font-medium">{stage.label}</span>
+              {/* A stage nobody has reached yet carries NORMAL weight rather
+                  than a dimmed row. The mark, the screen-reader status word
+                  and the absent detail line already say "pending", and greying
+                  the words would undo the token that keeps text ink. */}
+              <span
+                className={
+                  stage.status === "pending" ? "font-normal" : "font-medium"
+                }
+              >
+                {stage.label}
+              </span>
               <span className="sr-only">, {STATUS_WORD[stage.status]}</span>
               {stage.status === "pending" ? null : (
                 <span className="block">{stage.detail}</span>
@@ -169,7 +176,7 @@ export function MatchingReasoning({
         <p
           role="status"
           className={cn(
-            "mt-3 border-t border-border pt-3 text-xs leading-5",
+            "mt-3 border-t border-border pt-3 text-xs",
             state === "error" && "text-destructive"
           )}
         >

@@ -41,7 +41,13 @@ from app.models.project import (
 )
 from app.services import object_storage
 from app.services.llm_router import LLMUnavailableError
-from app.services.projects import ai_reasoning, archive_safety, evidence, repository
+from app.services.projects import (
+    ai_reasoning,
+    archive_safety,
+    evidence,
+    invisible_text,
+    repository,
+)
 from app.services.projects.limits import ProjectLimits, from_settings
 from app.services.projects.parsers import ParsedArtifact, parse_file
 
@@ -88,6 +94,44 @@ async def _gather_files(
         else:
             files.append((filename, data))
     return files, limitations, raw_bytes
+
+
+def _collect_intake_scans(
+    artifacts: list[ParsedArtifact], description: invisible_text.IntakeScan
+) -> dict[str, Any]:
+    """Roll every intake scan for this submission up onto one row-level record.
+
+    Two surfaces, because two things reach a prompt. DOCUMENTS reach it through
+    `text_excerpt`; source files and manifests contribute counts and labels
+    only and have nothing to hide behind. The candidate's own DESCRIPTION
+    reaches it verbatim, which makes a form field as good a carrier as a PDF and
+    a much easier one to type into.
+
+    The record is always written, flagged or not, so a NULL column means the
+    project predates the scan rather than meaning the submission was checked and
+    found clean.
+    """
+    documents = [
+        {"path": artifact.path, **artifact.signals["intake_scan"]}
+        for artifact in artifacts
+        if "intake_scan" in artifact.signals
+    ]
+    flagged = [row for row in documents if row.get("flagged")]
+    limitation = None
+    if flagged or description.flagged:
+        limitation = (
+            "This submission contains content a person reading it would not "
+            "see. The visible content was used to build this evidence and the "
+            "hidden content was set aside. A human should review the "
+            "submission."
+        )
+    return {
+        "flagged": bool(flagged) or description.flagged,
+        "flagged_documents": [row["path"] for row in flagged],
+        "description": description.as_json(),
+        "limitation": limitation,
+        "documents": documents,
+    }
 
 
 # ── The pipeline ─────────────────────────────────────────────────────────────
@@ -191,11 +235,30 @@ async def process_project(
         parse_file(path, data, limits) for path, data in files
     ]
 
+    # 2b. Hidden-content provenance (W9.2). The parser has already normalised
+    # every document's text, so what is left to do here is RECORD what it found,
+    # on the row, where a human can see it. Nothing is rejected: a flagged
+    # project runs the rest of this pipeline unchanged.
+    # The stored `description` column stays VERBATIM: it is the claim side of
+    # the claim-versus-observed split and the system must never rewrite it. What
+    # is normalised is the copy that goes into the evidence record and therefore
+    # into the reasoning prompt, and the scan that produced it is recorded, so
+    # this is a documented normalisation and not a silent strip.
+    description_scan = invisible_text.scan_text(project.description or "")
+    intake_scan = _collect_intake_scans(artifacts, description_scan)
+    if intake_scan["flagged"]:
+        limitations.append(intake_scan["limitation"])
+        logger.warning(
+            "project_evidence.hidden_content_detected project_id=%s documents=%d",
+            project.id,
+            len(intake_scan["documents"]),
+        )
+
     # 3. Evidence generation and reduction.
     units = evidence.build_units(artifacts, limits)
     record = evidence.build_evidence_record(
         project_name=project.name,
-        candidate_description=project.description,
+        candidate_description=description_scan.normalised_text,
         artifacts=artifacts,
         units=units,
         submission_kind=project.submission_kind,
@@ -233,6 +296,7 @@ async def process_project(
         )
 
     # 5. Persist the derived evidence.
+    project.intake_scan_json = intake_scan
     project.evidence_json = record
     project.evidence_units_json = [unit.as_json() for unit in units]
     project.ai_interpretation_json = interpretation

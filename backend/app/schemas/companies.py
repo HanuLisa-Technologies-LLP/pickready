@@ -216,6 +216,13 @@ class CompanyProfileResearchOut(BaseModel):
     about_company: str = ""
     work_life: str = ""
     benefits: str = ""
+    #: Section name -> a key in `generation_sufficiency.EMPTY_STATE_COPY`, for
+    #: each section the sufficiency gate refused. A KEY, never a sentence:
+    #: the whole point of the gate is that the model never gets to narrate
+    #: its own uncertainty into a public page, and shipping a sentence here
+    #: would reopen that by a different door. Empty when every section had
+    #: enough material, so an older client simply sees nothing new.
+    empty_state_keys: dict[str, str] = {}
     #: The pages the sections were written from, so a recruiter can check them.
     #: Never a social-media host: `company_research.is_allowed_source` refuses
     #: Facebook, X, Reddit and Instagram on the URL rather than only in the

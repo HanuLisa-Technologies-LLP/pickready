@@ -245,7 +245,7 @@ export function CandidateTeamReviewModal({
                     value={rewritten}
                     onChange={(event) => setRewritten(event.target.value)}
                   />
-                  <p className="text-xs leading-5">
+                  <p className="text-xs">
                     Your original remark is preserved. This version is used in the team summary after you save.
                   </p>
                 </div>
@@ -266,7 +266,7 @@ export function CandidateTeamReviewModal({
                         </p>
                         <Badge variant="outline">{RATING_LABELS[review.rating]}</Badge>
                       </div>
-                      <p className="mt-3 text-sm leading-6">
+                      <p className="mt-3 text-sm">
                         {review.ai_rewritten_remarks || review.remarks}
                       </p>
                     </article>

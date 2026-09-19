@@ -13,6 +13,7 @@ from app.models.job import Job
 from app.models.job_setup import JobMatchingCategory
 from app.schemas.candidates import CandidateOut
 from app.schemas.matching import (
+    ActivityOut,
     MatchingCategoriesOut,
     MatchingCategoryIn,
     MatchingCategoryOut,
@@ -286,8 +287,9 @@ async def matching_task_status(
     payload = (
         info
         if isinstance(info, dict) and isinstance(info.get("stages"), list)
-        else matching_progress.empty_payload()
+        else matching_progress.empty_payload(operation_id=task_id)
     )
+    activity = payload.get("activity")
     return MatchingTaskStatusOut(
         task_id=task_id,
         state=result.state,
@@ -295,6 +297,10 @@ async def matching_task_status(
         stages=[MatchingStageOut(**stage) for stage in payload["stages"]],
         candidate_count=int(payload.get("candidate_count") or 0),
         scored_count=int(payload.get("scored_count") or 0),
+        # The activity block travels in the SAME payload as the stages, so the
+        # two can never be read a poll apart from each other and show a
+        # sentence describing a stage the list has already moved past.
+        activity=ActivityOut(**activity) if isinstance(activity, dict) else None,
     )
 
 

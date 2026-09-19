@@ -106,7 +106,7 @@ const INCLUDED = [
   "ReadyPick Profile Intelligence",
   "One continuous candidate conversation",
   "Full PRISM Report",
-  "Four radar charts, no numbers on them",
+  "Three radar charts, no numbers on them",
   "Candidate databank",
   "Ten stage hiring pipeline",
   "AI drafted lifecycle emails",
@@ -134,13 +134,20 @@ export function Pricing() {
   }, [router, user]);
 
   return (
-    <section id="pricing" className="relative scroll-mt-24 py-24 sm:py-28">
+    <section
+      id="pricing"
+      className="relative scroll-mt-24 py-20 lg:py-24"
+      aria-labelledby="pricing-title"
+    >
       <div className="mx-auto max-w-6xl px-6 lg:px-10">
         <Reveal className="max-w-2xl">
           <Badge variant="brand" className="px-3 py-1 text-xs font-semibold">
             Pricing
           </Badge>
-          <h2 className="mt-5 text-balance text-3xl font-bold leading-tight sm:text-4xl">
+          <h2
+            id="pricing-title"
+            className="mt-5 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
+          >
             One rate. {formatInr(PRICE_PER_CREDIT_INR)} per credit.
           </h2>
           <p className="mt-5 text-pretty text-lg leading-8">
@@ -157,7 +164,10 @@ export function Pricing() {
               key={pack.slug}
               delay={0.04 * index}
               className={cn(
-                "flex h-full flex-col border bg-surface p-6 shadow-card transition-transform duration-200 motion-safe:hover:-translate-y-1",
+                // Flat at rest, and the pointer is answered with the border
+                // rather than with a lift: DESIGN.md section 6 keeps cards at
+                // level 0, and a price is not a thing to be playful about.
+                "flex h-full flex-col border bg-surface transition-colors duration-150 p-6 hover:border-field-hover",
                 pack.recommended
                   ? "border-brand-600 ring-1 ring-brand-600/30"
                   : "border-border",
@@ -181,10 +191,10 @@ export function Pricing() {
                   + {pack.bonus} bonus credits free
                 </p>
               ) : (
-                <p className="mt-1 text-sm leading-6 opacity-70">{pack.note}</p>
+                <p className="mt-1 text-sm">{pack.note}</p>
               )}
 
-              <dl className="mt-5 space-y-2 text-sm leading-6">
+              <dl className="mt-5 space-y-2 text-sm">
                 <div className="flex items-baseline justify-between gap-3">
                   <dt>Price</dt>
                   <dd className="font-semibold">
@@ -224,7 +234,7 @@ export function Pricing() {
           ))}
         </div>
 
-        <Reveal delay={0.05} className="mt-5 text-sm leading-6 opacity-80">
+        <Reveal delay={0.05} className="mt-5 text-sm">
           <p>
             Prices exclude 18% GST. A one-time account setup fee of{" "}
             {formatInr(5000)} applies to your first purchase and is currently
@@ -238,7 +248,7 @@ export function Pricing() {
             promising a button that cannot exist. */}
         <Reveal
           delay={0.05}
-          className="mt-5 flex flex-col gap-5 border border-border bg-surface p-7 shadow-card sm:flex-row sm:items-center sm:justify-between"
+          className="mt-5 flex flex-col gap-5 border border-border bg-surface p-7 sm:flex-row sm:items-center sm:justify-between"
         >
           <div className="max-w-2xl">
             <p className="text-lg font-semibold">Enterprise</p>
@@ -252,7 +262,7 @@ export function Pricing() {
             <a
               href="mailto:manjuchro@gmail.com?subject=Enterprise%20credits"
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
             >
               Contact us
             </a>
@@ -279,7 +289,7 @@ export function Pricing() {
           >
             {INCLUDED.map((item) => (
               <StaggerItem as="li" key={item}>
-                <span className="flex items-start gap-2.5 text-sm leading-6">
+                <span className="flex items-start gap-2.5 text-sm">
                   <Check
                     className="mt-0.5 h-4 w-4 shrink-0 text-brand-600"
                     aria-hidden="true"
@@ -297,7 +307,7 @@ export function Pricing() {
             <Reveal
               key={block.title}
               delay={0.05 * index}
-              className="border border-border bg-surface p-7 shadow-card"
+              className="border border-border bg-surface p-7"
             >
               <h3 className="text-base font-semibold">{block.title}</h3>
               <div className="mt-3 space-y-4">

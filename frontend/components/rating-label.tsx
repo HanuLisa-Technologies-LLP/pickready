@@ -82,7 +82,7 @@ export function RatedComment({
 }) {
   if (!comment) return null;
   return (
-    <p className="text-xs leading-5">
+    <p className="text-xs">
       <span className="font-semibold">{title}:</span>{" "}
       <RatingLabel label={label} />{" "}
       <span>{comment}</span>

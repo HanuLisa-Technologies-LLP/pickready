@@ -5,16 +5,16 @@
 // per role via renderActions.
 
 import * as React from "react";
+import dynamic from "next/dynamic";
 import { FileText, Mail } from "lucide-react";
 
 import { apiGet } from "@/lib/api";
 import type { CandidateLink, CandidateProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import {
-  FunctionalSkillsReportView,
-  type FunctionalReport,
-} from "@/components/functional-skills-report";
+import type { FunctionalReport } from "@/components/functional-skills-report";
 import { BgvResultsPanel } from "@/components/bgv-results-panel";
+import { BgvVerificationPanel } from "@/components/bgv-verification-panel";
+import { CandidateConversationCard } from "@/components/candidate-conversation-card";
 import { ProjectEvidencePanel } from "@/components/project-evidence-panel";
 import { ResumeViewer, describeResumeUrl } from "@/components/resume-viewer";
 import { SendOutreachModal } from "@/components/send-outreach-modal";
@@ -23,6 +23,20 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
+// Recharts is sizeable and only needed once a report is actually open. Every
+// recruiter opens the Review Screen, and most of that time is spent on the
+// candidate list rather than on a rendered report, so a static import put the
+// charting library into the initial bundle of a screen that frequently never
+// draws a chart. Same treatment, same options, as `ppi-report-modal.tsx`: the
+// type import above is erased at build time and pulls nothing in.
+const FunctionalSkillsReportView = dynamic(
+  () =>
+    import("@/components/functional-skills-report").then(
+      (module) => module.FunctionalSkillsReportView
+    ),
+  { loading: () => <div className="h-64 animate-pulse rounded-lg bg-muted" /> }
+);
 
 export function ProfileReview({
   links,
@@ -102,7 +116,6 @@ export function ProfileReview({
           profile_id: p.profile_id ?? p.id,
           resume_fields: p.resume_fields ?? p.parsed_fields_json,
           aspects,
-          verification: p.verification ?? p.verification_requests,
         });
       })
       .catch(() => {
@@ -272,6 +285,7 @@ export function ProfileReview({
                   <TabsTrigger value="resume">Resume</TabsTrigger>
                   <TabsTrigger value="projects">Projects</TabsTrigger>
                   <TabsTrigger value="verification">Verification</TabsTrigger>
+                  <TabsTrigger value="messages">Messages</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="scores" className="mt-4">
@@ -369,7 +383,19 @@ export function ProfileReview({
                   {/* Consent-gated on the server: an inquiry the candidate
                       has not shared with this employer arrives as a bare
                       "Not shared by the candidate" marker. */}
+                  <BgvVerificationPanel candidateId={selected.candidate.id} />
                   <BgvResultsPanel candidateId={selected.candidate.id} />
+                </TabsContent>
+
+                <TabsContent value="messages" className="mt-4">
+                  {/* One thread per candidate per customer, opened on first
+                      view. Live over a socket where the load balancer routes
+                      the upgrade, and kept current by refetching where it does
+                      not, with the panel saying which. */}
+                  <CandidateConversationCard
+                    candidateId={selected.candidate.id}
+                    candidateName={selected.candidate.full_name}
+                  />
                 </TabsContent>
 
               </Tabs>

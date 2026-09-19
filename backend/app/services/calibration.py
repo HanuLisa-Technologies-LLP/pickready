@@ -437,7 +437,6 @@ def calibration_view(evaluation: Mapping[str, Any]) -> dict[str, Any]:
         "artifact": "calibration_internals",
         "evaluation_id": evaluation.get("id"),
         "scorecard_version": evaluation.get("scorecard_version"),
-        "company_dna_version": evaluation.get("company_dna_version"),
         "situation_type": evaluation.get("situation_type"),
         "scoring_mode": evaluation.get("scoring_mode"),
         "dimensions": [

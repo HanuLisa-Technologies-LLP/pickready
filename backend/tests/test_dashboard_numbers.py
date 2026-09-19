@@ -39,7 +39,6 @@ COUNT_FIELDS = frozenset(
         "diverged",
         "rate",
         "scorecard_version",
-        "company_dna_version",
         "databank_matched",
         "fresh_sourced",
         "shortlisted",

@@ -8,6 +8,21 @@ are read on first use and cached.
 Placeholders use Python `str.format` syntax (`{candidate_name}`). Because JSON
 examples inside a prompt contain literal braces, those must be doubled (`{{`
 and `}}`) exactly as they are in `email_generation.txt`.
+
+THE LEADING COMMENT BLOCK IS DOCUMENTATION AND IS NOT SENT (2026-09-09)
+----------------------------------------------------------------------
+`registry.py` has always dropped a `# version: N` header and the file's leading
+comment lines; this loader did not, so `email_databank_invitation.txt` was
+shipping its own version header to the model as the first line of a system
+prompt. Two loaders disagreeing about what a prompt file IS meant a version
+header could not be added to the twelve files this loader owns without changing
+what the model reads, which is exactly the change a version header exists to
+make visible.
+
+Only the CONTIGUOUS LEADING block is stripped, not every `#` line anywhere.
+`registry.py` strips them wherever they appear and documents the trade; here a
+mid-file `#` is prompt text, and one of these prompts could legitimately need to
+show a model a Markdown heading.
 """
 from __future__ import annotations
 
@@ -15,6 +30,15 @@ from functools import lru_cache
 from pathlib import Path
 
 _PROMPT_DIR = Path(__file__).resolve().parent
+
+
+def _body(raw: str) -> str:
+    """The prompt text, without its leading documentation comment block."""
+    lines = raw.splitlines()
+    start = 0
+    while start < len(lines) and lines[start].startswith("#"):
+        start += 1
+    return "\n".join(lines[start:]).lstrip("\n")
 
 
 class PromptNotFound(FileNotFoundError):
@@ -36,7 +60,7 @@ def load(name: str) -> str:
             f"No prompt template {name!r} in {_PROMPT_DIR} "
             f"(available: {sorted(p.stem for p in _PROMPT_DIR.glob('*.txt'))})"
         )
-    return path.read_text(encoding="utf-8")
+    return _body(path.read_text(encoding="utf-8"))
 
 
 def render(name: str, /, **values: object) -> str:

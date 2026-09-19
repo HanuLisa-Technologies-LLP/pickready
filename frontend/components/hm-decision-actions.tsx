@@ -12,6 +12,7 @@ import { apiPost } from "@/lib/api";
 import type { CandidateLink } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
+import { ConfirmButton } from "@/components/confirm-button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
@@ -78,15 +79,18 @@ export function HmDecisionActions({
       >
         <ThumbsUp className="h-4 w-4" /> Shortlist
       </Button>
-      <Button
+      <ConfirmButton
         size="sm"
         variant="outline"
         className="gap-1"
         disabled={busy}
-        onClick={() => void decide("rejected")}
+        title="Reject this candidate?"
+        description="This moves them out of the pipeline for this role and they are told. It is not a stage you can step back from."
+        confirmLabel="Reject"
+        onConfirm={() => void decide("rejected")}
       >
-        <ThumbsDown className="h-4 w-4" /> Reject
-      </Button>
+        <ThumbsDown className="h-4 w-4" aria-hidden="true" /> Reject
+      </ConfirmButton>
       <Button
         size="sm"
         variant="outline"

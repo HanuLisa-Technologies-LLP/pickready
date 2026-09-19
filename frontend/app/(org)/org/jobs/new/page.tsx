@@ -143,8 +143,8 @@ export default function CreateJobPage() {
   } | null>(null);
 
   // Gate 1 (workflow section 18): a client cannot create a job until its
-  // Company Hiring Requirements exist. The SERVER refuses the create call; this
-  // reads the same status so the recruiter is told before they write a JD
+  // Company Profile says what the company does. The SERVER refuses the create
+  // call; this reads the same field so the recruiter is told before they write a JD
   // rather than after. `null` means "not answered yet" and blocks nothing --
   // an unreadable status must not lock the form, because the server is the
   // gate and it will refuse honestly on submit.
@@ -194,11 +194,14 @@ export default function CreateJobPage() {
     const tenantId = user?.tenant_id;
     if (!tenantId) return;
     let cancelled = false;
-    apiGet<{ status: string }>(
-      `/clients/${tenantId}/company-dna/status`,
-    )
+    // The same question Gate 1 asks server-side: has this organisation said
+    // what it does. Read off the profile the page already serves rather than
+    // through a second endpoint, so the banner and the refusal cannot disagree.
+    apiGet<{ about_company: string | null }>("/companies/me/profile")
       .then((res) => {
-        if (!cancelled) setRequirementsComplete(res.status === "complete");
+        if (!cancelled) {
+          setRequirementsComplete(Boolean((res.about_company ?? "").trim()));
+        }
       })
       .catch(() => {
         if (!cancelled) setRequirementsComplete(null);
@@ -309,16 +312,30 @@ export default function CreateJobPage() {
     }
   };
 
+  /**
+   * SCROLLING IS NOT THE SAME AS MOVING. Both of these refusals used to
+   * `scrollIntoView` and stop, which repairs the sighted mouse user's
+   * experience and nobody else's: the keyboard caret stayed on the Publish
+   * button at the bottom of a long form, and a screen reader was told
+   * nothing at all. Focus is what carries the error message, because the
+   * field now points at it through `aria-describedby`.
+   */
+  const focusInvalid = (id: string) => {
+    const el = document.getElementById(id);
+    el?.scrollIntoView({ block: "center" });
+    el?.focus();
+  };
+
   const publish = async () => {
     // Radix Select is not a native control, so `required` cannot gate it.
     if (!form.grade) {
       setGradeError("Select a grade. It decides which assessment the candidate receives.");
-      document.getElementById("grade")?.scrollIntoView({ block: "center" });
+      focusInvalid("grade");
       return;
     }
     setGradeError(null);
     if (!validateExperience()) {
-      document.getElementById("experience_min_years")?.scrollIntoView({ block: "center" });
+      focusInvalid("experience_min_years");
       return;
     }
     setBusy(true);
@@ -376,16 +393,16 @@ export default function CreateJobPage() {
         <Card className="mb-6 border-navy-200 bg-navy-50">
           <CardContent className="space-y-3 pt-6">
             <h2 className="text-base font-semibold">
-              Complete your Company Hiring Requirements first
+              Fill in your Company Profile first
             </h2>
             <p className="text-sm">
-              Every job this organisation posts is evaluated against what your
-              company considers a strong hire. Until that is on record there is
-              nothing for this role to be assessed against, so job creation
-              waits for it.
+              Every job this organisation posts is built on what your company
+              does and what working there is like. Until that is on record
+              there is nothing for this role to be drafted from, so job
+              creation waits for it.
             </p>
             <Button asChild>
-              <Link href="/org/company-dna">Open Company Hiring Requirements</Link>
+              <Link href="/org/profile">Open Company Profile</Link>
             </Button>
           </CardContent>
         </Card>
@@ -698,10 +715,26 @@ export default function CreateJobPage() {
 
           {publishedLink ? (
             <div className="flex flex-col gap-2 sm:flex-row">
-              <Input readOnly value={publishedLink} className="font-mono text-sm" />
+              <Input
+                id="published-link"
+                aria-label="Application link"
+                readOnly
+                value={publishedLink}
+                className="font-mono text-sm"
+              />
               <Button type="button" onClick={() => void copyLink()} className="gap-2">
-                {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                {copied ? (
+                  <Check className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <Copy className="h-4 w-4" aria-hidden="true" />
+                )}
                 {copied ? "Copied" : "Copy link"}
+                {/* The label swap is the confirmation for anyone watching it.
+                    A reader is not watching it, and the button keeps focus
+                    after the click, so the change has to be announced. */}
+                <span role="status" className="sr-only">
+                  {copied ? "Link copied to clipboard" : ""}
+                </span>
               </Button>
             </div>
           ) : (
@@ -714,7 +747,7 @@ export default function CreateJobPage() {
           <DialogFooter>
             {publishedLink ? (
               <Button asChild variant="outline" className="gap-1.5">
-                <a href={publishedLink} target="_blank" rel="noreferrer">
+                <a href={publishedLink} target="_blank" rel="noopener noreferrer">
                   <ExternalLink className="h-4 w-4" />
                   Preview
                 </a>

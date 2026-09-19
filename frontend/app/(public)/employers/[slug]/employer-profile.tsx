@@ -24,6 +24,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { EmptyState, ErrorState, LoadingCards } from "@/components/page-primitives";
+import { JsonLd, compact } from "@/components/json-ld";
+import { SITE_URL } from "@/lib/site";
 import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
 
 /** Mirrors `schemas.employer_pages.EmployerOpenRoleOut`. */
@@ -48,6 +50,41 @@ interface EmployerPageData {
   work_life?: string | null;
   benefits?: string | null;
   open_roles: OpenRole[];
+}
+
+/**
+ * The Organization payload for one employer page.
+ *
+ * EVERY FIELD COMES FROM THE FETCHED PAGE, AND NOTHING IS INVENTED. No
+ * address, no logo, no employee count, no founding date: the employer page
+ * endpoint returns a closed allowlist and none of those is on it.
+ *
+ * `industry` is carried as `knowsAbout`, because schema.org's Organization has
+ * no `industry` property and an undefined key is an unread key. `knowsAbout`
+ * is the defined field closest in meaning, and it is honest about being a
+ * subject rather than a classification code.
+ *
+ * IT CARRIES AN `@id`, AND THAT IS NOT DECORATION. This page sits inside the
+ * (public) group, so `app/(public)/layout.tsx` also emits ReadyPick's own
+ * Organization node on it. Two Organization nodes on one page, one the
+ * platform and one the hiring company, is an ambiguity a consumer resolves by
+ * guessing unless each one is named. ReadyPick's node is
+ * `<site>/#organization` and is what the WebSite node points at as its
+ * publisher; the employer's is its own page, so they cannot be merged.
+ */
+function organizationSchema(
+  data: EmployerPageData
+): Record<string, unknown> | null {
+  if (!data.name) return null;
+  return compact({
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "@id": `${SITE_URL}/employers/${data.slug}#organization`,
+    name: data.name,
+    url: data.website_domain ? `https://${data.website_domain}` : undefined,
+    description: data.about_company ?? undefined,
+    knowsAbout: data.industry ?? undefined,
+  });
 }
 
 function experienceBand(role: OpenRole): string | null {
@@ -161,6 +198,11 @@ export function EmployerProfile({ slug }: { slug: string }) {
 
   return (
     <>
+      {/* Structured data for this employer. Built from the fetched page in
+          code and serialised with JSON.stringify, so it is not an XSS
+          vector. */}
+      <JsonLd data={organizationSchema(data)} />
+
       <section className="relative overflow-hidden border-b border-border py-16 lg:py-20">
         <div
           aria-hidden="true"
@@ -258,7 +300,7 @@ export function EmployerProfile({ slug }: { slug: string }) {
                         ) : null}
                       </div>
                       {band || role.level ? (
-                        <p className="text-sm leading-6">
+                        <p className="text-sm">
                           {[role.level, band].filter(Boolean).join(" · ")}
                         </p>
                       ) : null}

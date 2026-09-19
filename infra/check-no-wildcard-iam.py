@@ -73,6 +73,7 @@ RESOURCELESS_ACTIONS = {
     "ec2:DeleteNetworkInterface": "detaches the ENI created above, whose id is not knowable in advance.",
     "ec2:AssignPrivateIpAddresses": "addresses the ENI created above.",
     "ec2:UnassignPrivateIpAddresses": "addresses the ENI created above.",
+    "ses:ListIdentities": "enumerates every identity on the ACCOUNT; SES defines no resource type for it, unlike the identity-scoped SendRawEmail and GetIdentityVerificationAttributes beside it in the same file.",
 }
 
 #: RESOURCE POLICIES, where `resources = ["*"]` does not mean "every resource".

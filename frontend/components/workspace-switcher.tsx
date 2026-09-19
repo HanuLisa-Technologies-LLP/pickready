@@ -129,7 +129,7 @@ export function WorkspaceSwitcher() {
                 <span className="block font-semibold">
                   {context.tenant_name ?? "ReadyPick"}
                 </span>
-                <span className="block text-xs opacity-80">
+                <span className="block text-xs">
                   {ROLE_LABEL[context.role]}
                 </span>
               </button>

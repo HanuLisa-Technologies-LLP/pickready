@@ -21,7 +21,11 @@ from app.core.config import get_settings
 # A SQL role name can't be passed as a bind parameter to SET ROLE, so it is
 # interpolated. It comes from trusted config, but we still hard-validate it as a
 # plain identifier to make injection impossible even if config is misconfigured.
-_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#
+# Public because `alembic/env.py` interpolates a role name for exactly the same
+# reason and must not carry a second copy of the rule: two identifier guards
+# drift, and the one that drifts is the one nobody is looking at.
+SQL_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -100,7 +104,7 @@ def _app_role() -> str | None:
     via SET LOCAL ROLE; it auto-resets at COMMIT/ROLLBACK.
     """
     role = get_settings().postgres_rls_app_role
-    if not role or not _IDENT_RE.match(role):
+    if not role or not SQL_IDENTIFIER_RE.match(role):
         return None
     return role
 

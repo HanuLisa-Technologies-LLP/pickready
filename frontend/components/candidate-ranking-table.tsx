@@ -38,6 +38,7 @@ import {
   Mail,
   MessageSquareText,
   MessagesSquare,
+  Users,
 } from "lucide-react";
 
 import { apiGet, apiPost } from "@/lib/api";
@@ -50,6 +51,7 @@ import type {
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/page-primitives";
 import { BandLegend } from "@/components/rating-label";
 import { AiRatingCell, AiRatingReportModal } from "@/components/ai-rating-report-modal";
 import { ProcurementBadge } from "@/components/procurement-badge";
@@ -120,7 +122,7 @@ function ValidationAnswersModal({
                   {group.items.map((item) => (
                     <div key={item.key} className="p-4">
                       <dt className="text-sm font-semibold">{item.question}</dt>
-                      <dd className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                      <dd className="mt-2 whitespace-pre-wrap text-sm">
                         {item.answer?.trim() || "Not answered"}
                       </dd>
                     </div>
@@ -240,7 +242,9 @@ export function CandidateRankingTable({
   // Keep the empty-state cell spanning the WHOLE table as columns come and go
   // with the caller's capabilities, a hardcoded span leaves a ragged row.
   const selectable = Boolean(onEmail || onSelectionChange);
-  const columnCount = 9 + (selectable ? 1 : 0) + (canDecide ? 2 : 0);
+  // 9 originals + the five vivekium columns (Match, CTC, Notice, Education,
+  // BGV Status, 2026-09-18).
+  const columnCount = 14 + (selectable ? 1 : 0) + (canDecide ? 2 : 0);
   const selectedRows = rows.filter((r) => selected.has(r.link_id));
 
   /**
@@ -367,7 +371,7 @@ export function CandidateRankingTable({
         </div>
       </div>
       {profileAge === "old" ? (
-        <p className="mb-3 text-sm leading-6">
+        <p className="mb-3 text-sm">
           These people applied before this job was renewed. Their profiles stay
           yours to read, and opening one for the first time draws a twentieth of
           a credit from your pool.
@@ -377,7 +381,7 @@ export function CandidateRankingTable({
       {/* Horizontal scroll on narrow screens (spec §10), the page body itself
           must never scroll sideways. */}
       <div className="overflow-x-auto rounded-lg border">
-        <Table className="min-w-[1020px]">
+        <Table label="Candidate ranking" className="min-w-[1560px]">
           <TableHeader>
             <TableRow>
               {selectable ? (
@@ -398,6 +402,19 @@ export function CandidateRankingTable({
                 </TableHead>
               ) : null}
               <TableHead className="w-[200px]">Name</TableHead>
+              {/* The Executive Profile Match Score (vivekium feature 3,
+                  column 2). The one number a client surface may show, per the
+                  2026-09-18 rule-1 amendment; the value arrives computed from
+                  the server and this file does no arithmetic on it. */}
+              <TableHead className="w-[90px]">Match</TableHead>
+              {/* Columns 3-5 and 7: derived words from the server. "Not
+                  stated" is a real state, never hidden: an absent comparison
+                  is information a recruiter should see, not a blank to
+                  paper over. */}
+              <TableHead className="w-[110px]">CTC Match</TableHead>
+              <TableHead className="w-[120px]">Notice Period</TableHead>
+              <TableHead className="w-[110px]">Education</TableHead>
+              <TableHead className="w-[110px]">BGV Status</TableHead>
               <TableHead className="w-[130px]">Type of Procurement</TableHead>
               <TableHead className="w-[150px]">Status</TableHead>
               {/* How the assessment was conducted and whether its recording is
@@ -446,8 +463,16 @@ export function CandidateRankingTable({
               ))
             ) : rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={columnCount} className="py-10 text-center">
-                  No candidates yet. Applications appear here as they arrive.
+                {/* Inside the cell, not instead of the table: the column
+                    headers name what will arrive, which is the useful half of
+                    an empty ranking table. */}
+                <TableCell colSpan={columnCount} className="p-0">
+                  <EmptyState
+                    icon={Users}
+                    title="No candidates yet"
+                    description="Applications appear here as they arrive."
+                    className="border-0"
+                  />
                 </TableCell>
               </TableRow>
             ) : (
@@ -499,6 +524,33 @@ export function CandidateRankingTable({
                         <TierBadge tier={row.tier} />
                       </span>
                     ) : null}
+                  </TableCell>
+                  <TableCell className="pt-4">
+                    {/* Column 2. Tabular figures so the percentages line up
+                        down the column; "Not scored" for a link the matching
+                        pipeline has not reached, the same word
+                        `ranking_status` already uses. */}
+                    {row.match_percent != null ? (
+                      <span className="font-medium tabular-nums">
+                        {row.match_percent}%
+                      </span>
+                    ) : (
+                      <span className="text-xs">Not scored</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="pt-4 text-xs">
+                    {row.ctc_match_label ?? "Not stated"}
+                  </TableCell>
+                  <TableCell className="pt-4 text-xs">
+                    {row.notice_period_label ?? "Not stated"}
+                  </TableCell>
+                  <TableCell className="pt-4 text-xs">
+                    {row.education_match_label ?? "Not stated"}
+                  </TableCell>
+                  <TableCell className="pt-4 text-xs">
+                    {/* Detail (which employer, which reply) lives inside the
+                        candidate's profile only, per the brief. */}
+                    {row.bgv_status_label ?? "Not Started"}
                   </TableCell>
                   <TableCell className="pt-4">
                     <ProcurementBadge

@@ -1,0 +1,51 @@
+# Defense-in-depth on top of .gitignore (which graphify already respects by
+# default). Explicit here so the exclusion is visible and doesn't silently
+# depend on .gitignore never changing shape.
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+secrets/
+**/*-keys.txt
+**/*service-account*.json
+**/gcp-key*.json
+application_default_credentials.json
+*.pem
+*.tfvars
+*.tfstate
+*.tfstate.*
+
+# Candidate/PII-shaped data — demo resumes carry real names even though the
+# tenants are synthetic (see claude.md's 2026-08-05 seed-fixtures section)
+backend/demo_resumes/
+
+# Vendored, generated Emscripten/WASM glue for MediaPipe (proctoring face
+# detection). ~591 nodes of auto-generated runtime internals (EmscriptenEH,
+# ioctl_tcgets, st_blksize...) with zero architectural signal — found via a
+# "Surprising Connections" false-positive in GRAPH_REPORT.md pointing at
+# analysis-service/tests/test_no_disk.py.
+frontend/public/models/
+
+# Build/dependency noise, already excluded by .gitignore but pinned here too
+node_modules/
+.next/
+__pycache__/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.git/
+
+# Vendored third-party design skills (see .gitignore for why)
+.claude/skills/impeccable/
+.claude/skills/design-taste-frontend/
+.claude/skills/high-end-visual-design/
+.claude/skills/redesign-existing-projects/
+.claude/skills/img2threejs/
+.github/skills/
+.agents/skills/
+
+# graphify's own output/cache, never re-index itself
+graphify-out/

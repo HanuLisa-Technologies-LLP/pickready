@@ -355,7 +355,7 @@ def number_renderings(value: float) -> List[str]:
 # ----------------------------------------------------------------- the tests
 def test_every_data_file_loads() -> None:
     names = runbook_data.all_names()
-    assert len(names) == 9, names
+    assert len(names) == 8, names
     for name in names:
         data = runbook_data.load(name)
         assert isinstance(data, dict) and data, name
@@ -624,32 +624,6 @@ def test_the_five_dimensions_and_their_anchors_match_the_runbook(
             assert normalise(anchor["meaning"]) == row[1], (key, anchor)
         head = normalise(runbook.lines[runbook.sections[section][0]])
         assert normalise(entry["name"]) in head, (key, head)
-
-
-def test_the_twelve_company_dna_sections_match_the_runbook(
-        runbook: Runbook) -> None:
-    sections = runbook_data.company_dna_instrument()["sections"]
-    assert len(sections) == 12, len(sections)
-    for entry in sections:
-        key = "16.%d" % entry["number"]
-        assert runbook.has(key), key
-        head = normalise(runbook.lines[runbook.sections[key][0]])
-        assert normalise(entry["title"]) in head, (key, entry["title"], head)
-
-
-def test_the_observable_evidence_example_pairs_are_verbatim(
-        runbook: Runbook) -> None:
-    """16.3's accepted/rejected pairs are the literal quality bar."""
-    section = next(s for s in runbook_data.company_dna_instrument()["sections"]
-                   if s["number"] == 3)
-    pairs = section["example_pairs"]
-    text = runbook.text("16.3")
-    assert len(pairs) == 2, pairs
-    assert text.count("Rejected:") == 2 and text.count("Accepted:") == 2, text
-    for pair in pairs:
-        assert normalise(pair["rejected"]) in text, pair["rejected"]
-        assert normalise(pair["accepted"]) in text, pair["accepted"]
-        assert len(normalise(pair["accepted"])) > 60, pair["accepted"]
 
 
 def test_the_seven_swot_probes_are_verbatim(runbook: Runbook) -> None:

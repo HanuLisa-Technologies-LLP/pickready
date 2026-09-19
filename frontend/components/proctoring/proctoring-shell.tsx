@@ -282,8 +282,8 @@ export function ProctoringShell({
             <CardTitle>{session === null ? START_FAILED_TITLE : ENDED_TITLE}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <p className="text-sm leading-6">{endedMessage ?? startError ?? ANSWERS_SAVED}</p>
-            <p className="text-sm leading-6">
+            <p className="text-sm">{endedMessage ?? startError ?? ANSWERS_SAVED}</p>
+            <p className="text-sm">
               If you believe this was a mistake, reply to the email that invited you and the hiring
               team will look at it.
             </p>

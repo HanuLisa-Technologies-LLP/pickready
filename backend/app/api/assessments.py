@@ -82,6 +82,7 @@ from app.services import (
     answer_classification,
     assessment_consent,
     assessment_invite,
+    consent_catalog,
     conversation_guardrails,
     credit_reconciliation,
     hiring_pipeline,
@@ -554,11 +555,11 @@ async def finalize_framework(
     refuses to reopen it once anyone has been, and gate G1 starts answering yes.
 
     RBAC §20 makes it an EXPLICIT transition and says what it has to record:
-    the user who finalized it, the timestamp, the relevant version and the
-    relevant hiring-criteria version. All four are written -- two onto the job,
-    two onto the append-only Company DNA binding -- and then again onto the
-    audit row, because the columns answer "what is in force" and the audit row
-    answers "what happened and who did it".
+    the user who finalized it, the timestamp and the relevant criteria version.
+    All three are written -- two onto the job, one onto the append-only
+    scorecard binding -- and then again onto the audit row, because the columns
+    answer "what is in force" and the audit row answers "what happened and who
+    did it".
 
     Authorised through `rbac.require_authorized` rather than
     `require_capability`, and the difference is the point: this route names a
@@ -603,10 +604,9 @@ async def finalize_framework(
                 category: sum(1 for item in rows if item.category == category)
                 for category in ppi.CATEGORIES
             },
-            # RBAC §20's four required facts, in the row as well as the columns.
+            # RBAC §20's required facts, in the row as well as the columns.
             "jd_version": swot_intake.jd_version(job),
             "criteria_version": matrix.version,
-            "company_dna_version": matrix.company_dna_version,
             "situation_key": matrix.situation_key,
         },
     )
@@ -617,11 +617,10 @@ async def finalize_framework(
     await _invalidate_framework(job)
     logger.info(
         "assessments.role_definition_finalized job_id=%s by=%s criteria_version=%d "
-        "dna_version=%s correlation_id=%s",
+        "correlation_id=%s",
         job.id,
         user.user_id,
         matrix.version,
-        matrix.company_dna_version,
         job.correlation_id,
     )
     return await _framework_out(session, job)
@@ -2201,7 +2200,26 @@ async def _ensure_conversation_ready(
     )
 
 
-@router.post("/conversations/links/{link_id}/start", response_model=ConversationOut)
+# Abuse control and COST control, not authorization (services/rate_limit).
+#
+# Every turn of an assessment conversation invokes a model, so this pair was the
+# most expensive unthrottled surface in the product: an authenticated candidate
+# session, or a stolen one, could drive unbounded model spend and exhaust the
+# shared per-credential rate limit at the provider, which starves OTHER tenants'
+# assessments because `llm_router`'s circuit breaker is keyed by credential.
+#
+# The numbers are set well above a real assessment and well below a flood. A
+# non-managerial assessment is 45 questions answered by a person typing prose,
+# so a handful of starts and a few dozen turns a minute cannot be reached by
+# somebody doing the assessment, and a candidate who legitimately retries a
+# failed send is nowhere near either ceiling. Now that `client_identifier`
+# resolves a verified subject, each candidate gets their own bucket rather than
+# sharing one with every other candidate behind the same office address.
+@router.post(
+    "/conversations/links/{link_id}/start",
+    response_model=ConversationOut,
+    dependencies=[Depends(rate_limit("assessment_start", limit=10, window=60))],
+)
 async def start_conversation(
     link_id: uuid.UUID,
     user: CurrentUser = Depends(get_current_candidate),
@@ -2260,6 +2278,10 @@ async def start_conversation(
                 target=hiring_pipeline.ASSESSMENT_IN_PROGRESS,
             )
     prompts = await _conversation_prompts(session, job, link)
+    # Pre-filled questions are consumed BEFORE anything is served, so the
+    # first thing this candidate ever sees is a question the resume could
+    # not answer for them (feature 2, C2).
+    await _consume_prefilled_questions(session, job, conversation, prompts)
     index = min(conversation.next_question_index, len(prompts))
 
     # THE FIRST QUESTION IS WRITTEN HERE, and it has to be.
@@ -2332,6 +2354,76 @@ async def _resume_excerpt(session: AsyncSession, link: JobCandidateLink) -> str:
             select(Profile.resume_text).where(Profile.id == link.profile_id)
         )
     ).scalar_one_or_none() or ""
+
+
+async def _consume_prefilled_questions(
+    session: AsyncSession,
+    job: Job,
+    conversation: AssessmentConversation,
+    prompts: list[tuple[str, str, str, CandidateQuestion]],
+) -> int:
+    """Record every consecutive pre-filled question instead of asking it.
+
+    Feature 2 (C2, owner-ruled): a question whose criterion the resume
+    already evidences carries `prefilled_answer`, and the conversation
+    writes that exchange, agent prompt, then the labelled answer, exactly
+    where a typed answer would land (`answer_label="resume_prefill"`, so the
+    transcript says where the words came from), advances the index and moves
+    on. The scorer reads the same rows it always reads; billing and
+    completion fire at the same chokepoints, because the index moves through
+    the same gate.
+    """
+    from app.services import resume_prefill
+
+    consumed = 0
+    while (
+        conversation.pending_prompt is None
+        and conversation.completed_at is None
+        and conversation.next_question_index < len(prompts)
+    ):
+        aspect, key, prompt_text, row = prompts[conversation.next_question_index]
+        prefilled = getattr(row, "prefilled_answer", None)
+        if not prefilled:
+            break
+        ordinal = (
+            await session.execute(
+                select(func.count()).select_from(AssessmentMessage).where(
+                    AssessmentMessage.conversation_id == conversation.id
+                )
+            )
+        ).scalar_one()
+        candidate_message = AssessmentMessage(
+            tenant_id=job.tenant_id,
+            conversation_id=conversation.id,
+            ordinal=ordinal + 2,
+            speaker="candidate",
+            domain=aspect,
+            question_key=key,
+            content=prefilled,
+            answer_label=resume_prefill.ANSWER_LABEL,
+        )
+        session.add_all([
+            AssessmentMessage(
+                tenant_id=job.tenant_id, conversation_id=conversation.id,
+                ordinal=ordinal + 1, speaker="agent", domain=aspect,
+                question_key=key, content=prompt_text,
+            ),
+            candidate_message,
+        ])
+        await session.flush()
+        await _write_answer_record(
+            session, job, conversation, row.id, candidate_message,
+            answer_json={"text": prefilled, "source": row.prefill_source or "resume"},
+            auto_score=None, evaluation=None,
+            now=datetime.now(timezone.utc), paused_ms=0,
+            question_type=row.question_type,
+        )
+        conversation.delivered_prompt = None
+        conversation.next_question_index += 1
+        consumed += 1
+    if consumed:
+        await session.flush()
+    return consumed
 
 
 async def _write_next_question(
@@ -2497,7 +2589,13 @@ async def _transcript_rows(
     return [{"speaker": speaker, "content": content} for speaker, content in rows]
 
 
-@router.post("/conversations/{conversation_id}/respond", response_model=ConversationOut)
+# See the note on `start_conversation` above. This is the one that actually
+# costs money per call: one model invocation per turn.
+@router.post(
+    "/conversations/{conversation_id}/respond",
+    response_model=ConversationOut,
+    dependencies=[Depends(rate_limit("assessment_turn", limit=40, window=60))],
+)
 async def respond(
     conversation_id: uuid.UUID,
     body: ConversationMessageIn,
@@ -2896,6 +2994,11 @@ async def respond(
             interviewer.STOP_NO_CONFLICT_OUTSTANDING in coverage.stop_conditions
         )
 
+    # Consume any pre-filled questions the advance just reached (feature 2,
+    # C2): recorded, never asked, and if the tail of the interview is all
+    # pre-filled this walks the index to the end so completion and the
+    # charge fire in the same block below, on the same request.
+    await _consume_prefilled_questions(session, job, conversation, prompts)
     if (
         conversation.next_question_index >= len(prompts) or evidence_complete
     ) and not conversation.pending_prompt:
@@ -2925,6 +3028,17 @@ async def respond(
             job_candidate_link_id=link.id,
         )
         dispatch("pickready.run_functional_assessment", args=[str(link.id)])
+        # The transcript is final now, so it becomes retrievable evidence
+        # (RPN-AI-UP-001 W2.1). Keyed on the LINK, like the recruiter
+        # transcript route, because the transcript outlives any one
+        # conversation row and every consumer of assessment evidence already
+        # holds a link id.
+        #
+        # AFTER completion and never per turn: a live conversation grows
+        # between two reads by design, so indexing mid-assessment would put
+        # half a transcript in the index and re-embed it on every answer. Same
+        # rule that keeps `extract_assessment` uncached.
+        dispatch("pickready.index_document", args=["assessment", str(link.id)])
     await session.flush()
     next_index = conversation.next_question_index
 
@@ -3155,6 +3269,13 @@ async def _mode_state(
             consent_version=terms.consent_version,
             privacy_policy_version=terms.privacy_policy_version,
             terms_version=terms.terms_version,
+            # Stage B items (vivekium feature 6), served so the screen never
+            # authors consent copy of its own.
+            items=[
+                item
+                for item in consent_catalog.catalogue_payload()
+                if item["stage"] == consent_catalog.STAGE_ASSESSMENT
+            ],
         ),
     )
 

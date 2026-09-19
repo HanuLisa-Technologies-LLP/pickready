@@ -37,6 +37,11 @@ AUTH_OTP_VERIFIED = "otp_verified"
 AUTH_OTP_FAILED = "otp_failed"
 AUTH_OTP_RATE_LIMITED = "otp_rate_limited"
 AUTH_LOGIN_SUCCEEDED = "login_succeeded"
+#: A proven Firebase identity was refused a session it asked for. Today the
+#: only reason is an attempt to rebind an account that is already linked to a
+#: different Firebase uid, which is the shape of an account takeover, so it
+#: is worth a row of its own rather than silence.
+AUTH_LOGIN_REFUSED = "login_refused"
 AUTH_CONTEXT_SELECTED = "context_selected"
 AUTH_LOGOUT = "logout"
 AUTH_EMAIL_SEND_FAILED = "email_send_failed"
@@ -51,6 +56,7 @@ AUTH_ACTIONS: frozenset[str] = frozenset(
         AUTH_OTP_FAILED,
         AUTH_OTP_RATE_LIMITED,
         AUTH_LOGIN_SUCCEEDED,
+        AUTH_LOGIN_REFUSED,
         AUTH_CONTEXT_SELECTED,
         AUTH_LOGOUT,
         AUTH_EMAIL_SEND_FAILED,

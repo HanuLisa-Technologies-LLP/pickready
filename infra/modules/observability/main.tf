@@ -8,7 +8,12 @@
 # and this product has already been bitten by a check that reported success
 # while three features did not work.
 #
-# The five conditions, and what each one is really asking:
+# THE LIST GREW ON 2026-09-17 and the filter above did not change. Four more
+# conditions were added below the dashboard section, each one already visible
+# as a widget and therefore not actually monitored. Read that section for what
+# each of them catches that the five here cannot.
+#
+# The five original conditions, and what each one is really asking:
 #
 #   unhealthy targets   the API is in the target group and failing its health
 #                       check, which now probes the database and Redis. The
@@ -214,6 +219,175 @@ resource "aws_cloudwatch_metric_alarm" "agent_failures" {
 
   alarm_actions = [var.alarm_topic_arn]
   tags          = var.tags
+}
+
+# ── The four conditions that were on the dashboard and nowhere else ──────────
+#
+# ADDED 2026-09-17, BEFORE THE FIRST PRODUCTION APPLY.
+# `HTTPCode_Target_5XX_Count` and `DatabaseConnections` were already drawn as
+# widgets, and there was no ElastiCache alarm of any kind. A widget is not a
+# monitor: it is read by somebody who already suspects a problem, which is the
+# one moment they do not need it.
+#
+# Each of the four answers a question the five alarms above structurally
+# cannot. Unhealthy targets catches a task failing its health check; it does
+# NOT catch a task that is perfectly healthy and returning 500 to every
+# request, because a 500 is a response. RDS CPU and free storage catch two
+# ceilings; the connection ceiling is a third and it fails harder than either,
+# because a refused connection is not slow, it is an error. And nothing at all
+# watched Redis.
+
+resource "aws_cloudwatch_metric_alarm" "alb_target_5xx" {
+  count = var.enable_alb_alarms ? 1 : 0
+
+  alarm_name        = "${local.name}-api-5xx"
+  alarm_description = "The API is answering requests with 5xx. The unhealthy-target alarm cannot see this: a task returning 500 to every request still passes its health check when the health check itself succeeds."
+
+  namespace   = "AWS/ApplicationELB"
+  metric_name = "HTTPCode_Target_5XX_Count"
+  statistic   = "Sum"
+  period      = 300
+  # Two periods. One period of 5xx is what a rolling deploy looks like from the
+  # outside; ten minutes of it is not something a retry explains.
+  evaluation_periods  = 2
+  threshold           = var.alb_5xx_threshold
+  comparison_operator = "GreaterThanThreshold"
+  # No requests means no datapoints, and "nobody used the product for five
+  # minutes" is not an incident. What catches a dead service is the
+  # unhealthy-target alarm above, which reads a metric that is always published.
+  treat_missing_data = "notBreaching"
+
+  dimensions = {
+    TargetGroup  = var.target_group_arn_suffix
+    LoadBalancer = var.load_balancer_arn_suffix
+  }
+
+  alarm_actions = [var.alarm_topic_arn]
+  ok_actions    = [var.alarm_topic_arn]
+  tags          = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_connections" {
+  alarm_name        = "${local.name}-rds-connections-high"
+  alarm_description = "Approaching the instance max_connections. Exhausting it does not degrade gracefully: the next connection is refused and the request that needed it fails. Peak connections here track Lambda concurrency, because the worker builds a fresh engine per invocation by design."
+
+  namespace   = "AWS/RDS"
+  metric_name = "DatabaseConnections"
+  # MAXIMUM, not Average. A connection storm is a spike, and an average over
+  # five minutes is exactly the statistic that hides one.
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 2
+  threshold           = var.db_connection_alarm_threshold
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  dimensions    = { DBInstanceIdentifier = var.db_instance_id }
+  alarm_actions = [var.alarm_topic_arn]
+  ok_actions    = [var.alarm_topic_arn]
+  tags          = var.tags
+}
+
+# ── Lambda throttles ─────────────────────────────────────────────
+#
+# A SEPARATE ALARM FROM THE ERROR RATE, because a throttle is not an error and
+# does not appear in that metric at all. `Errors` counts invocations that ran
+# and failed; `Throttles` counts invocations that never started because the
+# concurrency ceiling was already full. The two have different causes and
+# different fixes, and an environment that sets `reserve_lambda_concurrency`
+# has deliberately created a ceiling that can be hit.
+#
+# A COUNT AND NOT A RATE, unlike the error alarm, and threshold zero. One
+# throttle means work was held behind a ceiling. That is worth knowing the
+# first time, not the hundredth.
+
+resource "aws_cloudwatch_metric_alarm" "lambda_throttles" {
+  for_each = var.function_names
+
+  alarm_name        = "${local.name}-${each.key}-throttles"
+  alarm_description = "${each.value} was throttled: an invocation never started because the concurrency ceiling was full. This does not appear in the error rate, because a throttled invocation did not run."
+
+  namespace           = "AWS/Lambda"
+  metric_name         = "Throttles"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  dimensions    = { FunctionName = each.value }
+  alarm_actions = [var.alarm_topic_arn]
+  tags          = merge(var.tags, { Function = each.key })
+}
+
+# ── Redis ─────────────────────────────────────────────────────
+#
+# THERE WAS NO ELASTICACHE ALARM AT ALL, and this is the gap that mattered
+# most, because of a decision made deliberately elsewhere.
+# `maxmemory-policy` is `noeviction` (see `infra/modules/elasticache`): LRU
+# would evict a live assessment's proctoring warning counter under memory
+# pressure and silently reset a candidate's warnings to zero.
+#
+# The price of refusing to evict is that a full Redis does not degrade. Writes
+# FAIL, and `proctoring/gate` answers 503 rather than silently not warning, so
+# every assessment turn on the instance is refused. There is no cache-miss
+# stage between healthy and broken. Filling up has to be seen before it
+# completes, and only an alarm does that.
+#
+# ONE ALARM PER NODE. The ids are passed in rather than read off the
+# replication group, because a `for_each` over a resource attribute that is
+# unknown until apply cannot be planned.
+
+resource "aws_cloudwatch_metric_alarm" "redis_memory" {
+  for_each = var.redis_cluster_ids
+
+  alarm_name        = "${local.name}-redis-memory-${each.value}"
+  alarm_description = "Redis memory above ${var.redis_memory_threshold_percent} percent. The policy is noeviction, so filling up is not a cache miss: writes fail, and the proctoring gate then answers 503 for every assessment turn rather than silently not warning."
+
+  namespace           = "AWS/ElastiCache"
+  metric_name         = "DatabaseMemoryUsagePercentage"
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 2
+  threshold           = var.redis_memory_threshold_percent
+  comparison_operator = "GreaterThanThreshold"
+  # Redis publishes this continuously while the node exists, so an absence of
+  # datapoints is the node being gone, which the replication group's own
+  # failover handles and this alarm should not duplicate.
+  treat_missing_data = "notBreaching"
+
+  dimensions    = { CacheClusterId = each.value }
+  alarm_actions = [var.alarm_topic_arn]
+  ok_actions    = [var.alarm_topic_arn]
+  tags          = merge(var.tags, { CacheCluster = each.value })
+}
+
+# EVICTIONS MUST BE ZERO, AND THAT IS THE WHOLE POINT OF THE ALARM.
+#
+# Under `noeviction` Redis refuses the write instead of evicting, so this
+# metric is structurally always zero. A non-zero value therefore does not mean
+# "memory is tight"; it means the parameter group is no longer `noeviction` and
+# something has been silently discarded. That is the failure the policy was
+# chosen to prevent, and the evidence for it is a counter nobody looks at.
+resource "aws_cloudwatch_metric_alarm" "redis_evictions" {
+  for_each = var.redis_cluster_ids
+
+  alarm_name        = "${local.name}-redis-evictions-${each.value}"
+  alarm_description = "Redis evicted a key. Under noeviction this is structurally impossible, so a non-zero value means the maxmemory-policy has changed and something was silently discarded, which may be a live assessment's warning counter."
+
+  namespace           = "AWS/ElastiCache"
+  metric_name         = "Evictions"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  dimensions    = { CacheClusterId = each.value }
+  alarm_actions = [var.alarm_topic_arn]
+  tags          = merge(var.tags, { CacheCluster = each.value })
 }
 
 # ── One dashboard ────────────────────────────────────────────────────────────

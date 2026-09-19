@@ -217,6 +217,10 @@ class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
     payload_json: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+    # Resume pre-fill (migration 0104, vivekium feature 2 under C2): the
+    # answer recorded instead of asking, and its provenance. NULL = asked.
+    prefilled_answer: Mapped[str | None] = mapped_column(Text)
+    prefill_source: Mapped[str | None] = mapped_column(String(30))
     resume_anchor: Mapped[str | None] = mapped_column(Text)
     #: Suggested time, in seconds. Bounds the assessment's total length per
     #: role (composition rule 6); shown to the candidate as guidance only.
@@ -541,6 +545,21 @@ class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     #: they were found in: a finding's detail can quote the report, and this row
     #: is far more widely readable than the report it describes.
     review_findings_json: Mapped[list | None] = mapped_column(JSONB)
+    #: PROVENANCE (0094): the model id that wrote the delivered prose, resolved
+    #: at write time from the closed MODEL_FOR_TASK mapping for
+    #: `report_synthesis`. NULL means either "written before provenance was
+    #: recorded" or "no model produced this" (a deterministic-fallback run),
+    #: and both readings are deliberate: a fallback report naming a model would
+    #: claim work that never happened. Never backfilled.
+    model_id: Mapped[str | None] = mapped_column(Text)
+    #: PROVENANCE (0094): the registry labels of the versioned prompts this run
+    #: used, `name@declared+digest`, semicolon separated. HONEST ABOUT ITS OWN
+    #: LIMIT: the remark system prompt lives inline in
+    #: `functional_assessment.bounded_remark` rather than in the registry, so
+    #: its version is the deployed image, not this column, and the column
+    #: records only what the registry actually versions. NULL under the same
+    #: two readings as `model_id`.
+    prompt_version: Mapped[str | None] = mapped_column(Text)
     validation_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     #: RETIRED. The Gap Analysis & Action Plan replaced this section entirely
     #: (spec §9.6). Nothing writes it any more and it was deliberately not

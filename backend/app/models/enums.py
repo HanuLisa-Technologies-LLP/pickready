@@ -132,15 +132,8 @@ class PipelineStatus(str, enum.Enum):
     offered = "offered"
 
 
-class VerificationStatus(str, enum.Enum):
-    pending = "pending"
-    submitted = "submitted"
-    overridden = "overridden"  # explicit HR override with logged reason (ESD §10)
 
 
-class SubmittedVia(str, enum.Enum):
-    form = "form"
-    email_reply = "email_reply"
 
 
 class LLMProvider(str, enum.Enum):

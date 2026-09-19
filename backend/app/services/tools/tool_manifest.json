@@ -1,0 +1,711 @@
+{
+  "manifest_version": 1,
+  "tools": [
+    {
+      "digest": "47dbeed8509492ea40ee4b6b4bac85c297dcfaf9b29dbb4ed04a5fe1d4c93677",
+      "granted_to": [
+        "ppi_report",
+        "probe",
+        "scoring"
+      ],
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "link_id": {
+            "format": "uuid",
+            "title": "Link Id",
+            "type": "string"
+          },
+          "max_exchanges": {
+            "default": 40,
+            "maximum": 200,
+            "minimum": 1,
+            "title": "Max Exchanges",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "link_id"
+        ],
+        "title": "LinkRef",
+        "type": "object"
+      },
+      "name": "extract_assessment",
+      "output_schema": {
+        "$defs": {
+          "Exchange": {
+            "additionalProperties": false,
+            "description": "One question and the answer filed under it.\n\nPaired SERVER-SIDE, and the follow-up rule is why: a probe reuses its\nparent's `question_key`, which is exactly how the scorers file it. Pairing\nper caller would reimplement that rule and let it drift.",
+            "properties": {
+              "answer": {
+                "title": "Answer",
+                "type": "string"
+              },
+              "answer_label": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Answer Label"
+              },
+              "domain": {
+                "title": "Domain",
+                "type": "string"
+              },
+              "question": {
+                "title": "Question",
+                "type": "string"
+              },
+              "question_key": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Question Key"
+              }
+            },
+            "required": [
+              "domain",
+              "question",
+              "answer"
+            ],
+            "title": "Exchange",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Conversation Id"
+          },
+          "exchanges": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/Exchange"
+            },
+            "title": "Exchanges",
+            "type": "array"
+          },
+          "grade": {
+            "title": "Grade",
+            "type": "string"
+          },
+          "link_id": {
+            "format": "uuid",
+            "title": "Link Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "link_id",
+          "status",
+          "grade"
+        ],
+        "title": "AssessmentFacts",
+        "type": "object"
+      },
+      "risk": "read"
+    },
+    {
+      "digest": "743317c812d791d9b07f139bb2da39725a5574712e058ac09d8f7623cab96419",
+      "granted_to": [
+        "interviewer",
+        "ppi_report",
+        "probe",
+        "scoring"
+      ],
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "JobRef",
+        "type": "object"
+      },
+      "name": "extract_framework",
+      "output_schema": {
+        "$defs": {
+          "Competency": {
+            "additionalProperties": false,
+            "properties": {
+              "category": {
+                "title": "Category",
+                "type": "string"
+              },
+              "competency_id": {
+                "format": "uuid",
+                "title": "Competency Id",
+                "type": "string"
+              },
+              "description": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null,
+                "title": "Description"
+              },
+              "name": {
+                "title": "Name",
+                "type": "string"
+              },
+              "required_level": {
+                "enum": [
+                  "Highly Matching",
+                  "Matching",
+                  "Moderately Matching",
+                  "Not Matching"
+                ],
+                "title": "Required Level",
+                "type": "string"
+              }
+            },
+            "required": [
+              "competency_id",
+              "category",
+              "name",
+              "required_level"
+            ],
+            "title": "Competency",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "approved": {
+            "default": false,
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "competencies": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/Competency"
+            },
+            "title": "Competencies",
+            "type": "array"
+          },
+          "framework_pending": {
+            "default": false,
+            "title": "Framework Pending",
+            "type": "boolean"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "FrameworkFacts",
+        "type": "object"
+      },
+      "risk": "read"
+    },
+    {
+      "digest": "76a44a8c267ddd9faaf2057721e4bbce619f019bf7d8bcae6c01c44ea9227504",
+      "granted_to": [
+        "email",
+        "interviewer",
+        "job_setup",
+        "ppi_report",
+        "probe",
+        "ranking"
+      ],
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "JobRef",
+        "type": "object"
+      },
+      "name": "extract_jd",
+      "output_schema": {
+        "additionalProperties": false,
+        "description": "A job as an agent may see it. Deliberately without compensation.",
+        "properties": {
+          "assessment_status": {
+            "title": "Assessment Status",
+            "type": "string"
+          },
+          "department": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Department"
+          },
+          "education": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Education",
+            "type": "array"
+          },
+          "experience_max_years": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Experience Max Years"
+          },
+          "experience_min_years": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Experience Min Years"
+          },
+          "framework_approved": {
+            "default": false,
+            "title": "Framework Approved",
+            "type": "boolean"
+          },
+          "grade": {
+            "title": "Grade",
+            "type": "string"
+          },
+          "jd_markdown": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Jd Markdown"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "responsibilities": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Responsibilities",
+            "type": "array"
+          },
+          "skills": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Skills",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "title",
+          "grade",
+          "assessment_status"
+        ],
+        "title": "JobFacts",
+        "type": "object"
+      },
+      "risk": "read"
+    },
+    {
+      "digest": "08dd82bfdf1adac335895a55063fdea1936bc38b426c97c73383d536861e19d0",
+      "granted_to": [
+        "interviewer",
+        "ppi_report",
+        "ranking",
+        "scoring"
+      ],
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_id": {
+            "format": "uuid",
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "resume_chars": {
+            "default": 1500,
+            "maximum": 20000,
+            "minimum": 0,
+            "title": "Resume Chars",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "profile_id"
+        ],
+        "title": "ProfileRef",
+        "type": "object"
+      },
+      "name": "extract_resume",
+      "output_schema": {
+        "additionalProperties": false,
+        "description": "A parsed resume, compensation-stripped, bounded in size.",
+        "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "education": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Education",
+            "type": "array"
+          },
+          "employment_history": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Employment History",
+            "type": "array"
+          },
+          "profile_id": {
+            "format": "uuid",
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "resume_excerpt": {
+            "default": "",
+            "title": "Resume Excerpt",
+            "type": "string"
+          },
+          "resume_parsed": {
+            "default": false,
+            "title": "Resume Parsed",
+            "type": "boolean"
+          },
+          "skills": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Skills",
+            "type": "array"
+          },
+          "total_experience_years": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total Experience Years"
+          }
+        },
+        "required": [
+          "profile_id",
+          "candidate_id"
+        ],
+        "title": "ResumeFacts",
+        "type": "object"
+      },
+      "risk": "read"
+    },
+    {
+      "digest": "529f761dc6c5bee4ef5af39bb0fda5076b1d4143ca0ba2ea342cd1b65e41b843",
+      "granted_to": [
+        "interviewer",
+        "job_setup",
+        "ppi_report",
+        "probe",
+        "ranking",
+        "scoring"
+      ],
+      "input_schema": {
+        "additionalProperties": false,
+        "description": "Ask the context engine for the pieces of a document bearing on a query.\n\n`source_ids` is required rather than optional, and that is the important\nfield. An unscoped semantic search over the chunk table would happily return\nanother candidate's resume paragraph: RLS keeps it inside the tenant, and\nnothing but this scoping keeps it to the person being assessed.",
+        "properties": {
+          "max_tokens": {
+            "default": 2000,
+            "maximum": 8000,
+            "minimum": 100,
+            "title": "Max Tokens",
+            "type": "integer"
+          },
+          "query": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query",
+            "type": "string"
+          },
+          "section_types": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Section Types",
+            "type": "array"
+          },
+          "source_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Source Ids",
+            "type": "array"
+          },
+          "source_type": {
+            "title": "Source Type",
+            "type": "string"
+          },
+          "top_k": {
+            "default": 5,
+            "maximum": 20,
+            "minimum": 1,
+            "title": "Top K",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query",
+          "source_type",
+          "source_ids"
+        ],
+        "title": "RetrievalRequest",
+        "type": "object"
+      },
+      "name": "retrieve_context",
+      "output_schema": {
+        "$defs": {
+          "RetrievedPiece": {
+            "additionalProperties": false,
+            "properties": {
+              "chunk_id": {
+                "format": "uuid",
+                "title": "Chunk Id",
+                "type": "string"
+              },
+              "content": {
+                "title": "Content",
+                "type": "string"
+              },
+              "retrievers": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "title": "Retrievers",
+                "type": "array"
+              },
+              "section_type": {
+                "title": "Section Type",
+                "type": "string"
+              },
+              "source_id": {
+                "format": "uuid",
+                "title": "Source Id",
+                "type": "string"
+              },
+              "source_type": {
+                "title": "Source Type",
+                "type": "string"
+              }
+            },
+            "required": [
+              "chunk_id",
+              "source_type",
+              "source_id",
+              "section_type",
+              "content"
+            ],
+            "title": "RetrievedPiece",
+            "type": "object"
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "compressed": {
+            "default": false,
+            "title": "Compressed",
+            "type": "boolean"
+          },
+          "dropped": {
+            "default": 0,
+            "title": "Dropped",
+            "type": "integer"
+          },
+          "pieces": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/RetrievedPiece"
+            },
+            "title": "Pieces",
+            "type": "array"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          },
+          "tokens": {
+            "default": 0,
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "RetrievedContext",
+        "type": "object"
+      },
+      "risk": "read"
+    },
+    {
+      "digest": "d38d046a82b6bce4cda7b9398ad8c1a488115bf06f35c1e853df37b6031f7c09",
+      "granted_to": [
+        "email",
+        "interviewer",
+        "job_setup",
+        "ppi_report",
+        "probe",
+        "ranking",
+        "scoring"
+      ],
+      "input_schema": {
+        "additionalProperties": false,
+        "description": "Ask the tool layer whether a generated payload is shaped correctly.\n\nA tool rather than a helper function because it is the one piece of\nverification an agent may invoke on ITSELF mid-task, and routing it through\nthe executor means that self-check is counted and bounded like every other\ncall rather than being invisible work inside a prompt loop.",
+        "properties": {
+          "payload": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "items": {},
+                "type": "array"
+              }
+            ],
+            "title": "Payload"
+          },
+          "schema_name": {
+            "title": "Schema Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_name",
+          "payload"
+        ],
+        "title": "ValidationRequest",
+        "type": "object"
+      },
+      "name": "validate_output",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "errors": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "schema_name": {
+            "title": "Schema Name",
+            "type": "string"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_name",
+          "valid"
+        ],
+        "title": "ValidationVerdict",
+        "type": "object"
+      },
+      "risk": "read"
+    }
+  ],
+  "tools_digest": "ac6af8f29d74d85339f33ad369ff40611c528483796c96f48e5a27fd52bdcd56"
+}

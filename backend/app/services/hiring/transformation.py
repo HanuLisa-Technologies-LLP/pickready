@@ -4,9 +4,8 @@
                -> OBSERVABLE EVIDENCE (what would we SEE if this were true?)
                -> EVIDENCE SOURCES
                -> ASSESSMENT METHOD
-               -> WEIGHT             (Layer 1 baseline, modified by Layer 2
-                                      company DNA, modified again by this role's
-                                      Layer 3 SWOT and situation type)
+               -> WEIGHT             (Layer 1 baseline, modified by this
+                                      role's Layer 3 SWOT and situation type)
                -> THRESHOLD
                -> DISQUALIFIER       (if applicable)
 
@@ -25,8 +24,8 @@ persists it.
 
 What changes is that each item's WEIGHT is now the product of three named terms
 instead of an opaque model output, and every term is recorded on the item. The
-acceptance criterion is exactly this: "a change to a Layer 2 or Layer 3 input
-demonstrably moves a weight in the output -- not just appears in a summary".
+acceptance criterion is exactly this: "a change to a Layer 3 input demonstrably
+moves a weight in the output -- not just appears in a summary".
 `Weight.provenance` is what makes that demonstrable by reading a row.
 
 WHY THE ARITHMETIC IS HERE AND NOT IN A PROMPT
@@ -58,7 +57,6 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 from app.services.hiring import layers, situations
-from app.services.hiring.company_dna import CompanyDNA
 from app.services.hiring.department_models import (
     BaselineCompetency,
     DepartmentModel,
@@ -195,9 +193,15 @@ def _method_for(sources: Sequence[str]) -> tuple[str, list[str]]:
 
 @dataclass(frozen=True)
 class Weight:
-    """A weight and the three layers that produced it.
+    """A weight and the layers that produced it.
 
         value = baseline (L1) x company (L2) x situation (L3) x role (L3)
+
+    The company term returned on 2026-09-19: Drishti is LAYER_COMPANY's live
+    supplier (vivekium C3, owner-ruled), reversing exactly the half of the
+    2026-09-09 removal that removal itself said it would not defend forever
+    ("what it has today is no live supplier"). It defaults to 1.0, so every
+    matrix frozen without a Drishti profile is byte-identical to before.
 
     Every term is stored, so "why is this weighted 1.62" is answered by reading
     the row rather than by rerunning the pipeline. That is the acceptance
@@ -211,7 +215,6 @@ class Weight:
 
     value: float
     baseline: float
-    company: float
     situation: float
     role: float
     #: Which department model supplied `baseline`, or None when the competency
@@ -221,6 +224,8 @@ class Weight:
     dimension: str
     #: Every `layers.Adjustment` that contributed, as dicts.
     provenance: list[dict[str, Any]] = field(default_factory=list)
+    #: Layer 2, Drishti. 1.0 when the function has no profile (C3).
+    company: float = 1.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -249,25 +254,30 @@ def derive_weight(
     *,
     anchor: BaselineCompetency | None,
     dimension: str,
-    company: CompanyDNA | None,
     situation_key: str | None,
     role_emphasis: Mapping[str, float] | None = None,
+    company_emphasis: Mapping[str, float] | None = None,
     subject: str,
 ) -> Weight:
-    """Stage 5, in full. Pure arithmetic over three declared layers."""
+    """Stage 5, in full. Pure arithmetic over the declared layers."""
     baseline = anchor.baseline_weight if anchor else NEUTRAL_BASELINE
     baseline_source = anchor.key if anchor else None
 
     provenance: list[dict[str, Any]] = []
 
-    # Layer 2. The company's modifier is keyed by DIMENSION, because a company
-    # philosophy is a statement about what kind of evidence matters and not
-    # about a competency it has never heard of.
+    # Layer 2. Drishti, the function's strategic profile, acting through the
+    # COMPILED artifact only (C3): the same layers.resolve bounds and refusal
+    # recording every other layer is held to, so Drishti can TUNE and can
+    # never SUSPEND.
     company_multiplier = 1.0
-    if company and company.weight_modifiers:
-        company_multiplier = float(company.weight_modifiers.get(dimension, 1.0))
+    if company_emphasis and subject in company_emphasis:
+        resolution = layers.resolve(
+            "competency_weight", company={subject: company_emphasis[subject]}
+        )
+        company_multiplier = resolution.multiplier_for(subject)
+        provenance.extend(a.as_dict() for a in resolution.adjustments)
 
-    # Layer 3a. The situation type, also acting through the dimension.
+    # Layer 3a. The situation type, acting through the dimension.
     _, situation_multiplier = situations.apply_to(1.0, dimension, situation_key)
 
     # Layer 3b. This SWOT emphasising this specific competency. Passed through
@@ -285,9 +295,9 @@ def derive_weight(
     return Weight(
         value=value,
         baseline=baseline,
-        company=company_multiplier,
         situation=situation_multiplier,
         role=role_multiplier,
+        company=company_multiplier,
         baseline_source=baseline_source,
         dimension=dimension,
         provenance=provenance,
@@ -309,7 +319,7 @@ _BASELINE_INDEPENDENCE: dict[str, int] = {
     "behavioural": 1,
 }
 
-#: The platform floor a Layer 2 threshold modifier is applied to.
+#: The platform's evidence-quality floor. Nothing may lower it.
 BASELINE_THRESHOLD = 1.0
 
 
@@ -332,18 +342,15 @@ class Threshold:
         }
 
 
-def derive_threshold(category: str, company: CompanyDNA | None) -> Threshold:
-    baseline = _BASELINE_INDEPENDENCE.get(category, 1)
-    if company is None:
-        return Threshold(baseline, BASELINE_THRESHOLD, None)
-    # The company may raise the independence requirement, never lower it below
-    # the platform baseline for that category. Asymmetric on purpose: demanding
-    # more corroboration is always safe, and demanding less is how a Must-have
-    # bar stops being one.
+def derive_threshold(category: str) -> Threshold:
+    """Stage 6. The platform floor for this category, and nothing above it.
+
+    A CATEGORY floor rather than a per-item one: how much corroboration a
+    Must-have needs is a property of the criterion the hiring manager declared
+    essential, not of the competency's name.
+    """
     return Threshold(
-        independence_required=max(baseline, company.independence_required),
-        level=company.threshold_modifier,
-        max_age_days=company.evidence_max_age_days,
+        _BASELINE_INDEPENDENCE.get(category, 1), BASELINE_THRESHOLD, None
     )
 
 
@@ -428,9 +435,9 @@ def build_item(
     category: str,
     department: DepartmentModel | str,
     seniority: str,
-    company: CompanyDNA | None = None,
     situation_key: str | None = None,
     role_emphasis: Mapping[str, float] | None = None,
+    company_emphasis: Mapping[str, float] | None = None,
     observable_evidence: str | None = None,
     disqualifier: str | None = None,
     swot_origin: str | None = None,
@@ -484,14 +491,14 @@ def build_item(
     weight = derive_weight(
         anchor=anchor,
         dimension=dimension,
-        company=company,
         situation_key=situation_key,
         role_emphasis=role_emphasis,
+        company_emphasis=company_emphasis,
         subject=name,
     )
 
     # ── Stage 6: THRESHOLD ──────────────────────────────────────────────────
-    threshold = derive_threshold(category, company)
+    threshold = derive_threshold(category)
 
     # ── Stage 7: DISQUALIFIER, if applicable ────────────────────────────────
     item = Item(
@@ -541,9 +548,9 @@ def build(
     *,
     department: DepartmentModel | str,
     seniority: str,
-    company: CompanyDNA | None = None,
     situation_key: str | None = None,
     role_emphasis: Mapping[str, float] | None = None,
+    company_emphasis: Mapping[str, float] | None = None,
 ) -> tuple[list[Item], list[dict[str, Any]]]:
     """(items, rejections). Never raises for one bad input.
 
@@ -566,9 +573,9 @@ def build(
                 category=category,
                 department=department,
                 seniority=seniority,
-                company=company,
                 situation_key=situation_key,
                 role_emphasis=role_emphasis,
+                company_emphasis=company_emphasis,
                 observable_evidence=raw.get("observable_evidence"),
                 disqualifier=raw.get("disqualifier"),
                 swot_origin=raw.get("swot_origin") or phrase,
@@ -606,7 +613,7 @@ def matrix_provenance(items: Sequence[Item]) -> dict[str, Any]:
 
     INTERNAL. Carries weights, so it must never cross a client-facing boundary;
     `test_tatva_transformation.py` pins that. What it is for is the acceptance
-    criterion: change a Layer 2 or Layer 3 input, regenerate, diff this.
+    criterion: change a Layer 3 input, regenerate, diff this.
     """
     return {
         "stages": list(STAGES),

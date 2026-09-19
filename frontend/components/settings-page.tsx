@@ -303,7 +303,7 @@ function ReadOnlyRow({
 }) {
   return (
     <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm">
-      <span className="opacity-80">{label}</span>
+      <span className="font-normal">{label}</span>
       <span className={`font-semibold ${capitalize ? "capitalize" : ""}`}>
         {value}
       </span>

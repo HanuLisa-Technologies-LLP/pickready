@@ -34,6 +34,7 @@ from app.schemas.emails import (
     EmailSendOut,
 )
 from app.services import capabilities as caps
+from app.services import generation_sufficiency
 from app.services import assessment_invite, lifecycle_email
 from app.services.audit import audit
 from app.services.matching import RANKING_COMMENT_KEYS, ranking_payload
@@ -50,17 +51,80 @@ async def _load_targets(
     A candidate with no email address on file is SKIPPED, not failed: the rest
     of a 20-person batch must still go out, and the recruiter needs to be told
     exactly who was left behind rather than discovering it later.
+
+    THREE QUERIES, NOT THREE PER RECIPIENT
+    ---------------------------------------
+    This read one link, one candidate and one job per selected recipient, so a
+    fifty-person send was a hundred and fifty round trips before the first
+    draft was composed, and the drafting path then adds a model call per
+    recipient on top. `api/outreach._resolve` was repaired for exactly this and
+    the shape here is the same one on purpose, `.in_(...)` then a dict lookup,
+    because two spellings of one idea is how the second one stops being
+    maintained.
+
+    What is deliberately unchanged is every decision this function makes: the
+    order of the returned targets, which recipients are rejected, and the
+    wording each rejection carries. A missing link, a link belonging to another
+    tenant, a missing candidate or job, and a candidate with no address all
+    skip exactly as before, and a link id repeated by the caller still appears
+    once per occurrence.
     """
     targets: list[tuple[JobCandidateLink, Candidate, Job]] = []
     skipped: list[dict] = []
+
+    unique_ids = list(dict.fromkeys(link_ids))
+    links_by_id: dict[uuid.UUID, JobCandidateLink] = {}
+    if unique_ids:
+        links_by_id = {
+            row.id: row
+            for row in (
+                await session.execute(
+                    select(JobCandidateLink).where(JobCandidateLink.id.in_(unique_ids))
+                )
+            )
+            .scalars()
+            .all()
+        }
+
+    # Only the links that survive the tenant check contribute ids to the next
+    # two reads, so a row this request may not see never widens them.
+    in_tenant = [
+        link for link in links_by_id.values() if link.tenant_id == user.tenant_id
+    ]
+    candidates_by_id: dict[uuid.UUID, Candidate] = {}
+    jobs_by_id: dict[uuid.UUID, Job] = {}
+    if in_tenant:
+        candidates_by_id = {
+            row.id: row
+            for row in (
+                await session.execute(
+                    select(Candidate).where(
+                        Candidate.id.in_({link.candidate_id for link in in_tenant})
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+        jobs_by_id = {
+            row.id: row
+            for row in (
+                await session.execute(
+                    select(Job).where(Job.id.in_({link.job_id for link in in_tenant}))
+                )
+            )
+            .scalars()
+            .all()
+        }
+
     for link_id in link_ids:
-        link = await session.get(JobCandidateLink, link_id)
+        link = links_by_id.get(link_id)
         # Explicit tenant check is defense in depth; RLS is the boundary.
         if link is None or link.tenant_id != user.tenant_id:
             skipped.append({"link_id": str(link_id), "reason": "Application not found"})
             continue
-        candidate = await session.get(Candidate, link.candidate_id)
-        job = await session.get(Job, link.job_id)
+        candidate = candidates_by_id.get(link.candidate_id)
+        job = jobs_by_id.get(link.job_id)
         if candidate is None or job is None:
             skipped.append({"link_id": str(link_id), "reason": "Application not found"})
             continue
@@ -90,7 +154,11 @@ def _strengths_prose(breakdown: dict | None) -> str:
         if key != "overall_comment" and payload.get(key)
     ]
     return "\n".join(f"- {line}" for line in lines) or (
-        "strong, relevant experience for this role"
+        # THE CONSTANT, not the literal. `generation_sufficiency` has to
+        # RECOGNISE this exact default in order to refuse generation over it,
+        # and a default and its recogniser held as two independent literals
+        # drift the first time somebody rewords one of them.
+        generation_sufficiency.GENERIC_STRENGTHS_PLACEHOLDER
     )
 
 

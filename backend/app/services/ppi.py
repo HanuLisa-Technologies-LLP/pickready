@@ -1000,6 +1000,41 @@ async def generate_candidate_questions(
         profile=profile,
         project_evidence_block=project_evidence_block,
     )
+    # ── Resume pre-fill and the asked-question ceiling (feature 2, C2) ──────
+    # A criterion the resume already evidences (a substantive anchor AND the
+    # skill on the candidate's own parsed claim list) is recorded rather than
+    # asked; whatever would still be ASKED past the ceiling is trimmed lowest
+    # weight first, and never created at all. The trim is per candidate by
+    # ruling: the owner traded fixed-count comparability for speed, and the
+    # criteria ORDER stays deterministic per job.
+    from app.core.config import get_settings as _get_settings
+    from app.services import resume_prefill
+
+    text_types = frozenset(
+        {question_types.EVIDENCE_BASED, question_types.SHORT_ANSWER}
+    )
+    prefills: dict[int, str] = {}
+    for slot in slots:
+        competency = allocation[slot.index]
+        answer = resume_prefill.evidence_for(
+            competency_name=competency.name,
+            resume_anchor=slot.resume_anchor,
+            parsed_fields=profile.parsed_fields_json if profile else None,
+            question_type=slot.question_type,
+            text_types=text_types,
+        )
+        if answer is not None:
+            prefills[slot.index] = answer
+    trimmed = resume_prefill.trim_to_ceiling(
+        slots,
+        prefilled_indexes=set(prefills),
+        ceiling=_get_settings().assessment_question_ceiling,
+    )
+    if prefills or trimmed:
+        logger.info(
+            "ppi.questions.resume_aware link_id=%s prefilled=%d trimmed=%d",
+            link.id, len(prefills), len(trimmed),
+        )
     rows: list[CandidateQuestion] = [
         CandidateQuestion(
             tenant_id=job.tenant_id,
@@ -1014,8 +1049,11 @@ async def generate_candidate_questions(
             resume_anchor=slot.resume_anchor,
             time_allocation_seconds=slot.time_allocation_seconds,
             weight=slot.weight,
+            prefilled_answer=prefills.get(slot.index),
+            prefill_source="resume_anchor" if slot.index in prefills else None,
         )
         for slot in slots
+        if slot.index not in trimmed
     ]
     session.add_all(rows)
     await session.flush()

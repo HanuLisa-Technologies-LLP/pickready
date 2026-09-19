@@ -220,7 +220,7 @@ MIGRATION_PATH = (
     pathlib.Path(__file__).resolve().parents[1]
     / "alembic"
     / "versions"
-    / "0086_reclassify_historical_jobs.py"
+    / "0096_reclassify_historical_jobs.py"
 )
 
 
@@ -233,8 +233,8 @@ def test_the_backfill_migration_is_loadable_and_chained() -> None:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.revision == "0086_reclassify_historical_jobs"
-    assert module.down_revision == "0085_bgv_inquiries"
+    assert module.revision == "0096_reclassify_historical_jobs"
+    assert module.down_revision == "0095_bgv_and_conversations"
 
 
 def test_a_job_whose_rate_has_already_been_billed_is_left_alone() -> None:

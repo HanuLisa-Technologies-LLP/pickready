@@ -344,4 +344,24 @@
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+
+  /* A SPINNER IS NOT DECORATION, AND FREEZING IT IS A LIE ABOUT THE REQUEST.
+     The blanket rule above is right for everything that moves to delight and
+     wrong for the one thing that moves to report. Collapsing `animate-spin` to
+     0.01ms with one iteration leaves a stopped circle on screen for as long as
+     the call takes, which is the exact visual a HUNG request produces, so the
+     user who asked for less motion is the only user who cannot tell a slow save
+     from a broken one. Forty-five call sites render this spinner.
+
+     WCAG 2.3.3 asks for motion that is non-essential to be removable; it does
+     not ask for status indicators to be destroyed. So the spinner keeps
+     turning, slowly. Slower than the default, because the complaint behind the
+     setting is vestibular and a lazy rotation is the calm version of the same
+     information, not a smaller dose of the problem. The other half of the
+     answer is not CSS: every one of those call sites pairs the spinner with
+     text, and an aria-live region is what a screen reader reads. */
+  .animate-spin {
+    animation-duration: 1.8s !important;
+    animation-iteration-count: infinite !important;
+  }
 }

@@ -20,7 +20,7 @@ const buttonVariants = cva(
         default:
           "bg-brand-600 text-white shadow-brand hover:bg-brand-700 active:bg-brand-700",
         destructive:
-          "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
+          "bg-destructive text-destructive-foreground shadow-brand hover:bg-destructive/90",
         // `border-input` is the field token, so an outline button reads as
         // clickable at rest on a white card instead of only under the
         // pointer. The solid `default` variant is deliberately untouched.

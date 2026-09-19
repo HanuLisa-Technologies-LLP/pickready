@@ -397,14 +397,6 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         named_by_d2=False,
     ),
     TableRule(
-        "company_dna",
-        PRESERVE,
-        "The Layer 2 artifact and the client's answers behind it. Produced by "
-        "the new framework, and the input Sutra needs to compile a new "
-        "scorecard at all.",
-        named_by_d2=False,
-    ),
-    TableRule(
         "old_profile_reviews",
         PRESERVE,
         "A recruiter's decision on an old profile, and the billing event "
@@ -437,13 +429,12 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         named_by_d2=False,
     ),
     TableRule(
-        "job_company_dna_bindings",
+        "job_scorecard_bindings",
         PURGE,
-        "The frozen binding of a job to the Company DNA version and scorecard "
-        "version its evaluations were run under. The scorecard it names is "
-        "being archived, so the binding would assert a freeze over a matrix "
-        "that no longer exists. It is re-created when the job's new scorecard "
-        "is locked.",
+        "The frozen binding of a job to the scorecard version its evaluations "
+        "were run under. The scorecard it names is being archived, so the "
+        "binding would assert a freeze over a matrix that no longer exists. It "
+        "is re-created when the job's new scorecard is locked.",
         order=43,
         named_by_d2=False,
     ),

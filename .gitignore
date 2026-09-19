@@ -101,3 +101,7 @@ backend/htmlcov/
 # Offline-plan scratch copies (infra/plan-offline.sh). Siblings of the real
 # environment roots because the module paths are relative; removed on exit.
 infra/environments/.*-offline-plan/
+
+# Generated knowledge graph. Reproduced by `graphify update .`, and graph.json
+# alone is 800k+ lines: a build artifact, never a source of truth.
+graphify-out/

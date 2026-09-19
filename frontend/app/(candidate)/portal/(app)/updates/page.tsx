@@ -20,7 +20,7 @@ import { apiGet, apiPost } from "@/lib/api";
 import { PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { EmptyState, LoadingCards } from "@/components/page-primitives";
+import { EmptyState, ErrorState, LoadingCards } from "@/components/page-primitives";
 import { Stagger, StaggerItem } from "@/components/motion";
 
 interface CandidateUpdate {
@@ -111,7 +111,10 @@ export default function UpdatesPage() {
       {loading ? (
         <LoadingCards count={4} />
       ) : error ? (
-        <EmptyState
+        // A server fault is an ERROR, not an absence. Rendered as an empty
+        // state it told a candidate they had nothing, which is a different
+        // and far worse claim than "we could not load this".
+        <ErrorState
           title="Updates unavailable"
           description={error}
           action={
@@ -161,7 +164,7 @@ export default function UpdatesPage() {
                         {update.company_name ? ` at ${update.company_name}` : ""}
                       </p>
                     ) : null}
-                    <p className="text-sm leading-6">{update.body}</p>
+                    <p className="text-sm">{update.body}</p>
                     <div className="flex flex-wrap items-center gap-4 pt-1">
                       {update.link_path ? (
                         <Button asChild size="sm" variant="outline">

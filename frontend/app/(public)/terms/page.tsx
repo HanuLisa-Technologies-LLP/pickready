@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
+import { publicPageMetadata } from "@/lib/site";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = publicPageMetadata({
+  path: "/terms",
   title: "Terms",
-  description: "Terms governing access to and use of ReadyPick.",
-};
+  description:
+    "Terms governing access to and use of ReadyPick.",
+});
 
 const TERMS = [
   ["Using ReadyPick", "You may use ReadyPick only through an authorised account and for lawful candidate and people operations. Keep account credentials secure, provide accurate information and promptly remove access for people who no longer need it."],
