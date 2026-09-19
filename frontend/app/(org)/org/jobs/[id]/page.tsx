@@ -983,7 +983,7 @@ export default function OrgJobDetailPage() {
               Send assessment invitations
               {invitable.length > 0 ? ` (${invitable.length})` : ""}
             </Button>
-            <p className="text-xs leading-5">
+            <p className="text-xs">
               {selectedRows.length === 0
                 ? "Tick candidates below, then return here to send their assessment invitations."
                 : `${invitable.length} of ${selectedRows.length} selected can be invited; the rest are already past this stage.`}
@@ -1004,7 +1004,7 @@ export default function OrgJobDetailPage() {
               )}
               Invite to apply ({sourcedSelected.length})
             </Button>
-            <p className="text-xs leading-5">
+            <p className="text-xs">
               These candidates came from your databank and have not applied.
               This asks them to sign in and apply; nothing enters your pipeline
               until they do.

@@ -73,6 +73,41 @@ describe("API mount parity", () => {
     expect(offenders).toEqual([]);
   }, 15_000);
 
+  it("every SWOT API call carries the /api/v2/assessments mount", () => {
+    // The SWOT surfaces live on the assessments router but their paths START
+    // with /jobs/..., so the router-name grep above cannot see them. The Job
+    // SWOT Analysis panel shipped calling `/jobs/{id}/swot-analysis` relative
+    // to API_BASE, which resolved to /api/v1 and 404ed every call. A SWOT
+    // path is legal in exactly two spellings: written in full, or composed
+    // from a BASE constant that IS the full mount.
+    const call =
+      /api(?:Get|Post|Put|Patch|Delete)\s*(?:<[^>]*>)?\s*\(\s*["'`]([^"'`]*swot[^"'`]*)["'`]?/g;
+    const FULL = "/api/v2/assessments";
+    const VIA_BASE = `const BASE = "${FULL}/jobs"`;
+
+    // Guard on the guard: the regex must see both spellings it rules on.
+    expect(
+      [...`apiGet(\`\${BASE}/\${jobId}/swot\`)`.matchAll(call)][0]?.[1]
+    ).toContain("swot");
+    expect(
+      [...`apiPut("/jobs/j1/swot-analysis", body)`.matchAll(call)][0]?.[1]
+    ).toBe("/jobs/j1/swot-analysis");
+
+    const offenders: string[] = [];
+    for (const file of SEARCH_DIRS.flatMap((dir) => sourceFiles(join(ROOT, dir)))) {
+      if (/\.test\.tsx?$/.test(file)) continue;
+      const source = readFileSync(file, "utf8");
+      for (const match of source.matchAll(call)) {
+        const path = match[1];
+        const composed = path.startsWith("${BASE}") && source.includes(VIA_BASE);
+        if (!path.startsWith(FULL) && !composed) {
+          offenders.push(`${file.slice(ROOT.length)} -> ${path}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  }, 15_000);
+
   it("recognises the shape it is looking for, and only that shape", () => {
     // A guard on the guard: a regex that matched nothing would pass the test
     // above forever and prove nothing. The negative cases matter just as

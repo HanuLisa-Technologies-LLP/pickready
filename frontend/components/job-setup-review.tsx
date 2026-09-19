@@ -20,9 +20,11 @@
 // sent and in traces a rolling deploy is still writing, and every report
 // written before today was filed under those names.
 //
-// The SWOT intake sits above both and gates NEITHER on its own. It is an INPUT
-// to the matrix, so an intake nobody completed already shows up as a matrix
-// nobody approved; gating separately would give one problem two error messages.
+// The reporting authority SWOT intake moved to the JD tab (owner ruling,
+// 2026-09-19): it renders inside the Job SWOT Analysis panel, beside the JD it
+// is about. It still gates NOTHING on its own. It is an INPUT to the matrix,
+// so an intake nobody completed already shows up as a matrix nobody approved;
+// gating separately would give one problem two error messages.
 //
 // Everything after approval runs without human intervention. This screen
 // therefore has one job: make the outstanding work obvious, so the step does
@@ -46,7 +48,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "./ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { RatingLabel } from "@/components/rating-label";
-import { SwotIntakePanel } from "@/components/swot-intake";
 import { MatchingCategoriesCard } from "@/components/matching-categories";
 import { MonitoringPolicyCard } from "@/components/proctoring/monitoring-policy-card";
 import {
@@ -203,8 +204,9 @@ export function SetupStatus({ setup }: { setup: Setup }) {
       </p>
       {setup.swot_complete === false ? (
         <p className="mt-2 text-xs">
-          The role intake is unfinished. It is not a blocker on its own, but the
-          matrix is written from it, so answering it first is worth the two
+          The reporting authority intake, under the SWOT analysis on the job
+          description tab, is unfinished. It is not a blocker on its own, but
+          the matrix is written from it, so answering it first is worth the two
           minutes.
         </p>
       ) : null}
@@ -249,50 +251,51 @@ function CompetencyRow({
 
   if (!editing) {
     return (
-      <div className="flex items-start justify-between gap-3 rounded-md border p-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium">{competency.name}</p>
-          {competency.description ? (
-            <p className="mt-0.5 text-xs">{competency.description}</p>
-          ) : null}
-          <p className="mt-1 text-xs">
-            This role requires: <RatingLabel label={competency.required_level} />
-          </p>
+      <div className="flex h-full flex-col border p-4">
+        <div className="flex items-start justify-between gap-2">
+          <p className="min-w-0 text-sm font-semibold">{competency.name}</p>
+          {frozen ? null : (
+            <div className="flex shrink-0 gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setEditing(true)}
+                aria-label={`Edit ${competency.name}`}
+              >
+                <Pencil className="h-3.5 w-3.5" aria-hidden />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await onRemove();
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+                aria-label={`Remove ${competency.name}`}
+              >
+                <Trash2 className="h-3.5 w-3.5" aria-hidden />
+              </Button>
+            </div>
+          )}
         </div>
-        {frozen ? null : (
-          <div className="flex shrink-0 gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setEditing(true)}
-              aria-label={`Edit ${competency.name}`}
-            >
-              <Pencil className="h-3.5 w-3.5" aria-hidden />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await onRemove();
-                } finally {
-                  setBusy(false);
-                }
-              }}
-              aria-label={`Remove ${competency.name}`}
-            >
-              <Trash2 className="h-3.5 w-3.5" aria-hidden />
-            </Button>
-          </div>
-        )}
+        {competency.description ? (
+          <p className="mt-1 text-xs">{competency.description}</p>
+        ) : null}
+        <div className="mt-auto pt-3">
+          <p className="text-xs">This role requires:</p>
+          <RatingLabel label={competency.required_level} className="mt-1" />
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-2 rounded-md border p-3">
+    <div className="h-full space-y-2 border p-3">
       <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" />
       <Textarea
         value={description}
@@ -601,10 +604,6 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
     <div className="space-y-5">
       {setup ? <SetupStatus setup={setup} /> : null}
 
-      {/* The intake comes FIRST because it is an input to everything below it:
-          the matrix is generated from the job description and this together. */}
-      <SwotIntakePanel jobId={jobId} />
-
       {/* The other half of the one setup session (spec 3.2). */}
       <MatchingCategoriesCard jobId={jobId} />
 
@@ -623,9 +622,10 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
             <div>
               <CardTitle>Tatva Assessment matrix</CardTitle>
               <CardDescription>
-                Generated from this job&apos;s description and the role intake above. Once
-                saved it becomes the fixed evaluation criteria for every candidate who
-                applies, which is what makes their reports comparable.
+                Generated from this job&apos;s description and the reporting authority
+                intake under the SWOT analysis. Once saved it becomes the fixed
+                evaluation criteria for every candidate who applies, which is what
+                makes their reports comparable.
               </CardDescription>
             </div>
             {framework?.approved ? (
@@ -697,52 +697,66 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
                     </span>
                   </div>
                   <p className="text-xs">{CATEGORY_HINT[category]}</p>
-                  {rows.map((competency) => (
-                    <div
-                      key={`drag-${competency.id}`}
-                      draggable={!frozen}
-                      onDragStart={() => setDragging(competency.id)}
-                      onDragEnd={() => {
-                        setDragging(null);
-                        setDropTarget(null);
-                      }}
-                      onDragOver={(event) => {
-                        if (frozen || !dragging || dragging === competency.id) return;
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setDropTarget(category);
-                      }}
-                      onDrop={(event) => {
-                        if (frozen) return;
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void handleDrop(category, competency.id);
-                      }}
-                      className={
-                        (frozen ? "" : "cursor-grab active:cursor-grabbing ") +
-                        (dragging === competency.id ? "opacity-50" : "")
-                      }
-                    >
-                    <CompetencyRow
-                      key={competency.id}
-                      competency={competency}
-                      frozen={frozen}
-                      onSave={(next) =>
-                        mutate(
-                          () =>
-                            apiPut(`${BASE}/${jobId}/framework/${competency.id}`, next),
-                          "Couldn't save that change"
-                        ).then(() => undefined)
-                      }
-                      onRemove={() =>
-                        mutate(
-                          () => apiDelete(`${BASE}/${jobId}/framework/${competency.id}`),
-                          "Couldn't remove that entry"
-                        ).then(() => undefined)
-                      }
-                    />
+                  {/* Horizontal cards (owner ruling, 2026-09-19). The drop
+                      anchor is still "the item dropped ON", which is
+                      orientation-free, so the reorder math is unchanged. */}
+                  {rows.length > 0 ? (
+                    <div className="flex gap-3 overflow-x-auto pb-1">
+                      {rows.map((competency) => (
+                        <div
+                          key={`drag-${competency.id}`}
+                          draggable={!frozen}
+                          onDragStart={() => setDragging(competency.id)}
+                          onDragEnd={() => {
+                            setDragging(null);
+                            setDropTarget(null);
+                          }}
+                          onDragOver={(event) => {
+                            if (frozen || !dragging || dragging === competency.id) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setDropTarget(category);
+                          }}
+                          onDrop={(event) => {
+                            if (frozen) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void handleDrop(category, competency.id);
+                          }}
+                          className={
+                            "min-w-[190px] flex-1 " +
+                            (frozen ? "" : "cursor-grab active:cursor-grabbing ") +
+                            (dragging === competency.id ? "opacity-50" : "")
+                          }
+                        >
+                          <CompetencyRow
+                            key={competency.id}
+                            competency={competency}
+                            frozen={frozen}
+                            onSave={(next) =>
+                              mutate(
+                                () =>
+                                  apiPut(
+                                    `${BASE}/${jobId}/framework/${competency.id}`,
+                                    next
+                                  ),
+                                "Couldn't save that change"
+                              ).then(() => undefined)
+                            }
+                            onRemove={() =>
+                              mutate(
+                                () =>
+                                  apiDelete(
+                                    `${BASE}/${jobId}/framework/${competency.id}`
+                                  ),
+                                "Couldn't remove that entry"
+                              ).then(() => undefined)
+                            }
+                          />
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  ) : null}
                   {frozen ? null : (
                     <AddCompetency
                       category={category}

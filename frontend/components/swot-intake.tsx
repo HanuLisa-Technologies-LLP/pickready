@@ -7,6 +7,12 @@
 // Strengths, Weaknesses, Opportunities, Threats, all about the ROLE rather
 // than about any candidate.
 //
+// EMBEDDED, NOT A CARD (owner ruling, 2026-09-19): the intake renders as a
+// section INSIDE the Job SWOT Analysis panel on the JD tab, so it carries no
+// Card chrome of its own. A card here would be a card inside a card, which the
+// design gate treats as an antipattern, and it would also put two headed
+// surfaces on one subject.
+//
 // WHY THE CAPTURED POINTS ARE SHOWN BESIDE THE QUESTION
 // -----------------------------------------------------
 // The hiring manager is a busy person doing an unpaid step in their own hiring
@@ -15,9 +21,9 @@
 // makes a four-question conversation feel finite. An abandoned intake strands
 // the job, so this is not decoration.
 //
-// The panel does NOT block the rest of the setup screen. The intake is an INPUT
-// to the matrix, not a gate of its own: an intake nobody completed already
-// shows up as a matrix nobody approved.
+// The section does NOT block anything on its own. The intake is an INPUT to
+// the matrix, not a gate: an intake nobody completed already shows up as a
+// matrix nobody approved.
 
 import * as React from "react";
 import { Loader2, MessageSquare } from "lucide-react";
@@ -27,13 +33,6 @@ import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 
 const BASE = "/api/v2/assessments/jobs";
 
@@ -63,7 +62,19 @@ function errorMessage(error: unknown, fallback: string): string {
   return typeof detail === "string" && detail ? detail : fallback;
 }
 
-export function SwotIntakePanel({ jobId }: { jobId: string }) {
+export function SwotIntakePanel({
+  jobId,
+  canEdit,
+}: {
+  jobId: string;
+  /**
+   * The same effective answer the surrounding SWOT panel renders from. The
+   * respond route requires the edit capability server-side; a Send control a
+   * read-only user can press is a refusal waiting to be read as a bug. A
+   * read-only user still sees everything already captured.
+   */
+  canEdit: boolean;
+}) {
   const { toast } = useToast();
   const [intake, setIntake] = React.useState<SwotIntake | null>(null);
   const [answer, setAnswer] = React.useState("");
@@ -74,8 +85,8 @@ export function SwotIntakePanel({ jobId }: { jobId: string }) {
     try {
       setIntake(await apiGet<SwotIntake>(`${BASE}/${jobId}/swot`));
     } catch {
-      // Degrades to absent rather than taking the setup screen down with it.
-      // The matrix half of this screen is what actually gates candidates.
+      // Degrades to absent rather than taking the SWOT panel down with it.
+      // The matrix on the candidates screen is what actually gates candidates.
       setIntake(null);
     }
     setLoading(false);
@@ -115,12 +126,12 @@ export function SwotIntakePanel({ jobId }: { jobId: string }) {
 
   if (loading) {
     return (
-      <Card>
-        <CardContent className="flex items-center gap-2 py-6 text-sm">
+      <section className="border-t pt-5">
+        <p className="flex items-center gap-2 text-sm">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-          Loading the role intake
-        </CardContent>
-      </Card>
+          Loading the reporting authority intake
+        </p>
+      </section>
     );
   }
 
@@ -133,13 +144,13 @@ export function SwotIntakePanel({ jobId }: { jobId: string }) {
   }));
 
   return (
-    <Card>
-      <CardHeader>
+    <section className="space-y-5 border-t pt-5">
+      <div>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle className="flex items-center gap-2">
+          <h3 className="flex items-center gap-2 text-sm font-semibold">
             <MessageSquare className="h-4 w-4" aria-hidden />
-            Role intake
-          </CardTitle>
+            Reporting authority intake
+          </h3>
           {intake.complete ? (
             <Badge variant="secondary">Complete</Badge>
           ) : (
@@ -149,70 +160,82 @@ export function SwotIntakePanel({ jobId }: { jobId: string }) {
             </Badge>
           )}
         </div>
-        <CardDescription>
+        <p className="mt-1 text-xs">
           A short conversation with the person this role reports to, about what
-          the ROLE demands. It shapes the evaluation matrix below, so answer it
-          before saving that. Nothing here is about any candidate.
-        </CardDescription>
-      </CardHeader>
+          the role demands. It feeds the Tatva Assessment matrix. Nothing here
+          is about any candidate.
+        </p>
+      </div>
 
-      <CardContent className="space-y-5">
-        {intake.complete ? (
-          <p className="rounded-md border bg-muted/30 p-3 text-sm">
-            Thank you. What you described has been fed into the evaluation
-            matrix below, which is generated from the job description and this
-            intake together. Review it and save it when it looks right.
-          </p>
-        ) : (
-          <div className="space-y-3">
-            <div className="rounded-md border bg-muted/30 p-4">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide">
-                {intake.current_area_label}
-              </p>
-              <p className="leading-7">{intake.prompt}</p>
-            </div>
-            <Textarea
-              value={answer}
-              onChange={(event) => setAnswer(event.target.value)}
-              rows={4}
-              placeholder="Describe what someone would actually be seen doing, deciding, or failing to do."
-              aria-label="Your answer"
-            />
-            <div className="flex items-center gap-3">
-              <Button disabled={busy || !answer.trim()} onClick={() => void submit()}>
-                {busy ? (
-                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden />
-                ) : null}
-                Send
-              </Button>
-              <p className="text-xs">
-                Concrete beats general. &quot;Wasn&apos;t sharp enough&quot;
-                describes an impression; what they did or failed to do is what
-                shapes a fair assessment.
-              </p>
-            </div>
+      {intake.complete ? (
+        <p className="border bg-muted/30 p-3 text-sm">
+          Thank you. What you described has been fed into the evaluation
+          matrix, which is generated from the job description and this intake
+          together. Review it on the candidates screen and save it when it
+          looks right.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          <div className="border bg-muted/30 p-4">
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wide">
+              {intake.current_area_label}
+            </p>
+            <p className="leading-7">{intake.prompt}</p>
           </div>
-        )}
-
-        <div className="grid gap-3 sm:grid-cols-2">
-          {captured.map((group) => (
-            <div key={group.area} className="rounded-md border p-3">
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide">
-                {group.label}
-              </p>
-              {group.points.length === 0 ? (
-                <p className="text-xs">Nothing captured yet.</p>
-              ) : (
-                <ul className="list-disc space-y-1 pl-4 text-sm">
-                  {group.points.map((point, index) => (
-                    <li key={`${group.area}-${index}`}>{point}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          ))}
+          {/* The composer exists only for a user the server would let write.
+              The panel above already explains read-only access once, so
+              nothing is repeated here. */}
+          {canEdit ? (
+            <>
+              <Textarea
+                value={answer}
+                onChange={(event) => setAnswer(event.target.value)}
+                rows={4}
+                placeholder="Describe what someone would actually be seen doing, deciding, or failing to do."
+                aria-label="Your answer"
+              />
+              <div className="flex items-center gap-3">
+                <Button
+                  disabled={busy || !answer.trim()}
+                  onClick={() => void submit()}
+                >
+                  {busy ? (
+                    <Loader2
+                      className="mr-1.5 h-3.5 w-3.5 animate-spin"
+                      aria-hidden
+                    />
+                  ) : null}
+                  Send
+                </Button>
+                <p className="text-xs">
+                  Concrete beats general. &quot;Wasn&apos;t sharp enough&quot;
+                  describes an impression; what they did or failed to do is what
+                  shapes a fair assessment.
+                </p>
+              </div>
+            </>
+          ) : null}
         </div>
-      </CardContent>
-    </Card>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {captured.map((group) => (
+          <div key={group.area} className="border p-3">
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wide">
+              {group.label}
+            </p>
+            {group.points.length === 0 ? (
+              <p className="text-xs">Nothing captured yet.</p>
+            ) : (
+              <ul className="list-disc space-y-1 pl-4 text-sm">
+                {group.points.map((point, index) => (
+                  <li key={`${group.area}-${index}`}>{point}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
