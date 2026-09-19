@@ -187,6 +187,13 @@ export const config = {
     // the same care: it is a generated route, so it sits inside the matcher,
     // and a file whose only reader is an unauthenticated agent must never be
     // answered with a redirect to a sign-in form.
-    "/((?!api|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|llms.txt|opengraph-image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    //
+    // `__/auth` and `__/firebase` are the Firebase Auth helper endpoints,
+    // proxied to <project>.firebaseapp.com by the rewrites in next.config.js
+    // so the sign-in popup can run on this origin. They are loaded by a
+    // browser that BY DEFINITION has no session yet; answering them with a
+    // 307 to /login would break every sign-in the moment the auth domain
+    // moves to this host.
+    "/((?!api|__/auth|__/firebase|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|llms.txt|opengraph-image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

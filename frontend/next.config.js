@@ -104,6 +104,43 @@ const nextConfig = {
     pagesBufferLength: 2,
   },
 
+  // SAME-ORIGIN FIREBASE AUTH HELPER (/__/auth/*).
+  //
+  // Sign-in is signInWithPopup everywhere (there is no redirect flow in this
+  // codebase), so the MAIN window URL never carries the Firebase handler. What
+  // the user sees today is the POPUP's own address bar showing
+  // `<project>.firebaseapp.com/__/auth/handler?apiKey=...`. The apiKey there is
+  // the public Web API key, a client identifier and not a secret; the only
+  // thing worth removing is the vendor domain. This rewrite serves the helper
+  // from OUR origin instead: once NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN is set to
+  // the site's own host (e.g. readypick.ai), the popup opens
+  // readypick.ai/__/auth/handler and this proxies it to Firebase.
+  //
+  // Two console-side prerequisites before flipping the env var, or Google
+  // sign-in breaks: the site host must be in Firebase Auth's authorized
+  // domains, and `https://<host>/__/auth/handler` must be an authorized
+  // redirect URI on the project's Google OAuth client. Until the flip, this
+  // rewrite is inert: nothing links to /__/auth on our origin.
+  //
+  // Freezing the destination at build time is correct here, unlike the API
+  // proxy below: the project id is already baked into the same bundle as
+  // NEXT_PUBLIC_FIREBASE_PROJECT_ID, so the rewrite can never disagree with
+  // the SDK config it serves.
+  async rewrites() {
+    const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+    if (!projectId) return [];
+    return [
+      {
+        source: "/__/auth/:path*",
+        destination: `https://${projectId}.firebaseapp.com/__/auth/:path*`,
+      },
+      {
+        source: "/__/firebase/:path*",
+        destination: `https://${projectId}.firebaseapp.com/__/firebase/:path*`,
+      },
+    ];
+  },
+
   // NOTE: the same-origin API proxy is deliberately NOT a `rewrites()` entry.
   // Rewrites are resolved during `next build` and frozen into
   // routes-manifest.json, so a destination read from the environment would be

@@ -9,6 +9,13 @@ import {
   type Auth,
 } from "firebase/auth";
 
+// The Web API key below is a PUBLIC client identifier, not a secret: Firebase
+// requires it in the browser and shows it in the auth helper URL
+// (`<authDomain>/__/auth/handler?apiKey=...`) inside the sign-in POPUP. Do not
+// move it server-side; abuse protection is the authorized-domains list and API
+// key referrer restrictions, both console-managed. To take the vendor domain
+// out of that popup URL, set NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN to the site's
+// own host: next.config.js proxies /__/auth/* to Firebase for exactly that.
 const config = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
