@@ -66,13 +66,11 @@ export const metadata: Metadata = {
   },
   description: SITE_DESCRIPTION,
   applicationName: SITE_NAME,
-  icons: {
-    icon: [
-      { url: "/favicon.ico", sizes: "32x32" },
-      { url: "/icon.png", type: "image/png", sizes: "512x512" },
-    ],
-    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180" }],
-  },
+  // NO `icons` BLOCK, DELIBERATELY. It used to name three raster files that
+  // were the previous logo, so every tab flew the old name's initials. They
+  // are generated now by `app/icon.tsx` and `app/apple-icon.tsx`, which the
+  // App Router discovers by filename and links automatically. Naming them
+  // here as well would pin the OLD urls and win.
   openGraph: {
     type: "website",
     siteName: SITE_NAME,

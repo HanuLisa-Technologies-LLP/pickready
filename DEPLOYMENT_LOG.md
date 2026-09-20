@@ -1464,3 +1464,66 @@ against RUNNING tasks. Smoke ten for ten. Live probes: Drishti 401
 unauthenticated, the new form serving, the RETIRED form 404 in production,
 webhook still 503 pending its secret, and the worker invoked live on the
 new image.
+
+## Release 7, the Vivekium rebrand and five fixes, 2026-09-20
+
+`a03e978`, pilot (ap-south-2). Backend `sha-a03e978`
+(`sha256:bf3ae8db...0773fd14`), frontend `sha-a03e978`
+(`sha256:08a46ad4...29cd6b56`), analysis unchanged at `93ebfcb`. Lambdas on
+`sha-a03e978-fn`. No migration: `run-migration.sh` exited 0 with nothing to
+apply, so a rollback needs no data restore.
+
+**Rollback point: the tag `pre-vivekium-20260920`**, which carries all three
+image digests in its message. It has to, and this is the part worth copying:
+production was running a backend from `fe791e8` and a frontend from `fe1be7a`,
+two different commits, so "check out the tag and redeploy" would have been a
+wrong instruction. The digest triple is the rollback; the tag is a pointer to
+it.
+
+### What shipped
+
+The SWOT false 409, session hardening, the Role Intake removal, the Vivekium
+rename and a typography pass. The standing rules are in `claude.md` under
+"the Vivekium release (2026-09-20)". The one finding worth repeating here is
+that the 409 was not a locking bug at all: three routes mutated an audit row
+after `audit()` had flushed it, and on the generate route the resulting
+`UPDATE audit_log` failed at COMMIT, after the 200 had been sent, silently
+rolling the write back.
+
+### The gate found two regressions that targeted runs could not
+
+The full suite came back `5 failed, 6661 passed` AFTER every targeted run in
+the release was green. Three failures were one cause (Bodha's identity map
+still naming the deleted `swot_intake`), two were the new
+`/auth/password-changed` route being undeclared in both authorization sweeps.
+Neither belongs to the task that introduced the file it failed in, and no
+per-task test selection would have collected them. **Run the whole suite
+before a deploy, and read the count**: after the dead-service deletion it went
+6666 to 6653, and the 13 are exactly the parametrisations over two deleted
+prompts and one deleted task type. A drop nobody can account for is a
+deletion nobody noticed.
+
+### Live verification, and what it cost
+
+Every running task was confirmed by image digest. `verify-deployment.sh`
+refused the first attempt because the variable is `EXPECTED_BACKEND_DIGEST`
+and not `EXPECTED_API_DIGEST`, which is the script behaving exactly as its
+header promises.
+
+The SWOT fix was then proven against the reported job on production: a
+first-time save returned 200 and the version really moved (it had been
+answering 409), a second save with the refreshed token returned 200, and a
+deliberately stale token still returned 409 with the server's own sentence.
+
+**That verification wrote to a real record, and the residue is permanent.**
+The job's four quadrants were blanked afterwards, so the panel reads "Nothing
+captured yet" as it did before, but `human_edited` latches by design and the
+version is now 3 rather than 0. No SWOT content was fabricated to run the
+test: text beside a hiring decision that nobody wrote is worse than a blank,
+so the markers said what they were. A live write test on a customer record
+needs the owner's consent before, not an apology after.
+
+### Open
+
+The logomark still spells RP beside the word Vivekium on every page. The
+brief specified no logo and none was invented; it needs an owner decision.

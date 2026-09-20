@@ -1,5 +1,4 @@
 import Link from "next/link";
-import Image from "next/image";
 
 import { cn } from "@/lib/utils";
 
@@ -10,6 +9,12 @@ export interface LogoProps {
   variant?: "full" | "mark";
   height?: number;
   href?: string;
+  /**
+   * Retained so the three call sites that pass it still compile, and it is
+   * now a NO-OP: the mark is inline SVG, so there is no image request left to
+   * prioritise. Kept rather than removed because a prop that silently stopped
+   * existing would be a build break in someone else's branch.
+   */
   priority?: boolean;
   className?: string;
 }
@@ -18,26 +23,52 @@ export function Logo({
   variant = "full",
   height = 32,
   href,
-  priority = false,
   className,
 }: LogoProps) {
   const mark = (
     // A sharp square tile (directive Part 1 section 7: zero corner radius,
-    // brand mark included). The icon asset is the navy/teal R+P mark cropped
-    // tight from the source logo, so it renders contained, never zoomed.
+    // brand mark included).
+    //
+    // THE MARK IS A V, AND IT USED TO BE AN R+P. The previous asset was the
+    // old logo cropped tight, so it rendered the PREVIOUS PRODUCT'S INITIALS
+    // beside the word Vivekium on every page: a leftover of the old name
+    // rather than a design choice. Rename change 01 covers all screens, and
+    // glyphs that spell ReadyPick are an instance of it.
+    //
+    // It is drawn here rather than shipped as an asset, which is what the
+    // docstring above already claims the brand is ("rendered from native
+    // UI"): it stays sharp at every height, needs no network fetch, and
+    // carries the SAME navy-to-teal transition the wordmark makes across
+    // "Vivek" and "ium". Navy is structure and teal is evidence (DESIGN.md),
+    // and `teal-600` is correct here because this is a FILL and not text.
+    //
+    // GEOMETRY, NOT IDENTITY. This is a plain monogram standing in until the
+    // owner commissions a real mark; replacing it is this one element.
     <span
       aria-hidden="true"
       className="relative block aspect-square shrink-0 overflow-hidden rounded-none bg-white ring-1 ring-black/5"
       style={{ height, width: height }}
     >
-      <Image
-        src="/brand-mark-2026.png"
-        alt=""
-        fill
-        priority={priority}
-        sizes={`${height}px`}
-        className="object-contain"
-      />
+      <svg
+        viewBox="0 0 32 32"
+        className="absolute inset-0 h-full w-full"
+        role="presentation"
+      >
+        <path
+          d="M7 7.5 L16 25"
+          stroke="#012654"
+          strokeWidth="5"
+          strokeLinecap="square"
+          fill="none"
+        />
+        <path
+          d="M25 7.5 L16 25"
+          stroke="#00888A"
+          strokeWidth="5"
+          strokeLinecap="square"
+          fill="none"
+        />
+      </svg>
     </span>
   );
   const content = (

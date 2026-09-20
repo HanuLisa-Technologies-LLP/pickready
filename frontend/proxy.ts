@@ -186,6 +186,15 @@ export const config = {
     // browser that BY DEFINITION has no session yet; answering them with a
     // 307 to /login would break every sign-in the moment the auth domain
     // moves to this host.
-    "/((?!api|__/auth|__/firebase|_next/static|_next/image|favicon.ico|robots.txt|sitemap.xml|llms.txt|opengraph-image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    // `icon` and `apple-icon` joined this list on 2026-09-20 with the icons
+    // themselves. They are GENERATED routes (`app/icon.tsx`,
+    // `app/apple-icon.tsx`), so they carry no file extension and the
+    // extension clause below does not cover them, exactly like
+    // `opengraph-image`. A browser requests a favicon with no session on the
+    // very first paint, so without this every tab icon would 307 to /login
+    // and render nothing. That is not hypothetical: `robots.txt`,
+    // `sitemap.xml` and `opengraph-image` all shipped broken this precise way
+    // while every local test passed.
+    "/((?!api|__/auth|__/firebase|_next/static|_next/image|favicon.ico|icon|apple-icon|robots.txt|sitemap.xml|llms.txt|opengraph-image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

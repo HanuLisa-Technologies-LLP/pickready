@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| The Vivekium release (2026-09-20) | The product is Vivekium; the post-flush `audit_log` rollback; browser-session auth; Role Intake deleted |
 | The vivekium ruling (2026-09-18) | The brief is final; the match_percent exception to rule 1, the derived seven-column words, the C2/C8 supersessions |
 | The singleton that outlived its loop (2026-09-16) | Hub shutdown, per-loop binding, a suite that hangs instead of failing |
 | Permission-aware UX + occupational STEM + Job SWOT (2026-09-13) | The one read-only sentence, capability-first UI, occupational classification, the AI-drafted Job SWOT |
@@ -73,6 +74,127 @@ phase sections above them are where the sharp edges are.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
+
+## Current hard rules, the Vivekium release (2026-09-20)
+
+Five tasks in one release, deployed to pilot as `a03e978`. No migration. The
+rollback point is the tag `pre-vivekium-20260920`, which carries all three
+image digests because production ran a backend and a frontend built from
+DIFFERENT commits and a git tag alone would have been a misleading rollback
+instruction.
+
+### AN `audit_log` ROW IS WRITTEN IN ONE INSERT, AND THE SECOND WRITE IS INVISIBLE
+
+`audit()` FLUSHES its INSERT and returns the row. Anything assigned to that
+row afterwards emits `UPDATE audit_log`, a statement the application role has
+had REVOKED since migration 0001 and which has actually bound since the
+2026-09-11 credential split. The failure has two shapes and the second is the
+dangerous one: the doomed UPDATE either flushes inside the handler (500) or at
+COMMIT, **after FastAPI has already sent the response**, rolling back the whole
+transaction while the client holds a 200.
+
+That is what the SWOT "Someone else saved this SWOT while you were editing"
+409 was, on a FIRST save, with nobody else in the building: generate answered
+200 carrying version N+1, its commit rolled back to N, and the user then
+edited a draft the database never kept. **The optimistic lock was correct the
+whole time**, which is why the fix changed no comparison: a genuinely stale
+token still 409s with the same server-authored sentence.
+
+- **Write every RBAC 30 column in the ONE INSERT**, through `record_action` or
+  `record_agent_action`. Never `entry = await audit(...)` followed by
+  `entry.x = ...`.
+- **`ck_audit_log_agent_has_principal` forbids `agent_name` without a human
+  principal.** An agent-initiated record with no user puts the agent in the
+  metadata facts instead of the column. `pipeline_halt._record` is the case:
+  it could NEVER have committed, and its own `except` reduced that to a log
+  line, so no halt was ever recorded.
+- **The test must read committed state from a SECOND CONNECTION after the
+  response.** `tests/test_audit_single_insert_api.py`. An assertion on the
+  response body cannot see a write that answered 200 and vanished, which is
+  precisely the evidence that lied.
+
+### A SESSION DIES WITH THE BROWSER, AND THE IDLE DEADLINE IS THE SERVER'S
+
+`services/auth_sessions` is the Redis session record; the cookie is not the
+session. Three cookies, httpOnly, Secure, SameSite=Strict, and **no Max-Age or
+Expires on any of them**, so a full browser close ends the session.
+
+- **The 30 minutes are a Redis TTL touched only by REAL USER ACTIVITY**, never
+  by a polling tab. Redis unavailable is 503, never a fail-open check.
+- **A cookie JWT with no `sid` is refused outright**: an unrevocable legacy
+  cookie must not outlive the mechanism that can revoke it.
+- **`/auth/password-changed` takes a FRESH Firebase ID token in the body, not
+  a cookie**, and only ever removes access. The cookie it revokes may already
+  be expired, and the session most worth killing belongs to somebody who can
+  no longer sign in. It is declared in BOTH authorization sweeps with that
+  reason: `test_deploy_secret_hygiene._PUBLIC_BY_DESIGN` and
+  `test_authorization_surface.PUBLIC_BY_DESIGN`. A deliberate hole that is not
+  DECLARED is indistinguishable from an accidental one.
+
+### THE PRODUCT IS VIVEKIUM, AND THE DOMAIN IS NOT
+
+Owner rename. `Vivekium`, `Varpitech LLP`, and the PRISM expansion is
+**Evidence-Based** Role Intelligence and Suitability Mapping; the acronym and
+"PRISM Report" are unchanged. BGV display language is "Employer Confirmed",
+and the status CODES (`verified`, `Done`, `Pending`, `Not Started`) are
+untouched because they are read by logic and by filters.
+
+- **`readypick.ai` STAYS**, by explicit owner instruction, and so does every
+  env var name, `pickready.*` task name, infra resource name, database role,
+  migration and dated provenance document. The 2026-08-16 rule that deliberate
+  `pickready` identifiers must not be "fixed" is unchanged and now one layer
+  further from the product name.
+- **"Culture Fit" was a deliberate NO-OP.** Every occurrence is the
+  culture-REFUSAL machinery (`ppi.FORBIDDEN_COMPETENCY_TERMS`, the observable
+  detector, `disqualifiers.yaml`). Rewording a refusal renames the thing being
+  refused, which is a different claim.
+- **A download FILENAME is user-facing copy.** `vivekium-my-applications.xlsx`
+  is read by a person in their Downloads folder. A lowercase `readypick` that
+  CSS renders uppercase is user-facing too; it is not a domain reference just
+  because it is lowercase.
+- **THE LOGOMARK STILL SPELLS RP AND IS AN OPEN OWNER DECISION.** The brief
+  specified no logo, so none was invented. `components/brand/logo.tsx` renders
+  the R+P mark beside the word Vivekium on every page.
+
+### ROLE INTAKE IS DELETED, AND SO IS THE SERVICE IT ORPHANED
+
+The conversational intake routes 404; the Job SWOT Analysis DOCUMENT is the
+only live matrix input. `services/swot_intake.py` went with it: 1249 lines,
+two prompts, eight `llm_providers` task-type entries, and two
+`generation_sufficiency` gates whose only caller it was.
+
+- **`job_swot_intakes` SURVIVES as the transcript.** Code deletion, no
+  migration. Its phase vocabulary now lives in migration 0064 and the CHECK
+  constraint, and the parity assertion that compared those literals against
+  the module was DELETED rather than rewired: a parity test with one side gone
+  asserts nothing.
+- **An identity map that names unreachable code is a defect with a test.**
+  Bodha kept naming `swot_intake` after its last caller went, and three
+  reachability tests caught it. `implemented_by` is now `swot_analysis`.
+- **`provenance.STAGE_SWOT` keeps the VALUE `"swot_intake"`**, for the reason
+  the `dna` correlation kind was kept: stored traces carry it, and rewriting
+  the string would make history unreadable.
+- **A guard threshold moves only with its reason written beside it.**
+  Deleting two prompts took `GATED_PROMPTS` from 21 to 19, so
+  `test_no_meta_commentary`'s floor moved to 19 with the deletion named in
+  place. That assertion exists to catch a sweep that has quietly gone vacuous;
+  relaxing it silently is the failure it guards against.
+
+### VERIFYING A DEPLOY
+
+- **`verify-deployment.sh` reads `EXPECTED_BACKEND_DIGEST`**, not
+  `EXPECTED_API_DIGEST`, and REFUSES rather than skipping when one is absent.
+  A skipped check is not a passed check, and it says so.
+- **Python runs LOCALLY on this machine**
+  (`AppData/Local/Python/pythoncore-3.14-64/python.exe`); `scripts/test.sh`
+  runs pytest locally against dockerised Postgres. So
+  `scripts/mint-smoke-token.py` with `JWT_SECRET` from
+  `readypick-pilot/JWT_SECRET` gives a live bearer token and authenticates
+  every live check WITHOUT a password.
+- **There is no staging environment.** `infra/environments/staging` and
+  `production` have never been applied and have no tfvars. `readypick-pilot`
+  IS the live site, so "deploy to production" means pilot and there is nowhere
+  to rehearse.
 
 ## Current hard rules, the vivekium ruling (2026-09-18)
 
