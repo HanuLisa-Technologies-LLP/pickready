@@ -1525,5 +1525,35 @@ needs the owner's consent before, not an apology after.
 
 ### Open
 
-The logomark still spells RP beside the word Vivekium on every page. The
-brief specified no logo and none was invented; it needs an owner decision.
+A real designed logomark. The placeholder below is geometry, not identity.
+
+## Release 7a, the mark stopped spelling the old name, 2026-09-20
+
+`7466081`, frontend only, `sha-7466081`
+(`sha256:6ad8304f...705d8605`). Backend and analysis unmoved, so the rollback
+pair for this one is that digest against `sha-a03e978`
+(`sha256:08a46ad4...29cd6b56`).
+
+Release 7 shipped the rename with the PREVIOUS LOGO still in place.
+`brand-mark-2026.png` was the old artwork cropped, so an R+P monogram sat
+beside the word Vivekium in every header, and the three icon rasters were the
+same image, which put the old initials in the browser tab, the bookmark bar
+and the iOS home screen. Rename 01 covers all screens and glyphs that spell
+ReadyPick are an instance of the old name, so this is the narrow correction
+rather than a new identity: a two-stroke V, navy then teal, drawn inline and
+generated for the icons through next/og. Four rasters deleted, no binary
+added. A real designed mark is still the owner's to commission.
+
+**Two failures this would have shipped, both caught before the build.**
+`/icon` and `/apple-icon` are generated routes with no file extension, so
+`proxy.ts`'s matcher would have answered a browser's first favicon request
+with a 307 to /login, which is exactly how `robots.txt`, `sitemap.xml` and
+`opengraph-image` each shipped broken while every local test passed. And the
+JSON-LD Organization logo named `public/icon.png`, which this change deletes;
+its own comment says a logo pointing at a 404 is worse than no logo, so it
+moved with the file rather than after it.
+
+Verified on production: both icon routes answer 200 image/png with
+`num_redirects=0`, the old raster paths 404, the link tags and structured
+data carry the new urls, and the header mark is an inline SVG with no raster
+left in the document.

@@ -152,9 +152,21 @@ untouched because they are read by logic and by filters.
   is read by a person in their Downloads folder. A lowercase `readypick` that
   CSS renders uppercase is user-facing too; it is not a domain reference just
   because it is lowercase.
-- **THE LOGOMARK STILL SPELLS RP AND IS AN OPEN OWNER DECISION.** The brief
-  specified no logo, so none was invented. `components/brand/logo.tsx` renders
-  the R+P mark beside the word Vivekium on every page.
+- **THE MARK IS A V, AND IT IS GEOMETRY RATHER THAN IDENTITY.** It was the
+  old logo cropped, so an R+P monogram sat beside the word Vivekium on every
+  page and the same artwork was the favicon, the 512 icon and the iOS icon.
+  Glyphs spelling the old name are an instance of rename 01, so the mark is
+  now two strokes, navy then teal, making the transition the wordmark makes.
+  It is DRAWN, not shipped: inline SVG in `components/brand/logo.tsx`, and
+  `app/icon.tsx` / `app/apple-icon.tsx` generate the icons through next/og.
+  **A real designed mark is still an open owner decision**; replacing this one
+  is those three files and no raster.
+- **A GENERATED ROUTE HAS NO FILE EXTENSION, SO `proxy.ts` MUST NAME IT.**
+  `/icon` and `/apple-icon` joined `robots.txt`, `sitemap.xml`, `llms.txt` and
+  `opengraph-image` in the matcher's exclusion list. Each of those shipped
+  broken this exact way once: a browser requests a favicon with no session on
+  the first paint, and the matcher answers 307 to /login while every local
+  test passes.
 
 ### ROLE INTAKE IS DELETED, AND SO IS THE SERVICE IT ORPHANED
 
