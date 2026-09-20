@@ -101,17 +101,17 @@ describe("SetupStatus", () => {
     ).toBeNull();
   });
 
-  it("points an unfinished intake at its home on the job description tab", () => {
-    render(<SetupStatus setup={pendingSetup({ swot_complete: false })} />);
+  it("points an unsaved Job SWOT document at the job description tab", () => {
+    render(<SetupStatus setup={pendingSetup({ swot_analysis_ready: false })} />);
 
     expect(
-      screen.getByText(/reporting authority intake.*job\s+description tab/is)
+      screen.getByText(/Save the Job SWOT Analysis.*job description tab/is)
     ).toBeTruthy();
   });
 });
 
 describe("JobSetupReview", () => {
-  it("no longer renders the intake here: it lives inside the SWOT panel on the JD tab", async () => {
+  it("does not render the removed Role Intake", async () => {
     mockReads();
     render(<JobSetupReview jobId="workify-job" />);
 

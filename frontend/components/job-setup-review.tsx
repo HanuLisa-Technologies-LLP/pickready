@@ -143,9 +143,7 @@ export interface Setup {
   framework_approved: boolean;
   /** The second half of the setup session (spec 3.2). */
   matching_categories_finalized?: boolean;
-  /** Whether the reporting authority has finished the SWOT intake. Reported,
-   *  never a gate on its own: see the header. */
-  swot_complete?: boolean;
+  swot_analysis_ready?: boolean;
   ready_for_candidates: boolean;
   /**
    * The framework has not been generated yet and the backend has just enqueued
@@ -202,12 +200,10 @@ export function SetupStatus({ setup }: { setup: Setup }) {
           : "finish the setup review"}{" "}
         below. Applications still arrive in the meantime.
       </p>
-      {setup.swot_complete === false ? (
+      {setup.swot_analysis_ready === false ? (
         <p className="mt-2 text-xs">
-          The reporting authority intake, under the SWOT analysis on the job
-          description tab, is unfinished. It is not a blocker on its own, but
-          the matrix is written from it, so answering it first is worth the two
-          minutes.
+          Save the Job SWOT Analysis on the job description tab to supply the
+          evaluation matrix with this role&apos;s context.
         </p>
       ) : null}
       {setup.framework_pending ? (

@@ -1,11 +1,11 @@
-"""Native ReadyPick conversations: recruiter to candidate, recruiter to an employer.
+"""Native Vivekium conversations: recruiter to candidate, recruiter to an employer.
 
 WHY THIS IS NOT `support_threads`
 ----------------------------------
 The support tables carry a HARD structural rule: no candidate identifier,
 score, grade or evaluation detail may ever reach `support_messages`, enforced
 by import graph and swept by `test_support_candidate_boundary`. A support
-thread is about the CUSTOMER's relationship with ReadyPick. These conversations
+thread is about the CUSTOMER's relationship with Vivekium. These conversations
 are about a CANDIDATE by definition, so reusing that table would not be reuse,
 it would be deleting the guarantee that makes it safe.
 
@@ -22,7 +22,7 @@ across deliberately:
 
 THE EMAIL BRIDGE IS THE POINT, NOT A FEATURE ON THE SIDE
 ----------------------------------------------------------
-An employer's HR contact has no ReadyPick login and never will. So a message to
+An employer's HR contact has no Vivekium login and never will. So a message to
 them is BOTH a row here and an email through SES, and their reply is BOTH an
 email and a row here. One record, two transports; never two records for one
 thing. `channel` says how a message travelled and `email_log_id` points at the
@@ -82,7 +82,7 @@ PARTIES: frozenset[str] = frozenset(
     {PARTY_RECRUITER, PARTY_CANDIDATE, PARTY_EMPLOYER_HR, PARTY_SYSTEM}
 )
 
-#: The parties that have no ReadyPick session and are reached by email only.
+#: The parties that have no Vivekium session and are reached by email only.
 EXTERNAL_PARTIES: frozenset[str] = frozenset({PARTY_EMPLOYER_HR})
 
 # How a message travelled.
@@ -270,7 +270,7 @@ class ConversationMessage(Base, UUIDPKMixin, CreatedAtMixin):
 
 
 class ConversationAttachment(Base, UUIDPKMixin, CreatedAtMixin):
-    """A file on a message, stored where every other ReadyPick file is stored.
+    """A file on a message, stored where every other Vivekium file is stored.
 
     The object key never crosses an API boundary, the same rule the assessment
     video and the PRISM PDF already follow: a client receives an id and asks

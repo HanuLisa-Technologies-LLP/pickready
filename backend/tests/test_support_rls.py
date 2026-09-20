@@ -232,7 +232,7 @@ async def test_a_tenant_cannot_write_a_message_into_anothers_thread() -> None:
 # ── The platform's own path ──────────────────────────────────────────────────
 
 async def test_the_bypass_scope_sees_every_tenants_threads() -> None:
-    """ReadyPick staff read across customers through `superadmin_scope`, which
+    """Vivekium staff read across customers through `superadmin_scope`, which
     `get_superadmin_db` audit-logs on every request.
 
     Asserted because a policy tightened without this path in mind would leave

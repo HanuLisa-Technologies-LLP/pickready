@@ -9,7 +9,7 @@ import type { Metadata } from "next";
  * unchanged, so it adds no markup, no wrapper and no behaviour, and the nested
  * client shell is untouched.
  *
- * This is the ReadyPick owner's console over every customer. It is the one
+ * This is the Vivekium owner's console over every customer. It is the one
  * cross-tenant surface in the product.
  */
 export const metadata: Metadata = {

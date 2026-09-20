@@ -29,7 +29,7 @@ export function CallToAction() {
             >
               Start with one role and see the reports
             </h2>
-            <p className="mx-auto mt-4 max-w-xl text-pretty text-base leading-7 text-white">
+            <p className="mx-auto mt-4 max-w-xl text-pretty text-base text-white">
               Create an account, post a job, and read what comes back. Nothing
               is sent to a candidate until someone on your team approves the
               wording.

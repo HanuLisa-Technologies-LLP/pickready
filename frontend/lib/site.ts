@@ -14,7 +14,7 @@ import type { Metadata } from "next";
 export const SITE_URL = "https://readypick.ai";
 
 /** The product name, as it appears in a title, a share card and a schema. */
-export const SITE_NAME = "ReadyPick";
+export const SITE_NAME = "Vivekium";
 
 /**
  * The one-sentence description of the product, used as the site-wide meta
@@ -29,7 +29,7 @@ export const SITE_NAME = "ReadyPick";
  * The `ppi` identifiers in CODE stay exactly as they are; this is copy.
  */
 export const SITE_DESCRIPTION =
-  "ReadyPick ranks every applicant against the role, runs a structured AI assessment, and hands your team one readable PRISM Report per candidate.";
+  "Vivekium ranks every applicant against the role, runs a structured AI assessment, and hands your team one readable PRISM Report per candidate.";
 
 /**
  * Metadata for one public page.
@@ -40,7 +40,7 @@ export const SITE_DESCRIPTION =
  * /employers all served:
  *
  *     og:url          https://readypick.ai
- *     og:title        ReadyPick, know every candidate before you meet them
+ *     og:title        Vivekium, know every candidate before you meet them
  *     og:description  Rank every applicant against the role, ...
  *
  * A share of the privacy notice therefore advertised the home page, and every
@@ -73,7 +73,7 @@ export function publicPageMetadata({
 }: {
   /** Absolute path on this site, leading slash, no host and no trailing slash. */
   path: string;
-  /** The page name only. The root layout appends "| ReadyPick" to the tab title. */
+  /** The page name only. The root layout appends "| Vivekium" to the tab title. */
   title: string;
   description: string;
 }): Metadata {
@@ -82,7 +82,7 @@ export function publicPageMetadata({
     url: "/opengraph-image",
     width: 1200,
     height: 630,
-    alt: "ReadyPick, the candidate intelligence platform",
+    alt: "Vivekium, the candidate intelligence platform",
   };
   return {
     title,

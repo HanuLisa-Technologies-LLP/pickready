@@ -2,7 +2,7 @@ import { SupportProviderQueue } from "@/components/support-provider-queue";
 
 export const metadata = { title: "Support" };
 
-// ReadyPick's cross-customer support queue.
+// Vivekium's cross-customer support queue.
 //
 // The UI route is /admin/support and the API it calls is /provider/support,
 // which is this product's standing split: the Provider Portal lives at /admin

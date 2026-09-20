@@ -1,6 +1,6 @@
 "use client";
 
-// The ReadyPick boundary. Next mounts this in place of the segment when a
+// The Vivekium boundary. Next mounts this in place of the segment when a
 // render below it throws, so the portal frame survives and the user keeps a
 // route out. Copy is specific to this portal on purpose: "Something went
 // wrong" tells a person nothing about what is safe and what is lost.

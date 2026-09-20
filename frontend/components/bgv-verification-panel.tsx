@@ -91,8 +91,8 @@ const STATUS_WORD: Record<string, string> = {
   not_required: "Not required",
   not_started: "Not started",
   pending: "In progress",
-  verified: "Verified",
-  not_verified: "Not verified",
+  verified: "Employer Confirmed",
+  not_verified: "Not confirmed",
 };
 
 export function BgvVerificationPanel({ candidateId }: { candidateId: string }) {
@@ -175,7 +175,7 @@ export function BgvVerificationPanel({ candidateId }: { candidateId: string }) {
         </div>
         <CardDescription>
           {data.required
-            ? `${data.verified_count} of ${data.employer_count} previous employers verified.`
+            ? `${data.verified_count} of ${data.employer_count} previous employers confirmed.`
             : "This candidate declared no previous employment, so verification is not required."}
         </CardDescription>
       </CardHeader>
@@ -187,7 +187,7 @@ export function BgvVerificationPanel({ candidateId }: { candidateId: string }) {
         ) : data.required ? (
           <p className="flex items-center gap-2 rounded-md border p-3 text-sm">
             <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
-            Every submitted employer is verified. An offer can be extended.
+            Every submitted employer is confirmed. An offer can be extended.
           </p>
         ) : null}
 
@@ -281,7 +281,7 @@ export function BgvVerificationPanel({ candidateId }: { candidateId: string }) {
                       })
                     }
                   >
-                    Mark verified
+                    Mark confirmed
                   </Button>
                 ) : null}
 
@@ -299,7 +299,7 @@ export function BgvVerificationPanel({ candidateId }: { candidateId: string }) {
                       })
                     }
                   >
-                    Mark not verified
+                    Mark not confirmed
                   </Button>
                 ) : null}
               </div>
@@ -323,7 +323,7 @@ export function BgvVerificationPanel({ candidateId }: { candidateId: string }) {
 
               {/* The employer exchange itself, READ ONLY. A reply that lands
                   on the inbound webhook appears here, which is the point: a
-                  recruiter decides verified or not verified from what the
+                  recruiter decides confirmed or not confirmed from what the
                   employer actually wrote, on the same screen as the buttons.
                   Sending is refused from a chat box by the server, so the
                   compose box is hidden rather than rendered and then refused. */}

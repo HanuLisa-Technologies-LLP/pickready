@@ -1,6 +1,6 @@
 """Firebase identity exchange and legacy context-selection endpoints.
 
-Firebase proves identity; ReadyPick remains authoritative for application
+Firebase proves identity; Vivekium remains authoritative for application
 roles, tenant isolation, capabilities, and its portal-scoped sessions.
 """
 import uuid
@@ -47,7 +47,7 @@ from app.schemas.auth import (
     SelectContextIn,
     UserOut,
 )
-from app.services import otp as otp_service
+from app.services import auth_sessions, otp as otp_service
 from app.services import firebase_auth
 from app.services import rbac
 from app.services.rate_limit import rate_limit
@@ -206,11 +206,7 @@ async def _finalize_single(
             status_code=409, detail="This sign-in could not be linked to an account"
         ) from exc
     audience = audience_for_role(user.role)
-    _set_auth_cookies(
-        response,
-        create_access_token(user.id, user.role.value, user.tenant_id, audience=audience),
-        create_refresh_token(user.id, audience=audience),
-    )
+    await _issue_session(response, user, audience)
     return OTPVerifyOut(
         user=await _user_out(session, user),
         capabilities=await _capabilities(session, user),
@@ -375,7 +371,7 @@ async def _user_out(session: AsyncSession, user: User) -> UserOut:
     elif user.role == Role.candidate:
         workspace_name = "Candidate workspace"
     else:
-        workspace_name = "ReadyPick"
+        workspace_name = "Vivekium"
     return UserOut(
         id=user.id,
         role=user.role,
@@ -384,6 +380,7 @@ async def _user_out(session: AsyncSession, user: User) -> UserOut:
         email=user.email,
         email_verified=user.email_verified_at is not None,
         phone_verified=user.phone_verified_at is not None,
+        password_enabled="password" in (user.auth_providers or []),
         workspace_name=workspace_name,
     )
 
@@ -412,6 +409,22 @@ async def _capabilities(session: AsyncSession, user: User) -> list[str]:
 # (SameSite=Strict, httponly, secure-in-prod, refresh path-scoped) — a single
 # source of truth next to the cookie-name constants.
 _set_auth_cookies = set_auth_cookies
+
+
+async def _issue_session(response: Response, user: User, audience: str) -> None:
+    """Create the server record before exposing its signed browser cookies."""
+    sid = auth_sessions.new_id()
+    access = create_access_token(
+        user.id, user.role.value, user.tenant_id, audience=audience,
+        session_id=sid,
+    )
+    refresh_token = create_refresh_token(user.id, audience=audience, session_id=sid)
+    jti = pyjwt.decode(
+        refresh_token, get_settings().jwt_secret,
+        algorithms=[ALGORITHM], audience=audience,
+    )["jti"]
+    await auth_sessions.create(sid, user.id, jti, refresh_token)
+    _set_auth_cookies(response, access, refresh_token)
 
 
 async def register_candidate(
@@ -531,7 +544,7 @@ async def verify_otp(
             context_token=result.context_token,
         )
     if result.authenticated:
-        _set_auth_cookies(response, result.access_token, result.refresh_token)
+        await _issue_session(response, result.user, audience_for_role(result.user.role))
         return OTPVerifyOut(
             user=await _user_out(session, result.user),
             capabilities=await _capabilities(session, result.user),
@@ -618,7 +631,7 @@ async def select_context(
             },
         )
         await session.commit()
-        _set_auth_cookies(response, result.access_token, result.refresh_token)
+        await _issue_session(response, result.user, audience_for_role(result.user.role))
         return OTPVerifyOut(
             user=selected_workspace,
             capabilities=await _capabilities(session, result.user),
@@ -688,7 +701,7 @@ async def refresh(
             continue
         except pyjwt.PyJWTError:
             return _dead_session("Invalid refresh token")
-    if payload is None or payload.get("type") != "refresh":
+    if payload is None or payload.get("type") != "refresh" or not payload.get("sid") or not payload.get("jti"):
         return _dead_session("Invalid refresh token")
 
     user = await session.get(User, uuid.UUID(payload["sub"]))
@@ -698,17 +711,63 @@ async def refresh(
     # Rotate BOTH tokens on every refresh (refresh-token rotation), preserving
     # the token's audience.
     access = create_access_token(
-        user.id, user.role.value, user.tenant_id, audience=payload["aud"]
+        user.id, user.role.value, user.tenant_id, audience=payload["aud"],
+        session_id=payload["sid"],
     )
-    refresh_token = create_refresh_token(user.id, audience=payload["aud"])
+    refresh_candidate = create_refresh_token(
+        user.id, audience=payload["aud"], session_id=payload["sid"]
+    )
+    new_jti = pyjwt.decode(
+        refresh_candidate, get_settings().jwt_secret,
+        algorithms=[ALGORITHM], audience=payload["aud"],
+    )["jti"]
+    refresh_token = await auth_sessions.rotate(
+        payload["sid"], user.id, payload["jti"], new_jti, refresh_candidate,
+    )
+    if refresh_token is None:
+        return _dead_session("Session expired or revoked")
     set_auth_cookies(response, access, refresh_token)
     return {"refreshed": True}
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict:
+async def logout(request: Request, response: Response) -> dict:
+    for name in (REFRESH_COOKIE, "pr_access"):
+        token = request.cookies.get(name)
+        if not token:
+            continue
+        try:
+            payload = pyjwt.decode(
+                token, get_settings().jwt_secret, algorithms=[ALGORITHM],
+                audience=[AUDIENCE_OWNER, AUDIENCE_ORG, AUDIENCE_CANDIDATE],
+                options={"verify_exp": False},
+            )
+        except pyjwt.PyJWTError:
+            continue
+        if payload.get("sid") and payload.get("sub"):
+            await auth_sessions.revoke(payload["sid"], payload["sub"])
+            break
     clear_auth_cookies(response)
     return {"logged_out": True}
+
+
+@router.post("/password-changed")
+async def password_changed(
+    body: FirebaseSessionIn,
+    response: Response,
+    session: AsyncSession = Depends(get_identity_session),
+) -> dict:
+    """Fresh Firebase proof revokes app sessions even if this cookie expired."""
+    identity = await run_in_threadpool(firebase_auth.verify_id_token, body.id_token)
+    users = (await session.execute(
+        select(User.id).where(User.firebase_uid == identity.uid)
+    )).scalars().all()
+    if not users:
+        raise HTTPException(status_code=401, detail="Unknown account")
+    for user_id in users:
+        await auth_sessions.revoke_all(user_id)
+    clear_auth_cookies(response)
+    return {"sessions_revoked": True}
 
 
 @router.get("/me", response_model=MeOut)

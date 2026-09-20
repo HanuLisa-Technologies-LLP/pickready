@@ -519,7 +519,7 @@ def _compose_validation(
             )
 
 
-# ── The dashboard's Ready Pick Note ──────────────────────────────────────────
+# ── The dashboard's Vivekium Note ──────────────────────────────────────────
 
 #: THE KEY THE DASHBOARD READS THE NOTE FROM.
 #:

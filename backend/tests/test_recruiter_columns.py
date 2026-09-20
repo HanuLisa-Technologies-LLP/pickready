@@ -168,7 +168,7 @@ def test_bgv_words_cover_every_derivable_status():
     assert rc.bgv_status_word("not_started") == "Not Started"
     # The two states the brief's vocabulary does not name, rendered honestly.
     assert rc.bgv_status_word("not_required") == "Not Required"
-    assert rc.bgv_status_word("not_verified") == "Not Verified"
+    assert rc.bgv_status_word("not_verified") == "Not Confirmed"
     assert rc.bgv_status_word(None) == "Not Started"
 
 

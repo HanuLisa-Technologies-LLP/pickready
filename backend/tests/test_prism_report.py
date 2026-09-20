@@ -173,11 +173,11 @@ def test_the_header_is_the_documents_name_and_its_expansion_verbatim():
     assert report_pdf.REPORT_TITLE == "PRISM Report"
     assert (
         report_pdf.REPORT_SUBTITLE
-        == "Predictive Role Intelligence & Suitability Mapping"
+        == "Evidence-Based Role Intelligence & Suitability Mapping"
     )
     text = _pdf_text()
     assert "PRISM Report" in text
-    assert "Predictive Role Intelligence & Suitability Mapping" in text
+    assert "Evidence-Based Role Intelligence & Suitability Mapping" in text
 
 
 def test_the_document_never_calls_itself_the_process():

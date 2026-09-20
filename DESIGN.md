@@ -1,12 +1,12 @@
-# ReadyPick — DESIGN.md
+# Vivekium — DESIGN.md
 
-The design system for ReadyPick's product surfaces. Authored from the brand
+The design system for Vivekium's product surfaces. Authored from the brand
 foundation in spec-doc5 §C.1, in the nine-section structure the
 `awesome-design-md` collection uses.
 
 **On the borrowed structure.** `github.com/voltagent/awesome-design-md` is a
 library of *other companies'* extracted design systems — Stripe, Linear, Vercel.
-There is no ReadyPick entry and none was copied. What is borrowed is the
+There is no Vivekium entry and none was copied. What is borrowed is the
 nine-section format. Linear and Vercel were read for **restraint**, not for
 palette: they are the closest comparable feel to what an evidence-driven
 enterprise HR platform should project, and neither of their colour systems
@@ -21,7 +21,7 @@ them disagreeing.
 
 ## 1. Visual Theme & Atmosphere
 
-ReadyPick is a B2B enterprise hiring-intelligence platform sold to CHROs and
+Vivekium is a B2B enterprise hiring-intelligence platform sold to CHROs and
 hiring managers, positioned against traditional executive search. Every screen
 is read by somebody making a decision about a person's career, often with the
 candidate's own words on the same page.
@@ -351,7 +351,7 @@ are a pure CSS variable swap; no component branches on theme.
 
 ## 9. Agent Prompt Guide
 
-For an agent generating or modifying a ReadyPick surface:
+For an agent generating or modifying a Vivekium surface:
 
 > Build for a B2B enterprise hiring-intelligence platform sold to CHROs.
 > Confident and precise, never playful. Navy `#0A2642` for structure — primary

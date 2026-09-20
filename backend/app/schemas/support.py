@@ -2,7 +2,7 @@
 
 TWO OUTPUT SHAPES, DELIBERATELY, AND THE DIFFERENCE IS ONE FACT
 -----------------------------------------------------------------
-The customer sees their own thread. ReadyPick staff see the same thread plus
+The customer sees their own thread. Vivekium staff see the same thread plus
 which CUSTOMER it belongs to, because their queue spans every customer and a
 subject line alone does not say who is waiting.
 
@@ -107,7 +107,7 @@ class MessageIn(BaseModel):
 
 
 class ThreadPatchIn(BaseModel):
-    """ReadyPick staff moving a thread by hand. Status only.
+    """Vivekium staff moving a thread by hand. Status only.
 
     Assignment is deliberately absent: the first responder claims a thread by
     REPLYING to it. A separate claim action is one more thing to remember on a
@@ -187,7 +187,7 @@ class ProviderThreadListOut(PageMeta):
     total: int
     page: int
     page_size: int
-    #: How many threads are waiting on ReadyPick right now, across every
+    #: How many threads are waiting on Vivekium right now, across every
     #: customer and UNNARROWED by the page filters, so the number answers "how
     #: much is owed" rather than "how much is on this screen". Same shape and
     #: same reasoning as the New Candidates count on the job page.

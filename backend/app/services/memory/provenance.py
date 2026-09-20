@@ -57,9 +57,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 #: Derived from the platform's own deterministic output: a verifier defect, a
-#: schema rejection, a word count. Nobody outside ReadyPick chose the text.
+#: schema rejection, a word count. Nobody outside Vivekium chose the text.
 TRUST_PLATFORM = "platform"
-#: Recorded by a ReadyPick engineer looking at a run.
+#: Recorded by a Vivekium engineer looking at a run.
 TRUST_OPERATOR = "operator"
 #: Derived from text the client wrote, such as a job description.
 TRUST_TENANT_AUTHORED = "tenant_authored"

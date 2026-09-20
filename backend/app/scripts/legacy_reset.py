@@ -508,7 +508,7 @@ CLASSIFICATION: tuple[TableRule, ...] = (
     TableRule(
         "bd_leads",
         PRESERVE,
-        "Ready Pick Now's own sales pipeline. Not client hiring data.",
+        "Vivekium's own sales pipeline. Not client hiring data.",
         named_by_d2=False,
     ),
     TableRule(

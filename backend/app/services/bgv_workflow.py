@@ -177,8 +177,8 @@ def blocking_message(status: str) -> str | None:
         )
     return (
         "Background verification is still in progress. Every previous employer "
-        "this candidate submitted has to be verified before an offer can be "
-        "extended."
+        "this candidate submitted has to be marked Employer Confirmed before an "
+        "offer can be extended."
     )
 
 

@@ -313,7 +313,7 @@ export default function StaffPage() {
                 <DialogDescription>
                   {inviteResult
                     ? "Share this single-use link if the email does not arrive."
-                    : "They will create or use a ReadyPick account with email/password or Google."}
+                    : "They will create or use a Vivekium account with email/password or Google."}
                 </DialogDescription>
               </DialogHeader>
               {inviteResult ? (

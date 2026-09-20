@@ -109,7 +109,7 @@ export function SupportCustomerPanel() {
       setDetail(created);
       setSelectedId(created.id);
       await loadThreads();
-      toast({ title: "Sent. ReadyPick has been notified." });
+      toast({ title: "Sent. Vivekium has been notified." });
     } catch (error) {
       toast({ title: apiErrorMessage(error), variant: "destructive" });
     } finally {
@@ -146,7 +146,7 @@ export function SupportCustomerPanel() {
           <h1 className="text-xl font-semibold text-ink">Support</h1>
           <p className="text-sm text-ink">
             Questions about your account, your billing, or anything that is not
-            working. ReadyPick replies here and by email.
+            working. Vivekium replies here and by email.
           </p>
         </div>
         <Button

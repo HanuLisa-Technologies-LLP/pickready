@@ -1,7 +1,7 @@
 """In-product customer support: both sides of one conversation.
 
     Customer Portal   /support/...            a client company's own threads
-    Provider Portal   /provider/support/...   ReadyPick's queue across customers
+    Provider Portal   /provider/support/...   Vivekium's queue across customers
 
 TWO ROUTERS IN ONE MODULE, AND WHY THAT IS NOT A DUAL CODE PATH
 -----------------------------------------------------------------
@@ -116,7 +116,7 @@ async def _append_message(
     """Write a message and move the thread. The ONLY place either happens.
 
     The status is DERIVED from `author_side` here rather than passed in by a
-    handler, so "threads waiting on ReadyPick" can never mean "threads somebody
+    handler, so "threads waiting on Vivekium" can never mean "threads somebody
     remembered to mark". A missed mark would be a customer waiting on a reply
     that nobody could see was owed, which is precisely the failure this surface
     exists to prevent.
@@ -410,7 +410,7 @@ async def provider_list_threads(
     page_size: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
     session: AsyncSession = Depends(get_superadmin_db),
 ) -> ProviderThreadListOut:
-    """ReadyPick's queue across every customer.
+    """Vivekium's queue across every customer.
 
     Filtering, ordering and pagination all run in SQL, before the page is cut.
     Filtering a fetched page in the browser makes the match count depend on

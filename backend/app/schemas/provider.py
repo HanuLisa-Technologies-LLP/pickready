@@ -1,8 +1,8 @@
-"""Provider Portal schemas — the ReadyPick owner's view of its CUSTOMERS.
+"""Provider Portal schemas — the Vivekium owner's view of its CUSTOMERS.
 
 Vocabulary (the spec is strict about this and the code follows it):
 
-    Provider Portal   the ReadyPick owner's console — these schemas
+    Provider Portal   the Vivekium owner's console — these schemas
     Customer Portal   a client company's own HR/recruitment dashboard
     Candidate Portal  the public candidate surface
 
@@ -283,7 +283,7 @@ class CustomerUpdateIn(BaseModel):
 
 class ClassificationReviewItem(BaseModel):
     """One job in the Classification Review Queue: the §4.4 tentative band
-    (stem-score 0.30–0.79) plus any engine-error fallbacks, for the Hanulisa
+    (stem-score 0.30–0.79) plus any engine-error fallbacks, for the Varpitech
     team to verify by hand."""
 
     job_id: uuid.UUID

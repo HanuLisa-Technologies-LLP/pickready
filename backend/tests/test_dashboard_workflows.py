@@ -256,7 +256,7 @@ def _as(caller: Caller, world: World, role: Role) -> None:
 
 
 def test_workflow_one_fast_triage(caller: Caller, world: World) -> None:
-    """Land, sort by Ready Pick Score, skim the top, move one to Interview.
+    """Land, sort by Vivekium Score, skim the top, move one to Interview.
 
     The specification's own five steps, in order. What each assertion is
     defending:

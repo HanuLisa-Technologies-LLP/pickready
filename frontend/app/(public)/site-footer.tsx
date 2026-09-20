@@ -93,9 +93,9 @@ export function SiteFooter({ landingLive = false }: SiteFooterProps) {
 
         <div className="mt-12 flex flex-col gap-2 border-t border-border pt-6 text-sm sm:flex-row sm:items-center sm:justify-between">
           <p>
-            &copy; {new Date().getFullYear()} ReadyPick. All rights reserved.
+            &copy; {new Date().getFullYear()} Vivekium. All rights reserved.
           </p>
-          <p>A Hanulisa Technologies LLP product.</p>
+          <p>A Varpitech LLP product.</p>
         </div>
       </div>
     </footer>

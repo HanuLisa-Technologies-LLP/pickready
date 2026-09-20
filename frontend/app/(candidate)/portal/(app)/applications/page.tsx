@@ -293,7 +293,7 @@ export default function PortalApplicationsPage() {
         actions={
           applications.length ? (
             <ExportXlsxButton
-              fileName="readypick-my-applications"
+              fileName="vivekium-my-applications"
               rows={applications.map((application) => ({
                 role: application.job_title,
                 company: application.company_name ?? "",

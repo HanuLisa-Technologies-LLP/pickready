@@ -618,7 +618,7 @@ async def request_otp(
             dispatch(
                 "pickready.send_sms",
                 args=[target.destination,
-                      f"Your ReadyPick OTP is {code}. Valid for "
+                      f"Your Vivekium OTP is {code}. Valid for "
                       f"{settings.otp_ttl_minutes} minutes."],
             )
         channels_sent.append(target.channel.value)

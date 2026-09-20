@@ -2,7 +2,7 @@
 
 WHAT "RESERVE" MEANS, AND WHY IT IS NOT "CREATE WITH A PASSWORD"
 -----------------------------------------------------------------
-ReadyPick stores no password, has no password store and no forgot-password
+Vivekium stores no password, has no password store and no forgot-password
 flow: Firebase owns credentials (claude.md rule 2). So an account here is a
 `users` row carrying an email, a name and a ROLE, with `status = invited` and
 no `firebase_uid`. The person proves the address through Firebase, with Google
@@ -261,7 +261,7 @@ async def main() -> int:
     print(
         "Each person opens the link in their invitation, signs in with Google "
         "or with an email and password they set in Firebase, and the account "
-        "binds on that first sign-in. ReadyPick stores no password."
+        "binds on that first sign-in. Vivekium stores no password."
     )
     return 0
 

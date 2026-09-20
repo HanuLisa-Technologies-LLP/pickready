@@ -283,7 +283,7 @@ export function ResumeViewer({
       <FallbackPanel
         tone="error"
         title="Word preview could not be loaded"
-        message="ReadyPick could not convert this document for the in-app viewer. Download the original file and try again later."
+        message="Vivekium could not convert this document for the in-app viewer. Download the original file and try again later."
         fileName={descriptor.fileName}
       >
         {actions}
@@ -395,7 +395,7 @@ export function ResumeViewer({
 
         <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-6 py-3">
           <p className="text-xs">
-            Viewing inside ReadyPick, the file is never opened as a bare
+            Viewing inside Vivekium, the file is never opened as a bare
             storage link.
           </p>
           {actions}

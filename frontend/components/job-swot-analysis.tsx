@@ -55,7 +55,6 @@ import type { SwotAnalysis, SwotAnalysisDraft } from "@/lib/types";
 import { CAP, resolvePermission } from "@/lib/permissions";
 import { usePermissions } from "@/lib/use-permissions";
 import { ReadOnlyNotice } from "@/components/permission-notice";
-import { SwotIntakePanel } from "@/components/swot-intake";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -193,6 +192,9 @@ export function JobSwotAnalysisPanel({
   const [loading, setLoading] = React.useState(true);
   const [generating, setGenerating] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
+  // State disables the button after render; this ref closes the same-tick
+  // window in which a double click can otherwise submit the same version.
+  const saveInFlight = React.useRef(false);
   const [restoring, setRestoring] = React.useState(false);
   const [draft, setDraft] = React.useState<SwotAnalysisDraft>(EMPTY_DRAFT);
   const [confirmOverwrite, setConfirmOverwrite] = React.useState(false);
@@ -271,11 +273,13 @@ export function JobSwotAnalysisPanel({
   };
 
   const save = async () => {
+    if (saveInFlight.current || !analysis) return;
+    saveInFlight.current = true;
     setSaving(true);
     try {
       const res = await apiPut<SwotAnalysis>(`${BASE}/${jobId}/swot-analysis`, {
         ...draft,
-        expected_version: analysis?.version ?? null,
+        expected_version: analysis.version,
       });
       setAnalysis(res);
       setDraft(draftFrom(res));
@@ -296,6 +300,7 @@ export function JobSwotAnalysisPanel({
         variant: "destructive",
       });
     } finally {
+      saveInFlight.current = false;
       setSaving(false);
     }
   };
@@ -527,11 +532,6 @@ export function JobSwotAnalysisPanel({
               </div>
             ) : null}
 
-            {/* The reporting authority intake lives here (owner ruling,
-                2026-09-19): under the JD, inside the SWOT surface, because it
-                is the same conversation about the same role. It degrades to
-                absent on its own load failure. */}
-            <SwotIntakePanel jobId={jobId} canEdit={canEdit} />
           </>
         )}
       </CardContent>

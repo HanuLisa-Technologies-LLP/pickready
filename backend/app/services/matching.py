@@ -1435,7 +1435,7 @@ def _ai_score_payload(
     report a complete one.
     """
     from app.services.agents import identity  # noqa: PLC0415
-    from app.services import swot_intake  # noqa: PLC0415
+    from app.services import job_version  # noqa: PLC0415
 
     evidence_refs = list(_resume_evidence_refs(profile))
     sections = _resume_sections(profile)
@@ -1520,7 +1520,7 @@ def _ai_score_payload(
             ),
             "source_type": getattr(link, "source_type", None),
         },
-        "jd_version": swot_intake.jd_version(job),
+        "jd_version": job_version.jd_version(job),
         "artifact_version": AI_SCORE_ARTIFACT_VERSION,
     }
 

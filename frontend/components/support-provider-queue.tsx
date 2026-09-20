@@ -1,6 +1,6 @@
 "use client";
 
-// ReadyPick's support queue, across every customer.
+// Vivekium's support queue, across every customer.
 //
 // The same conversation view the customer sees, from the other side of the
 // desk. What this screen adds is the two facts a queue needs and a customer

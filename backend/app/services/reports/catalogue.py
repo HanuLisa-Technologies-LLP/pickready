@@ -137,7 +137,7 @@ CATALOGUE: tuple[ReportDefinition, ...] = (
     _r(
         id="A-01", name="Individual PRISM Report", category="A",
         description=(
-            "Full Predictive Role Intelligence & Suitability Mapping for one "
+            "Full Evidence-Based Role Intelligence & Suitability Mapping for one "
             "candidate: Overall Grade, Must-have, Nice-to-have, Behavioural "
             "dimensions, Gap Analysis, interview probes, Validation section."
         ),
@@ -324,7 +324,7 @@ CATALOGUE: tuple[ReportDefinition, ...] = (
     _r(
         id="C-03", name="Cost-per-Hire Report", category="C",
         description=(
-            "Total ReadyPick assessment cost per hired candidate: credits "
+            "Total Vivekium assessment cost per hired candidate: credits "
             "consumed x Rs 600, benchmarked against industry cost-per-hire "
             "norms."
         ),
@@ -623,7 +623,7 @@ CATALOGUE: tuple[ReportDefinition, ...] = (
             "Stage-wise demographic pass-through rates across the hiring "
             "funnel. Activates ONLY when the client has a documented DEI "
             "data collection policy and has explicitly consented to "
-            "demographic tracking in the ReadyPick service agreement."
+            "demographic tracking in the Vivekium service agreement."
         ),
         data_sources=("demographic funnel data (must not be processed without consent)",),
         parameters=(_P_RANGE, _P_DEPT),

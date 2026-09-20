@@ -403,7 +403,7 @@ async def preview_email_template(
 # ── SES delivery events over SNS (spec section 8) ────────────────────────────
 #
 # SNS delivers a JSON document over HTTPS with its own signature scheme. The
-# endpoint is unauthenticated by necessity (SNS holds no ReadyPick session),
+# endpoint is unauthenticated by necessity (SNS holds no Vivekium session),
 # so THREE independent checks gate every message before a row is touched:
 # the TopicArn must equal `ses_sns_topic_arn` exactly (empty setting = refuse
 # everything), the signing certificate must come from an https URL on

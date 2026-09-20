@@ -1,6 +1,6 @@
 """Tenant email-template rendering + .ics building (ESD §11/§12, FR-8.5).
 
-ReadyPick ships no fixed email copy — each tenant maintains editable,
+Vivekium ships no fixed email copy — each tenant maintains editable,
 versioned templates (EmailTemplate rows). Rendering picks the tenant's
 highest active version by name; if the tenant has no template yet, a
 deliberately minimal default keeps the pipeline functional (the product
@@ -30,8 +30,8 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # (Owner/super_admin) who have no tenant and therefore no tenant-authored
     # templates. The body carries the code; it is never logged (ESD §16).
     "otp": (
-        "Your ReadyPick verification code",
-        "Your ReadyPick one-time password is {{code}}. It is valid for "
+        "Your Vivekium verification code",
+        "Your Vivekium one-time password is {{code}}. It is valid for "
         "{{ttl_minutes}} minutes.\n\n"
         "If you did not request this code, you can ignore this email.",
     ),
@@ -63,14 +63,14 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # arriving, and the first the customer would otherwise hear of it is a
     # refused invitation. Deliberately carries no amount and no card detail.
     "payment_failed": (
-        "Your ReadyPick payment did not go through",
+        "Your Vivekium payment did not go through",
         "Hello,\n\n"
         "We could not process this month's subscription payment for "
         "{{company_name}}. Your credit balance is unchanged, and any credits "
         "already in your pool remain available.\n\n"
         "Update your payment method to keep new assessment invitations "
         "flowing:\n\n{{billing_url}}\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     # Master Directive Part 5 §4 — the two credit-balance warning tiers. The
     # figures are computed at send time by the worker; the copy states balance,
@@ -82,7 +82,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "At current usage, this covers approximately "
         "{{estimated_assessments}} more assessments.{{stem_note}}\n\n"
         "Top up now to keep your pipeline moving:\n\n{{billing_url}}\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     "credit_warning_critical": (
         "Critical: only {{balance_credits}} credits remaining",
@@ -92,14 +92,14 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "usage, this covers approximately {{estimated_assessments}} more "
         "assessments.{{stem_note}}\n\n"
         "Top up immediately:\n\n{{billing_url}}\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     # Master Directive Part 5 §7.3 — the GST invoice email that accompanies a
     # settled credit-pack purchase. The invoice itself is a PDF attachment
     # rendered by the worker; the body only confirms the top-up and points at
     # the billing page, where the invoice stays downloadable.
     "credit_invoice": (
-        "Your ReadyPick credit purchase and invoice {{invoice_number}}",
+        "Your Vivekium credit purchase and invoice {{invoice_number}}",
         "Hello,\n\n"
         "Your credit purchase for {{company_name}} is confirmed. "
         "{{credits_total}} credits have been added to your account and never "
@@ -107,7 +107,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "Invoice {{invoice_number}} (total Rs. {{total_inr}} incl. GST) is "
         "attached, and remains available from your billing page:\n\n"
         "{{billing_url}}\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     "interview_invite": (
         "Interview invitation, {{job_title}} at {{company_name}}",
@@ -161,14 +161,14 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # The recipient address is the only personal datum involved, and it is
     # already the thing being written to.
     "account_deleted": (
-        "Your ReadyPick profile has been deleted",
+        "Your Vivekium profile has been deleted",
         "Your profile and all of the data held with it have been permanently "
         "deleted at your request. This cannot be undone.\n\n"
         "You are no longer visible to employer clients registered on the "
         "platform, and any assessment or shortlisting in progress has been "
         "cancelled.\n\n"
         "If you did not ask for this, reply to this message immediately.\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     # Feature 8, the six-month renewal. BOTH of these carry no context for the
     # same reason `account_deleted` does: the sweep that sends them iterates
@@ -177,14 +177,14 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # The recipient address is the only personal datum involved and it is
     # already the thing being written to.
     "consent_renewal_reminder": (
-        "Confirm you would like to stay on ReadyPick",
+        "Confirm you would like to stay on Vivekium",
         "It has been six months since you joined or last confirmed your "
         "details, so we are checking that you would still like your profile "
         "kept on the platform.\n\n"
         "Sign in and confirm to stay visible to employer clients registered "
         "on the platform. If we do not hear from you we will write once more "
         "before removing your profile.\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     # THE SENTENCE THIS LETTER HAS TO EARN. It says deletion has not happened
     # yet, so the sweep opens a second window after sending it rather than
@@ -193,7 +193,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # the deletion at the same instant, which would warn somebody about
     # something already done.
     "consent_final_warning": (
-        "Action needed to keep your ReadyPick profile",
+        "Action needed to keep your Vivekium profile",
         "We wrote recently asking you to confirm that you would like to stay "
         "on the platform, and we have not heard back.\n\n"
         "If you do not confirm, your profile will be permanently deleted. "
@@ -201,7 +201,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "to be obtained again from the beginning, and takes you out of job "
         "matching entirely.\n\n"
         "Sign in and confirm to keep your profile.\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     "bgv_verification": ("{{subject}}", "{{body}}"),
     # Vivekium feature 4, the three candidate-facing BGV letters. Email 2
@@ -215,7 +215,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "A previous employer has completed the employment verification we "
         "requested as part of your application. There is nothing you need "
         "to do.\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     "bgv_no_response": (
         "Your previous employer has not responded yet",
@@ -226,7 +226,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "It may help to contact their HR team directly and ask them to "
         "complete the verification link we sent. A verification that is not "
         "completed can hold up an offer.\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     "bgv_bounced": (
         "We could not reach your previous employer",
@@ -235,29 +235,29 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "address ({{masked_hr_email}}) could not be delivered.\n\n"
         "Please sign in, open your employment history and correct the HR "
         "email address so we can send the request again.\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
     "client_invite": (
-        "Your {{tenant_name}} workspace on ReadyPick is ready",
+        "Your {{tenant_name}} workspace on Vivekium is ready",
         "Hello,\n\n"
-        "A ReadyPick workspace has been created for {{tenant_name}}. Accept "
+        "A Vivekium workspace has been created for {{tenant_name}}. Accept "
         "your invitation and sign in here:\n\n{{invite_link}}\n\n"
         "You will sign in with Google or with an email and password, "
-        "ReadyPick never asks you to set a separate password.\n\n"
-        "Regards,\nReadyPick",
+        "Vivekium never asks you to set a separate password.\n\n"
+        "Regards,\nVivekium",
     ),
     # api/companies.py seeds a tenant-EDITABLE row for this name on first use,
     # but a default belongs here too: the seeding and the send are separate
     # steps, and a missing row must degrade to generic copy rather than to a
     # silently lost invitation.
     "staff_invite": (
-        "You have been invited to {{company_name}} on ReadyPick",
+        "You have been invited to {{company_name}} on Vivekium",
         "Hi {{full_name}},\n\n"
-        "{{invited_by}} has invited you to join {{company_name}} on ReadyPick "
+        "{{invited_by}} has invited you to join {{company_name}} on Vivekium "
         "as a {{role_label}}.\n\n"
         "Accept your invitation here:\n\n{{invite_link}}\n\n"
         "You will sign in with Google or with an email and password, "
-        "ReadyPick never asks you to set a separate password.\n\n"
+        "Vivekium never asks you to set a separate password.\n\n"
         "This link expires on {{expires_on}}.\n\n"
         "Regards,\nThe {{company_name}} team",
     ),
@@ -271,7 +271,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "Employment verification request regarding {{candidate_name}}",
         "Dear HR team at {{employer_name}},\n\n"
         "{{candidate_name}} has listed {{employer_name}} as a previous "
-        "employer on their ReadyPick candidate profile and has asked us to "
+        "employer on their Vivekium candidate profile and has asked us to "
         "request a standard employment verification. Could you please reply "
         "to this email confirming the following, to the extent your policy "
         "allows:\n\n"
@@ -288,7 +288,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "This request was initiated by the candidate. If you are not the "
         "right contact, we would appreciate a forward to the appropriate "
         "team.\n\n"
-        "Regards,\nReadyPick Verification",
+        "Regards,\nVivekium Verification",
     ),
     # ── In-product support (2026-09-10) ─────────────────────────────────────
     #
@@ -303,12 +303,12 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # substitution here that could carry candidate material even if somebody
     # had pasted some into the thread.
     "support_reply_to_customer": (
-        "ReadyPick has replied about: {{subject_line}}",
+        "Vivekium has replied about: {{subject_line}}",
         "Hello,\n\n"
-        "A member of the ReadyPick team has replied to your support "
+        "A member of the Vivekium team has replied to your support "
         "conversation, {{subject_line}}.\n\n"
         "Read the reply and respond here:\n\n{{support_url}}\n\n"
-        "Regards,\nReadyPick Support",
+        "Regards,\nVivekium Support",
     ),
     "support_message_for_staff": (
         "{{company_name}} is waiting on a reply: {{subject_line}}",
@@ -316,7 +316,7 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "{{company_name}} has written in about {{subject_line}} and the "
         "conversation is waiting on a reply.\n\n"
         "Open it here:\n\n{{support_url}}\n\n"
-        "Regards,\nReadyPick",
+        "Regards,\nVivekium",
     ),
 }
 
@@ -386,12 +386,12 @@ def text_to_html(body: str) -> str:
         'border-radius:14px;background:#ffffff">'
         '<div style="padding:20px 28px;border-bottom:1px solid #ede9fe;'
         'font-family:Arial,sans-serif;font-size:20px;font-weight:800;color:#111827">'
-        'ReadyPick<span style="color:#7c3aed">.</span></div>'
+        'Vivekium<span style="color:#7c3aed">.</span></div>'
         '<div style="padding:28px;font-family:Arial,sans-serif;font-size:15px;'
         f'line-height:1.65;color:#374151">{content_html}</div>'
         '<div style="padding:16px 28px;background:#fafafa;font-family:Arial,sans-serif;'
         'font-size:12px;line-height:1.5;color:#6b7280">'
-        'This message was sent through a secure ReadyPick workflow.'
+        'This message was sent through a secure Vivekium workflow.'
         '</div></div></div>'
     )
 
@@ -467,7 +467,7 @@ def build_ics(
     from icalendar import Calendar, Event, vCalAddress, vText
 
     cal = Calendar()
-    cal.add("prodid", "-//ReadyPick//Interview Scheduling//EN")
+    cal.add("prodid", "-//Vivekium//Interview Scheduling//EN")
     cal.add("version", "2.0")
     cal.add("method", "REQUEST")
 

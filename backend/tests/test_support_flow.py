@@ -243,7 +243,7 @@ def test_the_status_is_derived_from_who_wrote_and_takes_no_current_status() -> N
 
     `status_after_message` cannot consult the current status, so it has no arm
     that can be forgotten and no way for a handler to pass a status of its own
-    choosing. If it could, "waiting on ReadyPick" would mean "threads somebody
+    choosing. If it could, "waiting on Vivekium" would mean "threads somebody
     remembered to mark".
     """
     assert support_fsm.status_after_message("customer") == THREAD_OPEN

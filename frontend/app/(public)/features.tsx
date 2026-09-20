@@ -67,7 +67,7 @@ export function Features() {
           >
             Built for teams who have to defend the decision
           </h2>
-          <p className="mt-4 text-pretty text-base leading-7">
+          <p className="mt-4 text-pretty text-base">
             Everything below is in the product today, not on a roadmap.
           </p>
         </Reveal>

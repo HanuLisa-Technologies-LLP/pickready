@@ -55,7 +55,7 @@ export function ReportSection() {
           >
             One page your hiring manager will actually read
           </h2>
-          <p className="mt-4 text-pretty text-base leading-7">
+          <p className="mt-4 text-pretty text-base">
             The report is the point of the whole product. It says what a
             candidate can do, in words, and it never puts a score in front of
             anyone. Four grades do all the rating: Highly Matching, Matching,

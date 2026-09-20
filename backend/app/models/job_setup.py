@@ -89,8 +89,10 @@ class JobSwotIntake(Base, UUIDPKMixin, CreatedAtMixin):
     # phase recomputed from the arrays would send a manager who genuinely had
     # nothing more to add back round to the same question forever.
 
-    #: Which block of §18.2's timeline the session is in. See
-    #: `swot_intake.PHASES`.
+    #: Which block of §18.2's timeline the session is in. The vocabulary lives
+    #: in migration 0064 and the CHECK constraint it created: the module that
+    #: defined it went with the retired Role Intake conversation on
+    #: 2026-09-20, and this table now holds only that conversation's history.
     phase: Mapped[str] = mapped_column(
         String(20), nullable=False, default="areas", server_default="areas"
     )

@@ -61,8 +61,8 @@ export const metadata: Metadata = {
    */
   metadataBase: new URL(SITE_URL),
   title: {
-    default: "ReadyPick, know every candidate before you meet them",
-    template: "%s | ReadyPick",
+    default: "Vivekium, know every candidate before you meet them",
+    template: "%s | Vivekium",
   },
   description: SITE_DESCRIPTION,
   applicationName: SITE_NAME,
@@ -77,7 +77,7 @@ export const metadata: Metadata = {
     type: "website",
     siteName: SITE_NAME,
     url: "/",
-    title: "ReadyPick, know every candidate before you meet them",
+    title: "Vivekium, know every candidate before you meet them",
     description:
       "Rank every applicant against the role, run a structured AI assessment, and read one clear report per candidate.",
     // No `images` entry here on purpose. `app/opengraph-image.tsx` generates
@@ -88,7 +88,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "ReadyPick, know every candidate before you meet them",
+    title: "Vivekium, know every candidate before you meet them",
     description:
       "Rank every applicant against the role, run a structured AI assessment, and read one clear report per candidate.",
     // `twitter:image` is deliberately absent for the same reason: X falls back

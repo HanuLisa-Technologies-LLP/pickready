@@ -13,6 +13,7 @@
 
 import * as React from "react";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -23,7 +24,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { READ_ONLY_TITLE } from "@/lib/permissions";
 import type { SwotAnalysis } from "@/lib/types";
-import type { SwotIntake } from "./swot-intake";
 
 const api = vi.hoisted(() => {
   class ApiError extends Error {
@@ -76,39 +76,8 @@ function analysis(overrides: Partial<SwotAnalysis> = {}): SwotAnalysis {
   };
 }
 
-function intake(overrides: Partial<SwotIntake> = {}): SwotIntake {
-  return {
-    job_id: "job-1",
-    status: "in_progress",
-    complete: false,
-    current_area: "strengths",
-    current_area_label: "Strengths",
-    prompt: "What would success in this role look like in the first year?",
-    captured: { strengths: [], weaknesses: [], opportunities: [], threats: [] },
-    areas_total: 4,
-    areas_done: 0,
-    ...overrides,
-  };
-}
-
-/**
- * The panel now makes TWO reads: the SWOT document, and the intake it embeds.
- * Routing by path keeps each test honest about which fetch it is shaping;
- * `intakeState: null` simulates the intake read failing, which the section
- * must absorb silently.
- */
-function mockReads(
-  doc: SwotAnalysis,
-  intakeState: SwotIntake | null = intake()
-) {
-  apiGet.mockImplementation((path: string) => {
-    if (path.endsWith("/swot")) {
-      return intakeState
-        ? Promise.resolve(intakeState)
-        : Promise.reject(new Error("intake unavailable"));
-    }
-    return Promise.resolve(doc);
-  });
+function mockReads(doc: SwotAnalysis) {
+  apiGet.mockResolvedValue(doc);
 }
 
 afterEach(cleanup);
@@ -185,6 +154,68 @@ describe("a user who may edit this job's SWOT", () => {
     // Nothing to edit yet, so no Edit control and still no restriction copy.
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     expect(screen.queryByText(READ_ONLY_TITLE)).toBeNull();
+  });
+
+  it("sends version zero on a first hand-written save and refreshes it after success", async () => {
+    mockReads(analysis({
+      status: "not_generated",
+      strengths: null,
+      weaknesses: null,
+      opportunities: null,
+      threats: null,
+      generated_by: null,
+      version: 0,
+    }));
+    apiPut.mockResolvedValue(analysis({
+      status: "edited", human_edited: true, version: 1,
+    }));
+    render(<JobSwotAnalysisPanel jobId="job-1" />);
+
+    const field = await screen.findByLabelText("Strengths");
+    fireEvent.change(field, { target: { value: "Written by the team." } });
+    fireEvent.click(screen.getByRole("button", { name: /Save SWOT Analysis/ }));
+    await waitFor(() => expect(apiPut).toHaveBeenCalledTimes(1));
+    expect(apiPut.mock.calls[0][1]).toMatchObject({
+      strengths: "Written by the team.", expected_version: 0,
+    });
+
+    await screen.findByText(/A clear, senior brief/);
+    fireEvent.click(screen.getByRole("button", { name: /Save SWOT Analysis/ }));
+    await waitFor(() => expect(apiPut).toHaveBeenCalledTimes(2));
+    expect(apiPut.mock.calls[1][1].expected_version).toBe(1);
+  });
+
+  it("sends one request for a rapid double save while the first is in flight", async () => {
+    mockReads(analysis());
+    let finishSave: (value: SwotAnalysis) => void = () => {};
+    apiPut.mockReturnValue(new Promise<SwotAnalysis>((resolve) => {
+      finishSave = resolve;
+    }));
+    render(<JobSwotAnalysisPanel jobId="job-1" />);
+
+    await screen.findByText(/A clear, senior brief/);
+    const button = screen.getByRole("button", { name: /Save SWOT Analysis/ });
+    act(() => {
+      button.click();
+      button.click();
+    });
+    expect(apiPut).toHaveBeenCalledTimes(1);
+    expect(apiPut.mock.calls[0][1].expected_version).toBe(1);
+
+    await act(async () => finishSave(analysis({ version: 2 })));
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it("treats a real concurrent edit as a conflict and reloads the document", async () => {
+    mockReads(analysis());
+    apiPut.mockRejectedValueOnce(new ApiError(409, "Someone else saved first."));
+    render(<JobSwotAnalysisPanel jobId="job-1" />);
+
+    await screen.findByText(/A clear, senior brief/);
+    fireEvent.click(screen.getByRole("button", { name: /Save SWOT Analysis/ }));
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith(`${MOUNT}/job-1/swot-analysis`));
+    await waitFor(() => expect(apiGet.mock.calls.filter((call) => call[0] === `${MOUNT}/job-1/swot-analysis`)).toHaveLength(2));
+    expect(apiPut).toHaveBeenCalledTimes(1);
   });
 
   it("renders each empty section as an open field with its own placeholder and hint", async () => {
@@ -301,36 +332,12 @@ describe("a user who may edit this job's SWOT", () => {
     expect(screen.getByText(/A clear, senior brief/)).toBeTruthy();
   });
 
-  it("embeds the reporting authority intake with a working Send", async () => {
+  it("uses only the Job SWOT document route", async () => {
     mockReads(analysis());
     render(<JobSwotAnalysisPanel jobId="job-1" />);
-
-    expect(
-      await screen.findByText("Reporting authority intake")
-    ).toBeTruthy();
-    expect(
-      screen.getByText(/What would success in this role look like/)
-    ).toBeTruthy();
-
-    const answer = screen.getByLabelText("Your answer");
-    fireEvent.change(answer, {
-      target: { value: "Ships the platform migration without an outage." },
-    });
-    apiPost.mockResolvedValueOnce(intake({ areas_done: 1 }));
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
-
-    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
-    expect(apiPost.mock.calls[0][0]).toBe(`${MOUNT}/job-1/swot/respond`);
-  });
-
-  it("absorbs an intake load failure without taking the SWOT down", async () => {
-    mockReads(analysis(), null);
-    render(<JobSwotAnalysisPanel jobId="job-1" />);
-
     await screen.findByText(/A clear, senior brief/);
-    await waitFor(() =>
-      expect(screen.queryByText("Reporting authority intake")).toBeNull()
-    );
+    expect(apiGet).toHaveBeenCalledTimes(1);
+    expect(apiGet).toHaveBeenCalledWith(`${MOUNT}/job-1/swot-analysis`);
   });
 });
 
@@ -349,10 +356,6 @@ describe("a user who may view but not edit", () => {
     expect(
       screen.queryByRole("button", { name: /Save SWOT Analysis/ })
     ).toBeNull();
-    // The intake's captured points are readable; the Send composer is not
-    // offered, because the respond route would refuse it.
-    expect(await screen.findByText("Reporting authority intake")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
   });
 
   it("says the SWOT is empty without inviting an action they cannot take", async () => {

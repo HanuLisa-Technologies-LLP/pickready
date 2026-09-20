@@ -159,21 +159,21 @@ TEMPLATES: dict[str, EmailTemplate] = {
         _template(
             "password_reset",
             "Password Reset",
-            "Reset your ReadyPick sign-in",
+            "Reset your Vivekium sign-in",
             "Hi {{candidate_name}},\n\n"
-            "We received a request to reset the sign-in for your ReadyPick "
+            "We received a request to reset the sign-in for your Vivekium "
             "account. If this was you, follow the instructions on the sign-in "
             "page. If it was not, you can safely ignore this email.\n\n"
-            "Regards,\nReadyPick",
+            "Regards,\nVivekium",
         ),
         _template(
             "account_verification",
             "Account Verification",
-            "Verify your ReadyPick account",
+            "Verify your Vivekium account",
             "Hi {{candidate_name}},\n\n"
-            "Welcome to ReadyPick. Please verify your account by following "
+            "Welcome to Vivekium. Please verify your account by following "
             "the link in your sign-in flow to finish setting things up.\n\n"
-            "Regards,\nReadyPick",
+            "Regards,\nVivekium",
         ),
         _template(
             "application_update",

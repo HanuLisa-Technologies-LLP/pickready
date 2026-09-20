@@ -300,7 +300,7 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from_email: str = "noreply@pickready.app"
-    smtp_from_name: str = "ReadyPick"
+    smtp_from_name: str = "Vivekium"
     smtp_starttls: bool = True
     smtp_ssl: bool = False
 
@@ -578,7 +578,7 @@ class Settings(BaseSettings):
     )
     assessment_consent_text_conversational: str = (
         "Before you begin the assessment, please understand and agree to the "
-        "following. ReadyPick collects and processes what you submit during "
+        "following. Vivekium collects and processes what you submit during "
         "the assessment: your written answers, your questions, your responses "
         "to multiple-choice and coding questions, and session data such as "
         "timings and interaction records. This information is stored, is "
@@ -735,7 +735,7 @@ class Settings(BaseSettings):
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
     razorpay_webhook_secret: str = ""
-    # ReadyPick's own GST registration number, printed on every credit-pack
+    # Vivekium's own GST registration number, printed on every credit-pack
     # invoice (Master Directive Part 5 §5.2). Configuration, not code: it is a
     # legal identifier that changes with registration, never with a release.
     readypick_gstin: str = ""

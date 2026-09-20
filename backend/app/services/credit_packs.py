@@ -328,7 +328,7 @@ async def settle_purchase(
 
 # ── GST invoice PDF (§5.2 / §7.3) ────────────────────────────────────────────
 
-#: ReadyPick brand navy for the invoice header (Part 1's palette).
+#: Vivekium brand navy for the invoice header (Part 1's palette).
 _NAVY = (0.06, 0.13, 0.28)
 
 
@@ -361,7 +361,7 @@ def render_invoice_pdf(purchase: CreditPurchase, tenant: Tenant) -> bytes:
     page.rect(0, height - 90, width, 90, stroke=0, fill=1)
     page.setFillColorRGB(1, 1, 1)
     page.setFont("Helvetica-Bold", 22)
-    page.drawString(40, height - 55, "ReadyPick")
+    page.drawString(40, height - 55, "Vivekium")
     page.setFont("Helvetica", 11)
     page.drawRightString(width - 40, height - 55, "TAX INVOICE")
 
@@ -376,7 +376,7 @@ def render_invoice_pdf(purchase: CreditPurchase, tenant: Tenant) -> bytes:
     y -= 18
     page.setFont("Helvetica", 10)
     if settings.readypick_gstin:
-        page.drawString(40, y, f"ReadyPick GSTIN: {settings.readypick_gstin}")
+        page.drawString(40, y, f"Vivekium GSTIN: {settings.readypick_gstin}")
         y -= 14
     page.drawString(40, y, f"Billed to: {tenant.name}")
     y -= 14
@@ -403,7 +403,7 @@ def render_invoice_pdf(purchase: CreditPurchase, tenant: Tenant) -> bytes:
         y -= 16
 
     line(
-        f"ReadyPick Intelligence Report Credits "
+        f"Vivekium Intelligence Report Credits "
         f"({purchase.credits_purchased} x {_inr(PRICE_PER_CREDIT_INR)})",
         _inr(purchase.subtotal_inr),
     )

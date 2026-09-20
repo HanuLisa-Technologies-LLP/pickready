@@ -134,13 +134,19 @@ AGENTS: dict[str, Agent] = {
     BODHA: Agent(
         name="Bodha",
         meaning="Understanding / insight",
-        role="Hiring Manager SWOT Intake Agent",
+        role="Hiring Manager Job SWOT Agent",
         runtime_id=permissions.AGENT_JOB_SETUP,
         trigger="Immediately after the recruiter saves the finalised job description.",
         portal=PORTAL_CUSTOMER,
         skills=("collect_swot", "summarize_role_context", "validate_swot_completeness"),
+        # The Role Intake conversation was retired (2026-09-20) and the Job
+        # SWOT Analysis document replaced it, so the live implementation is
+        # `swot_analysis`. `swot_intake` stayed named here after its last
+        # caller went, which is exactly what the reachability test caught: an
+        # identity map that names unreachable code claims an agent is running
+        # something nothing can invoke.
         implemented_by=(
-            "app.services.swot_intake",
+            "app.services.swot_analysis",
             "app.services.hiring.swot_quality",
             "app.services.hiring.situations",
         ),

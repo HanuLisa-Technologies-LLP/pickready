@@ -137,52 +137,6 @@ class FrameworkOut(BaseModel):
 # ── The Reporting Authority SWOT intake (spec 5.1) ───────────────────────
 
 
-class SwotAnswerIn(BaseModel):
-    answer: str = Field(min_length=1, max_length=6000)
-
-
-class SwotIntakeOut(BaseModel):
-    """The intake conversation, as one payload.
-
-    `captured` is what the PPI agent will read; `prompt` is what the reporting
-    authority is being asked right now. Both are returned every turn so the
-    screen can show the growing picture beside the question, which is what makes
-    a four-area conversation feel finite to someone doing it unpaid.
-    """
-
-    job_id: uuid.UUID
-    status: str
-    complete: bool
-    #: strengths | weaknesses | opportunities | threats, or null when finished.
-    current_area: str | None = None
-    current_area_label: str | None = None
-    prompt: str | None = None
-    #: area -> the points captured so far, in the authority's own terms.
-    captured: dict[str, list[str]] = {}
-    areas_total: int = 4
-    areas_done: int = 0
-    # ── The rest of §18.2's session, which the four quadrants are only the
-    #    first four blocks of ──────────────────────────────────────────────
-    #: `swot_intake.PHASES`. Reported so the screen can say which block of the
-    #: session the manager is in rather than showing "Threats" through the
-    #: force-ranking, the best-performer test and the classification read-back.
-    phase: str = "areas"
-    phase_label: str | None = None
-    #: The §18.4 situation type the manager CONFIRMED, as a word, plus its
-    #: label. Never a proposal: a proposal shown as a confirmation is how the
-    #: most expensive error at intake gets made silently.
-    situation_key: str | None = None
-    situation_label: str | None = None
-    #: True while §18.5 has handed the intake back. A screen that showed this
-    #: the same as "in progress" would let a rejected intake look finished.
-    returned_for_rework: bool = False
-    #: The §18.5 rules currently refusing, by name. The SENTENCE to say is
-    #: `prompt`; these are for the progress panel.
-    outstanding_rules: list[str] = []
-    #: §18.3 probes and the other instruments already put to the manager.
-    instruments_asked: list[str] = []
-
-
 class JobSetupOut(BaseModel):
     """The one manual step in the pipeline (spec §10), as one payload.
 
@@ -191,10 +145,6 @@ class JobSetupOut(BaseModel):
     when both are stamped, and everything after that -- the candidate
     conversation, scoring, report synthesis -- runs with no further human
     involvement.
-
-    The SWOT intake is REPORTED but does not gate on its own. It is an input to
-    the matrix, so an unfinished intake already shows up as a matrix nobody has
-    approved, and gating separately would give one problem two error messages.
 
     `questions_approved` is retained and always reports the matrix's own approval
     state. It is not a third gate: it is here so a client build that still reads
@@ -210,8 +160,7 @@ class JobSetupOut(BaseModel):
     framework_approved: bool
     #: The second half of the setup session (spec §3.2).
     matching_categories_finalized: bool = False
-    #: Whether the reporting authority has finished the SWOT intake.
-    swot_complete: bool = False
+    swot_analysis_ready: bool = False
     ready_for_candidates: bool
     generated_at: datetime | None = None
     approved_at: datetime | None = None
@@ -703,7 +652,7 @@ class SwotAnalysisSectionsIn(BaseModel):
     threats: str = Field(default="", max_length=4000)
     #: The version the editor loaded. Sent back so a save that would overwrite
     #: somebody else's newer save is refused instead of silently winning.
-    expected_version: int | None = None
+    expected_version: int = Field(ge=0)
 
 
 class SwotAnalysisGenerateIn(BaseModel):

@@ -7,7 +7,7 @@ import { EmployerProfile } from "./employer-profile";
 // One employer's public page (2026-09-05 add-features spec, "Employer Page &
 // Content"). The tab title is derived from the slug, which IS the company
 // name in URL form, so a fetch is not needed to name the tab; the layout
-// template appends "| ReadyPick".
+// template appends "| Vivekium".
 export async function generateMetadata({
   params,
 }: {

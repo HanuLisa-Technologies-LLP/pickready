@@ -36,7 +36,7 @@ from app.evaluation.metrics import ConfusionMatrix, InsufficientData, Interval, 
 def _protocol(**overrides: object) -> JudgeProtocol:
     base: dict[str, object] = {
         "scale": ("met", "not_met"),
-        "population": "ReadyPick reasoning golden set 2026.Q3.1, Must-have items",
+        "population": "Vivekium reasoning golden set 2026.Q3.1, Must-have items",
         "abstention_handling": "interval",
         "aggregation": "majority",
         "position_handling": "not_applicable",

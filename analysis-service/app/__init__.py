@@ -1,4 +1,4 @@
-"""ReadyPick analysis service: speaker counting and an AI-text estimate.
+"""Vivekium analysis service: speaker counting and an AI-text estimate.
 
 A separate image from the backend because the model libraries it carries
 (torch, pyannote.audio, transformers) are several hundred megabytes the API

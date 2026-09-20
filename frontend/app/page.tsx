@@ -51,10 +51,10 @@ const LANDING_LIVE = process.env.NEXT_PUBLIC_LANDING_LIVE === "true";
  * product tour that is not what `/` is currently serving.
  */
 const HOLDING_TITLE = `Site Under Construction | ${SITE_NAME}`;
-const HOLDING_DESCRIPTION = "ReadyPick is preparing something new. Check back soon.";
-const LANDING_TITLE = "ReadyPick, know every candidate before you meet them";
+const HOLDING_DESCRIPTION = "Vivekium is preparing something new. Check back soon.";
+const LANDING_TITLE = "Vivekium, know every candidate before you meet them";
 const LANDING_DESCRIPTION =
-  "ReadyPick reads every applicant against the role, runs a structured assessment built from the job itself, and returns one readable report per candidate.";
+  "Vivekium reads every applicant against the role, runs a structured assessment built from the job itself, and returns one readable report per candidate.";
 
 export const metadata: Metadata = LANDING_LIVE
   ? {
@@ -139,7 +139,7 @@ function SiteUnderConstruction() {
         <main className="relative flex flex-1 items-center justify-center overflow-hidden border border-t-0 border-navy-900 bg-navy-900">
           <div className="w-[min(980px,calc(100%-4rem))] px-6 py-20 text-center sm:py-24">
             <span className="mb-6 inline-block text-sm font-bold leading-tight text-teal-400">
-              ReadyPick
+              Vivekium
             </span>
 
             <h1 className="text-balance text-[clamp(3.5rem,10vw,8.9rem)] font-bold leading-[0.98] tracking-[-0.09em] text-white">
@@ -169,7 +169,7 @@ function SiteUnderConstruction() {
               href="/login"
               className="text-sm font-semibold leading-none text-white no-underline"
             >
-              Readypick
+              Vivekium
             </Link>
           </footer>
         </main>

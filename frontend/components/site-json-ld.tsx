@@ -4,7 +4,7 @@ import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
 /**
  * Site-level structured data: who publishes this site, and what the site is.
  *
- * TWO NODES, ONE GRAPH. `Organization` describes ReadyPick and `WebSite`
+ * TWO NODES, ONE GRAPH. `Organization` describes Vivekium and `WebSite`
  * describes readypick.ai. They are emitted together in an `@graph` so the
  * WebSite can name its publisher by `@id` rather than repeating the
  * organisation inline, which is what stops a consumer reading two different
@@ -19,8 +19,8 @@ import { SITE_DESCRIPTION, SITE_NAME, SITE_URL } from "@/lib/site";
  *    path. Google's Organization logo guidance wants an image at least
  *    112x112, so the icon qualifies. An invented path here would produce a
  *    logo property pointing at a 404, which is worse than no logo property.
- *  - `parentOrganization` is Hanulisa Technologies LLP, which the public site
- *    footer states on every page ("A Hanulisa Technologies LLP product"). It
+ *  - `parentOrganization` is Varpitech LLP, which the public site
+ *    footer states on every page ("A Varpitech LLP product"). It
  *    is the one corporate fact this site actually publishes.
  *  - `inLanguage` is "en", which is what `<html lang>` declares.
  *
@@ -71,7 +71,7 @@ export function SiteJsonLd() {
             description: SITE_DESCRIPTION,
             parentOrganization: {
               "@type": "Organization",
-              name: "Hanulisa Technologies LLP",
+              name: "Varpitech LLP",
             },
           },
           {

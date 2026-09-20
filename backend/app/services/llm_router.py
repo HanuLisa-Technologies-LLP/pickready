@@ -1,4 +1,4 @@
-"""The single-vendor LLM router: every model call in ReadyPick goes through here.
+"""The single-vendor LLM router: every model call in Vivekium goes through here.
 
 OpenAI Chat Completions, two model ids, one credential PER MODEL. A compiled
 LangGraph state machine drives the retry loop, exactly as it did in the

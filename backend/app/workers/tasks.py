@@ -926,6 +926,7 @@ def reconcile_job_setup():
     """
     from app.models.assessment import JobCompetency
     from app.models.job import Job
+    from app.models.job_setup import JobSwotAnalysis
     from app.services.hiring import pipeline_halt, scorecard
 
     #: Bounded per tick. Each job is at most one model call, so 25 is a few
@@ -951,7 +952,14 @@ def reconcile_job_setup():
                     select(Job)
                     .where(
                         Job.archived_at.is_(None),
-                        Job.swot_completed_at.is_not(None),
+                        select(JobSwotAnalysis.job_id)
+                        .where(
+                            JobSwotAnalysis.job_id == Job.id,
+                            (JobSwotAnalysis.strengths.is_not(None)
+                             | JobSwotAnalysis.weaknesses.is_not(None)
+                             | JobSwotAnalysis.opportunities.is_not(None)
+                             | JobSwotAnalysis.threats.is_not(None)),
+                        ).exists(),
                         ~has_framework,
                     )
                     .order_by(Job.created_at)
@@ -2611,7 +2619,7 @@ def notify_support_message(thread_id: str, message_id: str):
     WHO IS TOLD DEPENDS ON WHO WROTE
     ----------------------------------
     A STAFF message goes to the customer who opened the thread. A CUSTOMER
-    message goes to every ReadyPick staff member holding
+    message goes to every Vivekium staff member holding
     `handle_support_threads`, asked of the permission ROWS through the rbac
     engine rather than branched on by role name, so a future support role is a
     seeded row instead of an edit to this function.
@@ -2672,7 +2680,7 @@ def notify_support_message(thread_id: str, message_id: str):
                         # The staff notification is a PLATFORM email and
                         # carries no tenant, so it uses the default sender
                         # rather than the customer's own verified one: sending
-                        # ReadyPick's internal queue notice as the customer
+                        # Vivekium's internal queue notice as the customer
                         # would be wrong in both directions.
                         str(thread.tenant_id)
                         if message.author_side == SIDE_STAFF

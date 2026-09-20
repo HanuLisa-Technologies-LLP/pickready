@@ -93,7 +93,7 @@ export function WorkspaceSwitcher() {
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {pending ? `Switch to ${pending.tenant_name ?? "ReadyPick"}?` : "Switch workspace"}
+            {pending ? `Switch to ${pending.tenant_name ?? "Vivekium"}?` : "Switch workspace"}
           </DialogTitle>
           <DialogDescription>
             {pending
@@ -127,7 +127,7 @@ export function WorkspaceSwitcher() {
                 onClick={() => setPending(context)}
               >
                 <span className="block font-semibold">
-                  {context.tenant_name ?? "ReadyPick"}
+                  {context.tenant_name ?? "Vivekium"}
                 </span>
                 <span className="block text-xs">
                   {ROLE_LABEL[context.role]}

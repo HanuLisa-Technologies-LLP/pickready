@@ -1,4 +1,4 @@
-# Contributing to ReadyPick
+# Contributing to Vivekium
 
 All documentation is indexed at [docs/README.md](docs/README.md). Before
 changing code, read [claude.md](claude.md): it carries the rules a change must

@@ -1,6 +1,6 @@
 """The platform's ONE embedding client: voyage-4 (spec-doc5 §B.2).
 
-Every RAG surface in ReadyPick embeds through this module -- candidate profile
+Every RAG surface in Vivekium embeds through this module -- candidate profile
 vectors, job vectors, `context_chunks`, the department competency models, the
 The rubric anchors, the skills ontology and the
 validation probe bank. One model, one place, no per-surface choice, because two

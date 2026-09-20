@@ -306,7 +306,7 @@ def test_calling_the_jury_with_no_judges_raises_rather_than_returning_zeroes() -
 
     protocol = JudgeProtocol(
         scale=("met", "not_met"),
-        population="ReadyPick reasoning golden set 2026.Q3.1",
+        population="Vivekium reasoning golden set 2026.Q3.1",
         abstention_handling="interval",
         aggregation="majority",
         position_handling="not_applicable",

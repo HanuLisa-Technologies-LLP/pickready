@@ -492,6 +492,15 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
         "exchanges a verified Firebase ID token for this product's cookies. "
         "The Firebase token IS the authentication."
     ),
+    "/api/v1/auth/password-changed": (
+        "revokes every app session for an account after a Firebase password "
+        "change. It verifies a FRESH Firebase ID token in the body and acts "
+        "only on the uid that token names, so the token IS the authentication, "
+        "exactly as it is for /auth/firebase/session. A cookie dependency "
+        "would defeat the purpose: the cookie it revokes may already be "
+        "expired, and the session most worth killing is the one whose holder "
+        "cannot sign in any more. It only ever REMOVES access."
+    ),
     "/api/v1/auth/refresh": (
         "reads the refresh cookie itself and re-mints for the SAME audience. "
         "A missing or dead cookie returns a dead session rather than data."

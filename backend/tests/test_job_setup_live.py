@@ -65,7 +65,7 @@ from app.models.job_setup import JobSwotIntake
 from app.models.tenant import AuditLog, RolePermission, Tenant
 from app.models.user import User
 from app.services import capabilities as caps
-from app.services import ppi, swot_intake
+from app.services import ppi
 from app.services.hiring import (
     company_requirements,
     pipeline_halt,
@@ -388,7 +388,6 @@ def _no_provider(monkeypatch):
     monkeypatch.setattr(llm_router, "invoke_llm", _invoke)
     monkeypatch.setattr(llm_router, "chat_completion", _invoke)
     monkeypatch.setattr(scorecard.llm_router, "chat_completion", _invoke)
-    monkeypatch.setattr(swot_intake.llm_router, "invoke_llm", _invoke)
 
 
 def _naming_response(blob: str) -> dict[str, Any]:
@@ -447,6 +446,10 @@ class Caller:
     def post(self, path: str, **kwargs):
         assert self.http is not None
         return self.http.post(self._url(path), **kwargs)
+
+    def put(self, path: str, **kwargs):
+        assert self.http is not None
+        return self.http.put(self._url(path), **kwargs)
 
 
 @pytest.fixture
@@ -534,13 +537,6 @@ SWOT_ANSWERS: dict[str, str] = {
     ),
 }
 
-#: Answered whenever a phase asks something that is not one of the quadrants.
-_PHASE_ANSWERS: dict[str, str] = {
-    swot_intake.PHASE_FORCE_RANKING: "I would keep the first one. There is nothing that rules a candidate out.",
-    swot_intake.PHASE_BEST_PERFORMER: "no",
-    swot_intake.PHASE_SITUATION: "Yes, that is right.",
-}
-
 
 def _create_job(client: Caller, title: str = "Backend Engineer, Platform") -> str:
     created = client.post(
@@ -597,41 +593,16 @@ def _run_swot(
     job_id: str,
     *,
     answers: dict[str, str] | None = None,
-    situation: str | None = None,
 ) -> dict:
-    """Answer Bodha's whole session through HTTP until it closes or hands back.
-
-    Bounded rather than a `while True`: §18.5's rework is deliberately unbounded
-    in the product, and a test that looped forever on a refusal would hang the
-    suite instead of failing it.
-    """
-    said = dict(SWOT_ANSWERS)
-    said.update(answers or {})
-    opened = client.get(f"{ASSESSMENTS}/assessments/jobs/{job_id}/swot")
-    assert opened.status_code == 200, opened.text
-    body = opened.json()
-    for _turn in range(40):
-        if body["complete"]:
-            return body
-        area = body.get("current_area")
-        if area:
-            reply = said[area]
-        elif body["phase"] == swot_intake.PHASE_SITUATION and situation:
-            # §18.4's read-back, answered with a NAMED alternative rather than a
-            # yes. "no, it is closer to X" is exactly the correction the
-            # read-back exists to collect.
-            reply = f"No, it is closer to {situation}."
-        else:
-            reply = _PHASE_ANSWERS.get(body["phase"], "Yes, that is right.")
-        answered = client.post(
-            f"{ASSESSMENTS}/assessments/jobs/{job_id}/swot/respond", json={"answer": reply}
-        )
-        assert answered.status_code == 200, answered.text
-        body = answered.json()
-    raise AssertionError(
-        f"the SWOT session did not close in 40 turns; phase={body['phase']} "
-        f"outstanding={body['outstanding_rules']}"
+    """Save the standalone Job SWOT document through its public route."""
+    sections = dict(SWOT_ANSWERS)
+    sections.update(answers or {})
+    response = client.put(
+        f"{ASSESSMENTS}/assessments/jobs/{job_id}/swot-analysis",
+        json={**sections, "expected_version": 0},
     )
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def _compile(sessions, job_id: str) -> Any:
@@ -817,16 +788,9 @@ def test_a_job_created_through_the_api_runs_bodha_then_sutra(
 
     # Layer 3, through the hiring manager's own session.
     client.sign_in(Role.hiring_manager)
-    session_body = _run_swot(client, job_id)
-    assert session_body["complete"] is True
-    assert session_body["phase"] == swot_intake.PHASE_COMPLETE
-    # §18.4's classification was CONFIRMED, not guessed.
-    assert session_body["situation_key"] in situations.SITUATION_TYPES
-    assert session_body["situation_label"]
-    # §18.3's probes were actually put to them.
-    asked = set(session_body["instruments_asked"])
-    assert {probe.key for probe in swot_quality.HIGH_VALUE_PROBES} <= asked
-    assert swot_intake.DISQUALIFIER_INSTRUMENT in asked
+    document = _run_swot(client, job_id)
+    assert document["status"] == "edited"
+    assert document["strengths"] == SWOT_ANSWERS["strengths"]
 
     # Closing the session enqueues Sutra as a TASK, never inline (claude.md 4).
     assert any(name == "pickready.compile_tatva_matrix" for name, _a, _k in enqueued)
@@ -896,126 +860,42 @@ def test_every_weight_traces_to_a_named_layer_one_and_three_source(
 # ── The acceptance evidence spec-doc6 §4.3 asks for ─────────────────────────
 
 
-def test_changing_one_swot_input_moves_a_weight(client: Caller, sessions) -> None:
-    """The Layer 3 half of the same acceptance criterion.
-
-    ONE input, and it is the §18.4 classification the hiring manager confirms at
-    the end of the session. That is not a convenient choice: §18.4 says
-    misclassifying the situation is "the most expensive error available at
-    intake, because it corrupts the entire weight vector", so it is the single
-    SWOT input with the largest declared consequence and the one the Runbook
-    most wants to be demonstrably wired.
-
-    Everything else about the two runs is identical -- the same job title, the
-    same four quadrant answers word for word, the same scripted naming -- so
-    the two matrices carry the SAME competencies
-    under the same names. A weight that differs can only have come from the one
-    answer that differs.
-    """
-    tenant = client.world.tenant_a
-    client.sign_in(Role.hr_manager, tenant)
-    _write_company_profile(sessions, tenant)
-
-    first = _create_job(client, "Reliability Engineer")
-    _assign(sessions, first, client.world)
-    client.sign_in(Role.hiring_manager)
-    confirmed = _run_swot(client, first)
-    _compile(sessions, first)
-    baseline = _stored_weights(sessions, first)
-    baseline_raw = _stored_raw_weights(sessions, first)
-
-    client.sign_in(Role.hr_manager)
-    second = _create_job(client, "Reliability Engineer")
-    _assign(sessions, second, client.world)
-    client.sign_in(Role.hiring_manager)
-    corrected = _run_swot(client, second, situation="Greenfield")
-    _compile(sessions, second)
-    changed = _stored_weights(sessions, second)
-    changed_raw = _stored_raw_weights(sessions, second)
-
-    # The one input that differs, and it differs.
-    assert confirmed["situation_key"] != corrected["situation_key"]
-    assert corrected["situation_key"] == situations.GREENFIELD
-
-    shared = set(baseline) & set(changed)
-    assert shared, f"the two runs share no competency: {baseline} / {changed}"
-    # The acceptance criterion is about the DERIVED weight, which is where a
-    # situation type's multiplier lands. The stored `weight` is a normalised
-    # SHARE and is deliberately scale-invariant: when a situation lifts every
-    # scored item alike, because they sit on dimensions it treats alike,
-    # `_rank_and_normalise` divides the lift straight back out. See
-    # `_stored_raw_weights`.
-    shared_raw = set(baseline_raw) & set(changed_raw)
-    assert shared_raw, f"no shared competency: {baseline_raw} / {changed_raw}"
-    moved_raw = {
-        name: (baseline_raw[name], changed_raw[name])
-        for name in shared_raw
-        if abs(baseline_raw[name] - changed_raw[name]) > 1e-9
-    }
-    assert moved_raw, (
-        "one changed SWOT input moved no derived weight. "
-        f"{confirmed['situation_key']} -> {corrected['situation_key']}. "
-        f"{baseline_raw} / {changed_raw}"
-    )
-
-    # And the multiplier that moved is the SITUATION term specifically, not some
-    # other layer drifting. Asserting the term rather than only the product is
-    # what makes this a test of Layer 3 and not of arithmetic in general.
-    for name, (before, after) in moved_raw.items():
-        assert before != after, name
-
-    # And the MOVE is visible through the API, in the sentence the hiring
-    # manager reads before finalising, not only in the stored number.
-    client.sign_in(Role.hiring_manager)
-    prose = {
-        row["name"]: " ".join(row["provenance"])
-        for row in client.get(
-            f"{ASSESSMENTS}/assessments/jobs/{second}/framework"
-        ).json()["competencies"]
-    }
-    assert any(
-        situations.SITUATIONS[situations.GREENFIELD].label in text
-        for text in prose.values()
-    ), prose
-
-
-# ── §18.5: the six rejection rules, for real ────────────────────────────────
-
-
-def test_an_external_only_weakness_is_handed_back_to_the_hiring_manager(
+def test_removed_role_intake_routes_return_404_and_historic_data_is_ignored(
     client: Caller, sessions
 ) -> None:
-    """§18.5: "Weaknesses are absent or purely external ('the market is
-    competitive')".
-
-    RBAC §11 is the thing NOT being implemented here. The Hiring Manager cannot
-    reject the JD; Bodha handing a SWOT back to the Hiring Manager for rework is
-    a different act, and the difference is who is being asked to do more work.
-    """
     client.sign_in(Role.hr_manager)
     _write_company_profile(sessions, client.world.tenant_a)
-    job_id = _create_job(client, "Market Weakness Role")
+    job_id = _create_job(client, "Historic Intake Role")
     _assign(sessions, job_id, client.world)
-    client.sign_in(Role.hiring_manager)
-    body = client.get(f"{ASSESSMENTS}/assessments/jobs/{job_id}/swot").json()
-    for _turn in range(40):
-        if body["complete"] or body["returned_for_rework"]:
-            break
-        area = body.get("current_area")
-        reply = (
-            "Salaries here are not competitive and the market is very tight."
-            if area == "weaknesses"
-            else (SWOT_ANSWERS.get(area) if area else _PHASE_ANSWERS.get(body["phase"], "yes"))
-        )
-        body = client.post(
-            f"{ASSESSMENTS}/assessments/jobs/{job_id}/swot/respond", json={"answer": reply}
-        ).json()
 
-    assert body["returned_for_rework"] is True, body
-    assert body["complete"] is False
-    assert "weaknesses_external_only" in body["outstanding_rules"]
-    # The refusal is a SENTENCE the manager can act on, not an error code.
-    assert body["prompt"] and "market" in body["prompt"].lower()
+    async def _seed():
+        async with sessions() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    job = await session.get(Job, uuid.UUID(job_id))
+                    session.add(JobSwotIntake(
+                        tenant_id=job.tenant_id,
+                        job_id=job.id,
+                        status="complete",
+                        phase="complete",
+                        strengths=["Historic intake must not shape the new matrix"],
+                        weaknesses=["Historic gap"],
+                        opportunities=["Historic opportunity"],
+                        threats=["Historic threat"],
+                        situation_key=situations.GREENFIELD,
+                    ))
+    asyncio.run(_seed())
+
+    client.sign_in(Role.hiring_manager)
+    base = f"{ASSESSMENTS}/assessments/jobs/{job_id}"
+    assert client.get(f"{base}/swot").status_code == 404
+    assert client.post(f"{base}/swot/respond", json={"answer": "old"}).status_code == 404
+    saved = _run_swot(client, job_id)
+    assert saved["strengths"] == SWOT_ANSWERS["strengths"]
+    result = _compile(sessions, job_id)
+    assert result.items
+    assert result.situation_key is None
+    assert all("Historic intake" not in (row.swot_origin or "") for row in result.items)
 
 
 # ── Gate G1 ─────────────────────────────────────────────────────────────────
@@ -1160,7 +1040,7 @@ def test_the_hiring_manager_finalises_and_the_recruiter_publishes(
                                     (
                                         "role_definition_finalized",
                                         "jd_sent_to_hiring_manager",
-                                        "swot_session_completed",
+                                        "job_swot_analysis_edited",
                                     )
                                 ),
                             )
@@ -1174,7 +1054,7 @@ def test_the_hiring_manager_finalises_and_the_recruiter_publishes(
     # G1 now passes, and only now.
     assert matrix is not None
     assert matrix.version == 1
-    assert matrix.situation_key in situations.SITUATION_TYPES
+    assert matrix.situation_key is None
     # RBAC §20's record: one binding carrying the version and the person.
     assert len(bindings) == 1
     assert bindings[0].frozen_by == job.finalized_by
@@ -1183,13 +1063,11 @@ def test_the_hiring_manager_finalises_and_the_recruiter_publishes(
     assert job.correlation_id
     assert {row.action for row in audits} == {
         "jd_sent_to_hiring_manager",
-        "swot_session_completed",
+        "job_swot_analysis_edited",
         "role_definition_finalized",
     }
     assert all(row.correlation_id == job.correlation_id for row in audits)
-    # RBAC §34: the agent AND the human, on the row the agent produced.
-    swot_row = next(row for row in audits if row.action == "swot_session_completed")
-    assert swot_row.agent_name == "bodha"
+    swot_row = next(row for row in audits if row.action == "job_swot_analysis_edited")
     assert swot_row.actor_user_id is not None
 
 
@@ -1211,38 +1089,17 @@ def test_publication_is_blocked_when_the_definition_is_not_finalised(
 # ── The kill switch ─────────────────────────────────────────────────────────
 
 
-def test_the_halt_switch_refuses_and_never_degrades(
-    client: Caller, sessions, monkeypatch
-) -> None:
-    """spec-doc6 D1: `RPN_PIPELINE_HALT` "must never fall back to old logic,
-    degraded logic, or a stub".
-
-    Asserted as an absence: nothing is written, nothing is generated, and the
-    caller gets a 503 naming the stage and the way out. A halt that produced a
-    worse answer would be the one failure mode the switch exists to prevent.
-    """
+def test_the_halt_switch_refuses_matrix_compilation(client: Caller, sessions, monkeypatch) -> None:
     client.sign_in(Role.hr_manager)
     _write_company_profile(sessions, client.world.tenant_a)
     job_id = _create_job(client, "Halted Role")
     _assign(sessions, job_id, client.world)
-
-    monkeypatch.setenv(pipeline_halt.ENV_VAR, pipeline_halt.STAGE_BODHA_SWOT)
     client.sign_in(Role.hiring_manager)
-    opened = client.get(f"{ASSESSMENTS}/assessments/jobs/{job_id}/swot")
-    assert opened.status_code == 200
-    refused = client.post(
-        f"{ASSESSMENTS}/assessments/jobs/{job_id}/swot/respond", json={"answer": "anything"}
-    )
-    assert refused.status_code == 503, refused.text
-    assert pipeline_halt.STAGE_BODHA_SWOT in refused.json()["detail"]
-    assert pipeline_halt.ENV_VAR in refused.json()["detail"]
+    _run_swot(client, job_id)
 
-    monkeypatch.delenv(pipeline_halt.ENV_VAR)
-    resumed = client.post(
-        f"{ASSESSMENTS}/assessments/jobs/{job_id}/swot/respond",
-        json={"answer": SWOT_ANSWERS["strengths"]},
-    )
-    assert resumed.status_code == 200, resumed.text
+    monkeypatch.setenv(pipeline_halt.ENV_VAR, pipeline_halt.STAGE_SUTRA_MATRIX)
+    with pytest.raises(pipeline_halt.PipelineHalted):
+        _compile(sessions, job_id)
 
 
 def test_a_misspelled_halt_stage_is_an_error_rather_than_a_no_op(monkeypatch) -> None:
@@ -1258,6 +1115,13 @@ def test_a_misspelled_halt_stage_is_an_error_rather_than_a_no_op(monkeypatch) ->
 def test_the_migrations_situation_keys_are_the_modules(monkeypatch) -> None:
     """Migration 0064 holds the six situation keys as literals, deliberately: a
     migration describes the schema at its own point in history. This asserts
-    they agree TODAY, which is the guarantee that is actually wanted."""
+    they agree TODAY, which is the guarantee that is actually wanted.
+
+    The companion SWOT-phase assertion went with `services/swot_intake` on
+    2026-09-20. It compared the migration's phase literals against the module
+    that WROTE `job_swot_intakes`, and once the Role Intake conversation was
+    retired there is no writer left to disagree with them: the table survives
+    as a frozen transcript and its phase vocabulary lives in the migration and
+    the CHECK constraint that migration created. A parity test with one side
+    deleted asserts nothing."""
     assert set(SUTRA_MIGRATION._SITUATION_KEYS) == set(situations.SITUATION_TYPES)
-    assert set(SUTRA_MIGRATION._SWOT_PHASES) == set(swot_intake.PHASES)

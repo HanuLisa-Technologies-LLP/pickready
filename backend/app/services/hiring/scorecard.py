@@ -82,9 +82,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.assessment import JobCompetency
 from app.models.job_scorecard_binding import JobScorecardBinding
 from app.models.job import Job
-from app.models.job_setup import SWOT_AREAS, JobSwotIntake
+from app.models.job_setup import SWOT_AREAS, JobSwotAnalysis
 from app.prompts import fragments, registry
-from app.services import agent_loop, llm_router, ppi, swot_intake
+from app.services import agent_loop, llm_router, ppi
 from app.services.hiring import (
     gates,
     layers,
@@ -396,13 +396,19 @@ async def load_frozen_matrix(
             )
         return None
     binding = await _latest_binding(session, job_id)
-    intake = await swot_intake.load(session, job_id)
+    # The frozen rows are the record of what was approved. Historical matrices
+    # retain their situation in provenance even when the old intake is retired.
+    situation_key = next(
+        (item.provenance.get("situation_key") for item in items
+         if item.provenance.get("situation_key")),
+        None,
+    )
     return FrozenMatrix(
         job_id=job.id,
         tenant_id=job.tenant_id,
         version=int(binding.scorecard_version) if binding else 1,
         approved_at=job.framework_approved_at,
-        situation_key=intake.situation_key if intake else None,
+        situation_key=situation_key,
         correlation_id=job.correlation_id,
         items=tuple(items),
     )
@@ -499,55 +505,31 @@ class _Candidate:
     observable: str | None = None
 
 
-async def _layer3(
-    session: AsyncSession, job: Job
-) -> tuple[dict[str, list[str]], JobSwotIntake]:
-    """Bodha's validated SWOT, verified as an artifact before it is read.
+async def _layer3(session: AsyncSession, job: Job) -> tuple[dict[str, list[str]], int]:
+    """Read the saved Job SWOT document that the hiring team can review.
 
-    THE ARTIFACT IS THE ONLY PATH, and that is the change from the retired
-    generator. It read the intake ROWS whenever the artifact was missing or
-    failed verification, and wrote the reason on a log line: a matrix built from
-    a refused artifact and one built from a verified artifact came out
-    identical, and only the log said which had happened. spec-doc6 §5 settles
-    it -- "artifacts, never transcripts" -- so an intake that has not published
-    a verifiable artifact has not finished, and Sutra refuses rather than
-    reaching around it.
+    The retired intake row is deliberately never queried here. An existing job
+    with historic intake data follows the same path as a newly created job.
+    Each nonempty paragraph is a source phrase, with the section recorded on
+    every matrix item's provenance. Sutra still refuses phrases it cannot turn
+    into observable criteria rather than inventing a competency.
     """
-    intake = await swot_intake.load(session, job.id)
-    if intake is None or not swot_intake.is_complete(intake):
+    analysis = (
+        await session.execute(
+            select(JobSwotAnalysis).where(JobSwotAnalysis.job_id == job.id)
+        )
+    ).scalar_one_or_none()
+    if analysis is None or not analysis.has_content:
         raise ScorecardInputMissing(
             "layer3",
-            "The Hiring Manager's SWOT session for this role is not finished. "
-            "The matrix is built from what they said the job actually demands, "
-            "so there is nothing to build from until the session closes.",
+            "Save a Job SWOT Analysis before building the evaluation matrix.",
         )
-    artifact = await swot_intake.published_evidence(session, job)
-    if artifact is None:
-        raise ScorecardInputMissing(
-            "layer3",
-            "The SWOT session finished but published no evidence artifact, so "
-            "there is nothing Sutra can verify. Reopen the session and complete "
-            "it again.",
-        )
-    from app.services.agents import artifacts, identity  # noqa: PLC0415
-
-    verdict = artifacts.verify_for_consumer(
-        artifact,
-        identity.SUTRA,
-        tenant_id=str(job.tenant_id),
-        job_id=str(job.id),
-    )
-    if not verdict.passed:
-        raise ScorecardInputMissing(
-            "layer3",
-            "The SWOT evidence for this role did not verify: "
-            + "; ".join(finding.issue for finding in verdict.findings)
-            + ". The matrix is not built from evidence that cannot be checked.",
-        )
-    return (
-        {area: list(artifact.payload.get(area) or []) for area in SWOT_AREAS},
-        intake,
-    )
+    captured = {
+        area: [text.strip() for text in (getattr(analysis, area) or "").split("\n\n")
+               if text.strip()]
+        for area in SWOT_AREAS
+    }
+    return captured, analysis.version
 
 
 def _candidates_from_swot(
@@ -876,11 +858,14 @@ async def compile_matrix(
         # Idempotent by default, so a redelivery cannot discard a matrix
         # a human has already edited.
         binding = await _latest_binding(session, job.id)
-        intake = await swot_intake.load(session, job.id)
         return CompileResult(
             items=list(active),
             rejections=[],
-            situation_key=intake.situation_key if intake else None,
+            situation_key=next(
+                (row.provenance_json.get("situation_key") for row in active
+                 if row.provenance_json and row.provenance_json.get("situation_key")),
+                None,
+            ),
             department=job.department or "",
             correlation_id=correlation_id or job.correlation_id,
         )
@@ -892,10 +877,13 @@ async def compile_matrix(
             "underneath a report.",
         )
 
-    captured, intake = await _layer3(session, job)
+    captured, swot_version = await _layer3(session, job)
     model = department_for(job.department, job.title, (job.jd_markdown or "")[:400])
     seniority = job.assessment_grade
-    situation_key = intake.situation_key
+    # A situation type required the retired interview's explicit confirmation.
+    # The four-section document contains no such confirmation, so applying a
+    # guessed multiplier would misrepresent what the hiring team approved.
+    situation_key = None
 
     # ── Assemble the candidate set ──────────────────────────────────────────
     candidates = _candidates_from_swot(captured)
@@ -1023,6 +1011,8 @@ async def compile_matrix(
         provenance["normalised_share"] = round(share, 6)
         provenance["quadrant"] = quadrant
         provenance["situation_key"] = situation_key
+        provenance["swot_source"] = "job_analysis"
+        provenance["swot_analysis_version"] = swot_version
         provenance["department_model"] = model.key
         # Drishti (C3): the compiled context lines this matrix was built
         # under, and nothing else of the profile. Recorded so "what was this
@@ -1376,13 +1366,23 @@ def plain_provenance(item: MatrixItem) -> list[str]:
         )
 
     role = _direction(terms.get("role_layer3"))
-    if role and item.swot_origin:
+    if item.swot_origin and (item.provenance or {}).get("swot_source") == "job_analysis":
+        lines.append(
+            f'The Job SWOT Analysis states: "{item.swot_origin}" This informs '
+            "the emphasis of this criterion."
+        )
+    elif role and item.swot_origin:
         lines.append(
             f'You said: "{item.swot_origin}" That moved this criterion '
             f"{role} on the scorecard."
         )
     elif item.swot_origin:
         lines.append(f'This came from what you said: "{item.swot_origin}"')
+    elif not item.swot_origin and (item.provenance or {}).get("swot_source") == "job_analysis":
+        lines.append(
+            "The Job SWOT Analysis did not name this competency, so it carries "
+            "the department model's own emphasis."
+        )
     elif not item.swot_origin:
         lines.append(
             "Nothing in your SWOT session spoke to this one, so it carries the "

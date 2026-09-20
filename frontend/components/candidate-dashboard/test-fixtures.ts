@@ -31,9 +31,9 @@ export function row(overrides: Partial<DashboardRow> = {}): DashboardRow {
 
     ready_pick_score: null,
     band: BAND_PENDING,
-    band_label: "Pending Ready Pick Profile",
+    band_label: "Pending Vivekium Profile",
     band_screen_reader_label:
-      "Status: Pending Ready Pick Profile, assessment in progress",
+      "Status: Pending Vivekium Profile, assessment in progress",
     confidence: null,
     confidence_indicator: "grayed",
     confidence_label: "Insufficient confidence",
@@ -41,12 +41,12 @@ export function row(overrides: Partial<DashboardRow> = {}): DashboardRow {
     score_range_note:
       "No uncertainty interval is published by the evaluator, so no score range is shown.",
 
-    note: "Ready Pick Profile not written yet.",
+    note: "Vivekium Profile not written yet.",
     note_is_pending: true,
 
     profile: null,
     profile_pending_reason:
-      "The Ready Pick Profile has not been written yet. This says nothing about the PRISM Report, which is a different document.",
+      "The Vivekium Profile has not been written yet. This says nothing about the PRISM Report, which is a different document.",
 
     team_review_count: 0,
     own_verdict: null,

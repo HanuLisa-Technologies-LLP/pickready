@@ -2,7 +2,7 @@
 
 WHAT LAYER 1 IS, AND WHY IT IS PYTHON RATHER THAN A TABLE
 -----------------------------------------------------------
-Layer 1 is the ReadyPick Hiring Philosophy compiled into something executable:
+Layer 1 is the Vivekium Hiring Philosophy compiled into something executable:
 per-department baseline competencies, their baseline weights, the rubric anchors
 a dimension evaluator is given, and the evidence sources that would actually
 show a competency is real. spec-doc5 calls it "captured once, ever -- not
@@ -154,7 +154,7 @@ class EvidenceSource:
     key: str
     label: str
     tier: str
-    #: Whether this source is reachable inside a ReadyPick assessment today.
+    #: Whether this source is reachable inside a Vivekium assessment today.
     #: A source that is not reachable is still worth naming -- it tells Sutra's
     #: stage 3 what would be needed, and it tells a recruiter what the platform
     #: cannot see -- but it must never be treated as a satisfied requirement.

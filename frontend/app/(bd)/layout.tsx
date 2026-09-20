@@ -9,7 +9,7 @@ import type { Metadata } from "next";
  * adds no markup, no wrapper and no behaviour, and the nested client shell is
  * untouched.
  *
- * Leads, AI Reach results and prospect companies are ReadyPick's own sales
+ * Leads, AI Reach results and prospect companies are Vivekium's own sales
  * working notes about other businesses.
  */
 export const metadata: Metadata = {

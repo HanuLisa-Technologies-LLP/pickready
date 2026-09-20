@@ -122,7 +122,7 @@ export function EmailSendersCard() {
   return (
     <Section
       title="Email senders"
-      description="Business mailboxes your company has authorized to send automated recruitment email. ReadyPick never asks for a mailbox password. A new address stays pending until your Super Admin approves it."
+      description="Business mailboxes your company has authorized to send automated recruitment email. Vivekium never asks for a mailbox password. A new address stays pending until your Super Admin approves it."
       actions={
         <Button type="button" size="sm" onClick={() => setAddOpen(true)}>
           <Plus className="h-4 w-4" aria-hidden="true" /> Add sender

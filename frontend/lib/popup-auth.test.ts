@@ -58,4 +58,10 @@ describe("firebase sign-in stays popup-only", () => {
     expect(matcher).not.toBeNull();
     expect(matcher![1]).toContain("__/auth");
   });
+
+  it("keeps Firebase identity only in memory", () => {
+    const source = readFileSync(join(ROOT, "lib", "firebase.ts"), "utf8");
+    expect(source).toContain("persistence: inMemoryPersistence");
+    expect(source).not.toMatch(/browserLocalPersistence|indexedDBLocalPersistence|browserSessionPersistence/);
+  });
 });

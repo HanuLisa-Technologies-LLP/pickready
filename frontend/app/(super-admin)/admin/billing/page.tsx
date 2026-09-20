@@ -99,7 +99,7 @@ export default function ProviderBillingPage() {
         actions={
           rows.length ? (
             <ExportXlsxButton
-              fileName="readypick-provider-billing"
+              fileName="vivekium-provider-billing"
               rows={rows.map((row) => ({
                 customer: row.customer_name,
                 plan: row.plan_name ?? "No plan",

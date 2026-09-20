@@ -55,7 +55,7 @@ export function PublicShell({
             width === "wide" ? "max-w-5xl" : "max-w-3xl"
           )}
         >
-          <span className="font-semibold">Powered by ReadyPick</span>
+          <span className="font-semibold">Powered by Vivekium</span>
           <span>
             Your details are shared only with the hiring team for this role.
           </span>

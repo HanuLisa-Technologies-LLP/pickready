@@ -333,7 +333,7 @@ export function DashboardSummaryView() {
         actions={
           summary ? (
             <ExportXlsxButton
-              fileName="readypick-customer-dashboard"
+              fileName="vivekium-customer-dashboard"
               rows={summary.jobs.map((job) => ({
                 job: job.title,
                 databank_matches: job.databank_matched,

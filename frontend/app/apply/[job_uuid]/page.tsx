@@ -162,7 +162,7 @@ function jobPostingSchema(
     description,
     identifier: {
       "@type": "PropertyValue",
-      name: companyName ?? "ReadyPick",
+      name: companyName ?? "Vivekium",
       value: job.id,
     },
     datePosted: job.created_at ?? undefined,

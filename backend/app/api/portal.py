@@ -126,7 +126,7 @@ class ApplyContextOut(BaseModel):
 
 # ── The 40-aspect questionnaire ─────────────────────────────────────────────
 # ASSUMPTION: the PRD references "the 40-aspect questionnaire" but does not
-# enumerate the aspects (business content to be supplied by Hanulisa). Known
+# enumerate the aspects (business content to be supplied by Varpitech). Known
 # from the PRD: aspects 1-4 duplicate the personal fields collected in
 # FR-5.1 a-d (and are therefore skipped when those are already covered), and
 # Aspect 40 is the Databank re-use consent (FR-4.2 / PRD §10). The remaining
@@ -143,7 +143,7 @@ ASPECT_DEFINITIONS: list[AspectOut] = (
     ]
     + [AspectOut(id=n, prompt=f"Aspect {n} (questionnaire item {n})") for n in range(5, 40)]
     + [AspectOut(id=40, prompt="Do you consent to being matched against future "
-                               "roles via the ReadyPick Databank?")]
+                               "roles via the Vivekium Databank?")]
 )
 
 
@@ -2122,7 +2122,7 @@ async def edit_application(
 # ── Background verification (add-features spec 2026-09-05) ──────────────────
 #
 # Candidate-owned, candidate-driven. The candidate names up to two previous
-# employers' departmental mailboxes, ReadyPick sends ONE fixed-template
+# employers' departmental mailboxes, Vivekium sends ONE fixed-template
 # inquiry per explicit candidate action, and the parsed reply lands on the
 # candidate's own profile. An employer tenant sees the result only through a
 # `bgv_share_consents` row the candidate wrote for that specific tenant

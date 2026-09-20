@@ -397,12 +397,12 @@ def test_no_em_dash_anywhere_in_the_catalogue():
 
 def test_the_product_is_never_called_anything_but_readypick():
     """The specification calls the product Readypeek throughout. It is
-    ReadyPick, and user-visible copy says that or says nothing."""
+    Vivekium, and user-visible copy says that or says nothing."""
     for where, text in all_catalogue_text():
         assert "readypeek" not in text.lower(), where
         assert "pickready" not in text.lower(), where
         for occurrence in re.findall(r"(?i)readypick", text):
-            assert occurrence == "ReadyPick", f"{where}: {occurrence}"
+            assert occurrence == "Vivekium", f"{where}: {occurrence}"
 
 
 def test_every_sentence_is_a_sentence():

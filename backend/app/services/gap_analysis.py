@@ -541,7 +541,7 @@ async def build_gap_analysis(
         "groups": groups,
         # SIDDHI'S OWN NAMESPACE ON THE IMMUTABLE ROW.
         #
-        # The citation trail and the dashboard's Ready Pick Note are properties
+        # The citation trail and the dashboard's Vivekium Note are properties
         # of the report and have to survive with it, and this dict is the one
         # JSONB column that travels from here onto `functional_skills_reports`.
         # Namespaced under one key so it is unmistakably Siddhi's rather than

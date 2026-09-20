@@ -1,10 +1,9 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import {
-  browserLocalPersistence,
+  inMemoryPersistence,
   browserPopupRedirectResolver,
   getAuth,
   GoogleAuthProvider,
-  indexedDBLocalPersistence,
   initializeAuth,
   type Auth,
 } from "firebase/auth";
@@ -43,7 +42,7 @@ function resolveAuth(): Auth {
   }
   try {
     return initializeAuth(firebaseApp, {
-      persistence: [indexedDBLocalPersistence, browserLocalPersistence],
+      persistence: inMemoryPersistence,
       popupRedirectResolver: browserPopupRedirectResolver,
     });
   } catch {

@@ -9,7 +9,7 @@ So there are four ways a report leaves the building and all four go through one
 function each, and every one of those functions calls `numbers.assert_clean`
 before it returns. The alternative -- checking at the generator -- holds only
 for the paths that go through the generator, and the point of the ruling is that
-the dashboard now legitimately holds a 0-100 Ready Pick Score, so the report and
+the dashboard now legitimately holds a 0-100 Vivekium Score, so the report and
 the triage surface read from overlapping state. A rule that lived in one
 function would be a rule about that function.
 
@@ -203,8 +203,8 @@ def prism_pdf(
 #: outlives every access control on the document it came from.
 _EMAIL_BODY = (
     "The PRISM Report for {candidate} on {job} is ready.\n"
-    "Predictive Role Intelligence & Suitability Mapping.\n\n"
-    "Open it in ReadyPick to read the assessment, the gap analysis and the "
+    "Evidence-Based Role Intelligence & Suitability Mapping.\n\n"
+    "Open it in Vivekium to read the assessment, the gap analysis and the "
     "candidate's own application answers.\n\n"
     "Reference: {reference}\n"
 )

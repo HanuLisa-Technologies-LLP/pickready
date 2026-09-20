@@ -1,4 +1,4 @@
-# ReadyPick documentation
+# Vivekium documentation
 
 Everything written about this product lives under `docs/`. Five files stay at
 the repository root because a tool or a convention resolves them there:

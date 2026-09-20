@@ -12,7 +12,7 @@ one of them put an OTP screen in a portal that bans OTP everywhere else.
 The two checks that remain are genuinely different questions:
 
     Super Admin approval   Does this COMPANY authorize this address to speak
-                           for it? A business decision, ReadyPick's to record.
+                           for it? A business decision, Vivekium's to record.
     SES eligibility        Will AWS carry mail from it? An infrastructure
                            fact, AWS's to answer.
 
@@ -167,6 +167,6 @@ async def check_sender_eligibility(email: str) -> SenderEligibility:
         # SNS, IAM and DKIM are deliberately not concepts the Super Admin has.
         detail=(
             "This address cannot send yet because its domain is not set up for "
-            "sending. Your ReadyPick contact can complete that setup."
+            "sending. Your Vivekium contact can complete that setup."
         ),
     )

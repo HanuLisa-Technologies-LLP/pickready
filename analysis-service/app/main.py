@@ -1,6 +1,6 @@
 """The analysis service: speaker counting and an AI-text estimate, over HTTP.
 
-Three routes, called only by the ReadyPick backend over the private network:
+Three routes, called only by the Vivekium backend over the private network:
 
     POST /diarize   multipart field `chunk` (audio/webm or audio/wav, at most
                     MAX_CHUNK_BYTES) -> {"speaker_count": int, "speech_seconds": float}
@@ -103,7 +103,7 @@ def create_app(
         yield
 
     application = FastAPI(
-        title="ReadyPick analysis service",
+        title="Vivekium analysis service",
         description=__doc__,
         openapi_url=None,
         docs_url=None,

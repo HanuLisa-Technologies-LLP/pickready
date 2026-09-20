@@ -238,14 +238,10 @@ def _satisfy_publication_gate(monkeypatch, job: Job) -> None:
     Stubbed rather than seeded because these are unit tests over a fake
     session; `test_job_setup_live.py` exercises the real matrix end to end.
     """
-    job.swot_completed_at = datetime.now(timezone.utc)
+    async def _ready(session, current_job):
+        return None
 
-    async def _frozen(session, job_id):
-        return SimpleNamespace(job_id=job_id, version=1, items=())
-
-    from app.services.hiring import scorecard
-
-    monkeypatch.setattr(scorecard, "load_frozen_matrix", _frozen)
+    monkeypatch.setattr(jobs_api, "_publication_blocked", _ready)
 
 
 def _job_create_body() -> JobCreateIn:

@@ -269,7 +269,7 @@ BD sessions use the owner audience but carry no customer tenant context and are 
 
 ### 7.3 Session storage
 
-Access, refresh, and session-hint values are stored in secure HTTP-only cookies. Refresh rotation and logout are server-controlled. Browser JavaScript does not need direct access to bearer tokens.
+Access, refresh, and session-hint values are HTTP-only browser-session cookies with no Max-Age or Expires. They use Secure on HTTPS and SameSite=Strict by default. The access JWT expires after 15 minutes; a Redis session record enforces 30 minutes of inactivity independently of the cookies. Refresh rotation is atomic, and logout or a password change revokes the server record. Firebase identity is kept only in browser memory during an open tab; browser storage holds no identity token. Every app load validates the session through `/auth/me`.
 
 `tenants` and `users` have enabled and forced PostgreSQL RLS. Ordinary company
 sessions see only their selected tenant. Login, refresh, and workspace

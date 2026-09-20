@@ -80,7 +80,7 @@ export function Hero() {
             </h1>
 
             <p className="mt-6 max-w-xl text-pretty text-lg leading-8">
-              ReadyPick reads every applicant against the role, runs a
+              Vivekium reads every applicant against the role, runs a
               structured assessment built from the job itself, and hands your
               team one readable report per candidate. Plain language, no scores
               to argue about.

@@ -79,7 +79,7 @@ OPEN_SUPPORT_THREADS = "open_support_threads"
 # structurally cannot serve them because it resolves through `get_tenant_db`
 # and a platform user has no tenant to resolve against. What this capability
 # IS is the notification ROUTING list, asked of the permission rows rather
-# than branched on by role name, so a future ReadyPick support role is a
+# than branched on by role name, so a future Vivekium support role is a
 # seeded row instead of an edit to a background task.
 HANDLE_SUPPORT_THREADS = "handle_support_threads"
 
@@ -310,7 +310,7 @@ _CUSTOMER_FULL_ACCESS: dict[str, bool] = {
 # EDIT_ROLE_PERMISSIONS is never here: it rewrites the matrix itself, so
 # granting it to a customer role removes the boundary rather than widening it.
 # The three MANAGE_BD_* / USE_AI_REACH grants stay with the `bd` role, which is
-# ReadyPick's own sales console and has no tenant. Same two exclusions, and the
+# Vivekium's own sales console and has no tenant. Same two exclusions, and the
 # same reasoning, as migration 0031.
 DEFAULT_PERMISSION_MATRIX: dict[Role, dict[str, bool]] = {
     Role.recruitment_manager: dict(_CUSTOMER_FULL_ACCESS),

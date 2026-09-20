@@ -216,7 +216,7 @@ async def _seed(state: World) -> None:
                     },
                 )
                 # An evaluation on every job, so a refusal is never confusable
-                # with a 404 for an absent Ready Pick Profile. Every gate
+                # with a 404 for an absent Vivekium Profile. Every gate
                 # PASSED: the integrity lock has its own test, and leaving a
                 # finding open here would make the stage cases refuse for the
                 # wrong reason.

@@ -315,7 +315,7 @@ def _firebase_only_report(base: str) -> int:
 
 def main() -> int:
     settings = get_settings()
-    print("ReadyPick auth validation harness")
+    print("Vivekium auth validation harness")
     print(f"  environment = {settings.environment}")
 
     base = _pick_base_url()

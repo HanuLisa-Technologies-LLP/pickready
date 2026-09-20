@@ -1,7 +1,7 @@
-# ReadyPick
+# Vivekium
 
-Multi-tenant recruitment and hiring-intelligence platform for Hanulisa
-Technologies LLP. Candidates apply, are ranked against the role, sit one
+Multi-tenant recruitment and hiring-intelligence platform for Varpitech LLP.
+Candidates apply, are ranked against the role, sit one
 adaptive AI assessment, and come out the other side as a **PRISM Report** a
 recruiter can act on, graded in words and never in numbers.
 
@@ -24,9 +24,9 @@ Fargate.
 ## What it does
 
 **Four portals, one platform.** The *Provider Portal* (`/admin`) is the
-ReadyPick owner console. The *Customer Portal* (`/org`) is a client company
+Vivekium owner console. The *Customer Portal* (`/org`) is a client company
 workspace. The *Candidate Portal* (`/portal`) is where applicants live. The
-*Business Development Portal* (`/bd`) is where the ReadyPick sales team works
+*Business Development Portal* (`/bd`) is where the Vivekium sales team works
 leads.
 
 **The hiring flow.** A customer creates a job as one markdown JD; the platform
@@ -43,7 +43,7 @@ probed on the same criteria in the same order; only the wording varies. Five
 isolated dimension evaluators score it, and a model-free aggregator turns those
 bands into a grade.
 
-**The output.** A PRISM Report (*Predictive Role Intelligence & Suitability
+**The output.** A PRISM Report (*Evidence-Based Role Intelligence & Suitability
 Mapping*) with a fixed section order, three number-free radar charts, and a
 citation chokepoint that refuses an uncited statement. Client-visible grades are
 four words only: Highly Matching, Matching, Moderately Matching, Not Matching.

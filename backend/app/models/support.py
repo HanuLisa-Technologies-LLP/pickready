@@ -57,10 +57,10 @@ from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
 #
 # So the pair is `open` and `awaiting_customer`, which cannot be read backwards.
 
-#: The ball is with ReadyPick. A new thread, or one the customer just replied
-#: to. This is the queue ReadyPick staff work from.
+#: The ball is with Vivekium. A new thread, or one the customer just replied
+#: to. This is the queue Vivekium staff work from.
 THREAD_OPEN = "open"
-#: ReadyPick has replied and is waiting on the customer. Deliberately not
+#: Vivekium has replied and is waiting on the customer. Deliberately not
 #: called "pending": a reader has to be able to tell at a glance which side is
 #: holding things up, and this queue exists so nobody chases the wrong one.
 THREAD_AWAITING_CUSTOMER = "awaiting_customer"
@@ -79,7 +79,7 @@ THREAD_STATUSES: tuple[str, ...] = (
 
 #: Written by a member of the customer's own staff.
 SIDE_CUSTOMER = "customer"
-#: Written by ReadyPick staff.
+#: Written by Vivekium staff.
 SIDE_STAFF = "staff"
 
 MESSAGE_SIDES: tuple[str, ...] = (SIDE_CUSTOMER, SIDE_STAFF)
@@ -90,7 +90,7 @@ class SupportThread(Base, UUIDPKMixin, CreatedAtMixin):
     __table_args__ = (
         # The customer's own list: their threads, newest activity first.
         Index("ix_support_threads_tenant", "tenant_id", "last_message_at"),
-        # ReadyPick's queue: everything waiting on us, across every customer.
+        # Vivekium's queue: everything waiting on us, across every customer.
         Index("ix_support_threads_queue", "status", "last_message_at"),
     )
 
@@ -114,7 +114,7 @@ class SupportThread(Base, UUIDPKMixin, CreatedAtMixin):
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default=THREAD_OPEN, server_default=THREAD_OPEN
     )
-    #: The ReadyPick staff member who answered first. Claimed by replying
+    #: The Vivekium staff member who answered first. Claimed by replying
     #: rather than by a separate claim action: a claim flow nobody is obliged
     #: to use is a field that is empty on every real thread.
     assigned_to: Mapped[uuid.UUID | None] = mapped_column(

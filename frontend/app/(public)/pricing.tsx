@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
  * Public pricing (Master Directive Part 5).
  *
  * The model this section sells is the credit model and nothing else: Rs. 600
- * per credit, purchased in packs, consumed per completed ReadyPick
+ * per credit, purchased in packs, consumed per completed Vivekium
  * Intelligence Report - 1.0 credit for a Non-STEM role, 1.5 for a STEM role,
  * classified by the platform. No monthly subscription exists, no annual plan
  * exists, and credits never expire (Rule 4 is a stated promise, so the page
@@ -83,7 +83,7 @@ const MODEL_COPY = [
   {
     title: "How credits work",
     body: [
-      "One credit costs Rs. 600, plus 18% GST. A completed ReadyPick Intelligence Report consumes 1.0 credit for a Non-STEM role and 1.5 credits for a STEM role - technical roles run a deeper AI assessment, and the platform classifies each role itself from the job description. The headline price never changes either way.",
+      "One credit costs Rs. 600, plus 18% GST. A completed Vivekium Intelligence Report consumes 1.0 credit for a Non-STEM role and 1.5 credits for a STEM role - technical roles run a deeper AI assessment, and the platform classifies each role itself from the job description. The headline price never changes either way.",
       "A candidate who starts an assessment and never finishes consumes a third of the role's rate. A candidate who never opens the invitation consumes a fifteenth of a credit. Reviewing a profile carried over from an earlier posting uses a twentieth.",
       "Credits never expire. There is no monthly plan, no annual contract and no minimum usage: buy credits when you hire, and whatever you do not use waits for the next role.",
     ],
@@ -103,7 +103,7 @@ const INCLUDED = [
   "Unlimited team members, no per seat fee",
   "Four parameter AI matching",
   "Technical questions written per candidate",
-  "ReadyPick Profile Intelligence",
+  "Vivekium Profile Intelligence",
   "One continuous candidate conversation",
   "Full PRISM Report",
   "Three radar charts, no numbers on them",

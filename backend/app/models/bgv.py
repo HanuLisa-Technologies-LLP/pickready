@@ -3,14 +3,14 @@
 
 CANDIDATE-OWNED DATA, NOT TENANT DATA. The candidate provides their previous
 two employers' departmental mailboxes (hr@, careers@, resumes@) on their own
-profile; ReadyPick dispatches one inquiry email per employer and the parsed
+profile; Vivekium dispatches one inquiry email per employer and the parsed
 response lands HERE, on the candidate's side of the product. An employer
 (tenant) sees it only through `bgv_share_consents`: one row per tenant the
 candidate has explicitly shared that inquiry with, never directly. That
 consent boundary is the locked design decision from the spec discussion.
 
 Following up with an unresponsive employer is the candidate's own
-responsibility by design: ReadyPick sends the inquiry once per explicit
+responsibility by design: Vivekium sends the inquiry once per explicit
 candidate action and never chases, so there is no reminder sweep here.
 
 `domain_match_result` is PROVENANCE, never a gate: a deterministic comparison

@@ -113,7 +113,7 @@ __all__ = [
 ]
 
 #: The instrumentation scope. Named after this module so a backend can tell
-#: ReadyPick's own spans from any library instrumentation added later.
+#: Vivekium's own spans from any library instrumentation added later.
 INSTRUMENTATION_NAME = "readypick.observability.otel"
 
 # ── The four operations (values read from GenAiOperationNameValues) ──────────
@@ -145,7 +145,7 @@ ATTR_ERROR_TYPE = error_attributes.ERROR_TYPE
 TOKEN_TYPE_INPUT = gen_ai_attributes.GenAiTokenTypeValues.INPUT.value
 TOKEN_TYPE_OUTPUT = gen_ai_attributes.GenAiTokenTypeValues.COMPLETION.value
 
-#: ReadyPick's own dimensions. Prefixed rather than folded into `gen_ai.*`,
+#: Vivekium's own dimensions. Prefixed rather than folded into `gen_ai.*`,
 #: because a name in a published namespace that the published namespace does
 #: not define is the kind of thing a future collector rejects or a future
 #: convention collides with.
@@ -163,7 +163,7 @@ ATTR_ROUTE = "readypick.route"
 #: object key, and asserts none of them survive.
 #:
 #: `gen_ai.operation.name` is here and is not in the specification's own
-#: ReadyPick list because the conventions require it to identify the operation;
+#: Vivekium list because the conventions require it to identify the operation;
 #: without it a span says which model was called and not what was asked of it.
 #: `error.type` is here because the operation-duration metric is uninterpretable
 #: when a failed call is indistinguishable from a successful one, and an

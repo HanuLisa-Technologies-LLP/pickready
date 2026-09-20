@@ -49,7 +49,7 @@ const PARTY_LABEL: Record<Message["author_party"], string> = {
   recruiter: "Your team",
   candidate: "Candidate",
   employer_hr: "Previous employer",
-  system: "ReadyPick",
+  system: "Vivekium",
 };
 
 const STATE_LABEL: Record<StreamState, string> = {

@@ -182,7 +182,7 @@ async def create_tenant(
 ) -> TenantCreateOut:
     """Onboard a client company and its Client Company Admin account.
 
-    The admin signs in with email/password or Google via Firebase — ReadyPick
+    The admin signs in with email/password or Google via Firebase — Vivekium
     stores no password and issues no OTP (claude.md rule 2). No sending domain
     is collected: outbound mail is SMTP (rule 5).
     """
@@ -635,12 +635,12 @@ async def invite_staff(
     inviter = await session.get(User, user.user_id)
     inviter_label = (
         (inviter.full_name or inviter.email) if inviter is not None else None
-    ) or "The ReadyPick team"
+    ) or "The Vivekium team"
     # The context keys must match the PLACEHOLDERS in that template, which is
     # the same one the company portal uses. This path was passing `tenant_name`
     # and `role`, neither of which the template names, so every Owner-console
     # invitation rendered its blanks as empty strings: "You have been invited
-    # to  on ReadyPick", " has invited you to join  as a ", "This link expires
+    # to  on Vivekium", " has invited you to join  as a ", "This link expires
     # on ." An unknown placeholder resolves to '' rather than raising
     # (email_render.substitute), so the email sent and looked delivered.
     dispatch(
@@ -732,7 +732,7 @@ async def create_bd_user(
     """Reserve a Business Development account for an email address.
 
     The account is usable as soon as its owner signs in at the normal login
-    page with this email, through Google or email/password. ReadyPick never
+    page with this email, through Google or email/password. Vivekium never
     holds the credential.
     """
     email = str(body.email)

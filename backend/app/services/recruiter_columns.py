@@ -267,7 +267,7 @@ _BGV_WORDS: dict[str, str] = {
     "not_started": "Not Started",
     "pending": "Pending",
     "verified": "Done",
-    "not_verified": "Not Verified",
+    "not_verified": "Not Confirmed",
 }
 
 

@@ -172,7 +172,7 @@ function PrimaryContactSection({
       <div>
         <p className="text-sm font-medium">Primary contact</p>
         <p className="text-xs">
-          The customer&apos;s Super Admin. This is the address ReadyPick invites
+          The customer&apos;s Super Admin. This is the address Vivekium invites
           and the one they sign in with.
         </p>
       </div>
@@ -315,7 +315,7 @@ export function CustomerEditModal({
           <FormField
             label="Internal notes"
             htmlFor="customer-notes"
-            hint="Visible to ReadyPick only, never to the customer."
+            hint="Visible to Vivekium only, never to the customer."
           >
             <Textarea
               id="customer-notes"

@@ -7,18 +7,10 @@ import type { NextRequest } from "next/server";
 /**
  * Which cookies count as "this browser still has a session".
  *
- * `pr_access` is deleted by the browser the moment its 15-minute Max-Age
- * lapses. `pr_refresh` is path-scoped to /api/v1/auth so it is never sent to a
- * page request like /org/jobs, which means this middleware CANNOT see it, the
- * old `cookies.has("pr_refresh")` check here was dead code that never once
- * returned true. The result: an idle user with a perfectly valid 7-day refresh
- * token was redirected to /login on their next click, before the API client
- * ever got the chance to refresh silently.
- *
- * `pr_session` fixes that. It is set and cleared by the backend alongside the
- * refresh token, lives at path "/", and holds no token material at all, it
- * only says a refresh token exists. Presence still grants nothing: the page it
- * admits calls /auth/me, and a session that cannot refresh is cleared there.
+ * Both `pr_access` and `pr_session` are browser-session cookies at path "/".
+ * The refresh cookie stays scoped to /api/v1/auth. Presence grants nothing:
+ * the page calls /auth/me, which checks the signed JWT and server-side idle
+ * deadline. An expired access JWT can refresh while the browser stays open.
  */
 const SESSION_COOKIES = ["pr_access", "pr_session"] as const;
 

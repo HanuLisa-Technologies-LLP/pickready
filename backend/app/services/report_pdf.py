@@ -47,7 +47,7 @@ FOOTER = "Confidential. Permanent Assessment Record."
 #: title and the expansion are set in different styles; a reader must be able to
 #: read the two lines together and get the string the spec wrote.
 REPORT_TITLE = "PRISM Report"
-REPORT_SUBTITLE = "Predictive Role Intelligence & Suitability Mapping"
+REPORT_SUBTITLE = "Evidence-Based Role Intelligence & Suitability Mapping"
 
 #: The section order (spec doc 4, part 3), and the ONLY place it is written down
 #: on this side. `render_report_pdf` walks this tuple rather than emitting
@@ -496,7 +496,7 @@ def render_report_pdf(
         topMargin=16 * mm,
         bottomMargin=19 * mm,
         title=f"{REPORT_TITLE} - {candidate_name}",
-        author="ReadyPick",
+        author="Vivekium",
     )
     base = getSampleStyleSheet()
     styles = {
@@ -540,7 +540,7 @@ def render_report_pdf(
     # and authorises nothing.
     reference = _text(_value(report, "reference_code", "") or "")
     story: list[Any] = [
-        Paragraph("ReadyPick", styles["Subtitle"]),
+        Paragraph("Vivekium", styles["Subtitle"]),
         Paragraph(REPORT_TITLE, styles["Title"]),
         Paragraph(_text(REPORT_SUBTITLE), styles["Subtitle"]),
         Spacer(1, 3 * mm),

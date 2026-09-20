@@ -68,7 +68,7 @@ log = logging.getLogger(__name__)
 STEM = "STEM"
 NON_STEM = "NON_STEM"
 
-#: Part 5 §2.1 — credits deducted per completed ReadyPick Intelligence Report.
+#: Part 5 §2.1 — credits deducted per completed Vivekium Intelligence Report.
 CREDIT_COST: dict[str, Decimal] = {
     STEM: Decimal("1.5"),
     NON_STEM: Decimal("1.0"),

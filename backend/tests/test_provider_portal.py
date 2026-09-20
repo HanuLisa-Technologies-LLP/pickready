@@ -410,9 +410,9 @@ PROVIDER_WRITES = {
     # `test_primary_contact.py`, including the rebind, which is the part with
     # consequences.
     ("/customers/{customer_id}/primary-contact", "PUT"),
-    # ReadyPick's own commercial classification of a job, which the client
+    # Vivekium's own commercial classification of a job, which the client
     # never sees and cannot set. Permitted strictly before the first completed
-    # assessment (Part 3 rule 5), so it edits ReadyPick's own record of the
+    # assessment (Part 3 rule 5), so it edits Vivekium's own record of the
     # engagement rather than the customer's data.
     ("/jobs/{job_id}/reclassify", "POST"),
 }

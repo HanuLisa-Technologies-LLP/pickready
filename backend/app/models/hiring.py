@@ -288,7 +288,7 @@ class CalibrationRecord(Base, UUIDPKMixin, CreatedAtMixin):
     #: What KIND of calibration signal this row is (migration 0069).
     #: `outcome` is the original meaning, a hiring outcome observed months
     #: later. `team_review_divergence` is a reviewer whose verdict disagreed
-    #: with the Ready Pick Score (spec-doc6 8.2). Both answer "was the grade
+    #: with the Vivekium Score (spec-doc6 8.2). Both answer "was the grade
     #: right?", which is why they share a table rather than splitting into two
     #: places a calibration analysis would have to join.
     source: Mapped[str] = mapped_column(

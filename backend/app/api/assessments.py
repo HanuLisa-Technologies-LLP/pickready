@@ -37,9 +37,7 @@ from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
 from app.models.job_setup import (
     SWOT_ANALYSIS_SECTIONS,
-    SWOT_AREAS,
     JobSwotAnalysis,
-    JobSwotIntake,
 )
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -69,15 +67,13 @@ from app.schemas.assessments import (
     SwotAnalysisGenerateIn,
     SwotAnalysisOut,
     SwotAnalysisSectionsIn,
-    SwotAnswerIn,
-    SwotIntakeOut,
     TranscriptAnswerDetailOut,
     TranscriptExchangeOut,
     TranscriptOut,
 )
 from app.services import capabilities as caps
 from app.services import rbac
-from app.services.hiring import pipeline_halt, scorecard, situations, swot_quality
+from app.services.hiring import pipeline_halt, scorecard, swot_quality
 from app.services import (
     answer_classification,
     assessment_consent,
@@ -95,7 +91,7 @@ from app.services import (
     retake,
     retention_consent,
     swot_analysis,
-    swot_intake,
+    job_version,
     telemetry_events,
     tenant_cache,
 )
@@ -113,7 +109,7 @@ from app.services.video import storage as video_storage
 from app.services.assessment_formats import rendering as format_rendering
 from app.services.assessment_formats import scoring as format_scoring
 from app.services.assessment_formats import types as question_types
-from app.services.audit import audit
+from app.services.audit import audit, record_action, record_agent_action
 # PROCTORING IS MANDATORY (proctoring-spec-doc.md, principle P4). The gate is
 # this module's only import-time dependency on the proctoring package; the
 # behaviour recorder and the report loader are reached inside the handlers
@@ -195,7 +191,9 @@ async def _refresh_setup_status(session: AsyncSession, job: Job) -> None:
     await session.flush()
 
 
-def _setup_out(job: Job, *, framework_pending: bool = False) -> JobSetupOut:
+def _setup_out(
+    job: Job, *, framework_pending: bool = False, swot_analysis_ready: bool = False
+) -> JobSetupOut:
     approved = job.framework_approved_at is not None
     return JobSetupOut(
         job_id=job.id,
@@ -209,7 +207,7 @@ def _setup_out(job: Job, *, framework_pending: bool = False) -> JobSetupOut:
         questions_approved=approved,
         framework_approved=approved,
         matching_categories_finalized=job.matching_categories_finalized_at is not None,
-        swot_complete=job.swot_completed_at is not None,
+        swot_analysis_ready=swot_analysis_ready,
         ready_for_candidates=job.assessment_status == READY_FOR_CANDIDATES,
         generated_at=job.framework_generated_at,
         approved_at=job.framework_approved_at,
@@ -236,20 +234,15 @@ async def _framework_repair_pending(session: AsyncSession, job: Job) -> bool:
     timestamp was being treated as evidence that work happened, which is the
     exact failure this repo has a standing rule about.
 
-    CHANGED 2026-08-29. It no longer enqueues unconditionally. Sutra refuses to
-    compile without a completed SWOT session, so a job whose intake is still
-    running has no matrix for a perfectly good reason, and enqueueing a task
-    that is certain to refuse would fill the log with a normal waiting state.
-    The enqueue is now conditioned on the one input this layer can see; every
-    other refusal is Sutra's and is surfaced by `_setup_out`'s own fields.
+    Sutra now reads the saved Job SWOT document. A historic intake completion
+    stamp is not evidence that the document exists, so check the actual row.
     """
     rows = await ppi.load_framework(session, job.id)
     if rows:
         return False
-    if job.swot_completed_at is None:
-        # Nothing to enqueue. The setup screen says the SWOT session is
-        # outstanding, which is the actionable half of this state.
-        return True
+    analysis = await swot_analysis.get(session, job)
+    if analysis is None or not analysis.has_content:
+        return False
     dispatch(
         "pickready.compile_tatva_matrix",
         args=[str(job.id)],
@@ -266,7 +259,12 @@ async def job_setup(
     session: AsyncSession = Depends(get_tenant_db),
 ) -> JobSetupOut:
     job = await _staff_job(session, user, job_id)
-    return _setup_out(job, framework_pending=await _framework_repair_pending(session, job))
+    analysis = await swot_analysis.get(session, job)
+    return _setup_out(
+        job,
+        framework_pending=await _framework_repair_pending(session, job),
+        swot_analysis_ready=bool(analysis and analysis.has_content),
+    )
 
 
 # ── The technical question bank: REMOVED 2026-08-06 ──────────────────────────
@@ -592,28 +590,31 @@ async def finalize_framework(
     job.criteria_version = matrix.version
     await _refresh_setup_status(session, job)
     rows = await ppi.load_framework(session, job.id)
-    row = await audit(
+    # Every column in the one INSERT: the application role has no UPDATE grant
+    # on audit_log, so a post-flush attribute write aborts the transaction at
+    # commit, after the response has already left (the SWOT false-409 bug).
+    await record_action(
         session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
         action="role_definition_finalized",
-        target_type="job",
-        target_id=job.id,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
+        new_state={"lifecycle_state": job.lifecycle_state},
         metadata={
             "counts": {
                 category: sum(1 for item in rows if item.category == category)
                 for category in ppi.CATEGORIES
             },
             # RBAC §20's required facts, in the row as well as the columns.
-            "jd_version": swot_intake.jd_version(job),
+            "jd_version": job_version.jd_version(job),
             "criteria_version": matrix.version,
             "situation_key": matrix.situation_key,
         },
     )
-    row.job_id = job.id
-    row.actor_role = user.role.value
-    row.correlation_id = job.correlation_id
-    row.new_state = {"lifecycle_state": job.lifecycle_state}
     await _invalidate_framework(job)
     logger.info(
         "assessments.role_definition_finalized job_id=%s by=%s criteria_version=%d "
@@ -743,143 +744,6 @@ async def reorder_framework(
     return await _framework_out(session, job)
 
 
-# ── Bodha: the Hiring Manager SWOT session (Runbook §18) ───────────────────
-# The Layer 3 intake, run once per job before Sutra can compile anything. Four
-# quadrants, §18.3's seven high-value probes, §18.2's force-ranking and
-# disqualifier confirmation, §18.5's best-performer test, and §18.4's situation
-# classification read back for explicit confirmation.
-#
-# RBAC §10.4 makes the SWOT a Hiring-Manager-controlled field, so these routes
-# authorise on EDIT_SWOT through the full RBAC chain (tenant, assignment,
-# lifecycle state) rather than on CREATE_JOB. RBAC §9.4 names "job-role SWOT
-# analysis" among the things a Recruiter "MUST NOT be able to authoritatively
-# modify", and §11 is separately clear that the Hiring Manager cannot REJECT the
-# JD -- Bodha handing a SWOT back for rework is a different act and is what
-# §18.5 requires.
-
-
-def _swot_out(job: Job, intake: JobSwotIntake, prompt: str | None) -> SwotIntakeOut:
-    area = swot_intake.current_area(intake)
-    quality = dict(intake.quality_json or {})
-    return SwotIntakeOut(
-        job_id=job.id,
-        status=intake.status,
-        complete=swot_intake.is_complete(intake),
-        current_area=area,
-        current_area_label=swot_intake.AREA_LABELS.get(area) if area else None,
-        prompt=prompt,
-        captured=intake.captured(),
-        areas_total=len(SWOT_AREAS),
-        areas_done=min(intake.area_index, len(SWOT_AREAS)),
-        phase=intake.phase,
-        phase_label=swot_intake.PHASE_LABELS.get(intake.phase),
-        situation_key=intake.situation_key,
-        situation_label=(
-            situations.SITUATIONS[intake.situation_key].label
-            if situations.is_valid(intake.situation_key)
-            else None
-        ),
-        returned_for_rework=intake.phase == swot_intake.PHASE_REWORK,
-        # The §18.5 rules currently refusing, by NAME. The sentence to say is
-        # `prompt`; a screen that rendered both would say the same thing twice.
-        outstanding_rules=[
-            str(entry.get("rule"))
-            for entry in (quality.get("rejections") or [])
-            if entry.get("rule")
-        ],
-        instruments_asked=[str(key) for key in (intake.probes_asked or [])],
-    )
-
-
-@router.get("/jobs/{job_id}/swot", response_model=SwotIntakeOut)
-async def get_swot_intake(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> SwotIntakeOut:
-    job = await _staff_job(session, user, job_id)
-    intake = await swot_intake.get_or_create(session, job, conducted_by=user.user_id)
-    prompt = await swot_intake.open_question(session, job, intake)
-    return _swot_out(job, intake, prompt)
-
-
-@router.post("/jobs/{job_id}/swot/respond", response_model=SwotIntakeOut)
-async def respond_swot_intake(
-    job_id: uuid.UUID,
-    body: SwotAnswerIn,
-    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> SwotIntakeOut:
-    """Record one answer and return the next question.
-
-    CLOSING THE SESSION IS WHAT ACTIVATES SUTRA. §18.5's six rejection rules are
-    the only exit: an intake that trips one is handed back with the sentence
-    that says what is wanted, and nothing is enqueued. An intake that passes
-    them publishes Bodha's `swot_evidence` artifact and enqueues the seven-stage
-    compile.
-
-    The compile is a CELERY TASK, never inline. It is a model call plus a dozen
-    table lookups, and a hiring manager who has just finished a ninety-minute
-    session should not watch it run.
-
-    Regeneration is refused once the matrix is frozen, so a late intake cannot
-    move the criteria underneath a report that already states a grade against
-    them; `scorecard.compile_matrix` raises rather than overwriting.
-    """
-    job = await _staff_job(session, user, job_id)
-    intake = await swot_intake.get_or_create(session, job, conducted_by=user.user_id)
-    if swot_intake.is_complete(intake):
-        return _swot_out(job, intake, None)
-
-    try:
-        prompt = await swot_intake.submit_answer(session, job, intake, body.answer)
-    except pipeline_halt.PipelineHalted as halt:
-        raise HTTPException(
-            status_code=503, detail=pipeline_halt.http_detail(halt)
-        ) from halt
-
-    if swot_intake.is_complete(intake):
-        row = await audit(
-            session,
-            tenant_id=user.tenant_id,
-            actor_user_id=user.user_id,
-            action="swot_session_completed",
-            target_type="job",
-            target_id=job.id,
-            metadata={
-                "situation_key": intake.situation_key,
-                "captured": {
-                    area: len(points) for area, points in intake.captured().items()
-                },
-                "instruments": list(intake.probes_asked or []),
-                "best_performer_excluded": intake.best_performer_excluded,
-            },
-        )
-        row.job_id = job.id
-        row.actor_role = user.role.value
-        row.correlation_id = job.correlation_id
-        # RBAC §34: an AI-initiated mutation is attributable to BOTH the human
-        # principal and the agent that executed it. `actor_user_id` stays the
-        # human, always.
-        row.agent_name = "bodha"
-        if job.framework_approved_at is None:
-            dispatch(
-                "pickready.compile_tatva_matrix",
-                args=[str(job.id)],
-                kwargs={
-                    "replace": True,
-                    "correlation_id": job.correlation_id or "",
-                },
-            )
-            await _invalidate_framework(job)
-            logger.info(
-                "assessments.swot_complete_matrix_enqueued job_id=%s situation=%s",
-                job.id,
-                intake.situation_key,
-            )
-    return _swot_out(job, intake, prompt)
-
-
 # ── The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ──
 #
 # FOUR ROUTES, ONE AUTHORIZATION MODEL, NO NEW PERMISSION SYSTEM (section 27)
@@ -968,6 +832,19 @@ async def _swot_analysis_out(
     )
 
 
+async def _enqueue_matrix_from_swot(session: AsyncSession, job: Job, row: JobSwotAnalysis) -> None:
+    """Start Sutra when a saved SWOT exists and no matrix has been written."""
+    if not row.has_content or job.framework_approved_at is not None:
+        return
+    if await ppi.load_framework(session, job.id):
+        return
+    dispatch(
+        "pickready.compile_tatva_matrix",
+        args=[str(job.id)],
+        kwargs={"correlation_id": job.correlation_id or ""},
+    )
+
+
 @router.get("/jobs/{job_id}/swot-analysis", response_model=SwotAnalysisOut)
 async def get_swot_analysis(
     job_id: uuid.UUID,
@@ -1022,25 +899,35 @@ async def generate_swot_analysis(
         return out
 
     row_out = await _swot_analysis_out(session, user, job, row)
-    entry = await audit(
+    # ONE INSERT, never an UPDATE. The audit columns (job_id, actor_role,
+    # correlation_id, agent_name) must be set BEFORE the row is flushed:
+    # `audit()` flushes on return, so mutating the returned row afterwards
+    # emits `UPDATE audit_log`, which the app role has REVOKED (0001/0014,
+    # binding since the 2026-09-11 credential split). That UPDATE failed the
+    # COMMIT after the 200 had already been sent, the whole transaction rolled
+    # back, and the client's copy of `version` ran one ahead of the row --
+    # which is exactly the false "Someone else saved this SWOT" 409 on the
+    # next save. `record_agent_action` writes every column in the one INSERT.
+    # RBAC 34: an AI-initiated mutation is attributable to BOTH the human who
+    # asked for it and the agent that executed it. `actor_user_id` stays the
+    # human, always.
+    await record_agent_action(
         session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
         action="job_swot_analysis_generated",
-        target_type="job",
-        target_id=job.id,
+        agent_name="bodha",
+        principal_user_id=user.user_id,
+        principal_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
         metadata={
             "version": row.version,
             "replaced_human_edits": bool(body.confirm_overwrite and row.human_edited),
         },
     )
-    entry.job_id = job.id
-    entry.actor_role = user.role.value
-    entry.correlation_id = job.correlation_id
-    # RBAC 34: an AI-initiated mutation is attributable to BOTH the human who
-    # asked for it and the agent that executed it. `actor_user_id` stays the
-    # human, always.
-    entry.agent_name = "bodha"
+    await _enqueue_matrix_from_swot(session, job, row)
     return row_out
 
 
@@ -1069,18 +956,21 @@ async def save_swot_analysis(
     except swot_analysis.VersionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    entry = await audit(
+    # One INSERT carrying every audit column: see the generate route for why a
+    # post-flush mutation of the audit row is an UPDATE the app role cannot run.
+    await record_action(
         session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
         action="job_swot_analysis_edited",
-        target_type="job",
-        target_id=job.id,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
         metadata={"version": row.version},
     )
-    entry.job_id = job.id
-    entry.actor_role = user.role.value
-    entry.correlation_id = job.correlation_id
+    await _enqueue_matrix_from_swot(session, job, row)
     return await _swot_analysis_out(session, user, job, row)
 
 
@@ -1096,18 +986,21 @@ async def restore_swot_analysis(
         row = await swot_analysis.restore_previous(session, job)
     except swot_analysis.SwotAnalysisError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    entry = await audit(
+    # One INSERT carrying every audit column: see the generate route for why a
+    # post-flush mutation of the audit row is an UPDATE the app role cannot run.
+    await record_action(
         session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
         action="job_swot_analysis_restored",
-        target_type="job",
-        target_id=job.id,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
         metadata={"version": row.version},
     )
-    entry.job_id = job.id
-    entry.actor_role = user.role.value
-    entry.correlation_id = job.correlation_id
+    await _enqueue_matrix_from_swot(session, job, row)
     return await _swot_analysis_out(session, user, job, row)
 
 
@@ -1248,7 +1141,7 @@ async def download_report_pdf(
     tenant = await session.get(Tenant, link.tenant_id)
     candidate_name = (candidate.full_name if candidate else None) or "Candidate"
     job_title = (job.title if job else None) or "Role"
-    tenant_name = (tenant.name if tenant else None) or "ReadyPick customer"
+    tenant_name = (tenant.name if tenant else None) or "Vivekium customer"
     # ReportLab is heavy and PDF downloads are infrequent; keep it off the API
     # startup path so ordinary requests do not pay its import cost.
     from app.services.report_pdf import render_report_pdf

@@ -1,4 +1,4 @@
-"""Provider Portal — the ReadyPick owner's console over its CUSTOMERS.
+"""Provider Portal — the Vivekium owner's console over its CUSTOMERS.
 
     Provider Portal   this module: the platform owner's dashboard
     Customer Portal   a client company's own dashboard (api/companies.py)
@@ -824,7 +824,7 @@ async def classification_review_queue(
 ) -> list[ClassificationReviewItem]:
     """Jobs whose classification landed in the §4.4 tentative band
     (stem-score 0.30–0.79) or came from the engine-error fallback, newest
-    first, for manual verification by the Hanulisa team."""
+    first, for manual verification by the Varpitech team."""
     from app.models.job import Job
 
     rows = (

@@ -55,7 +55,7 @@ interface CandidateThread {
 const PARTY_LABEL: Record<string, string> = {
   recruiter: "Recruitment team",
   candidate: "You",
-  system: "ReadyPick",
+  system: "Vivekium",
 };
 
 export default function CandidateMessagesPage() {

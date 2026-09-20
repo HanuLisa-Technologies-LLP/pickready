@@ -211,7 +211,7 @@ export default function BillingPage() {
           keyId: order.razorpay_key_id,
           orderId: order.razorpay_order_id,
           amountInr: order.total_inr,
-          name: "ReadyPick",
+          name: "Vivekium",
           description: `${order.credits} Intelligence Report credits, one-time purchase`,
           prefill: {
             email: user?.email ?? undefined,
@@ -575,7 +575,7 @@ export default function BillingPage() {
               legacy subscription plans further down. */}
           <div id="billing-plans" className="scroll-mt-24">
             <Section
-              title="Purchase ReadyPick Intelligence Report Credits"
+              title="Purchase Vivekium Intelligence Report Credits"
               description={
                 canManage
                   ? `One-time purchases at ${formatInr(packs?.price_per_credit_inr ?? 600)} per credit. Credits never expire, and volume packs add bonus credits free.`

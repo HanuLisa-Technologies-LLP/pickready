@@ -3,8 +3,8 @@ import Image from "next/image";
 
 import { cn } from "@/lib/utils";
 
-/** ReadyPick's standalone product mark and wordmark, rendered from native UI. */
-const ALT = "ReadyPick";
+/** Vivekium's standalone product mark and wordmark, rendered from native UI. */
+const ALT = "Vivekium";
 
 export interface LogoProps {
   variant?: "full" | "mark";
@@ -51,8 +51,8 @@ export function Logo({
           className="font-black tracking-[-0.045em] text-foreground"
           style={{ fontSize: Math.max(18, Math.round(height * 0.72)) }}
         >
-          {/* "Pick" carries the TEAL, and the split is the wordmark's own:
-              navy Ready, teal Pick, exactly as the mark is drawn. `teal-700`
+          {/* The wordmark keeps the two-tone treatment: the tail carries the
+              TEAL the way "Pick" did before the Vivekium rename. `teal-700`
               rather than `teal-600` because this is TEXT and the brand teal
               measures 4.30:1 -- below AA. See DESIGN.md §2.
 
@@ -62,7 +62,7 @@ export function Logo({
               bar in BOTH themes while asserting teal-600 only at the 3:1
               non-text bar. The dark-mode override this replaces was the one
               place in the product that printed words in the fill token. */}
-          Ready<span className="text-teal-700">Pick</span>
+          Vivek<span className="text-teal-700">ium</span>
         </span>
       ) : null}
     </span>

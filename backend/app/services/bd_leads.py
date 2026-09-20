@@ -405,7 +405,7 @@ def iter_csv(customers: Iterable[BDCustomerOut]) -> Iterator[str]:
 
 
 def csv_filename(now: datetime | None = None) -> str:
-    return f"readypick-bd-customers-{_now(now).date().isoformat()}.csv"
+    return f"vivekium-bd-customers-{_now(now).date().isoformat()}.csv"
 
 
 # ── AI Reach, segment 1: our OWN customer database ───────────────────────────

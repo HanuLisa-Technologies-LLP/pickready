@@ -163,7 +163,6 @@ TaskType = Literal[
     # ── Job setup ──
     "jd_generation",
     "technical_questions",
-    "swot_intake",
     "swot_analysis",
     "situation_classification",
     "competency_transformation",
@@ -220,8 +219,6 @@ MODEL_FOR_TASK: dict[str, str] = {
     "conversation_turn": MODEL_TERRA,
     "jd_generation": MODEL_TERRA,
     "technical_questions": MODEL_TERRA,
-    # Bodha, both mandates: structured interview judgment and probe selection.
-    "swot_intake": MODEL_TERRA,
     # The recruitment-facing SWOT document: writing, and evidence-bounded.
     "swot_analysis": MODEL_TERRA,
     # Sutra: competency naming, observable-evidence authoring, weight
@@ -374,7 +371,6 @@ TASK_TIMEOUTS: dict[str, float] = {
     "situation_classification": 12.0,
     "email_composition": 15.0,
     "rerank": 15.0,
-    "swot_intake": 15.0,
     # ── GENERATIVE interactive: a request handler is blocked and the output is
     #    a DOCUMENT. This is the one number the model consolidation genuinely
     #    moved, and it is worth stating why rather than letting a reader assume
@@ -452,7 +448,6 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "situation_classification": 24.0,
     "email_composition": 30.0,
     "rerank": 30.0,
-    "swot_intake": 30.0,
     # The generative-interactive exception. See TASK_TIMEOUTS above.
     "jd_generation": 50.0,
     "swot_analysis": 50.0,
@@ -505,7 +500,6 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "jd_generation": 4096,
     "swot_analysis": 1536,
     "email_composition": 1024,
-    "swot_intake": 1024,
     "situation_classification": 512,
     "rerank": 2048,
     "technical_questions": 8192,
@@ -595,7 +589,6 @@ TASK_TEMPERATURE: dict[str, float] = {
     "jd_generation": 0.5,
     "swot_analysis": 0.5,
     "email_composition": 0.5,
-    "swot_intake": 0.5,
     # Writes three sections of prose from retrieved content. Low rather than
     # zero: every sentence must stay anchored to what was retrieved, and the
     # deterministic guards (word range, no invented number, no generic phrase)
@@ -634,7 +627,6 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "jd_generation": 3,
     "swot_analysis": 3,
     "email_composition": 3,
-    "swot_intake": 3,
     "rerank": 3,
     "technical_questions": 3,
     "competency_transformation": 3,
@@ -1065,7 +1057,6 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     "situation_classification": 0.05,
     "email_composition": 0.15,
     "rerank": 0.06,
-    "swot_intake": 0.15,
     "fill_blank_equivalence": 0.05,
     # Interactive, document output.
     "jd_generation": 0.25,

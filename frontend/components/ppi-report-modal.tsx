@@ -97,7 +97,7 @@ export function PPIReportModal({
           <div className="flex flex-wrap items-start justify-between gap-3 pr-8">
             <div>
               <DialogTitle>PRISM Report</DialogTitle>
-              <p className="text-sm">Predictive Role Intelligence &amp; Suitability Mapping</p>
+              <p className="text-sm">Evidence-Based Role Intelligence &amp; Suitability Mapping</p>
               <p className="mt-1 text-sm font-medium">
                 {candidateName}
                 {jobTitle ? ` (${jobTitle})` : ""}

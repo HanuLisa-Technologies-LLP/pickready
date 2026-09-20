@@ -41,7 +41,7 @@ class DashboardSummaryOut(BaseModel):
 #
 # THE ONE PLACE IN THIS PRODUCT WHERE A SCORE CROSSES THE API BOUNDARY.
 #
-# spec-doc6 D8 rules that the Ready Pick Score (0-100, plus band, plus
+# spec-doc6 D8 rules that the Vivekium Score (0-100, plus band, plus
 # confidence) is a DASHBOARD TRIAGE ARTIFACT: it renders in the candidate list
 # and nowhere else, and it must be technically impossible for it to enter a
 # delivered PRISM Report. Two things make that hold here rather than by
@@ -107,7 +107,7 @@ class DashboardRowOut(BaseModel):
     pre_screen_grade: str | None = None
     pre_screen_label: str
 
-    # 4. Ready Pick Score. The number D8 permits, and the band and confidence
+    # 4. Vivekium Score. The number D8 permits, and the band and confidence
     #    beside it. A null score with a `pending` or `under_review` band is the
     #    documented honest state, never a zero.
     ready_pick_score: int | None = None
@@ -123,11 +123,11 @@ class DashboardRowOut(BaseModel):
     score_range: str | None = None
     score_range_note: str
 
-    # 5. Ready Pick Note.
+    # 5. Vivekium Note.
     note: str
     note_is_pending: bool
 
-    # 6. Ready Pick Profile.
+    # 6. Vivekium Profile.
     profile: ReadyPickProfileRefOut | None = None
     profile_pending_reason: str | None = None
 

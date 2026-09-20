@@ -71,8 +71,6 @@ on a public page, neutral and precise in an internal report.
 | services/lifecycle_email      | email_joined                    | email_composition         | candidate-facing | `lifecycle_email_state` |
 | services/lifecycle_email      | email_databank_invitation       | email_composition         | candidate-facing | `lifecycle_email_state` |
 | services/lifecycle_email      | email_question_bank_reminder    | email_composition         | internal         | `lifecycle_email_state` |
-| services/swot_intake          | swot_intake_question.txt        | conversation_turn         | internal         | `swot_question_state` |
-| services/swot_intake          | swot_intake_capture.txt         | extraction                | internal         | `swot_capture_state` |
 | services/email_templates      | none, a fixed catalogue in code | none                      | candidate-facing | no model call, nothing to gate |
 
 Generators OUTSIDE this change, listed so the next reader does not think the
@@ -130,8 +128,6 @@ __all__ = [
     "outreach_evidence",
     "outreach_state",
     "OUTREACH_EVIDENCE_KEYS",
-    "swot_capture_state",
-    "swot_question_state",
 ]
 
 
@@ -148,8 +144,6 @@ GATED_PROMPTS: tuple[str, ...] = (
     "report_gap_probes",
     "outreach_email_system",
     "email_generation",
-    "swot_intake_question",
-    "swot_intake_capture",
 ) + tuple(sorted(EMAIL_TYPE_PROMPTS.values()))
 
 #: The few-shot block every gated prompt carries, and the fence around the one
@@ -291,13 +285,6 @@ EMPTY_STATE_COPY: dict[str, str] = {
     ),
     "lifecycle_email.no_scheduled_time": (
         "Sent from the standard wording for this stage."
-    ),
-    # SWOT intake, internal
-    "swot_intake.question.no_role_detail": (
-        "Asked from the standard question for this area."
-    ),
-    "swot_intake.capture.empty_answer": (
-        "Nothing was captured from this answer."
     ),
 }
 
@@ -927,38 +914,6 @@ def outreach_evidence(candidate: Mapping[str, Any]) -> dict[str, str]:
         for key in OUTREACH_EVIDENCE_KEYS
         if str(candidate.get(key) or "").strip()
     }
-
-
-# ── SWOT intake (internal) ───────────────────────────────────────────────────
-
-
-def swot_question_state(
-    job_title: str | None, jd_markdown: str | None
-) -> Sufficiency:
-    """Whether there is enough of a role to write a question about it.
-
-    The adaptive question is written from the job title and the JD. With neither,
-    the model is writing a question about a role it has not been told anything
-    about, and the scripted question for the area is both correct and specific.
-    """
-    if _has_text(job_title) or _has_text(jd_markdown):
-        return _ok()
-    return _no(
-        "swot_intake.question.no_role_detail",
-        "the job carries neither a title nor a description",
-    )
-
-
-def swot_capture_state(answer: str | None) -> Sufficiency:
-    """Whether one intake answer has anything in it to extract.
-
-    An empty answer already short-circuited in `capture_answer`; naming the
-    state gives that path the same fixed key as every other gate rather than an
-    unlabelled early return.
-    """
-    if _has_text(answer):
-        return _ok()
-    return _no("swot_intake.capture.empty_answer", "the answer was empty")
 
 
 # ── Self-checks that would otherwise be discovered in production ─────────────

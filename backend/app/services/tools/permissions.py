@@ -34,7 +34,7 @@ AGENT_PPI_REPORT = "ppi_report"    # services/functional_assessment + ppi
 AGENT_EMAIL = "email"              # services/lifecycle_email
 AGENT_PROBE = "probe"              # services/gap_analysis
 AGENT_INTERVIEWER = "interviewer"  # services/interviewer + ppi_interview
-AGENT_JOB_SETUP = "job_setup"      # services/ppi.generate_framework, swot_intake
+AGENT_JOB_SETUP = "job_setup"      # services/ppi.generate_framework, swot_analysis
 # Miti, the Tatva Scoring Agent. Split out on 2026-08-23 and NOT merely renamed:
 # scoring previously ran inside the report agent's grant, which meant the scorer
 # held `extract_jd`. The specification's security boundary says Miti "cannot

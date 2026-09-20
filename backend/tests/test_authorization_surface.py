@@ -122,6 +122,11 @@ PUBLIC_BY_DESIGN: dict[str, str] = {
     # The authentication endpoint itself. It cannot require authorization: it
     # is what produces the session. Rate limited instead (services/rate_limit).
     "/firebase/session": "creates the session",
+    # Authorized by a FRESH Firebase ID token in the body, verified before
+    # anything is read, and it acts only on the uid that token names. A cookie
+    # dependency would defeat it: the session it revokes may already be
+    # expired, and it only ever removes access.
+    "/password-changed": "verified Firebase ID token, revokes only",
     # Authorized by a single-use, short-lived context_token in the body, minted
     # by /firebase/session moments earlier.
     "/select-context": "single-use context token",

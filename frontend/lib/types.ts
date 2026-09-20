@@ -8,7 +8,7 @@ export type Role =
   | "recruiter"
   | "hiring_manager"
   | "candidate"
-  // Business Development: ReadyPick's own sales staff. Platform staff, so
+  // Business Development: Vivekium's own sales staff. Platform staff, so
   // tenant_id is always null on this user.
   | "bd";
 
@@ -20,6 +20,7 @@ export interface User {
   email: string;
   email_verified: boolean;
   phone_verified: boolean;
+  password_enabled?: boolean;
   workspace_name: string;
 }
 
@@ -57,7 +58,7 @@ export function isContextsResponse(
     && (res as AuthContextsResponse).contexts.length > 0;
 }
 
-// ---- Provider Portal (the ReadyPick owner's view of its customers) ----
+// ---- Provider Portal (the Vivekium owner's view of its customers) ----
 //
 // A "customer" is one onboarded client company. It is the same underlying row
 // the Owner console has always called a tenant, `Tenant` below stays for the
@@ -233,7 +234,7 @@ export interface StaffMember {
 }
 
 /**
- * Row from GET /admin/bd-users, ReadyPick's own Business Development team.
+ * Row from GET /admin/bd-users, Vivekium's own Business Development team.
  *
  * There is no tenant on this record and there never will be: a BD user is
  * platform staff. `signed_in` is false until Firebase binds an identity on the
@@ -596,7 +597,7 @@ export interface RankedCandidate {
   /** Where this applicant came from (spec §1.1). */
   application_source?: "direct" | "sourced" | null;
   /** How this candidate was procured. Applied means they came through
-   *  ReadyPick themselves, sourced means a third-party link, databank means
+   *  Vivekium themselves, sourced means a third-party link, databank means
    *  the recruitment team uploaded them in bulk. All three are parsed,
    *  matched and assessed identically; this is display and filtering only. */
   source_type: CandidateProcurement;
@@ -665,7 +666,7 @@ export interface RankedCandidate {
   education_match_label?: string | null;
   /** Raw derived BGV status ('verified' | 'pending' | ...), for logic. */
   bgv_status?: string;
-  /** "Done" / "Pending" / "Not Started" / "Not Required" / "Not Verified",
+  /** "Done" / "Pending" / "Not Started" / "Not Required" / "Not Confirmed",
    *  server-worded; detail lives inside the candidate's profile only. */
   bgv_status_label?: string;
 }
@@ -1535,7 +1536,7 @@ export interface VideoDelivery {
 // ── In-product support (2026-09-10) ─────────────────────────────────────────
 //
 // Two audiences, one conversation. `SupportThread` is what a customer sees of
-// their own thread; `ProviderSupportThread` adds the fact ReadyPick staff need
+// their own thread; `ProviderSupportThread` adds the fact Vivekium staff need
 // and the customer already knows, which is WHOSE thread it is.
 //
 // The status names WHO OWES THE NEXT MOVE, which is the only thing a support
@@ -1602,7 +1603,7 @@ export interface ProviderSupportThreadPage {
   total_pages: number;
   has_next: boolean;
   has_previous: boolean;
-  /** Threads waiting on ReadyPick across every customer, UNNARROWED by the
+  /** Threads waiting on Vivekium across every customer, UNNARROWED by the
    *  page filters: it answers how much is owed, not how much is on screen. */
   open_total: number;
 }

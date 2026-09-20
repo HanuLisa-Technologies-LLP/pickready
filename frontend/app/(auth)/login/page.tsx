@@ -16,7 +16,7 @@ export const metadata: Metadata = {
 export default function LoginPage() {
   return (
     <Suspense>
-      <LoginFlow title="Sign in to ReadyPick" />
+      <LoginFlow title="Sign in to Vivekium" />
     </Suspense>
   );
 }

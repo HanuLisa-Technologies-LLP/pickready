@@ -1,6 +1,6 @@
-"""ReadyPick Profile Intelligence (PPI) -- the per-job evaluation matrix.
+"""Vivekium Profile Intelligence (PPI) -- the per-job evaluation matrix.
 
-PROPRIETARY: PPI is ReadyPick's own competency framework, derived from
+PROPRIETARY: PPI is Vivekium's own competency framework, derived from
 first-principles job analysis. It is NOT modelled on, named after, or derived
 from any licensed psychometric instrument, and no such instrument may ever be
 referenced in this file, the product UI, or the documentation.
@@ -67,8 +67,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.assessment import CandidateQuestion, JobCompetency
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
-from app.models.job_setup import SWOT_AREAS, JobSwotIntake
-from app.services import agent_loop, llm_router, swot_intake
+from app.models.job_setup import SWOT_AREAS, JobSwotAnalysis
+from app.services import agent_loop, job_version, llm_router
 from app.services.assessment_formats import composition, generation
 from app.services.assessment_formats import config as format_config
 from app.services.assessment_formats import types as question_types
@@ -532,7 +532,7 @@ def _matrix_payload(
         "grade": job.assessment_grade,
         "version": version,
         "locked": locked,
-        "jd_version": swot_intake.jd_version(job),
+        "jd_version": job_version.jd_version(job),
         "provenance": {
             "producer": identity.SUTRA,
             "job_id": str(job.id),
@@ -1069,24 +1069,19 @@ async def generate_candidate_questions(
 
 
 async def _hiring_context(session: AsyncSession, job: Job) -> str:
-    """The hiring requirement and the SWOT session's captured points, for the
-    evidence-question writer (spec section 2.1 lists both among its inputs).
-
-    The CAPTURED points, in the reporting authority's own terms, never the
-    raw intake prose: the same rule Sutra follows when it reads the compiled
-    artifact rather than the free text, because this string reaches a prompt
-    that decides what a candidate is asked.
-    """
-    intake = (
+    """The JD and saved Job SWOT document for candidate question generation."""
+    analysis = (
         await session.execute(
-            select(JobSwotIntake).where(JobSwotIntake.job_id == job.id)
+            select(JobSwotAnalysis).where(JobSwotAnalysis.job_id == job.id)
         )
     ).scalars().first()
-    captured = intake.captured() if intake is not None else {}
     return json.dumps(
         {
             "hiring_requirement": job.jd_json or {},
-            "swot": {area: captured.get(area, []) for area in SWOT_AREAS},
+            "swot": {
+                area: getattr(analysis, area) or "" if analysis is not None else ""
+                for area in SWOT_AREAS
+            },
         }
     )
 

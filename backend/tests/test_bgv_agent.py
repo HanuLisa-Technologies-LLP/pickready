@@ -70,7 +70,7 @@ def test_the_house_style_rules_are_enforced_here_too() -> None:
 
 def test_an_email_that_asserts_rather_than_asks_is_rejected() -> None:
     """The claim is unconfirmed. An email that states it as fact invites an
-    employer to agree with something ReadyPick has no basis to say."""
+    employer to agree with something Vivekium has no basis to say."""
     asserted = (
         "Hello Asha R,\n\nKarthik Kumar worked at Company A as a Java Developer "
         "from 07 January 2019 to 30 June 2021. This is recorded in our system "

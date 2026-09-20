@@ -1,6 +1,6 @@
 """The serialiser-level number ban (spec-doc6 D8).
 
-    "The Ready Pick Score (0-100 plus band plus confidence) is a dashboard
+    "The Vivekium Score (0-100 plus band plus confidence) is a dashboard
      triage artifact. It renders in the candidate list and nowhere else. It
      must be technically impossible for it to enter a delivered report:
      enforce with a serialiser-level rule and a test that asserts no numeric
@@ -17,7 +17,7 @@ them; a rule enforced in the generator holds only for the paths that go through
 the generator, which is exactly the set of paths a future change adds one to.
 
 It is also the only formulation that survives the dashboard existing. D8 rules
-that the Ready Pick Score renders in the candidate list; the report and the
+that the Vivekium Score renders in the candidate list; the report and the
 dashboard therefore read from overlapping state, and "do not put the number in
 the report" stops being a property of one function and becomes a property of the
 boundary between two surfaces.
@@ -25,7 +25,7 @@ boundary between two surfaces.
 THE THREE RULES, AND WHY THERE ARE THREE RATHER THAN ONE
 ----------------------------------------------------------
 1. NUMERIC FIELD. Any int, float or Decimal at any path in the payload. This is
-   the structural half and it is the one that catches a Ready Pick Score: a
+   the structural half and it is the one that catches a Vivekium Score: a
    score does not arrive as prose, it arrives as a field somebody added to a
    response model. It needs no pattern and cannot be evaded by wording.
 
@@ -60,7 +60,7 @@ gets from the citation requirement. It is not a claim the product makes about
 the candidate; it is the candidate's own words carried across untouched, and a
 product that reworded or withheld it would have falsified an application field
 in a document a client decides from.
-Inside that subtree rule 1 is relaxed and rule 2 takes over, so a Ready Pick
+Inside that subtree rule 1 is relaxed and rule 2 takes over, so a Vivekium
 Score smuggled in under a key called `score` is still refused.
 """
 from __future__ import annotations
@@ -325,7 +325,7 @@ def _walk(
                 path,
                 RULE_NUMERIC_FIELD,
                 f"a numeric field ({value!r}) in a delivered report; grades are "
-                "words and the Ready Pick Score is a dashboard artifact",
+                "words and the Vivekium Score is a dashboard artifact",
             )
         )
         return found

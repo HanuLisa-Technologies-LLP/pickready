@@ -417,7 +417,7 @@ export function VideoInterview({ linkId }: { linkId: string }) {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
-          <p className="text-base leading-7">{current.prompt}</p>
+          <p className="text-base">{current.prompt}</p>
           {options ? (
             <ul className="space-y-2">
               {options.map((option) => (

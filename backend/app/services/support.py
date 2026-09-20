@@ -5,11 +5,11 @@ THE TRANSITION IS DERIVED FROM WHO WROTE, NOT CHOSEN BY THE CALLER
 `status_after_message` is a pure function of (current status, author side).
 Nothing else decides. This is deliberate and it is the whole reason the queue
 can be trusted: if a handler could pass a status alongside a message, then
-"threads waiting on ReadyPick" would mean "threads somebody remembered to mark",
+"threads waiting on Vivekium" would mean "threads somebody remembered to mark",
 and the first missed call would be a customer waiting on a reply that nobody
 could see was owed.
 
-The one status a human sets by hand is `resolved`, and only ReadyPick staff set
+The one status a human sets by hand is `resolved`, and only Vivekium staff set
 it, through `PATCH`. A customer closing their own ticket is a feature nobody
 asked for; a customer REOPENING one by replying is the behaviour they expect,
 and it falls out of the table below rather than needing a special case.
@@ -78,7 +78,7 @@ STATUS_AFTER_MESSAGE: dict[str, str] = {
 }
 
 #: current status -> the statuses a human may move it to by hand. Only
-#: ReadyPick staff hold this, through the provider PATCH route. Writing a
+#: Vivekium staff hold this, through the provider PATCH route. Writing a
 #: message is NOT in this table: that path goes through
 #: `status_after_message`, so the two mechanisms cannot disagree.
 MANUAL_TRANSITIONS: dict[str, frozenset[str]] = {

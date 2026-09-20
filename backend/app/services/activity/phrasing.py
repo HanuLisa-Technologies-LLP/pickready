@@ -44,7 +44,7 @@ VOICE
 -----
 Present participle, no first-person pronoun: "Reading the job description ...",
 not "I'm reading ...". The spec's examples use "I'm"; this product's existing
-recruiter-facing progress copy does not, and ReadyPick is a platform rather than
+recruiter-facing progress copy does not, and Vivekium is a platform rather than
 an assistant persona. Task specificity is the requirement; the pronoun is not.
 Sentences end in a full stop and carry no ellipsis, matching the copy already on
 the job page.
@@ -151,7 +151,7 @@ PHRASING: dict[tuple[str, str], Phrase] = {
         detailed="All {candidate_count} linked to this job have been assessed against its matching categories.",
     ),
     (_MATCHING, ev.TASK_FAILED): Phrase(
-        plain="ReadyPick could not finish assessing the candidates for this job. Please try again.",
+        plain="Vivekium could not finish assessing the candidates for this job. Please try again.",
     ),
     (_MATCHING, ev.TASK_CANCELLED): Phrase(
         plain="This matching run was stopped before it finished.",
@@ -192,7 +192,7 @@ PHRASING: dict[tuple[str, str], Phrase] = {
         plain="The PRISM Report for this candidate is ready.",
     ),
     (_REPORT, ev.TASK_FAILED): Phrase(
-        plain="ReadyPick could not finish this candidate's PRISM Report. Please try again.",
+        plain="Vivekium could not finish this candidate's PRISM Report. Please try again.",
     ),
     (_REPORT, ev.TASK_CANCELLED): Phrase(
         plain="Report writing was stopped before it finished.",

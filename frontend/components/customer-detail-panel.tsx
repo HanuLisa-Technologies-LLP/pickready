@@ -81,7 +81,7 @@ export function CustomerDetailPanel({
             {customer?.name ?? "Customer"}
           </DialogTitle>
           <DialogDescription>
-            Everything ReadyPick holds for this customer. Contact details, team
+            Everything Vivekium holds for this customer. Contact details, team
             and documents are maintained by the customer and shown here
             read-only.
           </DialogDescription>

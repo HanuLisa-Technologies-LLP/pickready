@@ -117,7 +117,7 @@ _settings = get_settings()
 _docs_enabled = not _settings.serves_over_https
 
 app = FastAPI(
-    title="ReadyPick API",
+    title="Vivekium API",
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/docs" if _docs_enabled else None,
@@ -234,7 +234,7 @@ app.include_router(reports.router, prefix=f"{API_PREFIX}/reports", tags=["report
 # In-product customer support (2026-09-10), which replaced a deleted
 # third-party sync (claude.md, 2026-09-10). Two routers, two audiences,
 # one write path: `router` is the customer's
-# own threads under the org audience, `provider_router` is ReadyPick's queue
+# own threads under the org audience, `provider_router` is Vivekium's queue
 # across every customer and mounts under /provider beside the customer list,
 # because that is where this product's Provider API lives. Mounted at one
 # prefix only, no /api/v2 alias: the feature is new in this release, so there

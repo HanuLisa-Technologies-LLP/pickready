@@ -75,7 +75,7 @@ from app.services import hiring_pipeline
 from app.services import rbac
 from app.services import status_hygiene
 from app.services import telemetry_events
-from app.services.audit import audit
+from app.services.audit import audit, record_action
 from app.workers import agent_client
 from app.workers.dispatch import dispatch
 
@@ -510,13 +510,15 @@ async def create_job(
     # the technical-bank half that used to share this task -- the job was
     # silently unusable forever. Nineteen live jobs were in exactly that state.
     # NOT ENQUEUED HERE ANY MORE (2026-08-29). Sutra compiles the Tatva matrix
-    # from Bodha's completed SWOT session; at job creation that does not exist,
-    # so a task fired here would refuse on every job the moment it ran. The compile is enqueued by the SWOT session's own
-    # completion (`api/assessments.respond_swot_intake`), which is the event
-    # that actually produces its input, and `pickready.reconcile_job_setup`
-    # sweeps for a job whose session finished and whose matrix never landed.
+    # from the Job SWOT Analysis document; at job creation that does not exist,
+    # so a task fired here would refuse on every job the moment it ran. The
+    # compile is enqueued when the SWOT document lands
+    # (`api/assessments._enqueue_matrix_from_swot`, on generate, save and
+    # restore), which is the event that actually produces its input, and
+    # `pickready.reconcile_job_setup` sweeps for a job whose SWOT exists and
+    # whose matrix never landed.
     # The two halves of job setup are generated IN PARALLEL (spec §10): the PPI
-    # matrix from the JD and the SWOT intake, the Matching category list from
+    # matrix from the JD and the SWOT document, the Matching category list from
     # the JD. Two tasks rather than one, and that split is not stylistic. A
     # single task that generated both would take the gating half down with any
     # failure in the other, which is the exact coupling that left nineteen live
@@ -708,12 +710,6 @@ async def _publication_blocked(session: AsyncSession, job: Job) -> str | None:
     """
     from app.services.hiring import scorecard  # noqa: PLC0415
 
-    if job.swot_completed_at is None:
-        return (
-            "The Hiring Manager has not finished the SWOT session for this "
-            "role, so the evaluation criteria do not exist yet. A published job "
-            "would take applications nobody could assess."
-        )
     matrix = await scorecard.load_frozen_matrix(session, job.id)
     if matrix is None:
         return (
@@ -767,20 +763,23 @@ async def send_jd_to_hiring_manager(
     previous = job.lifecycle_state
     job.lifecycle_state = target.value
     await session.flush()
-    row = await audit(
+    # Every column in the one INSERT: the application role has no UPDATE grant
+    # on audit_log, so a post-flush attribute write aborts the transaction at
+    # commit, after the response has already left (the SWOT false-409 bug).
+    await record_action(
         session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
         action="jd_sent_to_hiring_manager",
-        target_type="job",
-        target_id=job.id,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
+        previous_state={"lifecycle_state": previous},
+        new_state={"lifecycle_state": job.lifecycle_state},
         metadata={"title": job.title},
     )
-    row.job_id = job.id
-    row.actor_role = user.role.value
-    row.correlation_id = job.correlation_id
-    row.previous_state = {"lifecycle_state": previous}
-    row.new_state = {"lifecycle_state": job.lifecycle_state}
     logger.info(
         "jobs.sent_to_hiring_manager job_id=%s by=%s correlation_id=%s",
         job.id, user.user_id, job.correlation_id,

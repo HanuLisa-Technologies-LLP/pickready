@@ -72,7 +72,7 @@ async def send_outreach(
     # behalf of a named company, and rendering it with an empty company name
     # produces "a role at ." in the candidate's inbox.
     tenant = await session.get(Tenant, user.tenant_id)
-    company_name = tenant.name if tenant is not None else "ReadyPick"
+    company_name = tenant.name if tenant is not None else "Vivekium"
 
     sent: list[uuid.UUID] = []
     skipped_databank: list[uuid.UUID] = []

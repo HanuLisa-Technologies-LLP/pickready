@@ -89,8 +89,13 @@ const theme = EditorView.theme({
     boxShadow: "0 0 0 2px hsl(var(--ring) / 0.3)",
   },
   ".cm-scroller": {
+    // The token, not the literal name. `var(--font-mono)` is what next/font
+    // binds in `app/layout.tsx` and expands to the self-hosted face PLUS its
+    // metric-adjusted fallback, so the editor cannot drift from the stack the
+    // rest of the product reads, and text measured during the font swap keeps
+    // the same metrics.
     fontFamily:
-      "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      "var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
     lineHeight: "1.6",
     overflow: "auto",
     maxHeight: "60vh",

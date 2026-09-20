@@ -149,7 +149,7 @@ VECTOR_COLUMNS: tuple[VectorColumn, ...] = (
         erasure=(
             "not touched, and it is the ONE place cross-tenant vector similarity "
             "is a feature: AI Reach compares a prospect's role against "
-            "ReadyPick's own customer catalogue, for platform staff only, over "
+            "Vivekium's own customer catalogue, for platform staff only, over "
             "text the client publishes. It embeds no resume, no candidate, no "
             "assessment and no score, and it returns a word rather than a "
             "number. The justification is recorded in migration 0092"

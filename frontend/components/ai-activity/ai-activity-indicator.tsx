@@ -79,8 +79,8 @@ export function AiActivityIndicator({
   const text = failed
     ? errorMessage ||
       (label
-        ? `ReadyPick could not finish ${label.toLowerCase()}. Please try again.`
-        : "ReadyPick could not finish this. Please try again.")
+        ? `Vivekium could not finish ${label.toLowerCase()}. Please try again.`
+        : "Vivekium could not finish this. Please try again.")
     : cancelled
       ? "This was stopped before it finished."
       : sentence;

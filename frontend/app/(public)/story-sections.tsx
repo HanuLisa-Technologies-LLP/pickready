@@ -63,7 +63,7 @@ export function EvidenceProfile() {
         <div className="grid items-start gap-12 lg:grid-cols-[1.05fr_.95fr] lg:gap-14">
           <Reveal>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
-              ReadyPick intelligence
+              Vivekium intelligence
             </p>
             <h2
               id="evidence-title"
@@ -71,8 +71,8 @@ export function EvidenceProfile() {
             >
               AI can rank. A PRISM Report helps your team understand.
             </h2>
-            <p className="mt-4 text-pretty text-base leading-7">
-              ReadyPick Profile Intelligence connects role match, behavioural
+            <p className="mt-4 text-pretty text-base">
+              Vivekium Profile Intelligence connects role match, behavioural
               evidence, technical depth and validation into one readable
               decision profile. It is our own framework, generated from your job
               description, not a generic score pasted onto a resume.
@@ -155,7 +155,7 @@ export function AboutPreview() {
 
         <Reveal delay={0.08}>
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
-            About ReadyPick
+            About Vivekium
           </p>
           <h2
             id="about-preview-title"
@@ -163,12 +163,12 @@ export function AboutPreview() {
           >
             Experience became a different operating model
           </h2>
-          <p className="mt-4 text-pretty text-base leading-7">
-            ReadyPick grew from years spent seeing where teams lose time:
+          <p className="mt-4 text-pretty text-base">
+            Vivekium grew from years spent seeing where teams lose time:
             disconnected sourcing, repetitive screening, opaque scoring and
             systems that move the administrative load instead of removing it.
           </p>
-          <p className="mt-4 text-pretty text-base leading-7">
+          <p className="mt-4 text-pretty text-base">
             We combine AI-driven discovery and assessment with human validation
             before a profile reaches the customer. The result is not more
             activity. It is a profile the team can act on.

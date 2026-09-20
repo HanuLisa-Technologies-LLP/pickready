@@ -46,7 +46,7 @@ export const metadata: Metadata = publicPageMetadata({
   path: "/docs",
   title: "Docs",
   description:
-    "Implementation-aligned product and technical documentation for ReadyPick.",
+    "Implementation-aligned product and technical documentation for Vivekium.",
 });
 
 const CONTENTS = [
@@ -260,7 +260,7 @@ function SectionIntro({
       <h2 className="mt-3 text-balance text-3xl font-bold leading-tight sm:text-4xl">
         {title}
       </h2>
-      <p className="mt-5 text-pretty text-base leading-7 sm:text-lg sm:leading-8">
+      <p className="mt-5 text-pretty text-base sm:text-lg sm:leading-8">
         {body}
       </p>
     </FadeIn>
@@ -297,7 +297,7 @@ export default function DocsPage() {
               <span className="text-gradient-brand">documented as built.</span>
             </h1>
             <p className="mt-7 max-w-2xl text-pretty text-lg leading-8">
-              A code-aligned guide to what ReadyPick does, how each workspace
+              A code-aligned guide to what Vivekium does, how each workspace
               fits together, and how the platform should mature from its
               current deployment into a production-scale service.
             </p>
@@ -327,7 +327,7 @@ export default function DocsPage() {
                 <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
               </div>
               <p className="font-mono text-xs uppercase tracking-[.2em] text-teal-400">
-                readypick / system-map
+                vivekium / system-map
               </p>
               <div className="mt-8 grid gap-3">
                 {[
@@ -401,7 +401,7 @@ export default function DocsPage() {
             <SectionIntro
               eyebrow="Product documentation"
               title="Hiring operations built around evidence, not disconnected tools"
-              body="ReadyPick connects the work before and after a candidate appears: drafting the job, building the candidate set, comparing fit, inviting assessment, structuring evidence and carrying the decision through to offer and join."
+              body="Vivekium connects the work before and after a candidate appears: drafting the job, building the candidate set, comparing fit, inviting assessment, structuring evidence and carrying the decision through to offer and join."
             />
 
             <div className="mt-10 rounded-3xl border border-brand-500/25 bg-gradient-to-br from-brand-100 via-surface to-surface p-7 sm:p-9">
@@ -1002,7 +1002,7 @@ export default function DocsPage() {
                   href="/login?initial_context=all"
                   className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-white px-5 text-sm font-semibold text-brand-700 transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
                 >
-                  Open ReadyPick
+                  Open Vivekium
                   <ArrowRight className="h-4 w-4" aria-hidden="true" />
                 </a>
               </div>

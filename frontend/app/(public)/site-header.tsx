@@ -37,7 +37,7 @@ const PAGE_NAV = [
   { href: "/docs", label: "Docs" },
 ];
 
-const CONTACT_HREF = "mailto:manjuchro@gmail.com?subject=ReadyPick%20enquiry";
+const CONTACT_HREF = "mailto:manjuchro@gmail.com?subject=Vivekium%20enquiry";
 
 export interface SiteHeaderProps {
   /**

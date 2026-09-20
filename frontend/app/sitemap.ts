@@ -12,7 +12,7 @@ import { SITE_URL } from "@/lib/site";
  * An employer page is still reachable and still indexable: it is linked from
  * the /employers directory, which is listed here, and robots.txt allows the
  * subtree. What is absent is a machine-readable roster of every company that
- * has signed with ReadyPick, published from our own domain.
+ * has signed with Vivekium, published from our own domain.
  *
  * Individual /apply pages are absent for a related reason: a job lives for
  * exactly thirty days, so a build-time snapshot of them would advertise dead

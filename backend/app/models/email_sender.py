@@ -5,7 +5,7 @@ authorized From identity for automated email. The spec's `client_id` is
 `tenant_id` here: a customer IS a `tenants` row in this schema (the same
 substitution the billing work made when its spec wrote `companies`).
 
-ReadyPick never stores an email or SMTP password for these mailboxes (spec
+Vivekium never stores an email or SMTP password for these mailboxes (spec
 section 10). Ownership is proven by a short-lived OTP delivered TO the mailbox
 (services/email_senders), and the client Super Admin's authorization is what
 makes the row usable; both facts are recorded here permanently while the OTP

@@ -83,7 +83,7 @@ LIVE: dict[str, str] = {
         "api/assessments.py directly, and miti.tiering underneath the scorer"
     ),
     "app.services.agents": (
-        "identity, artifacts and gates, through ppi / matching / swot_intake "
+        "identity, artifacts and gates, through ppi / matching "
         "and functional_assessment"
     ),
     "app.services.proctoring": "api/proctoring.py and the assessment gate",

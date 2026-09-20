@@ -17,7 +17,7 @@ THIS IS NOT THE EMAIL LOG, AND MERGING THEM WOULD BE WRONG
 ------------------------------------------------------------
 `email_log` answers "what did we send, to which address, and did it deliver".
 It is an OUTBOUND DELIVERY record: it exists whether or not the recipient is a
-ReadyPick account, it carries the exact copy that was sent for audit, and rows
+Vivekium account, it carries the exact copy that was sent for audit, and rows
 in it are written for internal recipients too (the question-bank reminder goes
 to a recruiter).
 

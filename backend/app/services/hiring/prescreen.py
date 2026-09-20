@@ -936,7 +936,7 @@ class PreScreenGrade:
 class PreScreenScore:
     """THE DASHBOARD TRIAGE ARTIFACT. Numbers live here and only here.
 
-    D8 puts the Ready Pick Score on the dashboard and forbids it in the
+    D8 puts the Vivekium Score on the dashboard and forbids it in the
     delivered report. Keeping the number in a separate type from the grade is
     what makes "the number cannot reach a report" a property of the code rather
     than a rule somebody has to remember: the report path is handed a

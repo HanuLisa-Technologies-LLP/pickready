@@ -6,7 +6,7 @@
 //
 //   * the Review Queue: jobs whose stem-score landed in the section 4.4
 //     tentative band (0.30-0.79) or whose classification came from the
-//     engine-error fallback, for the Hanulisa team to verify by hand;
+//     engine-error fallback, for the Varpitech team to verify by hand;
 //   * Reclassify: the support function, permitted STRICTLY before the first
 //     completed assessment (Rule 5). The backend refuses it after; this page
 //     surfaces that refusal rather than hiding the button, because a support

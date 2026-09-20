@@ -3,7 +3,7 @@
 Each builder compiles ONE report's content from the stored tables and returns
 a format-neutral `ReportContent`; the engine renders that as PDF or CSV. The
 builders read the same models the product writes (no shadow tables, no
-telemetry side-store): Part 4 says data is "pulled from ReadyPick telemetry
+telemetry side-store): Part 4 says data is "pulled from Vivekium telemetry
 store at generation time", and in this codebase the operational tables ARE
 that store.
 

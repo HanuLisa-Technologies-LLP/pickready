@@ -117,7 +117,7 @@ FORBIDDEN_INSTRUMENTS = (
 
 
 def test_no_third_party_assessment_instrument_is_named() -> None:
-    """The ReadyPick Functional Index is proprietary work derived from first
+    """The Vivekium Functional Index is proprietary work derived from first
     principles. Associating its name with a licensed instrument, even in a code
     comment, is the kind of thing that is read as a claim later."""
     offenders: list[str] = []
@@ -408,7 +408,6 @@ IMMEDIATE_INTERACTIVE_TASKS = (
     "situation_classification",
     "email_composition",
     "rerank",
-    "swot_intake",
 )
 
 #: A request handler is blocked and the output is a DOCUMENT.

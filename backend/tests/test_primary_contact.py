@@ -62,7 +62,7 @@ async def _factory_or_skip():
 
 
 async def _tenant_and_actor(session) -> tuple[uuid.UUID, CurrentUser]:
-    """A customer, and the ReadyPick staff account acting on it."""
+    """A customer, and the Vivekium staff account acting on it."""
     tenant_id, actor_id = uuid.uuid4(), uuid.uuid4()
     await session.execute(
         text(

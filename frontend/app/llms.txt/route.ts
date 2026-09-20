@@ -34,15 +34,15 @@ import sitemap from "../sitemap";
 const NOTES: Record<string, string> = {
   "/": "Home page.",
   "/employers":
-    "Directory of companies hiring through ReadyPick, each with a public page and its currently open roles.",
-  "/about": "Who builds ReadyPick and the principles the product is built on.",
+    "Directory of companies hiring through Vivekium, each with a public page and its currently open roles.",
+  "/about": "Who builds Vivekium and the principles the product is built on.",
   "/insights":
     "Articles on evidence-led candidate decisions, assessment design and consent.",
   "/docs":
     "Product and technical documentation: the workspaces, the hiring flow, the assessment, the architecture and the stated limitations.",
   "/privacy":
     "Privacy notice covering candidate, customer and visitor information.",
-  "/terms": "Terms governing access to and use of ReadyPick.",
+  "/terms": "Terms governing access to and use of Vivekium.",
 };
 
 /** The path a sitemap entry addresses, with no host and no trailing slash. */

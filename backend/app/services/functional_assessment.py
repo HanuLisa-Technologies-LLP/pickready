@@ -1,4 +1,4 @@
-"""LangGraph orchestration for the ReadyPick PPI Assessment Report.
+"""LangGraph orchestration for the Vivekium PPI Assessment Report.
 
 ONE scoring agent, TWO methods (spec §8). The PPI Scoring Agent consumes the
 actual candidate answers, keyed by the `question_key` stamped on every message,
@@ -2220,7 +2220,7 @@ async def _write_evaluation(
     could never correct anything, and making the report mutable, which breaks
     the product's oldest rule.
 
-    THE DASHBOARD READS THIS ROW, NOT THE REPORT. Column 5's Ready Pick Note
+    THE DASHBOARD READS THIS ROW, NOT THE REPORT. Column 5's Vivekium Note
     comes from `aggregate_json` under `synthesis.READY_PICK_NOTE_KEY`, and never
     from the delivered document: sourcing a list cell from the report would make
     the row's pending state a statement about the report rather than about the

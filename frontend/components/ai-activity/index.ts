@@ -1,5 +1,5 @@
 /**
- * The AI activity status layer, for any ReadyPick screen running AI work.
+ * The AI activity status layer, for any Vivekium screen running AI work.
  *
  * A screen that already polls its operation's status wires this in three lines:
  * take a view with `useAiActivity(runId)`, hand each polled response to
