@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import * as React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -13,7 +13,17 @@ const api = vi.hoisted(() => ({
 const { apiGet } = api;
 
 vi.mock("@/lib/api", () => api);
-vi.mock("@/components/ui/toast", () => ({ useToast: () => ({ toast: vi.fn() }) }));
+
+// THE MOCKED `toast` MUST BE STABLE ACROSS RENDERS, and this is not a detail.
+//
+// The real `useToast` returns a `useCallback` whose identity never changes, and
+// `JobSetupReview` builds `load` from it and runs `load` in an effect keyed on
+// its identity. A mock handing back a fresh `vi.fn()` per render therefore
+// makes the component refetch on every render, forever: "Maximum update depth
+// exceeded", a spinning worker, and a suite that looks slow rather than broken.
+// The first test to interact twice with the screen is the one that exposes it.
+const toast = vi.hoisted(() => vi.fn());
+vi.mock("@/components/ui/toast", () => ({ useToast: () => ({ toast }) }));
 vi.mock("@/components/matching-categories", () => ({
   MatchingCategoriesCard: () => null,
 }));
@@ -120,28 +130,54 @@ describe("JobSetupReview", () => {
     expect(screen.queryByText("Role intake")).toBeNull();
   });
 
-  it("renders each competency as a card with its name, controls and required grade word", async () => {
+  it("renders each competency as a chip carrying its name and required grade word", async () => {
     mockReads();
     render(<JobSetupReview jobId="workify-job" />);
 
     await screen.findByText("Distributed systems design");
-    // The grade is the word, never a number, on a solid badge.
-    expect(screen.getAllByText("This role requires:")).toHaveLength(2);
+    // The grade is the word, never a number, on a solid badge beside the name.
     expect(screen.getByText("Highly Matching")).toBeTruthy();
-    // Edit and remove sit on the card while the matrix is not frozen.
+    // Edit and remove sit on the chip while the matrix is not frozen.
     expect(
       screen.getByRole("button", { name: "Edit Distributed systems design" })
     ).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Remove Distributed systems design" })
     ).toBeTruthy();
-    // The cards sit in a horizontal, scrollable row per category.
-    const card = screen
-      .getByText("Distributed systems design")
-      .closest("div[draggable]");
-    expect(card).toBeTruthy();
-    expect(card?.parentElement?.className).toContain("overflow-x-auto");
-    expect(card?.className).toContain("min-w-[190px]");
+    // Still draggable: moving an entry between Must-have and Nice-to-have is
+    // spec 5.3 and survived the 2026-09-20 simplification.
+    expect(
+      screen.getByText("Distributed systems design").closest("div[draggable]")
+    ).toBeTruthy();
+  });
+
+  it("asks for a name and a level, and nothing else", async () => {
+    // The "What this measures" box is GONE from both the add and the edit
+    // control (owner, 2026-09-20). It was optional, unexplained and never
+    // asked for, and it made adding one skill a four-field form.
+    mockReads();
+    render(<JobSetupReview jobId="workify-job" />);
+
+    await screen.findByText("Distributed systems design");
+    expect(screen.queryByPlaceholderText(/what this measures/i)).toBeNull();
+
+    // Opening the edit control must not reintroduce it.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Edit Distributed systems design" })
+    );
+    await screen.findByLabelText("Rename Distributed systems design");
+    expect(screen.queryByPlaceholderText(/what this measures/i)).toBeNull();
+  });
+
+  it("offers a one-line add per aspect plus a paste-a-list escape hatch", async () => {
+    mockReads();
+    render(<JobSetupReview jobId="workify-job" />);
+
+    await screen.findByText("Distributed systems design");
+    for (const aspect of ["Must-have", "Nice-to-have", "Behavioural Competencies"]) {
+      expect(screen.getByLabelText(`Add to ${aspect}`)).toBeTruthy();
+    }
+    expect(screen.getAllByRole("button", { name: "Paste a list" })).toHaveLength(3);
   });
 
   it("hides the mutation controls once the matrix is frozen", async () => {
@@ -156,8 +192,7 @@ describe("JobSetupReview", () => {
     expect(
       screen.queryByRole("button", { name: "Edit Distributed systems design" })
     ).toBeNull();
-    expect(
-      screen.queryByRole("button", { name: /Add to Must-have/ })
-    ).toBeNull();
+    expect(screen.queryByLabelText("Add to Must-have")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Paste a list" })).toBeNull();
   });
 });

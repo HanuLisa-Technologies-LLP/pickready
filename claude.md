@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| The soft delete and the hard constraint (2026-09-21) | Re-adding a name you removed; an emptied matrix is not an ungenerated one; the matrix editor is chips |
 | The Vivekium release (2026-09-20) | The product is Vivekium; the post-flush `audit_log` rollback; browser-session auth; Role Intake deleted |
 | The vivekium ruling (2026-09-18) | The brief is final; the match_percent exception to rule 1, the derived seven-column words, the C2/C8 supersessions |
 | The singleton that outlived its loop (2026-09-16) | Hub shutdown, per-loop binding, a suite that hangs instead of failing |
@@ -74,6 +75,80 @@ phase sections above them are where the sharp edges are.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
+
+## Current hard rules, the soft delete and the hard constraint (2026-09-21)
+
+No migration. One screen and three routes, found by a customer rather than by
+the suite, and the shape of it is worth more than the fix.
+
+### A SOFT DELETE UNDER A HARD UNIQUE CONSTRAINT IS A 500 WITH A DATE ON IT
+
+`remove_competency` sets `is_active = False`, because a generated candidate
+question may reference the row. `uq_job_competency_name` is on
+(job_id, category, name) with NO predicate. So a removed name still holds its
+slot, INVISIBLY, and adding it back was an INSERT onto a live key.
+
+Measured in pilot 2026-09-20 18:02 UTC: a hiring manager cleared the six
+generated Must-have items, pasted Python / SQL / DSA / Agentic AI / LLMs, and
+got `UniqueViolationError` twice, forty-five seconds apart. The screen said
+"API error 500". The paste box is the product's NORMAL way into this form.
+
+- **The row is REVIVED, never re-inserted** (`_rows_by_name`, `_revive`). The
+  stages Sutra derived are left alone: the name coming back is the same name,
+  so clearing them would strip a criterion of its provenance and inventing new
+  ones would claim a derivation that did not run.
+- **Adding a name that is ALREADY there is idempotent, not a refusal.** A paste
+  of thirty where two are present must not discard the other twenty-eight.
+  Every requested name is in the response and in the matrix afterwards, so
+  nothing is silently dropped; what is deliberately NOT done is overwrite an
+  existing item's required level, because a paste must not restate a criterion
+  the reviewer set. The COUNT the reviewer is told is computed on the client
+  from the rows it already holds -- "added 3" when one of four was already
+  there is a number they can see is wrong.
+- **A rename onto an occupied name is a 409 with the name in it**, including
+  when the occupant is only soft-deleted and therefore invisible to them.
+- **THE BULK ROUTE HAD NO TEST OF ANY KIND**, which is the whole reason it
+  shipped. `tests/test_framework_add_after_delete.py` replays the pilot
+  sequence over a real table with the real constraint and reads back from a
+  SECOND connection; mutation-checked against the old handler, which raises
+  `IntegrityError`.
+
+### A MATRIX A HUMAN EMPTIED IS NOT A MATRIX THAT WAS NEVER WRITTEN
+
+`_framework_repair_pending` asked `load_framework`, which filters
+`is_active`, so both states answered zero rows. A reviewer who deleted every
+item was told "We are still preparing the evaluation criteria for this role
+... refresh the page shortly" and Sutra was re-enqueued, which would have put
+the items they had just deleted BACK.
+
+The 2026-08-06 repair itself is unchanged and still needed: 19 of 35 live jobs
+really did carry `framework_generated_at` with zero rows. What was missing is
+the second question. **One row of ANY kind is proof the generator landed**, so
+the check now reads the table without the `is_active` filter, and from there
+the reviewer is told the blocker they can actually clear.
+
+### THE MATRIX EDITOR IS A LIST OF SKILLS, SO IT LOOKS LIKE ONE
+
+Owner ruling, 2026-09-20, and it SUPERSEDES the 2026-09-19 "matrix cards go
+horizontal". Each entry was a card carrying a name, a free-text "What this
+measures" box, a "This role requires:" caption and a grade badge, in a row
+that scrolled sideways; five skills filled the screen and the three aspects
+were never visible together.
+
+- **An entry is a CHIP**: its name, the grade word, edit, remove. The three
+  aspects sit side by side. Adding is ONE line, with "Paste a list" for the
+  common case.
+- **THE DESCRIPTION INPUT IS GONE FROM BOTH THE ADD AND THE EDIT CONTROL.**
+  What a competency MEANS is `observable_evidence`, which Sutra derives and
+  nobody hand-types. **The column and the generated text SURVIVE**: an edit
+  sends the stored description straight back, because a field disappearing
+  from a form must not be a field being erased from the record.
+- **Behavioural Competencies and drag-to-move both SURVIVE.** Dropping the
+  third aspect would be a product change wearing a UI change's clothes: it is
+  graded, remarked and charted on every PRISM report.
+- **`id="ppi-framework"` is on the matrix card itself now.** It had been on the
+  nothing-loaded fallback only, so the status strip's own "Review and save"
+  link scrolled nowhere in the normal case.
 
 ## Current hard rules, the Vivekium release (2026-09-20)
 

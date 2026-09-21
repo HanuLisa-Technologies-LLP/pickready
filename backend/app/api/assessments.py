@@ -240,6 +240,21 @@ async def _framework_repair_pending(session: AsyncSession, job: Job) -> bool:
     rows = await ppi.load_framework(session, job.id)
     if rows:
         return False
+    # A MATRIX A HUMAN EMPTIED IS NOT A MATRIX THAT WAS NEVER WRITTEN, and the
+    # ACTIVE rows alone cannot tell them apart -- deletion here is soft, so both
+    # states read as zero. Asked of the active rows only, this told a hiring
+    # manager who had just cleared the generated items "we are still preparing
+    # the evaluation criteria ... refresh the page shortly" and re-enqueued
+    # Sutra, which would have put the items they had deliberately removed back.
+    # One row of any kind is proof the generator landed, so from here the real
+    # blocker -- "Must-have has no items" -- is what they are told.
+    ever = (
+        await session.execute(
+            select(JobCompetency.id).where(JobCompetency.job_id == job.id).limit(1)
+        )
+    ).scalars().first()
+    if ever is not None:
+        return False
     analysis = await swot_analysis.get(session, job)
     if analysis is None or not analysis.has_content:
         return False
@@ -398,6 +413,85 @@ def _reject_culture(name: str) -> None:
         raise HTTPException(status_code=422, detail=ppi.FORBIDDEN_COMPETENCY_DETAIL)
 
 
+# ── Adding a name back that was removed ─────────────────────────────────────
+#
+# DELETION HERE IS SOFT AND THE UNIQUE CONSTRAINT IS NOT.
+#
+# `remove_competency` sets `is_active = False` rather than issuing a DELETE,
+# because a generated candidate question may already reference the row.
+# `uq_job_competency_name` is on (job_id, category, name) with NO predicate, so
+# a name the recruiter removed a minute ago still occupies its slot. Inserting
+# it again therefore raised `UniqueViolationError` and the route answered 500.
+#
+# Measured in pilot on 2026-09-20: a hiring manager cleared the six generated
+# Must-have items, pasted their own five, and got "API error 500" twice with
+# nothing on the screen explaining it. The paste is the product's normal way in
+# and the deleted rows were invisible, so from their seat the form simply did
+# not work. The bulk route had NO test of any kind, which is why it shipped.
+#
+# The row is REVIVED instead. And a name already sitting in the aspect is
+# returned UNTOUCHED rather than refused: a paste of thirty skills where two
+# are already present must not discard the other twenty-eight, and the caller's
+# intent -- "this aspect should contain these names" -- is already satisfied
+# for those two. Nothing is silently dropped, because every requested name is
+# in the response and in the matrix afterwards; what is deliberately NOT done
+# is overwrite an existing item's required level from a paste, since that would
+# quietly restate a criterion the reviewer had already set.
+
+
+async def _rows_by_name(
+    session: AsyncSession, job_id: uuid.UUID, category: str, names: list[str]
+) -> dict[str, JobCompetency]:
+    """Every row holding one of these names in this aspect, ACTIVE OR NOT."""
+    if not names:
+        return {}
+    rows = (
+        await session.execute(
+            select(JobCompetency).where(
+                JobCompetency.job_id == job_id,
+                JobCompetency.category == category,
+                JobCompetency.name.in_(names),
+            )
+        )
+    ).scalars().all()
+    return {row.name: row for row in rows}
+
+
+def _revive(
+    row: JobCompetency,
+    *,
+    description: str | None,
+    required_level: int,
+    ordinal: int,
+) -> JobCompetency:
+    """Bring a soft-deleted row back as the entry the caller just asked for.
+
+    The stages Sutra derived (`dimension`, `weight`, `provenance_json`, ...) are
+    deliberately left ALONE. They describe a criterion the pipeline derived, and
+    the name coming back is the same name; clearing them would turn a revived
+    item into one with no provenance, and inventing new ones would claim a
+    derivation that did not run.
+    """
+    row.is_active = True
+    row.description = description
+    row.required_level = required_level
+    row.ordinal = ordinal
+    row.updated_at = datetime.now(timezone.utc)
+    return row
+
+
+async def _next_ordinal(
+    session: AsyncSession, job_id: uuid.UUID, category: str
+) -> int:
+    return (
+        await session.execute(
+            select(func.coalesce(func.max(JobCompetency.ordinal), 0)).where(
+                JobCompetency.job_id == job_id, JobCompetency.category == category
+            )
+        )
+    ).scalar_one() + 1
+
+
 def _reject_frozen(job: Job) -> None:
     """A saved framework is the job's fixed evaluation criteria (spec §6.3).
 
@@ -427,23 +521,31 @@ async def add_competency(
     _reject_frozen(job)
     if body.category == ppi.CATEGORY_BEHAVIOURAL:
         _reject_culture(body.name)
-    ordinal = (
-        await session.execute(
-            select(func.coalesce(func.max(JobCompetency.ordinal), 0)).where(
-                JobCompetency.job_id == job.id, JobCompetency.category == body.category
-            )
+    existing = (
+        await _rows_by_name(session, job.id, body.category, [body.name])
+    ).get(body.name)
+    if existing is not None and existing.is_active:
+        # Already exactly what was asked for. See `_rows_by_name`.
+        return _competency_out(existing)
+    ordinal = await _next_ordinal(session, job.id, body.category)
+    if existing is not None:
+        row = _revive(
+            existing,
+            description=body.description,
+            required_level=ppi.required_level_score(body.required_level),
+            ordinal=ordinal,
         )
-    ).scalar_one() + 1
-    row = JobCompetency(
-        tenant_id=job.tenant_id,
-        job_id=job.id,
-        category=body.category,
-        name=body.name,
-        description=body.description,
-        required_level=ppi.required_level_score(body.required_level),
-        ordinal=ordinal,
-    )
-    session.add(row)
+    else:
+        row = JobCompetency(
+            tenant_id=job.tenant_id,
+            job_id=job.id,
+            category=body.category,
+            name=body.name,
+            description=body.description,
+            required_level=ppi.required_level_score(body.required_level),
+            ordinal=ordinal,
+        )
+        session.add(row)
     await session.flush()
     await _invalidate_framework(job)
     return _competency_out(row)
@@ -469,26 +571,34 @@ async def add_competencies_bulk(
     if body.category == ppi.CATEGORY_BEHAVIOURAL:
         for name in names:
             _reject_culture(name)
-    ordinal = (
-        await session.execute(
-            select(func.coalesce(func.max(JobCompetency.ordinal), 0)).where(
-                JobCompetency.job_id == job.id,
-                JobCompetency.category == body.category,
+    level = ppi.required_level_score(body.required_level)
+    existing = await _rows_by_name(session, job.id, body.category, names)
+    ordinal = await _next_ordinal(session, job.id, body.category) - 1
+    rows: list[JobCompetency] = []
+    for name in names:
+        found = existing.get(name)
+        if found is not None and found.is_active:
+            # Already in this aspect. Returned so the caller sees the whole
+            # requested set, and left untouched so a paste cannot restate a
+            # level the reviewer set deliberately. See `_rows_by_name`.
+            rows.append(found)
+            continue
+        ordinal += 1
+        if found is not None:
+            rows.append(
+                _revive(found, description=None, required_level=level, ordinal=ordinal)
             )
-        )
-    ).scalar_one()
-    rows = [
-        JobCompetency(
+            continue
+        fresh = JobCompetency(
             tenant_id=job.tenant_id,
             job_id=job.id,
             category=body.category,
             name=name,
-            required_level=ppi.required_level_score(body.required_level),
-            ordinal=ordinal + index,
+            required_level=level,
+            ordinal=ordinal,
         )
-        for index, name in enumerate(names, start=1)
-    ]
-    session.add_all(rows)
+        session.add(fresh)
+        rows.append(fresh)
     await session.flush()
     await _invalidate_framework(job)
     return [_competency_out(row) for row in rows]
@@ -509,6 +619,21 @@ async def update_competency(
         raise HTTPException(status_code=404, detail="Competency not found")
     if body.category == ppi.CATEGORY_BEHAVIOURAL:
         _reject_culture(body.name)
+    # The same slot `_rows_by_name` exists for: renaming an item onto a name
+    # that aspect already holds -- including one only soft-deleted, which the
+    # reviewer cannot see -- violates `uq_job_competency_name`. Refused with the
+    # reason rather than left to surface as a 500.
+    clash = (await _rows_by_name(session, job.id, body.category, [body.name])).get(
+        body.name
+    )
+    if clash is not None and clash.id != row.id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f'"{body.name}" is already an entry under '
+                f"{ppi.CATEGORY_LABELS[body.category]} on this job."
+            ),
+        )
     row.category = body.category
     row.name = body.name
     row.description = body.description
