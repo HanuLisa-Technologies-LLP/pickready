@@ -1557,3 +1557,51 @@ Verified on production: both icon routes answer 200 image/png with
 `num_redirects=0`, the old raster paths 404, the link tags and structured
 data carry the new urls, and the header mark is an inline SVG with no raster
 left in the document.
+
+## Release 8, the soft delete and the hard constraint, 2026-09-21
+
+`ce438cf`, backend and frontend both rebuilt, both `sha-ce438cf`
+(backend `sha256:6193da68...5162c84`, frontend `sha256:fb856e28...fb350b68`,
+Lambda sibling `sha-ce438cf-fn`). Analysis unmoved at `93ebfcb`
+(`sha256:e0c6d488...fc037ec1`), and that digest is supplied to
+`verify-deployment.sh` rather than omitted, because a skipped check is not a
+passed check. The rollback pair is `sha-a03e978` for the backend and
+`sha-7466081` for the frontend.
+
+**Found by a customer, not by the suite.** A hiring manager cleared the six
+generated Must-have items on the AI architect job, pasted their own five, and
+got "API error 500" twice, forty-five seconds apart. CloudWatch named it in
+one line: `UniqueViolationError` on `uq_job_competency_name`. Deletion here is
+SOFT (`is_active = False`, because a generated candidate question may
+reference the row) and the constraint has no predicate, so a removed name
+still held its slot invisibly and adding it back was an INSERT onto a live
+key. THE BULK ROUTE HAD NO TEST OF ANY KIND, which is how it shipped.
+
+The row is revived instead, a name already present is returned untouched
+rather than discarding the rest of a paste, and a rename onto an occupied name
+is a 409 naming it. Second defect, the one that made the screen misleading
+rather than merely broken: `_framework_repair_pending` asked only the ACTIVE
+rows, so a matrix a human had emptied was indistinguishable from one the
+generator never wrote. It said "We are still preparing the evaluation criteria
+for this role" and re-enqueued Sutra, which would have restored the items the
+reviewer had just deleted.
+
+The matrix editor is chips now (owner ruling): one line to add, "Paste a list"
+for many, and the "What this measures" box is gone from both the add and the
+edit control. The column and the generated text survive, because a field
+disappearing from a form must not be a field being erased from the record.
+
+**Verified on production against a seeded job, not against the source tree.**
+Add, delete, re-add the same name: 201, and the revived row came back under
+its ORIGINAL id, which is what proves revival rather than re-insertion. A
+paste carrying one already-present name added the rest and left the existing
+entry's required level alone. No duplicates. Emptying the matrix then reports
+"Must-have has no items", never "still preparing". Every running task matches
+the digest this build produced, both ALB target groups are healthy, and the
+API log carries no 5xx and no exception since the rollout.
+
+**One operational note.** The first apply died with its shell and left a
+DynamoDB state lock behind. Nothing had been written: all four task
+definitions were still at their old revisions with the old image tags, which
+is what made `force-unlock` safe rather than a guess. Check the task
+definitions before breaking a lock; the lock tells you who, not how far.
