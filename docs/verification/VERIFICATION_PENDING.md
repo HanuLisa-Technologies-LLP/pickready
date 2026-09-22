@@ -145,6 +145,30 @@ and a stub provider; not executed against a live provider.**
 | 28 | **The Terraform secret names still say `ANTHROPIC_API_KEY` and `VOYAGE_API_KEY`.** `infra/` was out of scope for the vendor change and was not touched, so a deployed task would be injected with the old variable names and would find neither model credential nor the embedding credential. Every path would degrade to its deterministic fallback, and the embedding path would do so SILENTLY, returning pseudo-random unit vectors. This is not a verification gap, it is a known unfinished edit, and it must be closed before any deploy. | `infra/modules/secrets/variables.tf`, `infra/environments/*/main.tf` | `grep -rn "ANTHROPIC_API_KEY\|VOYAGE_API_KEY" infra/` | No results, and `OPENAI_GPT_TERRA`, `OPENAI_GPT_LUNA` and `VOYAGE_CONTEXT_4` in their place. |
 | 29 | Two stale docstrings survive in modules that were explicitly out of scope for the vendor change. `app/services/matching.py` names `VOYAGE_API_KEY` as the variable that switches embeddings off the dev fallback, and `app/api/admin.py`'s `/llm/stats` docstring still describes the two model tiers as "Sonnet 5 and Haiku 4.5". Neither affects behaviour; both now describe things that do not exist, which is exactly the drift the vendor change set out to avoid everywhere it was in scope. | `app/services/matching.py`, `app/api/admin.py` | `grep -rn "VOYAGE_API_KEY\|Sonnet\|Haiku" app/services/matching.py app/api/admin.py` | No results. |
 
+## Prompt-cache accounting, 2026-09-22 (change 28A)
+
+Chat Completions applies prompt caching AUTOMATICALLY to a long enough
+identical prompt prefix and reports the hit as
+`usage.prompt_tokens_details.cached_tokens`. The router now reads that field,
+carries it through the counters, the OTel span and the per-assessment cost
+record, and `services/prompt_cache` orders a prompt so that its static context
+leads and its per-turn material trails.
+
+Every one of those is a property of THIS CODEBASE and is asserted in
+`tests/test_assessment_cost_telemetry.py`. None of them is evidence about the
+vendor. Neither model id has been sent a request from this repository, so what
+the configured endpoint actually reports, and whether the reordering produces a
+cache hit at all, are unobserved. The honest framing is unchanged: **built and
+tested against recorded fixtures and a stub provider; not executed against a
+live provider.**
+
+| Order | Claim that is unproven | Owner | Command that settles it | Expected evidence |
+|---:|---|---|---|---|
+| 30 | **`gpt-5.6-terra` and `gpt-5.6-luna` report `usage.prompt_tokens_details.cached_tokens` at all.** The field is read from the published schema and has never been seen on a response from either id. Its absence is handled as UNKNOWN rather than zero, so a deployment whose endpoint never sends it degrades to "we cannot see the cache" instead of reporting that the cache never hits; but the two readings are indistinguishable from here. | `app/services/llm_router.py` | `python scripts/verify_live.py --only reasoning --only extraction`, then read the `cached_in` field of the `llm_router.ok` log line | `cached_in=<integer>` rather than `cached_in=unreported`. |
+| 31 | **Reordering the prompt actually produces a cache hit.** `services/prompt_cache` puts the system prompt, the job description and the candidate's material ahead of the per-turn material, which is the only lever this API offers: there is no `cache_control` marker to send and none is sent. Whether the shared prefix is long enough to qualify, and what the minimum is for these ids, is undocumented here and unobserved. The change is safe either way, because it moves field order and no content. | `app/services/prompt_cache.py`, `app/services/interviewer.py` | Two consecutive `conversation_turn` calls in one live assessment, then compare the `cached_in` figures on the two `llm_router.ok` lines | A second call whose `cached_in` is materially above the first's. |
+| 32 | **There is no cached-input RATE on file, so a cache hit currently produces no saving in any figure this platform reports.** `TOKEN_PRICES_USD_PER_MILLION` carries `prompt` and `completion` only; `estimate_cost_usd` prices a cached token at the full uncached rate and `cached_input_price_known` returns False for both models. That is deliberate: row 26 already records that the uncached rates themselves are unverified, and a cache discount invented on top would be a second unverified number multiplying the first, in the direction that UNDER-states a bill. The cached COUNT is recorded in full, so every historical row can be repriced from what it stored the day a rate is confirmed. | `app/config/llm_providers.py` | Read the published price sheet for both ids, add a `cached_prompt` rate to each row, and reprice from `assessment_cost_records.models_json` | A `cached_prompt` figure per model, and a cost line whose modelled and billed figures agree. |
+| 33 | **The per-assessment cost record has never been written in a deployed environment.** `assessment_cost_records` is created by migration 0109 and is written by `services/cost_telemetry` from two places: the scoring run and the conversation turn. Both are exercised by tests, and the DB-backed ones in `tests/test_assessment_cost_dashboard.py` SKIP where the migration has not been applied, so a green local run does not mean a row has ever landed. This is the same class as `context_chunks` holding zero rows in every environment for its whole existence: a timestamp is not evidence that work happened, so check the TABLE. | `app/services/cost_telemetry.py` | Run one assessment end to end, then `SELECT count(*), sum(calls), sum(estimated_cost_usd) FROM assessment_cost_records` | A row for that application whose `calls` is non-zero and whose `pricing_tier` matches the tenant's plan. |
+
 ## Standing language rule
 
 Nowhere in this repository, in a commit message, in `CLAUDE.md` or in a report,

@@ -442,6 +442,7 @@ async def ranked_candidates(
                     sess.mode               AS assessment_mode,
                     sess.status             AS conversation_status,
                     vid.status              AS video_recording_status,
+                    vid.media_deleted_at    AS video_media_deleted_at,
                     EXISTS (
                         SELECT 1 FROM proctoring_reports pr
                         JOIN proctoring_sessions psess
@@ -481,7 +482,7 @@ async def ranked_candidates(
                     LIMIT 1
                 ) sess ON TRUE
                 LEFT JOIN LATERAL (
-                    SELECT vr.status
+                    SELECT vr.status, vr.media_deleted_at
                     FROM video_recordings vr
                     WHERE vr.job_candidate_link_id = l.id
                     ORDER BY vr.created_at DESC, vr.id DESC
@@ -576,7 +577,24 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
         "source": row["source"],
         "tier": row["tier"],
         "archived_at": row["archived_at"],
-        "resume_url": row["resume_url"],
+        # A STORAGE URI MUST NOT CROSS AN API BOUNDARY, and this row used to
+        # carry one. `profiles.resume_url` is an `s3://bucket/key` reference:
+        # a browser cannot fetch it, so the client only ever used it as a
+        # "does this candidate have a resume" flag, while it spent the whole
+        # time handing every recruiter's browser the bucket name and the
+        # object key. That is the same rule the video surfaces already
+        # follow ("no bucket name and no object key crosses an API
+        # boundary"), and it was being broken here by a field nothing needed.
+        #
+        # So the flag is a BOOLEAN, which is the whole of what the column was
+        # answering, and the resume itself is read through
+        # /candidates/profiles/{profile_id}/resume-file, which re-authorizes,
+        # mints a short-lived token and streams the bytes. The filename and
+        # the MIME type stay: the first is what a person sees in their
+        # Downloads folder and the second is what decides whether the DOCX
+        # renderer or the raw file is the right target. Neither names a
+        # bucket.
+        "has_resume": bool(row["resume_url"]),
         "resume_filename": row["resume_filename"],
         "resume_mime_type": row["resume_mime_type"],
         # The PPI Report button is only actionable once a report exists.
@@ -601,7 +619,8 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
             has_proctoring_session=bool(row.get("has_proctoring_session")),
         ),
         "video_status": video_access.video_status_word(
-            row.get("video_recording_status")
+            row.get("video_recording_status"),
+            media_deleted=row.get("video_media_deleted_at") is not None,
         ),
         # Old Profile / New Profile. Presentation and billing only: an Old
         # Profile is ranked, listed and openable exactly like a new one.

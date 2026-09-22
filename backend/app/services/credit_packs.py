@@ -11,6 +11,16 @@ Money rules this module keeps true:
   its own column so the invoice's breakdown is the stored breakdown.
 * The trial (20 credits) is once per account, checked on EVERY attempt
   (Rule 1); everything else is a hard 50-credit minimum (Rule 2).
+* The Starter Assessment Pack (change request 26) is 75 assessments for
+  Rs. 24,000, and it does NOT bend the price rule to get there: it is 40
+  credits purchased at Rs. 600 (Rs. 24,000 exactly) plus 35 bonus credits at
+  Rs. 0. The invoice therefore prints the same two-line shape `volume_100`
+  and `volume_200` already print, and `PRICE_PER_CREDIT_INR` does not move.
+* Credits granted by a purchase EXPIRE after `CREDIT_VALIDITY_MONTHS`
+  (change request 25), and the term is stamped on the purchase row so a
+  re-downloaded invoice states the terms it was actually sold under. NULL on
+  every purchase made before that change, which is what keeps the "Credits
+  never expire." line true on invoices already issued.
 * The ₹5,000 setup fee rides on the first purchase only (Rule 6) and is
   waived while fewer than 15 accounts hold the waiver (§5.1). The count of
   `tenants.setup_fee_waived` IS the §5.1 counter — no separate row to drift.
@@ -30,7 +40,9 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.billing import (
+    CREDIT_PACK_LABELS,
     CREDIT_PACKS,
+    CREDIT_VALIDITY_MONTHS,
     GST_RATE_PERCENT,
     MIN_PURCHASE_CREDITS,
     PRICE_PER_CREDIT_INR,
@@ -38,6 +50,7 @@ from app.models.billing import (
     PURCHASE_PAID,
     SETUP_FEE_INR,
     SETUP_FEE_WAIVER_LIMIT,
+    STARTER_PACK_SLUG,
     SUBUNITS_PER_CREDIT,
     TRIAL_CREDITS,
     BillingTransaction,
@@ -82,8 +95,17 @@ class PackQuote:
     """One line of the §7.2 purchase page: a pack priced for THIS tenant."""
 
     slug: str
+    #: The customer-facing name. Resolved here rather than in the client so an
+    #: invoice, an email and the billing page cannot call one pack three
+    #: things, and so the Starter Assessment Pack is never rendered as the bare
+    #: word "Starter", which is already a subscription plan.
+    label: str
     credits: int
     bonus_credits: int
+    #: What the customer actually receives. The Starter Assessment Pack is
+    #: quoted to them as 75 assessments; `credits` is 40 because that is what
+    #: is PURCHASED at the fixed rate, and the difference is the bonus.
+    credits_total: int
     subtotal_inr: int
     setup_fee_inr: int
     setup_fee_waived: bool
@@ -91,6 +113,11 @@ class PackQuote:
     total_inr: int
     available: bool
     trial: bool
+    #: Months of validity on the credits this pack grants. Never None today:
+    #: every NEW grant expires (change request 25). It is serialised so the
+    #: purchase page states the term before the customer pays rather than
+    #: after, on the invoice.
+    validity_months: int
 
 
 def _price(credit_count: int, setup_fee: int) -> tuple[int, int, int]:
@@ -135,8 +162,10 @@ async def quote(session: AsyncSession, tenant: Tenant) -> list[PackQuote]:
         quotes.append(
             PackQuote(
                 slug=slug,
+                label=CREDIT_PACK_LABELS[slug],
                 credits=credit_count,
                 bonus_credits=bonus,
+                credits_total=credit_count + bonus,
                 subtotal_inr=subtotal,
                 setup_fee_inr=setup_fee,
                 setup_fee_waived=waived,
@@ -144,6 +173,7 @@ async def quote(session: AsyncSession, tenant: Tenant) -> list[PackQuote]:
                 total_inr=total,
                 available=not (is_trial and tenant.trial_used),
                 trial=is_trial,
+                validity_months=CREDIT_VALIDITY_MONTHS,
             )
         )
     return quotes
@@ -171,6 +201,14 @@ async def create_purchase(
         if pack_slug not in CREDIT_PACKS:
             raise ValueError("Unknown credit pack.")
         credit_count, bonus = CREDIT_PACKS[pack_slug]
+        # Rule 2's 50-credit floor is checked on the CUSTOM path only, and the
+        # Starter Assessment Pack is the first named pack whose PURCHASED count
+        # (40) sits below it. That is not a hole: the floor is about how much a
+        # customer may buy at a time, the pack delivers 75 credits, and 75
+        # clears 50. Asserted here so the next reader does not "fix" it by
+        # adding a check that would take the pack off the page.
+        if pack_slug == STARTER_PACK_SLUG:
+            assert credit_count + bonus >= MIN_PURCHASE_CREDITS
         # Rule 1: check trial_used on EVERY attempt, not just the first.
         if pack_slug == "trial_20" and tenant.trial_used:
             raise ValueError(
@@ -206,6 +244,7 @@ async def create_purchase(
         gst_inr=tax,
         total_inr=total,
         status=PURCHASE_CREATED,
+        credit_validity_months=CREDIT_VALIDITY_MONTHS,
     )
     # The receipt is our purchase id, so the Razorpay dashboard and our table
     # cross-reference by inspection. The order is created BEFORE the row is
@@ -430,10 +469,20 @@ def render_invoice_pdf(purchase: CreditPurchase, tenant: Tenant) -> bytes:
     y -= 24
     page.setFont("Helvetica", 8)
     page.setFillColorRGB(0.35, 0.35, 0.35)
+    # Read from the ROW, never from the constant. An invoice issued before
+    # change request 25 carries NULL here and keeps saying what it said when
+    # it was issued; printing today's three-month term over a purchase sold as
+    # never-expiring would be a tax document contradicting itself.
+    validity = purchase.credit_validity_months
+    validity_sentence = (
+        "Credits never expire."
+        if validity is None
+        else f"Credits are valid for {validity} months from the date of this invoice."
+    )
     page.drawString(
         40,
         y,
-        "Credits never expire. GST collected is remitted to the government. "
+        f"{validity_sentence} GST collected is remitted to the government. "
         "This is a system-generated invoice.",
     )
     page.showPage()

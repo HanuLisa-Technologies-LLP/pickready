@@ -133,6 +133,58 @@ class JobCloseIn(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
 
 
+class AssessmentDisputeIn(BaseModel):
+    """Opening the dispute path on a closed job (change request 22).
+
+    The reason is REQUIRED here, unlike `JobCloseIn`'s, and the asymmetry is
+    the point. Closing a job is the client acting on their own requisition;
+    opening a dispute re-opens access to records the candidate was told had
+    been taken out of use, so an unlock with no stated reason is an unlock
+    nobody can review afterwards. `min_length` is on the stripped value
+    through the validator below, because a field of spaces satisfies a bare
+    length bound and tells a reader the opener said something.
+    """
+
+    reason: str = Field(max_length=1000)
+
+    @field_validator("reason")
+    @classmethod
+    def _must_say_something(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError(
+                "Say why this assessment record is being retrieved. The "
+                "reason is recorded against the retrieval."
+            )
+        return stripped
+
+
+class AssessmentRetentionOut(BaseModel):
+    """Where one job's assessment data sits in its thirty day lifecycle.
+
+    NO CANDIDATE DETAIL AND NO COUNT OF PEOPLE. It answers "can these records
+    still be retrieved, until when, and is a dispute open", which is what the
+    screen needs to decide whether to offer the control. A count of assessed
+    candidates here would be an assessment fact travelling on a route whose
+    whole purpose is that assessment facts are withheld.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    #: `live`, `pending_deletion` or `purged`, derived server-side.
+    state: str
+    closed_at: datetime | None = None
+    purge_due_at: datetime | None = None
+    purged_at: datetime | None = None
+    dispute_open: bool = False
+    #: Whole days, rounded up, and never zero while the window is open.
+    days_remaining: int | None = None
+    #: The server's own refusal sentence, so the screen renders it verbatim
+    #: rather than writing a second one that can contradict the gate.
+    message: str | None = None
+    dispute_reason: str | None = None
+
+
 class JobCreateIn(ExperienceBandMixin):
     title: str = Field(min_length=1, max_length=255)
     department: str | None = Field(default=None, max_length=255)
@@ -675,7 +727,12 @@ class RankedCandidateOut(BaseModel):
     #: the only handle the viewer and the download endpoint can use; a row
     #: without it renders as an unreadable resume.
     profile_id: uuid.UUID | None = None
-    resume_url: str | None = None
+    #: Whether a resume exists, and NOT where it is. This replaced
+    #: `resume_url`, which serialized the raw `s3://bucket/key` reference the
+    #: client could only ever use as this boolean; see
+    #: `job_candidates._row_payload` for why a storage URI must not cross an
+    #: API boundary. The resume is read through the authorized proxy route.
+    has_resume: bool = False
     resume_filename: str | None = None
     resume_mime_type: str | None = None
     has_report: bool = False

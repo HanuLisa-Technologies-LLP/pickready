@@ -651,7 +651,7 @@ _ASSESSMENT_VIDEO_JOINS = """
         LIMIT 1
     ) conv ON true
     LEFT JOIN LATERAL (
-        SELECT vr.status
+        SELECT vr.status, vr.media_deleted_at
         FROM video_recordings vr
         WHERE vr.job_candidate_link_id = link.id
         ORDER BY vr.created_at DESC, vr.id DESC
@@ -855,6 +855,7 @@ async def candidates_page(
                     conv.mode              AS assessment_mode,
                     conv.status            AS conversation_status,
                     vid.status             AS video_recording_status,
+                    vid.media_deleted_at   AS video_media_deleted_at,
                     EXISTS (
                         SELECT 1 FROM functional_skills_reports fsr
                          WHERE fsr.job_candidate_link_id = link.id
@@ -1000,7 +1001,8 @@ def assemble_row(row: Mapping[str, Any]) -> DashboardRow:
             has_proctoring_session=bool(row.get("has_proctoring_session")),
         ),
         video_status=video_access.video_status_word(
-            row.get("video_recording_status")
+            row.get("video_recording_status"),
+            media_deleted=row.get("video_media_deleted_at") is not None,
         ),
     )
 

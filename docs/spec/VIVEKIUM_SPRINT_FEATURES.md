@@ -269,6 +269,21 @@ summary. The resolutions:
   immediately, as the brief says ("No manual action from anyone"); the billing
   fact, which names no candidate content, is retained because the brief is
   silent about it and the credit ledger is append-only.
+  **SUPERSEDED 2026-09-22 by owner ruling, change request 22: the deletion is
+  DEFERRED BY THIRTY DAYS, not cancelled.** Closure withholds the artifacts
+  from the employer and the recruiter at the same instant it always did, and
+  `pickready.purge_closed_job_assessments` deletes them permanently at the end
+  of the window. "No manual action from anyone" still holds: a clock ends it,
+  not a person. What the reversal buys is the case the immediate delete had no
+  answer to, which is the one this register's own resolution never considered:
+  closure is TERMINAL WITH NO REOPEN, so a misclick or a dispute raised the
+  following week destroyed the evidence for the argument it caused. Retrieval
+  in those thirty days is one named, audited, capability-gated dispute path
+  (`retrieve_disputed_assessment`, migration 0112) and nothing else. The
+  retained list is unchanged, and one item on it was found to be FALSE in
+  practice: `assessment_consents.conversation_id` was ON DELETE CASCADE, so
+  the consent record was being destroyed by the deletion it authorised. 0112
+  makes it SET NULL.
 - **C8**: the brief describes the candidate-owned system (candidate-level,
   portable, two employers, checkbox form), so `bgv_inquiries` wins and
   `verification_requests` is retired the way Company DNA and Intercom were,
@@ -466,7 +481,7 @@ a rule if built as written.
 
 6. ~~Column 2 as a percentage (C1).~~ BUILT (release 5).
 7. ~~The question ceiling versus fixed counts (C2).~~ BUILT (release 6): services/resume_prefill, migration 0104.
-8. ~~Job-closure deletion (C5).~~ BUILT (release 5): erasure.job_closure_erasure, billing rows retained.
+8. ~~Job-closure deletion (C5).~~ BUILT (release 5): erasure.job_closure_erasure, billing rows retained. REVERSED 2026-09-22 (change request 22) to a thirty day soft deletion with a dispute path; the same function now runs from the sweep at the end of the window instead of from the close transaction.
 9. ~~Drishti (C3).~~ BUILT (release 6) as the enhancement layer: hiring/drishti, migration 0105, the company term restored to Weight through layers.resolve.
 
 **C8, added 2026-09-18: there are TWO background-verification systems**

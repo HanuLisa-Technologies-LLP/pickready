@@ -1002,6 +1002,29 @@ module "scheduler" {
       task            = "pickready.purge_proctoring_events"
       rate_expression = "rate(60 minutes)"
     }
+    # Stored assessment media has a retention and deletion lifecycle by owner
+    # ruling (2026-09-22). Deletes nothing while
+    # `assessment_media_retention_days` is zero, which is the current posture;
+    # the rule exists so enabling the window is a setting change rather than a
+    # deploy, and so the sweep cannot be the half that was forgotten.
+    "readypick-purge-assessment-media" = {
+      task            = "pickready.purge_assessment_media"
+      rate_expression = "rate(60 minutes)"
+    }
+    # Change request 22, owner ruling 2026-09-22: closing a job WITHHOLDS its
+    # assessment data for thirty days instead of deleting it inline, and this
+    # sweep is the half that makes the thirty days real. The Terraform half of
+    # the entry in app/workers/schedule.py; tests/test_schedule_parity.py
+    # fails on drift, and this is the SILENT direction of that failure -- a
+    # retention window with no rule behind it produces the same empty log as
+    # one with nothing to delete, while every assessed candidate's promise
+    # quietly stops being kept. Hourly, because it deletes stored objects one
+    # network call at a time and a store that refuses must be retried inside
+    # the same day.
+    "readypick-purge-closed-job-assessments" = {
+      task            = "pickready.purge_closed_job_assessments"
+      rate_expression = "rate(60 minutes)"
+    }
     "readypick-sweep-consent-lifecycle" = {
       task            = "pickready.sweep_consent_lifecycle"
       rate_expression = "rate(1440 minutes)"
@@ -1009,6 +1032,14 @@ module "scheduler" {
     # Email 3 of the vivekium BGV flow (feature 4): the day-3 chase for an
     # employer who has not answered. Daily; reminder_sent_at is the
     # once-only latch, so running late delays the letter, never duplicates.
+    # The object half of an erasure (feature 7, change 15). The Terraform half
+    # of the entry in app/workers/schedule.py; tests/test_schedule_parity.py
+    # fails on drift. Hourly, and it never gives up: a request that cannot be
+    # finished is escalated in the log, never abandoned.
+    "readypick-reconcile-candidate-erasures" = {
+      task            = "pickready.reconcile_candidate_erasures"
+      rate_expression = "rate(60 minutes)"
+    }
     "readypick-sweep-bgv-reminders" = {
       task            = "pickready.sweep_bgv_reminders"
       rate_expression = "rate(1440 minutes)"
@@ -1029,6 +1060,22 @@ module "scheduler" {
     "readypick-release-held-assessments" = {
       task            = "pickready.release_held_assessments"
       rate_expression = "rate(60 minutes)"
+    }
+    # Change request 25. A credit lot reaching its three-month expiry writes
+    # the ledger debit for whatever was left on it, so the balance stays the
+    # plain SUM of the ledger. Every gate already expires on read, so this is
+    # for the idle account whose figure the Provider overview reads. The
+    # Terraform half of the entry in app/workers/schedule.py.
+    "readypick-expire-credit-lots" = {
+      task            = "pickready.expire_credit_lots"
+      rate_expression = "rate(1440 minutes)"
+    }
+    # Change request 27. The month 10 and month 11 usage summary, purely
+    # informational: it writes one latch column and no subscription state.
+    # Daily, because the window it measures is a subscription month.
+    "readypick-sweep-subscription-usage-alerts" = {
+      task            = "pickready.sweep_subscription_usage_alerts"
+      rate_expression = "rate(1440 minutes)"
     }
   }
 

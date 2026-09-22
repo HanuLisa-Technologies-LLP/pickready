@@ -1,0 +1,44 @@
+id: performance.the_candidate_table_holds_a_full_pool
+version: 1
+tier: performance
+description: >
+  One job with a pool of sixty applicants, read through the real ordering and
+  pagination. The tier runs manually and nightly rather than on every commit
+  because its budget is unbounded (HARNESS.md section 9), and the regression
+  signal is the BASELINE COMPARISON rather than a threshold inside the
+  scenario: `harness compare` reads `duration_seconds` against the promoted
+  baseline for this tier under the ratio in `thresholds.yaml`, which is a
+  number derived from the machine the run happened on rather than one invented
+  here.
+
+  It deliberately does NOT name the `latency` evaluator. Section 9 gives this
+  tier no agreed budget, `latency` reports `unavailable` for exactly that
+  reason, and an unavailable outcome blocks; naming it would make every
+  performance run block on a ceiling nobody agreed to.
+tags: [performance, ordering, pagination, nightly]
+
+given:
+  world: ranked_pool
+  overrides:
+    pool.size: 60
+
+workload:
+  - read_candidate_table
+  - read_candidate_table
+
+expect:
+  state:
+    - job_candidate_links.count_for_job == 60
+  output:
+    - status.read_candidate_table == [200, 200]
+  trajectory:
+    - candidate_table_read
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client
+    - cost

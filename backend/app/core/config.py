@@ -180,6 +180,18 @@ class Settings(BaseSettings):
     assessment_question_ceiling: int = 40
     verification_link_ttl_days: int = 3
 
+    # -- A fresher's own verification documents (migration 0114) -------------
+    #
+    # The brief gives a fresher academic certificates and address proof in
+    # place of employer BGV. Every ceiling on that upload is DATA here rather
+    # than a literal in the pipeline, the rule `project_*` already follows:
+    # a candidate-supplied file is hostile input, and a bound somebody can
+    # only find by reading the parser is a bound nobody can change safely.
+    bgv_document_max_bytes: int = 10 * 1024 * 1024
+    #: Per candidate PER TYPE. A degree, a diploma and a consolidated marksheet
+    #: are three legitimate academic certificates; thirty is an abuse surface.
+    bgv_documents_max_per_type: int = 6
+
     # -- Background task dispatch --------------------------------------------
     #
     # Three real deployments, never a fallback chain (see workers/dispatch):
@@ -427,8 +439,21 @@ class Settings(BaseSettings):
     #
     # Proctoring is MANDATORY (principle P4). There is no enable flag: a
     # candidate who declines the consent screen does not take the assessment.
-    # The one feature flag below governs the AI-text detector only, because
-    # that signal is documented as unreliable and ships disabled.
+    # RE-AFFIRMED by the owner on 2026-09-22 ("Proctoring remains mandatory"),
+    # which is also the refusal of the pending request for a per-job on/off
+    # toggle. Do not add `proctoring_enabled`. The one feature flag below
+    # governs the AI-text detector only, because that signal is documented as
+    # unreliable and ships disabled.
+    #
+    # SUPERSEDED 2026-09-22, principle P1 ONLY. This block used to be read
+    # alongside "no media is ever stored"; the owner reversed that in the same
+    # ruling: "Media storage is required. The assessment video must be
+    # compressed and stored securely in S3, linked to the candidate
+    # assessment." The media itself is NOT configured here, because it is not
+    # a proctoring artifact: it is an assessment recording, it lives on
+    # `video_recordings`, and its ceilings are the `video_*` settings further
+    # down. What is still true of every setting in THIS block is that no
+    # module in the proctoring pipeline carries a literal.
     proctoring_max_warnings: int = 3
     # Object detection (section 3.1, 4.2).
     proctoring_object_confidence_threshold: float = 0.65
@@ -634,6 +659,18 @@ class Settings(BaseSettings):
     #: cover the click and a slow connection's head start.
     video_preview_url_ttl_seconds: int = 3 * 3600
     video_download_url_ttl_seconds: int = 900
+    #: How long a stored assessment recording is kept after the compressed
+    #: object was verified present (`video_recordings.stored_at`). ZERO means
+    #: the platform's existing candidate-data policy, which is deletion by
+    #: cascade with the candidate or the application plus the erasure and
+    #: job-closure paths; the platform has no time-based purge and this
+    #: setting does not invent one. A positive value enables the hourly
+    #: `pickready.purge_assessment_media`, which HEAD-confirms every deletion.
+    #: Deliberately the same shape and the same default as
+    #: `proctoring_event_retention_days`: choosing a number is an owner
+    #: decision about a customer's data, not something this code decides on
+    #: their behalf.
+    assessment_media_retention_days: int = 0
 
     # ── Project Evidence Intelligence limits ────────────────────────────────
     #
@@ -670,6 +707,33 @@ class Settings(BaseSettings):
     #: access and is never required. Public repositories only, by product
     #: decision: no private-repository OAuth or token intake exists.
     github_api_token: str = ""
+
+    # ── Per-assessment cost telemetry (change 28D) ──────────────────────────
+    #
+    # THE PLATFORM PAYS IN DOLLARS AND THE OWNER THINKS IN RUPEES, AND THE
+    # CONVERSION BETWEEN THEM IS A SETTING RATHER THAN A CONSTANT IN A QUERY.
+    #
+    # Every price in `config/llm_providers.TOKEN_PRICES_USD_PER_MILLION` is
+    # USD; every figure the owner reasons about (the plans, the rate card, the
+    # alert below) is INR. Something has to convert, and the two dishonest
+    # places to put it are inside the aggregation query, where nobody finds it,
+    # and inside the frontend, where two surfaces immediately disagree.
+    #
+    # BE EXACT ABOUT WHAT A FIXED RATE BUYS. It is not a live FX quote and it
+    # is not fetched: it is one number, edited by a person, and the rupee
+    # figures derived from it are therefore APPROXIMATE and are labelled as
+    # such everywhere they are rendered. That is enough for the question being
+    # asked -- "is the average per-assessment cost drifting toward the
+    # threshold" -- because a rate error moves every figure in the series by
+    # the same factor and leaves the trend intact. It would NOT be enough to
+    # invoice from, and nothing invoices from it.
+    #: USD to INR. A reviewed default, not a quote.
+    usd_to_inr_rate: float = 88.0
+    #: The owner's alert line: flag a month whose AVERAGE cost per assessment
+    #: exceeds this many rupees. A flag, never a gate: nothing in the product
+    #: refuses work because this was crossed, because the work in question has
+    #: already been paid for by a customer who is owed a report.
+    assessment_cost_alert_inr: float = 150.0
 
     # ── Retrieval, RPN-AI-UP-001 W2 ─────────────────────────────────────────
     #

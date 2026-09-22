@@ -1,0 +1,76 @@
+# What counts as a regression, and why (HARNESS.md section 8).
+#
+# THESE ARE DATA, NOT LITERALS IN CODE. A threshold typed into a comparison
+# function is a threshold that gets nudged during a red build and never nudged
+# back, with nothing in the diff saying what it was protecting. Moving one here
+# means editing its `reason` in the same change, which is the point.
+#
+# EVERY ENTRY CARRIES A `reason` AND THE LOADER REFUSES ONE THAT DOES NOT.
+# `baseline.load_thresholds` raises on a missing or blank reason rather than
+# defaulting it, for the reason CLAUDE.md gives about a guard threshold: it
+# "moves only with its reason written beside it".
+#
+# Each entry declares exactly one bound, never both:
+#
+#   max_increase        an absolute rise the metric may show before it is a
+#                       regression. Use for counts, where one more failure is
+#                       one more failure whatever the previous number was.
+#   max_increase_ratio  a proportional rise, as a fraction of the baseline.
+#                       Use for quantities whose scale depends on the machine
+#                       the run happened on.
+#
+# Every metric here is one that RISING means WORSE. That is a deliberate
+# uniformity: a table mixing directions is a table where a sign error reads as
+# a passing gate.
+
+version: 1
+
+thresholds:
+
+  checks_failed:
+    max_increase: 0
+    reason: >
+      A ground-truth assertion that held on the baseline and does not hold now
+      is the definition of a regression, and there is no count of them that is
+      acceptable. Zero rather than a small allowance, because an allowance is
+      the mechanism by which a suite goes from one known failure to nine.
+
+  evaluators_failed:
+    max_increase: 0
+    reason: >
+      An evaluator answers a dimension the assertions cannot: did it degrade
+      honestly, did a number reach a client, was a tenant boundary crossed.
+      Section 9 fails CI outright on a safety or adversarial scenario, and an
+      evaluator failing where it previously passed is that same event arriving
+      through the regression gate instead.
+
+  evaluators_unavailable:
+    max_increase: 0
+    reason: >
+      An evaluator that used to compute and now cannot is a broken harness, not
+      a quiet run, and a broken harness waves everything through while showing
+      green. `release_gate.py` already refuses to treat UNAVAILABLE as a pass;
+      this is the same rule applied to a change in how many of them there are.
+
+  duration_seconds:
+    max_increase_ratio: 0.5
+    # A ratio off a one-second baseline puts the ceiling at 1.5 seconds, which
+    # is inside the ordinary spread of a scenario that opens a TestClient and
+    # makes three requests. Measured: `safety.the_release_gate_...` baselines
+    # at about a second and the same scenario replayed on a loaded machine took
+    # 21, so the gate fired, correctly by its own arithmetic and wrongly about
+    # the code. Below this floor the ratio is not applied and the comparison
+    # says so in as many words. Ten seconds is where a scenario is doing enough
+    # work for half again as long to mean something; it is a CHOICE, like the
+    # ratio above it, and it should be re-derived from the dispersion of a
+    # repeated run at the same time.
+    min_baseline: 10.0
+    reason: >
+      A ratio and not an absolute, because the same scenario runs on a laptop
+      and in CI and the two differ by more than any fixed number worth setting.
+      Half again as long is the point at which a change is a performance
+      finding rather than machine noise: the tier budgets in section 9 have
+      roughly that much headroom, so a scenario crossing this is on its way to
+      crossing its budget. Chosen rather than measured, and it should be
+      re-derived from the dispersion of a repeated run once one exists, the way
+      `release_gate.NOISE_BAND` was derived from the W7.2 probe.

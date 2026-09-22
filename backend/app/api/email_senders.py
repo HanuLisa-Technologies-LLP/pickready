@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, get_public_db, get_tenant_db, require_capability
 from app.core.config import get_settings
 from app.models.email_log import (
+    EMAIL_TYPE_BGV_VERIFICATION,
     STATUS_BOUNCED,
     STATUS_COMPLAINT,
     STATUS_DELIVERED,
@@ -547,33 +548,54 @@ def _failure_reason(kind: str, message: dict) -> str | None:
     return None
 
 
-async def _alert_candidate_of_bgv_bounce(session: AsyncSession, row) -> None:
+def _bounce_is_permanent(message: dict) -> bool:
+    """Whether SES said the address is dead, rather than momentarily unusable.
+
+    `Permanent` is a receiver saying the mailbox does not exist; `Transient` is
+    a full mailbox or a throttled server, which SES is still retrying and which
+    a candidate cannot fix by correcting anything. Telling somebody to change a
+    working address because their former HR manager's inbox was full for an
+    hour is worse than saying nothing: they contact the employer, the employer
+    says the address is fine, and the product has spent the candidate's
+    credibility on a delay it caused.
+
+    `Undetermined` is read as NOT permanent, the safe direction: it is the
+    state where SES itself could not classify the refusal.
+    """
+    return str((message.get("bounce") or {}).get("bounceType") or "") == "Permanent"
+
+
+async def _alert_candidate_of_bgv_bounce(
+    session: AsyncSession, row, verification_id: uuid.UUID
+) -> None:
     """Email 4 of the brief: the BGV request could not be delivered.
 
-    Correlates the bounced EmailLog row back to the verification through the
-    address it was sent to, scoped to the row's own tenant, and only while
-    the verification is still unanswered. The candidate is asked to correct
-    the HR address; the address itself travels PARTIALLY MASKED
-    (`bgv_form.masked_email`), never in full.
+    The candidate is asked to sign in and correct the HR address; the address
+    itself travels PARTIALLY MASKED (`bgv_form.masked_email`), never in full.
+    Silent when the verification has already been answered, which is the case
+    where a second recipient on the same message bounced and the employer had
+    already replied from another.
     """
     from app.services import bgv_form
-    from app.workers.dispatch import dispatch
+    # LATE, and it stays late. `tests/test_bgv_form.py` patches
+    # `app.workers.dispatch.dispatch`, which a module-level binding would
+    # already have resolved past: removing this line as a duplicate import
+    # makes that test silently stop intercepting the send.
+    from app.workers.dispatch import dispatch as dispatch_email
 
     match = (
         (
             await session.execute(
                 sa_text(
                     "SELECT c.full_name, c.email AS candidate_email, "
-                    " e.hr_email "
+                    " e.hr_email, e.id AS employment_id "
                     "FROM bgv_verifications v "
                     "JOIN candidate_employments e "
                     "  ON e.id = v.candidate_employment_id "
                     "JOIN candidates c ON c.id = v.candidate_id "
-                    "WHERE v.tenant_id = :tid AND e.hr_email = :addr "
-                    "  AND v.responded_at IS NULL "
-                    "ORDER BY v.first_sent_at DESC NULLS LAST LIMIT 1"
+                    "WHERE v.id = :vid AND v.responded_at IS NULL"
                 ),
-                {"tid": str(row.tenant_id), "addr": row.recipient_email},
+                {"vid": str(verification_id)},
             )
         )
         .mappings()
@@ -581,7 +603,16 @@ async def _alert_candidate_of_bgv_bounce(session: AsyncSession, row) -> None:
     )
     if match is None or not match["candidate_email"]:
         return
-    dispatch(
+    from app.services import bgv_delivery
+
+    # The address that actually bounced, which is the candidate's correction
+    # when they have already made one. Masking the declaration instead would
+    # show them the address they replaced and read as if the correction was
+    # never applied.
+    failed_address = await bgv_delivery.effective_hr_email(
+        session, uuid.UUID(str(match["employment_id"]))
+    )
+    dispatch_email(
         "pickready.send_email",
         args=[
             str(row.tenant_id),
@@ -589,7 +620,9 @@ async def _alert_candidate_of_bgv_bounce(session: AsyncSession, row) -> None:
             "bgv_bounced",
             {
                 "candidate_name": match["full_name"] or "there",
-                "masked_hr_email": bgv_form.masked_email(match["hr_email"]),
+                "masked_hr_email": bgv_form.masked_email(
+                    failed_address or match["hr_email"]
+                ),
             },
         ],
     )
@@ -675,14 +708,63 @@ async def ses_event_webhook(
     elif kind == "delivery":
         row.delivered_at = row.delivered_at or now
         outcome = STATUS_DELIVERED
+        # THE EMPLOYER'S THREE DAYS START HERE, not at send. A request still in
+        # a provider's retry queue is one the HR team cannot act on, so the
+        # chase and the form link both key off this stamp
+        # (`services/bgv_delivery.clock_start`).
+        if row.bgv_verification_id is not None:
+            from app.services import bgv_delivery
+
+            await bgv_delivery.mark_delivered(
+                session, verification_id=row.bgv_verification_id, at=now
+            )
     elif kind == "bounce":
-        # Vivekium feature 4, bounce detection: a BGV inquiry that bounced is
-        # an address the candidate must fix NOW, not something to wait out
-        # for three days. Alerted on the FIRST bounce record only (the
-        # `bounced_at is None` gate), because SNS delivers at least once and
-        # a candidate does not need the same alert per redelivery.
-        if row.bounced_at is None and row.email_type == "bgv_verification":
-            await _alert_candidate_of_bgv_bounce(session, row)
+        # Vivekium feature 4, bounce detection: a BGV request that bounced is
+        # an address the candidate must fix NOW, not something to wait out for
+        # three days.
+        #
+        # THE VERIFICATION IS RESOLVED BY THE BINDING, never by the recipient
+        # address. This used to match `candidate_employments.hr_email` within
+        # the tenant, newest send first, limit one, so two open verifications
+        # sharing one HR mailbox (one HR manager confirming two candidates at
+        # the same company, which is the normal case at a large employer)
+        # resolved to whichever went out last: the wrong candidate was told to
+        # correct an address that worked, and nothing recorded the mistake. A
+        # row with no binding is left UNATTRIBUTED and logged, because
+        # attributing it to the most similar message is exactly the defect.
+        #
+        # PERMANENT ONLY. A transient bounce is a full mailbox or a throttled
+        # server that SES is still retrying, and a candidate cannot fix it by
+        # correcting an address that is already right.
+        #
+        # Acted on ONCE, on the first bounce record (`bounced_at is None`):
+        # SNS delivers at least once, so a redelivery is the default.
+        if row.email_type == EMAIL_TYPE_BGV_VERIFICATION and row.bounced_at is None:
+            if not _bounce_is_permanent(message):
+                logger.info(
+                    "bgv.transient_bounce email_log=%s  -  not alerting, SES is "
+                    "still retrying",
+                    row.id,
+                )
+            elif row.bgv_verification_id is None:
+                logger.warning(
+                    "bgv.bounce_unattributed email_log=%s  -  this row carries no "
+                    "verification binding, so the candidate cannot be told which "
+                    "employer to correct",
+                    row.id,
+                )
+            else:
+                from app.services import bgv_delivery
+
+                await bgv_delivery.mark_bounced(
+                    session,
+                    verification_id=row.bgv_verification_id,
+                    at=now,
+                    reason=_failure_reason(kind, message),
+                )
+                await _alert_candidate_of_bgv_bounce(
+                    session, row, row.bgv_verification_id
+                )
         row.bounced_at = row.bounced_at or now
         outcome = STATUS_BOUNCED
     elif kind == "complaint":

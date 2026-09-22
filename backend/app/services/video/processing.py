@@ -1,6 +1,16 @@
-"""The video processing pipeline (dual-mode spec section 6, video spec 8-10).
+"""The assessment media pipeline (dual-mode spec section 6, video spec 8-10,
+and the 2026-09-22 owner ruling that assessment media is stored).
 
-One recording in, one ready recording out, in five verified steps:
+TWO KINDS, ONE PIPELINE, AND THE KIND DECIDES WHICH HALF RUNS. A
+`video_interview` recording IS the candidate's answer and takes every step
+below. A `proctored_session` recording is the monitoring record of a proctored
+assessment and takes ONLY the compression and storage half, through
+`process_proctored_session_recording`: no audio extraction, no transcription,
+no transcript or answer record, no completion. The steps it does not take are
+the steps that reach a scorer, so principle P3 is kept structurally rather
+than by a flag somebody has to remember to check.
+
+One interview recording in, one ready recording out, in five verified steps:
 
     uploaded -> processing    download the raw object, extract the audio with
                               ffmpeg, measure the real duration with ffprobe
@@ -59,7 +69,7 @@ from app.models.assessment import (
     JobCompetency,
 )
 from app.models.candidate import JobCandidateLink
-from app.models.dual_mode import VideoRecording
+from app.models.dual_mode import RECORDING_PROCTORED_SESSION, VideoRecording
 from app.models.job import Job
 from app.services.video import keys, lifecycle, storage
 from app.workers.dispatch import dispatch
@@ -578,8 +588,151 @@ async def _fail(
     await session.commit()
 
 
+async def compress_store_and_finish(
+    session: AsyncSession,
+    recording: VideoRecording,
+    *,
+    conversation_id: uuid.UUID,
+    raw_path: Path,
+    compressed_path: Path,
+    raw_duration: float,
+    working_keys: tuple[str | None, ...] = (),
+) -> None:
+    """Compress, store, VERIFY, delete the raw artifacts, land on `ready`.
+
+    THE ONE PLACE assessment media becomes a long-term object, for both
+    recording kinds (owner ruling, 2026-09-22). A second copy of this tail
+    would be a second answer to "is the compressed object really there", and
+    the whole raw-deletion contract rests on that answer.
+
+    The order is the project-intake order and it is not negotiable: the raw
+    object is deleted only after the compressed one is HEAD-confirmed present,
+    at the right size, with a duration within tolerance of the raw. A failed
+    deletion is COUNTED and never blocks `ready`, because an undeleted
+    processing artifact is a cleanup job and a recording stuck out of `ready`
+    is a hiring team who cannot watch an assessment that exists.
+    """
+    settings = get_settings()
+
+    lifecycle.advance(recording, lifecycle.COMPRESSING)
+    await session.flush()
+    await session.commit()
+    try:
+        compress(raw_path, compressed_path)
+    except Exception as exc:  # noqa: BLE001 -- recorded then re-raised
+        await _fail(session, recording, lifecycle.COMPRESSION_FAILED, str(exc))
+        raise
+
+    lifecycle.advance(recording, lifecycle.STORING)
+    await session.flush()
+    await session.commit()
+    try:
+        compressed_bytes = compressed_path.read_bytes()
+        compressed_key = recording.s3_compressed_key or keys.compressed_key(
+            conversation_id, recording.id
+        )
+        storage.put(
+            key=compressed_key, data=compressed_bytes, content_type="video/mp4"
+        )
+        stored_size = storage.head_size(compressed_key)
+        if not stored_size or stored_size != len(compressed_bytes):
+            raise MediaProcessingError(
+                "The compressed object's stored size does not match what "
+                "was uploaded; refusing to delete the raw recording."
+            )
+        compressed_duration = probe_duration(
+            compressed_path,
+            timeout_seconds=settings.video_ffmpeg_timeout_seconds,
+        )
+        if abs(compressed_duration - raw_duration) > settings.video_duration_tolerance_seconds:
+            raise MediaProcessingError(
+                "The compressed recording's duration differs from the raw "
+                "recording by more than video_duration_tolerance_seconds; "
+                "refusing to delete the raw recording."
+            )
+        recording.s3_compressed_key = compressed_key
+        recording.compressed_size_bytes = len(compressed_bytes)
+        recording.stored_format = "mp4"
+        # The retention clock starts at the VERIFIED store and nowhere else.
+        recording.stored_at = datetime.now(timezone.utc)
+    except Exception as exc:  # noqa: BLE001 -- recorded then re-raised
+        await _fail(session, recording, lifecycle.STORAGE_FAILED, str(exc))
+        raise
+
+    # ── Raw deletion, HEAD-confirmed (project-intake contract) ──────────────
+    deleted = True
+    for key in (recording.s3_raw_key, *working_keys):
+        if not key:
+            continue
+        try:
+            if not storage.delete_verified(key):
+                deleted = False
+        except Exception:  # noqa: BLE001 -- counted, never blocks ready
+            deleted = False
+    if deleted:
+        recording.raw_deleted = True
+    else:
+        recording.raw_delete_failures += 1
+        logger.warning(
+            "video_processing.raw_delete_failed recording_id=%s failures=%d",
+            recording.id, recording.raw_delete_failures,
+        )
+
+    lifecycle.advance(recording, lifecycle.READY)
+    recording.processed_at = datetime.now(timezone.utc)
+    await session.flush()
+    await session.commit()
+    logger.info("video_processing.ready recording_id=%s", recording.id)
+
+
+async def process_proctored_session_recording(
+    session: AsyncSession, recording: VideoRecording
+) -> None:
+    """Store one proctored-session recording. Compression and storage ONLY.
+
+    This function is the whole of what a monitoring recording gets, and the
+    absence is the design (owner ruling, 2026-09-22 re-affirms P3): no audio
+    is extracted, no transcription runs, no transcript or answer record is
+    written, and `complete_assessment` is never called. A proctored recording
+    therefore cannot reach any code that computes a grade, and it cannot
+    reach it later either, because the `uploaded -> processing` edge is the
+    only door into that half and this path does not take it.
+    """
+    settings = get_settings()
+    with tempfile.TemporaryDirectory(prefix="readypick-session-media-") as workdir:
+        raw_path = Path(workdir) / Path(recording.s3_raw_key or "raw.webm").name
+        compressed_path = Path(workdir) / "assessment.mp4"
+        try:
+            raw_path.write_bytes(storage.get_bytes(recording.s3_raw_key or ""))
+            duration = probe_duration(
+                raw_path, timeout_seconds=settings.video_ffmpeg_timeout_seconds
+            )
+            if duration > settings.video_max_duration_seconds:
+                raise MediaProcessingError(
+                    "The recording is longer than video_max_duration_seconds "
+                    f"({settings.video_max_duration_seconds}s) allows."
+                )
+            recording.duration_seconds = duration
+        except Exception as exc:  # noqa: BLE001 -- recorded then re-raised
+            await _fail(session, recording, lifecycle.COMPRESSION_FAILED, str(exc))
+            raise
+        await compress_store_and_finish(
+            session,
+            recording,
+            conversation_id=recording.conversation_id,
+            raw_path=raw_path,
+            compressed_path=compressed_path,
+            raw_duration=duration,
+        )
+
+
 async def process_recording(session: AsyncSession, recording_id: uuid.UUID) -> None:
     """Drive one uploaded recording to `ready`. The worker task's whole body.
+
+    ONE task and ONE entry point for both recording kinds; the kind decides
+    which half of the pipeline runs, and it is read from the row rather than
+    passed in, so a dispatch cannot disagree with the record about what it is
+    processing.
 
     The session is a WORKER session (RLS bypassed); tenant scoping is explicit
     per query. Commits at each state transition so a kill mid-pipeline leaves
@@ -597,6 +750,9 @@ async def process_recording(session: AsyncSession, recording_id: uuid.UUID) -> N
             "video_processing.skipped recording_id=%s status=%s",
             recording_id, recording.status,
         )
+        return
+    if recording.kind == RECORDING_PROCTORED_SESSION:
+        await process_proctored_session_recording(session, recording)
         return
     conversation = await session.get(AssessmentConversation, recording.conversation_id)
     if conversation is None:
@@ -693,72 +849,12 @@ async def process_recording(session: AsyncSession, recording_id: uuid.UUID) -> N
                 await _fail(session, recording, lifecycle.PROCESSING_FAILED, str(exc))
             raise
 
-        # ── Compression ─────────────────────────────────────────────────────
-        lifecycle.advance(recording, lifecycle.COMPRESSING)
-        await session.flush()
-        await session.commit()
-        try:
-            compress(raw_path, compressed_path)
-        except Exception as exc:  # noqa: BLE001 -- recorded then re-raised
-            await _fail(session, recording, lifecycle.COMPRESSION_FAILED, str(exc))
-            raise
-
-        # ── Store, verify, and only then delete the raw ─────────────────────
-        lifecycle.advance(recording, lifecycle.STORING)
-        await session.flush()
-        await session.commit()
-        try:
-            compressed_bytes = compressed_path.read_bytes()
-            compressed_key = recording.s3_compressed_key or keys.compressed_key(
-                conversation.id, recording.id
-            )
-            storage.put(
-                key=compressed_key, data=compressed_bytes, content_type="video/mp4"
-            )
-            stored_size = storage.head_size(compressed_key)
-            if not stored_size or stored_size != len(compressed_bytes):
-                raise MediaProcessingError(
-                    "The compressed object's stored size does not match what "
-                    "was uploaded; refusing to delete the raw recording."
-                )
-            compressed_duration = probe_duration(
-                compressed_path,
-                timeout_seconds=settings.video_ffmpeg_timeout_seconds,
-            )
-            if abs(compressed_duration - duration) > settings.video_duration_tolerance_seconds:
-                raise MediaProcessingError(
-                    "The compressed recording's duration differs from the raw "
-                    "recording by more than video_duration_tolerance_seconds; "
-                    "refusing to delete the raw recording."
-                )
-            recording.s3_compressed_key = compressed_key
-            recording.compressed_size_bytes = len(compressed_bytes)
-            recording.stored_format = "mp4"
-        except Exception as exc:  # noqa: BLE001 -- recorded then re-raised
-            await _fail(session, recording, lifecycle.STORAGE_FAILED, str(exc))
-            raise
-
-        # ── Raw deletion, HEAD-confirmed (project-intake contract) ──────────
-        deleted = True
-        for key in (recording.s3_raw_key, audio_object_key, transcript_key):
-            if not key:
-                continue
-            try:
-                if not storage.delete_verified(key):
-                    deleted = False
-            except Exception:  # noqa: BLE001 -- counted, never blocks ready
-                deleted = False
-        if deleted:
-            recording.raw_deleted = True
-        else:
-            recording.raw_delete_failures += 1
-            logger.warning(
-                "video_processing.raw_delete_failed recording_id=%s failures=%d",
-                recording_id, recording.raw_delete_failures,
-            )
-
-        lifecycle.advance(recording, lifecycle.READY)
-        recording.processed_at = datetime.now(timezone.utc)
-        await session.flush()
-        await session.commit()
-        logger.info("video_processing.ready recording_id=%s", recording_id)
+        await compress_store_and_finish(
+            session,
+            recording,
+            conversation_id=conversation.id,
+            raw_path=raw_path,
+            compressed_path=compressed_path,
+            raw_duration=duration,
+            working_keys=(audio_object_key, transcript_key),
+        )

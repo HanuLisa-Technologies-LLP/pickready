@@ -1,7 +1,17 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -68,6 +78,25 @@ class Tenant(Base, UUIDPKMixin, CreatedAtMixin):
     )
     subscription_status: Mapped[str | None] = mapped_column(String(20))
     subscription_current_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # ── Subscription month (change request 27, migration 0111) ───────────────
+    #: When this customer's subscription first CHARGED successfully. The
+    #: product had no subscription-start date at all until now: it knew the
+    #: current period's END (`subscription_current_end`, restamped by Razorpay
+    #: on every renewal) and therefore could not answer "which month of their
+    #: subscription is this customer in", which the month 10 and 11 usage
+    #: summaries are keyed on. Stamped by `_grant_for_payment` on the FIRST
+    #: grant and never moved: a /subscribe click is an intent to pay, and
+    #: counting months from it would start the clock on a card that was never
+    #: charged.
+    subscription_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    #: The highest subscription month for which the informational usage summary
+    #: has been sent. The idempotency latch, in the same checked-UPDATE shape
+    #: as `credit_warning_1_sent`: the sweep claims a month with
+    #: `WHERE ... < :month RETURNING id`, so a re-run, a redelivered dispatch
+    #: and two sweeps racing all send exactly one letter.
+    usage_alert_last_month: Mapped[int | None] = mapped_column(Integer)
     # Derived from the ledger (balance < 0) but STORED: the invitation gate runs
     # on every send and must not re-aggregate the whole ledger to answer it.
     credit_deficit: Mapped[bool] = mapped_column(

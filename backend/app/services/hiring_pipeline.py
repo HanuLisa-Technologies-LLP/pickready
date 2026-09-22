@@ -394,6 +394,33 @@ async def apply_transition(
         },
     )
     await _record_candidate_update(session, link_id=link_id, status=status)
+    # ── THE SECOND SHORTLIST TRIGGER ─────────────────────────────────────────
+    #
+    # The specification's event map, wiring 2: "Shortlisting fires two parallel
+    # triggers: assessment start AND the BGV email. Neither waits for the
+    # other." Here for the same reason the gate above and the feed row are
+    # here: six callers reach this function, and a trigger wired into one route
+    # is a trigger the other five do not have.
+    #
+    # AFTER the writes, never before. A verification opened against a stage
+    # change that then failed would email a previous employer about a shortlist
+    # that did not happen.
+    #
+    # `on_shortlist` NEVER RAISES and runs each employer inside its own
+    # savepoint, so a BGV failure cannot fail the move and cannot poison this
+    # transaction; a fresher falls out of its first branch and nothing is sent.
+    if status == SHORTLISTED:
+        from app.services import bgv_autostart  # noqa: PLC0415 -- cyclic at module scope
+
+        await bgv_autostart.on_shortlist(
+            session,
+            tenant_id=tenant_id,
+            candidate_id=uuid.UUID(str(row["candidate_id"])),
+            link_id=link_id,
+            job_id=uuid.UUID(str(row["job_id"])) if row["job_id"] else None,
+            actor_user_id=actor_user_id,
+            now=now,
+        )
     # A FOURTH write, and the same chokepoint argument as the feed row above:
     # a stage that IS a section 5.1 lifecycle milestone (interview completed,
     # offer extended, joined) emits its telemetry event here so none of the

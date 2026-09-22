@@ -33,6 +33,9 @@ from app.models.billing import (
     SUBUNITS_PER_CREDIT,
     BillingTransaction,
     CreditLedgerEntry,
+    CreditLot,
+    CreditLotDraw,
+    CreditPurchase,
     OldProfileReview,
     PricingPlan,
     WebhookEvent,
@@ -47,10 +50,17 @@ from app.models.agent import (
 )
 from app.models.agent_action import AgentAction
 from app.models.context import ContextChunk
-from app.models.evidence import EvidenceClaim, EvidenceClaimLink, EvidenceItemRow
+from app.models.evidence import (
+    EvidenceClaim,
+    EvidenceClaimLink,
+    EvidenceItemRow,
+    PortableEvidenceItem,
+)
 from app.models.candidate_update import CandidateUpdate
+from app.models.deletion import CandidateDeletionRequest
 from app.models.support import SupportMessage, SupportThread
 from app.models.bgv import BGVInquiry, BGVShareConsent
+from app.models.bgv_documents import BGVContactCorrection, CandidateBGVDocument
 from app.models.bgv_verification import BGVVerification
 from app.models.conversation import (
     Conversation,
@@ -113,6 +123,12 @@ from app.models.proctoring import (
     ProctoringReport,
     ProctoringSession,
 )
+from app.models.cost import (
+    COST_BASIS_ESTIMATED,
+    COST_BASIS_FINALIZED,
+    COST_BASIS_VALUES,
+    AssessmentCostRecord,
+)
 from app.models.telemetry import TelemetryEvent
 from app.models.tenant import AuditLog, LLMProviderKey, RolePermission, Tenant
 from app.models.hiring import (
@@ -132,6 +148,7 @@ __all__ = [
     "APPROVAL_CHAIN",
     "ApprovalDecision",
     "BDLead",
+    "BGVContactCorrection",
     "BGVInquiry",
     "BGVShareConsent",
     "CHANNELS",
@@ -145,6 +162,7 @@ __all__ = [
     "Candidate",
     "CandidateProject",
     "CandidateUpdate",
+    "CandidateDeletionRequest",
     "SupportMessage",
     "SupportThread",
     "CandidateQuestion",
@@ -152,6 +170,9 @@ __all__ = [
     "CandidateTechnicalQuestion",
     "CONSUMPTION_SUBUNITS",
     "CreditLedgerEntry",
+    "CreditLot",
+    "CreditLotDraw",
+    "CreditPurchase",
     "EVENT_COMPLETED",
     "EVENT_GRANT",
     "EVENT_INCOMPLETE",
@@ -222,12 +243,17 @@ __all__ = [
     "EvidenceClaim",
     "EvidenceClaimLink",
     "EvidenceItemRow",
+    "PortableEvidenceItem",
     "STATUS_FAILED",
     "STATUS_PARTIAL",
     "STATUS_SUCCESS",
     "ProctoringEvent",
     "ProctoringReport",
     "ProctoringSession",
+    "AssessmentCostRecord",
+    "COST_BASIS_ESTIMATED",
+    "COST_BASIS_FINALIZED",
+    "COST_BASIS_VALUES",
     "TelemetryEvent",
     "Tenant",
     "TechnicalQuestion",
@@ -236,6 +262,7 @@ __all__ = [
     "UserStatus",
     "CandidateEmployment",
     "BGVVerification",
+    "CandidateBGVDocument",
     "Conversation",
     "ConversationParticipant",
     "ConversationMessage",

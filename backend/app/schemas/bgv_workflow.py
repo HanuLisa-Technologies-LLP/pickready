@@ -127,6 +127,18 @@ class VerificationOut(BaseModel):
     decided_at: datetime | None
     decided_by_name: str | None
     decision_note: str | None
+    #: DID IT ARRIVE, which is a different question from what the employer
+    #: said. `pending` with `delivery_status="bounced"` is a request nobody
+    #: received, and without this the screen shows it as an HR team who has
+    #: not got round to it yet.
+    delivery_status: str = "not_sent"
+    #: When the employer's three days actually began. NULL under a transport
+    #: that reports no delivery events, which is honest rather than absent:
+    #: `bgv_delivery.clock_start` says what the product falls back to.
+    delivered_at: datetime | None = None
+    bounced_at: datetime | None = None
+    #: The provider's short reason for a refusal, for the recruiter's screen.
+    delivery_detail: str | None = None
 
 
 class CandidateBGVOut(BaseModel):
@@ -143,6 +155,51 @@ class CandidateBGVOut(BaseModel):
     #: None when nothing is blocked. The exact sentence the pipeline would
     #: refuse an offer with, so the screen and the server never disagree.
     offer_blocked_reason: str | None
+
+
+class HREmailCorrectionIn(BaseModel):
+    """The candidate's replacement address for an employer who could not be reached.
+
+    ONE FIELD, and that is the security property rather than a convenience.
+    The employment facts (employer, title, dates) are immutable by database
+    trigger and stay that way; a schema that carried them would be a schema
+    somebody later wires through, and a candidate who could edit the dates
+    could rewrite the claim an employer is being asked to confirm.
+    """
+
+    hr_email: EmailStr
+
+
+class BGVDocumentOut(BaseModel):
+    """One of a fresher's own verification documents.
+
+    NO OBJECT KEY. The row names a file the candidate uploaded; where the bytes
+    live is not something an API boundary has any reason to carry
+    (claude.md, 2026-07-26: never name a storage vendor in user-facing copy,
+    and a key is the address of a bucket by another route).
+    """
+
+    id: uuid.UUID
+    document_type: str
+    document_label: str
+    original_filename: str
+    mime_type: str
+    size_bytes: int
+    uploaded_at: datetime
+
+
+class BGVDocumentsOut(BaseModel):
+    """The whole documents card, including the slots that are still empty.
+
+    Every known type is returned whether or not it holds a file, the same rule
+    the seven compliance slots follow: a short list is one a missing address
+    proof can hide in.
+    """
+
+    documents: list[BGVDocumentOut]
+    accepted_types: list[dict[str, str]]
+    upload_hint: str
+    max_per_type: int
 
 
 class DraftOut(BaseModel):

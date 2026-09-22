@@ -56,6 +56,22 @@ EMAIL_TYPES: tuple[str, ...] = (
     EMAIL_TYPE_DATABANK_INVITATION,
 )
 
+# ── Logged but never AI-drafted (migration 0114) ─────────────────────────────
+# The BGV verification request. It is DELIBERATELY not a member of
+# `EMAIL_TYPES`: every type in that tuple has a prompt in `EMAIL_TYPE_PROMPTS`
+# and is drafted by `lifecycle_email.draft`, and this one is not drafted at all
+# -- a recruiter writes it, or the deterministic template does when automation
+# sends it and there is no recruiter to review a draft. It exists as a type so
+# the message has an `email_log` row, which is the only thing a delivery event
+# can be matched back to.
+EMAIL_TYPE_BGV_VERIFICATION = "bgv_verification"
+
+NON_LIFECYCLE_EMAIL_TYPES: tuple[str, ...] = (EMAIL_TYPE_BGV_VERIFICATION,)
+
+#: Everything the `ck_email_log_type` CHECK admits. Mirrored by migration 0114
+#: -- keep both in step.
+LOGGED_EMAIL_TYPES: tuple[str, ...] = EMAIL_TYPES + NON_LIFECYCLE_EMAIL_TYPES
+
 #: Which prompt template drafts each type (app/prompts/*.txt).
 EMAIL_TYPE_PROMPTS: dict[str, str] = {
     EMAIL_TYPE_APPLICATION_CONFIRMATION: "email_application_confirmation",
@@ -169,4 +185,15 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
     #: this row and refuses anything that is not `active` (spec section 11).
     sender_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("client_email_senders.id", ondelete="SET NULL")
+    )
+    #: WHICH BGV VERIFICATION THIS MESSAGE IS (migration 0114). The bounce
+    #: handler used to correlate back through the recipient ADDRESS, and one
+    #: HR mailbox confirming two candidates at the same employer is the normal
+    #: case at any large company: the address resolved to whichever
+    #: verification was sent last, silently, and the wrong candidate was told
+    #: to fix an address that worked. An address is a property of a recipient
+    #: and is never an identity of a message. SET NULL so deleting a
+    #: verification never erases the delivery record of what was sent.
+    bgv_verification_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("bgv_verifications.id", ondelete="SET NULL")
     )

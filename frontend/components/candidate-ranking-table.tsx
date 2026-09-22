@@ -57,6 +57,7 @@ import { AiRatingCell, AiRatingReportModal } from "@/components/ai-rating-report
 import { ProcurementBadge } from "@/components/procurement-badge";
 import { StageBadge, StatusActions } from "@/components/pipeline-status";
 import { TierBadge } from "@/components/tier-badge";
+import { resumeTabUrl } from "@/components/resume-viewer";
 import {
   Table,
   TableBody,
@@ -141,11 +142,49 @@ function ValidationAnswersModal({
   );
 }
 
+/**
+ * Column 6, Resume Link: a direct tap that opens the resume in a NEW TAB.
+ *
+ * An anchor rather than a button with an onClick, and that is the change
+ * rather than an implementation detail of it. This used to set state and open
+ * an in-app dialog, and the brief asks for a tab: a recruiter reading a
+ * resume wants it beside the table, not on top of it, and a real link is what
+ * gives them middle-click, "open in new window" and a back button.
+ *
+ * `rel="noopener"` because a tab opened with target="_blank" can otherwise
+ * reach back through `window.opener`. The href is the authorized proxy route
+ * (see `resumeTabUrl`), never a storage URL: the payload no longer carries
+ * one, and `has_resume` is the flag that decides whether there is anything to
+ * open.
+ */
+function ResumeLinkCell({ row }: { row: RankedCandidate }) {
+  const href = row.has_resume
+    ? resumeTabUrl({
+        profileId: row.profile_id,
+        resumeFileName: row.resume_filename,
+        resumeMimeType: row.resume_mime_type,
+      })
+    : null;
+  if (!href) {
+    return (
+      <Button variant="outline" size="sm" disabled title="No resume on file">
+        None
+      </Button>
+    );
+  }
+  return (
+    <Button asChild variant="outline" size="sm">
+      <a href={href} target="_blank" rel="noopener" title="View resume">
+        View Resume
+      </a>
+    </Button>
+  );
+}
+
 export function CandidateRankingTable({
   jobId,
   onOpenReport,
   onOpenTranscript,
-  onOpenResume,
   onEmail,
   onSelectionChange,
   canDecide = false,
@@ -160,7 +199,6 @@ export function CandidateRankingTable({
    * they finish. A recruiter chasing a stalled assessment needs the former.
    */
   onOpenTranscript: (row: RankedCandidate) => void;
-  onOpenResume: (row: RankedCandidate) => void;
   /** Omit to hide the email action (caller lacks send_outreach). */
   onEmail?: (rows: RankedCandidate[]) => void;
   /** Show the status-action column (caller has decide_profile). */
@@ -587,15 +625,7 @@ export function CandidateRankingTable({
                     </span>
                   </TableCell>
                   <TableCell className="pt-4">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={!row.resume_url}
-                      title={row.resume_url ? "View resume" : "No resume on file"}
-                      onClick={() => onOpenResume(row)}
-                    >
-                      {row.resume_url ? "View" : "None"}
-                    </Button>
+                    <ResumeLinkCell row={row} />
                   </TableCell>
                   <TableCell className="pt-4">
                     <AiRatingCell row={row} onOpen={openCandidateDetail} />

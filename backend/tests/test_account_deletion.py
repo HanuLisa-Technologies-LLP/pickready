@@ -370,12 +370,34 @@ async def test_the_erasure_takes_the_sign_in_account_and_leaves_staff_alone(
         # The session was invalidated in the same request, not left for the
         # client to clean up.
         assert cleared.get("called") is True
-        # And the person was told, at the address read before the row went.
-        assert [name for name, _ in dispatched] == ["pickready.send_email"]
-        _, args = dispatched[0]
+        # TWO dispatches, in this order, and both are load bearing.
+        #
+        # The first finishes the OBJECT half of the erasure. Rows, vectors and
+        # caches are settled inside this request; a resume, an assessment
+        # recording and a staged project original live in an object store that
+        # fails independently of Postgres, so they are deleted by the
+        # resumable pass against the deletion record, which the hourly sweep
+        # also picks up. Before that record existed the objects were never
+        # touched at all.
+        #
+        # The second tells the person, at the address read before the row went.
+        assert [name for name, _ in dispatched] == [
+            "pickready.cascade_erasure",
+            "pickready.send_email",
+        ]
+        _, erasure_args = dispatched[0]
+        assert erasure_args[0] == str(out.candidate_id)
+        assert erasure_args[2], (
+            "the object pass was dispatched without a deletion request id, so "
+            "it cannot know which files were owed"
+        )
+        _, args = dispatched[1]
         assert args[1] == fx.email
         assert args[2] == account_deletion.CONFIRMATION_TEMPLATE
         assert args[3] == {}, "the confirmation letter carries context"
+        # The response says where the erasure actually stands rather than
+        # claiming a completion it cannot see.
+        assert out.deletion_state == "rows_erased"
     finally:
         await _cleanup(factory, fx)
         await engine.dispose()

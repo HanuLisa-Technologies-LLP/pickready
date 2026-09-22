@@ -223,6 +223,202 @@ jobs:
         run: python -m app.scripts.worked_example
 
   # ---------------------------------------------------------------------------
+  # THE HARNESS (docs/spec/HARNESS.md).
+  #
+  # A SEPARATE JOB FROM `backend-tests`, AND THAT IS THE POINT rather than a
+  # convenience. The suite answers "does this function do what its author
+  # believed"; the harness answers whether the system works end to end against
+  # its real seams, whether it degrades the way it said it would, and whether a
+  # change made it better or worse. Folding them into one job would make a
+  # harness regression look like a unit-test failure in the summary, which is
+  # the one thing a reader has to be able to tell apart at a glance.
+  #
+  # THREE EXIT CODES, AND CI HAS TO RESPECT ALL THREE.
+  #   0  pass
+  #   1  a scenario failed, or a run regressed against its baseline
+  #   3  UNAVAILABLE: something could not be measured
+  #
+  # Every `run:` below fails the step on ANY non-zero status, which is what
+  # makes 3 a failure here. That is deliberate and it is the whole reason the
+  # third code exists: an unavailable result means the thing could not be
+  # measured, and treating it as success is the green-while-broken outcome the
+  # harness was built to prevent. `release_gate.py` already states the rule for
+  # its own UNAVAILABLE and this is the same rule one layer out.
+  harness:
+    name: Harness (smoke, regression, integration, adversarial, safety)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        # pgvector for the same reason `backend-tests` gives: `0001_initial`
+        # runs `CREATE EXTENSION vector`.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: pickready
+          POSTGRES_PASSWORD: pickready
+          POSTGRES_DB: pickready
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pickready"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://pickready:pickready@localhost:5432/pickready
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET: ci-only-not-a-real-secret-value
+
+      # HARNESS.md section 1, the second structural guarantee. `record` accepts
+      # a dispatch, runs nothing and remembers it, and `dispatch.backend()`
+      # refuses it outright in production. A scenario asserts over what WOULD
+      # have been dispatched, which is how a dispatch count can be asserted at
+      # all without standing up a worker.
+      #
+      # `runner._prepare` REFUSES to execute under any other backend, so this
+      # being wrong is a loud unavailable rather than a run that quietly fired
+      # real background work at whatever this container can reach.
+      TASK_DISPATCH_BACKEND: record
+
+      # DELIBERATELY UNSET: OPENAI_GPT_TERRA, OPENAI_GPT_LUNA, VOYAGE_CONTEXT_4.
+      #
+      # HARNESS.md section 1, the third structural guarantee. Every generative
+      # path has a deterministic fallback, and a scenario that needs a vendor
+      # response gets it from the fault layer serving a hand-authored contract
+      # fixture out of `tests/fixtures/vendor/`. A key here would let a vendor
+      # outage turn the harness red, and would let a scenario silently exercise
+      # a real vendor instead of the contract it declared.
+      #
+      # It is not left to this comment. `a_model_credential_was_configured` is
+      # a prohibited outcome several scenarios name, and `safety_and_policy`
+      # checks it on EVERY scenario that names it whether the author remembered
+      # or not.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Migrate
+        working-directory: backend
+        run: alembic upgrade head
+
+      # THE CORPUS IS VALIDATED BEFORE ANY OF IT RUNS.
+      #
+      # Every world, step, fault, evaluator and probe a scenario names is
+      # resolved against its registry with no stack behind it. A misspelled
+      # step name is otherwise a run that executes less than it claimed, and
+      # `workload.run_step` only finds out after a database, a migration and
+      # several minutes have been spent. Seconds here, twenty minutes there.
+      - name: The scenario corpus resolves
+        working-directory: backend
+        run: pytest tests/test_harness_scenarios.py -q --no-header
+
+      - name: Restore the promoted baselines
+        uses: actions/cache/restore@v4
+        with:
+          path: harness-runs/baselines.json
+          # The key moves with the commit and the restore keys fall back to the
+          # branch and then to main, so a branch inherits main's baseline
+          # rather than starting with none. A comparison with nothing to
+          # compare against answers unavailable, which blocks.
+          key: harness-baselines-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            harness-baselines-${{ github.ref_name }}-
+            harness-baselines-main-
+
+      # ── The tiers ──────────────────────────────────────────────────────────
+      #
+      # Run separately rather than as one `harness run`, so the job summary
+      # says WHICH tier went red. They are not `continue-on-error`: section 9
+      # fails CI outright on any safety or adversarial scenario failing, and a
+      # tier allowed to keep going after a failure is a tier whose result
+      # somebody reads as a summary line.
+      #
+      # `performance` is absent on purpose. Section 9 gives it an unbounded
+      # budget and runs it manually and nightly; the step below runs it only on
+      # a workflow_dispatch.
+
+      - name: Smoke
+        working-directory: backend
+        run: python -m harness run --tier smoke
+
+      - name: Regression
+        working-directory: backend
+        run: python -m harness run --tier regression
+
+      - name: Integration
+        working-directory: backend
+        run: python -m harness run --tier integration
+
+      - name: Adversarial
+        working-directory: backend
+        run: python -m harness run --tier adversarial
+
+      - name: Safety
+        working-directory: backend
+        run: python -m harness run --tier safety
+
+      - name: Performance (manual runs only)
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: backend
+        # Section 9: manual and nightly, unbounded budget. Never on a commit,
+        # because a tier with no agreed ceiling cannot fail on time and would
+        # only ever cost every push several minutes.
+        run: python -m harness run --tier performance
+
+      # ── The regression gate ────────────────────────────────────────────────
+      #
+      # Everything above answers "did this run pass". This answers "did it get
+      # worse", which is a different question and the one a baseline exists for.
+      # Thresholds are DATA in `harness/thresholds.yaml`, each carrying the
+      # reason it is set where it is.
+      #
+      # A tier with NO promoted baseline has one established here rather than
+      # skipped. `compare` answers unavailable in that state, correctly, and a
+      # step that swallowed it would be a gate reading green because nobody had
+      # ever given it anything to read. Promoting is safe at this point and
+      # only at this point: every tier above has already passed, or this step
+      # never runs.
+      - name: Compare against the promoted baseline, or establish one
+        working-directory: backend
+        run: python -m harness gate
+
+      - name: Save the promoted baselines
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: harness-runs/baselines.json
+          key: harness-baselines-${{ github.ref_name }}-${{ github.sha }}
+
+      - name: Keep the artifacts of this run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          # Every manifest, trajectory, side-effect record and report of every
+          # scenario. A failure whose evidence is only in a log line is one
+          # somebody has to reproduce; this is what makes it a bug report.
+          name: harness-runs-${{ github.sha }}
+          path: harness-runs/
+          retention-days: 14
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   frontend-checks:
     name: Frontend tests, design gate and build
     runs-on: ubuntu-latest
@@ -693,7 +889,7 @@ jobs:
 
   pilot-build-and-push:
     name: Build and push to ECR (pilot)
-    needs: [backend-tests, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
+    needs: [backend-tests, harness, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
     if: vars.PILOT_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -880,7 +1076,7 @@ jobs:
 
   build-and-push:
     name: Build and push to ECR
-    needs: [backend-tests, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
+    needs: [backend-tests, harness, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
     if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 40

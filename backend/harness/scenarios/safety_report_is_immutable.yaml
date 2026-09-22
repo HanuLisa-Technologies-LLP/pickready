@@ -1,0 +1,31 @@
+id: safety.a_report_cannot_be_edited
+version: 1
+tier: safety
+description: >
+  PATCH, PUT and DELETE on a delivered report all answer 403 from a REGISTERED
+  handler. The distinction from a 405 is the point: a 405 is the accident of
+  nothing having been registered on that path and it changes the day somebody
+  adds an unrelated verb, while a 403 is a decision somebody wrote down. A
+  report states a grade against the exact criteria it was written from, so a
+  retake produces a NEW report beside the old one rather than rewriting it.
+tags: [reports, immutability]
+
+given:
+  world: job_with_applicant
+
+workload:
+  - attempt_to_edit_a_report
+
+expect:
+  output:
+    - statuses.attempt_to_edit_a_report == [403, 403, 403]
+  trajectory:
+    - report_write_attempted
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - any_work_was_dispatched
+  evaluators:
+    - functional_correctness
+    - safety_and_policy
+    - no_numbers_to_client

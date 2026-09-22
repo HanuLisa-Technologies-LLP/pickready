@@ -165,6 +165,58 @@ async def _seed(session, w: _World) -> None:
             {"i": str(uuid.uuid4()), "t": str(w.tenant), "sid": str(link),
              "h": uuid.uuid4().hex + uuid.uuid4().hex, "v": VECTOR},
         )
+    # ── What must SURVIVE, and one row that must not ─────────────────────────
+    # The billing fact and the consent record are the two things the C5
+    # reconciliation refused to delete and the ruling upheld: one answers a
+    # billing dispute and names no candidate content, and the other IS the
+    # legitimacy of this very deletion. They are seeded on the SUBJECT job, so
+    # they are inside the blast radius and have to survive it there rather
+    # than surviving by being somewhere else.
+    for link, job in (
+        (w.subject_link, w.subject_job),
+        (w.control_link, w.control_job),
+    ):
+        await session.execute(
+            text(
+                "INSERT INTO credit_ledger (id, tenant_id, event_type, "
+                "subunits_delta, job_candidate_link_id, idempotency_key) "
+                "VALUES (:i, :t, 'completed_assessment', -60, :l, :k)"
+            ),
+            {"i": str(uuid.uuid4()), "t": str(w.tenant), "l": str(link),
+             "k": f"closure-test-{link}"},
+        )
+    await session.execute(
+        text(
+            "INSERT INTO assessment_consents (id, tenant_id, candidate_id, "
+            "conversation_id, job_candidate_link_id, assessment_mode, "
+            "consent_status, consented_at, consent_version, "
+            "privacy_policy_version, terms_version) "
+            "VALUES (:i, :t, :c, :conv, :l, 'conversational', 'granted', "
+            "now(), 'v1', 'v1', 'v1')"
+        ),
+        {"i": str(uuid.uuid4()), "t": str(w.tenant), "c": str(w.candidate),
+         "conv": str(w.subject_conversation), "l": str(w.subject_link)},
+    )
+    # The recording ROW, which cascades from the conversation. It is seeded
+    # here to pin the foreign key that decides the purge ORDER: this row is
+    # the only thing in the database naming the S3 object, so a caller that
+    # deleted rows before objects would orphan the media permanently.
+    for conversation, link in (
+        (w.subject_conversation, w.subject_link),
+        (w.control_conversation, w.control_link),
+    ):
+        await session.execute(
+            text(
+                "INSERT INTO video_recordings (id, tenant_id, conversation_id, "
+                "candidate_id, job_candidate_link_id, status, kind, "
+                "s3_compressed_key, stored_at) "
+                "VALUES (:i, :t, :conv, :c, :l, 'ready', 'video_interview', "
+                ":key, now())"
+            ),
+            {"i": str(uuid.uuid4()), "t": str(w.tenant),
+             "conv": str(conversation), "c": str(w.candidate),
+             "l": str(link), "key": f"assessments/{link}.mp4"},
+        )
 
 
 async def _counts(session, w: _World) -> dict[str, tuple[int, int]]:
@@ -198,6 +250,21 @@ async def _counts(session, w: _World) -> dict[str, tuple[int, int]]:
         ),
         "links": await _pair(
             "SELECT COUNT(*) FROM job_candidate_links WHERE id = :x",
+            w.subject_link, w.control_link,
+        ),
+        "credit_ledger": await _pair(
+            "SELECT COUNT(*) FROM credit_ledger "
+            "WHERE job_candidate_link_id = :x",
+            w.subject_link, w.control_link,
+        ),
+        "consents": await _pair(
+            "SELECT COUNT(*) FROM assessment_consents "
+            "WHERE job_candidate_link_id = :x",
+            w.subject_link, w.control_link,
+        ),
+        "recordings": await _pair(
+            "SELECT COUNT(*) FROM video_recordings "
+            "WHERE job_candidate_link_id = :x",
             w.subject_link, w.control_link,
         ),
     }
@@ -258,6 +325,22 @@ def test_closure_erasure_deletes_the_subject_and_only_the_subject() -> None:
     assert after["chunks"][1] == 1
     # What the ruling keeps: both application rows survive.
     assert after["links"] == (1, 1)
+    # And the two records the reconciliation refused to delete, on the SUBJECT
+    # job, inside the blast radius. The billing fact answers a billing dispute
+    # and names no candidate content; the consent record is the legitimacy of
+    # the deletion itself, so destroying it would remove the evidence that the
+    # deletion was authorised.
+    assert after["credit_ledger"] == (1, 1)
+    assert after["consents"][0] == 1
+    # THE RECORDING ROW IS GONE, and that is not a defect, it is the foreign
+    # key that decides the purge ORDER. `video_recordings.conversation_id` is
+    # ON DELETE CASCADE, so this row, the ONLY thing in the database naming
+    # the stored mp4, disappears with the conversation. That is why
+    # `job_assessment_retention.purge_job` deletes the objects FIRST and calls
+    # this function only once the store has confirmed them gone.
+    # The CONTROL job's recording row survives, which is what makes the line
+    # above a statement about the cascade's scope rather than about nothing.
+    assert after["recordings"] == (0, 1)
     # The receipt counts what happened, honestly.
     assert receipt.reports_deleted == 1
     assert receipt.conversations_deleted == 1

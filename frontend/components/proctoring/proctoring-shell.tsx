@@ -35,7 +35,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { AnswerBehaviour, ProctoringBridge, ProctoringFieldHooks } from "@/lib/assessment/contracts";
 import { apiGet } from "@/lib/api";
-import { createSession, type SessionOut, type TerminationOut, type WarningOut } from "@/lib/proctoring/api";
+import {
+  createSession,
+  startSessionMedia,
+  type SessionMediaStartOut,
+  type SessionOut,
+  type TerminationOut,
+  type WarningOut,
+} from "@/lib/proctoring/api";
 import { parseClientConfig, type ProctoringClientConfig } from "@/lib/proctoring/config";
 import { SessionRuntime } from "@/lib/proctoring/session";
 import {
@@ -187,6 +194,21 @@ export function ProctoringShell({
         system_check: result.payload,
         face_descriptor: result.faceDescriptor,
       });
+      // The stored record of this session (owner ruling, 2026-09-22). Opened
+      // AFTER the monitoring session, because the proctoring gate is what
+      // authorizes it, and refused with a 409 for a video interview, which
+      // already records itself. A failure to open one NEVER blocks the
+      // assessment: the candidate answers, and the hiring team's dashboard
+      // says honestly that no recording arrived.
+      let mediaRecording: SessionMediaStartOut | null = null;
+      try {
+        mediaRecording = await startSessionMedia(linkId);
+      } catch (error) {
+        console.warn(
+          "assessment recording could not be opened: " +
+            (error instanceof Error ? error.message : "unknown")
+        );
+      }
       const started = new SessionRuntime(
         created,
         { camera: result.camera, microphone: result.microphone, inference: result.inference },
@@ -198,7 +220,8 @@ export function ProctoringShell({
           },
           onTermination: (termination: TerminationOut) => finish(termination.message),
           onSessionEnded: (message) => finish(message),
-        }
+        },
+        mediaRecording
       );
       // The media and the workers now belong to the runtime, which stops them.
       outcome.current = null;

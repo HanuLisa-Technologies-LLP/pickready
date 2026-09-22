@@ -76,6 +76,23 @@ class Candidate(Base, UUIDPKMixin, CreatedAtMixin):
     consent_final_warning_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    #: The INACTIVITY letter (migration 0108). A fourth stamp rather than a
+    #: reuse of the consent ones, because the two clocks are independent (C6)
+    #: and one letter must never latch the other's stage. Before it existed the
+    #: dormancy rule read one boolean and erased, with no warning at all.
+    dormancy_warning_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: The one-click renewal link, stored as a SHA-256 DIGEST and never as the
+    #: token itself, so a reader of this table cannot replay a link. Cleared by
+    #: the renewal, which is what makes it single use.
+    #: See `services/consent_renewal`.
+    consent_renewal_token_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    consent_renewal_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     #: Anything the candidate DID, or was sent, that means the platform is
     #: still working for them. Read through
     #: `consent_lifecycle.engagement_at_for` so the NULL rule cannot drift

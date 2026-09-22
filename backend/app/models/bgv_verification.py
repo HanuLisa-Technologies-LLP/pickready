@@ -68,6 +68,25 @@ RECRUITER_DECIDABLE: frozenset[str] = frozenset(
 DECIDED_STATUSES: frozenset[str] = RECRUITER_DECIDABLE
 
 
+# ── Delivery, which is a DIFFERENT QUESTION from status ──────────────────────
+#
+# `status` answers "what did the employer say". These answer "did the message
+# reach them at all", and conflating the two is what let a bounced request sit
+# at `pending` looking identical to one an HR team had simply not opened. The
+# day-3 chase then told the candidate their employer had not responded to a
+# letter nobody ever received, which sends them to argue with an innocent
+# person about an email that does not exist.
+
+DELIVERY_NOT_SENT = "not_sent"
+DELIVERY_SENT = "sent"
+DELIVERY_DELIVERED = "delivered"
+DELIVERY_BOUNCED = "bounced"
+
+DELIVERY_STATES: frozenset[str] = frozenset(
+    {DELIVERY_NOT_SENT, DELIVERY_SENT, DELIVERY_DELIVERED, DELIVERY_BOUNCED}
+)
+
+
 # The candidate-level states, DERIVED from the rows above and never stored.
 
 CANDIDATE_BGV_NOT_REQUIRED = "not_required"
@@ -171,3 +190,24 @@ class BGVVerification(Base, UUIDPKMixin, CreatedAtMixin):
     reminder_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+
+    # ── Delivery (migration 0114) ───────────────────────────────────────────
+    #: Where the outbound request got to, as the provider reported it. Written
+    #: by the SES event webhook through the `email_log.bgv_verification_id`
+    #: binding, never inferred from a recipient address.
+    delivery_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=DELIVERY_NOT_SENT,
+        server_default=DELIVERY_NOT_SENT,
+    )
+    #: WHEN THE THREE-DAY CLOCK IS ALLOWED TO START. The brief's window is
+    #: three days for the employer to act, and an employer cannot act on a
+    #: message still in the provider's retry queue. Under a transport that
+    #: reports no delivery events this stays NULL for ever, which is why
+    #: `bgv_delivery.clock_start` falls back to the send stamp EXPLICITLY
+    #: rather than leaving a credential that never expires.
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    bounced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The provider's own short reason, for the recruiter's screen. Bounded by
+    #: `_failure_reason`, which reads SES's structured fields rather than
+    #: dumping an event document that carries headers and a recipient list.
+    delivery_detail: Mapped[str | None] = mapped_column(Text)

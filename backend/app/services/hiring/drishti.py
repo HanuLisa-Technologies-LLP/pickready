@@ -27,12 +27,21 @@ THE TWO PROPERTIES THE 2026-09-09 REMOVAL DEMANDED, held here:
   removal deliberately kept alive with no supplier. Every clamp and refusal
   is recorded in provenance, the standing rule.
 
-THE STRUCTURED AI CONVERSATION is the critique loop: every sentence of
-every section is held to the observable-evidence bar by the SAME detector
-Bodha's SWOT quality rules and the model itself are held to
+THE STRUCTURED AI CONVERSATION lives in `hiring/drishti_conversation` and
+is a CAPTURE MECHANISM for this module and nothing more: it produces the
+same five strings the form produces, and hands them to the same save route,
+which calls the same `compile_profile`. There is no second compiler and no
+second artifact, which is what keeps the paragraph above structural rather
+than a matter of care. Both doors share this module's critique loop: every
+sentence of every section is held to the observable-evidence bar by the
+SAME detector Bodha's SWOT quality rules and the model itself are held to
 (`hiring/observable`), and each non-observable claim comes back as a probe
 asking for what somebody could actually watch happen. Deterministic and
 offline, because the guard matters most when the provider is down.
+
+WHAT REACHES A MODEL PROMPT is `prompt_context` and only `prompt_context`:
+derived from the compiled artifact, re-checked against the detector, and
+capped in lines and characters. Sutra's naming call is its one reader.
 """
 from __future__ import annotations
 
@@ -57,6 +66,16 @@ EMPHASIS_MULTIPLIER = 1.10
 #: than a second copy of the prose.
 MAX_CONTEXT_LINES = 12
 MAX_LINE_CHARS = 240
+
+#: The SECOND, tighter bound: what may reach a model prompt. Deliberately
+#: smaller than the artifact's own bound, because the two are protecting
+#: different things. `MAX_CONTEXT_LINES` keeps the stored artifact a summary;
+#: these keep the share of Sutra's naming prompt that is client-authored small
+#: enough that it cannot dominate the instruction above it. A budget in
+#: CHARACTERS as well as in lines, because twelve lines of 240 characters is a
+#: different prompt from twelve lines of thirty.
+PROMPT_CONTEXT_LINES = 8
+PROMPT_CONTEXT_CHARS = 1200
 
 
 @dataclass(frozen=True)
@@ -111,6 +130,26 @@ def sections_payload() -> list[dict[str, str]]:
 
 _SENTENCES = re.compile(r"[^.!?\n]+[.!?]?")
 
+#: Below this, a fragment is not a claim anybody could probe. "Yes." and a
+#: stray initial are not statements the detector should have an opinion about.
+MIN_SENTENCE_CHARS = 8
+
+
+def sentences(section_text: str) -> list[str]:
+    """The claims in one section, split the ONE way.
+
+    `critique`, `compile_profile` and the capture conversation all have to
+    agree about where one claim ends and the next begins, or a section reads
+    as three probes in one place and one long sentence in another. Splitting
+    it here once is the same argument `observable` makes for having one
+    detector rather than two copies.
+    """
+    return [
+        fragment
+        for match in _SENTENCES.finditer(section_text or "")
+        if len(fragment := match.group(0).strip()) >= MIN_SENTENCE_CHARS
+    ]
+
 
 def critique(section_text: str) -> list[str]:
     """The conversation's probes: one per non-observable claim.
@@ -119,14 +158,11 @@ def critique(section_text: str) -> list[str]:
     quality rules and the model's own bar cannot drift apart. An empty
     section returns no probes; absence is a real state.
     """
-    probes: list[str] = []
-    for match in _SENTENCES.finditer(section_text or ""):
-        sentence = match.group(0).strip()
-        if len(sentence) < 8:
-            continue
-        if not observable.is_observable(sentence):
-            probes.append(observable.rejection_message(sentence))
-    return probes
+    return [
+        observable.rejection_message(sentence)
+        for sentence in sentences(section_text)
+        if not observable.is_observable(sentence)
+    ]
 
 
 def compile_profile(
@@ -142,10 +178,8 @@ def compile_profile(
     """
     lines: list[str] = []
     for section in SECTIONS:
-        body = str(sections.get(section.key) or "")
-        for match in _SENTENCES.finditer(body):
-            sentence = match.group(0).strip()
-            if len(sentence) >= 8 and observable.is_observable(sentence):
+        for sentence in sentences(str(sections.get(section.key) or "")):
+            if observable.is_observable(sentence):
                 lines.append(f"{section.title}: {sentence}"[:MAX_LINE_CHARS])
             if len(lines) >= MAX_CONTEXT_LINES:
                 break
@@ -219,3 +253,104 @@ def emphasis_map(
         if re.search(pattern, haystack):
             out[clean] = EMPHASIS_MULTIPLIER
     return out
+
+
+def prompt_context(compiled: Mapping[str, Any] | None) -> list[str]:
+    """The ONLY Drishti text a model prompt is ever given.
+
+    THE C3 GUARANTEE, AT THE ONE PLACE IT COULD BE LOST. Sutra's naming call
+    decides what every candidate in this function is graded against, so what
+    reaches it has to be bounded three ways at once, and this function is
+    where all three are applied together:
+
+    * DERIVED, never raw. Its input is `compile_profile`'s own
+      `context_lines`, which are the observable sentences and nothing else.
+      `non_negotiables_text` is deliberately NOT reachable from here: it is
+      stored raw, and the whole reason that is safe is that it is only ever
+      word-looked-up against names the matrix already resolved
+      (`emphasis_map`). Putting it in a prompt would remove the property
+      that makes storing it raw defensible at all.
+    * RE-CHECKED against today's bar, not the bar the day it was compiled.
+      A stored artifact outlives the compiler that wrote it, and a detector
+      that only ever ran at write time is a detector an old row walks past.
+      The section title prefix is stripped before the check so the words
+      being judged are the client's, not ours.
+    * CAPPED, in lines and in characters, so a long profile cannot crowd out
+      the instruction above it.
+
+    An absent profile, and a profile whose every sentence fails the bar,
+    both return `[]`, which is what keeps the enhancement-layer contract
+    true for the PROMPT as well as for the weights: no lines, no key in the
+    payload, byte-identical request.
+    """
+    if not compiled:
+        return []
+    raw = compiled.get("context_lines")
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    spent = 0
+    for entry in raw:
+        line = str(entry).strip()[:MAX_LINE_CHARS]
+        if not line:
+            continue
+        # `compile_profile` writes "<Section title>: <sentence>". Judge the
+        # sentence the client wrote, not the label this module added to it.
+        _, _, sentence = line.partition(": ")
+        if not observable.is_observable(sentence or line):
+            continue
+        if spent + len(line) > PROMPT_CONTEXT_CHARS:
+            break
+        out.append(line)
+        spent += len(line)
+        if len(out) >= PROMPT_CONTEXT_LINES:
+            break
+    return out
+
+
+# ── The functional-head binding (migration 0115) ────────────────────────────
+
+#: Claim the profile for the caller: a new function, a profile nobody holds,
+#: or a change of head the client has explicitly confirmed. Stamps the
+#: binding and is audited under its own action.
+BIND = "bind"
+#: The caller is already the head of record. Write, change nothing else.
+KEEP = "keep"
+#: Somebody else's function, and no confirmation. 409, naming them.
+REFUSE = "refuse"
+
+
+def resolve_head_binding(
+    *,
+    current_head_id: uuid.UUID | None,
+    caller_id: uuid.UUID,
+    exists: bool,
+    change_confirmed: bool,
+) -> str:
+    """Who owns this function's profile after this write, as a pure function.
+
+    PULLED OUT OF THE HANDLER ON PURPOSE. The brief's rule is one sentence
+    ("a functional-head change is the CLIENT's trigger, never auto-detected")
+    and getting it wrong has exactly one visible symptom, which is nothing at
+    all: the profile saves, the head silently becomes whoever opened the
+    form, and the function's strategic direction is now attributed to
+    somebody who never set it. A rule whose failure is invisible has to be
+    testable without a database, or the only thing that ever exercises it is
+    production.
+
+    The three answers and why each is the answer:
+
+    * A profile that does not exist yet is CLAIMED. There is nobody to take
+      it from.
+    * A profile whose head is NULL is claimed too, with no confirmation
+      asked. That is a row from before this binding existed whose author has
+      since been deleted, and a refusal naming nobody is a dead end.
+    * A profile held by somebody else is REFUSED unless the caller confirmed
+      the change. Confirmation is the client's trigger; its absence is not a
+      permission problem, which is why the refusal is a 409 and not a 403.
+    """
+    if not exists or current_head_id is None:
+        return BIND
+    if current_head_id == caller_id:
+        return KEEP
+    return BIND if change_confirmed else REFUSE

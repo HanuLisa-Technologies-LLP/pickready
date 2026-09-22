@@ -1,0 +1,29 @@
+id: smoke.service_answers
+version: 1
+tier: smoke
+description: >
+  The service answers both of its probes. `/health/live` is the load balancer's
+  liveness check and `/health` is the deeper readiness one, and they are
+  deliberately not the same question: a task with no Redis refuses every
+  assessment turn while still being a perfectly good process to keep running.
+tags: [health, smoke]
+
+given:
+  world: no_state
+
+workload:
+  - probe_health
+
+expect:
+  output:
+    - status.probe_health == [200, 200]
+  trajectory:
+    - health_probed
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - a_model_credential_was_configured
+  evaluators:
+    - functional_correctness
+    - safety_and_policy
+    - latency

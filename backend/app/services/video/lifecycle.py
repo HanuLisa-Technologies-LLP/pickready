@@ -8,6 +8,14 @@ smaller machine.
     recording -> uploading -> uploaded -> processing -> compressing
                                                      -> storing -> ready
 
+A `proctored_session` recording (owner ruling, 2026-09-22) takes the SHORT
+edge `uploaded -> compressing` and never enters `processing`. That edge is not
+a convenience: `processing` is where the audio is extracted, transcribed and
+segmented into the records the scorers read, so a monitoring recording that
+could reach it would be one call away from being graded. The state it cannot
+enter is the enforcement, exactly as the missing `sourced -> shortlisted` edge
+is in `hiring_pipeline`.
+
 Failure states and where they lead back to on retry:
 
     upload_failed          the candidate re-uploads (client-side retry only;
@@ -58,7 +66,9 @@ _ALLOWED: dict[str, frozenset[str]] = {
     RECORDING: frozenset({UPLOADING, UPLOAD_FAILED}),
     UPLOADING: frozenset({UPLOADED, UPLOAD_FAILED}),
     UPLOAD_FAILED: frozenset({UPLOADING}),
-    UPLOADED: frozenset({PROCESSING}),
+    # PROCESSING for an interview recording, COMPRESSING for a proctored
+    # session recording, which has no transcript to build.
+    UPLOADED: frozenset({PROCESSING, COMPRESSING}),
     PROCESSING: frozenset({COMPRESSING, PROCESSING_FAILED, TRANSCRIPTION_FAILED}),
     PROCESSING_FAILED: frozenset({UPLOADED}),
     TRANSCRIPTION_FAILED: frozenset({UPLOADED}),

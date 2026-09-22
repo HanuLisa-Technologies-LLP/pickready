@@ -796,3 +796,107 @@ DEFAULT_PERMISSION_MATRIX[Role.hiring_manager].update(
 DEFAULT_PERMISSION_MATRIX[Role.interview_manager].update(
     {VIEW_INTELLIGENCE_DASHBOARDS: False}
 )
+
+
+# ── Drishti, the function's strategic profile (vivekium feature 1, C3) ───────
+#
+# WHY THIS IS ITS OWN CAPABILITY AND NOT `EDIT_COMPANY_PROFILE`
+# --------------------------------------------------------------
+# The brief names the audience in one line and excludes one role by name:
+# "MD, CEO, Functional Heads (CTO, CFO, COO). NOT the Hiring Manager." That
+# exclusion is a product rule, so it has to be expressible, and
+# `EDIT_COMPANY_PROFILE` cannot express it: every client-side staff role holds
+# it (see `_STAFF_OPERATIONAL`), including the Hiring Manager. Reusing it would
+# have made the brief's one explicit exclusion unstatable except as a role
+# branch, which rule 2 forbids.
+#
+# The Recruiter is refused for the complementary reason rather than by
+# analogy: they run a pipeline against criteria somebody else set, and a
+# function's strategic direction is not a pipeline act. Where a functional
+# head genuinely sits in a narrower seat, the per-user overlay
+# (`users.permissions_json`) pins that ONE person, which is the mechanism this
+# module already documents for exactly this case and is better than widening
+# the role default for everybody who shares their seat.
+#
+# Seeded by migration 0115 (a capability constant is only half a change), and
+# compared against the migrated database by tests/test_capability_seed_parity.
+AUTHOR_DRISHTI_PROFILE = "author_drishti_profile"
+
+# Appended, never interleaved: resolve_capability_set returns capabilities in
+# ALL_CAPABILITIES order and an existing response's field order must not
+# shuffle. It has to be in this list for a second reason here: /auth/me
+# returns exactly this list, and the customer portal's navigation asks
+# `hasCapability` for it, so a name missing from here is a page the client is
+# told does not exist.
+ALL_CAPABILITIES.append(AUTHOR_DRISHTI_PROFILE)
+
+DEFAULT_PERMISSION_MATRIX[Role.client].update({AUTHOR_DRISHTI_PROFILE: True})
+# hr_manager receives the SAME grant as recruitment_manager, the standing rule
+# above: the legacy role ranks beside Recruitment Manager, and tests/test_rbac
+# pins the two organisation-wide roles as identical grant-for-grant.
+for _role in (Role.recruitment_manager, Role.hr_manager):
+    DEFAULT_PERMISSION_MATRIX[_role].update({AUTHOR_DRISHTI_PROFILE: True})
+# Explicit False rather than an absent key: an absent row and a false row deny
+# identically, and the explicit row makes the brief's own exclusion observable
+# in the template instead of being an omission somebody later reads as an
+# oversight and "fixes".
+for _role in (Role.recruiter, Role.hiring_manager, Role.interview_manager):
+    DEFAULT_PERMISSION_MATRIX[_role].update({AUTHOR_DRISHTI_PROFILE: False})
+
+
+# ── The assessment dispute path (change request 22, owner ruling 2026-09-22) ─
+#
+# WHY A JOB CLOSURE NEEDED A CAPABILITY AT ALL
+# ----------------------------------------------
+# Closing a job now WITHHOLDS its assessment records from everybody rather
+# than deleting them on the spot (see `services/job_assessment_retention` for
+# the reversal and its reason). Withholding them from everybody is only
+# defensible if there is one narrow, named, audited way back in for the thirty
+# days they are retained, and "narrow" is a claim a capability can make and a
+# role branch cannot.
+#
+# WHY IT IS NOT `VIEW_REVIEW_SCREEN`
+# ------------------------------------
+# Every customer-side role holds that one, including the Hiring Manager and
+# the Interview Manager. Reusing it would mean closure withheld the data from
+# nobody, which is the whole feature. The two capabilities also answer
+# different questions: `view_review_screen` asks may this person read a live
+# candidate, and this asks may this person reopen a record the candidate was
+# told had been taken out of use.
+#
+# WHY ONLY THE CLIENT SUPER ADMIN BY DEFAULT
+# --------------------------------------------
+# A dispute is a contractual matter between the customer and Vivekium, not a
+# pipeline act, and the Client Super Admin is the one customer-side role that
+# already carries the tenant's contractual decisions (billing, compliance
+# documents). The three operational roles are refused with an explicit
+# allowed=false row rather than an absent one: both deny, and only the
+# explicit row makes the refusal observable in the template instead of looking
+# like an omission somebody later "fixes". Where a specific person genuinely
+# runs disputes, the per-user overlay (`users.permissions_json`) pins that ONE
+# person, which is the mechanism this module already documents for exactly
+# this case.
+#
+# It is deliberately absent from RBAC_INVARIANTS: `invariant_for` returns
+# ALLOW for a capability the specification does not speak to, and RBAC 24 has
+# no row for a dispute retrieval. The grant engine decides it alone.
+#
+# Seeded by migration 0112 (a capability constant is only half a change), and
+# compared against the migrated database by tests/test_capability_seed_parity.
+RETRIEVE_DISPUTED_ASSESSMENT = "retrieve_disputed_assessment"
+
+# Appended, never interleaved: resolve_capability_set returns capabilities in
+# ALL_CAPABILITIES order and an existing response's field order must not
+# shuffle. It must be in this list for the second reason too: /auth/me returns
+# exactly this list and the job page asks `hasCapability` for it, so a name
+# missing from here is a control the client is told does not exist.
+ALL_CAPABILITIES.append(RETRIEVE_DISPUTED_ASSESSMENT)
+
+DEFAULT_PERMISSION_MATRIX[Role.client].update({RETRIEVE_DISPUTED_ASSESSMENT: True})
+# hr_manager receives the SAME grant as recruitment_manager, the standing rule
+# above: the legacy role ranks beside Recruitment Manager, and tests/test_rbac
+# pins the two organisation-wide roles as identical grant-for-grant.
+for _role in (Role.recruitment_manager, Role.hr_manager):
+    DEFAULT_PERMISSION_MATRIX[_role].update({RETRIEVE_DISPUTED_ASSESSMENT: False})
+for _role in (Role.recruiter, Role.hiring_manager, Role.interview_manager):
+    DEFAULT_PERMISSION_MATRIX[_role].update({RETRIEVE_DISPUTED_ASSESSMENT: False})

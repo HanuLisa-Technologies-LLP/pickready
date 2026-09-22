@@ -143,6 +143,14 @@ PUBLIC_BY_DESIGN: dict[str, str] = {
     # handler extracts from the recipient address or the quoted body; a message
     # carrying no valid token reaches nothing.
     "/inbound-email": "signed token inside the message",
+    # The renewal link in the six-month consent letter (feature 8). The token
+    # is single use (renewal clears the stored hash), short lived, stored only
+    # as a SHA-256 hash, bound to one candidate, and accepted by this route
+    # and NOTHING else: it mints no session, identifies the holder to nothing,
+    # and its only effect is that a profile which was going to be deleted is
+    # not. A session dependency would defeat it, because the reader is by
+    # definition somebody who has not signed in for six months.
+    "/consent/renew": "single-use renewal token, keeps a profile and nothing else",
 }
 
 #: Routes that mutate ONLY the caller's own record.

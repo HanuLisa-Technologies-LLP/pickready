@@ -117,9 +117,8 @@ async def auto_open_verifications(
     """
     from datetime import datetime, timezone
 
-    from app.core.config import get_settings
-    from app.models.bgv_verification import VERIFICATION_PENDING
-    from app.services import bgv_agent, bgv_form
+    from app.models.bgv_verification import DELIVERY_SENT, VERIFICATION_PENDING
+    from app.services import bgv_agent, bgv_delivery, bgv_form
     from app.workers.dispatch import dispatch
 
     employment = (
@@ -158,8 +157,6 @@ async def auto_open_verifications(
     )
     opened = 0
     now = datetime.now(timezone.utc)
-    frontend = get_settings().frontend_url.rstrip("/")
-    ttl = get_settings().verification_link_ttl_days
     for tenant in tenants:
         exists = (
             await session.execute(
@@ -178,8 +175,10 @@ async def auto_open_verifications(
             text(
                 "INSERT INTO bgv_verifications (id, tenant_id, candidate_id, "
                 "candidate_employment_id, status, form_token, "
-                "form_token_issued_at, first_sent_at, created_at) "
-                "VALUES (:id, :tid, :cid, :eid, :st, :tok, :at, :at, now())"
+                "form_token_issued_at, first_sent_at, delivery_status, "
+                "created_at) "
+                "VALUES (:id, :tid, :cid, :eid, :st, :tok, :at, :at, "
+                ":delivery, now())"
             ),
             {
                 "id": str(verification_id),
@@ -189,6 +188,7 @@ async def auto_open_verifications(
                 "st": VERIFICATION_PENDING,
                 "tok": token,
                 "at": now,
+                "delivery": DELIVERY_SENT,
             },
         )
         facts = bgv_agent.FactBlock(
@@ -202,18 +202,37 @@ async def auto_open_verifications(
         )
         body = (
             f"{bgv_agent.deterministic_body(facts)}\n\n"
-            "To complete this verification in under two minutes, use the "
-            "secure form below. The link is unique to this request, works "
-            f"once, and expires in {ttl} days:\n"
-            f"{frontend}/verify-employment/{token}"
+            f"{bgv_delivery.form_link_paragraph(token)}"
+        )
+        subject = bgv_agent.subject_for(facts)
+        # The corrected address when the candidate has replaced one, so an
+        # employer appended after a bounce is not asked at the mailbox that
+        # already refused a message about them.
+        recipient = await bgv_delivery.effective_hr_email(session, employment_id)
+        if not recipient:  # pragma: no cover - hr_email is NOT NULL
+            continue
+        # BOUND TO THIS VERIFICATION. Without it a bounce on this message has
+        # nothing to resolve through, and the candidate is never told which
+        # employer to correct.
+        email_log_id = await bgv_delivery.record_outbound(
+            session,
+            tenant_id=uuid.UUID(str(tenant["tenant_id"])),
+            verification_id=verification_id,
+            candidate_id=candidate_id,
+            recipient=recipient,
+            subject=subject,
+            body=body,
+            generated_by_ai=False,
+            edited_by_human=False,
         )
         dispatch(
             "pickready.send_email",
             args=[
                 str(tenant["tenant_id"]),
-                employment["hr_email"],
+                recipient,
                 "bgv_verification",
-                {"subject": bgv_agent.subject_for(facts), "body": body},
+                {"subject": subject, "body": body},
+                str(email_log_id),
             ],
         )
         opened += 1

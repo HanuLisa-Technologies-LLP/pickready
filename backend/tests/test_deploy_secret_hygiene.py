@@ -515,6 +515,18 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
     "/api/v1/companies/invites/{token}": "an invite token names one pending invitation.",
     "/api/v2/companies/invites/{token}": "the same handler under the v2 prefix.",
     "/api/v1/portal/outreach/{token}": "an outreach token names one candidate link.",
+    "/api/v1/portal/consent/renew": (
+        "the one-click link in the six-month consent renewal letter (feature "
+        "8). The token is the authorization: single use, because renewal "
+        "clears the stored hash; short lived, because the expiry is checked "
+        "inside the lookup statement; bound to one candidate, because the "
+        "lookup is by hash on that row; and stored only as a SHA-256 digest, "
+        "so a reader of the table cannot replay it. It authorises exactly one "
+        "act and is accepted nowhere else, it mints no session, and it reads "
+        "nothing back. Requiring a cookie would defeat the purpose: the "
+        "reader is somebody who has not signed in for six months and whose "
+        "profile is about to be deleted."
+    ),
     "/api/v1/bgv/form/{token}": (
         "the employer HR checkbox form (vivekium feature 4). The token is "
         "minted per verification, single-use, and expires in "

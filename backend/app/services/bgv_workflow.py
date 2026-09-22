@@ -58,6 +58,10 @@ AUDIT_EMAIL_FAILED = "bgv_email_failed"
 AUDIT_RESPONSE_RECEIVED = "bgv_response_received"
 AUDIT_FORM_SUBMITTED = "bgv_form_submitted"
 AUDIT_HISTORY_APPENDED = "bgv_history_appended"
+#: A candidate replaced an HR address a provider refused. Recorded with BOTH
+#: addresses MASKED: the audit log answers "who changed what, and when", and a
+#: third party's full contact detail is not a fact it needs to carry to do that.
+AUDIT_HR_EMAIL_CORRECTED = "bgv_hr_email_corrected"
 AUDIT_MARKED_VERIFIED = "bgv_marked_verified"
 AUDIT_MARKED_NOT_VERIFIED = "bgv_marked_not_verified"
 AUDIT_SELECTION_BLOCKED = "bgv_selection_blocked"

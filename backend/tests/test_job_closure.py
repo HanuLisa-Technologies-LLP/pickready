@@ -264,26 +264,9 @@ async def _close(monkeypatch, job, reason=None):
     async def _fake_invalidate(job_id):
         calls["invalidated"] = job_id
 
-    async def _fake_closure_erasure(session, *, job_id):
-        from app.services import erasure
-
-        calls["erased_job"] = job_id
-        return erasure.JobClosureReceipt(
-            job_id=job_id,
-            erased_at=datetime.now(timezone.utc),
-            reports_deleted=0,
-            evaluations_deleted=0,
-            conversations_deleted=0,
-            questions_deleted=0,
-            chunks_deleted=0,
-        )
-
     monkeypatch.setattr(jobs_api, "audit", _fake_audit)
     monkeypatch.setattr(jobs_api, "_get_visible_job", _fake_visible)
     monkeypatch.setattr(jobs_api, "_invalidate_public_job", _fake_invalidate)
-    monkeypatch.setattr(
-        jobs_api.erasure, "job_closure_erasure", _fake_closure_erasure
-    )
     monkeypatch.setattr(
         jobs_api, "get_settings",
         lambda: SimpleNamespace(frontend_url="https://readypick.ai"),
@@ -324,30 +307,59 @@ async def test_closing_stamps_the_moment_and_records_the_reason(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_closing_erases_the_jobs_assessment_data(monkeypatch) -> None:
-    """Vivekium C5 (owner-ruled final): the closure IS the deletion trigger.
+async def test_closing_schedules_the_deletion_and_deletes_nothing_now(
+    monkeypatch,
+) -> None:
+    """Change request 22 (owner ruling 2026-09-22), reversing vivekium C5.
 
-    The erasure runs in the close transaction against THIS job, its receipt
-    is audited under its own action, and the job_closed audit still follows.
-    `test_job_closure_erasure.py` proves what the SQL actually deletes; this
-    proves the route cannot close without erasing.
+    Closure used to be the deletion trigger and this test used to assert that
+    it was. It no longer is: the close transaction stamps a due date thirty
+    days out and deletes nothing, because closure is terminal with no reopen
+    and an irreversible inline delete left a misclick or a later dispute with
+    nothing to examine.
+
+    Two halves, and the second is the one worth keeping. The due date is
+    stamped from `closed_at` rather than from a second clock read, so the
+    promise and the act it was made about cannot land on different days at
+    midnight. And `job_closure_erasure` is not called AT ALL: the assertion is
+    on the real function through a spy, not on a stub that would have passed
+    whatever the route did.
     """
-    from app.services import erasure
+    from app.services import erasure, job_assessment_retention
+
+    erased: list = []
+
+    async def _spy(session, *, job_id):
+        erased.append(job_id)
+        raise AssertionError("closing a job must not erase anything")
+
+    monkeypatch.setattr(erasure, "job_closure_erasure", _spy)
 
     job = _closable_job()
     out, calls = await _close(monkeypatch, job, reason="Filled.")
 
-    assert calls["erased_job"] == job.id
+    assert erased == []
+    assert job.assessment_purged_at is None
+    assert job.assessment_purge_due_at == job_assessment_retention.purge_due_at(
+        job.closed_at
+    )
+    # Thirty days is the owner's number, asserted against the stamp rather
+    # than against the constant that produced it.
+    assert (job.assessment_purge_due_at - job.closed_at) == timedelta(days=30)
+
     actions = [entry["action"] for entry in calls["audits"]]
-    assert erasure.ACTION_JOB_ASSESSMENT_ERASED in actions
-    assert actions.index(erasure.ACTION_JOB_ASSESSMENT_ERASED) < actions.index(
-        "job_closed"
-    )
-    erased = next(
+    assert job_assessment_retention.ACTION_PENDING_DELETION in actions
+    assert actions.index(
+        job_assessment_retention.ACTION_PENDING_DELETION
+    ) < actions.index("job_closed")
+    pending = next(
         entry for entry in calls["audits"]
-        if entry["action"] == erasure.ACTION_JOB_ASSESSMENT_ERASED
+        if entry["action"] == job_assessment_retention.ACTION_PENDING_DELETION
     )
-    assert erased["metadata"]["job_id"] == str(job.id)
+    assert pending["metadata"]["state"] == (
+        job_assessment_retention.STATE_PENDING_DELETION
+    )
+    assert pending["metadata"]["days_remaining"] == 30
 
 
 @pytest.mark.asyncio

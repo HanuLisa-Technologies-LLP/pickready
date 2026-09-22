@@ -995,24 +995,60 @@ def is_refusal_finish_reason(finish_reason: str | None) -> bool:
 #
 # Keyed by MODEL, not by provider, because with one vendor the model is the only
 # axis on which price varies.
+#
+# `cached_prompt` IS A THIRD, OPTIONAL KEY, AND NEITHER ROW CARRIES ONE.
+# --------------------------------------------------------------------
+# Chat Completions applies prompt caching automatically to a long identical
+# prefix and reports the hit as `usage.prompt_tokens_details.cached_tokens`,
+# which the router now reads. A cached input token is normally billed at a
+# fraction of an uncached one, so pricing it separately is the arithmetic that
+# would turn that count into a saving.
+#
+# The rate is deliberately ABSENT rather than guessed, and the two rows above
+# say why: no published price sheet has been read for either model id, so the
+# uncached rates are already carried forward from the previous roster and a
+# cache DISCOUNT invented on top of them would be a second unverified number
+# multiplying the first. `estimate_cost_usd` therefore prices a cached token at
+# the full uncached rate, which is the SAFE direction: the estimate can only
+# over-state the bill, never under-state it. The cached COUNT is recorded in
+# full either way, so the day a rate is confirmed the saving becomes a one-line
+# addition here and every historical row can be repriced from what it stored.
 TOKEN_PRICES_USD_PER_MILLION: dict[str, dict[str, float]] = {
     MODEL_TERRA: {"prompt": 3.00, "completion": 15.00},
     MODEL_LUNA: {"prompt": 1.00, "completion": 5.00},
 }
 
 
-def estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+def estimate_cost_usd(
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    *,
+    cached_prompt_tokens: int = 0,
+) -> float:
     """Estimated list-price cost of one call, in USD.
 
     Returns 0.0 for an unpriced model. Callers that need to distinguish "free"
     from "unknown" should check `is_priced` -- a missing price must never read
     as a free call.
+
+    `cached_prompt_tokens` is a SUBSET of `prompt_tokens`, not an addition to
+    it: the vendor reports the cache hit inside the prompt total. It is priced
+    at the `cached_prompt` rate when the table carries one and at the ordinary
+    prompt rate when it does not, so with today's table this argument changes
+    no number at all and the function is byte-identical to its previous
+    behaviour for every existing caller. `cached_input_price_known` is how a
+    reader tells "no saving applied" from "no saving available".
     """
     prices = TOKEN_PRICES_USD_PER_MILLION.get(model)
     if not prices:
         return 0.0
+    prompt_rate = prices.get("prompt", 0.0)
+    cached = max(0, min(int(cached_prompt_tokens), int(prompt_tokens)))
+    uncached = int(prompt_tokens) - cached
     return (
-        prompt_tokens * prices.get("prompt", 0.0)
+        uncached * prompt_rate
+        + cached * prices.get("cached_prompt", prompt_rate)
         + completion_tokens * prices.get("completion", 0.0)
     ) / 1_000_000
 
@@ -1020,6 +1056,18 @@ def estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) ->
 def is_priced(model: str) -> bool:
     """True when a price is on file, so a 0.0 can be read correctly."""
     return model in TOKEN_PRICES_USD_PER_MILLION
+
+
+def cached_input_price_known(model: str) -> bool:
+    """True when a SEPARATE cached-input rate is on file for this model.
+
+    False for every model today, and that is a statement about the price table
+    rather than about the vendor. A reader of a cost record needs it to tell
+    the two readings apart: a large cached count beside an unchanged estimate
+    means the saving is real and not yet priced, which is very different from
+    the cache never having been hit.
+    """
+    return "cached_prompt" in TOKEN_PRICES_USD_PER_MILLION.get(model, {})
 
 
 # ── Cost ceilings (RPN-AI-UP-001 W4.7) ───────────────────────────────────────

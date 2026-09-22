@@ -150,6 +150,16 @@ TOKEN_TYPE_OUTPUT = gen_ai_attributes.GenAiTokenTypeValues.COMPLETION.value
 #: not define is the kind of thing a future collector rejects or a future
 #: convention collides with.
 ATTR_TASK_TYPE = "readypick.task_type"
+#: The vendor's reported prompt-cache hit, a SUBSET of the input tokens.
+#:
+#: Prefixed rather than folded into `gen_ai.*` for the reason stated above: the
+#: semconv package pinned here defines no cached-token attribute, and emitting
+#: a `gen_ai.`-prefixed name it does not define is exactly the thing a future
+#: collector rejects. It is SPAN-ONLY and deliberately absent from the metric
+#: allowlist below: it is a token count rather than a dimension, so putting it
+#: on a histogram's attributes would multiply the cardinality by an unbounded
+#: number for no query anybody would write.
+ATTR_CACHED_INPUT_TOKENS = "readypick.cached_input_tokens"
 ATTR_PROMPT_VERSION = "readypick.prompt_version"
 ATTR_PROMPT_DIGEST = "readypick.prompt_digest"
 ATTR_TENANT_HASH = "readypick.tenant_hash"
@@ -177,6 +187,7 @@ _ALLOWED_SPAN_ATTRIBUTES = frozenset(
         ATTR_RESPONSE_FINISH_REASONS,
         ATTR_ERROR_TYPE,
         ATTR_TASK_TYPE,
+        ATTR_CACHED_INPUT_TOKENS,
         ATTR_PROMPT_VERSION,
         ATTR_PROMPT_DIGEST,
         ATTR_TENANT_HASH,
@@ -396,18 +407,31 @@ class GenAiSpan:
         self._started = started
 
     def record_usage(
-        self, *, input_tokens: int | None = None, output_tokens: int | None = None
+        self,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cached_input_tokens: int | None = None,
     ) -> None:
         """Put the token counts on the span and into the usage histogram.
 
         Recorded as two points on ONE histogram distinguished by
         `gen_ai.token.type`, which is what the convention specifies. Two
         separate instruments would be a second name for one measurement.
+
+        `cached_input_tokens` is the vendor's reported prompt-cache hit and is
+        a SUBSET of `input_tokens`, so it is never added to the histogram: the
+        same tokens would then be counted twice and every input-token total in
+        every dashboard would silently inflate. It is a span attribute only,
+        and None (the response said nothing about caching) leaves the attribute
+        off the span entirely rather than writing a zero somebody would read as
+        a measured miss.
         """
         attributes = _filter(
             {
                 ATTR_USAGE_INPUT_TOKENS: input_tokens,
                 ATTR_USAGE_OUTPUT_TOKENS: output_tokens,
+                ATTR_CACHED_INPUT_TOKENS: cached_input_tokens,
             },
             _ALLOWED_SPAN_ATTRIBUTES,
         )
@@ -488,7 +512,10 @@ _active_span: contextvars.ContextVar["GenAiSpan | None"] = contextvars.ContextVa
 
 
 def record_usage_on_active_span(
-    *, input_tokens: int | None = None, output_tokens: int | None = None
+    *,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cached_input_tokens: int | None = None,
 ) -> bool:
     """Report token counts against whatever span is open on this task.
 
@@ -500,7 +527,11 @@ def record_usage_on_active_span(
     span = _active_span.get()
     if span is None:
         return False
-    span.record_usage(input_tokens=input_tokens, output_tokens=output_tokens)
+    span.record_usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_input_tokens=cached_input_tokens,
+    )
     return True
 
 

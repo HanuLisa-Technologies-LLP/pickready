@@ -1,0 +1,47 @@
+id: safety.no_score_reaches_a_client_surface
+version: 1
+tier: safety
+description: >
+  A recruiter reads the candidate table for a job with a full pool, and the
+  candidate reads their own board, applications and Updates feed. No score,
+  percentage, rank or band index reaches any of those payloads. The one
+  sanctioned exception is the Executive Profile Match Score, `match_percent`,
+  owner-ruled on 2026-09-18 and pinned at exactly one field: the sweep allows
+  that name and nothing else, so a second numeric field appearing on the
+  recruiter table fails here rather than shipping.
+tags: [rule-1, no-numbers, serialisation]
+
+given:
+  world: ranked_pool
+  overrides:
+    pool.size: 12
+
+workload:
+  # THE CANDIDATE'S OWN SURFACES FIRST. A workload stops at the first step it
+  # cannot continue past, so leading with the recruiter table would throw away
+  # every candidate-side payload the moment that one route broke, and the
+  # candidate's surfaces are the ones this rule most exists to protect.
+  - read_the_job_board
+  - read_applications
+  - read_updates_feed
+  - read_candidate_table
+
+expect:
+  output:
+    - status.read_candidate_table == 200
+    - status.read_the_job_board == 200
+    - status.read_applications == 200
+    - status.read_updates_feed == 200
+  trajectory:
+    - job_board_read
+    - applications_read
+    - updates_feed_read
+    - candidate_table_read
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - an_automatic_rejection_occurred
+  evaluators:
+    - functional_correctness
+    - no_numbers_to_client
+    - safety_and_policy

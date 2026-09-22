@@ -324,6 +324,14 @@ async def firebase_session(
         session.add(user)
         await session.flush()
         from app.models.candidate import Candidate
+        # NO CONSENT IS WRITTEN HERE, DELIBERATELY. Vivekium feature 6 asks
+        # for Stage A "at registration, before candidate profile creation
+        # completes", and this is a Firebase sign-in: the candidate has seen
+        # no consent wording and ticked nothing, so a row written here would
+        # record an agreement that never happened. Profile creation COMPLETES
+        # at PUT /portal/me/profile-form, which is where the items are shown,
+        # ticked individually and stamped, and which refuses to report a
+        # profile complete while either of them is outstanding.
         session.add(Candidate(
             tenant_id=None, user_id=user.id, email=user.email, phone=user.phone,
             full_name=user.full_name,

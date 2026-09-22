@@ -85,7 +85,7 @@ from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
 from app.prompts import fragments, registry
-from app.services import agent_loop, answer_quality, llm_router
+from app.services import agent_loop, answer_quality, llm_router, prompt_cache
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,7 @@ __all__ = [
     "COVERAGE_WEAK",
     "MAX_FOLLOW_UPS",
     "MAX_FOLLOW_UPS_PER_QUESTION",
+    "STOP_CONDITIONS",
     "STOP_EVERY_DIMENSION_COVERED",
     "STOP_EVIDENCE_SUFFICIENT",
     "STOP_FLOOR_REACHED",
@@ -648,23 +649,53 @@ async def _deliver_compose(state: _DeliverState) -> _DeliverState:
     generate = (state.get("mode") or MODE_REWORD) == MODE_GENERATE
     if generate:
         system = _GENERATE_SYSTEM
-        payload = {
-            "competency_to_probe": state.get("competency"),
-            "what_it_means": state.get("competency_hint") or "",
-            "job_description": (state.get("jd_excerpt") or "")[:2500],
-            "candidate_resume": (state.get("resume_excerpt") or "")[:2500],
-            "conversation_so_far": _recent(state.get("transcript")),
-            # Named explicitly so the model can avoid repeating ground. Asking
-            # the same thing twice is the single most obvious tell that an
-            # interviewer is not listening.
-            "already_asked": list(state.get("asked_before") or [])[-20:],
-        }
+        # THE FIELDS AND THEIR VALUES ARE UNCHANGED; ONLY THE ORDER MOVED.
+        #
+        # This payload used to open with `competency_to_probe`, which is the
+        # most volatile thing in it, followed by the job description and the
+        # resume, which do not change for the whole of a candidate's
+        # conversation. Chat Completions caches a long IDENTICAL PREFIX and
+        # reports the hit in `usage.prompt_tokens_details.cached_tokens`; a
+        # body that diverges in its first field shares no prefix with anything,
+        # so the JD and the resume were being re-read at full price on every
+        # single turn of every interview.
+        #
+        # `prompt_cache.ordered_fields` writes the stable segments first and
+        # the per-turn segment last. It is not a rewrite of the prompt: the
+        # same six keys carry the same six values, and the only thing a model
+        # sees differently is which order they arrive in.
+        payload = prompt_cache.ordered_fields(
+            {
+                "job_description": {
+                    "job_description": (state.get("jd_excerpt") or "")[:2500]
+                },
+                "candidate": {
+                    "candidate_resume": (state.get("resume_excerpt") or "")[:2500]
+                },
+                "turn": {
+                    "competency_to_probe": state.get("competency"),
+                    "what_it_means": state.get("competency_hint") or "",
+                    "conversation_so_far": _recent(state.get("transcript")),
+                    # Named explicitly so the model can avoid repeating ground.
+                    # Asking the same thing twice is the single most obvious
+                    # tell that an interviewer is not listening.
+                    "already_asked": list(state.get("asked_before") or [])[-20:],
+                },
+            }
+        )
     else:
         system = _DELIVER_SYSTEM
-        payload = {
-            "question_to_ask": state.get("question"),
-            "conversation_so_far": _recent(state.get("transcript")),
-        }
+        # No static half worth ordering: both fields change every turn. Written
+        # through the same helper anyway, so a segment added here later lands
+        # in the right place instead of wherever it was typed.
+        payload = prompt_cache.ordered_fields(
+            {
+                "turn": {
+                    "question_to_ask": state.get("question"),
+                    "conversation_so_far": _recent(state.get("transcript")),
+                }
+            }
+        )
 
     original = state.get("question") or ""
     asked_before = list(state.get("asked_before") or [])
@@ -986,6 +1017,30 @@ STOP_PROMPTS_EXHAUSTED = "prompts_exhausted"
 #: 2026-08-29 for spec-doc6 4.4: "Ends when Sutra's question-count range AND
 #: evidence sufficiency are both satisfied."
 STOP_EVIDENCE_SUFFICIENT = "evidence_sufficient"
+
+#: The whole vocabulary, in the order `ConversationState.stop_conditions`
+#: reports them. It exists because `assessment_conversations.end_reason` now
+#: STORES one of these words, so the set has to be nameable in one place: the
+#: column's CHECK constraint (migration 0116) enumerates exactly this tuple,
+#: and `tests/test_vaada_end_reason.py` compares the two. Restating six string
+#: literals in SQL and hoping they keep step with six in Python is the drift
+#: `test_runbook_parity` exists to catch elsewhere.
+#:
+#: NOT every member is reachable as an end reason today, and that is
+#: deliberate rather than an oversight. Two are written (`prompts_exhausted`
+#: and `every_dimension_covered`, the assessment's two ways to finish); the
+#: rest are conditions that HOLD at a stop without being the reason for it.
+#: The constraint states the rule that a reason is one of Vaada's named stop
+#: conditions, so recording a different one later is a code change rather than
+#: a production write that a forgotten migration refuses.
+STOP_CONDITIONS: tuple[str, ...] = (
+    STOP_FLOOR_REACHED,
+    STOP_EVERY_DIMENSION_COVERED,
+    STOP_NO_PROBE_OUTSTANDING,
+    STOP_NO_CONFLICT_OUTSTANDING,
+    STOP_EVIDENCE_SUFFICIENT,
+    STOP_PROMPTS_EXHAUSTED,
+)
 
 
 @dataclass(frozen=True)

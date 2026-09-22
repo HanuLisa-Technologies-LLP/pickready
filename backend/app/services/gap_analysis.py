@@ -46,7 +46,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -438,6 +438,9 @@ async def build_gap_analysis(
     overall_summary: str | None = None,
     overall_grade: str | None = None,
     validation: dict[str, Any] | None = None,
+    validation_points: dict[str, Any] | None = None,
+    claim_evidence: dict[str, Any] | None = None,
+    extra_nodes: Sequence[Any] = (),
 ) -> dict[str, Any]:
     """The whole section, ready to render (spec §9.6), THROUGH SIDDHI.
 
@@ -467,6 +470,15 @@ async def build_gap_analysis(
     `overall_summary`, `overall_grade` and `validation` are optional so that the
     existing synthesis call site keeps working unchanged; supplying them brings
     the Overall Assessment and the Validation section under the same chokepoint.
+
+    `validation_points`, `claim_evidence` and `extra_nodes` are the same bargain
+    for the two sections added in 0107. They are ASSEMBLED BY THE CALLER and
+    RENDERED HERE, deliberately: the caller is the only thing that can read the
+    tenant's own BGV rows, and the chokepoint is the only thing that may turn a
+    statement into delivered text. Passing the built payload through rather than
+    building it here keeps both properties without giving this module a database
+    dependency it does not otherwise have. Their absence is a normal state and
+    composes nothing rather than composing an empty section.
     """
     cap_applied = must_have_cap_applies(dimensions)
     groups: list[dict[str, Any]] = []
@@ -533,6 +545,9 @@ async def build_gap_analysis(
         overall_summary=overall_summary,
         overall_grade=overall_grade,
         validation=validation,
+        validation_points=validation_points,
+        claim_evidence=claim_evidence,
+        extra_nodes=tuple(extra_nodes),
     )
 
     return {

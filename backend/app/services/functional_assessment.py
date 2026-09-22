@@ -52,10 +52,10 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, TypedDict
+from typing import Any, AsyncIterator, Mapping, Sequence, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import (
@@ -73,13 +73,17 @@ from app.services import (
     agent_loop,
     answer_quality,
     conversation_guardrails,
+    cost_telemetry,
     gap_analysis,
     llm_router,
     matching_categories,
     ppi,
     ppi_interview,
 )
+from app.services import evidence_confidence
 from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELDS
+from app.services.miti import claims as miti_claims
+from app.services.siddhi import claim_evidence, validation_points
 from app.services.assessment_formats import evaluation as format_evaluation
 from app.services.assessment_formats import rendering as format_rendering
 from app.services.assessment_formats import types as question_types
@@ -110,6 +114,7 @@ __all__ = [
     "infer_grade",
     "infer_grade_fallback",
     "must_have_cap_applies",
+    "portable_evidence_nodes",
     "rating_label",
     "run_assessment",
     "word_count",
@@ -1782,6 +1787,279 @@ def _evidence_by_item(state: AssessmentState) -> dict[str, list[dict[str, str]]]
     return evidence
 
 
+# -- Evidence Confidence, and the two sections derived from it (0107) --------
+
+
+#: The AI Score's four parameters are computed from the candidate's resume and
+#: profile before the assessment runs. That is their ONE source, and naming it
+#: is the honest answer: an AI Score line resting on a resume is the candidate's
+#: own unprompted account, which is what Low means.
+_AI_SCORE_SOURCES: tuple[str, ...] = (evidence_confidence.SOURCE_RESUME,)
+
+
+def _confidence_sources(
+    row: Mapping[str, Any],
+    competency_sources: Mapping[str, Sequence[str]],
+    evidence_by_item: Mapping[str, Sequence[Any]],
+) -> set[str]:
+    """Which kinds of source actually stand behind one rated line.
+
+    THREE CONTRIBUTIONS, AND EACH ONE IS A FACT ABOUT THIS RUN rather than an
+    assumption about how the product usually works:
+
+      * what the five evaluators were handed for this competency, by source
+        type, carried out of the Miti run that handed it to them;
+      * `answer`, when this item has at least one recorded exchange. That is
+        read from the transcript rather than from the ledger because the
+        transcript is what the item was actually scored from, and an answer the
+        ledger never recorded is still an answer the candidate gave;
+      * the hiring manager's defined requirement, when the row carries one. It
+        contributed the BAR rather than the proof, which is why
+        `evidence_confidence` marks it as not evidencing the candidate: naming
+        it is honest, and letting it corroborate a person would raise every
+        candidate's confidence the moment a requirement was written down.
+    """
+    name = str(row.get("name") or "")
+    kinds = {str(kind) for kind in competency_sources.get(name, ())}
+    if row.get("category") == CATEGORY_MATCHING:
+        kinds.update(_AI_SCORE_SOURCES)
+    if evidence_by_item.get(name):
+        kinds.add(evidence_confidence.SOURCE_ANSWER)
+    if row.get("required_level") is not None:
+        kinds.add(evidence_confidence.SOURCE_SWOT)
+    return kinds
+
+
+def apply_evidence_confidence(
+    dimensions: list[dict[str, Any]],
+    *,
+    competency_sources: Mapping[str, Sequence[str]],
+    evidence_by_item: Mapping[str, Sequence[Any]],
+) -> None:
+    """Stamp every rated row with its confidence word and its source keys.
+
+    IT RUNS AFTER SCORING AND IT TOUCHES NO SCORE. Every row already carries
+    the `score` the rubric produced; this adds two fields beside it and changes
+    nothing else on the dict, which is the whole guarantee the feature rests
+    on. `tests/test_evidence_confidence.py` asserts it over a range of inputs
+    by comparing the rows before and after.
+    """
+    for row in dimensions:
+        derived = evidence_confidence.describe(
+            _confidence_sources(row, competency_sources, evidence_by_item)
+        )
+        row["evidence_confidence"] = derived.confidence
+        row["evidence_sources"] = list(derived.sources)
+
+
+def validation_point_rows(
+    dimensions: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """The rated lines the validation points section reads, as WORDS.
+
+    The AI Score's parameters are excluded, and the exclusion is the decision
+    worth recording. They are a resume snapshot taken before anybody asked the
+    candidate anything, so every one of them is uncorroborated by construction
+    and including them would fill a five-entry section with four rows that all
+    say the same thing about the same document. The section exists to point at
+    the areas where the ASSESSMENT is thin.
+    """
+    return [
+        {
+            "name": str(row["name"]),
+            "grade": grade_for_percent(row.get("score")),
+            "required_level": grade_for_percent(row.get("required_level")),
+            "evidence_confidence": row.get("evidence_confidence"),
+        }
+        for row in dimensions
+        if row.get("name") and row.get("category") != CATEGORY_MATCHING
+    ]
+
+
+async def _declared_employments(
+    session: AsyncSession, job: Job, link: JobCandidateLink
+) -> list[dict[str, Any]]:
+    """The candidate's declared employments with THIS TENANT'S verification.
+
+    THREE COLUMNS AND NO MORE. The employer's name, the role the candidate
+    declared, and the decision a person in this tenant recorded. `hr_name` and
+    `hr_email` are deliberately absent from the SELECT rather than dropped
+    afterwards: a third party's contact detail a candidate handed over for one
+    purpose reaches the recruiter running the verification and nobody else, and
+    a query that fetched it would put it one careless projection away from a
+    document that gets forwarded.
+
+    THE TENANT FILTER IS IN THE JOIN'S OWN ON CLAUSE, not in the WHERE. In the
+    WHERE it would turn the LEFT JOIN into an inner one and silently drop every
+    employment another tenant had verified and this one had not, which reads as
+    "the candidate declared fewer jobs" rather than as "nobody here has checked
+    yet". Another tenant's decision is invisible either way, which is the
+    point: a verification belongs to the tenant that ran it until the candidate
+    consents to sharing it.
+
+    `started_on` orders the rows and is never selected. A date is a number, and
+    a delivered report states words.
+    """
+    rows = (
+        await session.execute(
+            text(
+                """
+                SELECT e.employer_name, e.designation, v.status
+                FROM candidate_employments e
+                LEFT JOIN bgv_verifications v
+                    ON v.candidate_employment_id = e.id
+                   AND v.tenant_id = :tid
+                WHERE e.candidate_id = :cid
+                ORDER BY e.started_on DESC, e.employer_name
+                """
+            ),
+            {"tid": str(job.tenant_id), "cid": str(link.candidate_id)},
+        )
+    ).all()
+    return [
+        {
+            "employer_name": row.employer_name,
+            "designation": row.designation,
+            "status": row.status,
+        }
+        for row in rows
+    ]
+
+
+def portable_evidence_nodes(state: "AssessmentState") -> tuple[Any, ...]:
+    """The citable "this rests on the portable record" nodes for this report.
+
+    DERIVED FROM THE QUESTION ROWS, NEVER RECOMPUTED FROM THE COVERAGE RULE.
+    `candidate_questions.prefill_source` is the durable record of what actually
+    happened when this candidate's assessment was built; re-running
+    `portable_evidence.coverage` here would answer a question about today's
+    record, and a portable fact could have been added or retired since. A
+    report is a permanent record of what it was written from, so the citation
+    has to come from the row that was written, the same argument that keeps
+    `report_dimensions.required_level` copied rather than joined.
+
+    Returns a node per rated ITEM, not per question: several questions can
+    probe one criterion, and one criterion is what a statement cites.
+
+    NO PRIOR GRADE IS READ OR READABLE HERE. The only field consulted is a
+    thirty-character provenance string, and the only field it can be is one of
+    the two values in `resume_prefill._LABEL_FOR_SOURCE`.
+    """
+    from app.services import resume_prefill
+    from app.services.siddhi import evidence as siddhi_evidence
+
+    names: dict[str, str] = {
+        str(competency.id): competency.name
+        for competency in (state.get("competencies") or [])
+    }
+    seen: set[str] = set()
+    nodes: list[Any] = []
+    for question in state.get("candidate_questions") or []:
+        if getattr(question, "prefill_source", None) != (
+            resume_prefill.PREFILL_SOURCE_PORTABLE
+        ):
+            continue
+        name = names.get(str(question.competency_id))
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        nodes.append(siddhi_evidence.portable_node(name))
+    return tuple(nodes)
+
+
+async def _ledger_claims(state: "AssessmentState") -> list[Any]:
+    """Every claim recorded against this application, or an empty list.
+
+    An unreadable ledger degrades to "no claims recorded", logged, for the same
+    reason `_uncertainty_from_evidence` does: a ledger outage that failed the
+    synthesis would discard a candidate's completed assessment over a section
+    that annotates it. What it must never do is degrade SILENTLY, so the
+    warning names the link and the sections render their own empty state rather
+    than an invented one.
+    """
+    # LAZY, like every other reach into `app.services.evidence` from this
+    # module. The package sits on an import cycle that this file has already
+    # closed once, and `test_miti_evidence_wiring` pins the rule.
+    from app.services.evidence import ledger
+
+    session = state.get("session")
+    link = state.get("link")
+    job = state.get("job")
+    if session is None or link is None or job is None:
+        return []
+    try:
+        return list(
+            await ledger.load_claims(
+                session, tenant_id=job.tenant_id, job_id=job.id, link_id=link.id
+            )
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "functional_assessment.claims_not_readable link_id=%s",
+            link.id, exc_info=True,
+        )
+        return []
+
+
+def claim_records(
+    claims: Sequence[Any],
+    dimensions: Sequence[Mapping[str, Any]],
+    evidence_refs: Mapping[str, tuple[str, ...]],
+) -> list[claim_evidence.ClaimRecord]:
+    """Ledger claims as the Evidence vs Claim Summary needs them.
+
+    MATERIALITY COMES FROM THE MATRIX, through `miti.claims.materiality_for`,
+    which is the one implementation of that rule in the product. The matrix
+    handed to it is built from the report's own rated rows, {name: category}.
+    Reading the claim's wording instead would let a confidently written resume
+    rate its own assertions material, which is the document this product exists
+    to see through.
+    """
+    matrix = {
+        str(row["name"]): str(row["category"])
+        for row in dimensions
+        if row.get("name") and row.get("category")
+    }
+    records: list[claim_evidence.ClaimRecord] = []
+    for claim in claims:
+        competency = str(getattr(claim, "dimension", "") or "")
+        records.append(
+            claim_evidence.ClaimRecord(
+                claim=str(getattr(claim, "claim", "") or ""),
+                materiality=miti_claims.materiality_for([competency], matrix),
+                # The ledger's own distinct source types behind the claim. It
+                # is already the shape a reader uses to judge whether a claim
+                # rests on one document read four ways.
+                sources=tuple(getattr(claim, "provenance", ()) or ()),
+                status=str(getattr(claim, "status", "") or ""),
+                evidence_refs=tuple(evidence_refs.get(competency, ())),
+                area=competency,
+            )
+        )
+    return records
+
+
+def contradicted_areas(claims: Sequence[Any]) -> list[str]:
+    """The competencies the ledger holds active evidence on BOTH sides of.
+
+    Read from the claim's own derived status rather than from a stored flag,
+    because `Claim.status` is computed from live evidence every time it is
+    asked and a stored copy is the one a report would be written from after it
+    had gone stale.
+    """
+    seen: list[str] = []
+    for claim in claims:
+        # `claim_evidence`'s restated literal, not the ledger's own constant:
+        # reaching the ledger at module scope here closes the import cycle, and
+        # the two are pinned to each other by `test_claim_evidence`.
+        if str(getattr(claim, "status", "")) != claim_evidence.CLAIM_CONTRADICTED:
+            continue
+        name = str(getattr(claim, "dimension", "") or "")
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+
 def _gate_report(
     state: "AssessmentState",
     dimensions: list[dict[str, Any]],
@@ -1943,6 +2221,7 @@ async def synthesis_node(state: AssessmentState) -> dict:
     # initialise the other side first.
     from app.services import verification as verification_base
     from app.services.miti import live as miti_live
+    from app.services.siddhi import synthesis as siddhi_synthesis
 
     session = state["session"]
     matching = await _matching_dimensions(state)
@@ -2030,22 +2309,77 @@ async def synthesis_node(state: AssessmentState) -> dict:
 
     validation = dict(state["validation"])
 
+    # `validation` is read ABOVE, before the gap section rather than after it:
+    # the section that must be exact-as-submitted has to exist before the
+    # chokepoint runs, or it goes round it.
+    evidence_by_item = _evidence_by_item(state)
+
+    # -- EVIDENCE CONFIDENCE, AND THE TWO SECTIONS BUILT ON IT (0107) --------
+    #
+    # ORDER IS LOAD BEARING AND IS THE FEATURE'S WHOLE GUARANTEE. Every score
+    # in `dimensions` was decided above, by the rubric, before a single line of
+    # this ran. `apply_evidence_confidence` adds two fields to each row and
+    # touches nothing else, so a confidence word cannot move a grade: there is
+    # no path from here back to a score to move.
+    apply_evidence_confidence(
+        dimensions,
+        competency_sources=evaluation.competency_sources,
+        evidence_by_item=evidence_by_item,
+    )
+
+    # Read ONCE, and both sections are derived from the same read. Two queries
+    # could legitimately disagree, because the ledger is written during
+    # scoring, and a report whose claim summary and validation points
+    # described different evidence sets would be two answers to one question.
+    ledger_claims = await _ledger_claims(state)
+    # Read once for the same reason. The employment rows feed both the claim
+    # entries and the citable nodes those entries point at, and a second read
+    # could return a verification a recruiter recorded in between, producing a
+    # statement whose own citation is missing from the index.
+    employments = await _declared_employments(session, state["job"], state["link"])
+    claims_section = claim_evidence.build(
+        claim_records(
+            ledger_claims,
+            dimensions,
+            siddhi_synthesis.evidence_refs_for(dimensions, evidence_by_item),
+        )
+        # The declared employments join the same list rather than forming a
+        # section of their own. They are claims the candidate made, selected
+        # by the same materiality ordering, and splitting them out would give
+        # the report two places that answer "what did they assert".
+        + claim_evidence.employment_claims(employments)
+    )
+    points_section = validation_points.build(
+        validation_point_rows(dimensions),
+        contradicted_areas=contradicted_areas(ledger_claims),
+    )
+
     # The Overall Assessment and the Validation section travel INTO Siddhi's
     # chokepoint rather than around it. Without these three the two sections are
     # assembled outside `citations.Section.render`, which is the one place an
     # uncited statement is refused, so they would be the only client-facing
     # prose in the report exempt from the rule the rest of it is built on.
     #
-    # `validation` is read HERE, before the gap section rather than after it,
-    # for the same reason: the section that must be exact-as-submitted has to
-    # exist before the chokepoint runs, or it goes round it.
+    # The two 0107 sections travel the same way, and the employer nodes with
+    # them: a statement citing an employer confirmation has to be refusable by
+    # the same chokepoint as every other statement in the document.
     gaps = await gap_analysis.build_gap_analysis(
         session,
         dimensions,
-        _evidence_by_item(state),
+        evidence_by_item,
         overall_summary=overall,
         overall_grade=grade_for_percent(overall_score),
         validation=validation,
+        validation_points=points_section,
+        claim_evidence=claims_section,
+        # The portable nodes travel the same channel as the employer ones, and
+        # for the same reason: a statement citing "we already held this" has to
+        # be refusable by the same chokepoint as every other statement in the
+        # document. A criterion established by the Portable layer is graded by
+        # THIS job's matrix like any other; what the node adds is where the
+        # evidence under that grade came from (CR 23, 2026-09-22).
+        extra_nodes=claim_evidence.employment_nodes(employments)
+        + portable_evidence_nodes(state),
     )
 
     scoring_mode = state.get("ppi_mode", MODE_LLM_RUBRIC)
@@ -2117,6 +2451,12 @@ async def synthesis_node(state: AssessmentState) -> dict:
         "scoring_mode": scoring_mode,
         "validation_json": validation,
         "gap_analysis_json": gaps,
+        # STORED, never recomputed on read. A report is immutable, and both
+        # sections are derived from an evidence ledger that keeps being written
+        # to: recomputing either one on read would let a document change after
+        # a recruiter approved it.
+        "validation_points_json": points_section,
+        "claim_evidence_json": claims_section,
         # `suggested_probes_json` is deliberately NOT written any more and
         # deliberately NOT dropped. Gap Analysis replaces that section entirely
         # (spec §9.6), and leaving the column in place means a rollback of this
@@ -2235,7 +2575,15 @@ async def _write_evaluation(
     re-frozen afterwards.
     """
     from app.models.hiring import Evaluation
-    from app.services.siddhi import evidence as siddhi_evidence
+
+    # `synthesis`, not `evidence`. The import here read `evidence as
+    # siddhi_evidence` while the body below uses `siddhi_synthesis`, so every
+    # run that produced a Vivekium Note raised NameError inside the write of
+    # the evaluation row, after Miti's five evaluators and Siddhi's synthesis
+    # had already been paid for. It stayed invisible because the only deployed
+    # environment holds zero candidates, so no real evaluation has ever been
+    # written there. Found while wiring 0107; the fix is the one line.
+    from app.services.siddhi import synthesis as siddhi_synthesis
 
     session = state["session"]
     aggregate = evaluation.aggregate
@@ -2378,17 +2726,36 @@ async def run_assessment(
 
     grade = job.assessment_grade if job.assessment_grade in GRADE_NAMES else infer_grade_fallback(job)
     profile = await session.get(Profile, link.profile_id) if link.profile_id else None
-    result = await assessment_graph.ainvoke(
-        {
-            "session": session,
-            "job": job,
-            "link": link,
-            "profile": profile,
-            "transcript": transcript,
-            "answers": answers_by_key(transcript),
-            "candidate_questions": questions,
-            "competencies": competencies,
-            "grade": grade,
-        }
-    )
+    # EVERYTHING THE SCORING RUN SPENDS IS BILLED TO THIS APPLICATION.
+    #
+    # The graph is where the expensive half of an assessment happens: five
+    # isolated evaluators, the aggregator's inputs, and Siddhi's synthesis,
+    # which is seven report sections in one reasoning-tier response and is
+    # routinely the single largest call in the product. None of it was
+    # attributable to a candidate before: the router counted it per process,
+    # and this runs in a Fargate container that exits.
+    #
+    # The scope wraps the WHOLE invoke rather than each node, so a node added
+    # to the graph later is accounted for without anybody remembering to say
+    # so, and so a run that dies part way through still reports what it had
+    # already spent.
+    async with cost_telemetry.record_for(
+        session,
+        tenant_id=job.tenant_id,
+        job_id=job.id,
+        link_id=link.id,
+    ):
+        result = await assessment_graph.ainvoke(
+            {
+                "session": session,
+                "job": job,
+                "link": link,
+                "profile": profile,
+                "transcript": transcript,
+                "answers": answers_by_key(transcript),
+                "candidate_questions": questions,
+                "competencies": competencies,
+                "grade": grade,
+            }
+        )
     return result["report_id"]

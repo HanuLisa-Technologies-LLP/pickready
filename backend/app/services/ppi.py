@@ -65,10 +65,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import CandidateQuestion, JobCompetency
-from app.models.candidate import JobCandidateLink, Profile
+from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
 from app.models.job_setup import SWOT_AREAS, JobSwotAnalysis
-from app.services import agent_loop, job_version, llm_router
+from app.services import (
+    agent_loop,
+    consent_catalog,
+    job_version,
+    llm_router,
+    portable_evidence,
+)
 from app.services.assessment_formats import composition, generation
 from app.services.assessment_formats import config as format_config
 from app.services.assessment_formats import types as question_types
@@ -93,6 +99,7 @@ __all__ = [
     "REQUIRED_LEVEL_SCORES",
     "RUBRIC_SCORED_CATEGORIES",
     "generate_candidate_questions",
+    "portable_coverage",
     "framework_is_complete",
     "is_forbidden_competency",
     "load_framework",
@@ -1010,14 +1017,47 @@ async def generate_candidate_questions(
     from app.core.config import get_settings as _get_settings
     from app.services import resume_prefill
 
+    # ── The Portable layer, mapped against THIS job's matrix (CR 23) ────────
+    #
+    # Owner ruling 2026-09-22. A criterion the candidate's PORTABLE record
+    # already establishes is recorded rather than asked, exactly as a resume
+    # pre-fill is, and for the same reason: nobody should be made to re-type a
+    # fact the platform already holds.
+    #
+    # THE CRITERION IS NEVER DROPPED FROM THE MATRIX. Its row is still
+    # created, still carries its rubric, still carries its required level and
+    # is still graded and charted. What changes is where the evidence for it
+    # came from, and `prefill_source` says so on the row. A criterion that
+    # vanished because the record covered it would be the "insufficient
+    # evidence is not negative evidence" rule failing in its other direction:
+    # an item nobody grades.
+    #
+    # PORTABLE IS TRIED FIRST, resume anchor second. A portable fact is the
+    # stronger record of the two: it carries an originator, a date and a
+    # locator, and one of its kinds was written by somebody other than the
+    # candidate. The resume anchor is the weaker fallback, not the default.
+    coverage = await portable_coverage(session, job, link)
+    covered = coverage.by_name()
+
     text_types = frozenset(
         {question_types.EVIDENCE_BASED, question_types.SHORT_ANSWER}
     )
     prefills: dict[int, str] = {}
+    sources: dict[int, str] = {}
     for slot in slots:
         competency = allocation[slot.index]
+        established = covered.get(competency.name)
+        if established is not None and slot.question_type in text_types:
+            prefills[slot.index] = portable_evidence.prefill_text(established)
+            sources[slot.index] = resume_prefill.PREFILL_SOURCE_PORTABLE
+            continue
         answer = resume_prefill.evidence_for(
             competency_name=competency.name,
+            # THE ARGUMENT THAT CLOSES THE DEFECT. Until 2026-09-22 this call
+            # passed no category at all, so a Behavioural competency whose name
+            # appeared in the parsed skills was pre-filled and skipped. Every
+            # behavioural dimension is freshly assessed, always.
+            category=competency.category,
             resume_anchor=slot.resume_anchor,
             parsed_fields=profile.parsed_fields_json if profile else None,
             question_type=slot.question_type,
@@ -1025,6 +1065,7 @@ async def generate_candidate_questions(
         )
         if answer is not None:
             prefills[slot.index] = answer
+            sources[slot.index] = resume_prefill.PREFILL_SOURCE_RESUME
     trimmed = resume_prefill.trim_to_ceiling(
         slots,
         prefilled_indexes=set(prefills),
@@ -1032,8 +1073,16 @@ async def generate_candidate_questions(
     )
     if prefills or trimmed:
         logger.info(
-            "ppi.questions.resume_aware link_id=%s prefilled=%d trimmed=%d",
-            link.id, len(prefills), len(trimmed),
+            "ppi.questions.resume_aware link_id=%s prefilled=%d portable=%d "
+            "trimmed=%d",
+            link.id,
+            len(prefills),
+            sum(
+                1
+                for source in sources.values()
+                if source == resume_prefill.PREFILL_SOURCE_PORTABLE
+            ),
+            len(trimmed),
         )
     rows: list[CandidateQuestion] = [
         CandidateQuestion(
@@ -1050,7 +1099,7 @@ async def generate_candidate_questions(
             time_allocation_seconds=slot.time_allocation_seconds,
             weight=slot.weight,
             prefilled_answer=prefills.get(slot.index),
-            prefill_source="resume_anchor" if slot.index in prefills else None,
+            prefill_source=sources.get(slot.index),
         )
         for slot in slots
         if slot.index not in trimmed
@@ -1066,6 +1115,87 @@ async def generate_candidate_questions(
         link.id, grade, len(rows), by_type,
     )
     return rows
+
+
+async def portable_coverage(
+    session: AsyncSession, job: Job, link: JobCandidateLink
+) -> portable_evidence.Coverage:
+    """The Portable plus Job Specific split for one candidate on one job (CR 23).
+
+    HARVEST FIRST, THEN MAP. The harvest is deterministic extraction from rows
+    the product already holds (the parsed resume, the finalised employment
+    history, an employer's own confirmation) and it calls no model, so running
+    it here costs a few indexed statements and guarantees the split is computed
+    against what is true NOW rather than against whatever a previous
+    application happened to leave behind.
+
+    This runs inside `pickready.generate_candidate_questions`, which is already
+    a dispatched task, so no request handler waits on it.
+
+    `retake` is imported INSIDE the function. It owns `RETAKE_WINDOW_DAYS`,
+    which is the product's one "how old is too old" boundary and belongs to the
+    module that already explains it to the candidate; importing it at module
+    scope here would make this file depend on the report models for a single
+    integer.
+
+    NEITHER HALF MAY FAIL QUESTION GENERATION. A candidate is waiting on their
+    assessment; the worst honest outcome of a portable read that will not work
+    is that every criterion is asked, which is the product's behaviour from
+    before this feature and is never wrong. The failure is LOGGED with its
+    class, never swallowed into a bare pass, and an empty Coverage is a real
+    value rather than a substitute for a missing one: it says the record
+    establishes nothing, which is exactly what the caller should then act on.
+    """
+    from app.services import retake
+
+    if not await consent_catalog.cross_employer_reuse_allowed(
+        session, link.candidate_id
+    ):
+        # Not an error and not a degradation. The candidate was asked and
+        # either declined or was never asked, and absence of consent is never
+        # consent.
+        return portable_evidence.Coverage()
+
+    try:
+        await portable_evidence.harvest(
+            session,
+            candidate_id=link.candidate_id,
+            job_id=job.id,
+            tenant_id=job.tenant_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - recorded, never silent
+        logger.warning(
+            "ppi.portable_harvest_failed link_id=%s reason=%s",
+            link.id, type(exc).__name__, exc_info=True,
+        )
+
+    criteria = await load_framework(session, job.id)
+    if not criteria:
+        return portable_evidence.Coverage()
+    try:
+        facts = await portable_evidence.load_for_candidate(
+            session, link.candidate_id
+        )
+    except Exception as exc:  # noqa: BLE001 - recorded, never silent
+        logger.warning(
+            "ppi.portable_load_failed link_id=%s reason=%s",
+            link.id, type(exc).__name__, exc_info=True,
+        )
+        return portable_evidence.Coverage(
+            to_assess=tuple(
+                row.name
+                for row in criteria
+                if row.category not in portable_evidence.NEVER_COVERED_CATEGORIES
+            ),
+            behavioural=tuple(
+                row.name
+                for row in criteria
+                if row.category in portable_evidence.NEVER_COVERED_CATEGORIES
+            ),
+        )
+    return portable_evidence.coverage(
+        list(criteria), facts, max_age_days=retake.RETAKE_WINDOW_DAYS
+    )
 
 
 async def _hiring_context(session: AsyncSession, job: Job) -> str:

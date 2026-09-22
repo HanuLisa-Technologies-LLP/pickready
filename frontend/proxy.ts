@@ -52,6 +52,11 @@ const PUBLIC_PREFIXES = [
   "/apply",
   "/portal/outreach", // public tokenized outreach completion
   "/verify-employment", // public employer verification form
+  // The one-click consent renewal link (feature 8). It MUST render
+  // signed-out: the reader is by definition somebody who has not signed in
+  // for six months, and bouncing them to /login is exactly the friction that
+  // makes their profile get deleted instead of kept.
+  "/keep-profile",
   // Assessment invitation landing. It MUST render signed-out: its whole
   // job is to resolve the token and then send the candidate through
   // /login carrying itself as `next`. Gating it here would bounce them

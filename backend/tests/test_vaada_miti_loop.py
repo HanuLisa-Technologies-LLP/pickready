@@ -326,7 +326,15 @@ def test_conversation_may_close_still_governs_early_stopping() -> None:
     assert "interviewer.STOP_NO_CONFLICT_OUTSTANDING in coverage.stop_conditions" in tail
     # Completion by exhausting the written questions is untouched, so nothing
     # added here can strand a candidate in an endless interview.
-    assert "conversation.next_question_index >= len(prompts) or evidence_complete" in source
+    #
+    # ASSERTED AS TWO HALVES SINCE 2026-09-22, when change request 28B hoisted
+    # the exhaustion check onto its own name so the recorded `end_reason` could
+    # be derived from the branch that already decided rather than re-evaluated.
+    # One string matched both halves while they sat on one line; the property
+    # is the same one, which is that the index-versus-prompts comparison is
+    # still an `or` alongside the early stop and not a replacement for it.
+    assert "prompts_exhausted = conversation.next_question_index >= len(prompts)" in source
+    assert "if (prompts_exhausted or evidence_complete) and " in source
 
 
 def test_the_conflicting_dimensions_are_read_from_the_ledger() -> None:

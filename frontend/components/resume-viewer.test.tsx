@@ -19,6 +19,7 @@ import {
   ResumeViewer,
   describeResumeUrl,
   kindFromMimeType,
+  resumeTabUrl,
 } from "./resume-viewer";
 
 afterEach(cleanup);
@@ -152,5 +153,55 @@ describe("resume viewer", () => {
     // This panel is correct for a genuinely profile-less row; the bug was that
     // the recruiter portal reached it for every candidate.
     expect(screen.getByText(/profile reference is missing/i)).toBeTruthy();
+  });
+});
+
+// ── The Resume Link column opens a TAB (vivekium feature 3, column 6) ────────
+//
+// The brief asks for a direct tap that opens the resume in a new tab, and the
+// href has to be something a browser can navigate to on its own. The row no
+// longer carries a storage URL at all, so the only inputs are the profile id
+// and the two descriptive fields; everything this builds has to be the
+// authorized proxy, never an object reference.
+describe("resumeTabUrl", () => {
+  it("sends a Word document to the server-side renderer", () => {
+    // A tab handed raw DOCX bytes silently turns the tap into a download,
+    // which is why the endpoint differs by format rather than by preference.
+    expect(
+      resumeTabUrl({ profileId: PROFILE_ID, resumeMimeType: DOCX })
+    ).toContain(`/candidates/profiles/${PROFILE_ID}/resume-preview`);
+  });
+
+  it("sends a PDF to the streaming route the browser can render", () => {
+    expect(
+      resumeTabUrl({ profileId: PROFILE_ID, resumeMimeType: "application/pdf" })
+    ).toContain(`/candidates/profiles/${PROFILE_ID}/resume-file`);
+  });
+
+  it("trusts a real filename extension over the recorded MIME type", () => {
+    expect(
+      resumeTabUrl({
+        profileId: PROFILE_ID,
+        resumeFileName: "asha-rao.docx",
+        resumeMimeType: "application/pdf",
+      })
+    ).toContain("resume-preview");
+  });
+
+  it("never emits a storage reference", () => {
+    const url = resumeTabUrl({
+      profileId: PROFILE_ID,
+      resumeFileName: "asha-rao.pdf",
+    });
+    expect(url).not.toContain("s3://");
+    expect(url).not.toContain(PRIVATE_OBJECT);
+    expect(url?.startsWith("/api/")).toBe(true);
+  });
+
+  it("has nothing to open without a profile", () => {
+    // The row that has no resume. The caller renders a disabled control
+    // rather than an href that 404s.
+    expect(resumeTabUrl({ profileId: null })).toBeNull();
+    expect(resumeTabUrl({ profileId: undefined })).toBeNull();
   });
 });

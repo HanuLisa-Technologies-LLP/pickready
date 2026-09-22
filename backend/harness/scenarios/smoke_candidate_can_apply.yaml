@@ -1,0 +1,37 @@
+id: smoke.a_candidate_can_apply
+version: 1
+tier: smoke
+description: >
+  A registered candidate applies to a published job with their main resume. The
+  application mints its own Profile, the link lands at `applied`, the Updates
+  feed records it and the resume parse is queued once.
+tags: [portal, apply, smoke]
+
+given:
+  world: job_with_unapplied_candidate
+
+workload:
+  - apply_to_job
+
+expect:
+  state:
+    - job_candidate_links.count_for_job == 1
+    - job_candidate_links.status_for_candidate == applied
+    - candidate_updates.count_for_candidate == 1
+    - profiles.count_for_candidate == 2
+  dispatched:
+    pickready.parse_resume: 1
+  output:
+    - status.apply_to_job == 201
+  trajectory:
+    - application_attempted
+    - application_accepted
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - an_automatic_rejection_occurred
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - no_numbers_to_client
+    - safety_and_policy

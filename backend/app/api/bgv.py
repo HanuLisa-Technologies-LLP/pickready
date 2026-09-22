@@ -34,7 +34,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,7 +47,14 @@ from app.api.deps import (
     require_capability,
 )
 from app.core.config import get_settings
+from app.models.bgv_documents import (
+    BGV_DOCUMENT_TYPES,
+    CORRECTION_REASON_BOUNCE,
+    DOCUMENT_TYPE_LABELS,
+)
 from app.models.bgv_verification import (
+    DELIVERY_BOUNCED,
+    DELIVERY_NOT_SENT,
     VERIFICATION_NOT_STARTED,
     VERIFICATION_NOT_VERIFIED,
     VERIFICATION_PENDING,
@@ -56,6 +63,8 @@ from app.models.bgv_verification import (
 from app.models.conversation import CHANNEL_EMAIL, DELIVERY_SENT, PARTY_RECRUITER
 from app.models.employment import BACKGROUND_EXPERIENCED, EMPLOYMENT_BACKGROUNDS
 from app.schemas.bgv_workflow import (
+    BGVDocumentOut,
+    BGVDocumentsOut,
     CandidateBGVOut,
     EmploymentIn,
     DecisionIn,
@@ -63,11 +72,15 @@ from app.schemas.bgv_workflow import (
     EmploymentHistoryIn,
     EmploymentHistoryOut,
     EmploymentOut,
+    HREmailCorrectionIn,
     SendIn,
     VerificationOut,
 )
 from app.services import (
+    bgv,
     bgv_agent,
+    bgv_delivery,
+    bgv_documents,
     bgv_form,
     bgv_maintenance,
     bgv_workflow,
@@ -75,6 +88,7 @@ from app.services import (
 )
 from app.services import capabilities as caps
 from app.services.audit import audit
+from app.services.rate_limit import rate_limit
 from app.workers.dispatch import dispatch
 
 router = APIRouter()
@@ -325,6 +339,356 @@ async def append_employer_route(
     return await _history_out(session, candidate_id)
 
 
+# ── Correcting an HR address the provider refused ────────────────────────────
+#
+# THE IMMUTABILITY TRIGGER IS NOT WEAKENED, AND THIS ROUTE IS WHY IT DID NOT
+# HAVE TO BE. `candidate_employments` holds the candidate's CLAIM: employer,
+# title, dates, and the HR contact as first declared. An employer whose mailbox
+# bounced has not made the claim wrong; the routing is wrong. So a correction
+# is a NEW ROW beside the claim (`bgv_contact_corrections`, append-only) rather
+# than an UPDATE of it, the 0103 trigger keeps refusing every UPDATE exactly as
+# it did, and the declaration stays readable next to every address ever tried.
+#
+# The alternative considered and rejected was a second GUC admitting an UPDATE
+# of `hr_email` alone. It is strictly weaker on two counts: a transaction-local
+# escape hatch is reachable by anything that can set the GUC, and the
+# overwritten address would be gone, so a candidate quietly redirecting a
+# verification to a mailbox they control would leave nothing behind to notice.
+
+
+@router.put("/me/employers/{employment_id}/hr-email", response_model=EmploymentHistoryOut)
+async def correct_hr_email(
+    employment_id: uuid.UUID,
+    body: HREmailCorrectionIn,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> EmploymentHistoryOut:
+    """Replace the HR address on an employer whose request could not be delivered.
+
+    ONLY AFTER A BOUNCE, and only on the address. The brief asks the candidate
+    to correct the address and the system to resend automatically; it does not
+    ask for an employment editor, and a route that accepted a correction at any
+    time would be one: a candidate could move a verification to a mailbox they
+    control the day before an offer, and nothing would have refused it.
+
+    Every bounced verification for this employer, across every tenant that
+    opened one, is resent with a FRESH single-use token. All of them, because
+    the address was wrong for all of them and asking the candidate to fix it
+    once per customer would be the product exporting its own data model.
+    """
+    candidate_id = await _candidate_id_for(session, user)
+    employment = (
+        (
+            await session.execute(
+                text(
+                    "SELECT id, employer_name, designation, started_on, ended_on, "
+                    " hr_name, hr_email FROM candidate_employments "
+                    "WHERE id = :eid AND candidate_id = :cid"
+                ),
+                {"eid": str(employment_id), "cid": str(candidate_id)},
+            )
+        )
+        .mappings()
+        .first()
+    )
+    if employment is None:
+        # 404 rather than 403: confirming that somebody else's employment row
+        # exists is the rule every cross-owner read here follows.
+        raise HTTPException(status_code=404, detail="Employer not found")
+
+    new_address = str(body.hr_email).strip()
+    current = await bgv_delivery.effective_hr_email(session, employment_id)
+    if new_address.lower() == (current or "").lower():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "That is the address we already tried. Please check it with "
+                "the employer and enter the corrected one."
+            ),
+        )
+    # The same refusal the declaration itself is held to: a reply from a
+    # personal mailbox proves a person owns a mailbox, not that a company's HR
+    # department answered.
+    if bgv.is_free_provider_domain(new_address):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Use your previous employer's own company email address. A "
+                "personal mailbox cannot confirm employment on their behalf."
+            ),
+        )
+
+    bounced = (
+        (
+            await session.execute(
+                text(
+                    "SELECT v.id, v.tenant_id, v.conversation_id, t.name AS tenant_name "
+                    "FROM bgv_verifications v "
+                    "LEFT JOIN tenants t ON t.id = v.tenant_id "
+                    "WHERE v.candidate_employment_id = :eid "
+                    "  AND v.delivery_status = :bounced "
+                    "  AND v.responded_at IS NULL"
+                ),
+                {"eid": str(employment_id), "bounced": DELIVERY_BOUNCED},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    if not bounced:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "We have not had a delivery failure for this employer, so "
+                "there is nothing to correct. Your employment details are "
+                "final once submitted."
+            ),
+        )
+
+    now = datetime.now(timezone.utc)
+    await session.execute(
+        text(
+            "INSERT INTO bgv_contact_corrections (id, candidate_id, "
+            " candidate_employment_id, previous_hr_email, hr_email, reason, "
+            " created_at) "
+            "VALUES (gen_random_uuid(), :cid, :eid, :old, :new, :reason, :at)"
+        ),
+        {
+            "cid": str(candidate_id),
+            "eid": str(employment_id),
+            "old": current or employment["hr_email"],
+            "new": new_address,
+            "reason": CORRECTION_REASON_BOUNCE,
+            "at": now,
+        },
+    )
+    for verification in bounced:
+        await _resend_after_correction(
+            session,
+            verification=verification,
+            employment=dict(employment),
+            candidate_id=candidate_id,
+            candidate_name=None,
+            recipient=new_address,
+            now=now,
+        )
+    await audit(
+        session,
+        tenant_id=None,
+        actor_user_id=user.user_id,
+        action=bgv_workflow.AUDIT_HR_EMAIL_CORRECTED,
+        target_type="candidate_employment",
+        target_id=employment_id,
+        metadata={
+            "employer": employment["employer_name"],
+            # MASKED IN BOTH DIRECTIONS. The audit log is read by staff and
+            # exported; a third party's full address is not a fact it needs to
+            # carry to answer "who changed what, and when".
+            "previous": bgv_form.masked_email(current or employment["hr_email"]),
+            "corrected": bgv_form.masked_email(new_address),
+            "resent": len(bounced),
+        },
+    )
+    await session.flush()
+    return await _history_out(session, candidate_id)
+
+
+async def _resend_after_correction(
+    session: AsyncSession,
+    *,
+    verification: dict,
+    employment: dict,
+    candidate_id: uuid.UUID,
+    candidate_name: str | None,
+    recipient: str,
+    now: datetime,
+) -> None:
+    """Send one verification again, to the corrected address, with a new token.
+
+    THE TOKEN IS FRESH. The one already sitting in a mailbox that refused the
+    message is worthless, and reusing it would leave two credentials live for
+    one verification if the original ever did arrive somewhere.
+
+    The DETERMINISTIC body, never the agent: nobody is reviewing this draft, so
+    `generated_by_ai` is recorded False rather than claimed.
+    """
+    tenant_id = uuid.UUID(str(verification["tenant_id"]))
+    name = candidate_name or (
+        await session.execute(
+            text("SELECT full_name FROM candidates WHERE id = :cid"),
+            {"cid": str(candidate_id)},
+        )
+    ).scalar()
+    facts = bgv_agent.FactBlock(
+        candidate_name=name or "The candidate",
+        employer_name=employment["employer_name"],
+        designation=employment["designation"],
+        started_on=employment["started_on"],
+        ended_on=employment["ended_on"],
+        hr_name=employment["hr_name"],
+        recruiter_team=f"Recruitment team, {verification['tenant_name'] or 'our team'}",
+    )
+    subject = bgv_agent.subject_for(facts)
+    body_text = bgv_agent.deterministic_body(facts)
+    verification_id = uuid.UUID(str(verification["id"]))
+    token = await bgv_delivery.issue_form_token(
+        session, verification_id=verification_id, at=now
+    )
+    if token is not None:
+        body_text = f"{body_text}\n\n{bgv_delivery.form_link_paragraph(token)}"
+
+    reply_to = None
+    if verification["conversation_id"] is not None:
+        conversation = await conversations.authorize_participant(
+            session,
+            conversation_id=uuid.UUID(str(verification["conversation_id"])),
+            tenant_id=tenant_id,
+        )
+        await conversations.post_message(
+            session,
+            conversation_id=uuid.UUID(str(verification["conversation_id"])),
+            tenant_id=tenant_id,
+            author_party=PARTY_RECRUITER,
+            body=body_text,
+            channel=CHANNEL_EMAIL,
+            delivery_status=DELIVERY_SENT,
+            client_token=f"bgv-resend-{verification_id}-{int(now.timestamp())}",
+            now=now,
+        )
+        reply_to = conversations.reply_address(conversation["thread_token"])
+    email_log_id = await bgv_delivery.record_outbound(
+        session,
+        tenant_id=tenant_id,
+        verification_id=verification_id,
+        candidate_id=candidate_id,
+        recipient=recipient,
+        subject=subject,
+        body=body_text,
+        generated_by_ai=False,
+        edited_by_human=False,
+    )
+    # Clears `bounced_at` and `reminder_sent_at`, so the corrected request gets
+    # its own three days instead of inheriting a clock that already ran out.
+    await bgv_delivery.mark_sent(session, verification_id=verification_id, at=now)
+    dispatch(
+        "pickready.send_email",
+        args=[
+            str(tenant_id),
+            recipient,
+            "bgv_verification",
+            {"subject": subject, "body": body_text},
+            None,
+            reply_to,
+            str(email_log_id),
+        ],
+    )
+
+
+# ── A fresher's own documents ────────────────────────────────────────────────
+#
+# The brief: "Freshers: no employer BGV. Academic certificates and address
+# proof only." These routes are the candidate's, on the candidate session, and
+# there is deliberately NO recruiter route: a degree certificate is a document
+# somebody uploaded once to a platform, and the product has no consent record
+# for handing it to every customer who opens their profile. The absence is the
+# decision (see `services/bgv_documents`), and it gates nothing at all --
+# `derive_status` still answers `not_required` for a fresher.
+
+
+def _documents_out(documents: list) -> BGVDocumentsOut:
+    return BGVDocumentsOut(
+        documents=[
+            BGVDocumentOut(
+                id=document.id,
+                document_type=document.document_type,
+                document_label=DOCUMENT_TYPE_LABELS[document.document_type],
+                original_filename=document.original_filename,
+                mime_type=document.mime_type,
+                size_bytes=document.size_bytes,
+                uploaded_at=document.uploaded_at,
+            )
+            for document in documents
+        ],
+        # EVERY type, always, including the ones with nothing in them. The same
+        # rule the seven compliance slots follow: a short list is one a missing
+        # address proof can hide in.
+        accepted_types=[
+            {"key": kind, "label": DOCUMENT_TYPE_LABELS[kind]}
+            for kind in BGV_DOCUMENT_TYPES
+        ],
+        upload_hint=bgv_documents.upload_limits_hint(),
+        max_per_type=get_settings().bgv_documents_max_per_type,
+    )
+
+
+@router.get("/me/documents", response_model=BGVDocumentsOut)
+async def my_bgv_documents(
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> BGVDocumentsOut:
+    """The candidate's own uploaded certificates and address proof."""
+    candidate_id = await _candidate_id_for(session, user)
+    return _documents_out(
+        await bgv_documents.list_documents(session, candidate_id=candidate_id)
+    )
+
+
+@router.post(
+    "/me/documents",
+    response_model=BGVDocumentsOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit("bgv_document_upload", limit=30, window=3600))],
+)
+async def upload_bgv_document(
+    document_type: str = Form(...),
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> BGVDocumentsOut:
+    """Add one document. Validated, never executed, never parsed.
+
+    The candidate id comes from the SESSION, never from the request: this
+    handler runs in the bypass scope, where the resolved candidate is the only
+    boundary there is.
+    """
+    candidate_id = await _candidate_id_for(session, user)
+    await bgv_documents.store_document(
+        session,
+        candidate_id=candidate_id,
+        document_type=document_type,
+        file=file,
+    )
+    await session.flush()
+    return _documents_out(
+        await bgv_documents.list_documents(session, candidate_id=candidate_id)
+    )
+
+
+@router.delete("/me/documents/{document_id}", response_model=BGVDocumentsOut)
+async def delete_bgv_document(
+    document_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> BGVDocumentsOut:
+    """Remove one of the candidate's own documents, bytes included.
+
+    A document is the candidate's to withdraw. It confirms nothing and blocks
+    nothing, so unlike the employment declaration there is no finality to
+    protect here, and refusing the delete would only mean a file they no longer
+    want is one they cannot remove.
+    """
+    candidate_id = await _candidate_id_for(session, user)
+    removed = await bgv_documents.delete_document(
+        session, candidate_id=candidate_id, document_id=document_id
+    )
+    if not removed:
+        raise HTTPException(status_code=404, detail="Document not found")
+    await session.flush()
+    return _documents_out(
+        await bgv_documents.list_documents(session, candidate_id=candidate_id)
+    )
+
+
 # ── The recruiter's view ─────────────────────────────────────────────────────
 
 
@@ -371,7 +735,9 @@ async def _candidate_bgv(
                     " e.started_on, e.ended_on, e.hr_name, e.hr_email, "
                     " v.id AS verification_id, v.status, v.conversation_id, "
                     " v.first_sent_at, v.responded_at, v.decided_at, "
-                    " v.decision_note, u.full_name AS decided_by_name "
+                    " v.decision_note, v.delivery_status, v.delivered_at, "
+                    " v.bounced_at, v.delivery_detail, "
+                    " u.full_name AS decided_by_name "
                     "FROM candidate_employments e "
                     "LEFT JOIN bgv_verifications v "
                     "  ON v.candidate_employment_id = e.id AND v.tenant_id = :tid "
@@ -412,6 +778,10 @@ async def _candidate_bgv(
             decided_at=row["decided_at"],
             decided_by_name=row["decided_by_name"],
             decision_note=row["decision_note"],
+            delivery_status=row["delivery_status"] or DELIVERY_NOT_SENT,
+            delivered_at=row["delivered_at"],
+            bounced_at=row["bounced_at"],
+            delivery_detail=row["delivery_detail"],
         )
         for row in rows
     ]
@@ -581,7 +951,8 @@ async def _verification_or_404(
                 text(
                     "SELECT v.id, v.tenant_id, v.status, v.conversation_id, "
                     " v.candidate_id, v.first_sent_at, v.form_submitted_at, "
-                    " e.employer_name, "
+                    " v.delivery_status, v.delivered_at, "
+                    " e.id AS employment_id, e.employer_name, "
                     " e.designation, e.started_on, e.ended_on, e.hr_name, "
                     " e.hr_email, c.full_name "
                     "FROM bgv_verifications v "
@@ -665,6 +1036,8 @@ async def _one_verification(
                 text(
                     "SELECT v.id, v.status, v.conversation_id, v.first_sent_at, "
                     " v.responded_at, v.decided_at, v.decision_note, "
+                    " v.delivery_status, v.delivered_at, v.bounced_at, "
+                    " v.delivery_detail, "
                     " e.id AS employment_id, e.employer_name, e.designation, "
                     " e.started_on, e.ended_on, e.hr_name, e.hr_email, "
                     " u.full_name AS decided_by_name "
@@ -699,6 +1072,10 @@ async def _one_verification(
         decided_at=row["decided_at"],
         decided_by_name=row["decided_by_name"],
         decision_note=row["decision_note"],
+        delivery_status=row["delivery_status"] or DELIVERY_NOT_SENT,
+        delivered_at=row["delivered_at"],
+        bounced_at=row["bounced_at"],
+        delivery_detail=row["delivery_detail"],
     )
 
 
@@ -730,18 +1107,9 @@ async def send(
     # carry a working link, and replacing the token retires the one already
     # sitting in the mailbox rather than leaving two live credentials. Once
     # the form is submitted the token is never reissued.
-    form_url = None
-    if row.get("form_submitted_at") is None:
-        token = bgv_form.mint_token()
-        await session.execute(
-            text(
-                "UPDATE bgv_verifications SET form_token = :tok, "
-                " form_token_issued_at = :at WHERE id = :vid"
-            ),
-            {"tok": token, "at": now, "vid": str(verification_id)},
-        )
-        frontend = get_settings().frontend_url.rstrip("/")
-        form_url = f"{frontend}/verify-employment/{token}"
+    token = await bgv_delivery.issue_form_token(
+        session, verification_id=verification_id, at=now
+    )
     message = await conversations.post_message(
         session,
         conversation_id=uuid.UUID(str(row["conversation_id"])),
@@ -770,33 +1138,59 @@ async def send(
     # server-side so no draft can drop it and no prompt can rewrite it. The
     # sentence states the brief's contract: three days, single use.
     outbound_body = body.body
-    if form_url:
-        outbound_body = (
-            f"{body.body}\n\n"
-            "To complete this verification in under two minutes, use the "
-            f"secure form below. The link is unique to this request, works "
-            f"once, and expires in "
-            f"{get_settings().verification_link_ttl_days} days:\n{form_url}"
+    if token is not None:
+        outbound_body = f"{body.body}\n\n{bgv_delivery.form_link_paragraph(token)}"
+    # THE ADDRESS THE CANDIDATE CORRECTED, when they have corrected one. Read
+    # through `effective_hr_email` rather than off the employment row, so a
+    # recruiter re-sending after a bounce cannot send to the address that
+    # already failed. `candidate_employments` still holds the declaration and
+    # is still immutable.
+    recipient = await bgv_delivery.effective_hr_email(
+        session, uuid.UUID(str(row["employment_id"]))
+    )
+    if not recipient:  # pragma: no cover - hr_email is NOT NULL on the table
+        raise HTTPException(
+            status_code=409,
+            detail="This employer has no HR address to send the request to.",
         )
+    # The outbound record, written BEFORE the dispatch and BOUND to this
+    # verification. It is what a later bounce or delivery event resolves
+    # through: matching on the recipient address instead would pick whichever
+    # request to that mailbox went out last (see `services/bgv_delivery`).
+    email_log_id = await bgv_delivery.record_outbound(
+        session,
+        tenant_id=user.tenant_id,
+        verification_id=verification_id,
+        candidate_id=uuid.UUID(str(row["candidate_id"])),
+        recipient=recipient,
+        subject=body.subject,
+        body=outbound_body,
+        generated_by_ai=False,
+        edited_by_human=True,
+    )
     dispatch(
         "pickready.send_email",
         args=[
             str(user.tenant_id),
-            row["hr_email"],
+            recipient,
             "bgv_verification",
             {"subject": body.subject, "body": outbound_body},
             None,
             conversations.reply_address(conversation["thread_token"]),
+            str(email_log_id),
         ],
     )
     await session.execute(
         text(
-            "UPDATE bgv_verifications SET status = :st, "
-            " first_sent_at = COALESCE(first_sent_at, :at), updated_at = :at "
+            "UPDATE bgv_verifications SET status = :st, updated_at = :at "
             "WHERE id = :vid"
         ),
         {"st": VERIFICATION_PENDING, "at": now, "vid": str(verification_id)},
     )
+    # The delivery half: stamps `first_sent_at` on the first send and clears
+    # the outcome of any PREVIOUS send, so a resend after a bounce starts a
+    # fresh three days rather than inheriting a clock that has already run out.
+    await bgv_delivery.mark_sent(session, verification_id=verification_id, at=now)
     await audit(
         session,
         tenant_id=user.tenant_id,
@@ -899,6 +1293,7 @@ async def _verification_by_form_token(session: AsyncSession, token: str) -> dict
                 text(
                     "SELECT v.id, v.tenant_id, v.candidate_id, v.status, "
                     " v.form_token_issued_at, v.form_submitted_at, "
+                    " v.delivered_at, "
                     " e.employer_name, e.hr_email, c.full_name, c.email "
                     "FROM bgv_verifications v "
                     "JOIN candidate_employments e "
@@ -925,14 +1320,19 @@ async def _verification_by_form_token(session: AsyncSession, token: str) -> dict
                 "nothing further is needed."
             ),
         )
-    issued = row["form_token_issued_at"]
-    if issued is None or bgv_form.is_expired(issued):
+    # THE WINDOW STARTS AT DELIVERY, not at send. An HR team cannot act on a
+    # message still in a provider's retry queue, and a link that expired while
+    # the message was in flight is a dead credential in a mailbox that never
+    # showed it. `clock_start` falls back to the send stamp when no delivery
+    # event exists, which is the honest answer under a transport that reports
+    # none rather than a link that never expires.
+    if bgv_delivery.link_expired(row["delivered_at"], row["form_token_issued_at"]):
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
             detail=(
                 "This verification link has expired. Links work for "
                 f"{get_settings().verification_link_ttl_days} days from "
-                "sending. The recruitment team can send a fresh one."
+                "delivery. The recruitment team can send a fresh one."
             ),
         )
     return dict(row)
@@ -948,7 +1348,9 @@ async def get_employer_checkbox_form(
         "candidate_name": row["full_name"],
         "employer_name": row["employer_name"],
         "items": bgv_form.items_payload(),
-        "expires_at": bgv_form.expires_at(row["form_token_issued_at"]),
+        "expires_at": bgv_delivery.link_expires_at(
+            row["delivered_at"], row["form_token_issued_at"]
+        ),
     }
 
 

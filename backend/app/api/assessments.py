@@ -42,6 +42,7 @@ from app.models.job_setup import (
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.assessments import (
+    AssessmentConsentIn,
     AssessmentModeIn,
     BulkCompetencyIn,
     CompetencyIn,
@@ -55,6 +56,7 @@ from app.schemas.assessments import (
     VideoQuestionOut,
     VideoRecordingStatusOut,
     VideoStartOut,
+    ClaimEvidenceOut,
     DimensionOut,
     FrameworkOut,
     FunctionalReportOut,
@@ -70,20 +72,29 @@ from app.schemas.assessments import (
     TranscriptAnswerDetailOut,
     TranscriptExchangeOut,
     TranscriptOut,
+    ValidationPointsOut,
 )
+# The proctored session's recording start. It lives beside the client-portal
+# video schemas rather than with the assessment ones because it is the
+# candidate-side half of the SAME artifact those schemas deliver, and both
+# halves are bound by the same rule: no bucket name and no object key.
+from app.schemas.videos import SessionMediaStartOut
 from app.services import capabilities as caps
 from app.services import rbac
 from app.services.hiring import pipeline_halt, scorecard, swot_quality
 from app.services import (
     answer_classification,
     assessment_consent,
+    evidence_confidence,
     assessment_invite,
     consent_catalog,
     conversation_guardrails,
+    cost_telemetry,
     credit_reconciliation,
     hiring_pipeline,
     interview_telemetry,
     interviewer,
+    job_assessment_retention,
     job_posting,
     ppi,
     ppi_interview,
@@ -101,6 +112,8 @@ from app.services import (
 from app.models.dual_mode import (
     MODE_CONVERSATIONAL,
     MODE_VIDEO_INTERVIEW,
+    RECORDING_PROCTORED_SESSION,
+    RECORDING_VIDEO_INTERVIEW,
     VideoRecording,
 )
 from app.services.video import lifecycle as video_lifecycle
@@ -1133,6 +1146,31 @@ async def restore_swot_analysis(
 # ── The PPI Assessment Report (spec §9) ──────────────────────────────────────
 
 
+async def _require_assessment_records_readable(
+    session: AsyncSession, user: CurrentUser, link: JobCandidateLink
+) -> None:
+    """THE JOB-CLOSURE ACCESS GATE (change request 22, 2026-09-22).
+
+    Closing a job no longer deletes its assessment data on the spot; it
+    WITHHOLDS it for thirty days and then a sweep deletes it. That makes
+    inaccessibility something the read path has to enforce rather than
+    something the absence of a row enforced for free, so every staff-facing
+    read of a report, a PDF or a transcript asks here.
+
+    Called AFTER the tenant check and BEFORE the artifact is loaded, the
+    ordering `services/tools` states: a refusal that ran the handler first has
+    already read the row it was refusing to show.
+
+    The CANDIDATE's own routes deliberately do not call this. The employer
+    closing a requisition withholds the record from the employer; it was never
+    a reason to take a person's own assessment away from them.
+    """
+    job = await session.get(Job, link.job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    await job_assessment_retention.require_readable(session, user, job)
+
+
 @router.get("/reports/links/{link_id}", response_model=FunctionalReportOut)
 async def get_report(
     link_id: uuid.UUID,
@@ -1142,6 +1180,7 @@ async def get_report(
     link = await session.get(JobCandidateLink, link_id)
     if link is None or link.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Report not found")
+    await _require_assessment_records_readable(session, user, link)
     report = (
         await session.execute(select(FunctionalSkillsReport).where(FunctionalSkillsReport.job_candidate_link_id == link.id))
     ).scalars().first()
@@ -1162,6 +1201,17 @@ async def get_report(
             grade=rating_label(row.score) or GRADES[-1],
             required_level=grade_for_percent(row.required_level),
             remark=row.remark,
+            # EVIDENCE CONFIDENCE (0107). The stored code becomes a word HERE,
+            # server side, for the same reason `score` becomes a grade here: a
+            # code that crossed the boundary is a code somebody eventually
+            # renders directly. A row written before 0107 carries None and
+            # `display_word` returns None for it rather than inventing one.
+            evidence_confidence=evidence_confidence.display_word(
+                row.evidence_confidence
+            ),
+            evidence_sources=list(
+                evidence_confidence.source_labels(row.evidence_sources)
+            ),
         )
 
     grouped: dict[str, list[DimensionOut]] = {}
@@ -1223,6 +1273,16 @@ async def get_report(
         validation=report.validation_json,
         proctoring=proctoring,
         gap_analysis=GapAnalysisOut.model_validate(report.gap_analysis_json or {}),
+        # An EMPTY model, not None, when the column is NULL. The two sections
+        # were added in 0107 and every report written before it has neither;
+        # a client walking the section order must find an empty section it can
+        # skip rather than a missing key it has to guard.
+        claim_evidence=ClaimEvidenceOut.model_validate(
+            report.claim_evidence_json or {}
+        ),
+        validation_points=ValidationPointsOut.model_validate(
+            report.validation_points_json or {}
+        ),
         # Populated only where Gap Analysis is not: a pre-Draft-v4 report shows
         # what it was actually written with rather than an empty section.
         suggested_interview_questions=(
@@ -1252,6 +1312,12 @@ async def download_report_pdf(
     link = await session.get(JobCandidateLink, link_id)
     if link is None or link.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Report not found")
+    # Asked again rather than relied on through `get_report` above, the same
+    # defensiveness the tenant check two lines up already applies: a gate that
+    # only holds because of the order two calls happen in is a gate the next
+    # reordering deletes without a diff that looks like a deletion. The Job is
+    # in the session identity map by now, so the second ask is free.
+    await _require_assessment_records_readable(session, user, link)
     candidate = await session.get(Candidate, link.candidate_id)
     # The candidate decides whether their assessment is retained beyond this
     # job (Consent & Privacy spec, 2026-09-05): Download enabled only on an
@@ -1484,6 +1550,7 @@ async def get_transcript(
     link = await session.get(JobCandidateLink, link_id)
     if link is None or link.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Application not found")
+    await _require_assessment_records_readable(session, user, link)
     conversation = (
         await session.execute(
             select(AssessmentConversation).where(
@@ -2385,11 +2452,16 @@ async def _consume_prefilled_questions(
     Feature 2 (C2, owner-ruled): a question whose criterion the resume
     already evidences carries `prefilled_answer`, and the conversation
     writes that exchange, agent prompt, then the labelled answer, exactly
-    where a typed answer would land (`answer_label="resume_prefill"`, so the
+    where a typed answer would land (the label names WHICH source, so the
     transcript says where the words came from), advances the index and moves
     on. The scorer reads the same rows it always reads; billing and
     completion fire at the same chokepoints, because the index moves through
     the same gate.
+
+    Since CR 23 (2026-09-22) there are two pre-fill sources: the resume anchor
+    and the candidate's PORTABLE record. Both land here identically on purpose,
+    because the mechanism is the same one and a second recording path would be
+    a second place for billing and completion to disagree.
     """
     from app.services import resume_prefill
 
@@ -2418,7 +2490,12 @@ async def _consume_prefilled_questions(
             domain=aspect,
             question_key=key,
             content=prefilled,
-            answer_label=resume_prefill.ANSWER_LABEL,
+            # The label says WHICH pre-fill produced this, not merely that one
+            # did. Since CR 23 there are two sources (the resume anchor and
+            # the candidate's portable record) and reading one as the other
+            # would misreport where an answer came from, which is the whole
+            # job of a transcript label.
+            answer_label=resume_prefill.answer_label_for(row.prefill_source),
         )
         session.add_all([
             AssessmentMessage(
@@ -2628,6 +2705,21 @@ async def respond(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     link, job = await _candidate_link(session, user, conversation.job_candidate_link_id)
+    # THE TURN'S MODEL SPEND IS BILLED TO THIS APPLICATION.
+    #
+    # Bound here, the moment the application is known and before anything can
+    # call a model, and drained by the single `cost_telemetry.flush` near the
+    # end of this handler. It is a plain tally rather than a context manager
+    # wrapped around four hundred lines: `contextvars` are per asyncio task and
+    # FastAPI gives every request its own, so nothing set here can reach
+    # another request, and the shape stays readable.
+    #
+    # A turn that raises after a model call loses that turn's counters, and
+    # that is the accepted cost rather than an oversight: this record is an
+    # OBSERVATION of work, the same class as `observability.trace`, and a turn
+    # that raised has already failed the candidate in front of it. Failing the
+    # turn to protect the counter would be exactly backwards.
+    turn_usage = cost_telemetry.begin()
     # A terminated conversation takes no further answer. The proctoring gate
     # below refuses too, through the session's outcome; this is the status the
     # ingestion pipeline wrote on the conversation itself, checked first
@@ -3017,11 +3109,54 @@ async def respond(
     # pre-filled this walks the index to the end so completion and the
     # charge fire in the same block below, on the same request.
     await _consume_prefilled_questions(session, job, conversation, prompts)
-    if (
-        conversation.next_question_index >= len(prompts) or evidence_complete
-    ) and not conversation.pending_prompt:
+    # Read AFTER the consumption above, which can walk the index to the end.
+    prompts_exhausted = conversation.next_question_index >= len(prompts)
+    if (prompts_exhausted or evidence_complete) and not conversation.pending_prompt:
         conversation.status = "completed"
         conversation.completed_at = datetime.now(timezone.utc)
+        # WHICH of the two endings this was, on the row (change request 28B).
+        #
+        # DERIVED FROM THE BRANCH THAT ALREADY DECIDED, never re-evaluated.
+        # `ppi.conversation_may_close` is still the only thing that can end an
+        # assessment early; this reads the decision it made rather than asking
+        # a second question that could answer differently, which is the
+        # duplicate decider `interviewer.stop_conditions` refuses to become.
+        #
+        # Exhaustion is checked FIRST, and the two are not symmetric. An early
+        # close requires `asked < total_written`, so the pair is mutually
+        # exclusive at the moment `evidence_complete` is computed; the
+        # pre-filled consumption above can then walk the index to the end, and
+        # a session that reached its last written question did not stop early
+        # whatever was true a few lines earlier. `prompts_exhausted` is the
+        # claim that can be checked against the row afterwards, so it wins.
+        #
+        # `every_dimension_covered` rather than `floor_reached` for the other
+        # branch, and the difference is the whole point of the feature: the
+        # floor is PERMISSION to stop, not a reason for stopping. Recording
+        # the floor would read as "we stopped at the minimum", which is the
+        # fail-style early exit this product deliberately does not do.
+        conversation.end_reason = (
+            interviewer.STOP_PROMPTS_EXHAUSTED
+            if prompts_exhausted
+            else interviewer.STOP_EVERY_DIMENSION_COVERED
+        )
+        # The same fact for a reader of the logs, with the three numbers that
+        # make it legible. Internal: `interview_telemetry`'s header is what
+        # forbids any of this reaching a response schema, and the end reason
+        # falls under it for a reason of its own, since how much of the matrix
+        # somebody was asked is precisely what a candidate would read as a
+        # verdict on their answers.
+        interview_telemetry.record_end(
+            interview_telemetry.EndEvent(
+                conversation_id=str(conversation.id),
+                end_reason=conversation.end_reason,
+                questions_asked=conversation.next_question_index,
+                questions_written=len(prompts),
+                floor=ppi.min_questions(
+                    job.assessment_grade, job.role_classification
+                ),
+            )
+        )
         # Master Directive Part 2 section 5.1: EV_INT_COMPLETED, the AI
         # assessment interview session ending. Feeds the TTF evaluation
         # segment (services/metrics.py); never allowed to fail the completion.
@@ -3074,6 +3209,27 @@ async def respond(
         await _write_next_question(
             session, job, link, conversation, prompts, next_index
         )
+
+    # Everything this turn spent, onto the application's cost record. AFTER
+    # `_write_next_question`, which is itself a model call and the second most
+    # expensive thing in the turn; flushing before it would under-report every
+    # interview by one composed question per turn, which is a systematic error
+    # rather than a rounding one.
+    #
+    # `questions_asked` is the conversation's own index, an absolute reading
+    # rather than a count of turns. The two genuinely differ: a follow-up and a
+    # re-ask are turns that advance no question, and reporting them as
+    # questions would make the cost record disagree with the progress label the
+    # candidate is looking at.
+    await cost_telemetry.flush(
+        session,
+        scope=cost_telemetry.AssessmentScope(
+            tenant_id=job.tenant_id, job_id=job.id, link_id=link.id
+        ),
+        tally=turn_usage,
+        conversation_turns=1,
+        questions_asked=conversation.next_question_index,
+    )
 
     # A pending follow-up is what the candidate sees next. The progress label
     # deliberately keeps counting BASE questions, so a probe does not make the
@@ -3289,11 +3445,7 @@ async def _mode_state(
             terms_version=terms.terms_version,
             # Stage B items (vivekium feature 6), served so the screen never
             # authors consent copy of its own.
-            items=[
-                item
-                for item in consent_catalog.catalogue_payload()
-                if item["stage"] == consent_catalog.STAGE_ASSESSMENT
-            ],
+            items=consent_catalog.stage_payload(consent_catalog.STAGE_ASSESSMENT),
         ),
     )
 
@@ -3343,6 +3495,7 @@ async def select_assessment_mode(
 @router.post("/conversations/links/{link_id}/consent", response_model=ModeStateOut)
 async def accept_assessment_consent(
     link_id: uuid.UUID,
+    body: AssessmentConsentIn,
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> ModeStateOut:
@@ -3351,10 +3504,17 @@ async def accept_assessment_consent(
     Only acceptance is recorded; a decline collects nothing and stores
     nothing, the candidate simply does not start. Idempotent per (session,
     mode): the first acceptance is the audit answer.
+
+    The body carries the Stage B items the candidate ticked, and the service
+    refuses anything short of the whole set (vivekium feature 6: each item is
+    consented individually).
     """
     link, _job, conversation = await _candidate_conversation(session, user, link_id)
     await assessment_consent.record_consent(
-        session, conversation, candidate_id=link.candidate_id
+        session,
+        conversation,
+        candidate_id=link.candidate_id,
+        consent_keys=body.consent_keys,
     )
     return await _mode_state(session, conversation)
 
@@ -3402,7 +3562,11 @@ async def start_video_interview(
                 target=hiring_pipeline.ASSESSMENT_IN_PROGRESS,
             )
     recording = await video_recordings.create_recording(
-        session, conversation, candidate_id=link.candidate_id, source_format=None
+        session,
+        conversation,
+        candidate_id=link.candidate_id,
+        source_format=None,
+        kind=RECORDING_VIDEO_INTERVIEW,
     )
     prompts = await _conversation_prompts(session, job, link)
     settings = _get_settings()
@@ -3416,6 +3580,63 @@ async def start_video_interview(
             )
             for index, (_aspect, _key, _stored, row) in enumerate(prompts)
         ],
+        max_upload_bytes=settings.video_max_upload_bytes,
+        max_duration_seconds=settings.video_max_duration_seconds,
+    )
+
+
+@router.post(
+    "/conversations/links/{link_id}/session-media/start",
+    response_model=SessionMediaStartOut,
+)
+async def start_session_media(
+    link_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> SessionMediaStartOut:
+    """Open the proctored session's recording (owner ruling, 2026-09-22).
+
+    THE GATE IS THE PROCTORING GATE, and that is the whole authorization
+    story: media is captured during a proctored assessment and at no other
+    time, so a session that may not proceed may not be recorded either. There
+    is no enable flag here, because there is no enable flag for proctoring
+    (principle P4, re-affirmed by the same ruling).
+
+    A VIDEO INTERVIEW IS REFUSED, not silently accepted. In that mode the
+    interview recording already captures the same camera for the same
+    minutes and is already stored, compressed and served through the same
+    routes; opening a second recording would store the candidate twice and
+    give the hiring team two artifacts to choose between.
+
+    The browser then uses the EXISTING upload, finalize and status routes.
+    They are not duplicated for this kind: one recording lifecycle, one
+    upload path, one processing task, and the row's `kind` is what decides
+    which half of the pipeline the bytes take.
+    """
+    link, job, conversation = await _candidate_conversation(session, user, link_id)
+    await proctoring_gate.require_active(session, conversation)
+    if conversation.mode == MODE_VIDEO_INTERVIEW:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This assessment is a video interview, and that recording is "
+                "already the stored record of the session."
+            ),
+        )
+    await assessment_consent.require_consent(session, conversation)
+    await _ensure_conversation_ready(session, job, link)
+    recording = await video_recordings.create_recording(
+        session,
+        conversation,
+        candidate_id=link.candidate_id,
+        source_format=None,
+        kind=RECORDING_PROCTORED_SESSION,
+    )
+    settings = _get_settings()
+    return SessionMediaStartOut(
+        conversation_id=conversation.id,
+        recording_id=recording.id,
+        status=recording.status,
         max_upload_bytes=settings.video_max_upload_bytes,
         max_duration_seconds=settings.video_max_duration_seconds,
     )

@@ -105,3 +105,12 @@ infra/environments/.*-offline-plan/
 # Generated knowledge graph. Reproduced by `graphify update .`, and graph.json
 # alone is 800k+ lines: a build artifact, never a source of truth.
 graphify-out/
+
+# Harness run artifacts (docs/spec/HARNESS.md section 5). One directory per run
+# holding the manifest, the trajectory, captured logs and the reports, plus
+# `baselines.json` naming the promoted reference per tier. Evidence of one
+# execution on one machine: committing it would put a stale report where the
+# next reader takes it for the current one, which is the same argument this
+# file already makes about backend/coverage.json. Retention is bounded by
+# `--keep-last`, so this directory does not grow without limit.
+harness-runs/

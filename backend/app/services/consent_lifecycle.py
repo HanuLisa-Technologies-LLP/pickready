@@ -141,6 +141,67 @@ def stage_for(
     return STAGE_DELETION_DUE
 
 
+#: Where a candidate is on the INACTIVITY clock. Named apart from the consent
+#: stages on purpose: the two clocks are independent (C6) and a shared
+#: vocabulary would invite a caller to compare one against the other.
+DORMANCY_ACTIVE = "dormancy_active"
+DORMANCY_WARNING_DUE = "dormancy_warning_due"
+DORMANCY_DELETION_DUE = "dormancy_deletion_due"
+
+ALL_DORMANCY_STAGES: frozenset[str] = frozenset(
+    {DORMANCY_ACTIVE, DORMANCY_WARNING_DUE, DORMANCY_DELETION_DUE}
+)
+
+
+def dormancy_stage_for(
+    *,
+    now: datetime,
+    last_engagement_at: datetime,
+    warning_sent_at: datetime | None,
+    thresholds: Thresholds,
+) -> str:
+    """Where this candidate is on the inactivity clock.
+
+    WHAT THIS REPLACES, AND WHY IT HAD TO. `is_dormant` answers one question
+    and the sweep used to erase on the strength of it alone: dormant, deleted,
+    with no letter, no warning and no window. The specification asks for a
+    deletion warning, then a grace period, then deletion, and the shape below
+    is the consent path's, for the reason that path already records.
+
+    THE GRACE RUNS FROM THE LETTER, NOT FROM THE DUE DATE. Gating the stage on
+    `warning_sent_at` rather than on elapsed time is what makes the sweep safe
+    to run late: if the scheduler is down for a month, a candidate does not
+    skip from active straight to deletion. The warning is still owed, it goes
+    out on the next sweep, and the window starts from THAT moment. A time-only
+    rule erases people for not answering a letter nobody sent, which is the one
+    failure this feature cannot recover from.
+
+    ONE WINDOW HERE, TWO ON THE CONSENT CLOCK, and the asymmetry is the brief
+    rather than an oversight. Feature 8 names two consent letters, a reminder
+    and then a final warning, so `stage_for` opens a second window to keep the
+    final warning's own sentence true when it is sent. The inactivity rule
+    names ONE letter, so there is one window. Adding a second here would
+    silently double the time a dormant profile is retained, which is a
+    retention decision and not a symmetry decision.
+
+    A WARNING OLDER THAN THE LAST ENGAGEMENT IS SPENT. `dormancy_warning_sent_at`
+    is a latch and nothing clears it, so a candidate who was warned, came back,
+    and then went quiet again would otherwise be read as already warned and
+    erased with no second letter at all. Comparing the two timestamps settles
+    that here rather than requiring every writer of `last_engagement_at` to
+    remember to clear a column it has no other reason to know about.
+    """
+    if not is_dormant(
+        now=now, last_engagement_at=last_engagement_at, thresholds=thresholds
+    ):
+        return DORMANCY_ACTIVE
+    if warning_sent_at is None or warning_sent_at <= last_engagement_at:
+        return DORMANCY_WARNING_DUE
+    if now < warning_sent_at + timedelta(days=thresholds.grace_days):
+        return DORMANCY_ACTIVE
+    return DORMANCY_DELETION_DUE
+
+
 def is_dormant(
     *, now: datetime, last_engagement_at: datetime, thresholds: Thresholds
 ) -> bool:

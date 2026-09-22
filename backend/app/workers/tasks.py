@@ -202,6 +202,7 @@ async def _send_email_async(
     context: dict,
     attachments: list[dict] | None = None,
     reply_to: str | None = None,
+    email_log_id: str | None = None,
 ) -> dict[str, str]:
     from app.services import email_render
 
@@ -285,6 +286,35 @@ async def _send_email_async(
         )
         raise
     finally:
+        # SETTLE THE email_log ROW, when the caller made one. Without this the
+        # row stays `queued` for ever and an SES event cannot find it: the
+        # webhook matches on `provider_message_id`, which only the delivery
+        # attempt knows. A binding written at send time and never settled is a
+        # correlation that looks present and resolves nothing, which is worse
+        # than an absent one because it reads as working.
+        #
+        # In the `finally` deliberately: `delivery_status` is already correct
+        # on both the success and the failure path, so one write covers both
+        # and cannot disagree with the audit row written beside it.
+        if email_log_id:
+            await session.execute(
+                text(
+                    "UPDATE email_log SET status = :status, "
+                    " provider_message_id = COALESCE(:mid, provider_message_id), "
+                    " transport = :transport, "
+                    " sent_at = CASE WHEN :status = 'sent' THEN now() "
+                    "            ELSE sent_at END, "
+                    " failed_at = CASE WHEN :status = 'failed' THEN now() "
+                    "              ELSE failed_at END "
+                    "WHERE id = :id"
+                ),
+                {
+                    "id": email_log_id,
+                    "status": delivery_status,
+                    "mid": message_id or None,
+                    "transport": settings.email_transport,
+                },
+            )
         # Log delivery to audit_log (ESD §11). NEVER include `context`  -  it may
         # carry OTP codes. Template name + recipient + status + failure taxonomy.
         await _audit(
@@ -321,6 +351,7 @@ def send_email(
     context: dict,
     attachments: list[dict] | None = None,
     reply_to: str | None = None,
+    email_log_id: str | None = None,
 ):
     """attachments: [{"filename": str, "content": <base64 str>}] (SMTP MIME part).
 
@@ -342,7 +373,7 @@ def send_email(
         async with _worker_session() as session:
             return await _send_email_async(
                 session, tenant_id, to, template_name, context, attachments,
-                reply_to=reply_to,
+                reply_to=reply_to, email_log_id=email_log_id,
             )
 
     try:
@@ -1370,6 +1401,128 @@ def purge_proctoring_events():
 
 
 @task(
+    name="pickready.purge_assessment_media",
+    route=Route.LAMBDA,
+)
+def purge_assessment_media():
+    """Hourly retention sweep over stored assessment recordings.
+
+    `assessment_media_retention_days` is zero by default, and zero means the
+    platform's existing candidate-data policy applies: media leaves with the
+    candidate erasure, the job closure deletion and the tenant cascade, and
+    nothing is deleted early. The task then LOGS that and does nothing, so an
+    operator reading the worker log can see the policy in force rather than
+    inferring it from silence. The same shape `purge_proctoring_events`
+    already has, for the same reason.
+
+    It asks the TABLE (`stored_at` older than the window and
+    `media_deleted_at` still null), never a timestamp on something else, and
+    every deletion is HEAD-confirmed. One recording at a time, committing as
+    it goes: a single transaction over the whole backlog would roll back
+    deletions the object store has already performed and leave the counters
+    disagreeing with the store.
+    """
+    from app.services import assessment_media_retention as media_retention
+
+    async def _task():
+        days = get_settings().assessment_media_retention_days
+        if days <= 0:
+            logger.info(
+                "assessment_media.purge_noop retention follows the platform "
+                "cascade policy"
+            )
+            return
+        async with _worker_session() as session:
+            expired = await media_retention.expired_recordings(
+                session, retention_days=days
+            )
+            purged = 0
+            incomplete = 0
+            for recording in expired:
+                outcome = await media_retention.delete_media_for_recording(
+                    session, recording
+                )
+                await session.commit()
+                if outcome.finished and outcome.failure is None:
+                    purged += 1
+                else:
+                    incomplete += 1
+            logger.info(
+                "assessment_media.purged recordings=%d incomplete=%d "
+                "older_than_days=%d",
+                purged, incomplete, days,
+            )
+    _run(_task())
+
+
+@task(
+    name="pickready.purge_closed_job_assessments",
+    route=Route.LAMBDA,
+)
+def purge_closed_job_assessments():
+    """Delete a closed job's assessment data once its thirty days are up.
+
+    Change request 22, owner ruling 2026-09-22, which REVERSED the 2026-09-18
+    ruling that `POST /jobs/{id}/close` deleted inline. Closure now withholds
+    and schedules; this is the half that makes "thirty days" a fact rather
+    than a sentence in a dialog. Without it the data is retained for ever and
+    the promise made to every assessed candidate is quietly broken, silently,
+    because a retention window with no sweep behind it produces exactly the
+    same empty log as one with nothing to delete.
+
+    IT ASKS THE TABLE (`assessment_purge_due_at` past and
+    `assessment_purged_at` still null), never a last-swept stamp on something
+    else (rule 8). That is what makes it idempotent: a job the purge finished
+    is never enumerated again, and a job whose object store refused comes back
+    on the very next run with its attempt counter one higher.
+
+    ONE JOB PER TRANSACTION, COMMITTING AS IT GOES, the rule the candidate
+    erasure sweep and the media sweep both follow: a single transaction over
+    the whole backlog would roll back row deletions whose S3 objects the store
+    has already destroyed, leaving reports that point at media that is gone.
+
+    NEVER GIVES UP and has no attempt ceiling, for the reason
+    `services/deletion_requests` states in place. Past
+    `ATTEMPTS_BEFORE_ALARM` the log line becomes an error, so a job the object
+    store keeps refusing is loud rather than merely present.
+    """
+    from app.services import deletion_requests, job_assessment_retention
+
+    async def _task():
+        purged = incomplete = 0
+        async with _worker_session() as session:
+            due = await job_assessment_retention.jobs_due_for_purge(session)
+            for job in due:
+                outcome = await job_assessment_retention.purge_job(session, job)
+                job_id = job.id
+                attempts = job.assessment_purge_attempts
+                failure = job.assessment_purge_last_failure
+                await session.commit()
+                if outcome.completed:
+                    purged += 1
+                    continue
+                incomplete += 1
+                message = (
+                    "job_assessment_retention.unfinished job_id=%s remaining=%d "
+                    "attempts=%d failure=%s"
+                )
+                if attempts >= deletion_requests.ATTEMPTS_BEFORE_ALARM:
+                    logger.error(
+                        message, job_id, outcome.media_remaining, attempts, failure
+                    )
+                else:
+                    logger.warning(
+                        message, job_id, outcome.media_remaining, attempts, failure
+                    )
+            if due:
+                logger.info(
+                    "job_assessment_retention.swept due=%d purged=%d incomplete=%d",
+                    len(due), purged, incomplete,
+                )
+    _run(_task())
+
+
+@task(
     name="pickready.release_held_assessments",
     route=Route.LAMBDA,
     max_attempts=3,
@@ -1655,7 +1808,7 @@ def sweep_consent_lifecycle():
     from app.core.config import get_settings
     from app.models.candidate import Candidate
     from app.services import consent_lifecycle as cl
-    from app.services import erasure
+    from app.services import consent_renewal, erasure
 
     async def _task():
         settings = get_settings()
@@ -1667,6 +1820,7 @@ def sweep_consent_lifecycle():
         deletion_armed = settings.consent_auto_deletion_enabled
         now = cl.utcnow()
         reminded = warned = erased = would_erase = 0
+        dormancy_warned = 0
 
         async with _worker_session() as session:
             candidates = (
@@ -1685,17 +1839,24 @@ def sweep_consent_lifecycle():
                     final_warning_sent_at=candidate.consent_final_warning_at,
                     thresholds=thresholds,
                 )
-                dormant = cl.is_dormant(
+                # THE INACTIVITY CLOCK NOW HAS A LETTER AND A WINDOW. It used
+                # to be one boolean: dormant, erased, with no warning of any
+                # kind and no way for the person to stop it. The stage is
+                # gated on the warning having ACTUALLY been sent, exactly as
+                # the consent stages are, so a scheduler outage delays the
+                # letter instead of skipping somebody to deletion.
+                dormancy = cl.dormancy_stage_for(
                     now=now,
                     last_engagement_at=cl.engagement_at_for(
                         created_at=candidate.created_at,
                         last_engagement_at=candidate.last_engagement_at,
                     ),
+                    warning_sent_at=candidate.dormancy_warning_sent_at,
                     thresholds=thresholds,
                 )
 
                 reason = None
-                if dormant:
+                if dormancy == cl.DORMANCY_DELETION_DUE:
                     reason = cl.REASON_DORMANT
                 elif stage == cl.STAGE_DELETION_DUE:
                     reason = cl.REASON_CONSENT_EXPIRED
@@ -1704,18 +1865,51 @@ def sweep_consent_lifecycle():
                     if not deletion_armed:
                         would_erase += 1
                         continue
-                    receipt = await erasure.cascade_erasure(
-                        session, candidate.id, actor_role=reason
+                    # THE ONE CANONICAL DELETION WORKFLOW. The two reasons are
+                    # reasons recorded on the same erasure, not two engines:
+                    # the record captures the object keys before the rows go,
+                    # the cascade runs, and the objects are finished by the
+                    # same resumable pass `DELETE /portal/me` uses.
+                    request = await erasure.open_deletion_request(
+                        session, candidate.id, reason=reason
                     )
+                    receipt = await erasure.cascade_erasure(
+                        session, candidate.id, reason=reason
+                    )
+                    await erasure.mark_rows_erased(session, request)
+                    await erasure.run_object_deletion(session, request)
+                    state = request.state
                     await session.commit()
                     erased += 1
                     logger.info(
                         "consent.erased candidate_id=%s reason=%s "
-                        "sign_in_accounts=%d",
+                        "sign_in_accounts=%d deletion_state=%s",
                         receipt.candidate_id,
                         reason,
                         receipt.sign_in_accounts_deleted,
+                        state,
                     )
+                    continue
+
+                if dormancy == cl.DORMANCY_WARNING_DUE and candidate.email:
+                    candidate.dormancy_warning_sent_at = now
+                    await session.commit()
+                    dispatch(
+                        "pickready.send_email",
+                        args=[
+                            None,
+                            candidate.email,
+                            "dormancy_deletion_warning",
+                            {},
+                        ],
+                    )
+                    dormancy_warned += 1
+                    # AT MOST ONE LETTER PER CANDIDATE PER SWEEP. The two
+                    # clocks are independent and can both come due, and two
+                    # letters about deletion in one morning reads as a fault
+                    # rather than as diligence. Skipping the consent letter
+                    # here costs a day, because its stage is latched on a
+                    # stamp that was not written: tomorrow's sweep sends it.
                     continue
 
                 # THE STAMP IS WRITTEN BEFORE THE LETTER IS DISPATCHED, and
@@ -1725,28 +1919,53 @@ def sweep_consent_lifecycle():
                 # nothing. The other order risks a letter with no stamp, and
                 # the next sweep would send it again, and the one after that,
                 # for ever.
+                #
+                # THE TOKEN IS MINTED AND STORED IN THE SAME UNIT OF WORK AS
+                # THE STAMP, and its URL is built in the same expression that
+                # reads the address it is sent to. That pairing is the whole
+                # mitigation for the hazard the templates' own comment names:
+                # a per-candidate slot in a letter the sweep sends inside a
+                # loop is a slot a loop variable eventually fills with the
+                # wrong person's value. Here the address and the link come
+                # from one row in one statement, and there is no intermediate
+                # variable that could survive an iteration.
                 if stage == cl.STAGE_REMINDER_DUE and candidate.email:
+                    minted = consent_renewal.mint(now=now)
+                    await consent_renewal.store_token(session, candidate.id, minted)
                     candidate.consent_reminder_sent_at = now
                     await session.commit()
                     dispatch(
                         "pickready.send_email",
-                        args=[None, candidate.email, "consent_renewal_reminder", {}],
+                        args=[
+                            None,
+                            candidate.email,
+                            "consent_renewal_reminder",
+                            {"renewal_url": consent_renewal.renewal_url(minted.token)},
+                        ],
                     )
                     reminded += 1
                 elif stage == cl.STAGE_FINAL_WARNING_DUE and candidate.email:
+                    minted = consent_renewal.mint(now=now)
+                    await consent_renewal.store_token(session, candidate.id, minted)
                     candidate.consent_final_warning_at = now
                     await session.commit()
                     dispatch(
                         "pickready.send_email",
-                        args=[None, candidate.email, "consent_final_warning", {}],
+                        args=[
+                            None,
+                            candidate.email,
+                            "consent_final_warning",
+                            {"renewal_url": consent_renewal.renewal_url(minted.token)},
+                        ],
                     )
                     warned += 1
 
         logger.info(
-            "consent.sweep reminded=%d warned=%d erased=%d would_erase=%d "
-            "deletion_armed=%s",
+            "consent.sweep reminded=%d warned=%d dormancy_warned=%d erased=%d "
+            "would_erase=%d deletion_armed=%s",
             reminded,
             warned,
+            dormancy_warned,
             erased,
             would_erase,
             deletion_armed,
@@ -1782,7 +2001,7 @@ def sweep_bgv_reminders():
     template asks them to contact that HR team directly.
     """
     from app.core.config import get_settings
-    from app.services import bgv_form
+    from app.services import bgv_delivery, bgv_form
 
     async def _task():
         ttl_days = get_settings().verification_link_ttl_days
@@ -1790,20 +2009,15 @@ def sweep_bgv_reminders():
         async with _worker_session() as session:
             rows = (
                 (
+                    # The three days run from CONFIRMED DELIVERY, not from
+                    # the send, and a bounced request is never chased: sending
+                    # somebody to argue with an HR team that received nothing
+                    # spends their credibility on a failure we caused. The
+                    # predicate lives in bgv_delivery beside the Python clock
+                    # it has to agree with, and a test drives both over the
+                    # same rows.
                     await session.execute(
-                        text(
-                            "SELECT v.id, v.tenant_id, c.full_name, "
-                            " c.email AS candidate_email, e.hr_email "
-                            "FROM bgv_verifications v "
-                            "JOIN candidate_employments e "
-                            "  ON e.id = v.candidate_employment_id "
-                            "JOIN candidates c ON c.id = v.candidate_id "
-                            "WHERE v.responded_at IS NULL "
-                            "  AND v.reminder_sent_at IS NULL "
-                            "  AND v.first_sent_at IS NOT NULL "
-                            "  AND v.first_sent_at <= now() - make_interval("
-                            "      days => :days)"
-                        ),
+                        text(bgv_delivery.reminder_due_sql()),
                         {"days": ttl_days},
                     )
                 )
@@ -1880,10 +2094,24 @@ def bgv_auto_maintenance(candidate_id: str, employment_id: str):
     name="pickready.cascade_erasure",
     route=Route.LAMBDA,
 )
-def cascade_erasure(candidate_id: str, actor_user_id: str | None = None):
-    """Erase one candidate: rows, VECTORS and caches (W9.5).
+def cascade_erasure(
+    candidate_id: str,
+    actor_user_id: str | None = None,
+    request_id: str | None = None,
+):
+    """Erase one candidate: rows, VECTORS, caches and STORED OBJECTS (W9.5).
 
-    A handful of statements and a Redis scan, so Lambda.
+    RESUMABLE, AND THE THIRD ARGUMENT IS WHAT MAKES IT SO. Called with a
+    `request_id` it picks a `candidate_deletion_requests` record up wherever it
+    was left: `pending` means the database half never ran, `rows_erased` means
+    only the objects are outstanding, `completed` means somebody else finished
+    it and this call is a redelivery. Called without one, as the AI runtime's
+    own call sites do, it opens its own record first, so there is exactly one
+    shape of erasure in the product rather than an orchestrated one and a bare
+    one that forgets the files.
+
+    A handful of statements, a Redis scan and a bounded set of object deletes,
+    so Lambda.
 
     THE VECTORS ARE THE POINT. An embedding is not a one-way hash: published
     inversion work recovers 50 to 70% of input words from popular sentence
@@ -1896,17 +2124,159 @@ def cascade_erasure(candidate_id: str, actor_user_id: str | None = None):
     candidate spans tenants via the databank, and their chunks may sit under a
     tenant the erasing operator is not scoped to.
     """
-    from app.services import erasure
+    from app.models.deletion import CandidateDeletionRequest
+    from app.services import deletion_requests, erasure
 
     async def _task():
         async with _worker_session() as session:
-            receipt = await erasure.cascade_erasure(
-                session, candidate_id, actor_user_id=actor_user_id
-            )
+            request = None
+            if request_id is not None:
+                request = await session.get(
+                    CandidateDeletionRequest, uuid.UUID(request_id)
+                )
+                if request is None:
+                    # LOUD, not skipped. A dispatch naming a record that does
+                    # not exist means either the transaction that opened it
+                    # rolled back after the enqueue, or something deleted the
+                    # only thing that still knows which objects have to go.
+                    # Both are worth an alarm; neither is worth pretending an
+                    # erasure completed.
+                    raise LookupError(
+                        f"no deletion request {request_id}, so there is "
+                        "nothing to resume and no record of what was owed"
+                    )
+            if request is None:
+                request = await erasure.open_deletion_request(
+                    session,
+                    candidate_id,
+                    reason=deletion_requests.REASON_CANDIDATE_REQUESTED,
+                    requested_by_user_id=actor_user_id,
+                )
+
+            receipt = None
+            if request.state == deletion_requests.STATE_PENDING:
+                receipt = await erasure.cascade_erasure(
+                    session, request.candidate_id, actor_user_id=actor_user_id
+                )
+                await erasure.mark_rows_erased(session, request)
+                await session.commit()
+                logger.info("erasure.cascaded candidate_id=%s", candidate_id)
+
+            outcome = await erasure.run_object_deletion(session, request)
+            state = request.state
+            objects_deleted = request.objects_deleted
+            objects_total = request.objects_total
             await session.commit()
-            logger.info("erasure.cascaded candidate_id=%s", candidate_id)
-            return receipt.as_json()
+            logger.info(
+                "erasure.request candidate_id=%s state=%s objects=%d/%d "
+                "failure=%s",
+                candidate_id,
+                state,
+                objects_deleted,
+                objects_total,
+                outcome.failure,
+            )
+            return {
+                "candidate_id": str(request.candidate_id),
+                "deletion_request_id": str(request.id),
+                "state": state,
+                "objects_deleted": objects_deleted,
+                "objects_total": objects_total,
+                "receipt": receipt.as_json() if receipt is not None else None,
+            }
     return _run(_task())
+
+
+@task(
+    name="pickready.reconcile_candidate_erasures",
+    route=Route.LAMBDA,
+)
+def reconcile_candidate_erasures():
+    """Finish every erasure that is not finished (feature 7, change 15).
+
+    THE STATE THIS EXISTS FOR IS `rows_erased`: the person is out of the
+    database and some of their stored files are not out of the object store.
+    Before the deletion record existed that state was not merely unrepaired,
+    it was UNDETECTABLE: the erasure was one inline transaction, the objects
+    were never touched at all, and nothing anywhere held a list of what was
+    owed.
+
+    It asks the TABLE, never a timestamp, which is the rule
+    `reconcile_context_index` states and the reason
+    `reconcile_project_intake` exists in the same shape: a dispatch that never
+    arrived leaves no trace, so the only durable record of outstanding work is
+    the row that describes it.
+
+    NEVER GIVES UP. There is no attempt ceiling and no terminal failure state,
+    because "we stopped trying to delete this person's documents" is not an
+    outcome this product may reach. What a persistent failure moves is the
+    attempt counter, and past `ATTEMPTS_BEFORE_ALARM` the log line becomes an
+    error so a stuck request is loud rather than merely present.
+
+    ONE REQUEST AT A TIME, COMMITTING AS IT GOES, the consent sweep's rule: a
+    single transaction over the whole backlog would roll back the deletions it
+    had already confirmed and leave counters that disagree with the store.
+    """
+    from app.models.deletion import CandidateDeletionRequest
+    from app.services import deletion_requests, erasure
+
+    async def _task():
+        resumed = completed = stuck = 0
+        async with _worker_session() as session:
+            requests = (
+                await session.execute(
+                    select(CandidateDeletionRequest)
+                    .where(
+                        CandidateDeletionRequest.state
+                        != deletion_requests.STATE_COMPLETED
+                    )
+                    .order_by(CandidateDeletionRequest.requested_at)
+                )
+            ).scalars().all()
+
+            for request in requests:
+                resumed += 1
+                if request.state == deletion_requests.STATE_PENDING:
+                    # The rows were never erased: the process died between
+                    # opening the record and running the cascade. Finish what
+                    # the person asked for rather than leaving them half in.
+                    await erasure.cascade_erasure(
+                        session, request.candidate_id, reason=request.reason
+                    )
+                    await erasure.mark_rows_erased(session, request)
+                await erasure.run_object_deletion(session, request)
+                state = request.state
+                attempts = request.deletion_attempts
+                failure = request.last_failure
+                candidate_id = request.candidate_id
+                remaining = request.objects_total - request.objects_deleted
+                await session.commit()
+
+                if state == deletion_requests.STATE_COMPLETED:
+                    completed += 1
+                    continue
+                stuck += 1
+                message = (
+                    "erasure.unfinished candidate_id=%s remaining=%d "
+                    "attempts=%d failure=%s"
+                )
+                if attempts >= deletion_requests.ATTEMPTS_BEFORE_ALARM:
+                    logger.error(
+                        message, candidate_id, remaining, attempts, failure
+                    )
+                else:
+                    logger.warning(
+                        message, candidate_id, remaining, attempts, failure
+                    )
+
+        if resumed:
+            logger.info(
+                "erasure.reconcile resumed=%d completed=%d unfinished=%d",
+                resumed,
+                completed,
+                stuck,
+            )
+    _run(_task())
 
 
 @task(
@@ -2253,6 +2623,183 @@ def send_credit_warning_email(tenant_id: str, level: int):
 
 
 @task(
+    name="pickready.expire_credit_lots",
+    route=Route.LAMBDA,
+)
+def expire_credit_lots(limit: int = 500):
+    """Materialise every credit lot that has passed its expiry.
+
+    Change request 25. A lot reaching its expiry writes an `expiry` ledger
+    debit for whatever was left on it, so `balance = SUM(subunits_delta)`
+    stays the single definition of the balance and the statement says why it
+    fell. `credit_lots.expire_due` is also called by every gate and by the
+    billing summary, so an ACTIVE customer's balance is already exact when
+    they look at it. This sweep exists for the customer nobody is looking at:
+    without it their balance would overstate until the next time somebody
+    happened to read it, and the Provider Portal's cross-tenant overview would
+    be reading those stale figures.
+
+    Asks the TABLE, never a "last swept" stamp: a sweep keyed on a timestamp
+    skips exactly the tenant whose previous run died between the stamp and the
+    work. Idempotent per lot three times over; see `expire_due`.
+
+    DAILY, and the interval is not load-bearing: expiry is materialised on
+    every read and every deduction, so running late costs a stale number on an
+    idle account and can never let an expired credit be spent.
+
+    Committing per tenant, the consent sweep's rule: a tenant's lot zeroing
+    and its ledger debit land together or neither does, and one tenant's
+    failure does not discard the work already done for the others.
+    """
+    from app.services import credit_lots
+
+    async def _task():
+        swept = 0
+        subunits = 0
+        async with _worker_session() as session:
+            tenant_ids = await credit_lots.tenants_with_due_lots(session, limit)
+            for tenant_id in tenant_ids:
+                expired = await credit_lots.expire_due(session, tenant_id)
+                await session.commit()
+                if expired:
+                    swept += 1
+                    subunits += expired
+        logger.info(
+            "credits.expiry_sweep tenants=%d subunits=%d", swept, subunits
+        )
+        return {"tenants": swept, "subunits": subunits}
+
+    return _run(_task())
+
+
+def _expiry_line(summary) -> str:
+    """The one sentence about validity in the usage summary.
+
+    Three states, and they are genuinely different facts rather than three
+    phrasings of one. A customer holding only pre-change credits is told their
+    credits do not expire, because that is still true for them and telling
+    them otherwise would be the letter contradicting their own invoices. A
+    customer with nothing expiring soon is told nothing about a date, because
+    a warning about one three months out is noise. Only the third state gets
+    a date.
+    """
+    if summary.expiring_soon_credits > 0 and summary.next_expiry_at is not None:
+        return (
+            "Expiring within the next month: "
+            f"{summary.expiring_soon_credits} credits, "
+            f"the first on {summary.next_expiry_at:%d %b %Y}."
+        )
+    if summary.non_expiring_credits == summary.balance_credits:
+        return "Your credits do not expire."
+    return "Nothing in your balance expires within the next month."
+
+
+@task(
+    name="pickready.sweep_subscription_usage_alerts",
+    route=Route.LAMBDA,
+)
+def sweep_subscription_usage_alerts(limit: int = 200):
+    """The month 10 and month 11 informational usage summary.
+
+    Change request 27. PURELY INFORMATIONAL: it writes exactly one column,
+    `tenants.usage_alert_last_month`, which exists only so the letter cannot
+    be sent twice. It does not renew, cancel, charge, grant or change a
+    subscription status, and `tests/test_subscription_usage_alerts.py` asserts
+    that by reading every subscription column back after the sweep.
+
+    The month is CLAIMED before the letter is dispatched, in one checked
+    UPDATE. That ordering is deliberate and is the same trade
+    `_sync_warning_flags` makes: claiming first means a crash between the
+    claim and the dispatch costs a customer one informational email, while
+    dispatching first would mean two sweeps racing send two.
+
+    DAILY, because the windows it measures are months. Running late delays the
+    letter by a day; it can never duplicate one.
+    """
+    from app.models.billing import (
+        CREDIT_PACK_LABELS,
+        STARTER_PACK_PRICE_INR,
+        STARTER_PACK_SLUG,
+        STARTER_PACK_TOTAL_CREDITS,
+    )
+    from app.services import subscription_usage
+
+    async def _task():
+        sent = 0
+        now = datetime.now(timezone.utc)
+        async with _worker_session() as session:
+            due = await subscription_usage.due_tenants(
+                session, now=now, limit=limit
+            )
+            for tenant_id, month in due:
+                row = (
+                    await session.execute(
+                        text(
+                            "SELECT u.email, t.name FROM users u "
+                            "JOIN tenants t ON t.id = u.tenant_id "
+                            "WHERE u.tenant_id = :tid AND u.role = 'client' "
+                            "AND u.status <> 'disabled' AND u.email IS NOT NULL "
+                            "ORDER BY u.created_at LIMIT 1"
+                        ),
+                        {"tid": str(tenant_id)},
+                    )
+                ).mappings().first()
+                if row is None:
+                    # No account admin to write to. Say so rather than
+                    # claiming the month: a tenant who gains an admin next
+                    # week should still get the summary while it is true.
+                    logger.warning(
+                        "billing.usage_summary_no_recipient tenant=%s", tenant_id
+                    )
+                    continue
+                if not await subscription_usage.claim_month(
+                    session, tenant_id, month
+                ):
+                    continue
+                summary = await subscription_usage.build_summary(
+                    session, tenant_id, month
+                )
+                await session.commit()
+                dispatch(
+                    "pickready.send_email",
+                    args=[
+                        str(tenant_id),
+                        row["email"],
+                        "subscription_usage_summary",
+                        {
+                            "company_name": row["name"],
+                            "subscription_month": str(month),
+                            "assessments_used": str(summary.assessments_used),
+                            "assessments_remaining": str(
+                                summary.assessments_remaining
+                            ),
+                            "balance_credits": str(summary.balance_credits),
+                            "rollover_credits": str(summary.rollover_credits),
+                            "average_credits": str(
+                                summary.average_credits_per_assessment
+                            ),
+                            "expiry_line": _expiry_line(summary),
+                            "starter_pack_label": CREDIT_PACK_LABELS[
+                                STARTER_PACK_SLUG
+                            ],
+                            "starter_pack_credits": str(
+                                STARTER_PACK_TOTAL_CREDITS
+                            ),
+                            "starter_pack_price": f"{STARTER_PACK_PRICE_INR:,}",
+                            "billing_url": (
+                                f"{get_settings().frontend_url}/org/billing"
+                            ),
+                        },
+                    ],
+                )
+                sent += 1
+        logger.info("billing.usage_summary_sweep sent=%d", sent)
+        return {"sent": sent}
+
+    return _run(_task())
+
+
+@task(
     name="pickready.send_credit_invoice_email",
     route=Route.LAMBDA,
 )
@@ -2322,6 +2869,19 @@ def send_credit_invoice_email(purchase_id: str):
                         ),
                         "invoice_number": purchase.invoice_number or "",
                         "total_inr": f"{purchase.total_inr:,}",
+                        # From the stored row, never the constant: an
+                        # invoice issued before change request 25 carries
+                        # NULL and keeps saying what it said when it was
+                        # issued.
+                        "validity_sentence": (
+                            "These credits never expire."
+                            if purchase.credit_validity_months is None
+                            else (
+                                "These credits are valid for "
+                                f"{purchase.credit_validity_months} months "
+                                "from the date of this invoice."
+                            )
+                        ),
                         "billing_url": f"{get_settings().frontend_url}/org/billing",
                     },
                 ],

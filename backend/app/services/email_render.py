@@ -102,10 +102,40 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "Your Vivekium credit purchase and invoice {{invoice_number}}",
         "Hello,\n\n"
         "Your credit purchase for {{company_name}} is confirmed. "
-        "{{credits_total}} credits have been added to your account and never "
-        "expire.\n\n"
+        "{{credits_total}} credits have been added to your account."
+        "\n\n{{validity_sentence}}\n\n"
         "Invoice {{invoice_number}} (total Rs. {{total_inr}} incl. GST) is "
         "attached, and remains available from your billing page:\n\n"
+        "{{billing_url}}\n\n"
+        "Regards,\nVivekium",
+    ),
+    # Change request 27: the month 10 and month 11 usage summary.
+    # INFORMATIONAL, and the copy has to carry that difference. The balance
+    # warnings above end with "Top up immediately" because the customer is
+    # about to be unable to run an assessment; this one fires on a calendar
+    # at a moment when nothing is wrong, so it states facts, offers the pack,
+    # and says in as many words that doing nothing is a normal choice.
+    # Borrowing the warning's urgency here is how a customer learns to
+    # ignore the warning.
+    "subscription_usage_summary": (
+        "Your Vivekium usage summary, month {{subscription_month}}",
+        "Hello,\n\n"
+        "This is a summary of how {{company_name}} has used Vivekium so "
+        "far. Nothing about your subscription changes because of this "
+        "email, and no action is required.\n\n"
+        "Assessments completed to date: {{assessments_used}}\n"
+        "Credit balance: {{balance_credits}} credits\n"
+        "Carried over from last month: {{rollover_credits}} credits\n"
+        "{{expiry_line}}\n"
+        "At your own average of {{average_credits}} credits per "
+        "assessment, your balance covers approximately "
+        "{{assessments_remaining}} more assessments.\n\n"
+        "If that is enough for the hiring you have planned, there is "
+        "nothing to do and this email needs no reply.\n\n"
+        "If you expect to need more, the {{starter_pack_label}} is "
+        "{{starter_pack_credits}} assessments for Rs. "
+        "{{starter_pack_price}} plus GST, and you can buy it from your "
+        "billing page:\n\n"
         "{{billing_url}}\n\n"
         "Regards,\nVivekium",
     ),
@@ -170,20 +200,30 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "If you did not ask for this, reply to this message immediately.\n\n"
         "Regards,\nVivekium",
     ),
-    # Feature 8, the six-month renewal. BOTH of these carry no context for the
-    # same reason `account_deleted` does: the sweep that sends them iterates
-    # every candidate, and a template with a name slot in it is a template that
-    # will eventually be handed the wrong person's name by a loop variable.
-    # The recipient address is the only personal datum involved and it is
-    # already the thing being written to.
+    # Feature 8, the six-month renewal. THE ONE SLOT EACH OF THESE CARRIES IS
+    # `renewal_url`, and it is the thing that makes their own instruction true.
+    # They said "sign in and confirm" for the whole time there was nothing
+    # anywhere to confirm with: `consent_renewed_at` was read in three places
+    # and written in none, so a candidate who did exactly as asked still
+    # advanced to the deletion stage.
+    #
+    # No name slot, and the original reason for that stands: the sweep that
+    # sends these iterates every candidate, and a template with a name in it is
+    # one a loop variable will eventually fill with the wrong person's. The
+    # link is different in kind rather than an exception to the rule, because
+    # it is minted for one candidate inside the same expression that reads
+    # their address, and following somebody else's renewal link can only ever
+    # keep a profile that asked to stay.
     "consent_renewal_reminder": (
         "Confirm you would like to stay on Vivekium",
         "It has been six months since you joined or last confirmed your "
         "details, so we are checking that you would still like your profile "
         "kept on the platform.\n\n"
-        "Sign in and confirm to stay visible to employer clients registered "
-        "on the platform. If we do not hear from you we will write once more "
-        "before removing your profile.\n\n"
+        "Confirm here to stay visible to employer clients registered on the "
+        "platform:\n{{renewal_url}}\n\n"
+        "You can also sign in and confirm from your profile. If we do not "
+        "hear from you we will write once more before removing your "
+        "profile.\n\n"
         "Regards,\nVivekium",
     ),
     # THE SENTENCE THIS LETTER HAS TO EARN. It says deletion has not happened
@@ -200,7 +240,28 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
         "That removes your background verification record, which would have "
         "to be obtained again from the beginning, and takes you out of job "
         "matching entirely.\n\n"
-        "Sign in and confirm to keep your profile.\n\n"
+        "Confirm here to keep your profile:\n{{renewal_url}}\n\n"
+        "You can also sign in and confirm from your profile.\n\n"
+        "Regards,\nVivekium",
+    ),
+    # Feature 8, the INACTIVITY rule, and this letter is the whole of change
+    # 17. The dormancy path used to read one boolean and erase: no warning, no
+    # window, no notice of any kind. A retention rule that deletes without
+    # telling anybody is indistinguishable from data loss.
+    #
+    # It describes the ACT that clears the clock rather than a link, and that
+    # is deliberate: the inactivity clock is reset by USING the platform, not
+    # by confirming a consent, so a one-click link would be a button that
+    # claimed to fix something it does not touch. Signing in is what resets it,
+    # which is why that is what the letter asks for.
+    "dormancy_deletion_warning": (
+        "Your Vivekium profile will be removed unless you sign in",
+        "Your profile has been inactive for a long time, and profiles that "
+        "are not being used are removed from the platform.\n\n"
+        "Sign in to keep your profile. If you do not, it will be permanently "
+        "deleted along with your assessment data and any background "
+        "verification record, and that record would have to be obtained again "
+        "from the beginning.\n\n"
         "Regards,\nVivekium",
     ),
     "bgv_verification": ("{{subject}}", "{{body}}"),

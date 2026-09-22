@@ -276,6 +276,131 @@ def test_no_forbidden_relationship_terms_anywhere() -> None:
     assert not offenders, f"forbidden relationship terms: {offenders}"
 
 
+# ── The same two rules, over the DATABASE ──────────────────────────────────
+#
+# THE SOURCE SWEEPS ABOVE ONLY COVER TEXT THE CODE WRITES, and that is half
+# the platform. Migration 0025 exists because 103 rows of seeded and generated
+# copy carried em dashes straight onto the public application page, and it was
+# found by loading a live job posting and reading it rather than by any test.
+# The forbidden relationship terms arrive by exactly the same routes: a model
+# writes a JD, a client types a company profile, a consent sentence is stored
+# beside the act it records. C7 asks for the sweep "over source AND the
+# database"; until now nothing here read a row.
+
+#: (table, column) pairs holding copy a candidate or a client can read. Text
+#: columns only: a jsonb document is swept whole, below, by casting it.
+_CONTENT_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("jobs", "about_company"),
+    ("jobs", "work_life"),
+    ("jobs", "benefits"),
+    ("jobs", "jd_markdown"),
+    ("tenants", "details"),
+    ("tenants", "culture"),
+    # The consent record stores the VERBATIM sentence shown (migration 0117),
+    # which is precisely the "consent text" the brief names first.
+    ("candidate_consent_events", "consent_text"),
+)
+
+#: jsonb documents rendered as copy. Cast to text and swept whole: the keys
+#: are fixed English identifiers this schema sets, so a match is in a value.
+_CONTENT_JSON_COLUMNS: tuple[tuple[str, str], ...] = (("jobs", "jd_json"),)
+
+
+def _database_offenders(needle: str) -> list[str]:
+    """Rows whose stored copy contains `needle`, case-insensitively.
+
+    A table this sweep names and cannot find is an ERROR, not a pass: the
+    whole failure mode of a sweep is silently measuring nothing, and a
+    renamed content column would otherwise take its rule with it.
+    """
+    import asyncio
+
+    from sqlalchemy import text as sql
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.config import get_settings
+
+    async def _sweep() -> list[str]:
+        engine = create_async_engine(get_settings().database_url)
+        try:
+            async with engine.connect() as conn:
+                found: list[str] = []
+                pairs = [
+                    (table, column, column)
+                    for table, column in _CONTENT_COLUMNS
+                ] + [
+                    (table, column, f"{column}::text")
+                    for table, column in _CONTENT_JSON_COLUMNS
+                ]
+                for table, column, expression in pairs:
+                    count = (
+                        await conn.execute(
+                            sql(
+                                f"SELECT count(*) FROM {table} "
+                                f"WHERE {expression} ILIKE :pattern"
+                            ),
+                            {"pattern": f"%{needle}%"},
+                        )
+                    ).scalar_one()
+                    if count:
+                        found.append(f"{table}.{column}: {count} row(s)")
+                return found
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(_sweep())
+
+
+def _skip_without_database() -> None:
+    """Skip when no database is reachable, saying so.
+
+    A skipped check is not a passed check. The source sweeps in this module
+    run everywhere; these two need rows to read, and reporting green without
+    a connection would be the exact dishonesty the rest of the file exists to
+    prevent.
+    """
+    import asyncio
+
+    from sqlalchemy import text as sql
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.core.config import get_settings
+
+    async def _probe() -> bool:
+        engine = create_async_engine(get_settings().database_url)
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(sql("SELECT 1"))
+                return True
+        except Exception:  # noqa: BLE001 - any refusal to connect means no DB
+            return False
+        finally:
+            await engine.dispose()
+
+    if not asyncio.run(_probe()):
+        pytest.skip("no database reachable: the stored-copy sweeps did not run")
+
+
+def test_no_forbidden_relationship_terms_in_stored_copy() -> None:
+    """C7, the half the source sweep cannot see."""
+    _skip_without_database()
+    offenders: list[str] = []
+    for term in FORBIDDEN_TERMS:
+        offenders.extend(
+            f"{hit} contains {term!r}" for hit in _database_offenders(term)
+        )
+    assert not offenders, f"forbidden relationship terms in the database: {offenders}"
+
+
+def test_no_em_dash_in_stored_copy() -> None:
+    """What migration 0025 fixed, kept fixed. Generated content is written by
+    a model on every published JD, so this is a live surface and not a
+    backlog that stays cleaned."""
+    _skip_without_database()
+    offenders = _database_offenders(EM_DASH)
+    assert not offenders, f"em dash in the database: {offenders}"
+
+
 # ── No em dash in user-visible text ────────────────────────────────────────
 
 def test_no_em_dash_in_frontend_source() -> None:

@@ -39,6 +39,7 @@ from app.core import cache
 from app.core.config import get_settings
 from app.core.db import get_session
 from app.models.billing import (
+    CREDIT_VALIDITY_MONTHS,
     GST_RATE_PERCENT,
     MIN_PURCHASE_CREDITS,
     PRICE_PER_CREDIT_INR,
@@ -62,6 +63,7 @@ from app.schemas.billing import (
     BillingOverviewOut,
     CheckoutVerifyIn,
     CreditLedgerEntryOut,
+    CreditLotOut,
     CreditPackQuoteOut,
     CreditPacksOut,
     CreditPurchaseCreatedOut,
@@ -244,6 +246,31 @@ async def _summary_out(session: AsyncSession, tenant_id: uuid.UUID) -> CreditSum
         consumed_subunits=summary.consumed_subunits,
         rollover_subunits=summary.rollover_subunits,
         rollover_credits=credits.credits_from_subunits(summary.rollover_subunits),
+        expired_subunits=summary.expired_subunits,
+        expired_credits=credits.credits_from_subunits(summary.expired_subunits),
+        non_expiring_subunits=summary.non_expiring_subunits,
+        non_expiring_credits=credits.credits_from_subunits(
+            summary.non_expiring_subunits
+        ),
+        expiring_soon_subunits=summary.expiring_soon_subunits,
+        expiring_soon_credits=credits.credits_from_subunits(
+            summary.expiring_soon_subunits
+        ),
+        expiring_soon_days=credits.EXPIRING_SOON_DAYS,
+        next_expiry_at=summary.next_expiry_at,
+        credit_validity_months=CREDIT_VALIDITY_MONTHS,
+        lots=[
+            CreditLotOut(
+                lot_id=lot.lot_id,
+                issued_at=lot.issued_at,
+                expires_at=lot.expires_at,
+                remaining_subunits=lot.remaining_subunits,
+                remaining_credits=credits.credits_from_subunits(
+                    lot.remaining_subunits
+                ),
+            )
+            for lot in summary.lots
+        ],
         usage_this_month_subunits=UsageBreakdownOut(**summary.month_by_event),
         in_deficit=summary.in_deficit,
         deficit_message=_DEFICIT_MESSAGE if summary.in_deficit else None,
@@ -482,6 +509,15 @@ async def _grant_for_payment(
         )
     )
     tenant.subscription_status = SUBSCRIPTION_ACTIVE
+    # The subscription month clock starts at the FIRST successful charge and
+    # never moves again (change request 27). Not at /subscribe: a created
+    # subscription is an intent to pay, and counting months from it would put
+    # a customer whose card was declined into month 10 having paid nothing.
+    # Not on every charge either, which is why the guard is `is None`:
+    # restamping on each renewal would reset the clock to month 1 forever and
+    # the month 10 letter would never be sent to anybody.
+    if tenant.subscription_started_at is None:
+        tenant.subscription_started_at = datetime.now(timezone.utc)
     # A top-up releases whatever finalisation was held for want of credits
     # (spec 11). Enqueued rather than run inline: this is a payment path, and
     # writing a batch of reports on it would make a customer's card confirmation

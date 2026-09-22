@@ -20,6 +20,8 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| The twenty two change requests and the harness (2026-09-22) | The four owner rulings; media IS stored now; one authority per consent; the harness and its three exit codes |
+| The thirty day soft deletion (2026-09-22) | Job closure withholds instead of deleting; the assessment dispute path; objects before rows |
 | The soft delete and the hard constraint (2026-09-21) | Re-adding a name you removed; an emptied matrix is not an ungenerated one; the matrix editor is chips |
 | The Vivekium release (2026-09-20) | The product is Vivekium; the post-flush `audit_log` rollback; browser-session auth; Role Intake deleted |
 | The vivekium ruling (2026-09-18) | The brief is final; the match_percent exception to rule 1, the derived seven-column words, the C2/C8 supersessions |
@@ -75,6 +77,268 @@ phase sections above them are where the sharp edges are.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
+
+## Current hard rules, the twenty two change requests and the harness (2026-09-22)
+
+Change requests 07 to 28D, built in one sprint against the already-shipped
+Vivekium features, plus `backend/harness/`, the first thing in this repository
+that can ask whether the system still works when its environment behaves badly.
+Migrations 0106 to 0117. Four owner rulings, and one of them reverses a
+principle this repository enforced with a build-gating test.
+
+### FOUR OWNER RULINGS, AND WHAT EACH ONE COST
+
+- **Proctoring stays MANDATORY, and P1 is REVERSED.** The per-job disable
+  toggle that change request 24 asked for is REFUSED: `gate.require_active`
+  still runs first in `start_conversation` and `respond`, with no flag and no
+  role bypass, and P4 stands. What changed is P1: assessment media IS stored
+  now, compressed, in S3, linked to the assessment, retrievable and rendered
+  for an authorized hiring-team member. `tests/test_proctoring_no_media.py` was
+  REWRITTEN rather than deleted, because a deleted test is a rule nobody is
+  defending: it now pins that media is written only through the one sanctioned
+  path, that no bucket name or key crosses an API boundary, and that media
+  never reaches a scorer. **`test_proctoring_scoring_isolation.py` is
+  unchanged and still passes**, which is the half of P3 that survives intact.
+- **Credit expiry applies to NEW GRANTS ONLY.** "Credits never expire" is
+  printed on GST tax invoices already issued to paying customers, so a lot with
+  a NULL expiry is how every pre-existing credit is represented and the
+  migration backfills them that way. The rule is expressible in the DATA rather
+  than in a code branch, which is what makes it auditable.
+- **Job closure became a thirty day soft deletion**, reversing the immediate
+  hard delete ruled in C5. Recorded in place in its own section below.
+- **The portable and job specific split is FULL**, un-retiring the cross-job
+  reuse deliberately retired on 2026-07-30.
+
+### A SQLALCHEMY DEFAULT LANDS AT INSERT, NOT AT `__init__`
+
+`AssessmentCostRecord` declares `default=0` on every counter. SQLAlchemy
+applies a Python-side default when the INSERT is emitted, so a freshly
+constructed row carries `None`, and the accumulator ran `row.calls +=
+tally.calls` against it. **The FIRST cost flush for every application failed,
+every time**, not occasionally.
+
+It survived because the handler caught the `TypeError`, logged
+`err=TypeError` and returned False. That is the shape rule 6 forbids, and it
+is why the bug was invisible: the symptom was a cost record that silently
+never appeared. The handler is `except SQLAlchemyError` now and nothing wider,
+logged with `logger.exception`, so a programming error propagates. **A
+`TypeError` is not an operational failure and must never be absorbed as one.**
+
+### TWO RECORDS FOR ONE PERMISSION IS THE SHAPE RULE 5 FORBIDS
+
+Cross-employer reuse of portable evidence was briefly gated on BOTH
+`candidates.retain_assessment_consent` and the new catalogue item.
+`consent_catalog.cross_employer_reuse_allowed` is the ONE authority and reads
+the catalogue row; `retention_consent.reuse_across_jobs_allowed` was DELETED
+rather than deprecated, with the reason left in its place.
+
+The reason is the wording. `retain_assessment_consent` says "retain the
+completed assessment for future jobs", which is a statement about RETENTION and
+was wired to the DOWNLOAD verb. It nowhere tells a candidate that evidence
+gathered while employer A assessed them may be reused to establish what
+employer B grades them against. **Reading it would have been one consent
+stretched over two purposes, which is exactly what the per-item catalogue
+exists to prevent.** A missing row refuses, so a candidate who declined the
+optional item and one who was never asked are treated alike.
+
+### A CONSENT RECORD MUST NOT OUTLIVE THE PERSON WHO GAVE IT
+
+Migration 0101 argued that `audit_log` is where the history of consent acts
+lives. 0117 supersedes that, and `services/erasure.py` is the reason:
+`audit_log.candidate_id` carries no foreign key ON PURPOSE, so those rows
+survive `cascade_erasure` ("an audit trail a subject can delete is not an
+audit trail"). Routing consent history there would make it the one part of a
+candidate's consent record that outlives their Delete My Profile. **Two
+opposite retention rules cannot share a table.** `candidate_consent_events` is
+append-only, carries the verbatim sentence, its version and its digest, and
+the backfill is NULL because stamping old rows with today's digest would
+manufacture the provenance the change exists to create.
+
+### THE SWEEPS THAT NEVER COVERED THE DATABASE
+
+`tests/test_platform_audit.py` swept frontend source, backend string literals
+and the prompt and template `.txt` files for the forbidden relationship terms
+and the em dash. **It never swept the database**, despite migration 0025
+existing precisely because 103 rows of stored copy broke that rule. Both sweeps
+now read `jobs`, `tenants` and `candidate_consent_events`; a named table that
+cannot be found RAISES rather than passing, and no database skips with an
+explicit reason.
+
+### THREE MORE DEFECTS THAT WERE TRUE IN PROSE ONLY
+
+- **`erasure.job_closure_erasure` was destroying the consent records it
+  claims to keep.** `assessment_consents.conversation_id` was ON DELETE
+  CASCADE. The "deliberately keeps" list was correct as a sentence and wrong
+  as behaviour, because nothing asserted it. Now SET NULL, with the test
+  reading the row back.
+- **`evaluations.confidence` was `varchar(10)` CHECK IN (high, medium, low)
+  while the aggregator emits `moderate` and `insufficient`.** The first
+  violates the CHECK, the second violates the CHECK and the width. Every
+  scoring run landing on either failed its write AFTER paying for five
+  evaluators and synthesis. 0106 makes the column match its one writer;
+  `medium` is rewritten to `moderate` rather than carried beside it.
+- **`RequestTrace.add_cost` had never been called**, so
+  `agent_execution_traces.cost_usd` was always 0, and the method also passed a
+  PROVIDER string to a MODEL-keyed price table, so it would have returned 0.0
+  even once wired.
+
+### BGV: A BOUNCED MAILBOX MAKES THE ROUTING WRONG, NOT THE CLAIM
+
+`candidate_employments` is immutable by trigger and **the trigger was not
+weakened**. A corrected HR address is a new append-only row in
+`bgv_contact_corrections` carrying the previous address, beside the claim
+rather than overwriting it. The alternative, a second GUC admitting an UPDATE
+of `hr_email` alone, is weaker twice over: a transaction-local escape hatch is
+reachable by anything that can set the GUC, and the overwritten address would
+be GONE, so a candidate quietly redirecting a verification to a mailbox they
+control would leave nothing behind.
+
+Two more rules from the same work. **The three day clock runs from CONFIRMED
+DELIVERY**, `COALESCE(delivered_at, first_sent_at)`, and the fallback is
+explicit because under the smtp transport Gmail reports no delivery events and
+a strict `delivered_at` key would leave a form link that never expires, which
+is a standing credential in a third party's mailbox. And **a bounce resolves
+by a BINDING, never by an address match**: `email_log.bgv_verification_id` is
+written at send time, an unattributed bounce is logged rather than guessed at,
+and two open verifications sharing one HR mailbox no longer resolve to
+whichever was sent last.
+
+### PORTABLE EVIDENCE CARRIES FACTS, NEVER VERDICTS
+
+`portable_evidence_items` is candidate-scoped and deliberately NOT a nullable
+`job_id` on `evidence_items`: that table is tenant-scoped under a
+tenant-equality RLS policy, so a portable row living there would be invisible
+to the next employer, and its `job_id` is ON DELETE CASCADE while job closure
+now purges, so portable rows would sit one mistyped WHERE from a sweep written
+for job-scoped data.
+
+- **The table has NO verdict column**, asserted against `information_schema`
+  rather than against the model, and the module's imports AND its extracted
+  SQL literals are walked by AST. Reading the raw file text fails, because the
+  docstring says the words it is looking for.
+- **Every behavioural dimension is freshly assessed, always.**
+  `resume_prefill.evidence_for` had no category parameter at all, so a
+  behavioural competency could be pre-filled and skipped. `category` is
+  REQUIRED now: a default is what let the defect exist.
+
+### THE HARNESS
+
+`docs/spec/HARNESS.md` is the contract and `backend/harness/` is the
+implementation. It answers six questions the suite structurally cannot, of
+which the load-bearing ones are whether the system still works when its
+environment behaves badly, and whether a failure can be reproduced.
+
+- **`backend/harness/` is never imported by `backend/app/`**, asserted by an
+  AST sweep, the same shape as `test_judge_isolation.py`. A harness production
+  code can reach is a harness that can change production behaviour.
+- **THREE exit codes: 0 pass, 1 fail or regression, 3 UNAVAILABLE.** CI must
+  be able to tell "this regressed" from "this could not be measured", and
+  collapsing the latter into success is the green-while-broken failure the
+  harness exists to prevent. A run with zero checks is `unavailable`, never a
+  pass, and status is DERIVED from the checks recorded rather than assigned.
+- **A fault must be observable in the result.** The point is never that the
+  system survived; it is that it degraded the way it SAID it would. Silent
+  survival is a finding.
+- **State assertions read from a SECOND CONNECTION after the response**,
+  because a write that answered 200 and rolled back at commit is invisible to
+  an assertion on the response body, and this repository shipped exactly that.
+- **`app/evaluation/release_gate.py` is wired in at last.** It was calibrated
+  against a measured probe, fully tested, and referenced by nothing but its own
+  test for an entire phase.
+- Fixture discipline is inherited, not relaxed: a fault kind with no authored
+  fixture RAISES `FixtureMissing` naming the file to write. The Voyage
+  `server_error` and `unavailable` kinds are refused for that reason rather
+  than invented, because nothing in the product parses a Voyage error body.
+
+**What the fault layer found on its first run, and has not been fixed:** a
+truncated response carrying `finish_reason: length` is ACCEPTED by the router
+rather than treated as a failure. It is a scenario now.
+
+**What the fault layer cannot reach:** `redis_down()` does not affect an
+already-built client, because `proctoring/state` and `workers/status` cache
+theirs in a module global. Covered from a cold process only, and said so in
+the docstring rather than left to be discovered.
+
+## Current hard rules, the thirty day soft deletion (2026-09-22)
+
+Change request 22. Migration 0112. One owner ruling that REVERSES another one
+four days old, and the reversal is the whole section.
+
+### CLOSING A JOB WITHHOLDS ITS ASSESSMENT DATA. IT NO LONGER DELETES IT
+
+**SUPERSEDES the vivekium C5 ruling of 2026-09-18**, which made
+`POST /jobs/{id}/close` a hard delete inline in the close transaction. The
+owner's reason is the sentence that was already sitting in the same docstring:
+**there is no reopen**, so an irreversible delete at the moment of the click
+left a misclick, a wrong job id and a dispute raised the following week with
+nothing to examine. What did NOT change is the promise to the candidate. Stage
+B consent item 3 still says the report lives only as long as the position, and
+it still becomes true: the employer loses access at the instant of closure and
+the bytes are gone thirty days later.
+
+- **`services/job_assessment_retention` owns the lifecycle.** Three states,
+  DERIVED from columns on `jobs` the way `posting_status` is derived: `live`,
+  `pending_deletion`, `purged`. **`assessment_purge_due_at` is the one thing
+  STORED**, because the window is a promise printed in a confirmation dialog
+  before an irreversible click and editing a module constant must not be able
+  to move a deadline for a job that is already closed.
+- **AN EXPIRED WINDOW READS AS `purged` BEFORE THE SWEEP HAS RUN.** The access
+  answer does not wait for a worker: otherwise a scheduler outage silently
+  extends a window the candidate was promised the end of.
+- **The gate is `require_readable`, and it answers 410 GONE.** Not 403, which
+  would say "ask somebody for permission" when nobody on the employer's side
+  can grant it; not 404, which would say the application does not exist and
+  make a recruiter doubt their own pipeline. It is called at the report, the
+  PDF, the transcript and every video route, AFTER the tenant check and BEFORE
+  the artifact is loaded. **The candidate's own routes are deliberately not
+  gated**: an employer closing a requisition is not a reason to take a person's
+  assessment away from them.
+- **The dispute path needs BOTH halves.** `retrieve_disputed_assessment`
+  (migration 0112 seeds it, Client Super Admin only, everybody else an explicit
+  allowed=false row) AND an open dispute on THAT job. Either alone would turn a
+  narrow retrieval into a standing ability to read every closed job in the
+  tenant. It is an UNLOCK rather than a second reader, so the existing report
+  and transcript routes answer again and there is no second serializer to
+  disagree with the first. **It does not extend the thirty days.**
+- **`pickready.purge_closed_job_assessments` is the half that makes the window
+  real**, hourly, in `schedule.py` and in all three environments' Terraform. A
+  retention window with no sweep produces the same empty log as one with
+  nothing to delete, while every candidate's promise quietly stops being kept.
+
+### OBJECTS BEFORE ROWS, BECAUSE THE ROWS ARE WHAT NAMES THE OBJECTS
+
+`video_recordings.conversation_id` is ON DELETE CASCADE, so
+`erasure.job_closure_erasure` deleting `assessment_conversations` takes the
+recording ROWS with it, and those rows are the only thing in the database that
+carries the S3 keys. **A purge pass that cannot HEAD-confirm every object gone
+deletes NOTHING**, records the class name, and comes back next hour. There is
+no terminal failure state, the rule `services/deletion_requests` already
+states. This is the `context_chunks` orphan trap arriving from the other
+direction, and it is why `job_closure_erasure` now carries a precondition
+rather than being callable first.
+
+### THE CONSENT RECORD WAS DYING WITH THE THING IT AUTHORISED
+
+`job_closure_erasure` has claimed since it was written that it keeps the
+`assessment_consents` rows, "a consent record is the LEGITIMACY of this very
+deletion". **It did not.** That table's `conversation_id` was ON DELETE
+CASCADE. The prose was right and nothing enforced it, for as long as nothing
+asserted it: migration 0112 makes the reference SET NULL and nullable, and
+`tests/test_job_closure_erasure.py` now reads the row back instead of trusting
+the sentence. NULL there means the session is gone and the consent stands.
+
+### THE DELETION REQUEST STATE MACHINE WAS EXAMINED AND DOES NOT FIT
+
+Rule 5 was checked first, and the answer is recorded rather than assumed.
+`services/deletion_requests` (`pending -> rows_erased -> completed`) is the
+CANDIDATE erasure: its middle state describes a crash lasting an instant, not a
+deliberate thirty day wait; it is keyed on `candidate_id` with no job; and its
+`object_keys_json` is captured BEFORE the rows go because a candidate cascade
+destroys every name. The job case is the opposite way round, which is exactly
+what fixes the order above. What IS reused: `erasure.job_closure_erasure`
+unchanged, `assessment_media_retention.object_keys_for_job` and
+`delete_objects` (that module's own documented job-closure hook), and the
+never-give-up discipline including `ATTEMPTS_BEFORE_ALARM`.
 
 ## Current hard rules, the soft delete and the hard constraint (2026-09-21)
 
@@ -1473,7 +1737,10 @@ implementation per concept:
   and both are read as history. Terminal for candidates, invisible to the team:
   `can_edit_application` deliberately takes no `closed_at`, so somebody already
   invited can finish work the client has already been charged for. **No
-  reopen** (RBAC 22 asks for a controlled revision mechanism).
+  reopen** (RBAC 22 asks for a controlled revision mechanism). **AMENDED
+  2026-09-18 and again 2026-09-22**: closure also stops the team reading the
+  job's assessment records, and the thirty day retention that follows is now
+  the only way back from closing the wrong job. See the 2026-09-22 section.
 
 ### The final ranking, which the product did not have
 
@@ -1566,13 +1833,23 @@ behavioural capture of one attaches to the answer fields of the other.
   the consent screen does not take the assessment. The old optional
   screen-capture consent component is deleted, not flagged off: it captured
   the screen and was optional, which contradicts both P1 and P4.
-- **No frame, image, snapshot or audio buffer is ever stored, anywhere.**
-  Inference happens in a Web Worker in the candidate's browser, which posts
-  detections only. The one medium that leaves the browser is a 15-second audio
-  chunk, read into memory, handed to the analysis service, and deleted.
-  `tests/test_proctoring_no_media.py` fails the build on a write path. A face
-  descriptor is a 128-float vector, not an image, and the database CHECK
-  refuses any other width.
+- ~~**No frame, image, snapshot or audio buffer is ever stored, anywhere.**~~
+  **SUPERSEDED 2026-09-22 by owner ruling: "Media storage is required. The
+  assessment video must be compressed and stored securely in S3, linked to the
+  candidate assessment."** See the 2026-09-22 section at the top of this file.
+  **WHAT SURVIVES IS THE BOUNDARY, AND IT IS NARROWER THAN THE OLD RULE WAS
+  BROAD:** `services/proctoring/` still persists NO media. Inference still
+  happens in a Web Worker in the candidate's browser, which posts detections
+  only, and the 15-second audio chunk is still read into memory, handed to the
+  analysis service and deleted. A face descriptor is still a 128-float vector,
+  not an image, and the database CHECK still refuses any other width. What
+  changed is WHERE media may live: assessment media is written by ONE
+  pipeline, `services/video/`, onto ONE table, `video_recordings`, through ONE
+  transport that encrypts at rest. `tests/test_proctoring_no_media.py` keeps
+  its name and was REWRITTEN rather than deleted, because a deleted test is a
+  rule nobody is defending: it now fails the build on a media write anywhere
+  else, on a bucket name or object key crossing an API boundary, and on a
+  scorer reaching the media package.
 - **Proctoring touches NO score, grade, ranking or matrix.** Nothing under
   `services/proctoring/` is imported by a scorer, by Miti, by Siddhi, by the
   dashboard or by ranking, and `tests/test_proctoring_scoring_isolation.py`

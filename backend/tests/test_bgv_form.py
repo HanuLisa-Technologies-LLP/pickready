@@ -359,10 +359,22 @@ def test_a_partial_confirmation_records_not_verified(monkeypatch) -> None:
 def test_a_bounced_inquiry_alerts_the_candidate_with_a_masked_address(
     monkeypatch,
 ) -> None:
-    """Email 4: the bounce handler correlates back through the HR address and
-    tells the candidate, masked. Driven at the helper, which is the whole of
-    the new behaviour; the SNS envelope around it is unchanged and has its
-    own tests."""
+    """Email 4: the candidate is told, with the HR address masked.
+
+    AMENDED 2026-09-22, migration 0114. This used to drive the helper with a
+    recipient ADDRESS, because that is what the helper correlated on: it looked
+    up the newest unanswered verification in the tenant whose employer carried
+    that address. One HR mailbox confirming two candidates at the same company
+    is the ordinary case at a large employer, and under it the wrong candidate
+    was told to correct an address that worked.
+
+    The correlation is now `email_log.bgv_verification_id`, written at send
+    time, so the helper is handed the verification itself. What this test
+    asserts is unchanged and is the part that always mattered: the right
+    candidate is written to, and the address travels masked.
+    `tests/test_bgv_bounce_and_correction.py` covers the two-verifications case
+    the old correlation could not survive.
+    """
     from types import SimpleNamespace
 
     from app.api import email_senders as es_api
@@ -387,7 +399,9 @@ def test_a_bounced_inquiry_alerts_the_candidate_with_a_masked_address(
             )
             async with factory() as session:
                 async with superadmin_scope(session):
-                    await es_api._alert_candidate_of_bgv_bounce(session, log_row)
+                    await es_api._alert_candidate_of_bgv_bounce(
+                        session, log_row, w.verification
+                    )
             assert sent, "no alert was dispatched for a bounced BGV inquiry"
             name, args = sent[-1]
             assert args[1] == f"{w.candidate}@bgvform.test"

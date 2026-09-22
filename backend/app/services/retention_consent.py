@@ -58,3 +58,14 @@ def video_download_allowed(candidate: Any) -> bool:
     Stable import surface for the video delivery path.
     """
     return _explicitly_true(getattr(candidate, "retain_video_consent", None))
+
+
+# `reuse_across_jobs_allowed` USED TO LIVE HERE and was deleted on
+# 2026-09-22 rather than deprecated. Cross-employer reuse of portable
+# evidence is now answered by `consent_catalog.cross_employer_reuse_allowed`,
+# which reads the catalogue row whose wording actually names that purpose.
+# This module's flag speaks about RETENTION and is wired to the DOWNLOAD
+# verb; reading it for reuse would have stretched one consent over two
+# purposes, and two records for one permission is what rule 5 forbids.
+
+

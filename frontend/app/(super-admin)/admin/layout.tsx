@@ -26,6 +26,7 @@
 import {
   Building2,
   Briefcase,
+  Coins,
   CreditCard,
   LifeBuoy,
   Settings,
@@ -65,6 +66,12 @@ export default function AdminLayout({
         // the Provider's job here is managing CUSTOMERS, and a customer
         // waiting on a reply is customer management.
         { href: "/admin/support", label: "Support", icon: LifeBuoy },
+        // Cost (2026-09-22, change 28D). What running assessments costs the
+        // PLATFORM, per assessment and per client. It belongs on this nav and
+        // on no other: the figures are operational and the per-client
+        // breakdown would show one customer every other customer's spend, so
+        // the backing route sits behind the owner audience like /admin/llm/stats.
+        { href: "/admin/cost", label: "Cost", icon: Coins },
         { href: "/admin/settings", label: "Settings", icon: Settings },
       ]}
     >

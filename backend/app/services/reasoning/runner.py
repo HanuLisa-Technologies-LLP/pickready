@@ -43,7 +43,7 @@ from typing import Any, Awaitable, Callable, Generic, TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services import agent_loop
+from app.services import agent_loop, cost_telemetry
 from app.services.memory import experience
 from app.services.memory.working import WorkingMemory
 from app.services.observability import trace as tracing
@@ -151,17 +151,36 @@ async def run_task(
             break
 
         trace.start("execute")
-        try:
-            value = await execute(instruction)
-            trace.attempts += 1
-            trace.end()
-        except Exception as exc:  # noqa: BLE001
-            trace.attempts += 1
-            trace.end(status="error")
-            trace.error = f"{type(exc).__name__}: {exc}"
-            reasons.append(trace.error)
-            value = None
-            break
+        # THE TRACE'S COST FIELD FINALLY HAS A WRITER.
+        #
+        # `RequestTrace.add_cost` existed from the day the trace was written and
+        # nothing ever called it, so `agent_execution_traces.cost_usd` was 0.0
+        # on every row in production. The runner could not have called it
+        # before: the token counts are only visible inside `llm_router`, four
+        # frames down, and threading an accounting handle through every
+        # generative step would have been the same "N call sites must
+        # remember" failure the router's own chokepoint exists to avoid.
+        #
+        # `cost_telemetry.collect()` is what closed the gap. The router already
+        # reports every successful call into whatever tally is bound, so the
+        # runner binds one around the step it is timing anyway and reads the
+        # totals off it afterwards. A step that made no model call tallies
+        # nothing and adds nothing, which is the correct answer rather than a
+        # zero standing in for one.
+        with cost_telemetry.collect() as usage:
+            try:
+                value = await execute(instruction)
+                trace.attempts += 1
+                trace.end()
+            except Exception as exc:  # noqa: BLE001
+                trace.attempts += 1
+                trace.end(status="error")
+                trace.error = f"{type(exc).__name__}: {exc}"
+                reasons.append(trace.error)
+                value = None
+                _charge(trace, usage)
+                break
+            _charge(trace, usage)
 
         trace.start("observe")
         trace.generated_tokens += _estimate(value)
@@ -233,6 +252,23 @@ def _initial_instruction(plan: Any) -> str:
     return (
         "Apply these lessons from previous attempts at this task:\n" + bullets
     )
+
+
+def _charge(trace: tracing.RequestTrace, usage: cost_telemetry.UsageTally) -> None:
+    """Move one execute step's measured usage onto the trace.
+
+    Per MODEL rather than as one lump, because `add_cost` prices by model and
+    the two tiers differ by a factor of three. Summing the tally's totals and
+    passing one model id would produce a plausible number computed from the
+    wrong rate, which is the failure the parameter rename above just repaired.
+    """
+    for model, stats in usage.by_model.items():
+        trace.add_cost(
+            model,
+            int(stats["prompt_tokens"]),
+            int(stats["completion_tokens"]),
+            cached_prompt_tokens=int(stats["cached_prompt_tokens"]),
+        )
 
 
 def _estimate(value: Any) -> int:

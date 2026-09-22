@@ -152,7 +152,18 @@ class RequestTrace:
     attempts: int = 0
     degraded: bool = False
     confidence: float | None = None
+    #: AN ESTIMATE, AND NAMED AS ONE HERE BECAUSE THE COLUMN CANNOT BE.
+    #: `reasoning.runner` fills this from `_estimate`, which is four characters
+    #: per token over the serialised output. It is not what the vendor billed,
+    #: it covers only the output half, and it exists for runs where no usage
+    #: block came back at all. The measured counts live in the three fields
+    #: below and are never added into this one: a total mixing a measurement
+    #: with a heuristic is a number nobody can act on.
     generated_tokens: int = 0
+    #: Tokens the VENDOR reported, accumulated by `add_cost`.
+    measured_prompt_tokens: int = 0
+    measured_completion_tokens: int = 0
+    measured_cached_prompt_tokens: int = 0
     cost_usd: float = 0.0
     tool_calls: int = 0
     stages: list[dict[str, Any]] = field(default_factory=list)
@@ -189,9 +200,52 @@ class RequestTrace:
 
     # ── accumulation ─────────────────────────────────────────────────────────
 
-    def add_cost(self, provider: str, prompt_tokens: int, completion_tokens: int) -> None:
+    def add_cost(
+        self,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        *,
+        cached_prompt_tokens: int = 0,
+    ) -> None:
+        """Add one model call's tokens and estimated cost onto this run.
+
+        TWO DEFECTS ARE FIXED HERE AND BOTH ARE WORTH REMEMBERING AS A CLASS.
+
+        The first is that this method HAD NO CALLER. It was written with the
+        trace, it looked correct in review, and `agent_execution_traces.cost_usd`
+        has therefore been 0.0 for every row ever written. That is the same
+        shape as `rag.index_document` sitting uncalled for its entire existence,
+        and it is why `tests/test_ai_reachability.REQUIRED_CALLERS` asserts that
+        a function which must have a caller still has one rather than trusting
+        that it does.
+
+        The second is that the parameter was named `provider` and a provider
+        string was what a caller would naturally have passed.
+        `TOKEN_PRICES_USD_PER_MILLION` is keyed by MODEL, so even once called it
+        would have priced every call at 0.0 -- a wrong number that looks exactly
+        like a free one, which is precisely what `is_priced` exists to stop a
+        reader doing. A signature that cannot be called correctly is worse than
+        one nobody calls.
+
+        The token counts are MEASURED when the vendor reported usage and the
+        caller says so. `generated_tokens` remains a character heuristic and is
+        deliberately kept apart from these fields rather than merged into them:
+        an estimate and a measurement summed into one column cannot be told
+        apart afterwards.
+        """
+        self.measured_prompt_tokens += int(prompt_tokens)
+        self.measured_completion_tokens += int(completion_tokens)
+        self.measured_cached_prompt_tokens += int(cached_prompt_tokens)
         self.cost_usd = round(
-            self.cost_usd + estimate_cost_usd(provider, prompt_tokens, completion_tokens), 6
+            self.cost_usd
+            + estimate_cost_usd(
+                model,
+                prompt_tokens,
+                completion_tokens,
+                cached_prompt_tokens=cached_prompt_tokens,
+            ),
+            6,
         )
 
     def add_defects(self, defects: Any) -> None:
@@ -247,7 +301,12 @@ class RequestTrace:
             "confidence": self.confidence,
             "duration_ms": self.duration_ms,
             "generated_tokens": self.generated_tokens,
+            "generated_tokens_basis": "character heuristic, not vendor usage",
+            "measured_prompt_tokens": self.measured_prompt_tokens,
+            "measured_completion_tokens": self.measured_completion_tokens,
+            "measured_cached_prompt_tokens": self.measured_cached_prompt_tokens,
             "cost_usd": self.cost_usd,
+            "cost_basis": "list price estimate, not an invoice",
             "tool_calls": self.tool_calls,
             "stages": self.stages,
             "defects": self.defects,

@@ -589,7 +589,17 @@ export interface RankedCandidate {
   /** The application's Profile. Resumes live in private storage, so this is
    *  the handle the viewer and the download endpoint are keyed on. */
   profile_id?: string | null;
-  resume_url?: string | null;
+  /**
+   * Whether a resume exists, and NOT where it is.
+   *
+   * This replaced `resume_url`, which carried the raw `s3://bucket/key`
+   * object reference. A browser cannot fetch that, so the only thing this
+   * screen ever did with it was ask whether it was truthy, while it handed
+   * every recruiter's browser the bucket name and the object key for nothing.
+   * The resume itself is read through the authorized proxy route, built by
+   * `resumeTabUrl` from `profile_id` plus the two descriptive fields below.
+   */
+  has_resume?: boolean;
   resume_filename?: string | null;
   resume_mime_type?: string | null;
   has_report: boolean;
@@ -1442,11 +1452,26 @@ export interface EmailSenderList {
 
 export type AssessmentMode = "conversational" | "video_interview";
 
-/** One Stage B consent item, server-authored (vivekium feature 6). */
+/** One consent item, server-authored (vivekium feature 6). The version is the
+ *  wording's, bumped whenever the text changes, and it is stored with the
+ *  tick so a later rewording cannot re-describe an agreement already given. */
 export interface ConsentCatalogueItem {
   key: string;
   stage: string;
   text: string;
+  version: number;
+  /** Whether declining it stops the candidate. The stage says WHEN an item is
+   *  asked; this says what refusing costs. An optional item never blocks. */
+  required: boolean;
+}
+
+/** A consent item as the candidate's own record shows it: the current wording
+ *  beside what they actually agreed to and when. `wording_current` false means
+ *  their standing consent is to words that have since been replaced. */
+export interface ConsentItemStatus extends ConsentCatalogueItem {
+  consented_at: string | null;
+  consented_version: number | null;
+  wording_current: boolean;
 }
 
 /** One mode's consent terms, exactly as the server will stamp them. */

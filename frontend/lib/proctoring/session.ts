@@ -17,10 +17,13 @@
 import type { AnswerBehaviour, ProctoringFieldHooks } from "@/lib/assessment/contracts";
 
 import {
+  finalizeSessionMedia,
   postAudioChunk,
   postEvents,
   postHeartbeat,
+  uploadSessionMedia,
   type MonitoringStatus,
+  type SessionMediaStartOut,
   type SessionOut,
   type TerminationOut,
   type WarningOut,
@@ -36,6 +39,7 @@ import { watchFocus, type FocusHandle } from "./focus";
 import { startHeartbeat, type HeartbeatHandle } from "./heartbeat";
 import { startIntegrityCheck, type IntegrityHandle } from "./integrity";
 import { installLockdown, type LockdownHandle } from "./lockdown";
+import { SessionRecorder } from "./recorder";
 import type { InferenceClient } from "./worker-client";
 
 export interface SessionMedia {
@@ -62,12 +66,17 @@ export class SessionRuntime {
   private displays: DisplaysHandle | null = null;
   private heartbeat: HeartbeatHandle | null = null;
   private integrity: IntegrityHandle | null = null;
+  private recorder: SessionRecorder | null = null;
   private stopped = false;
 
   constructor(
     private readonly session: SessionOut,
     private readonly media: SessionMedia,
-    private readonly callbacks: SessionCallbacks
+    private readonly callbacks: SessionCallbacks,
+    /** The recording the server opened for this session, when it opened one
+     *  (owner ruling, 2026-09-22). Null for a video interview, which records
+     *  itself through its own screen and must not be captured twice. */
+    private readonly mediaRecording: SessionMediaStartOut | null = null
   ) {
     const { config } = session;
     this.rules = new DetectionRules(config);
@@ -121,6 +130,27 @@ export class SessionRuntime {
     });
     void this.audio.start(this.media.microphone);
 
+    // The stored record of the session (owner ruling, 2026-09-22). It rides
+    // on the streams the monitors already hold rather than asking for a
+    // second camera: one permission prompt, one light, one recording.
+    if (this.mediaRecording !== null) {
+      this.recorder = new SessionRecorder({
+        camera: this.media.camera,
+        microphone: this.media.microphone,
+        recording: this.mediaRecording,
+        upload: (conversationId, blob) =>
+          uploadSessionMedia(conversationId, blob).then(() => undefined),
+        finalize: (conversationId) =>
+          finalizeSessionMedia(conversationId).then(() => undefined),
+        // Logged and never surfaced as a failure of the assessment: a
+        // recording that did not arrive is a status the hiring team reads,
+        // not a reason to stop a candidate mid-answer.
+        onProblem: (reason) =>
+          console.warn("assessment recording: " + reason),
+      });
+      this.recorder.start();
+    }
+
     this.integrity = startIntegrityCheck({
       intervalMs: seconds(config.heartbeat_interval_seconds),
       terminationMs: seconds(config.integrity_failure_termination_seconds),
@@ -170,6 +200,10 @@ export class SessionRuntime {
     this.heartbeat?.stop();
     this.integrity?.stop();
     this.queue.stop();
+    // BEFORE the tracks are released. A recorder whose tracks have already
+    // ended produces nothing, and the last thing this session does is hand
+    // over the recording of it.
+    this.recorder?.stop();
     this.camera?.stop();
     this.audio?.stop();
     this.displays?.release();

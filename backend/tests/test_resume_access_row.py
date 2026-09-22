@@ -106,6 +106,42 @@ def test_the_row_still_carries_the_mime_type_the_viewer_routes_on() -> None:
     assert payload["resume_mime_type"].endswith("wordprocessingml.document")
 
 
+def test_no_storage_uri_crosses_the_api_boundary() -> None:
+    """The row used to serialize `profiles.resume_url` verbatim.
+
+    That is an `s3://bucket/key` object reference (it was `gs://` before the
+    AWS migration): a browser cannot fetch it, so the only thing the client
+    ever did with it was ask whether it was truthy, while it handed every
+    recruiter's browser the bucket name and the object key for nothing. The
+    video surfaces already state the rule -- no bucket name and no object key
+    crosses an API boundary -- and this field was quietly breaking it.
+
+    So the flag is a BOOLEAN, which is the whole of what the column was
+    answering. The filename and the MIME type stay: one is what a person sees
+    in their Downloads folder, the other is what decides whether the DOCX
+    renderer or the raw file is the right target, and neither names a bucket.
+    """
+    payload = job_candidates._row_payload(_row(), "Non-managerial")
+    serialized = RankedCandidateOut.model_validate(payload).model_dump_json()
+    for scheme in ("s3://", "gs://", "pickready-resumes-private"):
+        assert scheme not in serialized, (
+            f"{scheme!r} reached the client in {serialized}"
+        )
+    assert payload["has_resume"] is True
+    assert "resume_url" not in payload
+    assert "resume_url" not in RankedCandidateOut.model_fields
+
+
+def test_a_row_with_no_resume_reads_as_false_rather_than_absent() -> None:
+    """The empty state is a real state: the table renders a disabled control
+    rather than a link that 404s."""
+    payload = job_candidates._row_payload(
+        _row(profile_id=None, resume_url=None, resume_filename=None), "CXO"
+    )
+    assert payload["has_resume"] is False
+    assert RankedCandidateOut.model_validate(payload).has_resume is False
+
+
 def test_no_score_leaked_into_the_row_while_adding_a_field() -> None:
     """The row is client-facing (claude.md: no numbers reach a client)."""
     payload = job_candidates._row_payload(_row(), "Non-managerial")

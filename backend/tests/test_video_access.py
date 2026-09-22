@@ -114,6 +114,7 @@ def test_servable_requires_ready_plus_the_playable_object() -> None:
         status = lifecycle.READY
         s3_compressed_key = "assessment-compressed/x/y/assessment.mp4"
         stored_format = "mp4"
+        media_deleted_at = None
 
     rec = _Rec()
     assert video_access.is_servable(rec)
@@ -126,6 +127,30 @@ def test_servable_requires_ready_plus_the_playable_object() -> None:
     rec.s3_compressed_key = ""
     assert not video_access.is_servable(rec)
     assert not video_access.is_servable(None)
+
+
+def test_deleted_media_is_not_servable_however_ready_the_row_looks() -> None:
+    """Retention and erasure delete OBJECTS; the row survives as provenance.
+    A signed URL onto a key that is gone renders as a broken player, which is
+    a worse answer than the sentence the dashboard already has for it."""
+    from datetime import datetime, timezone
+
+    class _Rec:
+        status = lifecycle.READY
+        s3_compressed_key = "assessment-compressed/x/y/assessment.mp4"
+        stored_format = "mp4"
+        media_deleted_at = None
+
+    rec = _Rec()
+    assert video_access.is_servable(rec)
+    assert not video_access.media_deleted(rec)
+    rec.media_deleted_at = datetime.now(timezone.utc)
+    assert not video_access.is_servable(rec)
+    assert video_access.media_deleted(rec)
+    assert (
+        video_access.video_status_word(lifecycle.READY, media_deleted=True)
+        == video_access.VIDEO_NONE
+    )
 
 
 def test_can_retry_mirrors_the_lifecycles_own_retryable_set() -> None:

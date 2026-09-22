@@ -36,3 +36,24 @@ class DrishtiProfile(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── The functional-head binding (migration 0115) ────────────────────────
+    #
+    # `updated_by` answers "who last pressed save". These answer "whose
+    # profile is this", which is the question the brief actually asks: once
+    # per function PER FUNCTIONAL HEAD, updated by that head at any time, and
+    # a change of head is the CLIENT's explicit trigger. Without the binding
+    # any holder of the capability silently became the author of somebody
+    # else's strategic profile, which is precisely the auto-detection the
+    # brief forbids.
+    functional_head_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    #: Denormalised at bind time, so "authored by the CTO" survives the SET
+    #: NULL above. Who said it must not be rewritten by a later change to who
+    #: they are, the same reason `support_messages.author_side` is stored.
+    functional_head_name: Mapped[str | None] = mapped_column(String(200))
+    functional_head_title: Mapped[str | None] = mapped_column(String(120))
+    functional_head_bound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )

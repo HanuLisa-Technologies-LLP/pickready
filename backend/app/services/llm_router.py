@@ -203,7 +203,7 @@ from app.config.llm_providers import (
     timeout_for,
     total_budget_for,
 )
-from app.services import context_budget, tracing
+from app.services import context_budget, cost_telemetry, tracing
 from app.services.observability import otel
 from app.services.agent_loop import reflection_text
 from app.services.reliability import vendor_contract
@@ -408,6 +408,12 @@ class _Stats:
     completion_tokens: int = 0
     estimated_cost_usd: float = 0.0
     calls_with_usage: int = 0
+    #: Prompt-cache hits, summed over the calls that REPORTED one. Read beside
+    #: `calls_reporting_cache`, never alone: this is a sum over a subset, so a
+    #: zero here with a zero beside it means nothing was observed rather than
+    #: that nothing was cached.
+    cached_prompt_tokens: int = 0
+    calls_reporting_cache: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         avg = self.total_latency_ms / self.attempts if self.attempts else 0.0
@@ -422,6 +428,8 @@ class _Stats:
             "completion_tokens": self.completion_tokens,
             "estimated_cost_usd": round(self.estimated_cost_usd, 6),
             "calls_with_usage": self.calls_with_usage,
+            "cached_prompt_tokens": self.cached_prompt_tokens,
+            "calls_reporting_cache": self.calls_reporting_cache,
         }
 
 
@@ -543,8 +551,14 @@ def _record(
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     had_usage: bool = False,
+    cached_prompt_tokens: int | None = None,
 ) -> None:
-    cost = estimate_cost_usd(model, prompt_tokens, completion_tokens)
+    cost = estimate_cost_usd(
+        model,
+        prompt_tokens,
+        completion_tokens,
+        cached_prompt_tokens=cached_prompt_tokens or 0,
+    )
     for stat in (_provider_stat, _model_stat(model), _key_stat(fingerprint)):
         stat.attempts += 1
         stat.total_latency_ms += latency_ms
@@ -557,6 +571,9 @@ def _record(
         stat.estimated_cost_usd += cost
         if had_usage:
             stat.calls_with_usage += 1
+        if cached_prompt_tokens is not None:
+            stat.cached_prompt_tokens += cached_prompt_tokens
+            stat.calls_reporting_cache += 1
     _key_models[fingerprint] = model
 
     if (
@@ -746,6 +763,14 @@ class _Result:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     had_usage: bool = False
+    #: `usage.prompt_tokens_details.cached_tokens`, a SUBSET of `prompt_tokens`.
+    #:
+    #: None means the response did not report the field, which is NOT the same
+    #: as a reported zero and must never be flattened into one. A deployment
+    #: whose endpoint does not carry `prompt_tokens_details` at all would read
+    #: as "the cache never hit" if this defaulted to 0, and the platform would
+    #: then be measuring the absence of a feature as the failure of one.
+    cached_prompt_tokens: int | None = None
     #: The vendor's own `finish_reason`, carried so a refusal can be told from
     #: an answer. Defaults None so `as_result("plain")` and every
     #: string-returning stub in the test suite keep working unchanged.
@@ -929,9 +954,37 @@ def parse_response(payload: dict[str, Any], *, json_mode: bool) -> _Result:
         prompt_tokens=int(usage.get("prompt_tokens") or 0),
         completion_tokens=int(usage.get("completion_tokens") or 0),
         had_usage=had_usage,
+        cached_prompt_tokens=_cached_prompt_tokens(usage),
         finish_reason=finish_reason,
         refusal=refusal,
     )
+
+
+def _cached_prompt_tokens(usage: object) -> int | None:
+    """The vendor's reported prompt-cache hit, or None when it said nothing.
+
+    Chat Completions applies prompt caching AUTOMATICALLY to a sufficiently
+    long identical prefix and reports the hit here; there is no request-side
+    marker to send and this API does not take one. So the only thing the
+    product controls is prompt ORDER (`services/prompt_cache`), and the only
+    thing it can observe is this field.
+
+    THE ABSENT CASE IS A REAL CASE AND IS RETURNED AS None. A response with no
+    `prompt_tokens_details` is the normal shape for an endpoint that does not
+    report caching, and rounding that to zero would make "we cannot see the
+    cache" indistinguishable from "the cache did not hit" in every downstream
+    average. A present-but-unparseable value is also None for the same reason:
+    a number nobody can read is not a measurement.
+    """
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("prompt_tokens_details")
+    if not isinstance(details, dict):
+        return None
+    raw = details.get("cached_tokens")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    return max(0, int(raw))
 
 
 def _refusal_result(payload: object) -> _Result | None:
@@ -1305,6 +1358,7 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
     otel.record_usage_on_active_span(
         input_tokens=result.prompt_tokens,
         output_tokens=result.completion_tokens,
+        cached_input_tokens=result.cached_prompt_tokens,
     )
     _record(
         fingerprint=ctx.key.fingerprint,
@@ -1314,6 +1368,21 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
         prompt_tokens=result.prompt_tokens,
         completion_tokens=result.completion_tokens,
         had_usage=result.had_usage,
+        cached_prompt_tokens=result.cached_prompt_tokens,
+    )
+    # The per-assessment cost record, when this call is running inside one.
+    # A no-op with nothing bound, so no caller has to know about it: the
+    # router is the one place every model call in the product passes through,
+    # and attributing the spend anywhere else would mean N call sites each
+    # remembering to do it.
+    cost_telemetry.note_usage(
+        task_type=ctx.task_type,
+        model=ctx.model,
+        provider=PROVIDER,
+        prompt_tokens=result.prompt_tokens,
+        completion_tokens=result.completion_tokens,
+        cached_prompt_tokens=result.cached_prompt_tokens,
+        had_usage=result.had_usage,
     )
     _record_success(ctx.key)
     # What this attempt actually cost, so the ceiling refuses the NEXT one on
@@ -1322,15 +1391,23 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
     # direction: under-counting a call the vendor billed would let the ceiling
     # be passed silently.
     ctx.spent_usd += (
-        estimate_cost_usd(ctx.model, result.prompt_tokens, result.completion_tokens)
+        estimate_cost_usd(
+            ctx.model,
+            result.prompt_tokens,
+            result.completion_tokens,
+            cached_prompt_tokens=result.cached_prompt_tokens or 0,
+        )
         if result.had_usage
         else _worst_case_cost_usd(ctx.model, outgoing, ctx.max_tokens)
     )
     logger.info(
         "llm_router.ok task=%s model=%s key=%s attempt=%d latency_ms=%.0f "
-        "in=%d out=%d priced=%s",
+        "in=%d out=%d cached_in=%s priced=%s",
         ctx.task_type, ctx.model, ctx.key.fingerprint, attempts, elapsed * 1000,
-        result.prompt_tokens, result.completion_tokens, is_priced(ctx.model),
+        result.prompt_tokens, result.completion_tokens,
+        "unreported" if result.cached_prompt_tokens is None
+        else result.cached_prompt_tokens,
+        is_priced(ctx.model),
     )
 
     if result.is_refusal:

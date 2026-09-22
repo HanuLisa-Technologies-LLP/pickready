@@ -7,13 +7,16 @@ by ONE piece of code from ONE input: a generator that minted its own refs
 against a set somebody else assembled would either always agree (making the
 check decorative) or disagree for reasons nobody could reproduce.
 
-THREE KINDS OF NODE, AND THE THIRD IS THE ONE WORTH ARGUING FOR
+FOUR KINDS OF NODE, AND THE THIRD IS THE ONE WORTH ARGUING FOR
 -----------------------------------------------------------------
 `answer`    something the candidate said, filed against the criterion it was
             said about. This is what a finding rests on.
 `question`  what they were asked. A probe that goes somewhere new with an
             answer cites the exchange, not just the reply.
 `searched`  THE RECORD THAT THE CRITERION WAS ASSESSED AT ALL.
+`employer`  a previous employer's own confirmation of a declared employment.
+            The one kind whose originator is not the candidate, added with the
+            Evidence vs Claim Summary; its argument is on the constant below.
 
 The third is the entry the citation rule stands or falls on. "There is no
 evidence of on-call ownership" feels uncitable, because there is nothing to
@@ -58,13 +61,56 @@ __all__ = [
     "KIND_ANSWER",
     "KIND_QUESTION",
     "KIND_SEARCHED",
+    "KIND_EMPLOYER",
+    "KIND_PORTABLE",
     "EvidenceNode",
     "EvidenceIndex",
+    "employer_item",
+    "employer_node",
+    "portable_node",
 ]
 
 KIND_ANSWER = "answer"
 KIND_QUESTION = "question"
 KIND_SEARCHED = "searched"
+
+#: A FOURTH KIND, AND THE ONLY ONE NOT SPOKEN BY THE CANDIDATE.
+#:
+#: A previous employer confirmed, or declined to confirm, an employment the
+#: candidate declared. The other three kinds are all the candidate's own
+#: account or the product's record of asking for it; this is the one node kind
+#: whose originator is somebody else, which is exactly why the Evidence vs
+#: Claim Summary needs it to exist: a claim corroborated only by the person
+#: making it and a claim an employer confirmed are different claims, and with
+#: three kinds there was no ref that could tell them apart.
+#:
+#: WHAT IT CARRIES AND WHAT IT MUST NOT. The employer's NAME and the tenant's
+#: own verification decision, as a word. Never the HR contact's address or
+#: name: that is a third party's personal contact detail a candidate handed
+#: over for one purpose, it reaches the recruiter running the verification and
+#: nobody else, and a delivered report is forwarded.
+KIND_EMPLOYER = "employer"
+
+#: A FIFTH KIND: THIS CRITERION RESTS ON THE CANDIDATE'S PORTABLE RECORD.
+#:
+#: Owner ruling 2026-09-22 (change request 23). A criterion the Portable layer
+#: already established was recorded rather than asked, so the answer in the
+#: transcript is the platform stating what it already held rather than the
+#: candidate typing it afresh. Both facts are true and the report must be able
+#: to say which it is standing on.
+#:
+#: A SEPARATE KIND RATHER THAN AN `answer` NODE WITH A NOTE ON IT, because the
+#: distinction is exactly the one a person auditing a grade needs: "they told
+#: us this, here, in this assessment" and "we already knew this, from their
+#: standing record" are different provenances, and a reader with one ref kind
+#: could not recover which. The node joins the item's own grounding rather than
+#: replacing it, so a criterion with both kinds cites both.
+#:
+#: WHAT IT DOES NOT CARRY, and this is the constraint the whole feature rests
+#: on: no score, no grade, no prior verdict of any kind. There is nothing in
+#: `portable_evidence_items` that could supply one, and a ref is a locator in
+#: any case. The new job's matrix grades this criterion itself.
+KIND_PORTABLE = "portable"
 
 #: How many characters of an answer the generator may quote back when grounding
 #: a probe. Long enough to be recognisably the candidate's own claim, short
@@ -99,6 +145,45 @@ class EvidenceNode:
         return {"ref": self.ref, "kind": self.kind, "item": self.item}
 
 
+def employer_item(employer_name: str) -> str:
+    """The index key an employer confirmation is filed under.
+
+    Namespaced like the aspect nodes are, so an employer called "Observability"
+    can never collide with a competency called "Observability" and silently
+    corroborate it.
+    """
+    return f"employer:{_slug(employer_name)}"
+
+
+def employer_node(employer_name: str) -> "EvidenceNode":
+    """One citable employer confirmation.
+
+    The ref carries the slug of the employer's name and nothing else. A ref is
+    persisted with the immutable report and read by people auditing a grade, so
+    it is a locator: it must not carry the confirmation's outcome, which is a
+    fact that belongs in the cited statement where a reader can see it stated
+    rather than encoded in an identifier.
+    """
+    item = employer_item(employer_name)
+    return EvidenceNode(ref=f"{KIND_EMPLOYER}:{_slug(employer_name)}", kind=KIND_EMPLOYER, item=item)
+
+
+def portable_node(item: str) -> "EvidenceNode":
+    """One citable "this came from the portable record" node for a rated item.
+
+    Filed under the ITEM's own name, not under a namespace of its own, because
+    it is evidence about that criterion and has to join that criterion's
+    grounding. The employer nodes are namespaced instead, and the difference is
+    real: an employer confirmation is about an EMPLOYER, which could collide
+    with a competency of the same name, while this is about the competency
+    already.
+    """
+    key = str(item)
+    return EvidenceNode(
+        ref=f"{KIND_PORTABLE}:{_slug(key)}", kind=KIND_PORTABLE, item=key
+    )
+
+
 @dataclass
 class EvidenceIndex:
     """The evaluation's complete citable set, keyed for the generator's use."""
@@ -127,13 +212,24 @@ class EvidenceIndex:
     def grounding(self, item: str) -> tuple[str, ...]:
         """The refs a claim ABOUT this item rests on.
 
-        The item's answers when it has any, and its `searched` record when it
-        does not. Never both-or-nothing: a claim resting on the search record
-        alone is a weaker claim, and the ref says so by its kind.
+        The item's answers and its portable record when it has either, and its
+        `searched` record when it has neither. Never both-or-nothing: a claim
+        resting on the search record alone is a weaker claim, and the ref says
+        so by its kind.
+
+        THE TWO REAL KINDS ARE RETURNED TOGETHER RATHER THAN ONE WINNING. A
+        criterion the Portable layer established still produced a recorded
+        exchange in the transcript, so both nodes exist and both are true; a
+        reader auditing the grade is entitled to see that the answer was the
+        platform restating what it held, which is only visible if the portable
+        ref travels beside it. The `searched` fallback stays last for the
+        reason it has always been last: it is the record that the criterion was
+        assessed at all, and it is what makes a gap statement citable.
         """
         answers = self.refs_for(item, kind=KIND_ANSWER)
-        if answers:
-            return answers
+        portable = self.refs_for(item, kind=KIND_PORTABLE)
+        if answers or portable:
+            return answers + portable
         return self.refs_for(item, kind=KIND_SEARCHED)
 
     def searched(self, item: str) -> tuple[str, ...]:

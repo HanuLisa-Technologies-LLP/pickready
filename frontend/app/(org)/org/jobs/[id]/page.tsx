@@ -56,7 +56,6 @@ import type {
   CarriesAiActivity,
 } from "@/lib/ai-activity";
 import { AssessmentTranscriptModal } from "@/components/assessment-transcript";
-import { ResumeViewer } from "@/components/resume-viewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -243,7 +242,6 @@ export default function OrgJobDetailPage() {
 
   const [reportRow, setReportRow] = React.useState<RankedCandidate | null>(null);
   const [transcriptRow, setTranscriptRow] = React.useState<RankedCandidate | null>(null);
-  const [resumeRow, setResumeRow] = React.useState<RankedCandidate | null>(null);
   const [emailRows, setEmailRows] = React.useState<RankedCandidate[]>([]);
   const [selectedRows, setSelectedRows] = React.useState<RankedCandidate[]>([]);
   const [inviting, setInviting] = React.useState(false);
@@ -607,11 +605,15 @@ export default function OrgJobDetailPage() {
               New applications stop immediately and the public link stops
               working. Every candidate already in your pipeline stays, but the
               assessment data for this job, the PRISM Reports, the assessment
-              scores and the interview transcripts, is permanently deleted the
-              moment you close it: candidates consented to their assessment
-              data on the basis that it lives only as long as this position.
-              Your ranked list, pipeline stages and billing records remain.
-              This cannot be undone and there is no reopen.
+              scores, the interview transcripts and any recordings, becomes
+              unavailable to your team the moment you close it: candidates
+              consented to their assessment data on the basis that it lives
+              only as long as this position. It is kept for 30 more days and
+              can be retrieved in that time only through the assessment
+              dispute process. After 30 days it is permanently deleted and
+              cannot be recovered. Your ranked list, pipeline stages and
+              billing records remain. There is no reopen, so those 30 days
+              are the only way back from closing the wrong job.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -1021,7 +1023,6 @@ export default function OrgJobDetailPage() {
         reloadKey={reloadKey}
         onOpenReport={setReportRow}
         onOpenTranscript={setTranscriptRow}
-        onOpenResume={setResumeRow}
         onEmail={canEmail ? setEmailRows : undefined}
         onSelectionChange={setSelectedRows}
         canDecide={canDecide}
@@ -1043,16 +1044,6 @@ export default function OrgJobDetailPage() {
         linkId={transcriptRow?.link_id ?? null}
         candidateName={transcriptRow?.full_name ?? ""}
         jobTitle={job?.title}
-      />
-
-      <ResumeViewer
-        open={resumeRow !== null}
-        onOpenChange={(open) => !open && setResumeRow(null)}
-        resumeUrl={resumeRow?.resume_url}
-        profileId={resumeRow?.profile_id}
-        resumeFileName={resumeRow?.resume_filename}
-        resumeMimeType={resumeRow?.resume_mime_type}
-        candidateName={resumeRow?.full_name ?? ""}
       />
 
       <EmailCompositionModal

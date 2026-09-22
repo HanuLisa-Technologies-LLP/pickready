@@ -1,14 +1,39 @@
-"""The shared evidence ledger tables (migration 0056).
+"""The evidence tables: the JOB SCOPED ledger (0056) and the PORTABLE layer (0113).
 
-Mapped for reads and for tests. Writes go through `services/evidence/ledger`,
-which UPSERTs on the claim identity and on the (claim, evidence) pair in one
-statement each. A per-row ORM write would lose that idempotence, and a scoring
-pass that ran twice would file one piece of evidence as two, which reads to
-anything counting support as corroboration.
+Mapped for reads and for tests. Writes to the job scoped ledger go through
+`services/evidence/ledger`, which UPSERTs on the claim identity and on the
+(claim, evidence) pair in one statement each. A per-row ORM write would lose
+that idempotence, and a scoring pass that ran twice would file one piece of
+evidence as two, which reads to anything counting support as corroboration.
 
 Note what is NOT here: no text column on `EvidenceItem`, and no support-state
 column on `EvidenceClaim`. Both absences are load-bearing and both are argued in
 the migration's docstring.
+
+TWO STORES, AND THE SECOND ONE IS NOT AN EXTENSION OF THE FIRST (0113)
+-----------------------------------------------------------------------
+`PortableEvidenceItem` sits at the bottom of this file and is a DIFFERENT TABLE
+on purpose. The change request asked whether to make `evidence_items.job_id`
+nullable instead, and the answer is no, for three reasons that each stand alone:
+
+* `evidence_items.tenant_id` is NOT NULL with an RLS policy on tenant equality.
+  Portable evidence follows the CANDIDATE across tenants, the way
+  `candidate_employments` already does. A portable row living here would have
+  to carry some tenant's id, and would then be invisible to the next employer
+  who needs it, which is the whole feature not working. Dropping the tenant
+  column instead would rewrite the policy every existing reader depends on.
+* `job_id` is NOT NULL ON DELETE CASCADE, and job closure is being given a
+  purge of job scoped assessment data. Both of those are CORRECT for a job
+  scoped ledger and fatal for a candidate's standing record. A nullable
+  `job_id` would leave the portable rows one mistyped `WHERE` away from a
+  sweep written for the job scoped ones.
+* The tables answer different questions. This one answers "what did we read
+  when we graded this application"; that one answers "what do we know about
+  this person". One table would make every future reader decide which it was
+  holding, from a nullable column.
+
+So the job reference on the portable row is NULLABLE and ON DELETE SET NULL: a
+deleted job forgets where a fact came from and never takes the fact with it.
 """
 from __future__ import annotations
 
@@ -16,7 +41,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -157,3 +182,101 @@ class EvidenceClaimLink(Base, UUIDPKMixin, CreatedAtMixin):
     )
     #: supports | contradicts
     stance: Mapped[str] = mapped_column(String(20), nullable=False)
+
+
+class PortableEvidenceItem(Base, UUIDPKMixin, CreatedAtMixin):
+    """One fact about a PERSON that outlives the job it was first read on (0113).
+
+    THE OWNER RULING OF 2026-09-22 reversed the 2026-07-30 "reuse is retired"
+    decision, and this table is where the reversal lives. Read
+    `services/retake.py` for the reversal itself; what matters here is the
+    shape, because the shape is what makes the reversal safe.
+
+    WHAT IS ABSENT IS THE POINT
+    -----------------------------
+    There is no score column. No grade, no band, no percent, no rating, no
+    required level, no verdict, no composite, no tier. That is not an
+    oversight to be corrected the first time somebody wants to carry a report
+    forward: it is the enforcement of the rule the whole feature stands on.
+
+        Portability is of the underlying EVIDENCE, judged against the NEW
+        matrix. It is never of a verdict.
+
+    A prior job's grade was reached against a matrix generated from a
+    different JD, by a rubric written for different questions. Carrying it
+    would state a verdict about criteria the candidate was never assessed on,
+    which is the exact error the 2026-07-30 retirement was written to prevent
+    and which the reversal does not license. A column is the only place a
+    verdict could travel, so there is no column, and
+    `tests/test_portable_evidence.py` reads `information_schema` and fails on
+    one appearing.
+
+    `statement` is the product's OWN normalised wording, like
+    `evidence_claims.claim` and for the same reason: a verbatim copy of what a
+    candidate wrote, in a row that follows them to every employer they ever
+    apply to, is a far wider disclosure than the transcript it came from.
+    `source_ref` is a locator, never the text.
+
+    NO TENANT COLUMN, DELIBERATELY
+    --------------------------------
+    A person's education did not happen inside a tenant. This table follows
+    `candidate_employments` and `bgv_inquiries`: candidate owned, tenant free,
+    reached through the candidate's own session or through an audited bypass.
+    `source_tenant_id` and `source_job_id` are PROVENANCE, nullable, and
+    `ON DELETE SET NULL`, so a closed job or a departed customer costs the row
+    its origin and never the row.
+
+    `uq_portable_evidence_subject` is UNIQUE with no predicate, and `status`
+    is a soft retirement, which is the exact pairing that produced a 500 on
+    the matrix editor in pilot on 2026-09-20. It is safe here for the one
+    reason it was not safe there: the only writer is an UPSERT that REVIVES
+    the row on conflict (`services/portable_evidence.record`). There is no
+    INSERT path that can land on an occupied key.
+    """
+
+    __tablename__ = "portable_evidence_items"
+    __table_args__ = (
+        Index("ix_portable_evidence_candidate", "candidate_id", "kind"),
+    )
+
+    candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("candidates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: One of `portable_evidence.PORTABLE_KINDS`, pinned by a CHECK. A closed
+    #: vocabulary rather than free text: an unrecognised kind is a new claim
+    #: about what may be reused, and it should cost a reviewed line.
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: What the fact is ABOUT: a skill, an employer, a qualification. This is
+    #: what a matrix criterion is matched against.
+    subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: The product's own wording of the fact. Never the candidate's verbatim.
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Structured detail, swept for verdict-shaped keys at write time.
+    facts: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    #: The ledger's own four trust levels, in the ledger's own order.
+    trust: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: resume | validation | bgv | profile. WHO originated it, which is what
+    #: `evidence_confidence` counts and what keeps one person saying one thing
+    #: twice from reading as corroboration.
+    source_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: `table:row_id[#fragment]`, the ledger's own locator grammar.
+    source_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    source_job_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("jobs.id", ondelete="SET NULL")
+    )
+    source_tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="SET NULL")
+    )
+    #: When the fact was TRUE, which is routinely not when it was recorded.
+    #: A date, not a timestamp: it comes from a document that states a month
+    #: at best, and a timestamptz would invent a time of day and a zone.
+    observed_on: Mapped[date | None] = mapped_column(Date)
+    #: An event in OUR system, so it is an instant.
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    #: active | superseded | revoked. Retired rows are kept: a delivered report
+    #: is a permanent record of what it was written from.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")

@@ -167,6 +167,17 @@ class LiveEvaluation:
     #: an evaluation is a permanent record of the criteria it was run against,
     #: and the job's matrix may be re-frozen afterwards.
     matrix: Any = None
+    #: {competency name: the ledger SOURCE TYPES mapped to it}, from the SAME
+    #: `EvidenceView` objects the five evaluators were handed.
+    #:
+    #: Carried rather than recomputed by the report writer, because a second
+    #: pass over the ledger could legitimately see a different set: evidence is
+    #: written during scoring, and "what did the evaluators actually read" is a
+    #: question only the run that read it can answer. `evidence_confidence`
+    #: turns these into the word beside each rated line, so a confidence that
+    #: disagreed with the evaluators' own inputs would be the report describing
+    #: an evaluation that did not happen.
+    competency_sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def aggregate(self) -> aggregation.Aggregate | None:
@@ -418,7 +429,29 @@ async def evaluate_application(
         unresolved_evidence=lost,
         evidence_count=len(views),
         matrix=matrix,
+        competency_sources=_sources_by_competency(views, mapping),
     )
+
+
+def _sources_by_competency(
+    views: Sequence[EvidenceView], mapping: Mapping[str, Sequence[str]]
+) -> dict[str, tuple[str, ...]]:
+    """Which KINDS of source stand behind each competency.
+
+    Kinds, never counts and never refs. The report's confidence word is derived
+    from distinct ORIGINATORS, so what it needs is the set of source types; a
+    count would invite somebody to read "four pieces of evidence" as four
+    sources, which is the arithmetic `independence_group_for` exists to stop.
+    """
+    by_ref = {view.ref: view.source_kind for view in views}
+    out: dict[str, set[str]] = {}
+    for ref, competencies in mapping.items():
+        kind = by_ref.get(ref)
+        if not kind:
+            continue
+        for name in competencies:
+            out.setdefault(str(name), set()).add(str(kind))
+    return {name: tuple(sorted(kinds)) for name, kinds in out.items()}
 
 
 def _as_dict(item: Any) -> dict[str, Any]:

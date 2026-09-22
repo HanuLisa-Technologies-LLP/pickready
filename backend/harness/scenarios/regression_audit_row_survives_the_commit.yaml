@@ -1,0 +1,45 @@
+id: regression.an_audit_row_survives_its_own_commit
+version: 1
+tier: regression
+description: >
+  Finalising the role definition answers 200 AND leaves an `audit_log` row
+  behind when a second connection looks. The defect this pins shipped on
+  2026-09-20: `audit()` flushes its INSERT and returns the row, so a field
+  assigned to it afterwards emitted `UPDATE audit_log`, a statement the
+  application role has had REVOKED since migration 0001. The doomed update
+  either 500'd inside the handler or flushed at COMMIT, after FastAPI had
+  already sent the response, rolling the whole transaction back while the
+  client held a 200.
+tags: [audit, rbac, rollback, "2026-09-20"]
+
+given:
+  world: job_with_generated_matrix
+  overrides:
+    job.lifecycle_state: IN_REVIEW
+    job.assessment_status: questions_pending_review
+
+workload:
+  - finalize_framework
+
+expect:
+  # THE WHOLE SCENARIO IS THE GAP BETWEEN THESE TWO BLOCKS. The output block
+  # is what the client saw; the state block is what the database kept. On the
+  # defect they disagreed, and only the second connection could tell.
+  state:
+    - audit_log.count:role_definition_finalized == 1
+    - jobs.framework_approved == true
+    - jobs.criteria_version is not null
+    - job_scorecard_bindings.count_for_job == 1
+  output:
+    - status.finalize_framework == 200
+    - body.finalize_framework.approved == true
+  trajectory:
+    - framework_finalize_attempted
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

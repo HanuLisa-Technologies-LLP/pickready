@@ -119,6 +119,18 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
         ),
     ),
     ScheduledTask(
+        rule="readypick-purge-assessment-media",
+        task="pickready.purge_assessment_media",
+        interval_minutes=60,
+        why=(
+            "Deletes nothing while `assessment_media_retention_days` is zero, "
+            "which is the platform's current posture. The owner ruling of "
+            "2026-09-22 requires stored assessment media to have a retention "
+            "and deletion lifecycle, and a retention window with no sweep "
+            "behind it is a paragraph rather than a policy."
+        ),
+    ),
+    ScheduledTask(
         rule="readypick-reconcile-context-index",
         task="pickready.reconcile_context_index",
         interval_minutes=60,
@@ -153,6 +165,26 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
         ),
     ),
     ScheduledTask(
+        rule="readypick-purge-closed-job-assessments",
+        task="pickready.purge_closed_job_assessments",
+        interval_minutes=60,
+        why=(
+            "Change request 22, owner ruling 2026-09-22: closing a job no "
+            "longer deletes its assessment data inline, it withholds it for "
+            "thirty days. This sweep is the half that makes the thirty days "
+            "real, and without it the promise made to every assessed "
+            "candidate is broken SILENTLY, because a retention window with "
+            "no sweep produces the same empty log as one with nothing to "
+            "delete. HOURLY rather than daily, even though the window is "
+            "measured in days: it deletes stored objects one network call at "
+            "a time, and a store that refuses has to be retried inside the "
+            "same day rather than once. Running LATE is safe and running "
+            "TWICE is safe: it asks the table for jobs whose window has "
+            "passed and whose data is still here, so a second pass over a "
+            "finished job finds nothing."
+        ),
+    ),
+    ScheduledTask(
         rule="readypick-sweep-consent-lifecycle",
         task="pickready.sweep_consent_lifecycle",
         interval_minutes=1440,
@@ -171,6 +203,26 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
         ),
     ),
     ScheduledTask(
+        rule="readypick-reconcile-candidate-erasures",
+        task="pickready.reconcile_candidate_erasures",
+        interval_minutes=60,
+        why=(
+            "An erasure has two halves that fail independently: the database "
+            "rows, which one transaction settles, and the STORED OBJECTS, "
+            "which an object store settles one network call at a time. The "
+            "second half used to be missing entirely, so a resume and an "
+            "assessment recording survived a deletion whose own warning "
+            "screen said they had not. This finishes every "
+            "`candidate_deletion_requests` row that is not complete, asking "
+            "the TABLE rather than a timestamp, and it NEVER gives up: "
+            "there is no terminal failure state, because 'we stopped trying "
+            "to delete this person's documents' is not an outcome this "
+            "product may reach. Hourly rather than daily because the window "
+            "it closes is one in which a person who asked to be erased is "
+            "only half erased."
+        ),
+    ),
+    ScheduledTask(
         rule="readypick-sweep-bgv-reminders",
         task="pickready.sweep_bgv_reminders",
         interval_minutes=1440,
@@ -184,6 +236,39 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "one who can nudge their own former employer."
         ),
     ),
+    ScheduledTask(
+        rule="readypick-expire-credit-lots",
+        task="pickready.expire_credit_lots",
+        interval_minutes=1440,
+        why=(
+            "Change request 25: a credit lot reaching its three-month expiry "
+            "writes the ledger debit for whatever was left on it, so the "
+            "balance stays the plain SUM of the ledger and the statement says "
+            "why it fell. Every gate and the billing summary already expire "
+            "on read, so an ACTIVE customer's balance is exact when they look "
+            "at it; this sweep is for the account nobody is looking at, whose "
+            "figure the Provider Portal's cross-tenant overview reads. DAILY, "
+            "and the interval is not load-bearing: running late costs a stale "
+            "number on an idle account and can never let an expired credit be "
+            "spent, because the deduction path expires first."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-sweep-subscription-usage-alerts",
+        task="pickready.sweep_subscription_usage_alerts",
+        interval_minutes=1440,
+        why=(
+            "Change request 27: the month 10 and month 11 usage summary. "
+            "PURELY INFORMATIONAL, and it writes exactly one column, the "
+            "once-only latch that stops the letter being sent twice. DAILY "
+            "because the window is a subscription MONTH, so running late "
+            "delays the letter by a day and can never duplicate it. It is "
+            "keyed on the TABLE (subscription_started_at against now), never "
+            "on a last-swept stamp, so a run that died between the claim and "
+            "the send does not silently skip the tenant it died on."
+        ),
+    ),
+
 )
 
 RULE_NAMES: tuple[str, ...] = tuple(entry.rule for entry in SCHEDULE)

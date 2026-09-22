@@ -592,12 +592,61 @@ def _candidates_from_menu(
     return picked
 
 
+#: What the naming prompt is told `function_strategic_context` is for, sent
+#: ONLY when a Drishti profile actually supplies lines. Separated from the
+#: prompt file's own body so the rendered instruction is byte-identical to
+#: what it was before Drishti existed whenever the function has no profile:
+#: an enhancement layer that changed every prompt in the product on the days
+#: it supplied nothing would not be one.
+_STRATEGIC_CONTEXT_RULE = (
+    "\n\nYou may also be given \"function_strategic_context\": a few "
+    "statements the head of this function wrote about what the function is "
+    "for and what it rewards. It is BACKGROUND for choosing between two "
+    "honest names for a phrase you were already given, and for nothing else. "
+    "It is not a source of phrases. Never convert a line of it into a "
+    "competency, never let it add a requirement nobody stated, and if it "
+    "conflicts with the phrase you are naming, the phrase wins."
+)
+
+
+def _naming_payload(
+    job: Job,
+    pending: Sequence[_Candidate],
+    model: DepartmentModel,
+    seniority: str,
+    strategic_context: Sequence[str],
+) -> str:
+    """The user message for the naming call.
+
+    Pulled out of `_name_unanchored` so the ONE property Drishti has to keep
+    is testable without a model or a database: with no profile, the key is
+    ABSENT rather than present and empty, so the request is byte-identical to
+    what it was before this layer had a supplier. A key carrying `[]` would
+    still be a different prompt, and "the platform still works without a
+    profile" has to mean the same bytes, not merely the same intent.
+    """
+    payload: dict[str, Any] = {
+        "job_title": job.title,
+        "seniority": seniority,
+        "department": model.label,
+        "known_competencies": [c.name for c in model.for_seniority(seniority)],
+        "phrases": [
+            {"index": index, "text": candidate.phrase}
+            for index, candidate in enumerate(pending)
+        ],
+    }
+    if strategic_context:
+        payload["function_strategic_context"] = list(strategic_context)
+    return json.dumps(payload)
+
+
 async def _name_unanchored(
     session: AsyncSession,
     job: Job,
     pending: Sequence[_Candidate],
     model: DepartmentModel,
     seniority: str,
+    strategic_context: Sequence[str] = (),
 ) -> tuple[dict[int, tuple[str, str]], list[dict[str, Any]], bool]:
     """Stages 1 and 2 for the phrases the department menu has no anchor for.
 
@@ -610,25 +659,25 @@ async def _name_unanchored(
     recorded, with the reason stated. That is spec-doc6 §4.1: a stage that
     cannot run raises and surfaces an actionable message rather than inventing a
     criterion every candidate on the job would then be graded against.
+
+    `strategic_context` is Drishti (vivekium C3), and it is the ONE thing in
+    this prompt the client wrote. It arrives already derived from the compiled
+    artifact, already through the observable-evidence detector and already
+    capped in lines and characters (`drishti.prompt_context`); raw section
+    text cannot reach here, which is the property the 2026-09-09 removal was
+    about. Empty is the normal case and costs nothing: no key in the payload,
+    no clause in the instruction, the same bytes as before.
     """
     if not pending:
         return {}, [], False
 
-    payload = json.dumps(
-        {
-            "job_title": job.title,
-            "seniority": seniority,
-            "department": model.label,
-            "known_competencies": [c.name for c in model.for_seniority(seniority)],
-            "phrases": [
-                {"index": index, "text": candidate.phrase}
-                for index, candidate in enumerate(pending)
-            ],
-        }
-    )
+    payload = _naming_payload(job, pending, model, seniority, strategic_context)
     system_prompt = registry.render(
         "sutra_competency_naming",
         authority_text_is_data=fragments.AUTHORITY_TEXT_IS_DATA,
+        strategic_context_rule=(
+            _STRATEGIC_CONTEXT_RULE if strategic_context else ""
+        ),
     )
 
     async def _execute(reflection: str) -> dict[str, Any]:
@@ -897,8 +946,25 @@ async def compile_matrix(
         if candidate.observable is None
         and match_competency(candidate.phrase, model, seniority) is None
     ]
+    # Layer 2, Drishti (vivekium C3): the function's COMPILED strategic
+    # profile, matched on the job's own department. Resolved HERE, ahead of
+    # the naming call, because the naming call is now one of its two readers:
+    # it reaches WEIGHTS through `emphasis_map` further down and it reaches
+    # Sutra's one model call through `prompt_context` just below. Empty when
+    # the function has no profile, and then both the prompt and every weight
+    # are exactly what they were before this layer had a live supplier.
+    from app.services.hiring import drishti
+
+    company_compiled, drishti_context = await drishti.compiled_for(
+        session, tenant_id=job.tenant_id, department=job.department
+    )
     named, refusals, degraded = await _name_unanchored(
-        session, job, pending, model, seniority
+        session,
+        job,
+        pending,
+        model,
+        seniority,
+        strategic_context=drishti.prompt_context(company_compiled),
     )
     resolved: dict[str, tuple[str, str]] = {
         candidate.phrase: named[index]
@@ -908,15 +974,6 @@ async def compile_matrix(
     refused_phrases = {row["phrase"] for row in refusals}
 
     emphasis = _quadrant_emphasis()
-    # Layer 2, Drishti (vivekium C3): the function's COMPILED strategic
-    # profile, matched on the job's own department. Empty when the function
-    # has no profile, and then every weight below is exactly what it was
-    # before this layer had a live supplier.
-    from app.services.hiring import drishti
-
-    company_compiled, drishti_context = await drishti.compiled_for(
-        session, tenant_id=job.tenant_id, department=job.department
-    )
     usable = [
         _Candidate(
             phrase=resolved.get(

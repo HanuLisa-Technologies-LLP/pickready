@@ -73,7 +73,9 @@ from typing import Any, Iterable
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "EndEvent",
     "TurnEvent",
+    "record_end",
     "record_turn",
     "conversation_summary",
     "emit_summary",
@@ -110,6 +112,38 @@ class TurnEvent:
     generated: bool      # True when written this turn, False when stored text
     degraded: bool       # True when an LLM step failed and a fallback was used
     latency_ms: int
+
+
+@dataclass(frozen=True)
+class EndEvent:
+    """Why one conversation finished, and where it finished.
+
+    The reason is also stored on `assessment_conversations.end_reason`; this
+    line is what makes a COHORT readable without a query, which is the
+    question an operator actually asks after a change to the stopping rule.
+    "Are sessions ending early at all, and how much of the ceiling are they
+    using" is a log aggregation over this line, and it could not be answered
+    from the row alone without access to the database.
+
+    The three counts are the only honest way to read the reason. A stop at
+    fourteen means nothing until you know whether fourteen was the floor, the
+    ceiling, or somewhere between them, and `questions_asked` on its own has
+    been misread as a quality signal before.
+
+    Numbers here are OPERATOR data, exactly as `conversation_summary`'s are,
+    and they are bounded by the same rule: this line goes to the log and
+    nothing in it may be forwarded to a client.
+    """
+
+    conversation_id: str
+    #: One of `interviewer.STOP_CONDITIONS`.
+    end_reason: str
+    #: Base questions the candidate actually reached.
+    questions_asked: int
+    #: Questions written up front, i.e. Sutra's ceiling for this job.
+    questions_written: int
+    #: The grade's minimum, below which no early stop is permitted.
+    floor: int
 
 
 def _scrub(value: Any) -> str:
@@ -152,6 +186,32 @@ def record_turn(event: TurnEvent) -> None:
     except Exception:  # noqa: BLE001
         # A candidate is mid-assessment on a live request. Losing one telemetry
         # line is free; raising out of an observer is not.
+        pass
+
+
+def record_end(event: EndEvent) -> None:
+    """Write ONE structured line saying why a conversation ended, at INFO.
+
+    Emitted beside the column write rather than instead of it. The column is
+    what a recruiter's own record can be read against months later; this line
+    is what a person watching a deploy can aggregate the same afternoon, and
+    neither substitutes for the other.
+
+    Never raises, like everything else here: it fires on the request that also
+    settles completion, the credit charge and the scoring dispatch, and an
+    observer that can interrupt that sequence is worse than no observer.
+    """
+    try:
+        logger.info(
+            "interview_telemetry.end conversation_id=%s end_reason=%s "
+            "questions_asked=%s questions_written=%s floor=%s",
+            _scrub(getattr(event, "conversation_id", None)),
+            _scrub(getattr(event, "end_reason", None)),
+            _scrub(getattr(event, "questions_asked", None)),
+            _scrub(getattr(event, "questions_written", None)),
+            _scrub(getattr(event, "floor", None)),
+        )
+    except Exception:  # noqa: BLE001
         pass
 
 

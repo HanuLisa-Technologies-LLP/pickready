@@ -338,6 +338,43 @@ class DeleteMeOut(BaseModel):
     projects_deleted: int
     cache_keys_deleted: int
     sign_in_accounts_deleted: int
+    #: How many stored files (resumes, recordings, staged originals, files on
+    #: the candidate's conversations) this erasure has to remove. Reported
+    #: because the row half and the OBJECT half of an erasure finish at
+    #: different moments, and telling somebody "deleted" while an unknown
+    #: number of their documents are still queued is the kind of half-truth
+    #: `deletion_state` exists to replace.
+    objects_total: int
+    #: Where the erasure stands, from `services/deletion_requests`. It is
+    #: `rows_erased` when the request returns, which is the honest word for
+    #: "you are out of the product and your stored files are being removed";
+    #: the object pass runs in `pickready.cascade_erasure` and is swept until
+    #: every file is verifiably gone.
+    deletion_state: str
+
+
+class RenewConsentIn(BaseModel):
+    """POST /portal/consent/renew. The one-click link's own payload.
+
+    The token is the whole authorization and it authorises exactly one act. It
+    is never a session, never identifies the holder to any other route, and is
+    consumed by the renewal itself. See `services/consent_renewal`.
+    """
+
+    token: str = Field(min_length=16, max_length=200)
+
+
+class ConsentRenewedOut(BaseModel):
+    """What a renewal answers, on both the signed-in and the one-click path.
+
+    `message` is the SERVER's sentence, for the reason every other rule
+    sentence in this product is: the page must not be able to promise
+    something different from what was written.
+    """
+
+    renewed: bool
+    renewed_at: datetime
+    message: str
 
 
 class ApplicationsOut(BaseModel):

@@ -159,6 +159,54 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
     #: Never interpreted, never scored, never sent to a model.
     closed_reason: Mapped[str | None] = mapped_column(Text)
 
+    # ── Thirty day soft deletion (migration 0112, owner ruling 2026-09-22) ────
+    # SUPERSEDES the 2026-09-18 vivekium C5 ruling that closure hard deleted
+    # the assessment data inline. Closure now WITHHOLDS it and schedules the
+    # deletion; `services/job_assessment_retention` owns the whole lifecycle
+    # and its docstring carries the reversal and its reason.
+    #
+    # `assessment_purge_due_at` is STORED rather than derived from `closed_at`
+    # plus the window, and that is the one place this feature departs from the
+    # house rule that a derivable value is derived. The window is a promise
+    # printed in the confirmation dialog before an irreversible click, so
+    # editing a module constant must not be able to move a deadline for a job
+    # that is already closed.
+    assessment_purge_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    #: Stamped only when a pass confirmed EVERY stored object gone and then
+    #: deleted the rows. It is the sweep's convergence condition, so a job it
+    #: could not finish is enumerated again on the next run rather than being
+    #: recorded as done.
+    assessment_purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    #: Counts passes, never a give-up threshold: there is no terminal failure
+    #: state here, for the reason `services/deletion_requests` states in place.
+    #: What a persistent failure moves is this number and the class name below,
+    #: which is what makes a stuck job loud rather than silent.
+    assessment_purge_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    #: An exception CLASS NAME, never a message: a message can quote a row.
+    assessment_purge_last_failure: Mapped[str | None] = mapped_column(String(200))
+    #: The dispute path. Opening one is an audited act by somebody holding
+    #: `retrieve_disputed_assessment`; while it is open, and only inside the
+    #: retention window, that person may read this job's assessment records
+    #: again. Written rather than inferred from the audit log, for the reason
+    #: `lifecycle_state` is written: a state read from a log is a state nothing
+    #: can index, refuse against, or show on a screen.
+    assessment_dispute_opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    assessment_dispute_opened_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    #: Why the dispute was opened, in the opener's own words. Required by the
+    #: route: an unlock of withheld candidate data with no stated reason is an
+    #: unlock nobody can review afterwards.
+    assessment_dispute_reason: Mapped[str | None] = mapped_column(Text)
+
     # ── Per-job JD sections (migration 0016) ─────────────────────────────────
     # Seeded from the company profile when the job is created. Editing them on
     # the job is a PER-JOB OVERRIDE that never writes back to the company, and

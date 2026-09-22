@@ -89,12 +89,15 @@ export default function UnifiedAssessmentPage() {
     [linkId]
   );
 
-  const accept = React.useCallback(async () => {
+  const accept = React.useCallback(async (consentKeys: string[]) => {
     setBusy(true);
     setError(null);
     try {
+      // The ticked items travel with the request: each one is stamped
+      // separately server-side, and the server refuses a short list.
       const updated = await apiPost<AssessmentModeState>(
-        `/api/v2/assessments/conversations/links/${linkId}/consent`
+        `/api/v2/assessments/conversations/links/${linkId}/consent`,
+        { consent_keys: consentKeys }
       );
       setState(updated);
       setStep("assessment");
@@ -156,7 +159,7 @@ export default function UnifiedAssessmentPage() {
         terms={state.consent}
         busy={busy}
         error={error}
-        onAccept={() => void accept()}
+        onAccept={(consentKeys) => void accept(consentKeys)}
         onDecline={() => {
           setError(null);
           setStep("mode");
