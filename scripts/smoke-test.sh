@@ -64,6 +64,34 @@ FRONTEND_TARGET="${FRONTEND_TARGET%/}"
 # one.
 HEALTH_PATH="${HEALTH_PATH:-/health/live}"
 
+# AND IT IS ASKED OF THE ORIGIN, NOT OF `$TARGET`.
+#
+# `/health/live` is declared on the FastAPI app itself (`@app.get` in
+# `app/main.py`), not on a router mounted under `/api/v1`, because the load
+# balancer's health check cannot carry an API prefix. `$TARGET` ends in
+# `/api/v1`, so joining the two asked for `/api/v1/health/live`, which is a
+# route that has never existed and answered 404 twelve times before failing
+# the deploy.
+#
+# This was invisible until 2026-09-23 because the CI jobs that run this script
+# are gated behind `vars.PILOT_DEPLOY_ENABLED`, which has never been set: the
+# script had simply never been executed against a live site. A check nobody
+# has run is not a check.
+# EVERY PATH IN THIS SCRIPT IS ABSOLUTE FROM THE ORIGIN, SO THE ORIGIN IS THE
+# BASE. `$TARGET` comes from the terraform output and ends in `/api/v1`, while
+# the paths below are written `/api/v1/jobs`, `/openapi.json`, `/health/live`.
+# Joining the two produced `/api/v1/api/v1/jobs` and `/api/v1/openapi.json`,
+# both 404, and `/api/v1/health/live`, which is a route that has never existed.
+#
+# It read as "the revision is not serving" and would have failed a deploy of a
+# perfectly healthy build. It survived because the CI jobs that run this script
+# are gated behind `vars.PILOT_DEPLOY_ENABLED`, which has never been set: until
+# 2026-09-23 the script had never been executed against a live site. A check
+# nobody has run is not a check, which is the same lesson `verify-deployment.sh`
+# states about a skipped digest.
+ORIGIN="${ORIGIN:-${TARGET%%/api/*}}"
+HEALTH_BASE="${HEALTH_BASE:-$ORIGIN}"
+
 # Authenticated endpoints, probed with TEST_BEARER_TOKEN. The capabilities
 # endpoint is /api/v1/auth/me: it returns {user, capabilities[]} and there is
 # no /api/v1/me/capabilities route in this codebase.
@@ -109,7 +137,7 @@ probe() {
   # as a mysterious non-200. The ${out:-000} default covers curl producing
   # nothing at all.
   local out
-  out="$(curl "${args[@]}" "${TARGET}${path}" 2>/dev/null || true)"
+  out="$(curl "${args[@]}" "${PROBE_BASE:-$ORIGIN}${path}" 2>/dev/null || true)"
   out="$(printf '%s' "$out" | tr -cd '0-9')"
   printf '%s' "${out:-000}"
 }
@@ -121,9 +149,9 @@ attempt=1
 while [ "$attempt" -le "$HEALTH_RETRIES" ]; do
   # NO_REDIRECT: a 3xx here means the request never reached the API, which is
   # exactly the failure this check exists to catch.
-  code="$(NO_REDIRECT=1 probe "$HEALTH_PATH")"
+  code="$(NO_REDIRECT=1 PROBE_BASE="$HEALTH_BASE" probe "$HEALTH_PATH")"
   if [ "$code" = "200" ]; then
-    pass "${HEALTH_PATH} 200"
+    pass "${HEALTH_BASE}${HEALTH_PATH} 200"
     break
   fi
   printf '  ....  %s attempt %s/%s -> %s\n' "$HEALTH_PATH" "$attempt" "$HEALTH_RETRIES" "$code"

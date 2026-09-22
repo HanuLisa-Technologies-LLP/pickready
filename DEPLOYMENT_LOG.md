@@ -10,6 +10,96 @@ that need you.
 
 ---
 
+## 2026-09-23, change requests 07 to 28D and the harness, pilot (ap-south-2)
+
+Deployed as `sha-d63f88937e05` from commit `d63f889`. Twenty two change
+requests plus `backend/harness/`, migrations 0106 to 0117, 243 files.
+
+**Verified before the build**: 7124 backend tests passed, 1 documented skip,
+2 xfailed; 329 frontend tests passed; agent evals passed; mypy clean over 52
+files; no import cycles; no dead code.
+
+**Rollback point**: api `:46`, frontend `:33`, analysis `:14`, all on
+`sha-ce438cf`. Note that a code rollback does NOT roll the schema back, and it
+does not need to: every migration here is additive or widening except 0106's
+rewrite of `medium` to `moderate`, a value the old CHECK never admitted, so no
+pre-existing row carried it.
+
+### What ran
+
+1. `terraform apply` for shape: 9 added, 3 changed, 4 destroyed. Five new
+   EventBridge rules (`expire-credit-lots`, `purge-closed-job-assessments`,
+   `sweep-subscription-usage-alerts`, `purge-assessment-media`,
+   `reconcile-candidate-erasures`), all confirmed present afterwards.
+2. `backend` and `frontend` built for linux/arm64 and pushed. `analysis` was
+   NOT rebuilt: it is unchanged in this commit and `analysis_image_tag` stays
+   pinned at `93ebfcb`, which is what that variable exists for.
+3. Migration on the new image, before anything serving traffic moved.
+4. Services rolled: api `:46` to `:48`, frontend `:33` to `:35`.
+5. The three image-backed Lambdas pointed at the same image.
+6. Verified by DIGEST of the running tasks, then smoke tested live.
+
+### THE MIGRATION RAN ON THE OLD IMAGE AND REPORTED SUCCESS
+
+The first `run-migration.sh` exited 0 having applied NOTHING. The plan had been
+generated before `terraform.tfvars` carried the new tag, so the `migrate` task
+definition still pointed at `sha-a03e978`, whose head is 0105. `alembic upgrade
+head` on that image had nothing to do and said so with exit 0.
+
+This is the standing rule with a fresh instance: a timestamp, or an exit code,
+is not evidence that work happened. What caught it was reading which IMAGE the
+stopped task had actually run, not the script's result. The fix was to apply
+terraform with the corrected tfvars so the task definition carried
+`sha-d63f88937e05`, then re-run and read the log: all twelve revisions, 0106
+through 0117, named in order.
+
+`terraform.tfvars` also carried `sha-a03e978` and `sha-7466081` while the
+services were really running `sha-ce438cf`, because release 8 was deployed with
+CLI `-var` overrides. The file's own comment says it must carry the tag the
+environment actually runs, so it now does.
+
+### `scripts/smoke-test.sh` HAD NEVER BEEN RUN AGAINST A LIVE SITE
+
+It failed the deploy of a healthy build, twelve times, on
+`/api/v1/health/live`, a route that has never existed.
+
+Every path in that script is written absolute from the origin
+(`/api/v1/jobs`, `/openapi.json`, `/health/live`), and it joined them onto
+`$TARGET`, which the terraform output ends with `/api/v1`. So liveness asked
+for `/api/v1/health/live`, the authenticated probes asked for
+`/api/v1/api/v1/jobs`, and the route contract asked for
+`/api/v1/openapi.json`. Five failures, none of them the product.
+
+It survived because the CI jobs that invoke it are gated behind
+`vars.PILOT_DEPLOY_ENABLED`, which has never been set. The base is the ORIGIN
+now, and the reasoning is written into the script beside it. This is the same
+finding `verify-deployment.sh` already states in its own words: a check nobody
+has run is not a check.
+
+`verify-deployment.sh` itself behaved exactly as designed, refusing to pass
+with `analysis: SKIPPED, no expected digest supplied`. Supplying it made all
+three services verify.
+
+### Live confirmation
+
+- `api` 2 tasks on `sha256:2bea4819...`, `frontend` 1 task on
+  `sha256:6d9744dc...`, `analysis` 2 tasks on `sha256:e0c6d488...`.
+- Smoke: liveness, three authenticated endpoints, the capabilities array, four
+  route-contract assertions and the frontend root, all passing.
+- New surfaces answered: `/drishti/sections`, `/drishti/functions`, and the
+  Starter Pack present as `starter_pack_75`, 40 credits purchased at the fixed
+  rate plus 35 bonus, Rs 24,000 subtotal, three month validity.
+
+### Still open
+
+- `AWS_DEPLOY_ENABLED` and `PILOT_DEPLOY_ENABLED` remain unset, so CI still
+  does not deploy and the post-deploy scripts still only run by hand.
+- The analysis service was not rebuilt, so nothing in this release exercised
+  its image path.
+
+---
+
+
 ## 1. What this was
 
 Two halves of one change, on 2026-09-05.
