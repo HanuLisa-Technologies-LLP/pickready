@@ -88,11 +88,33 @@ def test_no_executable_source_still_names_the_feature() -> None:
         for path in (REPO / root).rglob("*.py"):
             if path in allowed or "__pycache__" in path.parts:
                 continue
-            for number, line in enumerate(
-                path.read_text(encoding="utf-8").split("\n"), 1
-            ):
-                if pattern.search(line):
-                    offending.append(f"{path.relative_to(REPO)}:{number}: {line.strip()}")
+            text = path.read_text(encoding="utf-8")
+            # THE WHITESPACE IS NORMALISED FIRST, AND THAT IS NOT A TIDY-UP.
+            #
+            # This sweep read one LINE at a time until 2026-09-23, so a
+            # mention wrapped across a newline never matched a pattern that
+            # contains a space. Exactly one had been sitting in
+            # `workers/tasks.py` since the removal, describing a compiled
+            # Company DNA as a live precondition of Sutra, and it passed
+            # every run of this test. A sweep with a blind spot is worse than
+            # no sweep, because the green result is what stops anybody
+            # looking. Offsets are mapped back so a hit still names a line
+            # somebody can open.
+            flat: list[str] = []
+            offsets: list[int] = []
+            for index, character in enumerate(text):
+                if character.isspace():
+                    if flat and flat[-1] == " ":
+                        continue
+                    flat.append(" ")
+                else:
+                    flat.append(character)
+                offsets.append(index)
+            for match in pattern.finditer("".join(flat)):
+                line = text.count("\n", 0, offsets[match.start()]) + 1
+                offending.append(
+                    f"{path.relative_to(REPO)}:{line}: {match.group(0)}"
+                )
     assert not offending, offending
 
 

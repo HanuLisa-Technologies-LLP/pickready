@@ -470,12 +470,16 @@ CHECK constraint.
 PPI is a first-party framework and is not presented as DISC, MBTI, Hogan,
 CliftonStrengths, or another licensed psychometric instrument.
 
-**The framework is per job; the questions are per candidate.** Once the Hiring
-Manager saves the framework it is the fixed evaluation criteria for every
-candidate who applies to that job - that is the only reason two candidates'
-reports are comparable. The questions probing it are generated individually from
-the JD, the saved framework, and that candidate's own resume, so each
-conversation is relevant to the person in it.
+**The framework is per job; the questions are per candidate.** Sutra compiles
+the initial Tatva proposal from the job and its available context. The
+authorized Hiring Manager owns the final criteria: they may add, edit, rename,
+reorder, reclassify, or remove a proposed item. Save Matrix derives any missing
+internal assessment metadata and freezes exactly the reviewed matrix as a
+version. That version is the fixed evaluation contract for candidates assessed
+under it and makes their reports comparable. A later revision must not rewrite
+the contract used for an earlier assessment. Questions are generated
+individually from the JD, the frozen matrix, and each candidate's resume, so
+each conversation remains relevant to the person in it.
 
 ### 11.2.2 The hiring intelligence framework
 
@@ -485,7 +489,7 @@ boundary it may not cross:
 | Stage | Responsibility |
 |---|---|
 | **Bodha** | The per-job SWOT session. Reads back its situation classification with the consequence and the most-confused-with alternative, and a human confirms it before the session closes |
-| **Sutra** | Turns the role into a scored matrix through seven stages: competency, observable evidence, evidence sources, assessment method, weight, threshold, and disqualifier where applicable. Nothing enters the matrix without completing all seven |
+| **Sutra** | Proposes the initial Tatva matrix and derives assessment metadata through seven stages: competency, observable evidence, evidence sources, assessment method, weight, threshold, and disqualifier where applicable. Human edits are enriched without replacing the Hiring Manager's decisions |
 | **Yukti** | Grades the resume before any conversation: the pre-screen grade and the AI Score snapshot |
 | **Miti** | Five dimension evaluators that score the completed conversation, structurally isolated from each other, plus triangulation of contradictions |
 | **Siddhi** | Composes the PRISM Report through a citation chokepoint |

@@ -136,6 +136,16 @@ Already built. `api/jobs._publication_blocked` refuses publication while
 `swot_completed_at` is null or the Tatva matrix is not frozen, and it asks the
 table rather than a stamp.
 
+The Job SWOT and JD feed Sutra's initial Tatva proposal. The authorized Hiring
+Manager may then add, edit, rename, reorder, reclassify, or remove criteria.
+Those decisions remain authoritative when the system derives internal evidence,
+assessment, weight, and threshold metadata. Save Matrix validates and freezes
+the reviewed criteria as a version; a candidate's assessment uses that exact
+frozen contract. A later revision must preserve the contract already used by
+earlier assessments. Company Profile supplies company-level context through
+the job's snapshotted narrative. The retired Company DNA feature has no gate or
+input in this path.
+
 ### Gate 4 — the recruiter posts, and only with everything in place
 
 Already built, as RBAC 17's lifecycle: `DRAFT -> SENT_TO_HIRING_MANAGER ->

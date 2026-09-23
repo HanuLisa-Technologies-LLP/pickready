@@ -115,7 +115,7 @@ def test_a_trait_rather_than_evidence_is_refused() -> None:
     assert "trait_not_evidence" in {r.rule for r in report.rejections}
 
 
-def test_the_trait_rule_uses_the_same_detector_as_the_dna_instrument() -> None:
+def test_the_trait_rule_uses_the_same_detector_as_drishti() -> None:
     """Two copies of "is this an adjective" would drift, and the drift would be
     invisible -- one intake accepting what the other refuses."""
     import inspect

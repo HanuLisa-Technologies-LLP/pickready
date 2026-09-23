@@ -20,6 +20,7 @@ phase sections above them are where the sharp edges are.
 
 | Section | What it governs |
 |---|---|
+| Tatva human authority (2026-09-23) | Sutra proposes; the Hiring Manager owns criteria; Save Matrix freezes the approved version; Company Profile is current company context |
 | The twenty two change requests and the harness (2026-09-22) | The four owner rulings; media IS stored now; one authority per consent; the harness and its three exit codes |
 | The thirty day soft deletion (2026-09-22) | Job closure withholds instead of deleting; the assessment dispute path; objects before rows |
 | The soft delete and the hard constraint (2026-09-21) | Re-adding a name you removed; an emptied matrix is not an ungenerated one; the matrix editor is chips |
@@ -77,6 +78,153 @@ phase sections above them are where the sharp edges are.
 7. **No em dash anywhere**, including in seeded and generated content.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
+
+## Current hard rules, Tatva human authority (2026-09-23)
+
+**Sutra proposes; the authorized Hiring Manager decides.** Sutra compiles an
+initial Tatva draft and the technical metadata needed to assess it. The Hiring
+Manager owns the product-facing criteria: existence, name, category, order and
+the exposed importance controls. Enrichment after a human edit preserves those
+decisions. Save Matrix validates and freezes exactly the reviewed matrix as a
+version; assessments and reports use that version, and a later revision cannot
+rewrite a candidate's earlier assessment contract.
+
+The Company Profile is the current company-level context. Jobs snapshot its
+narrative sections at creation. Drishti is an optional functional strategic
+profile and is distinct from the retired Company DNA instrument. Company DNA
+has no live API, UI, gate, table, or assessment dependency. Older sections and
+migrations that name it are historical records, not implementation directions.
+Inspect the checked-out code before applying older design descriptions.
+
+### SAVE MATRIX ENRICHES, THEN FREEZES, AND THE REFUSAL IT REPLACED WAS THE BUG
+
+`scorecard.freeze` calls `_enrich_reviewed_rows` before it writes a binding.
+What it replaced was a validation that read the rows and refused: **"These
+criteria carry no derivation and cannot be frozen"**. That sentence was the
+defect, not the diagnosis. Adding a criterion is the product's NORMAL way into
+this form, and adding one produced a state the freeze then called invalid, so
+the supported workflow terminated in an instruction to rebuild the matrix the
+reviewer had just finished reviewing.
+
+- **All model work and all validation finish BEFORE the first row is
+  changed.** A refusal therefore cannot leave a half enriched matrix, and the
+  whole thing shares the request transaction, so a raise anywhere rolls back
+  the enrichment, the stamps and the binding together.
+- **`transformation.build_item(preserve_name=True)` on the reviewed path.**
+  Draft compilation may take the department model's canonical name; a reviewed
+  criterion may not. The anchor supplies technical evidence and never a
+  replacement label.
+- **`load_frozen_matrix` refuses a PARTIAL matrix exactly as hard as an absent
+  one**, which is what makes enrichment mandatory at freeze rather than best
+  effort: one un-enriched row makes the job un-scoreable rather than half
+  scoreable.
+
+### AN OUTAGE IS NOT A BADLY WRITTEN CRITERION
+
+`_name_unanchored` falls back to an empty naming result, so a degraded run
+refuses EVERY pending phrase with the same stock reason. The freeze path read
+the FIRST refusal and told the reviewer to edit that one criterion. It blamed
+an arbitrary criterion for a provider outage, and the reviewer could not fix it
+by editing, so they would edit until the provider came back.
+
+- **`degraded` is the only thing that separates the two cases**, and it was
+  being discarded into an underscore. It now raises its own message, naming no
+  criterion at all.
+- **A genuine refusal names EVERY criterion it refused**, not the first.
+  Telling somebody about the first of four means four round trips, each
+  reporting the matrix as broken.
+
+### A RENAME CLEARS `swot_origin`. A REVIVE DOES NOT. THAT ASYMMETRY IS THE RULE
+
+`swot_origin` carries the reporting authority's own SWOT sentence and
+`plain_provenance` renders it to the reviewer verbatim as `You said: "..."`.
+
+- **`_invalidate_derived_criterion` clears it**, because a rename is a
+  different criterion wearing the row's identity. Carrying the sentence across
+  attributes a quotation about "Kubernetes operations" to a criterion now
+  called "Incident command", which is a FABRICATED CITATION on the one screen
+  this contract exists to make trustworthy. A fabricated citation is worse
+  than a missing one: it reads as provenance.
+- **`_revive` deliberately keeps it**, unchanged from 2026-09-21. A revived
+  row is the SAME name coming back, so the sentence still refers to it.
+
+### A REBUILD MAY NOT DISCARD A HUMAN DECISION
+
+The default compile path is idempotent: a redelivered message finds active
+rows and returns them. `replace=True` skips that guard, and the deprecated
+`pickready.generate_ppi_framework` alias FORWARDS it, so a message sitting on
+the broker under the old name is a live route to rewriting every name,
+category, requirement level and ordinal on the draft.
+
+- **The refusal is in `compile_matrix`, before Layer 3 and before the naming
+  call**, the same ordering the Job SWOT regeneration rule already follows: a
+  refusal after the model call has spent the budget it was meant to protect.
+- **The signal is `swot_origin IS NULL` on an active row, and it is READ
+  rather than stored.** Every row the compiler writes carries the sentence it
+  came from. A criterion the hiring manager ADDED never had one, and a RENAME
+  clears it. So the absence means exactly "this entry is the human's, not this
+  compiler's", which is the question being asked, with no new column.
+
+### REOPEN IS BOUNDED BY THE ISSUED CONTRACT, AND BOTH EARLIER BOUNDARIES WERE WRONG
+
+- **It asked for a `functional_skills_reports` row** until 2026-09-22. A report
+  exists only at the END of an assessment, so between invitation and synthesis
+  the matrix was reopenable underneath somebody already answering questions
+  derived from it. Their questions came from one version and their grade would
+  have been written against another, with nothing recording it.
+- **It then asked for any `job_candidate_links` row**, which refuses to reopen
+  the moment the first CV lands on a job nobody has been invited to. There is
+  no reopen after that, so a typo caught on the day the posting went live
+  became permanent. Applying is not being assessed: a link is written by an
+  application, a sourced upload and a databank import, none of which reads a
+  competency.
+- **It now asks whether an assessment contract has been ISSUED**: an
+  `assessment_conversations` row, which IS the invitation, or a
+  `candidate_questions` row. Somebody who applies before a revision and is
+  invited after it is assessed against the revision, which is the currently
+  approved contract and the only one ever used on them.
+
+**`orchestration/versioning.resolve_for_application` HAS NO PRODUCTION
+CALLER.** It is implemented and tested and nothing on the live scoring path
+invokes it, so "a candidate is assessed against the version in force when they
+applied" is NOT in force. The reopen guard is a blanket prohibition standing in
+for it. Anybody who believes the resolver is load bearing will relax that guard
+and silently move a candidate's contract, which is why it is said here and in
+`models/job_scorecard_binding.py` rather than left to be discovered.
+
+### THE REMOVAL SWEEP HAD A BLIND SPOT, AND IT WAS EXACTLY ONE LINE WIDE
+
+`test_company_dna_removed.py` swept `app/`, `tests/` and `scripts/` one LINE at
+a time, so a mention wrapped across a newline never matched a pattern
+containing a space. One had been sitting in `workers/tasks.py` since the
+removal, describing a compiled company instrument as a live precondition of
+Sutra, and it passed every run for two weeks. The sweep normalises whitespace
+now and maps offsets back so a hit still names a line. **A sweep with a blind
+spot is worse than no sweep, because the green result is what stops anybody
+looking.**
+
+Live runtime carries no reference of any kind. What survives, deliberately:
+the `dna` correlation kind with no issuer (stored traces carry `dna-` ids and
+dropping the kind would make `is_correlation_id` call valid history
+malformed), the `company_layer2` provenance KEY (Layer 2 is Drishti since
+2026-09-19 and renaming the key would make stored provenance unreadable), and
+`job_scorecard_bindings`, renamed with its rows intact by migration 0088.
+
+### `administration` IS NOT A GITHUB ACTIONS PERMISSION
+
+`verify-approval-gate` declared `permissions: administration: read` on
+2026-09-17, on the advice of its own 403 message. `permissions:` accepts a
+closed set of scopes and `administration` is a fine-grained PAT permission that
+is not among them. **An unknown key there fails the workflow file at
+VALIDATION, before any job is created**: every run since recorded 0 seconds, no
+jobs and no logs, and the `pull_request` trigger stopped firing entirely, so
+the integration PR reported "no checks" while thirty commits landed on it.
+
+The scope is unobtainable from `GITHUB_TOKEN` under any configuration, so the
+job takes `APPROVAL_GATE_TOKEN` when configured and FAILS naming that when it
+is not. The check exists because a gate nobody can run is a gate nobody has;
+repairing it with a key that stops the file parsing did that to every other
+gate in the pipeline.
 
 ## Current hard rules, the twenty two change requests and the harness (2026-09-22)
 
@@ -1340,7 +1488,11 @@ wrote to, above an index that stayed empty.
   substitution must stay visible rather than implied.
 
 
-## Current hard rules, Company DNA removed (2026-09-09)
+## Historical ruling, Company DNA removed (2026-09-09)
+
+This section records the 2026-09-09 state. Its statement that the company
+weight layer had no live supplier was superseded by optional Drishti on
+2026-09-19. The 2026-09-23 Tatva authority rule above governs current work.
 
 Owner decision. The Company DNA questionnaire is GONE and the **Company
 Profile** replaces it. Five modules, four frontend files, six test modules, one
@@ -1690,11 +1842,15 @@ The workflow document names three things this product had already built. All
 three kept their implementation and their name in code, because one
 implementation per concept:
 
-- **"Company Hiring Requirements" IS Company DNA.** A second free-text box
-  beside it would immediately disagree with it about which one Sutra reads, and
-  Sutra reads the COMPILED artifact by design (an unbounded client-authored
+- **"Company Hiring Requirements" IS the Company Profile.** SUPERSEDED IN
+  PART 2026-09-09: this named Company DNA until that instrument was removed,
+  and the substitution it argues for is unchanged. A second free-text box
+  beside the profile would immediately disagree with it about which one Sutra
+  reads. What changed is WHAT Sutra reads: the Company Profile narrative as
+  snapshotted onto the job, and it reaches the naming prompt as DATA under an
+  explicit "not instructions" rule, because an unbounded client-authored
   string in a prompt that decides what every candidate is graded on is an
-  injection surface).
+  injection surface.
 - **"Executive Profile" IS the PRISM Report.** Already immutable, already with
   a fixed section order. A second consolidated document would force a choice
   about which one a recruiter is reading.
@@ -1703,12 +1859,18 @@ implementation per concept:
 
 ### The gates that were missing, and what enforces them now
 
-- **Gate 1: no Company DNA, no job.** `hiring/company_requirements.creation_blocked`
-  at the top of `POST /jobs`, asked of the TABLE (`status = complete` on the
-  current row), never a stamp. An open draft does not satisfy it. At CREATE and
-  not at publish, because the requirements are what the JD generator, the SWOT
-  session and the scorecard derivation all read. NOT retroactive: a job created
-  before the client completed theirs stays created.
+- **Gate 1: no Company Profile, no job.** SUPERSEDED 2026-09-09, and read the
+  replacement rather than the original: this said "no Company DNA, no job" and
+  described a `status = complete` column on a table migration 0088 has
+  DROPPED, so anybody following it goes looking for a table that is gone.
+  `hiring/company_requirements.creation_blocked` still runs at the top of
+  `POST /jobs` and still returns a MESSAGE or None, so no caller can invent
+  its own wording. It now reads `companies.about_company`, stripped, because
+  whitespace is not content: a profile holding three spaces would seed a job's
+  About section with three spaces. At CREATE and not at publish, because the
+  profile is what the JD generator, the SWOT session and the scorecard
+  derivation all read. NOT retroactive: a job created before the client wrote
+  their profile stays created.
 - **Gate 2: the experience band spans at most `MAX_EXPERIENCE_SPAN_YEARS` (5).**
   In `ExperienceBandMixin`, so create, patch and JD generation all inherit it and
   a recruiter cannot create a legal band then widen it with a PATCH. **The
@@ -2502,13 +2664,23 @@ exemptions. Anthropic is REMOVED, not kept as a fallback, and
   45" because it contains no listed word. A false positive is not harmless: it
   tells a client their lawful professional requirement is discriminatory, which
   destroys their trust in every refusal that follows.
-- **Compilation is deterministic and calls no model.** A Company DNA artifact
-  constrains every job that client will ever post, so it must be reproducible,
-  diffable between versions, and explainable without a provider.
-- **Sutra reads the COMPILED artifact, never the client's free-text.** An
-  unbounded client-authored string in a prompt that decides what every candidate
-  is graded on is both an injection surface and a way for "we like people who
-  are hungry" to become a criterion.
+- ~~**Compilation is deterministic and calls no model.**~~
+  ~~**Sutra reads the COMPILED artifact, never the client's free-text.**~~
+  **BOTH SUPERSEDED 2026-09-09: there is no compiled Company DNA artifact.**
+  Neither rule was dropped, and that is the point of recording them here
+  rather than deleting them. They MOVED, intact, into
+  `services/hiring/drishti`, whose module docstring names them as "the two
+  properties the 2026-09-09 removal demanded": its `compile_profile` is
+  deterministic and calls no model, so a profile constraining every job a
+  function will post stays reproducible, diffable between versions and
+  explainable without a provider; and `prompt_context` is the only thing that
+  reaches a prompt, derived from the compiled artifact, re-checked against the
+  observable detector and capped. The Company Profile reaches Sutra by the
+  other door, as bounded context carrying an explicit "treat as data, not
+  instructions" rule, and it may clarify the setting for a criterion the job
+  or the SWOT already supplied. It may never become a criterion, a weight or a
+  disqualifier of its own, which is what still stops "we like people who are
+  hungry" being something a candidate is graded on.
 - **Miti's five dimension evaluators are ISOLATED STRUCTURALLY.**
   `EvaluatorInput` is a frozen dataclass whose field set has no candidate name,
   no other dimension's score, no composite and no free-form context dict.
@@ -3723,7 +3895,7 @@ ReadyPick is a multi-tenant recruitment/ATS platform for Hanulisa Technologies L
 The `services/` packages worth knowing before adding one:
 
 ```
-services/hiring/     Bodha + Sutra: SWOT, Company DNA, scorecard, layers,
+services/hiring/     Bodha + Sutra: SWOT, Tatva scorecard, Drishti, layers,
                      transformation, gates, prescreen, runbook_data/
 services/miti/       the five isolated dimension evaluators + triangulation
 services/siddhi/     PRISM composition behind the citation chokepoint

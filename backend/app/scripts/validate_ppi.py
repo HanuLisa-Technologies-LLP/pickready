@@ -30,7 +30,9 @@ from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.enums import LinkSource
 from app.models.job import Job
 from app.models.tenant import Tenant
+from app.models.job_setup import SWOT_ANALYSIS_GENERATED, JobSwotAnalysis
 from app.services import ppi
+from app.services.hiring import scorecard
 from app.services.application_validation import MANDATORY_KEYS
 from app.services.functional_assessment import build_radar_charts, run_assessment
 from app.services.rating import GRADES
@@ -74,7 +76,38 @@ async def main() -> int:
         )
 
         # ── The framework generates and meets the minimum ────────────────────
-        framework = await ppi.generate_framework(session, job)
+        #
+        # `ppi.generate_framework` was DELETED on 2026-08-29: one model call
+        # asking for a whole matrix in one pass was replaced by Sutra's seven
+        # staged transformations in `hiring/scorecard.compile_matrix`. This
+        # script kept calling the old name and has therefore raised
+        # AttributeError on every run since, which is why it is worth saying
+        # here rather than quietly repairing: a validation script nobody runs
+        # reports nothing, and it reported nothing for a month.
+        #
+        # Compilation reads Layer 3 from the job's SWOT ANALYSIS, so the
+        # document is seeded first. Each paragraph becomes one candidate
+        # criterion, which is the contract `_candidates_from_swot` states.
+        session.add(
+            JobSwotAnalysis(
+                tenant_id=tenant.id,
+                job_id=job.id,
+                status=SWOT_ANALYSIS_GENERATED,
+                strengths=(
+                    "Ships ingestion services that stay up under load."
+                    "\n\n"
+                    "Debugs distributed failures across service boundaries."
+                ),
+                weaknesses="Has not owned a migration under a hard deadline.",
+                opportunities="Can take the streaming platform end to end.",
+                threats="Competing offers close faster than our loop runs.",
+                generated_by="script",
+            )
+        )
+        await session.flush()
+        framework = (
+            await scorecard.compile_matrix(session, job, actor_user_id=None)
+        ).items
         counts = {
             category: sum(1 for row in framework if row.category == category)
             for category in ppi.CATEGORIES

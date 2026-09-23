@@ -261,6 +261,22 @@ _SCORES = {
 }
 
 
+def test_structured_sutra_threshold_does_not_crash_live_scoring(monkeypatch) -> None:
+    """Evidence-quality metadata is not a numeric minimum score."""
+    matrix = _matrix()
+    matrix.items[0].threshold = {
+        "independence_required": 2,
+        "level": 1.0,
+        "max_age_days": None,
+    }
+    harness = _Harness(monkeypatch, matrix=matrix)
+
+    result = harness.run(item_scores=_SCORES)
+
+    assert result.aggregate is not None
+    assert result.matrix is matrix
+
+
 # -- 1. GATE G1 IS THE ONLY WAY IN ------------------------------------------
 
 

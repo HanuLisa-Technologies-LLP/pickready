@@ -643,17 +643,25 @@ async def published_matrix(
 ) -> artifacts.Artifact | None:
     """The job's current matrix as a verifiable artifact, or None if it has none.
 
-    The entry point Yukti, Vaada, Miti and Siddhi use. It reads the version from
-    EVERY generation's rows and publishes only the active ones, which is the
-    pairing that makes a stale read detectable: the payload is what a consumer
-    would grade against, and the version is how many times that payload has been
-    replaced.
+    The entry point Yukti, Vaada, Miti and Siddhi use. The append-only freeze
+    binding is the version authority; row creation batches are not versions
+    because compilation can reuse rows and human edits preserve row identity.
     """
     from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
     active = await load_framework(session, job.id)
     if not active:
         return None
-    version = matrix_version(await _all_competencies(session, job.id))
+    from app.models.job_scorecard_binding import JobScorecardBinding
+
+    current = (
+        await session.execute(
+            select(JobScorecardBinding.scorecard_version)
+            .where(JobScorecardBinding.job_id == job.id)
+            .order_by(JobScorecardBinding.freeze_sequence.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    version = int(current) if current is not None else 1
     return publish_tatva_matrix(
         job, active, version=version, correlation_id=correlation_id
     )

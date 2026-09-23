@@ -23,6 +23,12 @@ design tooling reads them from the project root).
 | Prove a change works end to end, or reproduce a failure | [spec/HARNESS.md](spec/HARNESS.md) |
 | Change code without breaking a rule | [../claude.md](../claude.md) |
 
+Current Tatva authority: Sutra proposes the initial assessment matrix; the
+authorized Hiring Manager decides its criteria; Save Matrix enriches and freezes
+the reviewed version for downstream assessment. Company Profile supplies relevant
+company context. Company DNA is a retired feature mentioned only in historical
+records and migration history.
+
 ## Precedence, when two documents disagree
 
 Settled 2026-08-29 and unchanged. Higher wins:
@@ -125,7 +131,7 @@ contract:
 
 | Path | Read by |
 |---|---|
-| `docs/product/Readypick Hiring Philosophy.md` | `services/hiring/dna_compilation.py`, `tests/test_runbook_parity.py`, `tests/test_runbook_reconciliation.py` |
+| `docs/product/Readypick Hiring Philosophy.md` | `services/hiring/runbook_data/`, `tests/test_runbook_parity.py`, `tests/test_runbook_reconciliation.py` |
 | `docs/operations/SKIPS.md` | `tests/test_skip_inventory.py` |
 | `docs/verification/VERIFICATION_*.md` | `tests/test_no_live_vendor_claims.py` |
 | `docs/history/LEGACY_RESET_SURVEY.md` | written by `app/scripts/legacy_reset.py --survey` |

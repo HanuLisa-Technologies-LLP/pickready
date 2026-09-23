@@ -824,30 +824,40 @@ jobs:
     timeout-minutes: 5
     if: github.event_name != 'pull_request'
 
-    # `administration: read`, AND WITHOUT IT THIS JOB CHECKED NOTHING.
+    # `administration: read` IS NOT AN ACTIONS PERMISSION, AND ASKING FOR IT
+    # TOOK THE WHOLE PIPELINE DOWN FOR FIVE DAYS.
     #
-    # The workflow-level default is `contents: read`. Reading
-    # `/repos/{owner}/{repo}/environments/{name}` needs the administration
-    # scope, so the call came back 403 -- and the script treated an empty
-    # response as "the environment does not exist" and exited 1 with that
-    # message. It failed CLOSED, which is the safe direction, so nothing was
-    # ever deployed on a bad answer. But it had never once read a reviewer
-    # configuration, and the failure told whoever hit it to go and create an
-    # environment that was already there.
+    # It was added here on 2026-09-17 because this job's own 403 message said
+    # to add it. That advice was wrong. `permissions:` accepts a closed set of
+    # scopes -- actions, attestations, checks, contents, deployments,
+    # discussions, id-token, issues, models, packages, pages, pull-requests,
+    # repository-projects, security-events, statuses -- and `administration`
+    # is a fine-grained PAT permission that is not among them. An unknown key
+    # there fails the workflow file at VALIDATION, before any job is created:
+    # every run recorded 0 seconds, no jobs and no logs, and the
+    # `pull_request` trigger stopped firing at all, so the integration PR sat
+    # reporting "no checks" while thirty commits landed on it.
     #
-    # Declaring any `permissions` block here replaces the default for this job
-    # rather than adding to it, so `contents: read` is restated: the job checks
-    # out the repository to run the script.
+    # THE CHECK'S OWN LESSON, ONE LEVEL UP. This job exists because a gate
+    # nobody can run is a gate nobody has. Repairing it with a key that stops
+    # the file parsing did exactly that to every other gate in the pipeline.
+    #
+    # AND THE SCOPE CANNOT COME FROM GITHUB_TOKEN AT ALL. The environments API
+    # needs administration:read, an Actions token can never carry it, and no
+    # arrangement of this block changes that. A PAT is the only mechanism.
+    # `APPROVAL_GATE_TOKEN` supplies it when configured; absent, the call 403s
+    # and the script FAILS naming that as the reason, because "could not be
+    # measured" is not "configured correctly" -- the rule the harness states
+    # with its third exit code.
     permissions:
       contents: read
-      administration: read
 
     steps:
       - uses: actions/checkout@v4
 
       - name: The production environment must have a required reviewer
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.APPROVAL_GATE_TOKEN || secrets.GITHUB_TOKEN }}
         run: ./scripts/verify-approval-gate.sh
 
   # ---------------------------------------------------------------------------

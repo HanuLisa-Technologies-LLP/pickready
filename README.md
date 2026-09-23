@@ -29,12 +29,16 @@ workspace. The *Candidate Portal* (`/portal`) is where applicants live. The
 *Business Development Portal* (`/bd`) is where the Vivekium sales team works
 leads.
 
-**The hiring flow.** A customer creates a job as one markdown JD; the platform
-derives a per-job **Tatva Assessment** matrix (Must-have, Nice-to-have,
-Behavioural) from that job's own description, informed by a SWOT intake and the
-department model. A human reviews and freezes the matrix, and that
-freeze is the only comparability guarantee the product has. Candidates apply,
-every applicant is ranked, and the recruiter selects who is assessed.
+**The hiring flow.** A customer completes its Company Profile, creates a job as
+one markdown JD, and completes the Job SWOT. Sutra proposes a per-job **Tatva
+Assessment** matrix (Must-have, Nice-to-have, Behavioural) using the role,
+department baseline, SWOT, and relevant company context. An authorized Hiring
+Manager decides which criteria remain and may add, edit, rename, reorder, or
+reclassify them. **Save Matrix** enriches the approved criteria with assessment
+metadata and freezes a version. That human-approved version is the contract
+used for candidate assessment and reporting. Candidates apply, every applicant
+is ranked, and the recruiter selects who is assessed. Company DNA is retired;
+the Company Profile provides company context.
 
 **The assessment.** One adaptive conversation per candidate, with questions
 written fresh from the JD, the frozen matrix, that candidate's resume and their

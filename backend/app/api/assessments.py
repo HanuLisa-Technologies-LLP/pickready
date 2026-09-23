@@ -493,6 +493,51 @@ def _revive(
     return row
 
 
+def _invalidate_derived_criterion(row: JobCompetency) -> None:
+    """A changed human decision needs fresh technical evidence at Save Matrix.
+
+    The draft remains editable and readable. Clearing the derived fields makes
+    stale evidence impossible to mistake for evidence of the new name/category.
+    Save Matrix derives them in the same transaction as the freeze.
+
+    `swot_origin` IS CLEARED HERE, AND IT IS THE ONE THAT WOULD HAVE LIED.
+    It carries the reporting authority's own SWOT sentence, and
+    `scorecard.plain_provenance` renders it to the reviewer verbatim as
+    `You said: "..."`. It is NOT cleared by `_revive`, and the difference is
+    the whole point: a revived row is the SAME name coming back, so the
+    sentence still refers to it. A rename is a different criterion wearing the
+    row's identity, and carrying the sentence across would attribute
+    "Kubernetes operations" to a criterion now called "Incident command" --
+    a fabricated citation on the one screen this whole contract exists to make
+    trustworthy. Enrichment re-derives from the human's name with no SWOT
+    anchor, which is an honest absence rather than a borrowed one.
+    """
+    row.dimension = None
+    row.observable_evidence = None
+    row.evidence_sources = None
+    row.assessment_method = None
+    row.weight = None
+    row.threshold_json = None
+    row.disqualifier = None
+    row.provenance_json = None
+    row.anchor_key = None
+    row.force_rank = None
+    row.swot_origin = None
+    # `description` IS THE MIRROR OF `observable_evidence`, so it goes with it.
+    #
+    # The 2026-09-20 ruling removed the description input from the add and the
+    # edit controls, and the edit route echoes the STORED value back so that a
+    # field missing from a form is not a field erased from the record. That
+    # protects against erasure caused by the form. It does not make the text
+    # survive a change of identity: what a competency MEANS is derived from its
+    # name, so the sentence describing "Kubernetes operations" is not a
+    # description of "Incident command". Leaving the mirror populated while its
+    # source is NULL is two fields that must agree, disagreeing, and the one a
+    # reviewer actually reads on the card is the stale one. Enrichment writes
+    # both again from the human's name at Save Matrix.
+    row.description = None
+
+
 async def _next_ordinal(
     session: AsyncSession, job_id: uuid.UUID, category: str
 ) -> int:
@@ -647,10 +692,16 @@ async def update_competency(
                 f"{ppi.CATEGORY_LABELS[body.category]} on this job."
             ),
         )
+    # The identity question is asked BEFORE the assignment, and the
+    # invalidation happens AFTER it, so the edit form's own echo of the stored
+    # description cannot survive a rename it no longer describes.
+    reidentified = row.name != body.name or row.category != body.category
     row.category = body.category
     row.name = body.name
     row.description = body.description
     row.required_level = ppi.required_level_score(body.required_level)
+    if reidentified:
+        _invalidate_derived_criterion(row)
     row.updated_at = datetime.now(timezone.utc)
     await session.flush()
     await _invalidate_framework(job)
@@ -774,25 +825,54 @@ async def reopen_framework(
     """Reopen a saved framework for editing, and close the job to new
     conversations while it is open.
 
-    Refused once any candidate has been graded against it: those reports state
-    a grade against criteria that would silently change underneath them, and a
-    report is immutable.
+    REFUSED ONCE AN ASSESSMENT CONTRACT HAS BEEN ISSUED, AND NOT BEFORE.
+
+    The test is whether any candidate on this job has been INVITED, which is
+    what an `assessment_conversations` row is, or has had per-candidate
+    questions written against the frozen matrix. Either one means a person is
+    being measured against these exact criteria, and a report is immutable, so
+    changing the criteria underneath them would make two reports on one job
+    incomparable. That is the one property the freeze exists to guarantee.
+
+    IT IS DELIBERATELY NOT "ANY LINKED CANDIDATE". Applying is not being
+    assessed: a `job_candidate_links` row is created by an application, a
+    sourced upload or a databank import, none of which reads a competency. A
+    guard on the link would stop a hiring manager correcting a typo the moment
+    the first CV arrives, on a job nobody has been invited to, and there is no
+    reopen after that. Somebody who applies before a revision and is invited
+    after it is assessed against the revision, which is the currently approved
+    contract and the only one that was ever used on them.
+
+    AND IT IS DELIBERATELY NOT "ANY REPORT", WHICH IS WHAT IT USED TO BE. A
+    report exists only at the END of an assessment, so between invitation and
+    synthesis the matrix was reopenable underneath a candidate who was already
+    answering questions derived from it. Their questions came from one version
+    and their grade would have been written against another, with nothing
+    recording that it had happened.
     """
     job = await _staff_job(session, user, job_id)
-    assessed = (
+    contracted = (
         await session.execute(
-            select(func.count())
-            .select_from(FunctionalSkillsReport)
-            .where(FunctionalSkillsReport.job_id == job.id)
+            select(
+                select(func.count())
+                .select_from(AssessmentConversation)
+                .where(AssessmentConversation.job_id == job.id)
+                .scalar_subquery()
+                + select(func.count())
+                .select_from(CandidateQuestion)
+                .where(CandidateQuestion.job_id == job.id)
+                .scalar_subquery()
+            )
         )
     ).scalar_one()
-    if assessed:
+    if contracted:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Candidates have already been assessed against this framework, so "
-                "it can no longer be changed. Reports state a grade against these "
-                "exact criteria and are never rewritten."
+                "Candidates on this job have already been invited to an "
+                "assessment against these criteria, so the matrix can no "
+                "longer be changed. A report states a grade against the exact "
+                "criteria it was written from and is never rewritten."
             ),
         )
     job.framework_approved_at = None
@@ -868,6 +948,7 @@ async def reorder_framework(
                 # Must-have and Nice-to-have, and the refusal above is what
                 # keeps it that way. A check on a branch that cannot be taken
                 # reads as protection and provides none.
+                _invalidate_derived_criterion(row)
                 row.category = group.category
                 moved += 1
             row.ordinal = ordinal

@@ -79,15 +79,20 @@ Nothing is known about the gate either way. That is a failure and not a pass:
 "we could not check" and "it is configured" are the two answers this script
 exists to keep apart.
 
-The environments API needs the administration scope. The job running this must
-declare:
+DO NOT "FIX" THIS BY ADDING `administration: read` TO THE JOB'S permissions
+BLOCK. That is what an earlier version of this very message advised, somebody
+followed it on 2026-09-17, and it broke every workflow run in the repository
+for five days: `administration` is not one of the scopes `permissions:`
+accepts, an unknown key there fails the workflow file at validation before any
+job starts, and the pull_request trigger stops firing with it.
 
-    permissions:
-      contents: read
-      administration: read
+The scope is unobtainable from GITHUB_TOKEN by design. GET
+/repos/{owner}/{repo}/environments/{name} requires administration:read, and an
+Actions token cannot be granted it under any configuration.
 
-An organization that restricts the default GITHUB_TOKEN permissions can refuse
-it anyway, in which case this check needs a token that carries the scope.
+So this check needs a PAT. Create a fine-grained token with Read access to
+repository Administration, store it as the APPROVAL_GATE_TOKEN secret, and this
+job passes it as GH_TOKEN.
 
 $(cat "$error_output")
 NOTE

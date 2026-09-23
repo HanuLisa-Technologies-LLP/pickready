@@ -441,6 +441,7 @@ def build_item(
     observable_evidence: str | None = None,
     disqualifier: str | None = None,
     swot_origin: str | None = None,
+    preserve_name: bool = False,
 ) -> Item:
     """Run one SWOT phrase through all seven stages.
 
@@ -454,7 +455,12 @@ def build_item(
 
     # ── Stage 1: COMPETENCY, named from the department model ────────────────
     anchor = match_competency(phrase, model, seniority)
-    name = anchor.name if anchor else (phrase or "").strip()
+    # Draft compilation may use the department model's canonical name. A
+    # reviewed criterion belongs to the Hiring Manager: the anchor supplies
+    # technical evidence, never a replacement for their chosen label.
+    name = (phrase or "").strip() if preserve_name else (
+        anchor.name if anchor else (phrase or "").strip()
+    )
     if not name:
         raise TransformationError(
             "Stage 1 produced no competency name. A matrix item with no name is "

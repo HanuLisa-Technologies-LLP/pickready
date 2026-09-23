@@ -161,6 +161,22 @@ def test_the_raw_non_negotiables_string_never_reaches_a_prompt() -> None:
     assert "IGNORE THE PHRASES" not in _payload(drishti.prompt_context(compiled))
 
 
+def test_company_profile_is_bounded_context_not_a_weight_source() -> None:
+    job = _Job()
+    job.about_company = "We build search tools. " * 80
+    job.work_life = "Teams review production evidence."
+    payload = json.loads(scorecard._naming_payload(
+        job,
+        [_Pending("retrieval design")],
+        _model(),
+        "non_managerial",
+        [],
+    ))
+    assert payload["company_profile_context"]["about_company"] == job.about_company[:500]
+    assert payload["company_profile_context"]["work_life"] == job.work_life
+    assert "company_emphasis" not in payload
+
+
 def test_the_context_is_capped_in_lines_and_in_characters() -> None:
     """A long profile cannot crowd out the instruction above it."""
     sentence = (

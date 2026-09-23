@@ -586,10 +586,21 @@ through `api/assessments.py`, `api/jobs.py`, `api/dashboard.py` and
 | Stage | Package | Boundary it enforces |
 |---|---|---|
 | Bodha | `services/hiring` (SWOT) | Situation classification is read back with its consequence and confirmed by a human before the session closes |
-| Sutra | `services/hiring/scorecard`, `transformation` | Seven stages per item; `Item.is_complete` refuses at build, not later |
+| Sutra | `services/hiring/scorecard`, `transformation` | Proposes and enriches Tatva items through seven stages. The Hiring Manager controls the final criterion set, names, categories, order, and exposed importance controls; Save Matrix validates derived metadata and freezes the reviewed version |
 | Yukti | `services/hiring/prescreen`, `services/matching` | Resume-only grading; never sees conversation content |
 | Miti | `services/miti` | Five evaluators over a frozen input; the aggregator imports no router |
 | Siddhi | `services/siddhi` | `Section.render` is the only path to text and raises on an uncited statement |
+
+Tatva uses one criterion representation, `job_competencies`. Sutra proposes
+the initial rows and derives internal assessment fields. The authorized Hiring
+Manager controls which rows exist and their product-facing names, categories,
+order, and exposed importance settings. Save Matrix enriches incomplete
+technical fields without reversing those choices, validates the complete
+matrix, and writes an append-only freeze binding. Downstream assessment reads
+the frozen version; reopening a draft cannot change the contract already used
+by a candidate. Company Profile supplies job narrative context; optional
+Drishti is separate functional context. Company DNA has no current runtime
+table, endpoint, weight source, or assessment dependency.
 
 Four structural properties, each asserted by a test rather than documented and
 hoped for:

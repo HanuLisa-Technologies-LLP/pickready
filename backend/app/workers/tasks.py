@@ -943,13 +943,16 @@ def reconcile_job_setup():
     indefinitely -- the next tick picks up where this one stopped.
 
     WHAT IT NO LONGER DOES (2026-08-29): repair every job it finds. Sutra
-    refuses to compile without a completed SWOT session and a compiled Company
-    DNA, and most jobs with no matrix now have no matrix for exactly that
-    reason. A sweep that logged a warning per job per tick would turn a normal
-    waiting state into recurring noise, and noise is how the nineteen-job
-    failure stayed invisible in the first place. So a blocked job is counted and
-    reported once per tick in aggregate, and only a job whose inputs are ready
-    is retried.
+    refuses to compile without a saved Job SWOT Analysis, and most jobs with
+    no matrix now have no matrix for exactly that reason. (Until 2026-09-23
+    this sentence named a second precondition, the compiled company instrument
+    withdrawn on 2026-09-09. It had not been one since that day. The line
+    outlived the removal sweep because the sweep read one line at a time and
+    the name here happened to wrap across two.) A sweep that logged a warning
+    per job per tick would turn a normal waiting state into recurring noise,
+    and noise is how the nineteen-job failure stayed invisible in the first
+    place. So a blocked job is counted and reported once per tick in
+    aggregate, and only a job whose inputs are ready is retried.
 
     Deliberately NOT scoped to a tenant. The defect was never tenant-specific;
     it only looked that way because the three demo tenants were seeded by a

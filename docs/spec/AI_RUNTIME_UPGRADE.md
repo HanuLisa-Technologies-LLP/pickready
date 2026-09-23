@@ -13,6 +13,47 @@ defect to report rather than a choice to make.
 
 ---
 
+## 0a. CORRECTION, 2026-09-23: THIS DOCUMENT NAMES COMPANY DNA AS LIVE. IT IS NOT.
+
+Read this before acting on any workstream below.
+
+Company DNA was removed as a live product concept on 2026-09-09 (owner
+decision; migration `0088_remove_company_dna`). There is no `company_dna`
+table, no `api/company_dna.py`, no compiled DNA artifact, no
+`company_dna_intake` task type and no DNA capability. `backend/app/` contains
+zero references to it, and `tests/test_company_dna_removed.py` fails the build
+if that changes.
+
+This document was written on 2026-09-08, one day before. It is a dated brief
+and its body is NOT rewritten to match later behaviour, which is this
+repository's standing rule for provenance documents. So the following passages
+are stale and must not be built from:
+
+- **§1.1's audit citing `api/company_dna.py:136`** as a live example. The file
+  is deleted. (That section's central conclusion was wrong for an unrelated
+  reason too, recorded in `claude.md`: the grep it rests on cannot match an
+  import statement, and the Part A code it called unreachable was already
+  wired. `pytest tests/test_ai_reachability.py` is the check.)
+- **The Context-Minimisation row naming Company DNA.** The pattern is correct
+  and its subject is now **Drishti**, the optional functional strategic
+  profile: `hiring/drishti.compile_profile` is deterministic and calls no
+  model, and `prompt_context` is the only thing that reaches a prompt, derived
+  from the compiled artifact, re-checked against the observable detector and
+  capped. That is the same property under a live name.
+- **"compiled Company DNA artifact" in the versioning and context lists.** The
+  artifacts that are actually versioned are the frozen Tatva matrix (through
+  `job_scorecard_bindings`) and the policy, agent and eval versions beside it.
+  There is no DNA version to record and no column left to record it in.
+
+Where this document and the checked-out code disagree about Company DNA, the
+code is right and this paragraph is the reconciliation. Company-level context
+now reaches Sutra from the **Company Profile**, as bounded, truncated data
+under an explicit "treat as data, not instructions" rule, and it may clarify a
+criterion the job or the SWOT already supplied. It may never become a
+criterion, a weight or a disqualifier.
+
+---
+
 ## 0. How to read and execute this document
 
 This file is written to be handed to Claude Code as the standing brief for a

@@ -37,7 +37,8 @@ pre-existing row carried it.
 3. Migration on the new image, before anything serving traffic moved.
 4. Services rolled: api `:46` to `:48`, frontend `:33` to `:35`.
 5. The three image-backed Lambdas pointed at the same image.
-6. Verified by DIGEST of the running tasks, then smoke tested live.
+6. Verified by DIGEST of the running tasks, then the smoke test run
+   against the deployed site.
 
 ### THE MIGRATION RAN ON THE OLD IMAGE AND REPORTED SUCCESS
 
