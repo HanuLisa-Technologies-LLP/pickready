@@ -1635,9 +1635,17 @@ export interface ProviderSupportThreadPage {
 
 // ---- The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ----
 
-/** not_generated | generated | failed | edited. */
+/**
+ * not_generated | generating | generated | failed | edited.
+ *
+ * `generating` (Vivekium release, Phase 1): generation is DISPATCHED work now,
+ * so the document says it is being drafted and the panel polls. A draft that
+ * outlives the server's stale window is served as `failed`, never as
+ * generating for ever.
+ */
 export type SwotAnalysisStatus =
   | "not_generated"
+  | "generating"
   | "generated"
   | "failed"
   | "edited";
@@ -1659,6 +1667,13 @@ export interface SwotAnalysis {
   last_modified_by_name: string | null;
   version: number;
   can_restore_previous: boolean;
+  /**
+   * True when the saved SWOT is newer than the version the skills were drafted
+   * from and the skills are not locked. The panel offers "Re-draft skills from
+   * the updated SWOT"; nothing is re-drafted without that click. Absent on a
+   * backend that predates the Skills step.
+   */
+  skills_redraft_available?: boolean;
   /**
    * The effective answer for this user on THIS job: the capability AND the
    * assignment scope AND the lifecycle state, resolved server-side by the same

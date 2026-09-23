@@ -80,7 +80,10 @@ function mockReads(doc: SwotAnalysis) {
   apiGet.mockResolvedValue(doc);
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 beforeEach(() => {
   apiGet.mockReset();
   apiPost.mockReset();
@@ -374,5 +377,130 @@ describe("a user who may view but not edit", () => {
     expect(
       await screen.findByText("No SWOT has been written for this job yet.")
     ).toBeTruthy();
+  });
+});
+
+describe("generation is dispatched work", () => {
+  const EMPTY = {
+    status: "not_generated" as const,
+    strengths: null,
+    weaknesses: null,
+    opportunities: null,
+    threats: null,
+    generated_by: null,
+    version: 0,
+  };
+
+  it("accepts the request, shows the drafting state, and re-reads until the draft lands", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    apiGet
+      .mockResolvedValueOnce(analysis(EMPTY))
+      .mockResolvedValueOnce(analysis({ ...EMPTY, status: "generating" }))
+      .mockResolvedValue(analysis({ version: 1 }));
+    apiPost.mockResolvedValue(analysis({ ...EMPTY, status: "generating" }));
+    render(<JobSwotAnalysisPanel jobId="job-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Generate with AI/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
+    expect(await screen.findAllByText("AI drafting")).toHaveLength(4);
+
+    await act(async () => {
+      vi.advanceTimersByTime(3100);
+    });
+    expect(screen.getAllByText("AI drafting")).toHaveLength(4);
+    await act(async () => {
+      vi.advanceTimersByTime(3100);
+    });
+    expect(await screen.findByText(/A clear, senior brief/)).toBeTruthy();
+    expect(apiGet).toHaveBeenCalledTimes(3);
+  });
+
+  it("picks up a draft somebody else started and waits for it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    apiGet
+      .mockResolvedValueOnce(analysis({ ...EMPTY, status: "generating" }))
+      .mockResolvedValue(analysis({ version: 1 }));
+    render(<JobSwotAnalysisPanel jobId="job-1" />);
+
+    expect(await screen.findAllByText("AI drafting")).toHaveLength(4);
+    await act(async () => {
+      vi.advanceTimersByTime(3100);
+    });
+    expect(await screen.findByText(/A clear, senior brief/)).toBeTruthy();
+  });
+
+  it("shows a refusal that is not the human-edit gate in the server's words", async () => {
+    mockReads(analysis(EMPTY));
+    apiPost.mockRejectedValueOnce(
+      new ApiError(409, "The job description is too short to draft a SWOT from. Add to it first.")
+    );
+    render(<JobSwotAnalysisPanel jobId="job-1" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /Generate with AI/ }));
+    expect(
+      await screen.findByText(
+        "The job description is too short to draft a SWOT from. Add to it first."
+      )
+    ).toBeTruthy();
+    expect(screen.queryByText("Replace what your team wrote?")).toBeNull();
+  });
+});
+
+describe("the skills follow the SWOT, never silently", () => {
+  it("tells the page a save landed, so the skills and the checklist re-read", async () => {
+    mockReads(analysis());
+    const saved = analysis({ status: "edited", human_edited: true, version: 2 });
+    apiPut.mockResolvedValue(saved);
+    const onSaved = vi.fn();
+    render(<JobSwotAnalysisPanel jobId="job-1" onSaved={onSaved} />);
+
+    await screen.findByText(/A clear, senior brief/);
+    fireEvent.click(screen.getByRole("button", { name: /Save SWOT Analysis/ }));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(saved));
+  });
+
+  it("offers a re-draft after a save that made one available, and only asks for it on a click", async () => {
+    mockReads(analysis());
+    apiPut.mockResolvedValue(
+      analysis({ status: "edited", human_edited: true, version: 2, skills_redraft_available: true })
+    );
+    const onRequest = vi.fn();
+    render(
+      <JobSwotAnalysisPanel
+        jobId="job-1"
+        canRedraftSkills
+        onRequestSkillsRedraft={onRequest}
+      />
+    );
+
+    await screen.findByText(/A clear, senior brief/);
+    expect(
+      screen.queryByRole("button", { name: /Re-draft skills from the updated SWOT/ })
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Save SWOT Analysis/ }));
+
+    const cta = await screen.findByRole("button", {
+      name: /Re-draft skills from the updated SWOT/,
+    });
+    expect(onRequest).not.toHaveBeenCalled();
+    fireEvent.click(cta);
+    expect(onRequest).toHaveBeenCalledTimes(1);
+    // The SWOT panel never drafts skills itself.
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("does not offer a re-draft to somebody who cannot edit the skills", async () => {
+    mockReads(analysis({ skills_redraft_available: true }));
+    render(
+      <JobSwotAnalysisPanel
+        jobId="job-1"
+        canRedraftSkills={false}
+        onRequestSkillsRedraft={vi.fn()}
+      />
+    );
+    await screen.findByText(/A clear, senior brief/);
+    expect(
+      screen.queryByRole("button", { name: /Re-draft skills from the updated SWOT/ })
+    ).toBeNull();
   });
 });
