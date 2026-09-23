@@ -12,7 +12,7 @@
 A prompt cannot enforce any of those, so each is a deterministic criterion
 inside the loop, and each is tested by handing the loop an output that breaks
 exactly one of them. The last section drives the whole regenerate-then-fall-
-back cycle in `ppi._compose_formats`, which is the thing that actually decides
+back cycle in `question_generation._compose_formats`, which is the thing that actually decides
 what a candidate is served.
 """
 from __future__ import annotations
@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import agent_loop, llm_router, ppi
+from app.services.assessment_questions import generate as question_generation
 from app.services.assessment_formats import composition, generation
 from app.services.assessment_formats import config as format_config
 from app.services.assessment_formats import types
@@ -432,11 +433,11 @@ def _allocation(size: int = 15) -> list[SimpleNamespace]:
         for category in ppi.CATEGORIES
         for index in range(5)
     ]
-    return ppi._allocate(matrix, size, "non_managerial")
+    return question_generation._allocate(matrix, size, "non_managerial")
 
 
 async def _compose(monkeypatch, *, anchor_batches, structured_ok=True, size=15):
-    """Drive `ppi._compose_formats` with scripted generation results."""
+    """Drive `question_generation._compose_formats` with scripted generation results."""
     allocation = _allocation(size)
     calls = {"anchor": 0, "structured": 0}
     batches = list(anchor_batches)
@@ -472,7 +473,7 @@ async def _compose(monkeypatch, *, anchor_batches, structured_ok=True, size=15):
 
     monkeypatch.setattr(generation, "anchor_evidence", _anchor_evidence)
     monkeypatch.setattr(generation, "write_structured", _write_structured)
-    slots = await ppi._compose_formats(
+    slots = await question_generation._compose_formats(
         _FakeSession(),
         _job(),
         allocation,

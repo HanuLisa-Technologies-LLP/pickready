@@ -14,7 +14,7 @@ about.
 """
 import pytest
 
-from app.services import ppi
+from app.services.assessment_questions import budget as question_budget
 
 
 GRADES = ("non_managerial", "managerial", "leadership", "cxo")
@@ -26,8 +26,8 @@ GRADES = ("non_managerial", "managerial", "leadership", "cxo")
 @pytest.mark.parametrize("grade", GRADES)
 def test_the_range_is_never_wider_than_the_grades_own_band(grade):
     """The band is the client's own table and a job may not escape it."""
-    low, high = ppi.resolve_question_range(grade, 500)
-    band_low, band_high = ppi.GRADE_QUESTION_RANGES[grade]
+    low, high = question_budget.resolve_question_range(grade, 500)
+    band_low, band_high = question_budget.GRADE_QUESTION_RANGES[grade]
     assert low >= band_low
     assert high <= band_high
 
@@ -37,23 +37,23 @@ def test_a_small_matrix_still_asks_the_grade_minimum(grade):
     """A four-item matrix must not become a four-question interview: the report
     grades every item, and a thin matrix is a reason to probe each item harder,
     not a reason to stop early."""
-    low, high = ppi.resolve_question_range(grade, 1)
-    assert low == ppi.min_questions(grade)
+    low, high = question_budget.resolve_question_range(grade, 1)
+    assert low == question_budget.min_questions(grade)
     assert high >= low
 
 
 @pytest.mark.parametrize("grade", GRADES)
 def test_a_large_matrix_asks_one_question_per_item_up_to_the_ceiling(grade):
     """Every item the report grades should actually have been probed."""
-    ceiling = ppi.max_questions(grade)
-    _, high = ppi.resolve_question_range(grade, ceiling)
+    ceiling = question_budget.max_questions(grade)
+    _, high = question_budget.resolve_question_range(grade, ceiling)
     assert high == ceiling
 
 
 def test_the_range_is_a_pure_function_of_grade_and_matrix_size():
     """No manual override, and no per-candidate input. Two candidates on one job
     must be offered the same range or their reports are not comparable."""
-    assert ppi.resolve_question_range("managerial", 18) == ppi.resolve_question_range(
+    assert question_budget.resolve_question_range("managerial", 18) == question_budget.resolve_question_range(
         "managerial", 18
     )
 
@@ -64,8 +64,8 @@ def test_the_legacy_target_is_the_ceiling_of_the_range():
     ask, rather than the number it will ask."""
     for grade in GRADES:
         for size in (1, 5, 12, 40):
-            assert ppi.resolve_question_target(grade, size) == (
-                ppi.resolve_question_range(grade, size)[1]
+            assert question_budget.resolve_question_target(grade, size) == (
+                question_budget.resolve_question_range(grade, size)[1]
             )
 
 
@@ -73,8 +73,8 @@ def test_questions_are_written_to_the_ceiling_not_the_floor():
     """Generation happens once, before the candidate starts. Writing only the
     floor would leave a conversation that legitimately needs more evidence with
     no further prompt to reach for."""
-    low, high = ppi.resolve_question_range("non_managerial", 40)
-    assert ppi.resolve_question_target("non_managerial", 40) == high
+    low, high = question_budget.resolve_question_range("non_managerial", 40)
+    assert question_budget.resolve_question_target("non_managerial", 40) == high
     assert high > low
 
 
@@ -84,13 +84,13 @@ def test_questions_are_written_to_the_ceiling_not_the_floor():
 def _close(**overrides):
     kwargs = dict(
         grade="non_managerial",
-        asked=ppi.min_questions("non_managerial"),
-        total_written=ppi.max_questions("non_managerial"),
+        asked=question_budget.min_questions("non_managerial"),
+        total_written=question_budget.max_questions("non_managerial"),
         covered_dimensions=8,
         total_dimensions=8,
     )
     kwargs.update(overrides)
-    return ppi.conversation_may_close(**kwargs)
+    return question_budget.conversation_may_close(**kwargs)
 
 
 def test_it_may_close_once_every_dimension_has_evidence_and_the_floor_is_met():
@@ -103,12 +103,12 @@ def test_it_never_closes_below_the_grade_floor(grade):
     assessed on fewer criteria than a hesitant one, and two reports on the same
     job stop being comparable, which is the one property the matrix exists to
     give."""
-    floor = ppi.min_questions(grade)
+    floor = question_budget.min_questions(grade)
     assert (
-        ppi.conversation_may_close(
+        question_budget.conversation_may_close(
             grade=grade,
             asked=floor - 1,
-            total_written=ppi.max_questions(grade),
+            total_written=question_budget.max_questions(grade),
             covered_dimensions=6,
             total_dimensions=6,
         )
@@ -132,7 +132,7 @@ def test_running_out_of_questions_is_not_this_functions_decision():
     """`asked >= total_written` is ordinary completion, handled by the caller.
     This function answers the EARLY-stop question only, so it must not also
     claim the last question as an early stop."""
-    total = ppi.max_questions("non_managerial")
+    total = question_budget.max_questions("non_managerial")
     assert _close(asked=total, total_written=total) is False
 
 
@@ -143,7 +143,7 @@ def test_the_stopping_rule_calls_no_model():
     must be "keep asking", not "stop"."""
     import inspect
 
-    source = inspect.getsource(ppi.conversation_may_close)
+    source = inspect.getsource(question_budget.conversation_may_close)
     for forbidden in ("invoke_llm", "chat_completion", "llm_router", "await "):
         assert forbidden not in source, forbidden
 
@@ -152,9 +152,9 @@ def test_a_closed_conversation_stays_inside_sutras_range():
     """The property the two halves exist to give jointly: whatever the candidate
     says, the number of base questions lands in the job's range."""
     for grade in GRADES:
-        low, high = ppi.resolve_question_range(grade, 40)
+        low, high = question_budget.resolve_question_range(grade, 40)
         for asked in range(0, high + 2):
-            if ppi.conversation_may_close(
+            if question_budget.conversation_may_close(
                 grade=grade,
                 asked=asked,
                 total_written=high,

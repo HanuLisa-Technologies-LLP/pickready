@@ -36,6 +36,7 @@ import re
 from dataclasses import dataclass, field
 
 from app.services import functional_assessment as fa
+from app.services.assessment_questions import budget as question_budget
 from app.services import matching, ppi
 from app.services.rating import (
     GRADE_HIGHLY,
@@ -458,14 +459,14 @@ def _measure_question_counts_by_grade() -> Result:
         "cxo": (18, 25),
     }
     for grade, bounds in expected.items():
-        actual = (ppi.min_questions(grade), ppi.max_questions(grade))
+        actual = (question_budget.min_questions(grade), question_budget.max_questions(grade))
         result.record(actual == bounds, f"{grade}: {actual}, expected {bounds}")
     # A resolved target never leaves its grade's range, whatever the matrix
     # holds. Both ends, because a silent clamp in either direction would change
     # how long a real candidate sits in an interview.
     for grade, (low, high) in expected.items():
         for size in (0, 1, low, high, high + 40):
-            target = ppi.resolve_question_target(grade, size)
+            target = question_budget.resolve_question_target(grade, size)
             result.record(
                 low <= target <= high,
                 f"{grade} resolved {target} for a {size}-item matrix, "
@@ -473,7 +474,7 @@ def _measure_question_counts_by_grade() -> Result:
             )
     # A grade nobody recognises must not silently produce zero questions.
     result.record(
-        ppi.resolve_question_target(None, 12) > 0,
+        question_budget.resolve_question_target(None, 12) > 0,
         "an unknown grade produced no questions",
     )
     return result

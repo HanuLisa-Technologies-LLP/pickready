@@ -84,6 +84,7 @@ from app.models.job_scorecard_binding import JobScorecardBinding
 from app.models.job import Job
 from app.models.job_setup import SWOT_AREAS, JobSwotAnalysis
 from app.prompts import fragments, registry
+from app.services.assessment_questions import budget as question_budget
 from app.services import agent_loop, llm_router, ppi
 from app.services.hiring import (
     gates,
@@ -1170,7 +1171,7 @@ async def compile_matrix(
         if key not in kept_keys:
             row.is_active = False
     job.framework_generated_at = datetime.now(timezone.utc)
-    job.question_target = ppi.resolve_question_target(
+    job.question_target = question_budget.resolve_question_target(
         job.assessment_grade, len(created), job.role_classification
     )
     await session.flush()
@@ -1327,7 +1328,7 @@ def _apply_ceilings(
     behavioural_room = max(
         1, min(
             ceiling,
-            ppi.max_questions(job.assessment_grade, job.role_classification)
+            question_budget.max_questions(job.assessment_grade, job.role_classification)
             - len(keep_scored),
         )
     )
@@ -1557,7 +1558,7 @@ async def freeze(
     version = scorecard_version(previous)
 
     job.framework_approved_at = datetime.now(timezone.utc)
-    job.question_target = ppi.resolve_question_target(
+    job.question_target = question_budget.resolve_question_target(
         job.assessment_grade, len(rows), job.role_classification
     )
     session.add(

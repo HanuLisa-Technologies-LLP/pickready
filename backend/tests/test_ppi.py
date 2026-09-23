@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import ppi, rating
+from app.services.assessment_questions import budget as question_budget
+from app.services.assessment_questions import generate as question_generation
 from app.services import application_validation as av
 from app.services.hiring import layers, scorecard, swot_quality, transformation
 
@@ -350,7 +352,7 @@ def test_a_matrix_above_the_grade_ceiling_blocks_the_save_and_says_how_many() ->
     """Every item is probed at least once, so a matrix bigger than the grade
     allows questions would grade a candidate on criteria nobody asked them
     about. The refusal names the number to remove rather than truncating."""
-    ceiling = ppi.max_questions("cxo")
+    ceiling = question_budget.max_questions("cxo")
     rows = _small_matrix() + [
         _competency(ppi.CATEGORY_MUST_HAVE, f"Extra {index}")
         for index in range(ceiling)
@@ -360,7 +362,7 @@ def test_a_matrix_above_the_grade_ceiling_blocks_the_save_and_says_how_many() ->
     assert str(len(rows) - ceiling) in reason
     # The same matrix is perfectly saveable at a grade that asks more questions.
     assert ppi.matrix_is_complete(rows, "non_managerial")[0] is (
-        len(rows) <= ppi.max_questions("non_managerial")
+        len(rows) <= question_budget.max_questions("non_managerial")
     )
 
 
@@ -386,7 +388,7 @@ def _matrix(per_aspect: int = 5) -> list[SimpleNamespace]:
 
 def test_allocation_probes_every_item_at_least_once() -> None:
     competencies = _matrix()
-    plan = ppi._allocate(competencies, 20, "non_managerial")
+    plan = question_generation._allocate(competencies, 20, "non_managerial")
     assert len(plan) == 20
     assert {row.name for row in plan} == {row.name for row in competencies}
 
@@ -396,9 +398,9 @@ def test_allocation_spends_the_remainder_on_the_most_weighted_aspect() -> None:
     what decides where a SPARE question goes: whichever aspect the client's
     table asks the most of."""
     competencies = _matrix()
-    plan = ppi._allocate(competencies, 20, "non_managerial")  # 15 items, 5 spare
+    plan = question_generation._allocate(competencies, 20, "non_managerial")  # 15 items, 5 spare
     extras = plan[15:]
-    split = ppi.typical_split("non_managerial")
+    split = question_budget.typical_split("non_managerial")
     heaviest = max(ppi.CATEGORIES, key=lambda category: split[category][1])
     assert all(row.category == heaviest for row in extras)
 
@@ -407,11 +409,11 @@ def test_seniority_and_stem_both_raise_the_question_count() -> None:
     # Master Directive Part 3 section 6 inverted the old direction: seniority
     # now ADDS questions, and a STEM job probes deeper than a non-STEM one at
     # every grade.
-    assert ppi.max_questions("cxo") >= ppi.max_questions("non_managerial")
-    assert ppi.min_questions("cxo") >= ppi.min_questions("non_managerial")
+    assert question_budget.max_questions("cxo") >= question_budget.max_questions("non_managerial")
+    assert question_budget.min_questions("cxo") >= question_budget.min_questions("non_managerial")
     for grade in ("non_managerial", "managerial", "leadership", "cxo"):
-        assert ppi.min_questions(grade, "STEM") > ppi.min_questions(grade)
-        assert ppi.max_questions(grade, "STEM") > ppi.max_questions(grade)
+        assert question_budget.min_questions(grade, "STEM") > question_budget.min_questions(grade)
+        assert question_budget.max_questions(grade, "STEM") > question_budget.max_questions(grade)
 
 
 # ── Mandatory application fields (spec §7) ───────────────────────────────────

@@ -90,7 +90,7 @@ async def start_video_interview(
     a video interview shows each question while the camera runs and the
     candidate answers in speech, so there is no per-turn request for a
     rewritten prompt. The stored prompts were generated per candidate by
-    `ppi.generate_candidate_questions` from this candidate's own resume, so
+    `assessment_questions.generate.generate_candidate_questions` from this candidate's own resume, so
     every question is already theirs. The answer key still never crosses:
     `_question_out` serves the candidate view only.
     """

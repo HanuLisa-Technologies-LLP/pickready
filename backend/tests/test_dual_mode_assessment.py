@@ -111,7 +111,9 @@ PERMITTED_IMPORTERS = {
     # The video routes, carved out of api/assessments.py on 2026-09-24
     # (PLAN-p3 WP0); api/assessments.py no longer imports the package.
     "api/assessment_recording.py",
-    "workers/tasks.py",
+    # The processing task, carved out of workers/tasks.py on 2026-09-24
+    # (PLAN-p3 WP0); workers/tasks.py no longer imports the package.
+    "workers/tasks_media.py",
     # The client-side delivery/metadata layer (2026-09-05 dashboard/Executive
     # Profile/video spec). It reads the lifecycle constants and the per-link
     # accessor to render honest status words and mint presigned URLs; it is

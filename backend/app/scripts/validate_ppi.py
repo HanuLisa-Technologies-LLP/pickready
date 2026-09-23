@@ -31,6 +31,7 @@ from app.models.enums import LinkSource
 from app.models.job import Job
 from app.models.tenant import Tenant
 from app.models.job_setup import SWOT_ANALYSIS_GENERATED, JobSwotAnalysis
+from app.services.assessment_questions import generate as question_generation
 from app.services import ppi
 from app.services.hiring import scorecard
 from app.services.application_validation import MANDATORY_KEYS
@@ -181,7 +182,7 @@ async def main() -> int:
         await session.flush()
 
         # ── Per-candidate questions ─────────────────────────────────────────
-        questions = await ppi.generate_candidate_questions(session, job, link)
+        questions = await question_generation.generate_candidate_questions(session, job, link)
         expected = ppi.ppi_question_count(job.assessment_grade)
         check(
             f"the candidate gets exactly {expected} PPI questions",

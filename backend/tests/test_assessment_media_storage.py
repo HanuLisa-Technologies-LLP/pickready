@@ -110,7 +110,12 @@ def test_the_kind_is_read_from_the_row_not_passed_to_the_task() -> None:
     task, one entry point, and the row says what it is."""
     source = (APP / "services" / "video" / "processing.py").read_text(encoding="utf-8")
     assert "if recording.kind == RECORDING_PROCTORED_SESSION:" in source
-    tasks = (APP / "workers" / "tasks.py").read_text(encoding="utf-8")
+    # Every task module, since the Phase 3 tasks were carved out of
+    # `workers/tasks.py` on 2026-09-24 (PLAN-p3 WP0).
+    tasks = "\n".join(
+        module.read_text(encoding="utf-8")
+        for module in sorted((APP / "workers").glob("tasks*.py"))
+    )
     assert "pickready.process_assessment_video" in tasks
     assert "process_proctored_session" not in tasks, (
         "a second processing task would be a second way to decide what a "
@@ -289,7 +294,7 @@ def test_the_purge_task_and_its_schedule_entry_both_exist() -> None:
     )
     assert entry.rule == "readypick-purge-assessment-media"
     assert entry.interval_minutes == 60
-    tasks = (APP / "workers" / "tasks.py").read_text(encoding="utf-8")
+    tasks = (APP / "workers" / "tasks_media.py").read_text(encoding="utf-8")
     assert 'name="pickready.purge_assessment_media"' in tasks
 
 

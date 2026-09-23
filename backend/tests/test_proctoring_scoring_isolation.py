@@ -48,7 +48,10 @@ PERMITTED_IMPORTERS: dict[str, str] = {
     "api/assessment_conversation.py": "the gate on the conversation",
     "api/assessment_recording.py": "the gate on the recording start",
     "services/report_pdf.py": "renders the report's final section",
-    "workers/tasks.py": "the three proctoring tasks",
+    "workers/tasks.py": "the proctoring event purge",
+    # The report and the reconciler, carved out of workers/tasks.py on
+    # 2026-09-24 (PLAN-p3 WP0).
+    "workers/tasks_proctoring.py": "the report task and the session reconciler",
     "schemas/proctoring.py": "reads the event vocabulary for its validator",
     "schemas/jobs.py": "reads the warning-policy vocabulary",
     "api/jobs.py": "reads the warning-policy default",

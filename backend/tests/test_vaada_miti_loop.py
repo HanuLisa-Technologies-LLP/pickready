@@ -12,7 +12,7 @@ Two properties are asserted here, and a third is asserted by NOT changing.
   1. the state is explicit, deterministic, and internal;
   2. two semantically equivalent questions are not both asked, decided without
      a model call, because the guard matters most when the provider is down;
-  3. `ppi.conversation_may_close` is still the only thing that ENDS a
+  3. `question_budget.conversation_may_close` is still the only thing that ENDS a
      conversation early, floor included. Everything added here can make it
      stricter and can never make it looser.
 
@@ -319,8 +319,8 @@ def test_conversation_may_close_still_governs_early_stopping() -> None:
     from app.api import assessment_conversation as assessments
 
     source = inspect.getsource(assessments.respond)
-    assert "ppi.conversation_may_close(" in source
-    close_at = source.index("evidence_complete = ppi.conversation_may_close(")
+    assert "question_budget.conversation_may_close(" in source
+    close_at = source.index("evidence_complete = question_budget.conversation_may_close(")
     tail = source[close_at : close_at + 1200]
     assert ") and (" in tail, tail[:400]
     assert "interviewer.STOP_NO_CONFLICT_OUTSTANDING in coverage.stop_conditions" in tail

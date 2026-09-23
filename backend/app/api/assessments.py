@@ -61,6 +61,7 @@ from app.schemas.assessments import (
 # halves are bound by the same rule: no bucket name and no object key.
 from app.services import capabilities as caps
 from app.services import rbac
+from app.services.assessment_questions import budget as question_budget
 from app.services.hiring import pipeline_halt, scorecard
 from app.services import (
     evidence_confidence,
@@ -331,16 +332,16 @@ async def _framework_out(
         status=job.assessment_status,
         approved=job.framework_approved_at is not None,
         competencies=[_competency_out(row) for row in rows],
-        maximum_items=ppi.max_questions(job.assessment_grade, job.role_classification),
+        maximum_items=question_budget.max_questions(job.assessment_grade, job.role_classification),
         # Computed from what the matrix holds RIGHT NOW rather than read from
         # `job.question_target`, which is stamped at generation. The Hiring
         # Manager is mid-edit on this screen and needs to see what the matrix in
         # front of them would cost a candidate, not what the generated one did.
-        question_target=ppi.resolve_question_target(
+        question_target=question_budget.resolve_question_target(
             job.assessment_grade, len(rows), job.role_classification
         ),
         question_range=list(
-            ppi.resolve_question_range(
+            question_budget.resolve_question_range(
                 job.assessment_grade, len(rows), job.role_classification
             )
         ),

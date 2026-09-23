@@ -52,6 +52,7 @@ from app.schemas.assessments import (
 # video schemas rather than with the assessment ones because it is the
 # candidate-side half of the SAME artifact those schemas deliver, and both
 # halves are bound by the same rule: no bucket name and no object key.
+from app.services.assessment_questions import budget as question_budget
 from app.services import (
     answer_classification,
     assessment_consent,
@@ -64,7 +65,6 @@ from app.services import (
     interview_telemetry,
     interviewer,
     job_posting,
-    ppi,
     ppi_interview,
     retake,
     telemetry_events,
@@ -497,7 +497,7 @@ async def _conversation_state(
         ],
         asked=conversation.next_question_index,
         total_written=total_written,
-        floor=ppi.min_questions(job.assessment_grade, job.role_classification),
+        floor=question_budget.min_questions(job.assessment_grade, job.role_classification),
         probe_outstanding=conversation.pending_prompt is not None,
     )
 
@@ -515,7 +515,7 @@ async def _conversation_prompts(
     behavioural bots and never sees the scoring methods behind the conversation.
 
     The order is the matrix's own: Must-have, Nice-to-have, Behavioural, which
-    is `ppi.generate_candidate_questions`' allocation order, held in `ordinal`.
+    is `assessment_questions.generate.generate_candidate_questions`' allocation order, held in `ordinal`.
     That is deterministic per job, which is what keeps two candidates' reports
     comparable.
 
@@ -1024,7 +1024,7 @@ async def _write_next_question_inner(
     there is no single correct answer to weigh a behavioural account against.
 
     Degrades to the stored text, which is always a correct thing to ask: it is
-    the question `ppi.generate_candidate_questions` already wrote for this item
+    the question `assessment_questions.generate.generate_candidate_questions` already wrote for this item
     from this candidate's own resume.
     """
     _aspect, key, stored, _row = prompts[index]
@@ -1507,7 +1507,7 @@ async def respond(
             "assessments.conversation_state conversation_id=%s state=%s",
             conversation.id, coverage.as_log(),
         )
-        evidence_complete = ppi.conversation_may_close(
+        evidence_complete = question_budget.conversation_may_close(
             grade=job.assessment_grade,
             role_classification=job.role_classification,
             asked=conversation.next_question_index,
@@ -1539,7 +1539,7 @@ async def respond(
         # WHICH of the two endings this was, on the row (change request 28B).
         #
         # DERIVED FROM THE BRANCH THAT ALREADY DECIDED, never re-evaluated.
-        # `ppi.conversation_may_close` is still the only thing that can end an
+        # `assessment_questions.budget.conversation_may_close` is still the only thing that can end an
         # assessment early; this reads the decision it made rather than asking
         # a second question that could answer differently, which is the
         # duplicate decider `interviewer.stop_conditions` refuses to become.
@@ -1574,7 +1574,7 @@ async def respond(
                 end_reason=conversation.end_reason,
                 questions_asked=conversation.next_question_index,
                 questions_written=len(prompts),
-                floor=ppi.min_questions(
+                floor=question_budget.min_questions(
                     job.assessment_grade, job.role_classification
                 ),
             )
