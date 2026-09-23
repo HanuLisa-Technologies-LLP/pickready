@@ -21,9 +21,13 @@ def test_retired_intake_routes_return_404_while_document_route_remains() -> None
     with TestClient(app) as client:
         assert client.get(f"{base}/swot").status_code == 404
         assert client.post(f"{base}/swot/respond", json={"answer": "old"}).status_code == 404
-    assert any(
-        getattr(route, "path", "") == "/api/v2/assessments/jobs/{job_id}/swot-analysis"
-        for route in app.routes
+    # The published paths rather than `app.routes`: from FastAPI 0.141 an
+    # included router is one `_IncludedRouter` entry carrying `path = None`,
+    # so `getattr(route, "path", "")` quietly matched nothing and this
+    # assertion failed while the route was registered and working.
+    assert (
+        "/api/v2/assessments/jobs/{job_id}/swot-analysis"
+        in app.openapi()["paths"]
     )
 
 

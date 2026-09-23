@@ -59,7 +59,21 @@ def test_the_retired_system_is_gone_from_live_backend_source() -> None:
 def test_the_retired_routes_are_not_registered() -> None:
     from app.main import app
 
-    paths = {route.path for route in app.router.routes}
+    # THE PUBLISHED PATHS, NOT `app.router.routes`.
+    #
+    # Reading `.path` off every entry in `app.router.routes` was reading a
+    # private shape, and FastAPI changed it: from 0.141 `include_router`
+    # leaves a single `_IncludedRouter` in that list, which carries `path =
+    # None` and does not expose `.routes`, so the comprehension raised
+    # `AttributeError` and the nested routes were unreachable from it anyway.
+    # `app.openapi()["paths"]` is the documented surface, returns fully
+    # prefixed paths, and gives byte-identical answers on 0.136 and 0.141.
+    #
+    # It reports only routes in the schema, so a retired path hidden with
+    # `include_in_schema=False` would read as absent. The survivor assertion
+    # below is what stops that being a vacuous pass, and it is why that
+    # assertion is load bearing rather than decorative.
+    paths = set(app.openapi()["paths"])
     for gone in (
         "/api/v1/verification/form/{token}",
         "/api/v1/verification/profile/{profile_id}",

@@ -1313,7 +1313,7 @@ module "ecs" {
         # in production it must refuse to boot without its key. The
         # guard is opt-in per container because secrets are enumerated
         # per service and most containers rightly hold no signing key.
-        REQUIRE_JWT_SECRET = "1"
+        REQUIRE_JWT_SECRET              = "1"
         PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
         # PUBLIC BY DESIGN, and a plain variable rather than a secret for that
         # reason: the browser reads it from GET /billing/config at runtime.
@@ -1633,7 +1633,7 @@ module "lambda" {
       # equivalent, so the function fetches them at cold start with the
       # policy below. Only the ARNs are here.
       secrets = {
-        DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
+        DATABASE_URL = module.secrets.secret_arns["DATABASE_URL"]
         # The worker MINTS assessment invite links (workers/tasks.py, the
         # invitation email), which are signed material: it needs the real
         # key, and REQUIRE_JWT_SECRET below makes it refuse to boot in

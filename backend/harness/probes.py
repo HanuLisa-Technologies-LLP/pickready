@@ -523,6 +523,15 @@ def read_output(name: str, ctx: ScenarioContext) -> Any:
 #: exception that widens.
 SANCTIONED_NUMERIC_FIELDS = frozenset({"match_percent"})
 
+#: Ordering coordinates, NOT scores, and deliberately not merged into the set
+#: above because they are a different claim: `force_rank` is section 20.3's
+#: position in the force-ranking (1..n) on the Hiring Manager's review screen,
+#: documented in `schemas/assessments.CompetencyOut` as "an ORDER rather than
+#: a score -- the same status the radar chart's band index has had all along".
+#: It trips `siddhi.numbers`' score-shaped-key pattern only because the word
+#: "rank" is in the name.
+ORDER_COORDINATE_FIELDS = frozenset({"force_rank"})
+
 #: Rule 7. The character is built from its code point rather than typed,
 #: because a repository-wide sweep for the character would otherwise rewrite
 #: the code that detects it. `test_platform_audit.py` makes the same move.
@@ -586,7 +595,11 @@ def _a_number_reached_a_client(ctx: ScenarioContext) -> tuple[bool, str]:
                 hits.append(f"{path}.{field_path}: {text[:80]!r}")
         for violation in numbers.scan({numbers.VERBATIM_ROOT: body}, path=path):
             leaf = violation.path.rsplit(".", 1)[-1]
-            if leaf in SANCTIONED_NUMERIC_FIELDS or _PAGINATION.search(leaf):
+            if (
+                leaf in SANCTIONED_NUMERIC_FIELDS
+                or leaf in ORDER_COORDINATE_FIELDS
+                or _PAGINATION.search(leaf)
+            ):
                 continue
             hits.append(f"{path}: {violation}")
     return bool(hits), "; ".join(hits[:6]) or "no number reached a client payload"

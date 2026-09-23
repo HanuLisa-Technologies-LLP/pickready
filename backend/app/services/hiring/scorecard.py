@@ -1485,18 +1485,21 @@ async def _enrich_reviewed_rows(
             ranks[row.id] = rank if group == SCORED_CATEGORIES else None
 
     for row in rows:
-        item = prepared.get(row.id)
-        if item is not None:
-            row.description = item.observable_evidence
-            row.dimension = item.dimension
-            row.observable_evidence = item.observable_evidence
-            row.evidence_sources = list(item.evidence_sources)
-            row.assessment_method = item.assessment_method
-            row.threshold_json = item.threshold.as_dict()
-            row.disqualifier = item.disqualifier
-            row.anchor_key = item.anchor_key
-            provenance = item.weight.as_dict()
-            provenance["unreachable_sources"] = list(item.unreachable_sources)
+        # A fresh name: `item` is bound to a plain Item earlier in this
+        # function, and rebinding it to `Item | None` here is the assignment
+        # mypy rightly refuses.
+        enriched = prepared.get(row.id)
+        if enriched is not None:
+            row.description = enriched.observable_evidence
+            row.dimension = enriched.dimension
+            row.observable_evidence = enriched.observable_evidence
+            row.evidence_sources = list(enriched.evidence_sources)
+            row.assessment_method = enriched.assessment_method
+            row.threshold_json = enriched.threshold.as_dict()
+            row.disqualifier = enriched.disqualifier
+            row.anchor_key = enriched.anchor_key
+            provenance = enriched.weight.as_dict()
+            provenance["unreachable_sources"] = list(enriched.unreachable_sources)
             provenance["source"] = "human_reviewed_criterion"
             # Stamped for the same reason `compile_matrix` stamps it: Drishti
             # emphasis reached this weight, and a provenance record that omits
