@@ -22,10 +22,11 @@ THE TWO PROPERTIES THE 2026-09-09 REMOVAL DEMANDED, held here:
   what every candidate is graded on is an injection surface, and "we like
   hungry people" must not become a criterion. Compilation is DETERMINISTIC
   and calls no model, so it is reproducible and diffable between versions.
-* Drishti may TUNE and may never SUSPEND: its emphasis reaches weights only
-  through `layers.resolve` under `LAYER_COMPANY`, the bounds table the
-  removal deliberately kept alive with no supplier. Every clamp and refusal
-  is recorded in provenance, the standing rule.
+* Drishti is OPTIONAL CONTEXT TEXT and nothing else (Vivekium release,
+  owner ruling). It moved weights through `layers.resolve` under
+  `LAYER_COMPANY` until the Tatva matrix compiler was deleted; that weighting
+  (`emphasis_map`) is DELETED with it. No weight, no multiplier and no skill
+  comes from Drishti anywhere on the live path.
 
 THE STRUCTURED AI CONVERSATION lives in `hiring/drishti_conversation` and
 is a CAPTURE MECHANISM for this module and nothing more: it produces the
@@ -41,7 +42,9 @@ offline, because the guard matters most when the provider is down.
 
 WHAT REACHES A MODEL PROMPT is `prompt_context` and only `prompt_context`:
 derived from the compiled artifact, re-checked against the detector, and
-capped in lines and characters. Sutra's naming call is its one reader.
+capped in lines and characters. Sutra's two calls (the skills draft and the
+hidden assessment context, `hiring/sutra`) are its only readers, and the key is
+ABSENT from their payload when a function has no profile.
 """
 from __future__ import annotations
 
@@ -58,10 +61,6 @@ from app.services.hiring import observable
 #: The compiled artifact's schema version, stored inside the artifact.
 COMPILED_VERSION = 1
 
-#: How strongly a competency named in the non-negotiables leans on the
-#: weight. Applied through layers.resolve, whose BOUNDS clamp it regardless.
-EMPHASIS_MULTIPLIER = 1.10
-
 #: Bound on compiled context lines, so the artifact stays a summary rather
 #: than a second copy of the prose.
 MAX_CONTEXT_LINES = 12
@@ -70,7 +69,7 @@ MAX_LINE_CHARS = 240
 #: The SECOND, tighter bound: what may reach a model prompt. Deliberately
 #: smaller than the artifact's own bound, because the two are protecting
 #: different things. `MAX_CONTEXT_LINES` keeps the stored artifact a summary;
-#: these keep the share of Sutra's naming prompt that is client-authored small
+#: these keep the share of Sutra's prompts that is client-authored small
 #: enough that it cannot dominate the instruction above it. A budget in
 #: CHARACTERS as well as in lines, because twelve lines of 240 characters is a
 #: different prompt from twelve lines of thirty.
@@ -171,10 +170,14 @@ def compile_profile(
     """The compiled artifact: deterministic, model-free, bounded.
 
     `context_lines` are the OBSERVABLE sentences only, per section, capped;
-    a sentence the detector rejects never reaches a prompt or a weight.
-    `emphasis` names each known competency the non-negotiables mention on a
-    word boundary (the "hold contains old" lesson), at the one declared
-    multiplier; the layers engine clamps it again regardless.
+    a sentence the detector rejects never reaches a prompt.
+
+    The raw non-negotiables text is NOT stored any more (Vivekium release). It
+    was kept only so the matrix compiler could word-look it up against resolved
+    competency names and lean a weight (`emphasis_map`), and that weighting is
+    deleted. Client free text nothing reads is client free text nobody needs
+    to hold. Artifacts compiled before the change still carry the key; nothing
+    reads it.
     """
     lines: list[str] = []
     for section in SECTIONS:
@@ -186,20 +189,10 @@ def compile_profile(
         if len(lines) >= MAX_CONTEXT_LINES:
             break
 
-    # The non-negotiables text is stored RAW (bounded), unlike the context
-    # lines, and the asymmetry is deliberate: context lines can reach a
-    # prompt, so they pass the observable bar; this string never does. It is
-    # only ever WORD-LOOKED-UP against names the matrix already resolved
-    # (`emphasis_map`), so an adjective in it cannot become a criterion; the
-    # worst it can do is lean, within layers bounds, on a competency the
-    # hiring manager independently declared. Emphasis resolves AT FREEZE, so
-    # a profile written before any job exists still reaches every later
-    # matrix in its function.
     return {
         "version": COMPILED_VERSION,
         "function": function_name,
         "context_lines": lines,
-        "non_negotiables_text": str(sections.get("non_negotiables") or "")[:4000],
     }
 
 
@@ -230,46 +223,18 @@ async def compiled_for(
     return row, [str(line) for line in lines] if isinstance(lines, list) else []
 
 
-def emphasis_map(
-    compiled: Mapping[str, Any] | None, names: list[str]
-) -> dict[str, float]:
-    """Which of THESE competency names the non-negotiables lean on.
-
-    Resolved at freeze against the matrix's own resolved names, word-
-    boundary matched (the "hold contains old" lesson), at the one declared
-    multiplier; layers.resolve clamps it again regardless.
-    """
-    if not compiled:
-        return {}
-    haystack = str(compiled.get("non_negotiables_text") or "").casefold()
-    if not haystack:
-        return {}
-    out: dict[str, float] = {}
-    for name in names:
-        clean = str(name).strip()
-        if not clean:
-            continue
-        pattern = rf"(?<!\w){re.escape(clean.casefold())}(?!\w)"
-        if re.search(pattern, haystack):
-            out[clean] = EMPHASIS_MULTIPLIER
-    return out
-
-
 def prompt_context(compiled: Mapping[str, Any] | None) -> list[str]:
     """The ONLY Drishti text a model prompt is ever given.
 
-    THE C3 GUARANTEE, AT THE ONE PLACE IT COULD BE LOST. Sutra's naming call
-    decides what every candidate in this function is graded against, so what
-    reaches it has to be bounded three ways at once, and this function is
-    where all three are applied together:
+    THE C3 GUARANTEE, AT THE ONE PLACE IT COULD BE LOST. Sutra's skills
+    draft and hidden assessment context decide what every candidate in this
+    function is assessed against, so what reaches them has to be bounded three
+    ways at once, and this function is where all three are applied together:
 
     * DERIVED, never raw. Its input is `compile_profile`'s own
       `context_lines`, which are the observable sentences and nothing else.
-      `non_negotiables_text` is deliberately NOT reachable from here: it is
-      stored raw, and the whole reason that is safe is that it is only ever
-      word-looked-up against names the matrix already resolved
-      (`emphasis_map`). Putting it in a prompt would remove the property
-      that makes storing it raw defensible at all.
+      A pre-release artifact's raw `non_negotiables_text` is deliberately NOT
+      reachable from here.
     * RE-CHECKED against today's bar, not the bar the day it was compiled.
       A stored artifact outlives the compiler that wrote it, and a detector
       that only ever ran at write time is a detector an old row walks past.

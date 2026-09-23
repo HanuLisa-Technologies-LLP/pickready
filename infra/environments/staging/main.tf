@@ -970,8 +970,8 @@ module "scheduler" {
       task            = "pickready.refresh_dashboard_views"
       rate_expression = "rate(5 minutes)"
     }
-    "readypick-remind-unapproved-framework" = {
-      task            = "pickready.remind_unapproved_technical_questions"
+    "readypick-remind-unsaved-skills" = {
+      task            = "pickready.remind_unsaved_skills"
       rate_expression = "rate(60 minutes)"
     }
     "readypick-reconcile-job-setup" = {

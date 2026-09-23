@@ -33,8 +33,9 @@ RETRIES LIVE HERE, IN ONE PLACE
 `max_attempts` and `backoff_seconds` replace Celery's `autoretry_for` /
 `retry_backoff` / `max_retries`. They are declared per task because the right
 answer differs per task and always did: delivery is worth retrying because SMTP
-fails transiently, and `compile_tatva_matrix` is not, because it refuses on a
-missing SWOT artifact and no amount of waiting supplies one.
+fails transiently, and a SWOT generation is not, because a failed draft is a
+state the team retries from the tab and a second model call would only repeat
+it.
 
 The retry loop runs INSIDE the invocation (see `runtime.run_task`), and the
 Lambda's own asynchronous retry is set to zero in Terraform. Two retry

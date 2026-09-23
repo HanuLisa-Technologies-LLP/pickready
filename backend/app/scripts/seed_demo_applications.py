@@ -30,7 +30,7 @@ The same measurement found that 30 of the 33 demo jobs had ZERO competencies:
     Sarkar / Python Backend Developer    5 / 5 / 5   framework approved
     every other demo job                 0 / 0 / 0   NOT approved
 
-`pickready.generate_ppi_framework`
+the retired matrix generator task
 had evidently never run for them. So even with applications seeded, those jobs
 answer 409 to `select-candidates` and nobody can be invited. Seeding the
 applications alone would have produced a demo that still did not work, and a
@@ -242,45 +242,44 @@ async def _open_jobs(session, tenant_id: uuid.UUID) -> list[Job]:
 
 
 async def _ensure_framework(session, job: Job, dry_run: bool) -> str:
-    """Approve this job's Tatva matrix, if Sutra has already built one.
+    """Mark this demo job's skills saved, if its skills are already there.
 
-    CHANGED 2026-08-29. This used to CALL the matrix generator and then approve
-    what came back. It no longer generates anything, and the reason is spec-doc6
-    §4.3's own: a matrix is built from Bodha's SWOT session with the Hiring
-    Manager, which a seed
-    script has. The old single-pass generator would produce one from the JD
-    alone, which is what made this call look reasonable.
+    CHANGED (Vivekium release). The Tatva matrix and its save check are gone;
+    a demo job's skills are held to the Skills step's own rule
+    (`skills.validate_for_save`: at most five per bucket, at least one
+    Must-have and one Behavioural). A demo job with no skills is REPORTED and
+    left alone: the skills are drafted from a SWOT the team saved, which a seed
+    script does not have.
 
-    So a demo job with no matrix is REPORTED and left alone. The approval half
-    stays, because a demo tenant genuinely does need its matrices approved
-    without a human present, and `matrix_is_complete` is the same check the
-    Hiring Manager's Save press goes through.
+    The hidden context is the HONEST EMPTY one migration 0118 stamps on a saved
+    matrix (`role_summary` empty, the writer named), never an invented
+    summary. The routes package rebuilds this on `skills.save`, which writes a
+    real context through Sutra.
     """
+    from app.services import skills  # noqa: PLC0415
+
     if job.framework_approved_at is not None:
         return "already approved"
 
     rows = await ppi.load_framework(session, job.id)
     if not rows:
         return (
-            "NO MATRIX: run the SWOT session for this job and let Sutra build "
-            "one. A seed script has neither the hiring manager nor the "
-            "company's philosophy to build it from."
+            "NO SKILLS: save the SWOT for this job and let Sutra draft the "
+            "skills. A seed script has no hiring team to save a SWOT for it."
         )
-    ok, reason = ppi.matrix_is_complete(
-        list(rows), job.assessment_grade, job.role_classification
-    )
-    if not ok:
-        return f"INCOMPLETE, left pending: {reason}"
+    problems = skills.validate_for_save(list(rows))
+    if problems:
+        return "INCOMPLETE, left pending: " + " ".join(problems)
     if dry_run:
-        return f"would approve ({len(rows)} competencies)"
+        return f"would approve ({len(rows)} skills)"
 
     job.framework_approved_at = datetime.now(timezone.utc)
-    # Mirrors api/assessments._refresh_setup_status, which is the one place that
-    # normally moves this column. Kept in step by hand here because importing an
-    # API-layer helper into a script would drag its request dependencies along.
-    job.assessment_status = "ready_for_candidates"
-    await session.flush()
-    return f"approved ({len(rows)} competencies)"
+    job.assessment_context_json = {
+        "role_summary": "",
+        "generated_by": "seed_demo_applications",
+    }
+    await skills.refresh_setup_status(session, job)
+    return f"approved ({len(rows)} skills)"
 
 
 async def _run(dry_run: bool, rank: bool) -> int:

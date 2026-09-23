@@ -105,8 +105,9 @@ class JobSwotIntake(Base, UUIDPKMixin, CreatedAtMixin):
     situation_confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
-    #: `swot_quality.HIGH_VALUE_PROBES` keys already put to the manager. §18.3's
-    #: seven, asked once each and in order.
+    #: The §18.3 probe keys already put to the manager, as the retired intake
+    #: conversation stored them. History only: the intake and its quality
+    #: module are deleted and nothing writes this column.
     probes_asked: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
@@ -114,7 +115,7 @@ class JobSwotIntake(Base, UUIDPKMixin, CreatedAtMixin):
     #: accepts it, and NULL means the question has not been put -- which is a
     #: different state from "no" and must never be read as a pass.
     best_performer_excluded: Mapped[bool | None] = mapped_column(Boolean)
-    #: The last `swot_quality.review` verdict, as `QualityReport.as_dict()`.
+    #: The retired intake's last quality verdict. History only.
     quality_json: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )

@@ -502,30 +502,11 @@ async def create_job(
     if body.publish:
         # Databank matching runs the moment a job is published (FR-4.2), async.
         dispatch("pickready.run_matching", args=[str(job.id)])
-    # The PPI framework is generated from the JD as soon as the JD exists; it
-    # does not wait for publish, so an unpublished draft is never the thing
-    # holding up the assessment.
-    #
-    # This enqueue is now BACKED UP by `pickready.reconcile_job_setup` on the
-    # beat schedule. It used to be the only attempt the job ever got, and when
-    # it failed -- a broker hiccup, an exhausted retry budget, an exception in
-    # the technical-bank half that used to share this task -- the job was
-    # silently unusable forever. Nineteen live jobs were in exactly that state.
-    # NOT ENQUEUED HERE ANY MORE (2026-08-29). Sutra compiles the Tatva matrix
-    # from the Job SWOT Analysis document; at job creation that does not exist,
-    # so a task fired here would refuse on every job the moment it ran. The
-    # compile is enqueued when the SWOT document lands
-    # (`api/assessments._enqueue_matrix_from_swot`, on generate, save and
-    # restore), which is the event that actually produces its input, and
-    # `pickready.reconcile_job_setup` sweeps for a job whose SWOT exists and
-    # whose matrix never landed.
-    # The two halves of job setup are generated IN PARALLEL (spec §10): the PPI
-    # matrix from the JD and the SWOT document, the Matching category list from
-    # the JD. Two tasks rather than one, and that split is not stylistic. A
-    # single task that generated both would take the gating half down with any
-    # failure in the other, which is the exact coupling that left nineteen live
-    # jobs with a stamped timestamp and no framework.
-    dispatch("pickready.generate_matching_categories", args=[str(job.id)])
+    # Nothing about the skills or the matching is dispatched at creation any
+    # more (Vivekium release). The skills draft starts when the team first
+    # saves the Job SWOT (`skills.after_swot_saved`), which is the event that
+    # produces its input, and `pickready.reconcile_job_setup` repairs a draft
+    # that never landed. The Matching category list is gone with its editor.
     # Load the GENERATED posting-window columns before serialising. The mapper
     # asks for them via RETURNING (models/job.eager_defaults), but a direct
     # publish re-stamps `posting_start_date` after the INSERT, which expires

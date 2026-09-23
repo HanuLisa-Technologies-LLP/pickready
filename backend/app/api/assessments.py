@@ -1,12 +1,11 @@
-"""Job setup review, the unified conversation, and the PPI Assessment Report."""
+"""The Job SWOT routes, the PPI Assessment Report and the transcript view."""
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -36,16 +35,10 @@ from app.models.job_setup import (
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.assessments import (
-    BulkCompetencyIn,
-    CompetencyIn,
-    CompetencyOut,
     ClaimEvidenceOut,
     DimensionOut,
-    FrameworkOut,
     FunctionalReportOut,
     GapAnalysisOut,
-    JobSetupOut,
-    MatrixReorderIn,
     RadarChartOut,
     SwotAnalysisGenerateIn,
     SwotAnalysisOut,
@@ -61,19 +54,16 @@ from app.schemas.assessments import (
 # halves are bound by the same rule: no bucket name and no object key.
 from app.services import capabilities as caps
 from app.services import rbac
-from app.services.assessment_questions import budget as question_budget
-from app.services.hiring import pipeline_halt, scorecard
 from app.services import (
+    assessment_contract,
     evidence_confidence,
-    hiring_pipeline,
     job_assessment_retention,
     ppi,
     ppi_interview,
     reference_code,
     retention_consent,
+    skills,
     swot_analysis,
-    job_version,
-    tenant_cache,
 )
 # DUAL-MODE ASSESSMENT (2026-09-05 spec). The video package is reached ONLY by
 # these routes and the processing task, never by a scorer; the models carry the
@@ -81,7 +71,7 @@ from app.services import (
 from app.services.assessment_formats import rendering as format_rendering
 from app.services.assessment_formats import scoring as format_scoring
 from app.services.assessment_formats import types as question_types
-from app.services.audit import audit, record_action, record_agent_action
+from app.services.audit import record_action
 # PROCTORING IS MANDATORY (proctoring-spec-doc.md, principle P4). The gate is
 # this module's only import-time dependency on the proctoring package; the
 # behaviour recorder and the report loader are reached inside the handlers
@@ -96,14 +86,13 @@ from app.services.functional_assessment import (
     rating_label,
 )
 from app.services.rating import GRADES, grade_for_percent
-from app.workers.dispatch import dispatch
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-READY_FOR_CANDIDATES = "ready_for_candidates"
-PENDING_REVIEW = "questions_pending_review"
+READY_FOR_CANDIDATES = skills.READY_FOR_CANDIDATES
+PENDING_REVIEW = skills.PENDING_REVIEW
 
 
 async def _staff_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID) -> Job:
@@ -113,809 +102,15 @@ async def _staff_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID
     return job
 
 
-async def _refresh_setup_status(session: AsyncSession, job: Job) -> None:
-    """A job is open to candidates once the PPI FRAMEWORK is approved.
-
-    CHANGED 2026-08-04: the technical question bank stopped gating anything. It
-    used to be the other half of this condition, and a job stayed at
-    `questions_pending_review` until a recruiter pressed Finalize on it.
-
-    CHANGED 2026-08-06: the bank stopped EXISTING. Technical questions are
-    written per candidate during the conversation, so there is no per-job list
-    for anyone to approve.
-
-    The FRAMEWORK review is deliberately KEPT through both changes, and the
-    reason is the same one each time. The framework is the fixed evaluation
-    criteria every candidate on this job is graded against, it is frozen once
-    anyone has been assessed, and a report states a grade against those exact
-    criteria. A human confirming it is the product's only comparability
-    guarantee. A technical question carried no such promise even when it was
-    stored: it is scored against its own rubric, so a weak one costs one item on
-    one report rather than making two reports incomparable.
-
-    `questions_approved_at` is left on the model and is now written by NOTHING
-    -- the route that stamped it went with the bank. It is deliberately not
-    dropped in the same change that stopped using it, so a rollback needs no
-    data restore, and `_setup_out` reports the framework's state under that name
-    so a client still reading the old field cannot conclude a ready job is
-    unready.
-    """
-    #: CHANGED (Draft v4): the setup session has TWO halves and the job is open
-    #: to candidates only when both are finalised (spec §10). The PPI matrix is
-    #: what every candidate is graded against; the Matching category list is what
-    #: every sourced resume is ranked against, and a job whose categories were
-    #: never confirmed would rank its whole pipeline against a list nobody read.
-    #:
-    #: The SWOT intake is deliberately NOT a third condition. It is an INPUT to
-    #: the matrix, so an intake nobody completed shows up here as a matrix nobody
-    #: approved; making it its own gate would give one problem two error messages
-    #: and two places to fix it.
-    ready = (
-        job.framework_approved_at is not None
-        and job.matching_categories_finalized_at is not None
-    )
-    target = READY_FOR_CANDIDATES if ready else PENDING_REVIEW
-    if job.assessment_status != target:
-        job.assessment_status = target
-    await session.flush()
-
-
-def _setup_out(
-    job: Job, *, framework_pending: bool = False, swot_analysis_ready: bool = False
-) -> JobSetupOut:
-    approved = job.framework_approved_at is not None
-    return JobSetupOut(
-        job_id=job.id,
-        status=job.assessment_status,
-        grade=job.assessment_grade,
-        # Deprecated, and deliberately MIRRORS the framework rather than
-        # reporting `questions_approved_at`. That column tracked the technical
-        # bank, which no longer exists; a client still reading this field would
-        # otherwise see False forever on every job and hide the invite control
-        # on a job that is perfectly ready.
-        questions_approved=approved,
-        framework_approved=approved,
-        matching_categories_finalized=job.matching_categories_finalized_at is not None,
-        swot_analysis_ready=swot_analysis_ready,
-        ready_for_candidates=job.assessment_status == READY_FOR_CANDIDATES,
-        generated_at=job.framework_generated_at,
-        approved_at=job.framework_approved_at,
-        framework_pending=framework_pending,
-    )
-
-
-async def _framework_repair_pending(session: AsyncSession, job: Job) -> bool:
-    """Whether this job has no usable matrix, enqueueing Sutra if it can run.
-
-    WHY THIS EXISTS
-    ---------------
-    Framework generation was fire-and-forget at job creation and nothing ever
-    checked it landed. Measured on the live database 2026-08-06: 19 of 35 jobs
-    carried `framework_generated_at` and had ZERO competency rows. Three whole
-    tenants were in that state for every one of their jobs, which is what "the
-    portal does not work for other companies" actually was -- a recruiter opened
-    the setup screen, saw an empty list, had nothing to approve, and so no
-    candidate on any of those jobs could ever be assessed.
-
-    Worse, the stamp made it invisible. `remind_unapproved_technical_questions`
-    chases jobs where `framework_generated_at IS NOT NULL`, so a job that never
-    produced rows was excluded from the very reminder meant to catch it. A
-    timestamp was being treated as evidence that work happened, which is the
-    exact failure this repo has a standing rule about.
-
-    Sutra now reads the saved Job SWOT document. A historic intake completion
-    stamp is not evidence that the document exists, so check the actual row.
-    """
-    rows = await ppi.load_framework(session, job.id)
-    if rows:
-        return False
-    # A MATRIX A HUMAN EMPTIED IS NOT A MATRIX THAT WAS NEVER WRITTEN, and the
-    # ACTIVE rows alone cannot tell them apart -- deletion here is soft, so both
-    # states read as zero. Asked of the active rows only, this told a hiring
-    # manager who had just cleared the generated items "we are still preparing
-    # the evaluation criteria ... refresh the page shortly" and re-enqueued
-    # Sutra, which would have put the items they had deliberately removed back.
-    # One row of any kind is proof the generator landed, so from here the real
-    # blocker -- "Must-have has no items" -- is what they are told.
-    ever = (
-        await session.execute(
-            select(JobCompetency.id).where(JobCompetency.job_id == job.id).limit(1)
-        )
-    ).scalars().first()
-    if ever is not None:
-        return False
-    analysis = await swot_analysis.get(session, job)
-    if analysis is None or not analysis.has_content:
-        return False
-    dispatch(
-        "pickready.compile_tatva_matrix",
-        args=[str(job.id)],
-        kwargs={"correlation_id": job.correlation_id or ""},
-    )
-    logger.info("assessments.matrix_compile_enqueued job_id=%s", job.id)
-    return True
-
-
-@router.get("/jobs/{job_id}/setup", response_model=JobSetupOut)
-async def job_setup(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> JobSetupOut:
-    job = await _staff_job(session, user, job_id)
-    analysis = await swot_analysis.get(session, job)
-    return _setup_out(
-        job,
-        framework_pending=await _framework_repair_pending(session, job),
-        swot_analysis_ready=bool(analysis and analysis.has_content),
-    )
-
-
-# ── The technical question bank: REMOVED 2026-08-06 ──────────────────────────
+# ── Job setup: the Tatva matrix editor is DELETED (Vivekium release) ────────
 #
-# Five routes lived here: GET/POST/PUT/DELETE `/jobs/{id}/questions` and
-# `POST /jobs/{id}/finalize`. They were the Company Portal's preset technical
-# bank -- a per-job list of stored strings a company authored, edited and
-# finalised, which every applicant to that job then read verbatim.
-#
-# The feature is withdrawn. Technical questions are written per candidate,
-# during the conversation, from the JD, that candidate's resume and everything
-# said so far (`services/technical_interview`). There is nothing on a job to
-# create, edit, store or assign, so there is no route.
-#
-# They are DELETED rather than left returning 410. A route that answers is a
-# route a client keeps calling, and the frontend screens behind these went in
-# the same change; a 404 from an unregistered path is the honest answer to a
-# request for a feature that does not exist.
-#
-# `job.questions_approved_at` is still stamped on nothing and read by nothing.
-# It was already inert before this change (2026-08-04 stopped it gating
-# anything) and is deliberately not dropped here, so a rollback needs no data
-# restore.
-
-
-# ── The PPI framework (spec §6.2, §6.3) ──────────────────────────────────────
-
-
-def _competency_out(row: JobCompetency) -> CompetencyOut:
-    """One matrix item as the review screen reads it.
-
-    THE SEVEN STAGES TRAVEL; THE ARITHMETIC DOES NOT. `weight`, the four
-    multiplier terms and `threshold` stay on the row. What crosses is the
-    plain-language provenance and the force-ranking POSITION, which is an order
-    rather than a score. spec-doc6 §4.3 asks for the traceability to be shown
-    "in plain language before finalisation", and a table of multipliers is not
-    plain language: a hiring manager confirming "1.4850" is confirming that the
-    arithmetic looks plausible.
-    """
-    item = scorecard.item_from_row(row)
-    return CompetencyOut(
-        id=row.id,
-        category=row.category,
-        name=row.name,
-        description=row.description,
-        # A number never crosses this boundary, not even the job's own
-        # requirement level: the client reads and writes the same four words.
-        required_level=grade_for_percent(row.required_level) or GRADES[1],
-        ordinal=row.ordinal,
-        observable_evidence=row.observable_evidence,
-        assessment_method=row.assessment_method,
-        disqualifier=row.disqualifier,
-        swot_origin=row.swot_origin,
-        provenance=scorecard.plain_provenance(item) if item is not None else [],
-    )
-
-
-#: Shown when a job has no framework at all and one has just been enqueued.
-#: Distinct from `framework_is_complete`'s reasons, which describe a framework
-#: that EXISTS and is short of a category minimum. An empty list means the
-#: generator has not landed, and telling a recruiter "add at least 5 Primary
-#: Skills" in that state sends them to hand-build 15 competencies the product
-#: was supposed to write for them.
-FRAMEWORK_PREPARING = (
-    "We are still preparing the evaluation criteria for this role. This "
-    "normally takes under a minute. Refresh the page shortly."
-)
-
-
-async def _framework_out(
-    session: AsyncSession, job: Job, *, pending: bool | None = None
-) -> FrameworkOut:
-    rows = await ppi.load_framework(session, job.id)
-    ok, reason = ppi.matrix_is_complete(
-        rows, job.assessment_grade, job.role_classification
-    )
-    if not rows and pending:
-        reason = FRAMEWORK_PREPARING
-    return FrameworkOut(
-        job_id=job.id,
-        status=job.assessment_status,
-        approved=job.framework_approved_at is not None,
-        competencies=[_competency_out(row) for row in rows],
-        maximum_items=question_budget.max_questions(job.assessment_grade, job.role_classification),
-        # Computed from what the matrix holds RIGHT NOW rather than read from
-        # `job.question_target`, which is stamped at generation. The Hiring
-        # Manager is mid-edit on this screen and needs to see what the matrix in
-        # front of them would cost a candidate, not what the generated one did.
-        question_target=question_budget.resolve_question_target(
-            job.assessment_grade, len(rows), job.role_classification
-        ),
-        question_range=list(
-            question_budget.resolve_question_range(
-                job.assessment_grade, len(rows), job.role_classification
-            )
-        ),
-        minimum_per_category=ppi.MINIMUM_PER_CATEGORY,
-        blocking_reason=None if ok else reason,
-    )
-
-
-@router.get("/jobs/{job_id}/framework", response_model=FrameworkOut)
-async def get_framework(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> FrameworkOut:
-    job = await _staff_job(session, user, job_id)
-    # Self-healing read. See `_framework_repair_pending`: a job whose generator
-    # never landed used to render as an empty framework indistinguishable from a
-    # finished one, and nothing anywhere retried.
-    cache_key = f"pickready:tenant:{job.tenant_id}:job_competencies:{job.id}"
-    cached = await tenant_cache.get_json(cache_key)
-    if cached is not None:
-        return FrameworkOut.model_validate(cached)
-    pending = await _framework_repair_pending(session, job)
-    output = await _framework_out(session, job, pending=pending)
-    await tenant_cache.set_json(cache_key, output.model_dump(mode="json"), ttl=120)
-    return output
-
-
-async def _invalidate_framework(job: Job) -> None:
-    await tenant_cache.delete(
-        f"pickready:tenant:{job.tenant_id}:job_competencies:{job.id}"
-    )
-
-
-def _reject_culture(name: str) -> None:
-    if ppi.is_forbidden_competency(name):
-        raise HTTPException(status_code=422, detail=ppi.FORBIDDEN_COMPETENCY_DETAIL)
-
-
-# ── Adding a name back that was removed ─────────────────────────────────────
-#
-# DELETION HERE IS SOFT AND THE UNIQUE CONSTRAINT IS NOT.
-#
-# `remove_competency` sets `is_active = False` rather than issuing a DELETE,
-# because a generated candidate question may already reference the row.
-# `uq_job_competency_name` is on (job_id, category, name) with NO predicate, so
-# a name the recruiter removed a minute ago still occupies its slot. Inserting
-# it again therefore raised `UniqueViolationError` and the route answered 500.
-#
-# Measured in pilot on 2026-09-20: a hiring manager cleared the six generated
-# Must-have items, pasted their own five, and got "API error 500" twice with
-# nothing on the screen explaining it. The paste is the product's normal way in
-# and the deleted rows were invisible, so from their seat the form simply did
-# not work. The bulk route had NO test of any kind, which is why it shipped.
-#
-# The row is REVIVED instead. And a name already sitting in the aspect is
-# returned UNTOUCHED rather than refused: a paste of thirty skills where two
-# are already present must not discard the other twenty-eight, and the caller's
-# intent -- "this aspect should contain these names" -- is already satisfied
-# for those two. Nothing is silently dropped, because every requested name is
-# in the response and in the matrix afterwards; what is deliberately NOT done
-# is overwrite an existing item's required level from a paste, since that would
-# quietly restate a criterion the reviewer had already set.
-
-
-async def _rows_by_name(
-    session: AsyncSession, job_id: uuid.UUID, category: str, names: list[str]
-) -> dict[str, JobCompetency]:
-    """Every row holding one of these names in this aspect, ACTIVE OR NOT."""
-    if not names:
-        return {}
-    rows = (
-        await session.execute(
-            select(JobCompetency).where(
-                JobCompetency.job_id == job_id,
-                JobCompetency.category == category,
-                JobCompetency.name.in_(names),
-            )
-        )
-    ).scalars().all()
-    return {row.name: row for row in rows}
-
-
-def _revive(
-    row: JobCompetency,
-    *,
-    description: str | None,
-    required_level: int,
-    ordinal: int,
-) -> JobCompetency:
-    """Bring a soft-deleted row back as the entry the caller just asked for.
-
-    The stages Sutra derived (`dimension`, `weight`, `provenance_json`, ...) are
-    deliberately left ALONE. They describe a criterion the pipeline derived, and
-    the name coming back is the same name; clearing them would turn a revived
-    item into one with no provenance, and inventing new ones would claim a
-    derivation that did not run.
-    """
-    row.is_active = True
-    row.description = description
-    row.required_level = required_level
-    row.ordinal = ordinal
-    row.updated_at = datetime.now(timezone.utc)
-    return row
-
-
-def _invalidate_derived_criterion(row: JobCompetency) -> None:
-    """A changed human decision needs fresh technical evidence at Save Matrix.
-
-    The draft remains editable and readable. Clearing the derived fields makes
-    stale evidence impossible to mistake for evidence of the new name/category.
-    Save Matrix derives them in the same transaction as the freeze.
-
-    `swot_origin` IS CLEARED HERE, AND IT IS THE ONE THAT WOULD HAVE LIED.
-    It carries the reporting authority's own SWOT sentence, and
-    `scorecard.plain_provenance` renders it to the reviewer verbatim as
-    `You said: "..."`. It is NOT cleared by `_revive`, and the difference is
-    the whole point: a revived row is the SAME name coming back, so the
-    sentence still refers to it. A rename is a different criterion wearing the
-    row's identity, and carrying the sentence across would attribute
-    "Kubernetes operations" to a criterion now called "Incident command" --
-    a fabricated citation on the one screen this whole contract exists to make
-    trustworthy. Enrichment re-derives from the human's name with no SWOT
-    anchor, which is an honest absence rather than a borrowed one.
-    """
-    row.dimension = None
-    row.observable_evidence = None
-    row.evidence_sources = None
-    row.assessment_method = None
-    row.weight = None
-    row.threshold_json = None
-    row.disqualifier = None
-    row.provenance_json = None
-    row.anchor_key = None
-    row.force_rank = None
-    row.swot_origin = None
-    # `description` IS THE MIRROR OF `observable_evidence`, so it goes with it.
-    #
-    # The 2026-09-20 ruling removed the description input from the add and the
-    # edit controls, and the edit route echoes the STORED value back so that a
-    # field missing from a form is not a field erased from the record. That
-    # protects against erasure caused by the form. It does not make the text
-    # survive a change of identity: what a competency MEANS is derived from its
-    # name, so the sentence describing "Kubernetes operations" is not a
-    # description of "Incident command". Leaving the mirror populated while its
-    # source is NULL is two fields that must agree, disagreeing, and the one a
-    # reviewer actually reads on the card is the stale one. Enrichment writes
-    # both again from the human's name at Save Matrix.
-    row.description = None
-
-
-async def _next_ordinal(
-    session: AsyncSession, job_id: uuid.UUID, category: str
-) -> int:
-    return (
-        await session.execute(
-            select(func.coalesce(func.max(JobCompetency.ordinal), 0)).where(
-                JobCompetency.job_id == job_id, JobCompetency.category == category
-            )
-        )
-    ).scalar_one() + 1
-
-
-def _reject_frozen(job: Job) -> None:
-    """A saved framework is the job's fixed evaluation criteria (spec §6.3).
-
-    Editing it after candidates have been graded against it would make two
-    reports on the same job incomparable, which is the one property the
-    framework exists to guarantee. Reopening is a deliberate act: unfinalize,
-    which is refused once any candidate has been assessed.
-    """
-    if job.framework_approved_at is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "This framework has been saved and is now the fixed evaluation "
-                "criteria for the job. Reopen it for editing before making changes."
-            ),
-        )
-
-
-@router.post("/jobs/{job_id}/framework", response_model=CompetencyOut, status_code=status.HTTP_201_CREATED)
-async def add_competency(
-    job_id: uuid.UUID,
-    body: CompetencyIn,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> CompetencyOut:
-    job = await _staff_job(session, user, job_id)
-    _reject_frozen(job)
-    if body.category == ppi.CATEGORY_BEHAVIOURAL:
-        _reject_culture(body.name)
-    existing = (
-        await _rows_by_name(session, job.id, body.category, [body.name])
-    ).get(body.name)
-    if existing is not None and existing.is_active:
-        # Already exactly what was asked for. See `_rows_by_name`.
-        return _competency_out(existing)
-    ordinal = await _next_ordinal(session, job.id, body.category)
-    if existing is not None:
-        row = _revive(
-            existing,
-            description=body.description,
-            required_level=ppi.required_level_score(body.required_level),
-            ordinal=ordinal,
-        )
-    else:
-        row = JobCompetency(
-            tenant_id=job.tenant_id,
-            job_id=job.id,
-            category=body.category,
-            name=body.name,
-            description=body.description,
-            required_level=ppi.required_level_score(body.required_level),
-            ordinal=ordinal,
-        )
-        session.add(row)
-    await session.flush()
-    await _invalidate_framework(job)
-    return _competency_out(row)
-
-
-@router.post(
-    "/jobs/{job_id}/framework/bulk",
-    response_model=list[CompetencyOut],
-    status_code=status.HTTP_201_CREATED,
-)
-async def add_competencies_bulk(
-    job_id: uuid.UUID,
-    body: BulkCompetencyIn,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> list[CompetencyOut]:
-    """Add a pasted list atomically, preserving order and removing duplicates."""
-    job = await _staff_job(session, user, job_id)
-    _reject_frozen(job)
-    names = list(dict.fromkeys(name.strip() for name in body.names if name.strip()))
-    if not names:
-        raise HTTPException(status_code=422, detail="Add at least one name.")
-    if body.category == ppi.CATEGORY_BEHAVIOURAL:
-        for name in names:
-            _reject_culture(name)
-    level = ppi.required_level_score(body.required_level)
-    existing = await _rows_by_name(session, job.id, body.category, names)
-    ordinal = await _next_ordinal(session, job.id, body.category) - 1
-    rows: list[JobCompetency] = []
-    for name in names:
-        found = existing.get(name)
-        if found is not None and found.is_active:
-            # Already in this aspect. Returned so the caller sees the whole
-            # requested set, and left untouched so a paste cannot restate a
-            # level the reviewer set deliberately. See `_rows_by_name`.
-            rows.append(found)
-            continue
-        ordinal += 1
-        if found is not None:
-            rows.append(
-                _revive(found, description=None, required_level=level, ordinal=ordinal)
-            )
-            continue
-        fresh = JobCompetency(
-            tenant_id=job.tenant_id,
-            job_id=job.id,
-            category=body.category,
-            name=name,
-            required_level=level,
-            ordinal=ordinal,
-        )
-        session.add(fresh)
-        rows.append(fresh)
-    await session.flush()
-    await _invalidate_framework(job)
-    return [_competency_out(row) for row in rows]
-
-
-@router.put("/jobs/{job_id}/framework/{competency_id}", response_model=CompetencyOut)
-async def update_competency(
-    job_id: uuid.UUID,
-    competency_id: uuid.UUID,
-    body: CompetencyIn,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> CompetencyOut:
-    job = await _staff_job(session, user, job_id)
-    _reject_frozen(job)
-    row = await session.get(JobCompetency, competency_id)
-    if row is None or row.job_id != job.id:
-        raise HTTPException(status_code=404, detail="Competency not found")
-    if body.category == ppi.CATEGORY_BEHAVIOURAL:
-        _reject_culture(body.name)
-    # The same slot `_rows_by_name` exists for: renaming an item onto a name
-    # that aspect already holds -- including one only soft-deleted, which the
-    # reviewer cannot see -- violates `uq_job_competency_name`. Refused with the
-    # reason rather than left to surface as a 500.
-    clash = (await _rows_by_name(session, job.id, body.category, [body.name])).get(
-        body.name
-    )
-    if clash is not None and clash.id != row.id:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f'"{body.name}" is already an entry under '
-                f"{ppi.CATEGORY_LABELS[body.category]} on this job."
-            ),
-        )
-    # The identity question is asked BEFORE the assignment, and the
-    # invalidation happens AFTER it, so the edit form's own echo of the stored
-    # description cannot survive a rename it no longer describes.
-    reidentified = row.name != body.name or row.category != body.category
-    row.category = body.category
-    row.name = body.name
-    row.description = body.description
-    row.required_level = ppi.required_level_score(body.required_level)
-    if reidentified:
-        _invalidate_derived_criterion(row)
-    row.updated_at = datetime.now(timezone.utc)
-    await session.flush()
-    await _invalidate_framework(job)
-    return _competency_out(row)
-
-
-@router.delete("/jobs/{job_id}/framework/{competency_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def remove_competency(
-    job_id: uuid.UUID,
-    competency_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> None:
-    job = await _staff_job(session, user, job_id)
-    _reject_frozen(job)
-    row = await session.get(JobCompetency, competency_id)
-    if row is None or row.job_id != job.id:
-        raise HTTPException(status_code=404, detail="Competency not found")
-    # Soft delete: a generated candidate question may already reference it.
-    row.is_active = False
-    row.updated_at = datetime.now(timezone.utc)
-    await session.flush()
-    await _invalidate_framework(job)
-
-
-@router.post("/jobs/{job_id}/framework/finalize", response_model=FrameworkOut)
-async def finalize_framework(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(
-        rbac.require_authorized(caps.FINALIZE_ROLE_DEFINITION)
-    ),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> FrameworkOut:
-    """The Hiring Manager finalises the role definition (RBAC §12, §20).
-
-    THIS IS THE ONE HUMAN ACT THE WHOLE PIPELINE TURNS ON. From here the matrix
-    is what EVERY candidate on this job is graded against, `_reject_frozen`
-    refuses to reopen it once anyone has been, and gate G1 starts answering yes.
-
-    RBAC §20 makes it an EXPLICIT transition and says what it has to record:
-    the user who finalized it, the timestamp and the relevant criteria version.
-    All three are written -- two onto the job, one onto the append-only
-    scorecard binding -- and then again onto the audit row, because the columns
-    answer "what is in force" and the audit row answers "what happened and who
-    did it".
-
-    Authorised through `rbac.require_authorized` rather than
-    `require_capability`, and the difference is the point: this route names a
-    resource, so tenant, job assignment (RBAC §10.2: each job has exactly one
-    Hiring Manager) and lifecycle state all apply. The check runs BEFORE the
-    handler, so a refusal has not already read the criteria it was refusing to
-    show.
-    """
-    job = await _staff_job(session, user, job_id)
-    try:
-        matrix = await scorecard.freeze(
-            session,
-            job,
-            actor_user_id=user.user_id,
-            correlation_id=job.correlation_id,
-        )
-    except scorecard.ScorecardInputMissing as missing:
-        raise HTTPException(status_code=422, detail=missing.detail) from missing
-    except pipeline_halt.PipelineHalted as halt:
-        raise HTTPException(
-            status_code=503, detail=pipeline_halt.http_detail(halt)
-        ) from halt
-
-    # RBAC §17's explicit transition. IN_REVIEW -> FINALIZED, and it is the only
-    # way into FINALIZED, which is what makes §21's publish precondition
-    # checkable: `rbac._state_rules` refuses PUBLISH_JOB in any earlier state.
-    job.lifecycle_state = hiring_pipeline.JobLifecycleState.FINALIZED.value
-    job.finalized_by = user.user_id
-    job.finalized_at = matrix.approved_at
-    job.criteria_version = matrix.version
-    await _refresh_setup_status(session, job)
-    rows = await ppi.load_framework(session, job.id)
-    # Every column in the one INSERT: the application role has no UPDATE grant
-    # on audit_log, so a post-flush attribute write aborts the transaction at
-    # commit, after the response has already left (the SWOT false-409 bug).
-    await record_action(
-        session,
-        action="role_definition_finalized",
-        actor_user_id=user.user_id,
-        actor_role=user.role.value,
-        tenant_id=user.tenant_id,
-        resource_type="job",
-        resource_id=job.id,
-        job_id=job.id,
-        correlation_id=job.correlation_id,
-        new_state={"lifecycle_state": job.lifecycle_state},
-        metadata={
-            "counts": {
-                category: sum(1 for item in rows if item.category == category)
-                for category in ppi.CATEGORIES
-            },
-            # RBAC §20's required facts, in the row as well as the columns.
-            "jd_version": job_version.jd_version(job),
-            "criteria_version": matrix.version,
-            "situation_key": matrix.situation_key,
-        },
-    )
-    await _invalidate_framework(job)
-    logger.info(
-        "assessments.role_definition_finalized job_id=%s by=%s criteria_version=%d "
-        "correlation_id=%s",
-        job.id,
-        user.user_id,
-        matrix.version,
-        job.correlation_id,
-    )
-    return await _framework_out(session, job)
-
-
-@router.post("/jobs/{job_id}/framework/reopen", response_model=FrameworkOut)
-async def reopen_framework(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> FrameworkOut:
-    """Reopen a saved framework for editing, and close the job to new
-    conversations while it is open.
-
-    REFUSED ONCE AN ASSESSMENT CONTRACT HAS BEEN ISSUED, AND NOT BEFORE.
-
-    The test is whether any candidate on this job has been INVITED, which is
-    what an `assessment_conversations` row is, or has had per-candidate
-    questions written against the frozen matrix. Either one means a person is
-    being measured against these exact criteria, and a report is immutable, so
-    changing the criteria underneath them would make two reports on one job
-    incomparable. That is the one property the freeze exists to guarantee.
-
-    IT IS DELIBERATELY NOT "ANY LINKED CANDIDATE". Applying is not being
-    assessed: a `job_candidate_links` row is created by an application, a
-    sourced upload or a databank import, none of which reads a competency. A
-    guard on the link would stop a hiring manager correcting a typo the moment
-    the first CV arrives, on a job nobody has been invited to, and there is no
-    reopen after that. Somebody who applies before a revision and is invited
-    after it is assessed against the revision, which is the currently approved
-    contract and the only one that was ever used on them.
-
-    AND IT IS DELIBERATELY NOT "ANY REPORT", WHICH IS WHAT IT USED TO BE. A
-    report exists only at the END of an assessment, so between invitation and
-    synthesis the matrix was reopenable underneath a candidate who was already
-    answering questions derived from it. Their questions came from one version
-    and their grade would have been written against another, with nothing
-    recording that it had happened.
-    """
-    job = await _staff_job(session, user, job_id)
-    contracted = (
-        await session.execute(
-            select(
-                select(func.count())
-                .select_from(AssessmentConversation)
-                .where(AssessmentConversation.job_id == job.id)
-                .scalar_subquery()
-                + select(func.count())
-                .select_from(CandidateQuestion)
-                .where(CandidateQuestion.job_id == job.id)
-                .scalar_subquery()
-            )
-        )
-    ).scalar_one()
-    if contracted:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Candidates on this job have already been invited to an "
-                "assessment against these criteria, so the matrix can no "
-                "longer be changed. A report states a grade against the exact "
-                "criteria it was written from and is never rewritten."
-            ),
-        )
-    job.framework_approved_at = None
-    await _refresh_setup_status(session, job)
-    await audit(
-        session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
-        action="ppi_framework_reopened",
-        target_type="job",
-        target_id=job.id,
-    )
-    await _invalidate_framework(job)
-    return await _framework_out(session, job)
-
-
-# ── Drag-and-drop reordering of the matrix (spec §5.3) ───────────────────────
-
-
-@router.post("/jobs/{job_id}/framework/reorder", response_model=FrameworkOut)
-async def reorder_framework(
-    job_id: uuid.UUID,
-    body: MatrixReorderIn,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> FrameworkOut:
-    """Apply one drag-and-drop gesture: reorder within an aspect, or move an
-    item between Must-have and Nice-to-have.
-
-    ONE route for both, because to the person dragging they are one gesture, and
-    a UI that had to guess which of two endpoints a drop belonged to would guess
-    wrong at exactly the boundary the feature exists to cross.
-
-    The client sends each changed aspect's WHOLE ordered list. That is
-    idempotent, it always describes a state a human actually looked at, and it
-    means a dropped or retried request cannot leave the matrix in an order
-    nobody chose. An aspect the client did not send is left untouched.
-
-    Behavioural is deliberately not a valid destination for a move. §5.3 offers
-    moving items "between Must-have and Nice-to-have"; a skill dragged into
-    Behavioural would be scored by judgement instead of against a rubric, which
-    silently changes how every candidate on the job is assessed on it.
-    """
-    job = await _staff_job(session, user, job_id)
-    _reject_frozen(job)
-    rows = {row.id: row for row in await ppi.load_framework(session, job.id)}
-
-    moved = 0
-    for group in body.groups:
-        if group.category == ppi.CATEGORY_BEHAVIOURAL and any(
-            rows[competency_id].category != ppi.CATEGORY_BEHAVIOURAL
-            for competency_id in group.competency_ids
-            if competency_id in rows
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "An item can be moved between Must-have and Nice-to-have, but "
-                    "not into Behavioural Competencies. A skill assessed by "
-                    "judgement rather than against a rubric would change how every "
-                    "candidate on this job is graded on it."
-                ),
-            )
-        for ordinal, competency_id in enumerate(group.competency_ids, 1):
-            row = rows.get(competency_id)
-            if row is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail="One of the items in this list is not on this job.",
-                )
-            if row.category != group.category:
-                # No culture check here: the only reachable destinations are
-                # Must-have and Nice-to-have, and the refusal above is what
-                # keeps it that way. A check on a branch that cannot be taken
-                # reads as protection and provides none.
-                _invalidate_derived_criterion(row)
-                row.category = group.category
-                moved += 1
-            row.ordinal = ordinal
-            row.updated_at = datetime.now(timezone.utc)
-
-    await session.flush()
-    await _invalidate_framework(job)
-    logger.info(
-        "assessments.matrix_reordered job_id=%s groups=%d moved=%d",
-        job.id, len(body.groups), moved,
-    )
-    return await _framework_out(session, job)
+# `GET /jobs/{id}/setup`, the `/framework` routes (add, bulk, edit, delete,
+# finalize, reopen, reorder) and the helpers behind them lived here. The matrix
+# editor is gone (owner decision D1): the Skills step replaces it, its service
+# is `services/skills`, Sutra is `services/hiring/sutra`, and what a candidate
+# is assessed against is `services/assessment_contract`. The job-setup routes
+# are rebuilt on those services by the routes package; nothing here reaches
+# the retired compiler, the freeze or the matching categories any more.
 
 
 # ── The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ──
@@ -984,16 +179,19 @@ async def _swot_analysis_out(
     )
 
     previous = dict(row.previous_json or {})
+    # A generation that outlived its window READS as failed, derived and never
+    # written, so the tab can never spin for ever on a lost dispatch.
+    status, generation_error = swot_analysis.effective_status(row)
     return SwotAnalysisOut(
         job_id=job.id,
-        status=row.status,
+        status=status,
         strengths=row.strengths,
         weaknesses=row.weaknesses,
         opportunities=row.opportunities,
         threats=row.threats,
         generated_by=row.generated_by,
         last_generated_at=row.last_generated_at,
-        generation_error=row.generation_error,
+        generation_error=generation_error,
         human_edited=row.human_edited,
         last_modified_at=row.last_modified_at,
         last_modified_by_name=editor_name,
@@ -1003,19 +201,12 @@ async def _swot_analysis_out(
             for name in SWOT_ANALYSIS_SECTIONS
         ),
         can_edit=decision.allowed,
-    )
-
-
-async def _enqueue_matrix_from_swot(session: AsyncSession, job: Job, row: JobSwotAnalysis) -> None:
-    """Start Sutra when a saved SWOT exists and no matrix has been written."""
-    if not row.has_content or job.framework_approved_at is not None:
-        return
-    if await ppi.load_framework(session, job.id):
-        return
-    dispatch(
-        "pickready.compile_tatva_matrix",
-        args=[str(job.id)],
-        kwargs={"correlation_id": job.correlation_id or ""},
+        skills_redraft_available=skills.redraft_available(
+            job,
+            row,
+            locked=await assessment_contract.is_locked(session, job.id),
+            any_row=await skills.has_any_row(session, job.id),
+        ),
     )
 
 
@@ -1036,73 +227,41 @@ async def get_swot_analysis(
     return await _swot_analysis_out(session, user, job, row)
 
 
-@router.post("/jobs/{job_id}/swot-analysis/generate", response_model=SwotAnalysisOut)
+@router.post(
+    "/jobs/{job_id}/swot-analysis/generate",
+    response_model=SwotAnalysisOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def generate_swot_analysis(
     job_id: uuid.UUID,
     body: SwotAnalysisGenerateIn,
     user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> SwotAnalysisOut:
-    """Draft the SWOT with the model. Section 28: generation is the same
-    authority as editing, because both decide what the document says."""
+    """ASK for a SWOT draft. The model runs in `pickready.generate_job_swot`.
+
+    Section 28: generation is the same authority as editing, because both
+    decide what the document says. Answers 202 with the document in the
+    `generating` state; the client re-reads it until the worker has written
+    `generated` or `failed`. Refusals happen BEFORE anything is written: 409
+    over the team's edits without confirmation (the client resolves it by
+    confirming), and 409 with fixed copy when the JD is too thin to draft from.
+    The audit row is written by the worker in one insert, naming Bodha and the
+    person who asked (RBAC 34).
+    """
     job = await _staff_job(session, user, job_id)
     try:
-        row = await swot_analysis.generate(
-            session, job, confirm_overwrite=body.confirm_overwrite
+        row, _handle = await swot_analysis.request_generation(
+            session,
+            job,
+            confirm_overwrite=body.confirm_overwrite,
+            requested_by=user.user_id,
         )
     except swot_analysis.HumanEditsWouldBeLost as exc:
-        # 409, not 403: the caller is authorized and the request is well
-        # formed. What is wrong is the STATE, and the client resolves it by
-        # confirming rather than by acquiring a permission.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except swot_analysis.SwotAnalysisError as exc:
-        # The row now carries `status=failed` and the reason; that write is
-        # part of this transaction and must survive the error response, so the
-        # failure is returned as a document rather than raised past it.
-        failed = await swot_analysis.get_or_create(session, job)
-        out = await _swot_analysis_out(session, user, job, failed)
-        await audit(
-            session,
-            tenant_id=user.tenant_id,
-            actor_user_id=user.user_id,
-            action="job_swot_analysis_generation_failed",
-            target_type="job",
-            target_id=job.id,
-            metadata={"reason": str(exc)},
-        )
-        return out
-
-    row_out = await _swot_analysis_out(session, user, job, row)
-    # ONE INSERT, never an UPDATE. The audit columns (job_id, actor_role,
-    # correlation_id, agent_name) must be set BEFORE the row is flushed:
-    # `audit()` flushes on return, so mutating the returned row afterwards
-    # emits `UPDATE audit_log`, which the app role has REVOKED (0001/0014,
-    # binding since the 2026-09-11 credential split). That UPDATE failed the
-    # COMMIT after the 200 had already been sent, the whole transaction rolled
-    # back, and the client's copy of `version` ran one ahead of the row --
-    # which is exactly the false "Someone else saved this SWOT" 409 on the
-    # next save. `record_agent_action` writes every column in the one INSERT.
-    # RBAC 34: an AI-initiated mutation is attributable to BOTH the human who
-    # asked for it and the agent that executed it. `actor_user_id` stays the
-    # human, always.
-    await record_agent_action(
-        session,
-        action="job_swot_analysis_generated",
-        agent_name="bodha",
-        principal_user_id=user.user_id,
-        principal_role=user.role.value,
-        tenant_id=user.tenant_id,
-        resource_type="job",
-        resource_id=job.id,
-        job_id=job.id,
-        correlation_id=job.correlation_id,
-        metadata={
-            "version": row.version,
-            "replaced_human_edits": bool(body.confirm_overwrite and row.human_edited),
-        },
-    )
-    await _enqueue_matrix_from_swot(session, job, row)
-    return row_out
+    except swot_analysis.SwotInputInsufficient as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return await _swot_analysis_out(session, user, job, row)
 
 
 @router.put("/jobs/{job_id}/swot-analysis", response_model=SwotAnalysisOut)
@@ -1144,7 +303,10 @@ async def save_swot_analysis(
         correlation_id=job.correlation_id,
         metadata={"version": row.version},
     )
-    await _enqueue_matrix_from_swot(session, job, row)
+    # The FIRST save on a job with no skill rows asks Sutra for a draft, after
+    # the commit. Every later save only OFFERS a re-draft
+    # (`skills_redraft_available`); the skills never change silently.
+    await skills.after_swot_saved(session, job, actor_user_id=user.user_id)
     return await _swot_analysis_out(session, user, job, row)
 
 
@@ -1174,7 +336,7 @@ async def restore_swot_analysis(
         correlation_id=job.correlation_id,
         metadata={"version": row.version},
     )
-    await _enqueue_matrix_from_swot(session, job, row)
+    await skills.after_swot_saved(session, job, actor_user_id=user.user_id)
     return await _swot_analysis_out(session, user, job, row)
 
 

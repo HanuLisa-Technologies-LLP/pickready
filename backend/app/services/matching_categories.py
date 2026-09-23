@@ -1,4 +1,13 @@
-"""The Matching Agent's per-job category list (spec §3.2).
+"""The Matching Agent's per-job category list (spec §3.2). NO LONGER GENERATED.
+
+VIVEKIUM RELEASE: the generator (`generate_categories`), its prompt
+(`matching_categories_system`) and its task (`pickready.generate_matching_categories`)
+are DELETED with the Matching Categories editor (owner decision D2: Yukti scores
+a FIXED structure held in backend configuration, and nobody edits categories).
+What remains here is read by the scorer until the Yukti phase replaces it:
+`list_categories`, `resolved_categories`, `load_keys`, the default and legacy
+keys a job with no rows falls back to, and the finalise check the categories
+routes still call until they are deleted.
 
 WHAT CHANGED
 ------------
@@ -39,7 +48,6 @@ anything a determined client cannot post around.
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -48,10 +56,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.job import Job
 from app.models.job_setup import JobMatchingCategory
-from app.prompts import registry
-from app.services import agent_loop, llm_router
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +65,6 @@ __all__ = [
     "DEFAULT_KEYS",
     "MAXIMUM_CATEGORIES",
     "MINIMUM_CATEGORIES",
-    "generate_categories",
     "list_categories",
     "load_keys",
     "resolved_categories",
@@ -176,159 +180,6 @@ async def resolved_categories(
 async def load_keys(session: AsyncSession, job_id: Any) -> tuple[str, ...]:
     """Just the keys, which is what the scorer and the aggregate need."""
     return tuple(key for key, _, _ in await resolved_categories(session, job_id))
-
-
-def _normalise(rows: Any) -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for row in rows if isinstance(rows, list) else []:
-        if not isinstance(row, dict):
-            continue
-        name = " ".join(str(row.get("name") or "").split())[:255]
-        if not name:
-            continue
-        key = slugify(name)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(
-            {
-                "key": key,
-                "name": name,
-                "description": " ".join(str(row.get("description") or "").split())[:1000],
-            }
-        )
-        if len(out) >= MAXIMUM_CATEGORIES:
-            break
-    return out
-
-
-def _default_rows() -> list[dict[str, str]]:
-    return [
-        {"key": key, "name": name, "description": description}
-        for key, name, description in DEFAULT_CATEGORIES
-    ]
-
-
-def _merge_defaults(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Top a short generation up to the minimum, from the defaults.
-
-    Reached when the model returned fewer than five usable categories. Topping
-    up is better than rejecting: the recruiter reviews this list anyway, and a
-    default they choose to delete costs one click, while an empty screen costs
-    them the whole list by hand.
-    """
-    if len(rows) >= MINIMUM_CATEGORIES:
-        return rows
-    have = {row["key"] for row in rows}
-    for default in _default_rows():
-        if len(rows) >= MINIMUM_CATEGORIES:
-            break
-        if default["key"] in have:
-            continue
-        rows.append(default)
-    return rows
-
-
-async def generate_categories(
-    session: AsyncSession, job: Job, *, replace: bool = False
-) -> list[JobMatchingCategory]:
-    """Propose this job's Matching categories and leave them AWAITING REVIEW.
-
-    Idempotent by default: a job that already has categories keeps them, so a
-    redelivery cannot discard a list a recruiter has already edited.
-
-    Never approves anything. `jobs.matching_categories_finalized_at` is stamped
-    only when the recruiter saves, which is the other half of the one setup
-    session (spec §10).
-    """
-    existing = (
-        await session.execute(
-            select(JobMatchingCategory).where(JobMatchingCategory.job_id == job.id)
-        )
-    ).scalars().all()
-    if existing and not replace:
-        return list(existing)
-
-    system = registry.render(
-        "matching_categories_system",
-        defaults="\n".join(
-            f"  {name}: {description}" for _, name, description in DEFAULT_CATEGORIES
-        ),
-        maximum=MAXIMUM_CATEGORIES,
-    )
-    payload = json.dumps(
-        {
-            "title": job.title,
-            "grade": job.assessment_grade,
-            "experience_min_years": job.experience_min_years,
-            "experience_max_years": job.experience_max_years,
-            "jd": job.jd_json,
-            "jd_markdown": (job.jd_markdown or "")[:6000],
-        }
-    )
-
-    async def _execute(reflection: str) -> list[dict[str, str]]:
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": payload},
-        ]
-        if reflection:
-            messages.append({"role": "user", "content": reflection})
-        raw = await llm_router.chat_completion(
-            "jd_generation", messages, response_format_json=True, session=session
-        )
-        return _normalise(json.loads(raw).get("categories", []))
-
-    def _evaluate(candidate: list[dict[str, str]]) -> agent_loop.Critique:
-        if len(candidate) < MINIMUM_CATEGORIES:
-            return agent_loop.reject(
-                f"return at least {MINIMUM_CATEGORIES} categories; the previous "
-                f"attempt returned {len(candidate)}"
-            )
-        missing = [row["name"] for row in candidate if not row["description"]]
-        if missing:
-            return agent_loop.reject(
-                "every category needs a one-line description of what in a resume "
-                "answers it; these had none: " + ", ".join(missing)
-            )
-        return agent_loop.ok()
-
-    result = await agent_loop.run_loop(
-        name="matching_categories",
-        execute=_execute,
-        evaluate=_evaluate,
-        fallback=_default_rows(),
-        max_attempts=agent_loop.BACKGROUND_ATTEMPTS,
-        deadline_seconds=agent_loop.BACKGROUND_DEADLINE,
-        max_generated_tokens=agent_loop.BACKGROUND_TOKEN_BUDGET,
-    )
-    if result.degraded:
-        logger.warning(
-            "matching_categories.degraded job_id=%s reasons=%s",
-            job.id, list(result.reasons),
-        )
-    rows = _merge_defaults(list(result.value or _default_rows()))
-
-    for row in existing:
-        row.is_active = False
-    created = [
-        JobMatchingCategory(
-            tenant_id=job.tenant_id,
-            job_id=job.id,
-            key=row["key"],
-            name=row["name"],
-            description=row["description"] or None,
-            ordinal=ordinal,
-        )
-        for ordinal, row in enumerate(rows, 1)
-    ]
-    session.add_all(created)
-    await session.flush()
-    logger.info(
-        "matching_categories.generated job_id=%s count=%d", job.id, len(created)
-    )
-    return created
 
 
 def categories_are_complete(

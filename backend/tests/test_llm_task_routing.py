@@ -108,6 +108,13 @@ SPEC_B3_ASSIGNMENT = {
     # Sutra -- competency naming, observable-evidence authoring, weight
     # derivation -> the reasoning tier
     "competency_transformation": llm_providers.MODEL_TERRA,
+    # Sutra, simplified (Vivekium release) -- the skills draft JUDGES what the
+    # role needs and the hidden assessment context WRITES what every candidate
+    # is assessed against -> the reasoning tier, both
+    "skills_drafting": llm_providers.MODEL_TERRA,
+    "assessment_context": llm_providers.MODEL_TERRA,
+    # Bodha -- the Job SWOT document -> the reasoning tier (writing)
+    "swot_analysis": llm_providers.MODEL_TERRA,
     # Yukti -- AI Score / category matching -> the extraction tier (must be fast)
     "rerank": llm_providers.MODEL_LUNA,
     # Vaada -- conversation / question generation -> the reasoning tier

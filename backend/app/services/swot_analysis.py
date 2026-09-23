@@ -30,6 +30,27 @@ explicit that the generator must not invent company-specific facts, so the
 prompt is given the material and told to say what the team should establish
 where the material is thin.
 
+GENERATION IS DISPATCHED, AND THE REQUEST ONLY ASKS FOR IT (rule 4)
+--------------------------------------------------------------------
+`request_generation` runs in the request: it refuses over human edits and over
+a JD too thin to analyse (`generation_sufficiency.swot_input_state`), BEFORE
+anything is written, then moves the row to `generating` and hands
+`pickready.generate_job_swot` off to run after the transaction is durable.
+`run_generation` is the worker body: it calls the model WITHOUT holding a lock,
+then locks the row and writes only if nobody saved over it meanwhile, so a
+human save during a generation always wins. A `generating` row older than
+`settings.swot_generation_stale_minutes` READS as failed (`effective_status`),
+derived and never written, so a worker that never reported back cannot leave a
+spinner on the tab for ever.
+
+A SAVED SWOT IS A HUMAN ACT (`is_saved`)
+-----------------------------------------
+The Skills draft and the publish gate both ask whether the team has SAVED the
+SWOT, and a model draft is not that. `is_saved` is derived from the row: the
+content is the team's, either because the last write was theirs (`edited`), or
+because a regeneration was requested or failed over content they wrote and
+left it in place.
+
 FAILURE IS A STATE, NOT AN EXCEPTION THAT REACHES THE USER AS A BLANK PAGE
 ---------------------------------------------------------------------------
 claude.md rule 6 forbids a silent fallback, and a template SWOT presented as
@@ -45,20 +66,25 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from datetime import timedelta
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.models.job import Job
 from app.models.job_setup import (
     SWOT_ANALYSIS_EDITED,
     SWOT_ANALYSIS_FAILED,
     SWOT_ANALYSIS_GENERATED,
+    SWOT_ANALYSIS_GENERATING,
     SWOT_ANALYSIS_NOT_GENERATED,
     SWOT_ANALYSIS_SECTIONS,
     JobSwotAnalysis,
 )
 from app.prompts import registry
-from app.services import llm_router
+from app.services import generation_sufficiency, llm_router
+from app.workers.dispatch import TaskHandle, dispatch_after_commit
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +108,23 @@ class HumanEditsWouldBeLost(RuntimeError):
 
 class VersionConflict(RuntimeError):
     """The document moved under an editor who was holding an older version."""
+
+
+class SwotInputInsufficient(RuntimeError):
+    """The job carries too little to draft a SWOT from. Carries the fixed
+    `EMPTY_STATE_COPY` key and its copy, never model text."""
+
+    def __init__(self, empty_state_key: str) -> None:
+        self.empty_state_key = empty_state_key
+        super().__init__(generation_sufficiency.empty_state_copy(empty_state_key))
+
+
+#: The dispatched worker. Registered in `workers/tasks.py`.
+GENERATE_TASK = "pickready.generate_job_swot"
+
+#: What a reader is told about a generation that never reported back. Fixed
+#: copy, like every other state sentence on this tab.
+STALE_GENERATION_ERROR = "The draft did not finish. Generate it again."
 
 
 # ── Reading and creating the row ────────────────────────────────────────────
@@ -155,10 +198,15 @@ async def build_context(session: AsyncSession, job: Job) -> dict[str, str]:
     elif jd.get("experience_years") is not None:
         experience = f"{jd.get('experience_years')} years"
 
+    from app.services.job_candidates import grade_label  # noqa: PLC0415
+
     return {
         "title": _clean(job.title),
         "department": _clean(job.department),
-        "level": _clean(job.level) or _clean(job.assessment_grade),
+        # The GRADE, never `jobs.level`: `level` is a pre-2026-07-28 free-text
+        # field no form collects any more (Vivekium release, Phase 1). The
+        # grade and the experience band below are what the job states.
+        "grade": grade_label(job.assessment_grade),
         "role_classification": _clean(job.role_classification),
         "experience": experience,
         "role_summary": _clean(jd.get("role")),
@@ -179,7 +227,7 @@ def _user_message(context: dict[str, str]) -> str:
     labels = [
         ("Job title", "title"),
         ("Department", "department"),
-        ("Seniority", "level"),
+        ("Grade", "grade"),
         ("Role type", "role_classification"),
         ("Experience required", "experience"),
         ("Role summary", "role_summary"),
@@ -283,18 +331,77 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def generate(
+def is_stale(row: JobSwotAnalysis, *, now: datetime | None = None) -> bool:
+    """A `generating` row nobody has finished within the stale window."""
+    if row.status != SWOT_ANALYSIS_GENERATING:
+        return False
+    requested = row.generation_requested_at
+    if requested is None:
+        return True
+    window = timedelta(minutes=get_settings().swot_generation_stale_minutes)
+    return (now or _now()) - requested > window
+
+
+def effective_status(
+    row: JobSwotAnalysis, *, now: datetime | None = None
+) -> tuple[str, str | None]:
+    """(status, error) as a reader should see them. DERIVED, never written.
+
+    A `generating` row past the stale window reads as `failed` with fixed copy,
+    so a lost dispatch or a worker killed mid-run becomes a retry button rather
+    than a spinner that never stops.
+    """
+    if is_stale(row, now=now):
+        return SWOT_ANALYSIS_FAILED, STALE_GENERATION_ERROR
+    return row.status, row.generation_error
+
+
+def is_saved(row: JobSwotAnalysis | None) -> bool:
+    """Whether the team has SAVED this SWOT: its content is the team's.
+
+    `edited` is the plain case. A regeneration that was requested, or that
+    failed, over the team's saved content leaves that content in place, so it
+    is still theirs; `last_modified_at` against `last_generated_at` on the SAME
+    row says which of the two kinds of write the content came from. A
+    `generated` row holds a model draft nobody has saved, which is exactly what
+    the Skills draft and the publish gate must not treat as the team's SWOT.
+    """
+    if row is None or not row.has_content or not row.human_edited:
+        return False
+    if row.status == SWOT_ANALYSIS_EDITED:
+        return True
+    if row.status in (SWOT_ANALYSIS_FAILED, SWOT_ANALYSIS_GENERATING):
+        return row.last_modified_at is not None and (
+            row.last_generated_at is None
+            or row.last_modified_at >= row.last_generated_at
+        )
+    return False
+
+
+async def request_generation(
     session: AsyncSession,
     job: Job,
     *,
-    confirm_overwrite: bool = False,
-) -> JobSwotAnalysis:
-    """Draft the SWOT and store it. Raises before touching a human's work.
+    confirm_overwrite: bool,
+    requested_by: uuid.UUID,
+) -> tuple[JobSwotAnalysis, TaskHandle | None]:
+    """Ask for a SWOT draft. Refuses first, writes second, dispatches LAST.
 
-    The refusal comes FIRST, before the model is called, for two reasons: a
-    regeneration the caller is not allowed to complete should not spend a
-    model call, and a confirmation prompt that appears after a thirty-second
-    wait is a confirmation nobody reads.
+    Order is the whole design:
+
+    1. `HumanEditsWouldBeLost` over the team's content without confirmation,
+       before anything else (section 32; a confirmation after a wait is one
+       nobody reads).
+    2. `SwotInputInsufficient` when the JD cannot carry a SWOT, decided in code
+       before any model is involved (`generation_sufficiency.swot_input_state`).
+    3. An in-flight generation that is not stale is returned as it is, with no
+       second dispatch: a double click is one request.
+    4. Otherwise the row moves to `generating` and the task is handed off to run
+       AFTER the transaction is durable, so a rolled-back request dispatches
+       nothing and the worker can never read a row that was not stored.
+
+    A lost invoke is repaired by the read rule, not a sweep: the row reads as
+    failed after the stale window and the team presses Generate again.
     """
     row = await get_or_create(session, job, for_update=True)
     if row.human_edited and row.has_content and not confirm_overwrite:
@@ -302,18 +409,102 @@ async def generate(
             "This SWOT has been edited by your team. Regenerating replaces "
             "what they wrote."
         )
+    verdict = generation_sufficiency.swot_input_state(job.title, job.jd_markdown)
+    if not verdict.sufficient:
+        log.info(
+            "swot_analysis.generation_refused job=%s reason=%s", job.id, verdict.reason
+        )
+        raise SwotInputInsufficient(str(verdict.empty_state_key))
+    if row.status == SWOT_ANALYSIS_GENERATING and not is_stale(row):
+        return row, None
+    row.status = SWOT_ANALYSIS_GENERATING
+    row.generation_requested_at = _now()
+    row.generation_error = None
+    await session.flush()
+    handle = dispatch_after_commit(
+        session,
+        GENERATE_TASK,
+        args=[str(job.id)],
+        kwargs={
+            "confirm_overwrite": bool(confirm_overwrite),
+            "requested_by": str(requested_by),
+            "requested_version": row.version,
+        },
+    )
+    return row, handle
+
+
+async def run_generation(
+    session: AsyncSession,
+    job: Job,
+    *,
+    confirm_overwrite: bool,
+    requested_version: int,
+) -> JobSwotAnalysis | None:
+    """The worker body. Returns the written row, or None when it stood down.
+
+    THE MODEL IS CALLED WITHOUT A ROW LOCK, then the row is locked and re-read.
+    Holding `FOR UPDATE` across a model call would make a person's Save wait on
+    a provider. Instead the write happens only if the row is still the one that
+    was asked about: still `generating`, at the requested version. A human save
+    in the meantime bumps the version and moves the status to `edited`, and the
+    generation stands down without touching their words.
+
+    Raises `SwotAnalysisError` after recording the failed state on the row; the
+    caller persists that state and re-raises, so the error metric moves.
+    """
+    current = await get(session, job)
+    if (
+        current is None
+        or current.status != SWOT_ANALYSIS_GENERATING
+        or current.version != requested_version
+    ):
+        log.info(
+            "swot_analysis.generation_superseded job=%s status=%s version=%s requested=%d",
+            job.id,
+            None if current is None else current.status,
+            None if current is None else current.version,
+            requested_version,
+        )
+        return None
 
     try:
         sections = await draft(session, job)
     except SwotAnalysisError as exc:
-        # The failed state keeps whatever was already there. A recruiter whose
-        # regeneration failed still has last week's SWOT.
-        row.status = SWOT_ANALYSIS_FAILED
-        row.generation_error = str(exc)
-        await session.flush()
+        row = await get(session, job, for_update=True)
+        if (
+            row is not None
+            and row.status == SWOT_ANALYSIS_GENERATING
+            and row.version == requested_version
+        ):
+            # The failed state keeps whatever was already there. A recruiter
+            # whose regeneration failed still has last week's SWOT.
+            row.status = SWOT_ANALYSIS_FAILED
+            row.generation_error = str(exc)
+            await session.flush()
         raise
 
+    row = await get(session, job, for_update=True)
+    if (
+        row is None
+        or row.status != SWOT_ANALYSIS_GENERATING
+        or row.version != requested_version
+    ):
+        log.info("swot_analysis.generation_lost_race job=%s", job.id)
+        return None
     if row.human_edited and row.has_content:
+        if not confirm_overwrite:
+            # Unreachable through the request, which refuses first. Kept as a
+            # second guard because this is the write that would destroy the
+            # team's words, and a guard at the request alone is one the next
+            # caller of this function does not know about.
+            row.status = SWOT_ANALYSIS_FAILED
+            row.generation_error = (
+                "This SWOT has been edited by your team. Regenerating replaces "
+                "what they wrote."
+            )
+            await session.flush()
+            return None
         row.previous_json = {
             **row.sections(),
             "replaced_at": _now().isoformat(),

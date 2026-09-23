@@ -10,11 +10,12 @@ answers "does this rest on a protected attribute", which is Runbook 12.3.
 THERE IS ONE OF EACH, DELIBERATELY
 ------------------------------------
 Two copies of a fairness detector drift invisibly: the copy nobody edits keeps
-passing its own tests while the rule it encodes has moved. `swot_quality` holds
-a hiring manager's SWOT to this bar and `scorecard` holds the model that names
-a competency to the same one, so the bar a human is held to and the bar a model
-is held to cannot come apart. Both import from here, and
-`tests/test_observable_detector.py` is the one place the behaviour is pinned.
+passing its own tests while the rule it encodes has moved. Sutra holds the
+model that writes a skill's hidden evidence line to this bar
+(`hiring/sutra.build_context`), and Drishti holds a functional head's profile to
+it (`hiring/drishti`), so no second copy of the rule exists to drift. Both
+import from here, and `tests/test_observable_detector.py` is the one place the
+behaviour is pinned.
 
 THE ASYMMETRY IN `is_observable` IS THE POINT
 ----------------------------------------------

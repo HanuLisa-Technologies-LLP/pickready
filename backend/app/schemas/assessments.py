@@ -797,7 +797,8 @@ class SwotAnalysisOut(BaseModel):
     """
 
     job_id: uuid.UUID
-    #: not_generated | generated | failed | edited
+    #: not_generated | generating | generated | failed | edited. A generation
+    #: past its stale window is served as `failed` (derived, never written).
     status: str
     strengths: str | None = None
     weaknesses: str | None = None
@@ -817,3 +818,8 @@ class SwotAnalysisOut(BaseModel):
     can_restore_previous: bool = False
     #: The effective answer for THIS user on THIS job.
     can_edit: bool = False
+    #: The saved SWOT is newer than the one the skills were drafted from and
+    #: the skills are not locked, so the team may be OFFERED "Re-draft skills
+    #: from the updated SWOT". An offer only: nothing is re-drafted without the
+    #: team asking (`services/skills.redraft_available`).
+    skills_redraft_available: bool = False
