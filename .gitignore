@@ -135,3 +135,6 @@ harness-runs/
 # Release planning scratch written by the coding agent during a release. The
 # commits and CLAUDE.md are the durable record; these are working notes.
 .claude/vivekium-release/
+
+# Agent worktrees created during a release; each is a branch, never content.
+.claude/worktrees/
