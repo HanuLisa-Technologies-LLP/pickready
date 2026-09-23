@@ -101,6 +101,13 @@ LIVE: dict[str, str] = {
         "_attempt reports the token counts against it. Before that the trace "
         "module was reached only from reasoning/runner.py and recorded nothing."
     ),
+    "app.services.assessment_pipeline": (
+        "Vivekium release, 2026-09-24. workers/tasks.py "
+        "pickready.run_functional_assessment -> functional_assessment "
+        "-> assessment_pipeline.evidence, the one per-answer ledger writer, run "
+        "as the scoring backfill. The conversation's per-answer call is wired by "
+        "the assessment phase."
+    ),
     "app.services.rag": (
         "RPN-AI-UP-001 W2, wired 2026-09-09. workers/tasks.py registers "
         "pickready.index_document and pickready.reconcile_context_index, which "
@@ -163,7 +170,24 @@ IMPORTED_BUT_NOT_EXERCISED: dict[str, str] = {
 #: giving it a caller. The dict is kept, empty, because the check below is the
 #: shape the next dead entry point needs and rebuilding it would cost more than
 #: the lines it occupies.
-ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {}
+ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
+    # The skills contract landed (migration 0118) ahead of its two callers, on
+    # purpose: the assessment phase stamps `started_at` and must call
+    # `lock_contract` in the same transaction, and Vaada and Miti read the
+    # bound contract. Until then `job_skill_snapshots` is written only by the
+    # migration. The owning directory is `app/services`, so this asks about
+    # callers in routes, workers and scripts, which is where the start lives.
+    ("app/services/assessment_contract.py", "lock_contract"): (
+        "the only writer of job_skill_snapshots after migration 0118; the "
+        "assessment phase calls it where assessment_conversations.started_at "
+        "is stamped. When it does, move this entry to REQUIRED_CALLERS."
+    ),
+    ("app/services/assessment_contract.py", "load_contract_for_conversation"): (
+        "Vaada (conversation start) and Miti (grading) both read the contract "
+        "bound to the conversation and log its digest; both are wired by the "
+        "assessment and grading phases."
+    ),
+}
 
 #: The positive form of what W2 established, and the regression it guards.
 #: `(module, function)` -> where the call must come from.
@@ -178,6 +202,11 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
         "the index is never written, and retrieval over an empty table returns "
         "nothing SILENTLY: the lexical retriever ORs its terms and fusion "
         "tolerates an empty list, so it looks like a query with no good match."
+    ),
+    ("app/services/assessment_pipeline/evidence.py", "backfill_answer_evidence"): (
+        "app/services/functional_assessment.py, the scoring pass. It is how an "
+        "answer the conversation never filed still reaches Miti's ledger; "
+        "without a caller the ledger is written by nothing at scoring time."
     ),
     ("app/services/rag/sources.py", "pending"): (
         "app/workers/tasks.py, from pickready.reconcile_context_index. This is "

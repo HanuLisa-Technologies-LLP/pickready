@@ -83,6 +83,12 @@ class TechnicalQuestion(Base, UUIDPKMixin, CreatedAtMixin):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+#: `job_competencies.authored_by`. Mirrored by a CHECK constraint (0118).
+AUTHORED_BY_SUTRA = "sutra"
+AUTHORED_BY_HUMAN = "human"
+AUTHORED_BY: tuple[str, ...] = (AUTHORED_BY_SUTRA, AUTHORED_BY_HUMAN)
+
+
 class JobCompetency(Base, UUIDPKMixin, CreatedAtMixin):
     """One entry in a job's PPI evaluation framework (spec §6.2).
 
@@ -154,8 +160,25 @@ class JobCompetency(Base, UUIDPKMixin, CreatedAtMixin):
     #: The department-model competency stage 1 named this from, or NULL when the
     #: requirement is genuinely role-specific. NULL is an honest provenance.
     anchor_key: Mapped[str | None] = mapped_column(String(80))
-    #: §20.3's force-ranking position, 1..n within the scored competencies.
+    #: THE SKILL'S PRIORITY WITHIN ITS BUCKET, 1 = highest (migration
+    #: 0118_skills_contract). Until that migration it was section 20.3's
+    #: force-ranking position across every scored competency of the job; the
+    #: migration rewrote it per bucket, in place, for every job whose skills
+    #: are not locked. Assigned by Sutra, INTERNAL, never shown to or edited by
+    #: the recruitment team, and never serialised
+    #: (`services/assessment_contract.ContractSkill.priority` is the reader).
     force_rank: Mapped[int | None] = mapped_column(Integer)
+    #: Who wrote this entry: `sutra` (drafted by the model) or `human` (added
+    #: or renamed by the hiring team). The Tatva human authority rule
+    #: (2026-09-23) made the absence of `swot_origin` the signal for "the
+    #: human's entry"; this column states it outright, because a Sutra draft
+    #: may legitimately carry no SWOT quotation (a JD-sourced skill) and must
+    #: still not read as the team's own. Values in `AUTHORED_BY`, mirrored by
+    #: `ck_job_competencies_authored_by`.
+    authored_by: Mapped[str] = mapped_column(
+        String(10), nullable=False,
+        default=AUTHORED_BY_HUMAN, server_default=AUTHORED_BY_HUMAN,
+    )
 
 
 class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
@@ -480,6 +503,23 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     # employer-facing schema serialises it, and `tests/test_vaada_end_reason`
     # sweeps the response schemas to keep it that way.
     end_reason: Mapped[str | None] = mapped_column(String(40))
+
+    # ── The assessment contract this session runs against (0118) ─────────────
+    # Bound by `assessment_contract.lock_contract` at the session's start: the
+    # immutable skills snapshot the questions came from and its content
+    # digest. Vaada (the conversation) and Miti (the grade) both read the
+    # contract through `load_contract_for_conversation`, which reads THIS
+    # binding, so a later snapshot version can never move a candidate who has
+    # already started. NULL means the session has not started, or started
+    # before contracts existed and was never bound; the migration bound every
+    # started session it found. SET NULL on the snapshot side only because a
+    # snapshot is deleted solely by the cascade of its job or tenant, which
+    # takes this row with it anyway.
+    skill_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("job_skill_snapshots.id", ondelete="SET NULL"),
+    )
+    contract_digest: Mapped[str | None] = mapped_column(String(64))
 
     # ── Credit reconciliation (migration 0026) ───────────────────────────────
     # The daily reconciliation job charges an abandoned assessment once and only

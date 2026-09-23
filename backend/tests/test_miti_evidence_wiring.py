@@ -6,6 +6,12 @@ package returned one file: the model definitions. So the question a recruiter
 actually asks when they disagree with a grade -- "what did you read?" -- still
 had no answer, and every review of the ledger read like an enforced property.
 
+Since 2026-09-24 the writer is `assessment_pipeline.evidence.
+record_answer_evidence`, the ONLY ledger writer in the product, called per
+answer during the conversation and again here as the scoring backfill
+(`tests/test_answer_evidence_idempotent.py` proves the two calls write once).
+This file keeps asserting the scoring side of it.
+
 What is asserted here is not "evidence is recorded". It is the five rules that
 decide whether recording it is safe to do at all:
 
@@ -27,8 +33,11 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from app.services import functional_assessment as fa
+from app.services.assessment_pipeline import evidence as answer_evidence
+from app.services.assessment_pipeline.types import AnswerRecord
 from app.services.evidence import contradictions, ledger
 
 _ANSWER = "I rebuilt the ingest pipeline and cut the nightly batch to minutes."
@@ -60,6 +69,13 @@ class _Session:
         return _Nested(self)
 
 
+def _outage() -> OperationalError:
+    """A DATABASE failure, which is the only kind the writer absorbs. A
+    programming error propagates (the 2026-09-22 rule), so a RuntimeError here
+    would be testing a behaviour the writer deliberately does not have."""
+    return OperationalError("INSERT INTO evidence_items", {}, Exception("unavailable"))
+
+
 class _Recorder:
     """Stands in for the three ledger writes and keeps every argument."""
 
@@ -71,19 +87,19 @@ class _Recorder:
 
     async def record_evidence(self, session, **kwargs):
         if self.raising:
-            raise RuntimeError("the ledger is unavailable")
+            raise _outage()
         self.evidence.append(kwargs)
         return uuid.uuid4()
 
     async def record_claim(self, session, **kwargs):
         if self.raising:
-            raise RuntimeError("the ledger is unavailable")
+            raise _outage()
         self.claims.append(kwargs)
         return uuid.uuid4()
 
     async def attach_evidence(self, session, **kwargs):
         if self.raising:
-            raise RuntimeError("the ledger is unavailable")
+            raise _outage()
         self.attachments.append(kwargs)
 
     def install(self, monkeypatch) -> "_Recorder":
@@ -125,8 +141,12 @@ def _fixture(*, answer: str = _ANSWER, category: str = "must_have"):
         "answers": {str(question.id): [answer]},
         "answer_refs": {
             str(question.id): [
-                fa.AnswerRef(
-                    message_id=message_id, turn=2, content=answer, answered_at=None
+                AnswerRecord(
+                    message_id=message_id,
+                    question_key=str(question.id),
+                    turn=2,
+                    text=answer,
+                    answered_at=None,
                 )
             ]
         },
@@ -203,10 +223,10 @@ async def test_a_locator_read_failure_leaves_scoring_untouched(monkeypatch) -> N
     trail, never a report that fails."""
     recorder = _Recorder().install(monkeypatch)
 
-    async def _explode(session, link):
+    async def _explode(session, link_id):
         raise RuntimeError("no locators")
 
-    monkeypatch.setattr(fa, "_answer_locators", _explode)
+    monkeypatch.setattr(answer_evidence, "answer_records", _explode)
     state, _competency, _question, _message_id = _fixture()
     state.pop("answer_refs")
 
@@ -223,9 +243,11 @@ def test_the_writes_run_inside_a_savepoint() -> None:
     reconciliation the caller commits afterwards -- fails too. Swallowing the
     exception would then turn "the ledger write failed" into "the report was
     lost"."""
-    source = inspect.getsource(fa._record_answer_evidence)
+    source = inspect.getsource(answer_evidence.record_answer_evidence)
     assert "_savepoint(session)" in source
-    assert "except Exception" in source
+    # A DATABASE failure only: a TypeError is a bug, not an outage.
+    assert "except SQLAlchemyError" in source
+    assert "except Exception" not in source
 
 
 @pytest.mark.asyncio
@@ -319,7 +341,7 @@ def test_the_evidence_is_written_before_the_claim() -> None:
     `contradictions.detect` -- a conclusion nothing stands behind. Creating the
     claim first and failing on the evidence would manufacture the most serious
     finding the system has out of a transient write error."""
-    source = inspect.getsource(fa._record_answer_evidence)
+    source = inspect.getsource(answer_evidence.record_answer_evidence)
     assert source.index("record_evidence(") < source.index("record_claim(")
 
 
@@ -354,8 +376,12 @@ async def test_a_locator_pointing_at_a_non_answer_is_dropped(monkeypatch) -> Non
         competency,
         question,
         [
-            fa.AnswerRef(
-                message_id=message_id, turn=1, content=_GIBBERISH, answered_at=None
+            AnswerRecord(
+                message_id=message_id,
+                question_key=str(question.id),
+                turn=1,
+                text=_GIBBERISH,
+                answered_at=None,
             )
         ],
     )
@@ -367,10 +393,10 @@ def test_substance_is_decided_by_the_scorers_own_classifier() -> None:
     """One classifier, not two. A second set of thresholds here would be a
     second thing to keep in step, and the day they drifted the ledger would
     claim evidence for a grade the scorer had already treated as unanswered."""
-    source = inspect.getsource(fa._record_answer_evidence)
+    source = inspect.getsource(answer_evidence.record_answer_evidence)
     assert "answer_quality.is_substantive" in source
     # No private substance rules of its own.
-    for smell in ("MIN_CHARS", "MIN_WORDS", "re.compile", "len(ref.content)"):
+    for smell in ("MIN_CHARS", "MIN_WORDS", "re.compile", "len(text)"):
         assert smell not in source, f"a second substance rule appeared: {smell}"
 
 
@@ -597,8 +623,11 @@ def test_the_evidence_path_can_reach_no_grading_rule() -> None:
     """The cheapest possible proof that no grade moved: neither function can
     name the four-grade scale, the unanswered score or the Must-have hard cap,
     so neither is in a position to change any of them."""
-    for name in ("_record_answer_evidence", "_uncertainty_from_evidence"):
-        source = inspect.getsource(getattr(fa, name))
+    for name, source in (
+        ("_record_answer_evidence", inspect.getsource(fa._record_answer_evidence)),
+        ("_uncertainty_from_evidence", inspect.getsource(fa._uncertainty_from_evidence)),
+        ("record_answer_evidence", inspect.getsource(answer_evidence)),
+    ):
         for rule in (
             "UNANSWERED_SCORE",
             "cap_to_moderately",

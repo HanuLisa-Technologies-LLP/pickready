@@ -41,7 +41,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Numeric, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,6 +52,22 @@ class EvidenceItemRow(Base, UUIDPKMixin, CreatedAtMixin):
     """One addressable piece of evidence, stored as a REFERENCE to its source."""
 
     __tablename__ = "evidence_items"
+    __table_args__ = (
+        # ONE LIVE ROW PER ANSWER (migration 0118). The conflict arbiter of
+        # `ledger.record_evidence`, which is what makes the per-answer writer
+        # idempotent under concurrency and not only in sequence: the writer runs
+        # during the conversation AND again as the scoring backfill.
+        Index(
+            "ux_evidence_items_live_answer",
+            "tenant_id",
+            "link_id",
+            "source_id",
+            unique=True,
+            postgresql_where=text(
+                "source_type = 'answer' AND status = 'active' AND link_id IS NOT NULL"
+            ),
+        ),
+    )
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False

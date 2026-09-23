@@ -38,6 +38,18 @@ REPORTING_TO_OPTIONS: tuple[str, ...] = (
 #: value. It is never itself stored as the reporting line.
 REPORTING_TO_OTHER = "Others"
 
+#: `jobs.skills_draft_status` (0118). Mirrored by `ck_jobs_skills_draft_status`.
+SKILLS_DRAFT_NOT_STARTED = "not_started"
+SKILLS_DRAFT_DRAFTING = "drafting"
+SKILLS_DRAFT_DRAFTED = "drafted"
+SKILLS_DRAFT_FAILED = "failed"
+SKILLS_DRAFT_STATUSES: tuple[str, ...] = (
+    SKILLS_DRAFT_NOT_STARTED,
+    SKILLS_DRAFT_DRAFTING,
+    SKILLS_DRAFT_DRAFTED,
+    SKILLS_DRAFT_FAILED,
+)
+
 
 class Job(Base, UUIDPKMixin, CreatedAtMixin):
     """`jd_markdown` is the CANONICAL candidate-facing job description as of
@@ -225,7 +237,35 @@ class Job(Base, UUIDPKMixin, CreatedAtMixin):
     # in PARALLEL and approved independently; the job reaches
     # `ready_for_candidates` only when both `*_approved_at` are stamped.
     framework_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: REUSED FROM 0118 AS "SKILLS SAVED AT". The persisted name is kept (like
+    #: `ppi`) so every reader of the ready state needs no change; the Skills
+    #: step's Save stamps it and any later skills edit before the lock clears
+    #: it. `assessment_contract.skills_saved` is the one reader that decides.
     framework_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── The skills contract (migration 0118_skills_contract) ─────────────────
+    #: The HIDDEN assessment context Sutra writes when the skills are saved:
+    #: `{role_summary, generated_by, model_id, prompt_version, generated_at}`.
+    #: INTERNAL: it reaches Vaada and Miti through
+    #: `assessment_contract.load_contract` and never a response schema. The
+    #: migration stamped `{"role_summary": "", "generated_by": "migration"}` on
+    #: every job whose matrix was already saved, so none of them stopped being
+    #: invitable; the empty summary is the honest record that nothing wrote one.
+    assessment_context_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: Where the Sutra skills DRAFT stands: one of `SKILLS_DRAFT_STATUSES`,
+    #: mirrored by `ck_jobs_skills_draft_status`. A state of the draft job,
+    #: never of the skills themselves (those are the rows).
+    skills_draft_status: Mapped[str] = mapped_column(
+        String(20), nullable=False,
+        default=SKILLS_DRAFT_NOT_STARTED, server_default=SKILLS_DRAFT_NOT_STARTED,
+    )
+    #: The fixed reason the last draft failed; cleared on the next request.
+    skills_draft_error: Mapped[str | None] = mapped_column(Text)
+    skills_draft_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    skills_drafted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The `job_swot_analyses.version` the current draft was written from, so a
+    #: later SWOT save can OFFER a redraft without ever performing one silently.
+    skills_drafted_swot_version: Mapped[int | None] = mapped_column(Integer)
 
     # ── Draft v4 job setup (migration 0048, 0049) ────────────────────────────
     # The total number of questions this job's candidates are asked, resolved

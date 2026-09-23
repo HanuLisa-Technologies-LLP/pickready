@@ -173,6 +173,10 @@ SWOT_ANALYSIS_NOT_GENERATED = "not_generated"
 SWOT_ANALYSIS_GENERATED = "generated"
 SWOT_ANALYSIS_FAILED = "failed"
 SWOT_ANALYSIS_EDITED = "edited"
+#: A generation has been requested and dispatched and has not finished (0118).
+#: The request commits this state and the worker moves it on; a row still here
+#: after the stale window reads as failed without a write.
+SWOT_ANALYSIS_GENERATING = "generating"
 
 #: The four quadrants of the analysis document, in render order.
 SWOT_ANALYSIS_SECTIONS: tuple[str, ...] = (
@@ -243,6 +247,9 @@ class JobSwotAnalysis(Base, UUIDPKMixin, CreatedAtMixin):
     #: Cleared on the next success, because a stale error under fresh content
     #: reads as a fresh error.
     generation_error: Mapped[str | None] = mapped_column(Text)
+    #: When the in-flight generation was requested (0118). Read with the stale
+    #: window to tell a slow worker from one that never reported back.
+    generation_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     human_edited: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
