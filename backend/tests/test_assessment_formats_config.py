@@ -26,6 +26,7 @@ import pytest
 
 from app.core.config import get_settings
 from app.services import ppi
+from app.services.assessment_questions import generate as question_generation
 from app.services.assessment_formats import composition
 from app.services.assessment_formats import config as format_config
 from app.services.assessment_formats import types
@@ -141,7 +142,7 @@ def _allocation(size: int = 20):
         for category in ppi.CATEGORIES
         for index in range(5)
     ]
-    return ppi._allocate(matrix, size, "non_managerial")
+    return question_generation._allocate(matrix, size, "non_managerial")
 
 
 def _anchored(slots):

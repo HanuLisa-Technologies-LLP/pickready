@@ -61,6 +61,11 @@ def test_every_task_name_is_namespaced() -> None:
     "module_name",
     [
         "app.workers.tasks",
+        # The Phase 3 task modules carved out of `tasks` on 2026-09-24 (PLAN-p3
+        # WP0). Their bodies import lazily too, so each is swept by name.
+        "app.workers.tasks_media",
+        "app.workers.tasks_proctoring",
+        "app.workers.tasks_questions",
         "app.workers.dispatch",
         "app.workers.runtime",
         "app.workers.entrypoints.lambda_worker",
@@ -184,7 +189,8 @@ def test_the_deleted_probe_task_is_gone() -> None:
     """
     assert "pickready.probe_llm_models" not in names()
     assert not [e for e in SCHEDULE if "probe" in e.rule]
-    assert "probe_llm_models" not in (WORKERS / "tasks.py").read_text(encoding="utf-8")
+    for module in sorted(WORKERS.glob("tasks*.py")):
+        assert "probe_llm_models" not in module.read_text(encoding="utf-8"), module.name
 
 
 def test_celery_is_gone_from_the_worker_package() -> None:

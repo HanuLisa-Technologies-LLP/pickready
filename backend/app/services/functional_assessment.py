@@ -80,6 +80,8 @@ from app.services import (
     ppi,
     ppi_interview,
 )
+from app.services.assessment_questions import budget as question_budget
+from app.services.assessment_questions import generate as question_generation
 from app.services import evidence_confidence
 from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELDS
 from app.services.miti import claims as miti_claims
@@ -123,7 +125,7 @@ __all__ = [
 #: Re-exported so a caller has one import for the whole assessment contract.
 #: Ranges, not counts: Draft v4 resolves a total per JOB from the grade's range
 #: and the size of that job's matrix (spec §5.4).
-GRADE_QUESTION_RANGES = ppi.GRADE_QUESTION_RANGES
+GRADE_QUESTION_RANGES = question_budget.GRADE_QUESTION_RANGES
 
 GRADE_NAMES: tuple[str, ...] = tuple(GRADE_QUESTION_RANGES)
 
@@ -2722,7 +2724,7 @@ async def run_assessment(
     # on every normal run the rows already exist and this is a read.
     questions = await ppi_interview.load_for_link(session, link.id)
     if not questions:
-        questions = await ppi.generate_candidate_questions(session, job, link)
+        questions = await question_generation.generate_candidate_questions(session, job, link)
 
     grade = job.assessment_grade if job.assessment_grade in GRADE_NAMES else infer_grade_fallback(job)
     profile = await session.get(Profile, link.profile_id) if link.profile_id else None

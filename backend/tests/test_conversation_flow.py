@@ -237,7 +237,7 @@ async def _respond(mod, fx, s, answer=_ANSWER):
 async def test_a_follow_up_is_filed_under_the_same_question_key(monkeypatch) -> None:
     """The grouping hinge. A new key here would be silently dropped by every
     scorer, because nothing iterates keys the framework did not define."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentMessage
     from app.services.functional_assessment import answers_by_key
@@ -295,7 +295,7 @@ async def test_a_follow_up_is_filed_under_the_same_question_key(monkeypatch) -> 
 async def test_a_follow_up_does_not_advance_the_index(monkeypatch) -> None:
     """The billing hinge. The index reaching len(prompts) is what charges the
     customer, so a probe must not push it along."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
 
@@ -336,7 +336,7 @@ async def test_a_follow_up_does_not_advance_the_index(monkeypatch) -> None:
 async def test_a_pending_follow_up_holds_completion_open(monkeypatch) -> None:
     """The completion hinge. A probe outstanding on the LAST base question must
     not let billing and scoring fire while the candidate is still typing."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
 
@@ -386,7 +386,7 @@ async def test_a_pending_follow_up_holds_completion_open(monkeypatch) -> None:
 async def test_without_a_follow_up_the_flow_is_unchanged(monkeypatch) -> None:
     """The regression guard for every conversation that never gets probed:
     one base question, answered once, completes exactly as it always did."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
 
@@ -427,7 +427,7 @@ async def test_irrelevant_answer_holds_counter_then_valid_reask_advances_one(
     monkeypatch,
 ) -> None:
     """A rejected turn must not consume a paid base-question slot."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.services.answer_classification import Classification
 
@@ -497,7 +497,7 @@ async def test_irrelevant_answer_holds_counter_then_valid_reask_advances_one(
 @pytest.mark.asyncio
 async def test_reask_cap_records_evidence_gap_and_moves_on(monkeypatch) -> None:
     """Repeated non-answers are bounded and remain explicit in evidence."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentMessage
     from app.services.answer_classification import Classification
@@ -566,7 +566,7 @@ async def _link_stub(*args, **kwargs):  # replaced per-test by _patch_link
 def _patch_link(monkeypatch, fx: _Fx) -> None:
     """`_candidate_link` resolves the caller's candidate identity, which these
     tests do not exercise: they drive the conversation, not the auth path."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.models import Job
     from app.models.candidate import JobCandidateLink
 

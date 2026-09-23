@@ -1,6 +1,6 @@
 """WHY a Vaada session ended, recorded where somebody can read it later.
 
-The early exit itself is old. `ppi.conversation_may_close` has decided it since
+The early exit itself is old. `question_budget.conversation_may_close` has decided it since
 2026-08-23 and `tests/test_question_count_range.py` and
 `tests/test_vaada_miti_loop.py` between them pin the rule, the floor and the
 fact that nothing else may end a conversation. None of that is re-asserted
@@ -46,6 +46,7 @@ from tests.test_conversation_flow import (
     _respond,
     _seed,
 )
+from app.services.assessment_questions import budget as question_budget
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 
@@ -91,7 +92,7 @@ def _no_probes(monkeypatch) -> None:
     decided to ask, and a test that cannot say which turn it is asserting about
     is not asserting anything.
     """
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
 
     async def _none(**kwargs):
         return None
@@ -107,7 +108,7 @@ async def test_running_out_of_questions_is_recorded_as_exhaustion(
     monkeypatch,
 ) -> None:
     """One question, answered once. Nothing stopped early; there was no more."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
 
@@ -149,7 +150,7 @@ async def test_stopping_on_coverage_is_recorded_as_the_reason_it_stopped(
 ) -> None:
     """Fourteen questions written, twelve answered, and the stop is real.
 
-    The counts are chosen against `ppi.GRADE_QUESTION_RANGES`, not picked: a
+    The counts are chosen against `question_budget.GRADE_QUESTION_RANGES`, not picked: a
     non-managerial floor is twelve, so the twelfth substantive answer is the
     first turn at which `conversation_may_close` may say yes, and two prompts
     are deliberately left unasked so the early exit is observable rather than
@@ -162,14 +163,13 @@ async def test_stopping_on_coverage_is_recorded_as_the_reason_it_stopped(
     stopped at the minimum", which is the fail-style early exit this product
     deliberately does not do.
     """
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
-    from app.services import ppi
 
     monkeypatch.setattr(mod, "dispatch", lambda name, *a, **k: None)
 
-    floor = ppi.min_questions("non_managerial", None)
+    floor = question_budget.min_questions("non_managerial", None)
     written = floor + 2
 
     engine, factory = await _factory_or_skip()

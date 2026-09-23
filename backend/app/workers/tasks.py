@@ -1042,39 +1042,6 @@ def reconcile_job_setup():
 
 
 @task(
-    name="pickready.generate_candidate_questions",
-    route=Route.ECS,
-    max_attempts=2,
-    backoff_seconds=5.0,
-)
-def generate_candidate_questions(link_id: str):
-    """This candidate's PPI questions, from their resume + the job's framework.
-
-    Per candidate, unlike the technical bank. Idempotent: a candidate who
-    already has questions keeps exactly those, so a redelivery cannot
-    hand someone a different assessment halfway through.
-    """
-    from app.models.candidate import JobCandidateLink
-    from app.models.job import Job
-    from app.services.ppi import generate_candidate_questions as _generate
-
-    async def _task():
-        async with _worker_session() as session:
-            link = await session.get(JobCandidateLink, uuid.UUID(str(link_id)))
-            if link is None:
-                raise ValueError(f"Application {link_id} not found")
-            job = await session.get(Job, link.job_id)
-            if job is None:
-                raise ValueError(f"Job {link.job_id} not found")
-            rows = await _generate(session, job, link)
-            await session.commit()
-            logger.info(
-                "ppi_questions.generated link_id=%s count=%d", link_id, len(rows)
-            )
-    _run(_task())
-
-
-@task(
     name="pickready.run_functional_assessment",
     route=Route.ECS,
     max_attempts=2,
@@ -1225,146 +1192,6 @@ def run_functional_assessment(link_id: str):
 
 
 @task(
-    name="pickready.generate_proctoring_report",
-    route=Route.ECS,
-    max_attempts=2,
-    backoff_seconds=5.0,
-)
-def generate_proctoring_report(link_id: str):
-    """Write the Proctoring Report for one application (proctoring spec 7).
-
-    Idempotent: `report.generate` returns the existing row. A session still
-    active whose conversation has completed is closed as completed here, on
-    the conversation's own timestamp, because completion is decided by the
-    assessment and the proctoring row merely records it. A session still
-    active whose conversation has NOT completed is left alone and logged:
-    the reconciler settles it later as abandoned, on the credit reconciler's
-    clock, and reporting it now would date the report before the session
-    ended.
-
-    The AI-text observation runs here, post-submission, never in a request.
-    """
-    from app.models.assessment import AssessmentConversation
-    from app.models.proctoring import (
-        OUTCOME_ACTIVE,
-        OUTCOME_COMPLETED,
-        ProctoringSession,
-    )
-    from app.services.proctoring import ai_text
-    from app.services.proctoring import report as proctoring_report
-
-    async def _task():
-        async with _worker_session() as session:
-            ps = (
-                await session.execute(
-                    select(ProctoringSession).where(
-                        ProctoringSession.job_candidate_link_id == uuid.UUID(str(link_id))
-                    )
-                )
-            ).scalars().first()
-            if ps is None:
-                logger.info("proctoring.report_skipped no_session link_id=%s", link_id)
-                return
-            conversation = await session.get(AssessmentConversation, ps.conversation_id)
-            if conversation is None:
-                raise ValueError(f"proctoring session {ps.id} has no conversation")
-            now = datetime.now(timezone.utc)
-            if ps.outcome == OUTCOME_ACTIVE:
-                if conversation.completed_at is None:
-                    logger.warning(
-                        "proctoring.report_deferred session_still_active session_id=%s",
-                        ps.id,
-                    )
-                    return
-                ps.outcome = OUTCOME_COMPLETED
-                ps.ended_at = conversation.completed_at
-                ps.updated_at = now
-                await session.flush()
-            await ai_text.scan_conversation(session, ps, conversation, now=now)
-            await proctoring_report.generate(session, ps)
-            await session.commit()
-    _run(_task())
-
-
-@task(
-    name="pickready.reconcile_proctoring_sessions",
-    route=Route.LAMBDA,
-)
-def reconcile_proctoring_sessions():
-    """Hourly: close the sessions nothing else will close, and report them.
-
-    Two states, and only two:
-
-    1. The conversation completed but the session is still active. The report
-       task was enqueued and lost (broker hiccup, worker restart). Re-enqueue
-       it; it closes the session itself.
-    2. The conversation never completed and the session has heard nothing for
-       `credit_reconciliation.SETTLE_AFTER_HOURS`. The candidate closed the
-       tab and did not return. The session is ended as `abandoned` and its
-       report is enqueued. The clock is deliberately the credit reconciler's,
-       so an assessment is never "abandoned" for proctoring while still
-       "open" for billing, or the reverse.
-
-    A technical failure is NOT decided here. It is decided at termination
-    time by `ingestion.outcome_for_termination`, which has the reason in
-    hand; re-reading it from a row later would be a second implementation.
-    """
-    from datetime import timedelta
-
-    from app.models.assessment import AssessmentConversation
-    from app.models.proctoring import (
-        OUTCOME_ABANDONED,
-        OUTCOME_ACTIVE,
-        ProctoringSession,
-    )
-    from app.services import credit_reconciliation
-    from app.services.proctoring import ingestion as proctoring_ingestion
-
-    async def _task():
-        async with _worker_session() as session:
-            now = datetime.now(timezone.utc)
-            cutoff = now - timedelta(hours=credit_reconciliation.SETTLE_AFTER_HOURS)
-            rows = (
-                await session.execute(
-                    select(ProctoringSession).where(
-                        ProctoringSession.outcome == OUTCOME_ACTIVE
-                    )
-                )
-            ).scalars().all()
-            completed = 0
-            abandoned = 0
-            for ps in rows:
-                conversation = await session.get(AssessmentConversation, ps.conversation_id)
-                if conversation is None:
-                    continue
-                if conversation.completed_at is not None:
-                    dispatch(
-                        "pickready.generate_proctoring_report",
-                        args=[str(ps.job_candidate_link_id)],
-                    )
-                    completed += 1
-                    continue
-                last_heard = ps.last_heartbeat_at or ps.started_at or ps.consented_at
-                if last_heard >= cutoff:
-                    continue
-                await proctoring_ingestion.end_session(
-                    session, ps, outcome=OUTCOME_ABANDONED, reason_code=None, now=now
-                )
-                dispatch(
-                    "pickready.generate_proctoring_report",
-                    args=[str(ps.job_candidate_link_id)],
-                )
-                abandoned += 1
-            await session.commit()
-            if completed or abandoned:
-                logger.info(
-                    "proctoring.reconciled completed_requeued=%d abandoned=%d",
-                    completed, abandoned,
-                )
-    _run(_task())
-
-
-@task(
     name="pickready.purge_proctoring_events",
     route=Route.LAMBDA,
 )
@@ -1399,61 +1226,6 @@ def purge_proctoring_events():
             await session.commit()
             logger.info(
                 "proctoring.purged events=%d older_than_days=%d", result.rowcount, days
-            )
-    _run(_task())
-
-
-@task(
-    name="pickready.purge_assessment_media",
-    route=Route.LAMBDA,
-)
-def purge_assessment_media():
-    """Hourly retention sweep over stored assessment recordings.
-
-    `assessment_media_retention_days` is zero by default, and zero means the
-    platform's existing candidate-data policy applies: media leaves with the
-    candidate erasure, the job closure deletion and the tenant cascade, and
-    nothing is deleted early. The task then LOGS that and does nothing, so an
-    operator reading the worker log can see the policy in force rather than
-    inferring it from silence. The same shape `purge_proctoring_events`
-    already has, for the same reason.
-
-    It asks the TABLE (`stored_at` older than the window and
-    `media_deleted_at` still null), never a timestamp on something else, and
-    every deletion is HEAD-confirmed. One recording at a time, committing as
-    it goes: a single transaction over the whole backlog would roll back
-    deletions the object store has already performed and leave the counters
-    disagreeing with the store.
-    """
-    from app.services import assessment_media_retention as media_retention
-
-    async def _task():
-        days = get_settings().assessment_media_retention_days
-        if days <= 0:
-            logger.info(
-                "assessment_media.purge_noop retention follows the platform "
-                "cascade policy"
-            )
-            return
-        async with _worker_session() as session:
-            expired = await media_retention.expired_recordings(
-                session, retention_days=days
-            )
-            purged = 0
-            incomplete = 0
-            for recording in expired:
-                outcome = await media_retention.delete_media_for_recording(
-                    session, recording
-                )
-                await session.commit()
-                if outcome.finished and outcome.failure is None:
-                    purged += 1
-                else:
-                    incomplete += 1
-            logger.info(
-                "assessment_media.purged recordings=%d incomplete=%d "
-                "older_than_days=%d",
-                purged, incomplete, days,
             )
     _run(_task())
 
@@ -3136,36 +2908,6 @@ def parse_bgv_reply(inquiry_id: str, raw_email_text: str):
 
 
 @task(
-    name="pickready.process_assessment_video",
-    route=Route.ECS,
-    max_attempts=2,
-    backoff_seconds=10.0,
-)
-def process_assessment_video(recording_id: str):
-    """The video-interview processing pipeline (dual-mode spec section 6).
-
-    Route.ECS because this is work measured in minutes: downloading a
-    recording, two ffmpeg passes and an Amazon Transcribe job over an
-    hour-long interview legitimately outrun Lambda's ceiling.
-
-    The whole body lives in `services/video/processing.process_recording`,
-    which owns the recording's state machine: every failure lands the row in
-    the failure state naming the step (committed before the re-raise, so a
-    retry or the staff retry endpoint knows what to retry), the transcript is
-    written into the SAME records the conversational mode writes, and the
-    completion it triggers (`charge_completed` + the scoring dispatch) is
-    idempotent, so this task redelivered is safe.
-    """
-    from app.services.video import processing
-
-    async def _task():
-        async with _worker_session() as session:
-            await processing.process_recording(session, uuid.UUID(str(recording_id)))
-
-    _run(_task())
-
-
-@task(
     name="pickready.notify_support_message",
     route=Route.LAMBDA,
     max_attempts=2,
@@ -3316,3 +3058,10 @@ async def _support_staff_recipients(session, rbac, User, capability) -> list[str
         if await rbac.has_capability(session, None, role, capability, user_id):
             recipients.append(email)
     return recipients
+
+
+# The Phase 3 tasks live in their own modules since 2026-09-24 (PLAN-p3 WP0).
+# Importing them here is what registers them: `registry.resolve` imports this
+# module and nothing else, so a task module not imported here would be a task
+# no dispatch could reach.
+from app.workers import tasks_media, tasks_proctoring, tasks_questions  # noqa: E402,F401

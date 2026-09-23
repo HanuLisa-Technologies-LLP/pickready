@@ -28,6 +28,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import ppi
+from app.services.assessment_questions import generate as question_generation
 from app.services.assessment_formats import composition
 from app.services.assessment_formats import config as format_config
 from app.services.assessment_formats import types
@@ -55,9 +56,9 @@ def _matrix(per_aspect: int = 5) -> list[SimpleNamespace]:
 
 
 def _allocation(size: int, per_aspect: int = 5) -> list[SimpleNamespace]:
-    """What `ppi._allocate` hands the composer: one row per question, every
+    """What `question_generation._allocate` hands the composer: one row per question, every
     item probed at least once and the remainder repeating items."""
-    return ppi._allocate(_matrix(per_aspect), size, "non_managerial")
+    return question_generation._allocate(_matrix(per_aspect), size, "non_managerial")
 
 
 def _anchor(slot: composition.Slot) -> None:

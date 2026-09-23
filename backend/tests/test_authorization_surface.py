@@ -42,6 +42,8 @@ import pytest
 
 from app.api import (
     admin,
+    assessment_conversation,
+    assessment_recording,
     assessments,
     auth,
     bd,
@@ -64,6 +66,10 @@ from app.api import (
 ROUTERS = {
     "admin": admin,
     "assessments": assessments,
+    # Carved out of `assessments` on 2026-09-24 (PLAN-p3 WP0). Listed so the
+    # moved routes stay under this sweep rather than leaving it with the move.
+    "assessment_conversation": assessment_conversation,
+    "assessment_recording": assessment_recording,
     "auth": auth,
     "bd": bd,
     "billing": billing,

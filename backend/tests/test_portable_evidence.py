@@ -48,6 +48,7 @@ from app.core.db import superadmin_scope, tenant_scope
 from app.services import consent_catalog
 from app.services import portable_evidence as pe
 from app.services import retake
+from app.services.assessment_questions import generate as question_generation
 
 TABLE = "portable_evidence_items"
 
@@ -1061,7 +1062,7 @@ def test_an_established_criterion_keeps_its_row_in_the_matrix():
     """
     source = (
         pathlib.Path(__file__).resolve().parents[1]
-        / "app" / "services" / "ppi.py"
+        / "app" / "services" / "assessment_questions" / "generate.py"
     ).read_text(encoding="utf-8")
     tree = ast.parse(source)
     comprehensions = [
@@ -1145,7 +1146,6 @@ def test_ppi_computes_the_same_split_the_candidate_was_told(world: World):
     """
     from app.models.candidate import JobCandidateLink
     from app.models.job import Job
-    from app.services import ppi
 
     async def _probe() -> tuple[tuple[str, ...], tuple[str, ...]]:
         sessions = _sessions()
@@ -1170,7 +1170,7 @@ def test_ppi_computes_the_same_split_the_candidate_was_told(world: World):
                 async with superadmin_scope(session):
                     job = await session.get(Job, world.job_b)
                     link = await session.get(JobCandidateLink, link_id)
-                    from_ppi = await ppi.portable_coverage(session, job, link)
+                    from_ppi = await question_generation.portable_coverage(session, job, link)
                     from_retake = await retake.load_coverage(
                         session, world.candidate, world.job_b
                     )

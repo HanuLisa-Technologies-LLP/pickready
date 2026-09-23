@@ -428,7 +428,9 @@ def test_the_catalogue_is_the_only_author_of_consent_copy() -> None:
 
     screens = ("assessment-consent-screen.tsx", "candidate-profile-form.tsx")
     backend = pathlib.Path(app_package.__file__).resolve().parent
-    served = (backend / "api" / "assessments.py").read_text(encoding="utf-8")
+    served = (backend / "api" / "assessment_conversation.py").read_text(
+        encoding="utf-8"
+    )
     assert "stage_payload(consent_catalog.STAGE_ASSESSMENT)" in served
     portal = (backend / "api" / "portal.py").read_text(encoding="utf-8")
     assert "consent_catalog.items_for(session, candidate.id)" in portal

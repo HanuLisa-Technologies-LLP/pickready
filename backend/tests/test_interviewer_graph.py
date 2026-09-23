@@ -63,14 +63,16 @@ def test_no_canned_acknowledgments_in_the_conversation_path() -> None:
     """
     import inspect
 
-    from app.api import assessments
+    from app.api import assessment_conversation, assessment_recording, assessments
 
     # CODE lines only. The comment recording the removal necessarily quotes the
     # strings it removed, and a check that could not tell those apart would
-    # forbid explaining the change.
+    # forbid explaining the change. The conversation path spans the three
+    # modules `api/assessments.py` was carved into on 2026-09-24.
     code = "\n".join(
         line
-        for line in inspect.getsource(assessments).splitlines()
+        for module in (assessments, assessment_conversation, assessment_recording)
+        for line in inspect.getsource(module).splitlines()
         if not line.lstrip().startswith("#")
     )
     assert "_CONNECTORS" not in code, (

@@ -15,6 +15,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.api import drishti as drishti_api
 from app.api import (
     bgv,
+    assessment_conversation,
+    assessment_recording,
     assessments,
     admin,
     auth,
@@ -284,6 +286,15 @@ app.include_router(
 # Mounted at one path only, new in this release with no v1/v2 split to honour.
 app.include_router(videos.router, prefix=f"{API_PREFIX}/videos", tags=["videos"])
 app.include_router(assessments.router, prefix="/api/v2/assessments", tags=["assessments-v2"])
+# The candidate side and the recording routes were carved out of the same
+# module on 2026-09-24 (PLAN-p3 WP0). Same prefix and tag, included in the
+# order the routes used to be declared, so every URL is unchanged.
+app.include_router(
+    assessment_conversation.router, prefix="/api/v2/assessments", tags=["assessments-v2"]
+)
+app.include_router(
+    assessment_recording.router, prefix="/api/v2/assessments", tags=["assessments-v2"]
+)
 # Proctoring (proctoring-spec-doc.md). Mounted beside the assessment it
 # monitors, under v2 only: it is new in this release and has no v1 client.
 app.include_router(proctoring.router, prefix="/api/v2/proctoring", tags=["proctoring-v2"])

@@ -251,7 +251,7 @@ def _staff(fx: _Fx):
 @pytest.fixture
 def wired(monkeypatch):
     """Everything the conversation reaches that is not the subject here."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.services import agent_loop, answer_classification, ppi_interview
     from app.services.assessment_formats import scoring as format_scoring
 
@@ -289,7 +289,7 @@ def wired(monkeypatch):
 
 
 def _patch_link(monkeypatch, fx: _Fx) -> None:
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.models import Job
     from app.models.candidate import JobCandidateLink
 
@@ -333,7 +333,7 @@ ANSWERS: list[tuple[str, dict | None]] = [
 @pytest.mark.asyncio
 async def test_every_format_is_delivered_answered_scored_and_recorded(monkeypatch, wired) -> None:
     """One assessment, six formats, end to end."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentAnswer, AssessmentConversation
 
@@ -424,7 +424,7 @@ async def test_every_format_is_delivered_answered_scored_and_recorded(monkeypatc
 async def test_a_structured_answer_becomes_a_readable_transcript_line(monkeypatch, wired) -> None:
     """The transcript is what every scorer and the recruiter read, and an
     option id is not something a person can read."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentMessage
 
@@ -472,7 +472,7 @@ async def test_the_server_measures_the_time_and_a_long_pause_cannot_go_negative(
     """`time_spent_seconds` is measured from `prompt_shown_at`, less a pause
     BOUNDED by the elapsed time. A client-reported duration would be a number
     the client chose."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentAnswer, AssessmentConversation
 
@@ -526,7 +526,7 @@ async def test_a_structured_question_refuses_prose_and_an_option_it_never_offere
 ) -> None:
     """A selected option the question does not carry is a defect in the client,
     not a wrong answer, so it is refused rather than scored zero."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
 
     engine, factory = await _factory_or_skip()
@@ -558,7 +558,7 @@ async def test_a_follow_up_revises_the_base_answer_rather_than_adding_a_row(
     """One row per (conversation, question), by the unique constraint. A
     follow-up is more evidence for a question already counted, and the
     transcript is where it lives."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentAnswer
 
@@ -604,7 +604,7 @@ async def test_a_follow_up_revises_the_base_answer_rather_than_adding_a_row(
 
 @pytest.mark.asyncio
 async def test_editing_the_latest_answer_counts_as_a_revision(monkeypatch, wired) -> None:
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentAnswer
     from app.schemas.assessments import ConversationAnswerEditIn
@@ -648,7 +648,7 @@ async def test_editing_the_latest_answer_counts_as_a_revision(monkeypatch, wired
 async def test_neither_route_runs_without_a_consented_proctoring_session(
     monkeypatch, wired
 ) -> None:
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
 
     engine, factory = await _factory_or_skip()
@@ -675,7 +675,7 @@ async def test_neither_route_runs_without_a_consented_proctoring_session(
 async def test_a_terminated_conversation_takes_no_further_answer(monkeypatch, wired) -> None:
     """The candidate's answers up to that point were saved; what is refused is
     the next one."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
 
@@ -706,7 +706,7 @@ async def test_answer_behaviour_reaches_proctoring_and_moves_no_score(
     monkeypatch, wired
 ) -> None:
     """The timings go to the proctoring tables and nowhere near a grade."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentAnswer
     from app.models.proctoring import ProctoringEvent
@@ -764,7 +764,8 @@ async def test_the_transcript_renders_every_format_for_a_recruiter(monkeypatch, 
     """"Per question, show ... which option they chose, which was correct,
     marked clearly ... their input against accepted answers ... the resume
     anchor that prompted the question ... time spent"."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
+    from app.api import assessments as staff_mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentAnswer
     from app.services.siddhi import numbers
@@ -798,7 +799,7 @@ async def test_the_transcript_renders_every_format_for_a_recruiter(monkeypatch, 
 
         async with factory() as s:
             async with superadmin_scope(s):
-                out = await mod.get_transcript(fx.link_id, user=_staff(fx), session=s)
+                out = await staff_mod.get_transcript(fx.link_id, user=_staff(fx), session=s)
 
         by_type = {
             exchange.question_type: exchange

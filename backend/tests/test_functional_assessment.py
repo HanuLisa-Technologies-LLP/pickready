@@ -10,6 +10,7 @@ from app.services import application_validation
 from app.services import functional_assessment as fa
 from app.services import gap_analysis
 from app.services import ppi
+from app.services.assessment_questions import budget as question_budget
 from app.services import rating
 from app.services.functional_assessment import (
     GRADE_QUESTION_RANGES,
@@ -43,7 +44,7 @@ def test_question_ranges_follow_the_grade_table() -> None:
         "leadership": (18, 25),
         "cxo": (18, 25),
     }
-    assert ppi.STEM_GRADE_QUESTION_RANGES == {
+    assert question_budget.STEM_GRADE_QUESTION_RANGES == {
         "non_managerial": (18, 28),
         "managerial": (22, 35),
         "leadership": (25, 38),
@@ -57,16 +58,16 @@ def test_the_resolved_target_never_leaves_its_grade_range(grade, bounds) -> None
     # A matrix smaller than the floor still asks the floor: the surplus goes to
     # the aspects the typical split weights most heavily, so a four-item matrix
     # does not become a four-question interview.
-    assert ppi.resolve_question_target(grade, 1) == low
+    assert question_budget.resolve_question_target(grade, 1) == low
     # One question per item in between.
-    assert ppi.resolve_question_target(grade, low + 1) == low + 1
+    assert question_budget.resolve_question_target(grade, low + 1) == low + 1
     # And never more than the grade allows, whatever the matrix holds.
-    assert ppi.resolve_question_target(grade, high + 50) == high
+    assert question_budget.resolve_question_target(grade, high + 50) == high
 
 
 def test_an_unknown_grade_resolves_as_non_managerial() -> None:
-    assert ppi.resolve_question_target(None, 15) == 15
-    assert ppi.max_questions("not-a-grade") == GRADE_QUESTION_RANGES["non_managerial"][1]
+    assert question_budget.resolve_question_target(None, 15) == 15
+    assert question_budget.max_questions("not-a-grade") == GRADE_QUESTION_RANGES["non_managerial"][1]
 
 
 def test_the_typical_splits_are_illustrative_and_fit_their_own_range() -> None:
@@ -77,7 +78,7 @@ def test_the_typical_splits_are_illustrative_and_fit_their_own_range() -> None:
     product refuses to run.
     """
     for grade, (low, high) in GRADE_QUESTION_RANGES.items():
-        split = ppi.typical_split(grade)
+        split = question_budget.typical_split(grade)
         assert set(split) == set(ppi.CATEGORIES)
         assert sum(bounds[0] for bounds in split.values()) <= high
         assert sum(bounds[1] for bounds in split.values()) >= low
@@ -129,7 +130,7 @@ def test_validation_is_not_asked_in_the_conversation() -> None:
     """
     import inspect
 
-    from app.api import assessments
+    from app.api import assessment_conversation as assessments
 
     source = inspect.getsource(assessments._conversation_prompts)
     assert "validation" not in source.lower().replace("validation_json", "")
@@ -156,9 +157,13 @@ def test_the_preset_bank_routes_are_gone() -> None:
     404s, and a 404 is indistinguishable from a typo in a test. This checks that
     nothing is REGISTERED, which is the actual claim.
     """
-    from app.api import assessments
+    from app.api import assessment_conversation, assessment_recording, assessments
 
-    paths = {route.path for route in assessments.router.routes}
+    paths = {
+        route.path
+        for module in (assessments, assessment_conversation, assessment_recording)
+        for route in module.router.routes
+    }
     assert "/jobs/{job_id}/questions" not in paths
     assert "/jobs/{job_id}/questions/{question_id}" not in paths
     assert "/jobs/{job_id}/finalize" not in paths

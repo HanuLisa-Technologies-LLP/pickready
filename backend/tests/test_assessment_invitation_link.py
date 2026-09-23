@@ -26,7 +26,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.api.assessments import resolve_invitation
+from app.api.assessment_conversation import resolve_invitation
 from app.models.assessment import AssessmentConversation
 from app.models.candidate import JobCandidateLink
 from app.models.job import Job
@@ -435,7 +435,7 @@ async def test_every_state_carries_a_real_explanation() -> None:
     """Section 1's engineering constraint, applied to this endpoint: no state
     may fall through to a generic message, and no refusal may carry a
     destination."""
-    from app.api.assessments import _INVITE_STATE_MESSAGES
+    from app.api.assessment_conversation import _INVITE_STATE_MESSAGES
 
     cases = [
         (_world(), _candidate()),

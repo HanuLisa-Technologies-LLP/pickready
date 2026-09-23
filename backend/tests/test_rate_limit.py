@@ -305,7 +305,7 @@ def test_the_public_endpoints_that_do_real_work_are_limited() -> None:
     # routers as lazy wrappers, so the app's route list is not flattened and a
     # scan of it silently finds nothing -- which would have made this test pass
     # by measuring an empty set.
-    from app.api import assessments, auth
+    from app.api import assessment_conversation, auth
 
     def limited_paths(router) -> set[str]:
         found = set()
@@ -318,7 +318,7 @@ def test_the_public_endpoints_that_do_real_work_are_limited() -> None:
                     found.add(route.path)
         return found
 
-    invitation = limited_paths(assessments.router)
+    invitation = limited_paths(assessment_conversation.router)
     session = limited_paths(auth.router)
     assert any("invitations" in path for path in invitation), (
         f"the public invitation resolver is not rate limited: {invitation}"
