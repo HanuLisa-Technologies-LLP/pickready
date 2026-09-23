@@ -109,3 +109,28 @@ bodies are not reproduced in detail, deliberately**: the client
 body, because an embedding request carries a real candidate's resume text. A
 fixture asserting a body shape nothing reads would be a claim about the vendor
 with no code behind it.
+
+## Judge0 CE (`judge0/`), added 2026-09-24
+
+The code-execution sandbox is self-hosted Judge0 Community Edition 1.13.1, and
+`app/services/code_execution/judge0.py` is the only module that speaks to it.
+Every file under `judge0/` is hand-authored from the published Judge0 CE API
+documentation (the Submissions section: batch create, batch get, delete; and
+the System and Configuration section: `/workers`, the status id table, the
+AUTHN and AUTHZ headers). `observed` is `false` in every one: no Judge0 host
+had been provisioned when they were written.
+
+What they prove: the adapter's request shape (base64 transport, explicit
+limits, `enable_network` false, and no `expected_output`, `callback_url`,
+`compiler_options`, `command_line_arguments` or `additional_files`), its
+status mapping (Accepted, compile error, the runtime-error family with the
+memory-limit and SIGXFSZ output-limit promotions, time limit, internal error),
+its pending and pruned-ticket handling, and its failure classification (401
+and 403 as a credential outage, 503 queue full, 500, 422 as our own bad
+request).
+
+What they do not prove: that a real host sends these bodies. The operator
+verification task planned for Phase 4 WP-4B2
+(`pickready.verify_code_execution_sandbox`) is the first thing that will, and
+until it has run against the pilot host these shapes are statements of what
+the code expects and nothing more.

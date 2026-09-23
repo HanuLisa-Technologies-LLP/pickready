@@ -1,0 +1,14 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): DELETE /submissions/{token}?fields=token answers 200 with the requested fields of the deleted submission; it requires ENABLE_SUBMISSION_DELETE and the X-Auth-User header.",
+    "observed": false,
+    "notes": ""
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "token": "d85cd024-1548-4165-96c7-7bc88673f194"
+  }
+}

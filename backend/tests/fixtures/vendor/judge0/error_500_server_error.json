@@ -1,0 +1,14 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): an unhandled server fault answers 500.",
+    "observed": false,
+    "notes": "Retryable, and never the candidate's fault."
+  },
+  "status": 500,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "error": "internal server error"
+  }
+}

@@ -1,0 +1,75 @@
+# Judge0 CE 1.13.1 configuration for the Vivekium code sandbox.
+#
+# Rendered by Terraform into the host's user data and written to
+# /etc/judge0/judge0.conf.base. It holds NO SECRET: the database and Redis
+# passwords and the Rails secret are generated ON the host at first boot and
+# never leave it, and the API token is read from Secrets Manager at every start
+# into /run/judge0 (tmpfs). The two are appended to this file only there.
+#
+# Names follow the upstream judge0.conf for 1.13.1. The per-submission values
+# the application sends are the FIRST fence; the MAX_* caps below are the
+# second, and app/services/code_execution/limits.HOST_MAXIMA mirrors them
+# (tests/test_code_execution_provider.py compares the two).
+
+# ── Surface: everything a submission could use to widen what it may do ──────
+JUDGE0_TELEMETRY_ENABLE=false
+USE_DOCS_AS_HOMEPAGE=false
+MAINTENANCE_MODE=false
+AUTHN_HEADER=X-Auth-Token
+AUTHZ_HEADER=X-Auth-User
+ENABLE_WAIT_RESULT=false
+ENABLE_COMPILER_OPTIONS=false
+ALLOWED_LANGUAGES_FOR_COMPILER_OPTIONS=
+ENABLE_COMMAND_LINE_ARGUMENTS=false
+ENABLE_SUBMISSION_DELETE=true
+ENABLE_CALLBACKS=false
+ENABLE_ADDITIONAL_FILES=false
+ENABLE_BATCHED_SUBMISSIONS=true
+MAX_SUBMISSION_BATCH_SIZE=20
+SUBMISSION_CACHE_DURATION=0
+
+# ── Untrusted code has no network, and cannot ask for one ────────────────────
+ENABLE_NETWORK=false
+ALLOW_ENABLE_NETWORK=false
+ENABLE_PER_PROCESS_AND_THREAD_TIME_LIMIT=false
+ALLOW_ENABLE_PER_PROCESS_AND_THREAD_TIME_LIMIT=false
+ENABLE_PER_PROCESS_AND_THREAD_MEMORY_LIMIT=false
+ALLOW_ENABLE_PER_PROCESS_AND_THREAD_MEMORY_LIMIT=false
+
+# ── Per-run limits: defaults, and the caps no request may exceed ─────────────
+CPU_TIME_LIMIT=2
+MAX_CPU_TIME_LIMIT=5
+CPU_EXTRA_TIME=0.5
+MAX_CPU_EXTRA_TIME=1
+WALL_TIME_LIMIT=5
+MAX_WALL_TIME_LIMIT=10
+MEMORY_LIMIT=262144
+MAX_MEMORY_LIMIT=524288
+STACK_LIMIT=65536
+MAX_STACK_LIMIT=131072
+# JVM threads count here, so it cannot be single digits; it still bounds a fork bomb.
+MAX_PROCESSES_AND_OR_THREADS=60
+MAX_MAX_PROCESSES_AND_OR_THREADS=120
+# The sandbox writes stdout to a file, so the file-size cap IS the output cap.
+MAX_FILE_SIZE=1024
+MAX_MAX_FILE_SIZE=4096
+NUMBER_OF_RUNS=1
+MAX_NUMBER_OF_RUNS=1
+REDIRECT_STDERR_TO_STDOUT=false
+
+# ── Capacity ─────────────────────────────────────────────────────────────────
+# One worker per vCPU on a t3.medium. The upstream default of two per core
+# oversubscribes, and an oversubscribed box turns correct solutions into
+# time-limit failures.
+COUNT=2
+INTERVAL=0.1
+MAX_QUEUE_SIZE=500
+
+# ── Judge0's own stores, on this host only, never the application's ─────────
+REDIS_HOST=redis
+REDIS_PORT=6379
+POSTGRES_HOST=db
+POSTGRES_PORT=5432
+POSTGRES_DB=judge0
+POSTGRES_USER=judge0
+RAILS_ENV=production

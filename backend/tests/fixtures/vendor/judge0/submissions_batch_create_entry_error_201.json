@@ -1,0 +1,21 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): a batch is accepted with 201 even when an entry fails validation; that entry carries the attribute errors instead of a token.",
+    "observed": false,
+    "notes": "The adapter must refuse the whole batch and delete the accepted entry, because a half-submitted test set cannot be graded."
+  },
+  "status": 201,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": [
+    {
+      "token": "d85cd024-1548-4165-96c7-7bc88673f194"
+    },
+    {
+      "language_id": [
+        "language with id 999 doesn't exist"
+      ]
+    }
+  ]
+}

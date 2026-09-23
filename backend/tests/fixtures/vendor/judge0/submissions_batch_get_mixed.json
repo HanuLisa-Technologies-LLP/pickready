@@ -1,0 +1,113 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): GET /submissions/batch?tokens=...&base64_encoded=true&fields=... answers 200 with {submissions: [...]} in token order; output fields are base64 when base64_encoded=true; status ids follow GET /statuses (3 Accepted, 5 Time Limit Exceeded, 6 Compilation Error, 7 to 12 Runtime Error variants of which 8 is SIGXFSZ, 13 Internal Error).",
+    "observed": false,
+    "notes": "One entry per outcome class the adapter maps. The memory-limit entry is a runtime error whose peak memory sits within five percent of memory_limit, which is how a cgroup memory kill presents. The SIGXFSZ entry carries a truncated stdout, the shape an output flood leaves."
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "submissions": [
+      {
+        "token": "d85cd024-1548-4165-96c7-7bc88673f194",
+        "status": {
+          "id": 3,
+          "description": "Accepted"
+        },
+        "stdout": "NQo=",
+        "stderr": null,
+        "compile_output": null,
+        "time": "0.012",
+        "wall_time": "0.031",
+        "memory": 3264,
+        "memory_limit": 262144
+      },
+      {
+        "token": "3b2c1a90-7d4e-4f0a-9c1e-2a5b6c7d8e9f",
+        "status": {
+          "id": 6,
+          "description": "Compilation Error"
+        },
+        "stdout": null,
+        "stderr": null,
+        "compile_output": "bWFpbi5jcHA6Mzo1OiBlcnJvcjogZXhwZWN0ZWQgJzsnIGJlZm9yZSAncmV0dXJuJwo=",
+        "time": null,
+        "wall_time": null,
+        "memory": null,
+        "memory_limit": 262144
+      },
+      {
+        "token": "a1b2c3d4-e5f6-4789-8abc-def012345678",
+        "status": {
+          "id": 11,
+          "description": "Runtime Error (NZEC)"
+        },
+        "stdout": null,
+        "stderr": "VHJhY2ViYWNrIChtb3N0IHJlY2VudCBjYWxsIGxhc3QpOgpaZXJvRGl2aXNpb25FcnJvcjogZGl2aXNpb24gYnkgemVybwo=",
+        "compile_output": null,
+        "time": "0.020",
+        "wall_time": "0.044",
+        "memory": 3400,
+        "memory_limit": 262144
+      },
+      {
+        "token": "0f1e2d3c-4b5a-4968-8776-655443322110",
+        "status": {
+          "id": 5,
+          "description": "Time Limit Exceeded"
+        },
+        "stdout": null,
+        "stderr": null,
+        "compile_output": null,
+        "time": "2.001",
+        "wall_time": "2.513",
+        "memory": 3100,
+        "memory_limit": 262144
+      },
+      {
+        "token": "11111111-2222-4333-8444-555555555555",
+        "status": {
+          "id": 11,
+          "description": "Runtime Error (NZEC)"
+        },
+        "stdout": null,
+        "stderr": "TWVtb3J5RXJyb3IK",
+        "compile_output": null,
+        "time": "0.400",
+        "wall_time": "0.450",
+        "memory": 262100,
+        "memory_limit": 262144
+      },
+      {
+        "token": "66666666-7777-4888-9999-aaaaaaaaaaaa",
+        "status": {
+          "id": 8,
+          "description": "Runtime Error (SIGXFSZ)"
+        },
+        "stdout": "eQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQp5CnkKeQo=",
+        "stderr": null,
+        "compile_output": null,
+        "time": "0.300",
+        "wall_time": "0.310",
+        "memory": 3000,
+        "memory_limit": 262144
+      },
+      {
+        "token": "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+        "status": {
+          "id": 13,
+          "description": "Internal Error"
+        },
+        "stdout": null,
+        "stderr": null,
+        "compile_output": null,
+        "time": null,
+        "wall_time": null,
+        "memory": null,
+        "memory_limit": 262144
+      }
+    ]
+  }
+}

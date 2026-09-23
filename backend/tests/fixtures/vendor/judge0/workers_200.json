@@ -1,0 +1,22 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): GET /workers answers one object per queue with its size and worker counts.",
+    "observed": false,
+    "notes": "Two workers, matching COUNT=2 in judge0.conf.tftpl."
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": [
+    {
+      "queue": "1.13.1",
+      "size": 0,
+      "available": 2,
+      "idle": 2,
+      "working": 0,
+      "paused": 0,
+      "failed": 0
+    }
+  ]
+}

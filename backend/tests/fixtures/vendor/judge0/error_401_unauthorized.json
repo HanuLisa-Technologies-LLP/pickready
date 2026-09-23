@@ -1,0 +1,12 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): a request without a valid X-Auth-Token when AUTHN_TOKEN is set answers 401 Unauthorized.",
+    "observed": false,
+    "notes": "The documented response carries no body of interest; the adapter classifies on the status alone."
+  },
+  "status": 401,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {}
+}

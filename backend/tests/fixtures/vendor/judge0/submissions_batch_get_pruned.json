@@ -1,0 +1,16 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): a batch GET answers null in the position of a token the host no longer holds.",
+    "observed": false,
+    "notes": "What the adapter sees after the host's hourly prune or an instance replacement."
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "submissions": [
+      null
+    ]
+  }
+}
