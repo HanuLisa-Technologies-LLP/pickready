@@ -316,12 +316,9 @@ export interface Job {
   id: string;
   title: string;
   department: string;
-  /**
-   * Legacy free-text seniority. Superseded 2026-07-28 by the experience band
-   * below and no longer collected on the Create Job form, but still returned
-   * for jobs created before that change.
-   */
-  level: string;
+  // `level` is gone (Vivekium release, Phase 1): nothing writes or reads the
+  // free-text seniority any more. The grade and the experience band replaced
+  // it; the column survives in the database as history only.
   /** The experience band this role expects, in years. */
   experience_min_years?: number | null;
   experience_max_years?: number | null;
@@ -836,17 +833,6 @@ export const jobCompensation = (
   job: Job | null | undefined
 ): Record<string, unknown> =>
   (job?.compensation ?? job?.compensation_json ?? {}) as Record<string, unknown>;
-
-export interface ApprovalTransition {
-  id?: string;
-  level: string;
-  decision?: "approved" | "rejected" | "skipped" | string;
-  actor?: string | null;
-  actor_name?: string | null;
-  remarks?: string | null;
-  created_at?: string;
-  skipped?: boolean;
-}
 
 // ---- Candidates & matching ----
 

@@ -1,16 +1,34 @@
 "use client";
 
-// The job detail page (2026-07-27 spec §2/§3/§7). This IS the review screen, 
+// The job detail page (2026-07-27 spec §2/§3/§7). This IS the review screen,
 // there is no separate one any more.
 //
-//   [ JD, with About Company / Work Life / Benefits, Edit button top-right ]
-//   [ RUN AI MATCHING ]
-//   [ Assessment setup review: PPI framework + technical questions ]
-//   [ Inline candidate table: Name | Level | PRISM Report | Resume | 4 comments ]
+// Two tabs. The JOB DESCRIPTION tab is the job's setup, in the order the work
+// happens (Vivekium release, Phase 1, owner ruling D1):
+//
+//   [ JD: the one markdown document + the job's details (grade, band, ...) ]
+//   [ SWOT analysis (Bodha)                                                ]
+//   [ Skills: Must-have / Nice-to-have / Behavioural, at most five each    ]
+//   [ Assessment monitoring                                                ]
+//   [ Publish: the checklist and the one publish action                    ]
+//
+// The CANDIDATES tab carries the databank upload, AI matching, invitations
+// and the ranked table.
+//
+// What is gone, and why:
+//   * The per-section JD editor. The markdown document is canonical and is
+//     edited as one document through PATCH /jobs/{id}/jd; a second editor that
+//     re-rendered the document from sections discarded the recruiter's own
+//     formatting. The job's details (title, grade, band, narrative sections)
+//     are a separate, smaller form through PATCH /jobs/{id}.
+//   * `level`. The grade and the experience band replaced it; the badge reads
+//     "Grade", never "Level".
+//   * The Tatva matrix editor and the Matching Categories card
+//     (`JobSetupReview`). The Skills panel replaces both.
 //
 // Deliberately absent, per the spec: the "Added by HR after ratification"
 // metadata, the notes textbox, the approval-status display, and the separate
-// JD-edits card. Editing happens in place, in one form.
+// JD-edits card.
 
 import * as React from "react";
 import { Loader2, Pencil, Send, Sparkles } from "lucide-react";
@@ -34,14 +52,19 @@ import { useToast } from "@/components/ui/toast";
 import { PageHeader } from "@/components/app-shell";
 import { RoleTypeBadge } from "@/components/role-type-badge";
 import { ErrorState, LoadingRows } from "@/components/page-primitives";
-import { asJdLines } from "@/components/job-description";
+import { JdDocument } from "@/components/jd-document";
 import { CandidateRankingTable } from "@/components/candidate-ranking-table";
 import { DatabankUpload } from "@/components/databank-upload";
 import { PipelineFunnel } from "@/components/pipeline-status";
 import { PostingWindowBanner } from "@/components/posting-window";
 import { EmailCompositionModal } from "@/components/email-composition-modal";
-import { JobSetupReview } from "@/components/job-setup-review";
 import { JobSwotAnalysisPanel } from "@/components/job-swot-analysis";
+import { JobSkillsPanel } from "@/components/job-skills";
+import {
+  JobPublishCard,
+  type JobSetupStatus,
+} from "@/components/job-publish-card";
+import { MonitoringPolicyCard } from "@/components/proctoring/monitoring-policy-card";
 import { PPIReportModal } from "@/components/ppi-report-modal";
 import {
   MatchingReasoning,
@@ -84,25 +107,19 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-/** One labelled JD paragraph; hidden entirely when the field is empty. */
-function JdField({ label, value }: { label: string; value: unknown }) {
-  const lines = asJdLines(value);
-  if (lines.length === 0) return null;
-  return (
-    <div>
-      <h4 className="mb-1 font-semibold">{label}</h4>
-      {lines.length === 1 ? (
-        <p className="whitespace-pre-line">{lines[0]}</p>
-      ) : (
-        <ul className="list-disc space-y-1 pl-5">
-          {lines.map((line, index) => (
-            <li key={`${label}-${index}`}>{line}</li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
+/**
+ * Why the grade field is disabled. The grade locks with the skills the moment
+ * a candidate starts the assessment (D5), because it decides the question
+ * budget every candidate on the job receives. Same words the server refuses a
+ * grade change with.
+ */
+const GRADE_LOCKED_SENTENCE =
+  "The grade is locked because a candidate has started the assessment. It decides the question budget every candidate on this job receives.";
+
+/** What the Close Job toast says. Closing withholds the assessment records
+ *  from the team at once (2026-09-22); the pipeline is NOT unchanged. */
+const JOB_CLOSED_SENTENCE =
+  "New applications have stopped. This job's assessment records are now withheld from the hiring team and are deleted when the retention window ends.";
 
 /** A narrative section, with a note when it is inherited from the company. */
 function NarrativeSection({
@@ -130,45 +147,33 @@ function NarrativeSection({
   );
 }
 
-function experienceLabel(value: unknown): string | null {
-  const text = asJdLines(value)[0];
-  if (!text) return null;
-  if (typeof value === "number") return `${text}+ years`;
-  return /years?/i.test(text) ? text : `${text} years`;
-}
-
-type Draft = {
+/** The job's details: everything a recruiter edits that is not the document. */
+type DetailsDraft = {
   title: string;
   department: string;
-  level: string;
   grade: JobGrade | "";
-  role: string;
-  responsibilities: string;
-  accountabilities: string;
-  education: string;
-  skills: string;
-  experience_years: string;
+  requirement_period: string;
+  experience_min_years: string;
+  experience_max_years: string;
   about_company: string;
   work_life: string;
   benefits: string;
 };
 
-function draftFromJob(job: Job): Draft {
-  const jd = jobJd(job);
+function detailsFromJob(job: Job): DetailsDraft {
   return {
     title: job.title ?? "",
     department: job.department ?? "",
-    level: job.level ?? "",
     grade: job.grade ?? "",
-    role: asJdLines(jd.role).join("\n"),
-    responsibilities: asJdLines(jd.responsibilities).join("\n"),
-    accountabilities: asJdLines(jd.accountabilities).join("\n"),
-    education: asJdLines(jd.education).join("\n"),
-    skills: (jd.skills ?? []).join(", "),
-    experience_years:
-      jd.experience_years !== undefined && jd.experience_years !== null
-        ? String(jd.experience_years)
-        : "",
+    requirement_period: job.requirement_period ?? "",
+    experience_min_years:
+      job.experience_min_years === null || job.experience_min_years === undefined
+        ? ""
+        : String(job.experience_min_years),
+    experience_max_years:
+      job.experience_max_years === null || job.experience_max_years === undefined
+        ? ""
+        : String(job.experience_max_years),
     // Pre-filled with the RESOLVED value (spec §3.1): opening the editor shows
     // the company's text rather than an empty box, so a recruiter who only
     // wanted to tweak a sentence does not have to retype the paragraph.
@@ -176,6 +181,22 @@ function draftFromJob(job: Job): Draft {
     work_life: job.work_life ?? "",
     benefits: job.benefits ?? "",
   };
+}
+
+function yearsOrNull(value: string): number | null {
+  const text = value.trim();
+  if (!text) return null;
+  const number = Number(text);
+  return Number.isFinite(number) ? number : null;
+}
+
+function experienceBand(job: Job): string | null {
+  const low = job.experience_min_years;
+  const high = job.experience_max_years;
+  if (low === null || low === undefined || high === null || high === undefined) {
+    return null;
+  }
+  return `${low} to ${high} years`;
 }
 
 export default function OrgJobDetailPage() {
@@ -190,6 +211,12 @@ export default function OrgJobDetailPage() {
   const canDecide = hasCapability(CAP.decideProfile);
   const canUploadDatabank = hasCapability(CAP.uploadResumes);
   const canRenew = hasCapability(CAP.publishJob);
+  // The capability half of "may re-draft the skills": all three buckets. The
+  // Skills panel re-checks with the server's per-job answer.
+  const canRedraftSkills =
+    hasCapability(CAP.editMustHaveSkills) &&
+    hasCapability(CAP.editNiceToHaveSkills) &&
+    hasCapability(CAP.editBehaviouralCompetencies);
 
   // Which of the two top-level screens is showing. The JD opens first: a
   // recruiter arriving at a job usually wants to check the posting before the
@@ -198,15 +225,35 @@ export default function OrgJobDetailPage() {
 
   const [job, setJob] = React.useState<Job | null>(null);
   const [company, setCompany] = React.useState<CompanyProfile | null>(null);
-  const [editing, setEditing] = React.useState(false);
-  const [draft, setDraft] = React.useState<Draft | null>(null);
-  const [saving, setSaving] = React.useState(false);
   // Distinguishes "the job has not arrived yet" from "the job could not be
   // read". Without it a failed load left `job` null forever and the card below
   // showed its loading skeleton for the rest of the session: the job
   // description simply never appeared, and the toast that said why was long
   // gone by the time anyone looked.
   const [jobError, setJobError] = React.useState<string | null>(null);
+
+  // The one JD document, edited as one document.
+  const [editingDoc, setEditingDoc] = React.useState(false);
+  const [docDraft, setDocDraft] = React.useState("");
+  const [savingDoc, setSavingDoc] = React.useState(false);
+  // The job's details, a separate and smaller form.
+  const [editingDetails, setEditingDetails] = React.useState(false);
+  const [details, setDetails] = React.useState<DetailsDraft | null>(null);
+  const [savingDetails, setSavingDetails] = React.useState(false);
+
+  // The setup answer the Publish card reads, shared so the grade field locks
+  // from the same server answer the checklist shows.
+  const [setup, setSetup] = React.useState<JobSetupStatus | null>(null);
+  // Bumped when a SWOT save may have started a skills draft.
+  const [skillsReloadKey, setSkillsReloadKey] = React.useState(0);
+  // Bumped whenever anything the publish checklist reads may have changed.
+  const [checklistReloadKey, setChecklistReloadKey] = React.useState(0);
+  // Bumped by the SWOT panel's "Re-draft skills from the updated SWOT".
+  const [redraftSignal, setRedraftSignal] = React.useState(0);
+  const refreshChecklist = React.useCallback(
+    () => setChecklistReloadKey((key) => key + 1),
+    []
+  );
 
   const [matchingState, setMatchingState] = React.useState<
     "idle" | "running" | "done" | "error"
@@ -250,6 +297,12 @@ export default function OrgJobDetailPage() {
   const [closeOpen, setCloseOpen] = React.useState(false);
   const [closeReason, setCloseReason] = React.useState("");
 
+  /** Take a fresh job read as the page's truth, and reset both editors to it. */
+  const acceptJob = React.useCallback((next: Job) => {
+    setJob(next);
+    setDocDraft(next.jd_markdown ?? "");
+    setDetails(detailsFromJob(next));
+  }, []);
 
   /**
    * Re-open an expired posting for another fixed 30-day window.
@@ -263,8 +316,7 @@ export default function OrgJobDetailPage() {
     setRenewing(true);
     try {
       const updated = await apiPost<Job>(`/jobs/${jobId}/renew`);
-      setJob(updated);
-      setDraft(draftFromJob(updated));
+      acceptJob(updated);
       setReloadKey((key) => key + 1);
       toast({
         title: "Posting renewed",
@@ -279,7 +331,7 @@ export default function OrgJobDetailPage() {
     } finally {
       setRenewing(false);
     }
-  }, [jobId, toast]);
+  }, [jobId, toast, acceptJob]);
 
   /**
    * Close the posting because the requirement is met (workflow Gate 8).
@@ -296,15 +348,11 @@ export default function OrgJobDetailPage() {
       const updated = await apiPost<Job>(`/jobs/${jobId}/close`, {
         reason: closeReason.trim() || null,
       });
-      setJob(updated);
-      setDraft(draftFromJob(updated));
+      acceptJob(updated);
       setCloseOpen(false);
       setCloseReason("");
-      toast({
-        title: "Job closed",
-        description:
-          "New applications have stopped. Your candidate pipeline is unchanged.",
-      });
+      refreshChecklist();
+      toast({ title: "Job closed", description: JOB_CLOSED_SENTENCE });
     } catch (e) {
       toast({
         title: "Could not close this job",
@@ -314,14 +362,13 @@ export default function OrgJobDetailPage() {
     } finally {
       setClosing(false);
     }
-  }, [jobId, closeReason, toast]);
+  }, [jobId, closeReason, toast, acceptJob, refreshChecklist]);
 
   const loadJob = React.useCallback(async () => {
     setJobError(null);
     try {
       const res = await apiGet<Job>(`/jobs/${jobId}`);
-      setJob(res);
-      setDraft(draftFromJob(res));
+      acceptJob(res);
     } catch (e) {
       setJobError(
         e instanceof Error ? e.message : "This job could not be loaded."
@@ -332,7 +379,7 @@ export default function OrgJobDetailPage() {
         variant: "destructive",
       });
     }
-  }, [jobId, toast]);
+  }, [jobId, toast, acceptJob]);
 
   React.useEffect(() => {
     void loadJob();
@@ -343,41 +390,17 @@ export default function OrgJobDetailPage() {
       .catch(() => setCompany(null));
   }, [loadJob]);
 
-  const saveJd = async () => {
-    if (!draft || !job) return;
-    setSaving(true);
+  /** Save the one JD document. The server re-derives every section from it. */
+  const saveDocument = async () => {
+    if (!job) return;
+    setSavingDoc(true);
     try {
-      const updated = await apiPatch<Job>(`/jobs/${jobId}`, {
-        title: draft.title.trim(),
-        department: draft.department.trim() || null,
-        level: draft.level.trim() || null,
-        ...(draft.grade ? { grade: draft.grade } : {}),
-        jd: {
-          ...jobJd(job),
-          role: draft.role,
-          responsibilities: draft.responsibilities,
-          accountabilities: draft.accountabilities,
-          education: draft.education,
-          skills: draft.skills
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean),
-          experience_years: (() => {
-            const value = draft.experience_years.trim();
-            if (!value) return null;
-            const numeric = Number(value);
-            return Number.isFinite(numeric) ? numeric : value;
-          })(),
-        },
-        // Sending null (not "") clears the per-job override so the section
-        // falls back to the company profile, the two mean different things.
-        about_company: draft.about_company.trim() || null,
-        work_life: draft.work_life.trim() || null,
-        benefits: draft.benefits.trim() || null,
+      const updated = await apiPatch<Job>(`/jobs/${jobId}/jd`, {
+        jd_markdown: docDraft,
       });
-      setJob(updated);
-      setDraft(draftFromJob(updated));
-      setEditing(false);
+      acceptJob(updated);
+      setEditingDoc(false);
+      refreshChecklist();
       toast({ title: "Job description updated" });
     } catch (e) {
       toast({
@@ -386,7 +409,43 @@ export default function OrgJobDetailPage() {
         variant: "destructive",
       });
     } finally {
-      setSaving(false);
+      setSavingDoc(false);
+    }
+  };
+
+  /** Save the job's details. The grade is sent only when it changed, so a
+   *  locked job can still have its title or narrative sections edited. */
+  const saveDetails = async () => {
+    if (!details || !job) return;
+    setSavingDetails(true);
+    try {
+      const updated = await apiPatch<Job>(`/jobs/${jobId}`, {
+        title: details.title.trim(),
+        department: details.department.trim() || null,
+        requirement_period: details.requirement_period.trim() || null,
+        experience_min_years: yearsOrNull(details.experience_min_years),
+        experience_max_years: yearsOrNull(details.experience_max_years),
+        ...(details.grade && details.grade !== job.grade
+          ? { grade: details.grade }
+          : {}),
+        // Sending null (not "") clears the per-job override so the section
+        // falls back to the company profile, the two mean different things.
+        about_company: details.about_company.trim() || null,
+        work_life: details.work_life.trim() || null,
+        benefits: details.benefits.trim() || null,
+      });
+      acceptJob(updated);
+      setEditingDetails(false);
+      refreshChecklist();
+      toast({ title: "Job details updated" });
+    } catch (e) {
+      toast({
+        title: "Couldn't save the job details",
+        description: e instanceof Error ? e.message : undefined,
+        variant: "destructive",
+      });
+    } finally {
+      setSavingDetails(false);
     }
   };
 
@@ -543,6 +602,7 @@ export default function OrgJobDetailPage() {
 
   const overridden = new Set(job?.overridden_sections ?? []);
   const jd = job ? jobJd(job) : {};
+  const gradeLocked = Boolean(setup?.grade_locked);
 
   return (
     <div>
@@ -556,17 +616,7 @@ export default function OrgJobDetailPage() {
         title={job?.title ?? "Job"}
         description={
           job
-            ? [
-                job.department,
-                // The experience band replaced the old free-text level.
-                job.experience_min_years !== null &&
-                job.experience_min_years !== undefined &&
-                job.experience_max_years !== null &&
-                job.experience_max_years !== undefined
-                  ? `${job.experience_min_years} to ${job.experience_max_years} years`
-                  : job.level,
-                job.requirement_period,
-              ]
+            ? [job.department, experienceBand(job), job.requirement_period]
                 .filter(Boolean)
                 .join(" · ")
             : undefined
@@ -580,7 +630,7 @@ export default function OrgJobDetailPage() {
                 classification={job.role_classification}
                 creditCost={job.credit_cost_per_report}
               />
-              <Badge variant="secondary">Level: {jobGradeLabel(job.grade)}</Badge>
+              <Badge variant="secondary">Grade: {jobGradeLabel(job.grade)}</Badge>
             </div>
           ) : undefined
         }
@@ -596,6 +646,17 @@ export default function OrgJobDetailPage() {
           closing={closing}
         />
       ) : null}
+
+      {/* ── MOUNT POINT: AssessmentRetentionPanel (Phase 6) ─────────────────
+          Phase 6 builds components/assessment-retention-panel.tsx (the
+          thirty day retention state and the assessment dispute path for a
+          CLOSED job). It is mounted HERE, under the posting banner, and only
+          for a closed job:
+
+            {job?.closed_at ? <AssessmentRetentionPanel jobId={jobId} /> : null}
+
+          Deliberately not imported by Phase 1: the component does not exist
+          on this branch. */}
 
       <Dialog open={closeOpen} onOpenChange={setCloseOpen}>
         <DialogContent>
@@ -669,23 +730,25 @@ export default function OrgJobDetailPage() {
         ))}
       </div>
 
-      {/* ── Job description ─────────────────────────────────────────────── */}
+      {/* ── Job description: the one document ───────────────────────────── */}
       <Card className={cn("mb-6", tab !== "jd" && "hidden")}>
         <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
           <div>
             <CardTitle>Job description</CardTitle>
             <CardDescription>
               Reporting to {String(jd.reporting_to || "-")}
-              {jd.reportees ? ` · Reportees: ${jd.reportees}` : ""}
             </CardDescription>
           </div>
-          {canEditJd && !editing ? (
+          {job && canEditJd && !editingDoc ? (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => setEditing(true)}
+              onClick={() => {
+                setDocDraft(job.jd_markdown ?? "");
+                setEditingDoc(true);
+              }}
             >
-              <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit description
             </Button>
           ) : null}
         </CardHeader>
@@ -703,36 +766,103 @@ export default function OrgJobDetailPage() {
             />
           ) : !job ? (
             <LoadingRows rows={4} label="Loading the job description" />
-          ) : editing && draft ? (
+          ) : editingDoc ? (
+            <div className="space-y-3">
+              <Textarea
+                aria-label="Job description document"
+                className="min-h-[420px] font-mono text-[13px] leading-6"
+                value={docDraft}
+                onChange={(e) => setDocDraft(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <Button
+                  disabled={savingDoc || !docDraft.trim()}
+                  onClick={() => void saveDocument()}
+                >
+                  {savingDoc ? "Saving" : "Save description"}
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={savingDoc}
+                  onClick={() => {
+                    setDocDraft(job.jd_markdown ?? "");
+                    setEditingDoc(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (job.jd_markdown ?? "").trim() ? (
+            <JdDocument markdown={job.jd_markdown ?? ""} />
+          ) : (
+            <p>No job description has been written for this job yet.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ── The job's details: everything that is not the document ───────── */}
+      <Card className={cn("mb-6", tab !== "jd" && "hidden")}>
+        <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+          <div>
+            <CardTitle>Job details</CardTitle>
+            <CardDescription>
+              The grade decides which assessment candidates receive.
+            </CardDescription>
+          </div>
+          {job && canEditJd && !editingDetails ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setDetails(detailsFromJob(job));
+                setEditingDetails(true);
+              }}
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" /> Edit details
+            </Button>
+          ) : null}
+        </CardHeader>
+        <CardContent className="space-y-4 text-sm">
+          {!job ? (
+            jobError ? null : <LoadingRows rows={3} label="Loading the job details" />
+          ) : editingDetails && details ? (
             <div className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-3">
-                <FormField label="Title" htmlFor="jd-title" required>
+                <FormField label="Title" htmlFor="job-title" required>
                   <Input
-                    id="jd-title"
-                    value={draft.title}
-                    onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+                    id="job-title"
+                    value={details.title}
+                    onChange={(e) => setDetails({ ...details, title: e.target.value })}
                   />
                 </FormField>
-                <FormField label="Department" htmlFor="jd-dept">
+                <FormField label="Department" htmlFor="job-dept">
                   <Input
-                    id="jd-dept"
-                    value={draft.department}
+                    id="job-dept"
+                    value={details.department}
                     onChange={(e) =>
-                      setDraft({ ...draft, department: e.target.value })
+                      setDetails({ ...details, department: e.target.value })
                     }
                   />
                 </FormField>
                 <FormField
-                  label="Level"
-                  htmlFor="jd-grade"
-                  hint="Decides which assessment applicants receive."
+                  label="Grade"
+                  htmlFor="job-grade"
+                  hint={
+                    gradeLocked
+                      ? GRADE_LOCKED_SENTENCE
+                      : "Decides which assessment applicants receive."
+                  }
                 >
                   <Select
-                    value={draft.grade}
-                    onValueChange={(v) => setDraft({ ...draft, grade: v as JobGrade })}
+                    value={details.grade}
+                    disabled={gradeLocked}
+                    onValueChange={(v) =>
+                      setDetails({ ...details, grade: v as JobGrade })
+                    }
                   >
-                    <SelectTrigger id="jd-grade">
-                      <SelectValue placeholder="Select a level" />
+                    <SelectTrigger id="job-grade">
+                      <SelectValue placeholder="Select a grade" />
                     </SelectTrigger>
                     <SelectContent>
                       {JOB_GRADES.map((g) => (
@@ -745,58 +875,37 @@ export default function OrgJobDetailPage() {
                 </FormField>
               </div>
 
-              <FormField label="Role" htmlFor="jd-role">
-                <Textarea
-                  id="jd-role"
-                  rows={2}
-                  value={draft.role}
-                  onChange={(e) => setDraft({ ...draft, role: e.target.value })}
-                />
-              </FormField>
-              <FormField label="Responsibilities" htmlFor="jd-resp">
-                <Textarea
-                  id="jd-resp"
-                  rows={4}
-                  value={draft.responsibilities}
-                  onChange={(e) =>
-                    setDraft({ ...draft, responsibilities: e.target.value })
-                  }
-                />
-              </FormField>
-              <FormField label="Accountabilities" htmlFor="jd-acc">
-                <Textarea
-                  id="jd-acc"
-                  rows={3}
-                  value={draft.accountabilities}
-                  onChange={(e) =>
-                    setDraft({ ...draft, accountabilities: e.target.value })
-                  }
-                />
-              </FormField>
               <div className="grid gap-4 sm:grid-cols-3">
-                <FormField label="Education" htmlFor="jd-edu">
+                <FormField label="Experience from (years)" htmlFor="job-exp-min">
                   <Input
-                    id="jd-edu"
-                    value={draft.education}
+                    id="job-exp-min"
+                    type="number"
+                    min={0}
+                    max={60}
+                    value={details.experience_min_years}
                     onChange={(e) =>
-                      setDraft({ ...draft, education: e.target.value })
+                      setDetails({ ...details, experience_min_years: e.target.value })
                     }
                   />
                 </FormField>
-                <FormField label="Skills (comma-separated)" htmlFor="jd-skills">
+                <FormField label="Experience to (years)" htmlFor="job-exp-max">
                   <Input
-                    id="jd-skills"
-                    value={draft.skills}
-                    onChange={(e) => setDraft({ ...draft, skills: e.target.value })}
+                    id="job-exp-max"
+                    type="number"
+                    min={0}
+                    max={60}
+                    value={details.experience_max_years}
+                    onChange={(e) =>
+                      setDetails({ ...details, experience_max_years: e.target.value })
+                    }
                   />
                 </FormField>
-                <FormField label="Experience (years)" htmlFor="jd-exp">
+                <FormField label="Requirement period" htmlFor="job-period">
                   <Input
-                    id="jd-exp"
-                    placeholder="e.g. 3 or 3-5"
-                    value={draft.experience_years}
+                    id="job-period"
+                    value={details.requirement_period}
                     onChange={(e) =>
-                      setDraft({ ...draft, experience_years: e.target.value })
+                      setDetails({ ...details, requirement_period: e.target.value })
                     }
                   />
                 </FormField>
@@ -804,56 +913,56 @@ export default function OrgJobDetailPage() {
 
               <FormField
                 label="About company"
-                htmlFor="jd-about"
+                htmlFor="job-about"
                 hint="Defaults to your company profile. Editing it here changes this job only."
               >
                 <Textarea
-                  id="jd-about"
+                  id="job-about"
                   rows={4}
-                  value={draft.about_company}
+                  value={details.about_company}
                   onChange={(e) =>
-                    setDraft({ ...draft, about_company: e.target.value })
+                    setDetails({ ...details, about_company: e.target.value })
                   }
                 />
               </FormField>
               <FormField
                 label="Work life"
-                htmlFor="jd-worklife"
+                htmlFor="job-worklife"
                 hint="Defaults to your company profile. Editing it here changes this job only."
               >
                 <Textarea
-                  id="jd-worklife"
+                  id="job-worklife"
                   rows={4}
-                  value={draft.work_life}
-                  onChange={(e) => setDraft({ ...draft, work_life: e.target.value })}
+                  value={details.work_life}
+                  onChange={(e) => setDetails({ ...details, work_life: e.target.value })}
                 />
               </FormField>
               <FormField
                 label="Benefits"
-                htmlFor="jd-benefits"
+                htmlFor="job-benefits"
                 hint="Defaults to your company profile. Editing it here changes this job only."
               >
                 <Textarea
-                  id="jd-benefits"
+                  id="job-benefits"
                   rows={4}
-                  value={draft.benefits}
-                  onChange={(e) => setDraft({ ...draft, benefits: e.target.value })}
+                  value={details.benefits}
+                  onChange={(e) => setDetails({ ...details, benefits: e.target.value })}
                 />
               </FormField>
 
               <div className="flex gap-2">
                 <Button
-                  disabled={saving || !draft.title.trim()}
-                  onClick={() => void saveJd()}
+                  disabled={savingDetails || !details.title.trim()}
+                  onClick={() => void saveDetails()}
                 >
-                  {saving ? "Saving" : "Save changes"}
+                  {savingDetails ? "Saving" : "Save details"}
                 </Button>
                 <Button
                   variant="outline"
-                  disabled={saving}
+                  disabled={savingDetails}
                   onClick={() => {
-                    setDraft(draftFromJob(job));
-                    setEditing(false);
+                    setDetails(detailsFromJob(job));
+                    setEditingDetails(false);
                   }}
                 >
                   Cancel
@@ -862,26 +971,21 @@ export default function OrgJobDetailPage() {
             </div>
           ) : (
             <>
-              <JdField label="Description" value={jd.description} />
-              <JdField label="Role" value={jd.role} />
-              <JdField label="Responsibilities" value={jd.responsibilities} />
-              <JdField label="Accountabilities" value={jd.accountabilities} />
-              <JdField label="Education" value={jd.education} />
-              <JdField label="Experience" value={experienceLabel(jd.experience_years)} />
-              <div>
-                <h4 className="mb-1 font-semibold">Skills</h4>
-                <div className="flex flex-wrap gap-1.5">
-                  {(jd.skills ?? []).length > 0 ? (
-                    (jd.skills ?? []).map((s) => (
-                      <Badge key={s} variant="secondary">
-                        {s}
-                      </Badge>
-                    ))
-                  ) : (
-                    <span>-</span>
-                  )}
+              <dl className="grid gap-3 sm:grid-cols-3">
+                <div>
+                  <dt className="font-semibold">Grade</dt>
+                  <dd>{jobGradeLabel(job.grade)}</dd>
                 </div>
-              </div>
+                <div>
+                  <dt className="font-semibold">Experience</dt>
+                  <dd>{experienceBand(job) ?? "-"}</dd>
+                </div>
+                <div>
+                  <dt className="font-semibold">Requirement period</dt>
+                  <dd>{job.requirement_period || "-"}</dd>
+                </div>
+              </dl>
+              {gradeLocked ? <p className="text-xs">{GRADE_LOCKED_SENTENCE}</p> : null}
               <NarrativeSection
                 label="About company"
                 value={job.about_company}
@@ -904,10 +1008,52 @@ export default function OrgJobDetailPage() {
 
       {/* The SWOT analysis sits under the JD because that is what it is about:
           this role's hiring position, drafted from this JD. It renders its own
-          permission-aware states, so there is no capability check here. */}
+          permission-aware states, so there is no capability check here. Its
+          first save starts the skills draft on the server; a later one can
+          only OFFER a re-draft, which opens the Skills panel's confirmation. */}
       {job ? (
         <JobSwotAnalysisPanel
           jobId={job.id}
+          className={cn(tab !== "jd" && "hidden")}
+          onSaved={() => {
+            setSkillsReloadKey((key) => key + 1);
+            refreshChecklist();
+          }}
+          canRedraftSkills={canRedraftSkills}
+          onRequestSkillsRedraft={() => setRedraftSignal((n) => n + 1)}
+        />
+      ) : null}
+
+      {/* The Skills step (D1): what every candidate is assessed against. It
+          replaced the Tatva matrix editor and the Matching Categories card. */}
+      {job ? (
+        <JobSkillsPanel
+          jobId={job.id}
+          reloadKey={skillsReloadKey}
+          redraftSignal={redraftSignal}
+          onChanged={refreshChecklist}
+          className={cn(tab !== "jd" && "hidden")}
+        />
+      ) : null}
+
+      {/* The one monitoring setting, moved here from the deleted setup review:
+          it is part of setting the job up, not of reviewing candidates. */}
+      {job ? (
+        <div className={cn("mb-6", tab !== "jd" && "hidden")}>
+          <MonitoringPolicyCard jobId={job.id} />
+        </div>
+      ) : null}
+
+      {/* The one place a job goes live. */}
+      {job ? (
+        <JobPublishCard
+          jobId={job.id}
+          job={job}
+          reloadKey={checklistReloadKey}
+          onSetup={setSetup}
+          onPublished={() => {
+            void loadJob();
+          }}
           className={cn(tab !== "jd" && "hidden")}
         />
       ) : null}
@@ -927,13 +1073,6 @@ export default function OrgJobDetailPage() {
       ) : null}
 
       {/* ── Run AI matching ─────────────────────────────────────────────── */}
-      {/* ── Assessment selection (spec §3.1) ─────────────────────────────── */}
-      {/* The one manual step (spec §11): the PPI framework is reviewed and
-          saved here before any candidate can be invited. Technical questions
-          are no longer shown -- they are written per candidate during the
-          assessment, and what each person was actually asked is on their own
-          row in the table below. */}
-      {job ? <JobSetupReview jobId={jobId} /> : null}
 
       <div className="my-6 space-y-3 rounded-xl border border-border p-4">
         {canRunMatching ? (
