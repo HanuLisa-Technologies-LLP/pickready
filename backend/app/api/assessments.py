@@ -346,7 +346,6 @@ def _competency_out(row: JobCompetency) -> CompetencyOut:
         assessment_method=row.assessment_method,
         disqualifier=row.disqualifier,
         swot_origin=row.swot_origin,
-        force_rank=row.force_rank,
         provenance=scorecard.plain_provenance(item) if item is not None else [],
     )
 

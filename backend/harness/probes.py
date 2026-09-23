@@ -523,14 +523,19 @@ def read_output(name: str, ctx: ScenarioContext) -> Any:
 #: exception that widens.
 SANCTIONED_NUMERIC_FIELDS = frozenset({"match_percent"})
 
-#: Ordering coordinates, NOT scores, and deliberately not merged into the set
-#: above because they are a different claim: `force_rank` is section 20.3's
-#: position in the force-ranking (1..n) on the Hiring Manager's review screen,
-#: documented in `schemas/assessments.CompetencyOut` as "an ORDER rather than
-#: a score -- the same status the radar chart's band index has had all along".
-#: It trips `siddhi.numbers`' score-shaped-key pattern only because the word
-#: "rank" is in the name.
-ORDER_COORDINATE_FIELDS = frozenset({"force_rank"})
+#: DELIBERATELY EMPTY, AND IT IS A RECORD RATHER THAN A PLACEHOLDER.
+#:
+#: This briefly held `force_rank`, on the argument that section 20.3's
+#: force-ranking position is an ORDER rather than a score. The argument was
+#: sound; the field was not read by any screen (`grep -rn force_rank
+#: frontend/` returns nothing), so the allowlist was widening a detector to
+#: let an integer cross a boundary for no reader. The field was removed from
+#: `CompetencyOut` instead and this set emptied.
+#:
+#: Keep it empty. A genuine ordering coordinate belongs here only if
+#: something actually renders it and it cannot be rendered any other way,
+#: which is how the radar chart's band index earns its place.
+ORDER_COORDINATE_FIELDS: frozenset[str] = frozenset()
 
 #: Rule 7. The character is built from its code point rather than typed,
 #: because a repository-wide sweep for the character would otherwise rewrite

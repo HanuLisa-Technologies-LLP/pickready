@@ -815,10 +815,15 @@ def test_a_job_created_through_the_api_runs_bodha_then_sutra(
         # sentences and a grade WORD.
         #
         # `id` and `ordinal` are exempt and were always there -- a primary key
-        # and a display position are not assessment numbers. `force_rank` is an
-        # ORDER rather than a score, and is the one integer §20.3 puts on a
-        # scorecard at all.
+        # and a display position are not assessment numbers.
+        #
+        # `force_rank` WAS exempt on the argument that section 20.3's ranking
+        # is an ORDER rather than a score. It is not serialised anymore, and
+        # this assertion is what keeps it out: nothing rendered it, so it was
+        # an integer crossing the boundary for no reader, and the harness read
+        # a real finalize body and called it what it looked like.
         assert "weight" not in row and "threshold" not in row, row
+        assert "force_rank" not in row, row
         prose = " ".join(row["provenance"]) + " " + str(row["required_level"])
         assert not any(character.isdigit() for character in prose), prose
 

@@ -75,6 +75,38 @@ phase sections above them are where the sharp edges are.
 8. **A timestamp is not evidence that work happened.** Check the table.
 
 
+## How to work in this repository
+
+Standing working practice, not a phase ruling. It applies to every session.
+
+**Work token-efficiently.** Inspect the CURRENT code, not historical documents.
+This file is reverse-chronological and `docs/history/` is provenance: both
+record what was true when they were written, and neither is a description of
+how the product works today.
+
+- **Start with the files directly relevant to the task**, and follow only the
+  callers and dependencies the change actually requires. Do not scan or reread
+  the whole repository unless the task genuinely needs it.
+- **Search before opening.** `graphify query` first where the graph exists,
+  then a targeted grep. Reading a file to find out whether it is relevant is
+  the expensive way to answer a question a search answers.
+- **Keep command output bounded.** Pipe through `head`, `tail` or a count.
+  An unbounded dump of a log, a test run or a sweep costs more than the answer
+  inside it is worth.
+- **Run targeted tests while developing** and the full relevant suite only
+  before declaring the work finished. The full backend suite is minutes long;
+  a single module is seconds.
+- **Subagents are for genuinely independent work.** Never let two of them
+  modify overlapping files, and never run one beside a container build or a
+  second `scripts/test.sh` against the same database: the 2026-09-16 section
+  records what CPU and database contention look like from the outside, and it
+  looks like a hang rather than a failure.
+- **Keep progress reports short.** Do not restate context already established
+  in the session. Report what changed, what it cost and what is still open.
+- **Stop when the requested implementation is complete, tested and verified.**
+  Finishing is a state, not a feeling: the tests named in the task have run and
+  passed, and anything left undone has been said out loud.
+
 ## Current hard rules, Tatva human authority (2026-09-23)
 
 **Sutra proposes; the authorized Hiring Manager decides.** Sutra compiles an

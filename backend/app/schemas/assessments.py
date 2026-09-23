@@ -64,10 +64,36 @@ class CompetencyOut(BaseModel):
     #
     # NO NUMBER CROSSES THIS BOUNDARY. `weight`, `threshold` and the four
     # multiplier terms stay on the row; what a reviewer reads is `provenance`,
-    # a list of sentences, and `force_rank`, which is an ORDER rather than a
-    # score -- the same status the radar chart's band index has had all along,
-    # and it is what §20.3's force-ranking is FOR. A weight rendered as "1.4850"
-    # would be a number a hiring manager could not usefully argue with.
+    # a list of sentences. A weight rendered as "1.4850" would be a number a
+    # hiring manager could not usefully argue with.
+    #
+    # `force_rank` WAS SERIALISED HERE UNTIL 2026-09-23, on the argument that
+    # §20.3's force-ranking is an ORDER rather than a score, the status the
+    # radar chart's band index has always had. The argument is sound and it
+    # still lost to one measurement: `grep -rn force_rank frontend/` returns
+    # NOTHING. No screen has ever drawn it.
+    #
+    # That is what separates it from the band index, which earns its exemption
+    # by being a coordinate a radar cannot be drawn without. This was an
+    # integer crossing the boundary for no reader, so it bought none of the
+    # traceability it was added for while costing the rule that keeps every
+    # other number inside -- a rule `test_platform_audit.py` pins at exactly
+    # one field, `match_percent`.
+    #
+    # THE HARNESS FOUND IT AND WAS BRIEFLY WEAKENED TO ACCOMMODATE IT. The
+    # `no_numbers_to_client` probe reads a real `framework/finalize` body and
+    # flagged `competencies[N].force_rank` as a score-shaped key; the first
+    # repair allowlisted the name. Widening a detector so an unused field can
+    # keep crossing is the green-while-broken shape this repository already
+    # has a rule about, so the field went instead and the allowlist went with
+    # it.
+    #
+    # It had been invisible because finalize used to REFUSE a matrix carrying
+    # human-added criteria, so no scenario ever got a populated body back to
+    # inspect. Repairing that path is what let the older defect be seen.
+    #
+    # The COLUMN is untouched and still ranks internally; `ordinal` carries
+    # display order to the review screen.
 
     #: Stage 2: what we would SEE if a candidate had this.
     observable_evidence: str | None = None
@@ -78,9 +104,6 @@ class CompetencyOut(BaseModel):
     #: The hiring manager's own sentence, quoted, when a Layer 3 input produced
     #: this criterion.
     swot_origin: str | None = None
-    #: §20.3's position in the force-ranking, 1..n, or null for a behavioural
-    #: competency (§20.1's scorecard has no behavioural row to rank).
-    force_rank: int | None = None
     #: Where the weight came from, in sentences. `hiring.scorecard.plain_provenance`.
     provenance: list[str] = []
 
