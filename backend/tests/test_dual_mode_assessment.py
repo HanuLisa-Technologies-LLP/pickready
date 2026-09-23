@@ -116,6 +116,20 @@ PERMITTED_IMPORTERS = {
     # not a scorer and its own importers (the dashboard, the /videos routes)
     # deliberately do not touch the pipeline package.
     "services/assessment_video_access.py",
+    # The deletion side of the same artifact (owner ruling, 2026-09-22:
+    # assessment media is stored, and its retention and deletion lifecycle is
+    # preserved). It reads `video.storage.delete_verified` so a deletion is
+    # HEAD-confirmed by the SAME function the pipeline already uses; a second
+    # deleter would be a second answer to "is the object really gone". It
+    # scores nothing and is imported by the erasure, job-closure and retention
+    # callers, none of which touch the pipeline package.
+    "services/assessment_media_retention.py",
+    # Candidate erasure. A person asking for their data to go must reach their
+    # stored recordings, and it reaches them through
+    # `video.storage.delete_verified` so the HEAD-confirmed deletion contract
+    # is the pipeline's own rather than a second copy of it. It scores
+    # nothing; it only deletes.
+    "services/erasure.py",
 }
 
 FORBIDDEN_TARGET = "app.services.video"
@@ -394,7 +408,7 @@ async def test_consent_records_the_versions_in_force(monkeypatch) -> None:
     from app.core.config import get_settings
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
-    from app.services import assessment_consent
+    from app.services import assessment_consent, consent_catalog
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -404,11 +418,17 @@ async def test_consent_records_the_versions_in_force(monkeypatch) -> None:
             async with s.begin():
                 async with superadmin_scope(s):
                     conversation = await s.get(AssessmentConversation, fx.conv_id)
+                    # Every Stage B item ticked: the service refuses a short
+                    # list (vivekium feature 6, each item consented
+                    # individually), so the full set is what acceptance means.
+                    keys = list(consent_catalog.STAGE_B_KEYS)
                     first = await assessment_consent.record_consent(
-                        s, conversation, candidate_id=fx.cand_id
+                        s, conversation, candidate_id=fx.cand_id,
+                        consent_keys=keys,
                     )
                     again = await assessment_consent.record_consent(
-                        s, conversation, candidate_id=fx.cand_id
+                        s, conversation, candidate_id=fx.cand_id,
+                        consent_keys=keys,
                     )
                     settings = get_settings()
                     assert first.assessment_mode == "video_interview"

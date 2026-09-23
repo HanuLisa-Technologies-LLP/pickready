@@ -163,7 +163,7 @@ async def _company_profile_out(
     tenant = await session.get(Tenant, tenant_id)
     return CompanyProfileOut(
         tenant_id=tenant_id,
-        company_name=tenant.name if tenant else "ReadyPick",
+        company_name=tenant.name if tenant else "Vivekium",
         industry=tenant.industry if tenant else None,
         about_company=company.about_company if company else None,
         work_life=company.work_life if company else None,
@@ -254,6 +254,7 @@ async def research_company_profile(
         sources=draft.sources,
         degraded=draft.degraded,
         message=draft.message,
+        empty_state_keys=draft.empty_state_keys,
     )
 
 
@@ -387,14 +388,14 @@ async def _ensure_invite_template(session: AsyncSession, tenant_id: uuid.UUID) -
         EmailTemplate(
             tenant_id=tenant_id,
             name="staff_invite",
-            subject="You've been invited to {{company_name}} on ReadyPick",
+            subject="You've been invited to {{company_name}} on Vivekium",
             body=(
                 "Hi {{full_name}},\n\n"
                 "{{invited_by}} has invited you to join {{company_name}} on "
-                "ReadyPick as a {{role_label}}.\n\n"
+                "Vivekium as a {{role_label}}.\n\n"
                 "Accept your invitation here:\n\n{{invite_link}}\n\n"
                 "You'll sign in with Google or with an email and password, "
-                "ReadyPick never asks you to set a separate password.\n\n"
+                "Vivekium never asks you to set a separate password.\n\n"
                 "This link expires on {{expires_on}}.\n\n"
                 ", The {{company_name}} team"
             ),
@@ -443,7 +444,14 @@ async def _issue_invite(
 
     link = build_invite_link(get_settings().frontend_url, token)
     await _ensure_invite_template(session, actor.tenant_id)
-    dispatch = _email_dispatch_state()
+    # `dispatch_state`, NOT `dispatch`. This local was called `dispatch` and it
+    # SHADOWED THE IMPORTED FUNCTION on the next line: `_email_dispatch_state()`
+    # returns a str, so `dispatch(...)` below raised
+    # `TypeError: 'str' object is not callable` and POST /companies/me/staff
+    # answered 500 unconditionally. Staff invitation has been completely broken
+    # since 2026-09-05, and no test ever issued the request, so nothing caught
+    # it. The third return value is the STATE, which is what the caller wants.
+    dispatch_state = _email_dispatch_state()
     # Rule 4: delivery is ALWAYS a dispatched task, never inline in the handler.
     dispatch(
         "pickready.send_email",
@@ -462,14 +470,14 @@ async def _issue_invite(
             },
         ],
     )
-    return invite, link, dispatch
+    return invite, link, dispatch_state
 
 
 async def _tenant_name(session: AsyncSession, tenant_id: uuid.UUID | None) -> str:
     if tenant_id is None:
-        return "ReadyPick"
+        return "Vivekium"
     tenant = await session.get(Tenant, tenant_id)
-    return tenant.name if tenant is not None else "ReadyPick"
+    return tenant.name if tenant is not None else "Vivekium"
 
 
 async def _load_staff(
@@ -601,7 +609,7 @@ async def create_staff(
                 action="staff_created", target_type="user", target_id=staff_user.id,
                 metadata={"role": role.value, "email": str(body.email)})
 
-    # New staff activate on their first verified Firebase sign-in — ReadyPick
+    # New staff activate on their first verified Firebase sign-in — Vivekium
     # never generates a password or an app OTP for them (rule 2).
     actor = await session.get(User, user.user_id)
     invite, link, dispatch = await _issue_invite(
@@ -1112,7 +1120,7 @@ async def update_email_template(
 #
 # The WRITE half of the Provider Portal's compliance section (spec Â§3.3): the
 # customer's HR Head files their own tax and commercial records here, and the
-# ReadyPick owner reads them through api/provider.py. The split is deliberate
+# Vivekium owner reads them through api/provider.py. The split is deliberate
 # and complete â€” the Provider router has no upload route, this router has no
 # cross-tenant read, and RLS confines every statement below to the caller's own
 # tenant regardless.

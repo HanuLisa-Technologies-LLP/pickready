@@ -9,6 +9,21 @@ bounded set of meaningful files is downloaded, each under its own size cap.
 
 Fetched content is repository DATA, never instructions (the same rule resume
 chunks follow through conversation_guardrails downstream).
+
+EVERY OUTBOUND REQUEST GOES THROUGH `services/egress` (W9.3). This module
+fetches from a CANDIDATE SUPPLIED URL, from a task that also holds tenant data,
+which is a server side request forgery primitive and an exfiltration primitive
+in one object. `validate_repository_url` below is in band: it checks the string
+the candidate typed, once, before a redirect chain it never sees. `egress` is
+what re-applies a host allowlist on every hop, refuses an address that resolves
+to loopback, link-local or a cloud metadata endpoint, and bounds the read.
+Neither replaces the other, and neither is the boundary: the network layer is.
+
+NOTE THAT `SUPPORTED_HOSTS` AND `egress.ALLOWED_HOSTS` ARE DIFFERENT LISTS and
+must stay so. The first is the set of hosts a candidate may paste a link to
+(github.com); the second is the set of hosts this service may open a connection
+to (api.github.com, raw.githubusercontent.com). Merging them would either let a
+candidate address the API directly or stop this module reaching it at all.
 """
 from __future__ import annotations
 
@@ -20,6 +35,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.core.config import get_settings
+from app.services import egress
 from app.services.projects.formats import (
     FAMILY_ARCHIVE,
     FAMILY_IMAGE,
@@ -28,8 +44,6 @@ from app.services.projects.formats import (
     is_ignored_path,
 )
 from app.services.projects.limits import ProjectLimits
-
-_FETCH_TIMEOUT = 30.0
 
 
 class RepositoryRejected(RuntimeError):
@@ -212,9 +226,9 @@ def _raise_for_github(response: httpx.Response, ref: RepositoryRef) -> None:
 
 async def _fetch_github(ref: RepositoryRef, limits: ProjectLimits) -> RepositoryFetch:
     headers = _github_headers()
-    async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, headers=headers) as client:
-        meta_response = await client.get(
-            f"https://api.github.com/repos/{ref.owner}/{ref.name}"
+    async with egress.build_client(headers=headers) as client:
+        meta_response = await egress.get(
+            client, f"https://api.github.com/repos/{ref.owner}/{ref.name}"
         )
         _raise_for_github(meta_response, ref)
         meta = meta_response.json()
@@ -222,9 +236,10 @@ async def _fetch_github(ref: RepositoryRef, limits: ProjectLimits) -> Repository
             raise RepositoryRejected("Only public repositories are supported.")
         branch = str(meta.get("default_branch") or "main")
 
-        tree_response = await client.get(
+        tree_response = await egress.get(
+            client,
             f"https://api.github.com/repos/{ref.owner}/{ref.name}"
-            f"/git/trees/{branch}?recursive=1"
+            f"/git/trees/{branch}?recursive=1",
         )
         _raise_for_github(tree_response, ref)
         tree = tree_response.json()
@@ -245,9 +260,10 @@ async def _fetch_github(ref: RepositoryRef, limits: ProjectLimits) -> Repository
         files: list[tuple[str, bytes]] = []
         for entry in chosen:
             path = str(entry["path"])
-            raw = await client.get(
+            raw = await egress.get(
+                client,
                 f"https://raw.githubusercontent.com/{ref.owner}/{ref.name}"
-                f"/{branch}/{path}"
+                f"/{branch}/{path}",
             )
             if raw.status_code != 200:
                 limitations.append(f"One file could not be fetched: {path}")
@@ -290,6 +306,14 @@ async def fetch_repository(ref: RepositoryRef, limits: ProjectLimits) -> Reposit
         raise RepositoryRejected("That repository provider is not supported yet.")
     try:
         return await fetcher(ref, limits)
+    except egress.EgressRefused as exc:
+        # TERMINAL, not retryable, and it becomes a candidate-safe REJECTION
+        # rather than an outage: waiting will not make an off-allowlist host or
+        # a link-local address acceptable, and reporting it as "unavailable"
+        # would retry an attack on a schedule.
+        raise RepositoryRejected(
+            f"The repository link could not be fetched safely. {exc.reason}"
+        ) from exc
     except httpx.HTTPError as exc:
         raise RepositoryUnavailable(
             f"repository fetch failed: {type(exc).__name__}"

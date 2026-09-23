@@ -38,7 +38,7 @@ afterEach(cleanup);
 const wrap = (node: React.ReactNode) =>
   render(<TooltipProvider>{node}</TooltipProvider>);
 
-describe("Ready Pick Score", () => {
+describe("Vivekium Score", () => {
   it("shows the number, because D8 licenses exactly this one", () => {
     // The other half of the no-numbers rule, and the half a well-meaning
     // sweep would delete. spec-doc6 D8 carved this exception deliberately.
@@ -61,7 +61,7 @@ describe("Ready Pick Score", () => {
     const cell = screen.getByTestId("ready-pick-score");
     expect(cell.getAttribute("data-band")).toBe(BAND_PENDING);
     expect(cell.textContent).not.toMatch(/\d/);
-    expect(cell.textContent).toContain("Pending Ready Pick Profile");
+    expect(cell.textContent).toContain("Pending Vivekium Profile");
   });
 
   it("announces Under Review with its meaning, not as a colour", () => {
@@ -121,10 +121,10 @@ describe("Ready Pick Score", () => {
   });
 });
 
-describe("Ready Pick Note", () => {
+describe("Vivekium Note", () => {
   it("renders the pending sentence rather than an empty cell", () => {
     wrap(<NoteCell row={row()} />);
-    expect(screen.getAllByText("Ready Pick Profile not written yet.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Vivekium Profile not written yet.").length).toBeGreaterThan(0);
   });
 
   it("is never bold and never coloured", () => {
@@ -140,7 +140,7 @@ describe("Ready Pick Note", () => {
   });
 });
 
-describe("Ready Pick Profile button", () => {
+describe("Vivekium Profile button", () => {
   it("is disabled with an explanation before a profile exists", () => {
     wrap(<ProfileButton row={row()} onOpen={() => undefined} />);
     const button = screen.getByRole("button", { name: /not available/i });
@@ -148,7 +148,7 @@ describe("Ready Pick Profile button", () => {
   });
 
   it("names the PRISM Report as a different document in its explanation", () => {
-    // spec-doc6 C15: the row's pending state refers to the Ready Pick Profile,
+    // spec-doc6 C15: the row's pending state refers to the Vivekium Profile,
     // not to the delivered PRISM Report.
     expect(row().profile_pending_reason).toContain("PRISM Report");
   });
@@ -163,7 +163,7 @@ describe("Ready Pick Profile button", () => {
         onOpen={() => undefined}
       />
     );
-    const button = screen.getByRole("button", { name: /Open the Ready Pick Profile/i });
+    const button = screen.getByRole("button", { name: /Open the Vivekium Profile/i });
     expect(button.hasAttribute("disabled")).toBe(false);
   });
 });

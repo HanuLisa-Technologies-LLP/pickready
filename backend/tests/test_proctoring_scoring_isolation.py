@@ -1,7 +1,7 @@
 """Proctoring touches no score, and nothing that scores touches it (P3).
 
     P3: "Proctoring never affects any score or ranking. It must not feed into
-     the AI Hiring Score, the Ready Pick Score, the Executive Profile
+     the AI Hiring Score, the Vivekium Score, the Executive Profile
      evaluation, candidate ranking, or any sorting. It is reported separately
      and only."
 

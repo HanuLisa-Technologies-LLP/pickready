@@ -47,8 +47,15 @@ import {
   MatchingReasoning,
   type MatchingProgress,
 } from "@/components/matching-reasoning";
+import {
+  AiActivityIndicator,
+  useAiActivity,
+} from "@/components/ai-activity";
+import type {
+  AiTransportState,
+  CarriesAiActivity,
+} from "@/lib/ai-activity";
 import { AssessmentTranscriptModal } from "@/components/assessment-transcript";
-import { ResumeViewer } from "@/components/resume-viewer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -211,11 +218,30 @@ export default function OrgJobDetailPage() {
    *  until the first poll answers, so the panel is absent rather than empty. */
   const [matchingProgress, setMatchingProgress] =
     React.useState<MatchingProgress | null>(null);
+  /**
+   * The dispatched run id, which is also this AI operation's activity id.
+   *
+   * One identifier for both, rather than a second one invented for the status:
+   * the browser is holding the run id before the task has been picked up, so
+   * every activity payload is attributable from the first poll, and a second
+   * run started from another tab cannot repaint this one (Case 3 section 24).
+   */
+  const [matchingRunId, setMatchingRunId] = React.useState("");
+  const matchingActivity = useAiActivity(matchingRunId);
+  /**
+   * The latest activity view, for the poll loop below.
+   *
+   * `runMatching` is an async function, so it closes over the view from the
+   * render it was called in, and that view still carries the PREVIOUS run id.
+   * Reporting through it would file the new run's payloads under the old
+   * operation and every one of them would be discarded as foreign.
+   */
+  const matchingActivityRef = React.useRef(matchingActivity);
+  matchingActivityRef.current = matchingActivity;
   const [reloadKey, setReloadKey] = React.useState(0);
 
   const [reportRow, setReportRow] = React.useState<RankedCandidate | null>(null);
   const [transcriptRow, setTranscriptRow] = React.useState<RankedCandidate | null>(null);
-  const [resumeRow, setResumeRow] = React.useState<RankedCandidate | null>(null);
   const [emailRows, setEmailRows] = React.useState<RankedCandidate[]>([]);
   const [selectedRows, setSelectedRows] = React.useState<RankedCandidate[]>([]);
   const [inviting, setInviting] = React.useState(false);
@@ -437,18 +463,31 @@ export default function OrgJobDetailPage() {
   const runMatching = async () => {
     setMatchingState("running");
     setMatchingProgress(null);
+    // Clears the previous run's activity before this one has an id of its own,
+    // so the last line of a finished run is never sitting under a button that
+    // has just been pressed again.
+    setMatchingRunId("");
     setMatchingMessage("Starting the run.");
     try {
       const res = await apiPost<{ candidate_count: number; task_id: string }>(
         `/jobs/${jobId}/run-matching`
       );
+      setMatchingRunId(res.task_id);
       let finished = false;
       let finalState = "PENDING";
       for (let attempt = 0; attempt < 240; attempt += 1) {
-        const status = await apiGet<MatchingTaskStatus>(
+        const status = await apiGet<MatchingTaskStatus & CarriesAiActivity>(
           `/matching/tasks/${res.task_id}`
         );
         finalState = status.state;
+        // The AI activity line, from the same response the stage list comes
+        // from, so the two cannot be read a poll apart from each other. The
+        // field is optional: a response without it leaves the indicator silent
+        // rather than the page inventing a status it was not given.
+        matchingActivityRef.current.report(
+          status.activity,
+          status.state as AiTransportState
+        );
         // The stage list is always returned, including for a task still sitting
         // in the queue, so the panel draws the whole plan at once and fills it
         // in rather than appearing to invent steps as it goes.
@@ -487,6 +526,10 @@ export default function OrgJobDetailPage() {
       });
     } catch (e) {
       setMatchingState("error");
+      // Ends the activity immediately. Without this the last line the run
+      // reported stays on screen describing a step that is no longer running,
+      // which is the failure Case 3 section 25 names.
+      matchingActivityRef.current.fail();
       setMatchingMessage(
         e instanceof Error ? e.message : "AI matching could not be started."
       );
@@ -560,8 +603,17 @@ export default function OrgJobDetailPage() {
             <DialogTitle>Close this job?</DialogTitle>
             <DialogDescription>
               New applications stop immediately and the public link stops
-              working. Every candidate already in your pipeline stays, including
-              anyone part-way through an assessment. This cannot be undone.
+              working. Every candidate already in your pipeline stays, but the
+              assessment data for this job, the PRISM Reports, the assessment
+              scores, the interview transcripts and any recordings, becomes
+              unavailable to your team the moment you close it: candidates
+              consented to their assessment data on the basis that it lives
+              only as long as this position. It is kept for 30 more days and
+              can be retrieved in that time only through the assessment
+              dispute process. After 30 days it is permanently deleted and
+              cannot be recovered. Your ranked list, pipeline stages and
+              billing records remain. There is no reopen, so those 30 days
+              are the only way back from closing the wrong job.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -901,11 +953,23 @@ export default function OrgJobDetailPage() {
           </div>
         ) : null}
         {canRunMatching ? (
-          <MatchingReasoning
-            state={matchingState}
-            progress={matchingProgress}
-            message={matchingMessage}
-          />
+          <>
+            {/* One line saying what the run is doing right now, derived from
+                the milestones the pipeline actually reached. It sits above the
+                stage list rather than replacing it: the list is the plan and
+                what is left, this is the current work and what it turned up. */}
+            <AiActivityIndicator
+              activity={matchingActivity}
+              errorMessage={
+                matchingState === "error" ? matchingMessage : undefined
+              }
+            />
+            <MatchingReasoning
+              state={matchingState}
+              progress={matchingProgress}
+              message={matchingMessage}
+            />
+          </>
         ) : null}
         {canEmail ? (
           <div className="flex flex-wrap items-center gap-3">
@@ -921,7 +985,7 @@ export default function OrgJobDetailPage() {
               Send assessment invitations
               {invitable.length > 0 ? ` (${invitable.length})` : ""}
             </Button>
-            <p className="text-xs leading-5">
+            <p className="text-xs">
               {selectedRows.length === 0
                 ? "Tick candidates below, then return here to send their assessment invitations."
                 : `${invitable.length} of ${selectedRows.length} selected can be invited; the rest are already past this stage.`}
@@ -942,7 +1006,7 @@ export default function OrgJobDetailPage() {
               )}
               Invite to apply ({sourcedSelected.length})
             </Button>
-            <p className="text-xs leading-5">
+            <p className="text-xs">
               These candidates came from your databank and have not applied.
               This asks them to sign in and apply; nothing enters your pipeline
               until they do.
@@ -959,7 +1023,6 @@ export default function OrgJobDetailPage() {
         reloadKey={reloadKey}
         onOpenReport={setReportRow}
         onOpenTranscript={setTranscriptRow}
-        onOpenResume={setResumeRow}
         onEmail={canEmail ? setEmailRows : undefined}
         onSelectionChange={setSelectedRows}
         canDecide={canDecide}
@@ -981,16 +1044,6 @@ export default function OrgJobDetailPage() {
         linkId={transcriptRow?.link_id ?? null}
         candidateName={transcriptRow?.full_name ?? ""}
         jobTitle={job?.title}
-      />
-
-      <ResumeViewer
-        open={resumeRow !== null}
-        onOpenChange={(open) => !open && setResumeRow(null)}
-        resumeUrl={resumeRow?.resume_url}
-        profileId={resumeRow?.profile_id}
-        resumeFileName={resumeRow?.resume_filename}
-        resumeMimeType={resumeRow?.resume_mime_type}
-        candidateName={resumeRow?.full_name ?? ""}
       />
 
       <EmailCompositionModal

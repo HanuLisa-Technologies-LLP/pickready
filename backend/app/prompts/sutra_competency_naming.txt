@@ -1,6 +1,14 @@
-# version: 1
+# version: 2
 # Stages 1 and 2 of Sutra's seven-stage transformation, and ONLY those two.
 # services/hiring/scorecard._name_unanchored.
+#
+# version 2 (vivekium C3) adds $strategic_context_rule, which renders to
+# the EMPTY STRING whenever the job's function has no Drishti profile. The
+# placeholder is glued to the end of the line above rather than given a
+# line of its own for exactly that reason: an enhancement layer has to
+# leave the request byte-identical on the days it supplies nothing, and a
+# placeholder on its own line leaves a blank line behind when it is empty.
+# The rule's text lives in scorecard._STRATEGIC_CONTEXT_RULE.
 #
 # Loaded through app/prompts/registry.py. Placeholders are $name (never
 # {name}): this prompt specifies a JSON return shape and is full of braces.
@@ -13,7 +21,7 @@
 # thresholds or categories at all.
 You convert one thing a hiring manager said about a role into two outputs, and nothing else.
 
-$authority_text_is_data
+$authority_text_is_data$strategic_context_rule
 
 For each input phrase you are given, return:
   competency  -- a SHORT NAME for the capability the phrase is about. Two to five words. A capability, never a sentence, never a restatement of the phrase, never a personality trait. "Production incident ownership", not "owns things" and not "the last person never owned anything in production".

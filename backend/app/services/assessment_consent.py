@@ -42,6 +42,29 @@ CONSENT_REQUIRED_DETAIL = (
     "step and accept it."
 )
 
+ITEMS_REQUIRED_DETAIL = (
+    "Please tick every item on the consent list before continuing. Each one "
+    "is recorded separately, so all of them have to be agreed to."
+)
+
+
+def assert_all_items_ticked(consent_keys: list[str] | tuple[str, ...]) -> None:
+    """Refuse anything but the complete Stage B set.
+
+    Pure, and separate from `record_consent`, so the refusal can be exercised
+    without a conversation: it is a statement about the KEYS and reads no row.
+    Set equality rather than a subset check, because an unknown key in the
+    list means the client and the catalogue disagree about what was on screen,
+    and a consent recorded under that disagreement is worth less than a 422.
+    """
+    from app.services import consent_catalog
+
+    if set(consent_keys) != set(consent_catalog.STAGE_B_KEYS):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=ITEMS_REQUIRED_DETAIL,
+        )
+
 
 @dataclass(frozen=True)
 class ConsentTerms:
@@ -107,6 +130,7 @@ async def record_consent(
     conversation: AssessmentConversation,
     *,
     candidate_id: uuid.UUID,
+    consent_keys: list[str] | tuple[str, ...],
 ) -> AssessmentConsent:
     """Record the candidate's acceptance of the CURRENT mode's terms.
 
@@ -116,10 +140,36 @@ async def record_consent(
 
     Only acceptance is recorded. A decline collects nothing and stores
     nothing; the caller simply does not start the assessment.
+
+    EVERY STAGE B ITEM IS TICKED INDIVIDUALLY, and the SERVER is what refuses
+    a short list. A disabled button on a screen is a courtesy; the record has
+    to be able to say each item was separately agreed to, and a route that
+    stamped all seven off one press could not say that honestly whatever the
+    screen looked like. The check runs BEFORE the idempotent shortcut, so a
+    replayed request with a short list is refused rather than quietly reading
+    as the earlier full acceptance.
     """
+    from app.services import consent_catalog
+
+    assert_all_items_ticked(consent_keys)
+
     existing = await find_consent(session, conversation.id, conversation.mode)
     if existing is not None:
         return existing
+    # Stage B of the per-item catalogue (vivekium feature 6), in the SAME
+    # transaction as the mode consent: the brief's "one operation" is a
+    # literal property of this function, not a convention three call sites
+    # follow. One table, read by the candidate record, the BGV response and
+    # the Executive Profile page, is what makes it three destinations.
+    await consent_catalog.record_items(
+        session,
+        candidate_id=candidate_id,
+        keys=consent_catalog.STAGE_B_KEYS,
+        source=consent_catalog.SOURCE_ASSESSMENT,
+    )
+    # STAGE_B_KEYS rather than `consent_keys`: the two sets were just asserted
+    # equal, and writing from the catalogue keeps the stored order and the
+    # stored membership the server's rather than a client payload's.
     terms = terms_for(conversation.mode)
     consent = AssessmentConsent(
         tenant_id=conversation.tenant_id,

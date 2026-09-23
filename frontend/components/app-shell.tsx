@@ -15,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
 import { Logo } from "@/components/brand";
+import { MAIN_CONTENT_ID, SkipToContent } from "@/components/page-primitives";
 import { WorkspaceContentBoundary } from "@/components/workspace-boundary";
 import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import { Button } from "@/components/ui/button";
@@ -118,7 +119,7 @@ function AccountBlock({ compact = false }: { compact?: boolean }) {
               <p className="truncate text-xs font-semibold">
                 {user.full_name || user.email}
               </p>
-              <p className="truncate text-xs opacity-80">{user.email}</p>
+              <p className="truncate text-xs">{user.email}</p>
             </div>
           </div>
           <WorkspaceSwitcher />
@@ -232,6 +233,7 @@ export function AppShell({
 
   return (
     <div className="flex min-h-screen bg-canvas text-foreground">
+      <SkipToContent />
       <aside
         className={cn(
           "fixed inset-y-0 left-0 hidden shrink-0 flex-col border-r border-border bg-surface transition-[width] duration-150 md:flex",
@@ -246,7 +248,7 @@ export function AppShell({
           ) : (
             <>
               <Logo variant="full" height={34} href="/" />
-              <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em] opacity-70">
+              <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em]">
                 {title}
               </p>
               {user ? (
@@ -323,7 +325,7 @@ export function AppShell({
               <SheetTitle className="sr-only">{title}</SheetTitle>
               <div className="px-5 py-6">
                 <Logo variant="full" height={32} />
-                <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em] opacity-70">
+                <p className="mt-3 text-xs font-medium uppercase tracking-[0.12em]">
                   {title}
                 </p>
               </div>
@@ -348,7 +350,11 @@ export function AppShell({
           </Button>
         </header>
 
-        <main className="mx-auto w-full max-w-[1400px] flex-1 px-6 py-6 md:px-10 md:py-8">
+        <main
+          id={MAIN_CONTENT_ID}
+          tabIndex={-1}
+          className="mx-auto w-full max-w-[1400px] flex-1 px-6 py-6 outline-none md:px-10 md:py-8"
+        >
           <WorkspaceContentBoundary user={user}>
             {loading && !user ? <ShellSkeleton /> : children}
           </WorkspaceContentBoundary>
@@ -418,7 +424,7 @@ export function PageHeader({
           {title}
         </h1>
         {description ? (
-          <p className="mt-2 max-w-2xl text-pretty text-sm leading-6">
+          <p className="mt-3 max-w-2xl text-pretty text-sm">
             {description}
           </p>
         ) : null}

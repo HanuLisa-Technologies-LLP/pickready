@@ -18,7 +18,7 @@ exemptions (a radar axis's band index, and the candidate's own verbatim
 submission) live in `siddhi.numbers` and are argued there.
 
 It RAISES rather than redacting. A response that silently dropped a field would
-leave the reader unable to tell a redaction from an omission, and a Ready Pick
+leave the reader unable to tell a redaction from an omission, and a Vivekium
 Score that reached a response model is a defect in the model, not in the row.
 The failure is loud, names the exact path, and is the actionable form of the
 D8 ruling: it must be technically impossible for the dashboard's triage number

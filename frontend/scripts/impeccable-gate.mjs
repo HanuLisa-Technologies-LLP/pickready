@@ -104,8 +104,40 @@ function loadFindings() {
   return JSON.parse(raw.slice(start));
 }
 
+/**
+ * Drop findings in files git does not track.
+ *
+ * `impeccable detect .` walks the whole tree, which includes GENERATED output
+ * that happens to be HTML -- the knowledge-graph viewer under `graphify-out/`
+ * is the one that surfaced this. Those files are not product UI, nobody wrote
+ * their markup, and there is no fix: the only way to change them is to change
+ * a third-party tool's renderer. Left in, they fail the gate permanently for a
+ * reason unrelated to anything in the product, and the usual response to a gate
+ * that fails for a reason nobody can act on is to stop reading it.
+ *
+ * Asked of GIT rather than hardcoded as a directory list, so this cannot drift:
+ * the set of generated output is exactly the set `.gitignore` already names,
+ * and a new build directory is covered the day it is ignored. It is NOT a
+ * blanket relaxation -- an ignored file is by definition one nobody reviews in
+ * a diff, so nothing that ships is excluded here.
+ */
+function isGitIgnored(file) {
+  try {
+    execFileSync("git", ["check-ignore", "--quiet", "--", file], {
+      cwd: repoRoot,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    // Exit 1 is "not ignored", which is the ordinary answer. A git that is not
+    // present at all lands here too and reports everything, which is the safe
+    // direction: the gate judges more, never less.
+    return false;
+  }
+}
+
 const exceptions = loadExceptions();
-const findings = loadFindings();
+const findings = loadFindings().filter((finding) => !isGitIgnored(finding.file));
 
 function isExcepted(finding) {
   const rel = relative(repoRoot, finding.file).split(sep).join("/");

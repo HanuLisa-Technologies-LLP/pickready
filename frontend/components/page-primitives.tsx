@@ -22,6 +22,39 @@ import { Skeleton } from "@/components/ui/skeleton";
  */
 
 /* -------------------------------------------------------------------------- */
+/*  SkipToContent                                                              */
+/* -------------------------------------------------------------------------- */
+
+/** The id every shell puts on its `<main>`, and the target of the skip link. */
+export const MAIN_CONTENT_ID = "main";
+
+/**
+ * The first focusable thing on the page: hidden until it takes focus, then a
+ * solid brand chip in the top left that jumps past the chrome.
+ *
+ * ONE IMPLEMENTATION, FOUR SHELLS. The public layout had this inline and the
+ * signed-in shell had nothing, which is the wrong way round: the marketing
+ * header is one row of links, while `AppShell` puts a whole navigation rail,
+ * a workspace switcher and a sign-out button in front of the content on every
+ * single route. A keyboard user tabbed through all of it to reach the page,
+ * again, on every navigation.
+ *
+ * `tabIndex={-1}` on the target is the other half and it is not optional:
+ * without it the browser scrolls to the anchor and leaves the focus ring
+ * behind on the skip link, so the next Tab goes back into the navigation.
+ */
+export function SkipToContent({ children = "Skip to content" }: { children?: React.ReactNode }) {
+  return (
+    <a
+      href={`#${MAIN_CONTENT_ID}`}
+      className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[60] focus:bg-brand-600 focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white"
+    >
+      {children}
+    </a>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Section                                                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -51,7 +84,7 @@ export function Section({
           <div className="min-w-0 space-y-1">
             <CardTitle className="text-base">{title}</CardTitle>
             {description ? (
-              <p className="text-sm leading-6">{description}</p>
+              <p className="text-sm">{description}</p>
             ) : null}
           </div>
           {actions ? (
@@ -99,7 +132,7 @@ export function EmptyState({
       </span>
       <p className="mt-4 text-base font-semibold">{title}</p>
       {description ? (
-        <p className="mt-1 max-w-sm text-pretty text-sm leading-6">
+        <p className="mt-1 max-w-sm text-pretty text-sm">
           {description}
         </p>
       ) : null}
@@ -137,7 +170,7 @@ export function ErrorState({
       </span>
       <p className="mt-4 text-base font-semibold">{title}</p>
       {description ? (
-        <p className="mt-1 max-w-sm text-pretty text-sm leading-6">
+        <p className="mt-1 max-w-sm text-pretty text-sm">
           {description}
         </p>
       ) : null}
@@ -159,7 +192,7 @@ export function InlineError({
     <p
       role="alert"
       className={cn(
-        "flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm leading-6",
+        "flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm",
         className
       )}
     >
@@ -267,7 +300,7 @@ export function Field({
         ) : null}
       </label>
       {children}
-      {hint ? <p className="text-xs leading-5 opacity-80">{hint}</p> : null}
+      {hint ? <p className="text-xs">{hint}</p> : null}
     </div>
   );
 }
@@ -288,10 +321,10 @@ export function DetailItem({
 }) {
   return (
     <div className={cn("min-w-0 space-y-1", className)}>
-      <dt className="text-xs font-medium uppercase tracking-[0.08em] opacity-70">
+      <dt className="text-xs font-medium uppercase tracking-[0.08em]">
         {label}
       </dt>
-      <dd className="break-words text-sm leading-6">{children}</dd>
+      <dd className="break-words text-sm">{children}</dd>
     </div>
   );
 }
@@ -334,7 +367,7 @@ export function RowCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold">{title}</p>
-          {meta ? <div className="mt-1 text-xs leading-5">{meta}</div> : null}
+          {meta ? <div className="mt-1 text-xs">{meta}</div> : null}
         </div>
         {actions ? (
           <div className="flex shrink-0 items-center gap-2">{actions}</div>

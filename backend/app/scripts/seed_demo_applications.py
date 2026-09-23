@@ -247,7 +247,7 @@ async def _ensure_framework(session, job: Job, dry_run: bool) -> str:
     CHANGED 2026-08-29. This used to CALL the matrix generator and then approve
     what came back. It no longer generates anything, and the reason is spec-doc6
     §4.3's own: a matrix is built from Bodha's SWOT session with the Hiring
-    Manager and the client's compiled Company DNA, neither of which a seed
+    Manager, which a seed
     script has. The old single-pass generator would produce one from the JD
     alone, which is what made this call look reasonable.
 

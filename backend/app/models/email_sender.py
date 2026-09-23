@@ -5,7 +5,7 @@ authorized From identity for automated email. The spec's `client_id` is
 `tenant_id` here: a customer IS a `tenants` row in this schema (the same
 substitution the billing work made when its spec wrote `companies`).
 
-ReadyPick never stores an email or SMTP password for these mailboxes (spec
+Vivekium never stores an email or SMTP password for these mailboxes (spec
 section 10). Ownership is proven by a short-lived OTP delivered TO the mailbox
 (services/email_senders), and the client Super Admin's authorization is what
 makes the row usable; both facts are recorded here permanently while the OTP
@@ -29,11 +29,25 @@ from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
 #: The sender lifecycle vocabulary. Mirrored by ck_client_email_senders_status
 #: in migration 0080 -- keep both in step.
 SENDER_PENDING_VERIFICATION = "pending_verification"
-SENDER_EMAIL_VERIFIED = "email_verified"
 SENDER_ACTIVE = "active"
-SENDER_VERIFICATION_EXPIRED = "verification_expired"
 SENDER_DISABLED = "disabled"
 SENDER_REVOKED = "revoked"
+#: The Super Admin said no. Terminal, and DISTINCT FROM `revoked`: revoked is
+#: an authorization withdrawn from a sender that was once active and may have
+#: sent mail, while rejected was never authorized at all. Collapsing the two
+#: would lose the difference between "we stopped trusting this" and "we never
+#: did", which is exactly what an audit of a sender decision has to answer.
+SENDER_REJECTED = "rejected"
+
+# ── Retired, never removed (the PipelineStatus lesson) ───────────────────────
+# The mailbox OTP was withdrawn once SES identity verification became the
+# sending-identity check: proving mailbox control a second time established
+# nothing AWS had not already established, and it cost the portal an OTP
+# surface. NOTHING PRODUCES THESE TWO ANY MORE, and they stay in the vocabulary
+# because rows still carry them. An enum missing a value the column accepts
+# 500s every read of every row holding it, permanently, for that whole tenant.
+SENDER_EMAIL_VERIFIED = "email_verified"
+SENDER_VERIFICATION_EXPIRED = "verification_expired"
 
 SENDER_STATUSES: tuple[str, ...] = (
     SENDER_PENDING_VERIFICATION,
@@ -42,6 +56,7 @@ SENDER_STATUSES: tuple[str, ...] = (
     SENDER_VERIFICATION_EXPIRED,
     SENDER_DISABLED,
     SENDER_REVOKED,
+    SENDER_REJECTED,
 )
 
 

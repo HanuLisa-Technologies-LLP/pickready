@@ -49,7 +49,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
-from app.services.siddhi import citations, numbers
+from app.services import evidence_confidence
+from app.services.siddhi import citations, claim_evidence, numbers
+from app.services.siddhi import validation_points
 from app.services.siddhi.evidence import KIND_SEARCHED, EvidenceIndex, EvidenceNode
 
 logger = logging.getLogger(__name__)
@@ -91,7 +93,9 @@ SECTION_TITLES: dict[str, str] = {
     "must_have": "Must-have",
     "nice_to_have": "Nice-to-have",
     "behavioural": "Behavioural Competencies",
+    "claim_evidence": "Evidence vs Claim Summary",
     "gap_analysis": "Gap Analysis & Action Plan",
+    "validation_points": "Recommended Human Validation Points",
     "validation": "Validation",
     #: LEGACY. A report written against the standalone technical bank that no
     #: longer exists still carries these rows, and a report is immutable.
@@ -246,6 +250,9 @@ def compose(
     overall_summary: str | None = None,
     overall_grade: str | None = None,
     validation: Mapping[str, Any] | None = None,
+    validation_points: Mapping[str, Any] | None = None,
+    claim_evidence: Mapping[str, Any] | None = None,
+    extra_nodes: Sequence[EvidenceNode] = (),
 ) -> ComposedReport:
     """Assemble the report and RENDER IT. Raises on anything uncited.
 
@@ -280,12 +287,18 @@ def compose(
             EvidenceNode(ref=ref, kind=KIND_SEARCHED, item=f"aspect:{category}")
             for category, ref in aspect_nodes.items()
         )
+        # The employer confirmations join the SAME index, for the reason the
+        # aspect nodes do: a ref that is citable but absent from the index is a
+        # ref the persisted trail cannot explain.
+        + tuple(extra_nodes)
     )
     report = citations.Report(known_refs=index.refs)
 
     _compose_rated_sections(report, rated, index)
     _compose_overall(report, rated, index, overall_summary, overall_grade)
+    _compose_claim_evidence(report, index, claim_evidence)
     _compose_gap_section(report, index, aspect_nodes, gap_groups, focus_summary)
+    _compose_validation_points(report, index, rated, validation_points)
     _compose_validation(report, validation)
 
     composed = ComposedReport(
@@ -369,6 +382,27 @@ def _compose_rated_sections(
             if remark:
                 section.add(
                     citations.Statement(citations.KIND_FINDING, remark, refs)
+                )
+            # EVIDENCE CONFIDENCE, beside the grade and under the same rule.
+            # It is a verdict about the record, so it is a KIND_GRADE
+            # statement carrying the same refs the grade carries: the whole
+            # point of the word is that a reader can ask what it rests on, and
+            # a word outside the chokepoint could not be asked.
+            #
+            # ABSENT ON EVERY ROW WRITTEN BEFORE 0107, and nothing is
+            # substituted for it. A report is immutable and the evidence set an
+            # older one was written from is not reconstructable; an invented
+            # word here would be the only uncheckable statement in the section.
+            confidence = evidence_confidence.display_word(
+                row.get("evidence_confidence")
+            )
+            if confidence:
+                section.add(
+                    citations.Statement(
+                        citations.KIND_GRADE,
+                        f"{name}: evidence confidence {confidence}",
+                        refs,
+                    )
                 )
 
 
@@ -497,6 +531,155 @@ def _compose_gap_section(
                     )
 
 
+def _compose_claim_evidence(
+    report: citations.Report,
+    index: EvidenceIndex,
+    payload: Mapping[str, Any] | None,
+) -> None:
+    """Evidence vs Claim Summary: the claim, what was found, how sure we are.
+
+    THREE STATEMENTS PER ENTRY, not one, because they are three different kinds
+    of assertion and merging them would make two of them untraceable. The claim
+    is a finding about what this person asserted; the evidence sentence is a
+    finding about what the record holds, or a GAP when the record holds
+    nothing; the confidence is a verdict over the sources.
+
+    THE GAP KIND ON AN UNEVIDENCED CLAIM IS THE ENTRY WORTH DEFENDING, and it
+    is the same argument the Gap Analysis already makes: "nothing addressed
+    this" is citable, and its citation is the `searched` node. Without that the
+    generator's only options would be to emit it uncited, which the chokepoint
+    refuses, or to drop it, which would quietly delete the most material claim
+    on the report.
+
+    An entry with no refs is NOT rescued with a fallback here. It raises at
+    render, loudly, naming the section, because a claim summary whose entries
+    cannot be traced is the one section in this report that would be worse than
+    absent.
+    """
+    if not payload:
+        return
+    entries = list(payload.get("entries") or [])
+    statement = _clean(payload.get("no_claims_statement"))
+    if not entries and not statement:
+        return
+    section = report.section(
+        claim_evidence.SECTION_KEY, SECTION_TITLES[claim_evidence.SECTION_KEY]
+    )
+    section.add(
+        citations.Statement(
+            citations.KIND_HEADING, SECTION_TITLES[claim_evidence.SECTION_KEY]
+        )
+    )
+    note = _clean(payload.get("note"))
+    if note:
+        # CONNECTIVE. It describes what the section is, and asserts nothing
+        # about the candidate.
+        section.add(citations.Statement(citations.KIND_CONNECTIVE, note))
+    if not entries:
+        # "No material claims were recorded" is a claim about the RECORD of
+        # this assessment, so it cites what was searched across the whole of
+        # it rather than nothing.
+        section.add(
+            citations.Statement(
+                citations.KIND_GAP, statement, _all_searched(index)
+            )
+        )
+        return
+    for entry in entries:
+        refs = tuple(entry.get("evidence_refs") or ())
+        claim = _clean(entry.get("claim"))
+        if claim:
+            section.add(citations.Statement(citations.KIND_FINDING, claim, refs))
+        found = _clean(entry.get("evidence"))
+        if found:
+            kind = (
+                citations.KIND_GAP
+                if found.startswith(claim_evidence.ABSENT_EVIDENCE[:40])
+                else citations.KIND_FINDING
+            )
+            section.add(citations.Statement(kind, found, refs))
+        confidence = _clean(entry.get("confidence"))
+        if confidence:
+            section.add(
+                citations.Statement(
+                    citations.KIND_GRADE,
+                    f"Evidence confidence: {confidence}",
+                    refs,
+                )
+            )
+
+
+def _compose_validation_points(
+    report: citations.Report,
+    index: EvidenceIndex,
+    rated: Sequence[Mapping[str, Any]],
+    payload: Mapping[str, Any] | None,
+) -> None:
+    """Recommended Human Validation Points, every line of it cited.
+
+    A point's REASON is a claim about the evidence base behind a rated line, and
+    its PROBE is advice for an interviewer, so they are KIND_GAP and KIND_PROBE
+    respectively: the same two kinds the Gap Analysis uses, because they are the
+    same two kinds of assertion. The refs are the area's own, so a reader can
+    follow "the evidence here is thin" back to the evidence it is thin about.
+
+    An area with no rated line of its own falls back to the whole searched set
+    rather than being dropped. That case is a contradiction the ledger recorded
+    against a subject the matrix does not grade, and an inconsistency in an
+    ungraded claim is still an inconsistency worth a person's attention.
+    """
+    if not payload:
+        return
+    points = list(payload.get("points") or [])
+    statement = _clean(payload.get("no_points_statement"))
+    if not points and not statement:
+        return
+    section = report.section(
+        validation_points.SECTION_KEY,
+        SECTION_TITLES[validation_points.SECTION_KEY],
+    )
+    section.add(
+        citations.Statement(
+            citations.KIND_HEADING, SECTION_TITLES[validation_points.SECTION_KEY]
+        )
+    )
+    note = _clean(payload.get("note"))
+    if note:
+        section.add(citations.Statement(citations.KIND_CONNECTIVE, note))
+    everything = _all_searched(index)
+    if not points:
+        # "Nothing further needs checking" asserts something about every area
+        # assessed, so it cites every area that was searched.
+        section.add(
+            citations.Statement(citations.KIND_GAP, statement, everything)
+        )
+        return
+    for point in points:
+        area = str(point.get("area") or "")
+        refs = index.grounding(area) or everything
+        heading = _clean(area)
+        if heading:
+            section.add(citations.Statement(citations.KIND_HEADING, heading))
+        reason = _clean(point.get("reason"))
+        if reason:
+            section.add(citations.Statement(citations.KIND_GAP, reason, refs))
+        probe = _clean(point.get("probe"))
+        if probe:
+            section.add(citations.Statement(citations.KIND_PROBE, probe, refs))
+
+
+def _all_searched(index: EvidenceIndex) -> tuple[str, ...]:
+    """Every `searched` ref in the evaluation, in index order.
+
+    The citation for a statement about the assessment AS A WHOLE. It is the
+    honest one: a sentence saying every area is corroborated is answerable only
+    by pointing at every area that was looked at.
+    """
+    return tuple(
+        node.ref for node in index.nodes if node.kind == KIND_SEARCHED
+    )
+
+
 def _compose_validation(
     report: citations.Report, validation: Mapping[str, Any] | None
 ) -> None:
@@ -519,7 +702,7 @@ def _compose_validation(
             )
 
 
-# ── The dashboard's Ready Pick Note ──────────────────────────────────────────
+# ── The dashboard's Vivekium Note ──────────────────────────────────────────
 
 #: THE KEY THE DASHBOARD READS THE NOTE FROM.
 #:

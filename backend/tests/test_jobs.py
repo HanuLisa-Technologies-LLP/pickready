@@ -211,17 +211,17 @@ def _stub_create_deps(monkeypatch) -> dict:
         lambda: SimpleNamespace(frontend_url="https://readypick.ai"),
     )
     # Gate 1 (workflow section 18): job creation is refused until the client
-    # has completed its Company Hiring Requirements. Satisfied here rather than
+    # has filled in its Company Profile. Satisfied here rather than
     # routed around, the same way `_satisfy_publication_gate` satisfies RBAC 21
     # -- every test below is about some OTHER property of create_job, and a
     # fake session cannot answer the gate's query honestly. The gate itself is
     # tested directly in test_company_requirements_gate.py.
     from app.services.hiring import company_requirements
 
-    async def _dna_complete(session, tenant_id):
+    async def _profile_complete(session, tenant_id):
         return True
 
-    monkeypatch.setattr(company_requirements, "is_complete", _dna_complete)
+    monkeypatch.setattr(company_requirements, "is_complete", _profile_complete)
     return calls
 
 
@@ -238,14 +238,10 @@ def _satisfy_publication_gate(monkeypatch, job: Job) -> None:
     Stubbed rather than seeded because these are unit tests over a fake
     session; `test_job_setup_live.py` exercises the real matrix end to end.
     """
-    job.swot_completed_at = datetime.now(timezone.utc)
+    async def _ready(session, current_job):
+        return None
 
-    async def _frozen(session, job_id):
-        return SimpleNamespace(job_id=job_id, version=1, items=())
-
-    from app.services.hiring import scorecard
-
-    monkeypatch.setattr(scorecard, "load_frozen_matrix", _frozen)
+    monkeypatch.setattr(jobs_api, "_publication_blocked", _ready)
 
 
 def _job_create_body() -> JobCreateIn:

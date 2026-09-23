@@ -517,7 +517,7 @@ def _firebase_admin_initializes():
 
 def main() -> int:
     settings = get_settings()
-    print("ReadyPick stack readiness harness")
+    print("Vivekium stack readiness harness")
     print(f"  environment = {settings.environment}")
     print(f"  database    = {settings.database_url.rsplit('@', 1)[-1]}")
     print(f"  redis       = {settings.redis_url}")

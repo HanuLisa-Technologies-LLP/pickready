@@ -2,7 +2,7 @@
 
 THREE THINGS LIVE HERE AND THEY ARE RELATED BY ONE IDEA
 --------------------------------------------------------
-A reviewer disagreeing with the Ready Pick Score is DATA. It is either a sign
+A reviewer disagreeing with the Vivekium Score is DATA. It is either a sign
 that the scorecard needs recalibration or a sign that the reviewer saw
 something the assessment missed, and nothing in the system can tell which. So
 all three of these exist to RECORD that disagreement and none of them exists to
@@ -161,7 +161,7 @@ async def raise_divergence(
     link_id: uuid.UUID | str | None = None,
     candidate_id: uuid.UUID | str | None = None,
 ) -> uuid.UUID | None:
-    """Record a Team Review verdict that disagreed with the Ready Pick Score.
+    """Record a Team Review verdict that disagreed with the Vivekium Score.
 
     Returns the calibration record's id, or None when the verdict AGREED and
     there was nothing to record. Agreement is not a calibration event: a table
@@ -231,7 +231,7 @@ async def raise_divergence(
                 # `team_review_id` is the pointer to it.
                 "note": (
                     f"Team Review verdict {team_review.VERDICT_LABELS[verdict]} "
-                    f"against Ready Pick grade {machine_grade}."
+                    f"against Vivekium grade {machine_grade}."
                 ),
             },
         )
@@ -437,7 +437,6 @@ def calibration_view(evaluation: Mapping[str, Any]) -> dict[str, Any]:
         "artifact": "calibration_internals",
         "evaluation_id": evaluation.get("id"),
         "scorecard_version": evaluation.get("scorecard_version"),
-        "company_dna_version": evaluation.get("company_dna_version"),
         "situation_type": evaluation.get("situation_type"),
         "scoring_mode": evaluation.get("scoring_mode"),
         "dimensions": [

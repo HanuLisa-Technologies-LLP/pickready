@@ -103,10 +103,10 @@ async def test_the_retired_technical_approval_is_not_a_gate_in_either_direction(
 
 
 @pytest.mark.asyncio
-async def test_the_swot_intake_is_not_a_separate_gate() -> None:
-    """Spec §5.1 feeds the intake INTO the matrix rather than gating on it.
+async def test_the_job_swot_is_not_a_separate_gate() -> None:
+    """Spec §5.1 feeds the SWOT INTO the matrix rather than gating on it.
 
-    An intake nobody completed already shows up as a matrix nobody approved.
+    A SWOT nobody completed already shows up as a matrix nobody approved.
     Gating separately would give one problem two error messages and two places
     to fix it -- and would strand a job whose hiring manager left mid-setup even
     after someone else reviewed and approved the matrix by hand.

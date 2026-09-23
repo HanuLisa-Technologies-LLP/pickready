@@ -11,8 +11,8 @@
  * THE ONE NUMBER
  * --------------
  * `ready_pick_score` is the only numeric assessment value in this product's
- * client-facing types, and it is deliberate. spec-doc6 D8 rules that the Ready
- * Pick Score renders on the dashboard and can never enter a delivered PRISM
+ * client-facing types, and it is deliberate. spec-doc6 D8 rules that the Vivekium
+ * Score renders on the dashboard and can never enter a delivered PRISM
  * Report; everything else here is a WORD the server chose. Nothing in this
  * folder computes a grade, a band or a label from a number: the server sends
  * `band`, `band_label`, `confidence_indicator` and every spoken label, so a
@@ -133,7 +133,6 @@ export interface ReadyPickProfile {
   under_integrity_review: boolean;
   needs_human_review: boolean;
   scorecard_version: number | null;
-  company_dna_version: number | null;
   evaluated_at: string | null;
   scoring_mode: string | null;
 }

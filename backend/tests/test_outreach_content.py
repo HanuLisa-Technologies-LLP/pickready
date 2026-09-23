@@ -9,9 +9,17 @@ import pytest
 
 from app.services import outreach_content
 
-_CANDIDATE = {"name": "Ada Lovelace", "email": "ada@example.com"}
+# A RECORDED RANKING COMMENT, since 2026-09-09. `generation_sufficiency` refuses
+# to call a model for a candidate with nothing recorded on any of the four
+# categories, so a fixture without one exercises the deterministic template and
+# stops testing the generated path these tests are about.
+_CANDIDATE = {
+    "name": "Ada Lovelace",
+    "email": "ada@example.com",
+    "skills_comment": "Eight years of distributed systems work in Python",
+}
 _JOB = {"title": "Staff Engineer"}
-_COMPANY = {"name": "Hanulisa Technologies"}
+_COMPANY = {"name": "Varpitech Technologies"}
 
 
 def _assert_email_shape(email: dict):
@@ -25,7 +33,7 @@ async def test_outreach_valid_llm_output(monkeypatch):
         return (
             '{"subject": "Next steps, Ada!", '
             '"body": "Hi Ada Lovelace,\\n\\nWe would love to invite you to the '
-            'next round for the Staff Engineer role at Hanulisa Technologies."}'
+            'next round for the Staff Engineer role at Varpitech Technologies."}'
         )
 
     monkeypatch.setattr(outreach_content.llm_router, "chat_completion", _ok)
@@ -55,7 +63,7 @@ async def test_prompt_includes_review_evidence_and_company_culture(monkeypatch):
         "education_comment": "Relevant computer science education.",
     }
     company = {
-        "name": "Hanulisa Technologies",
+        "name": "Varpitech Technologies",
         "culture": "Collaborative, curious, and accountable.",
     }
     await outreach_content.generate_outreach_email(candidate, _JOB, company)
@@ -78,7 +86,7 @@ async def test_outreach_falls_back_when_unavailable(monkeypatch):
     # Deterministic template personalizes name, role, company.
     assert "Ada Lovelace" in email["text"]
     assert "Staff Engineer" in email["text"]
-    assert "Hanulisa Technologies" in email["text"]
+    assert "Varpitech Technologies" in email["text"]
     assert "next round" in email["text"].lower()
 
 

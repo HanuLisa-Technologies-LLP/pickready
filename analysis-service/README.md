@@ -1,4 +1,4 @@
-# ReadyPick analysis service
+# Vivekium analysis service
 
 Speaker counting and an AI-text estimate for the proctoring pipeline. A
 FastAPI service on `python:3.12-slim`, called only by the backend over the

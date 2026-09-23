@@ -33,7 +33,6 @@ from app.models.candidate import (
     PipelineStatusEntry,
     Profile,
     SOURCE_TYPE_SOURCED,
-    VerificationRequest,
     source_type_label,
 )
 from app.models.enums import LinkSource, PipelineStatus
@@ -59,8 +58,7 @@ from app.schemas.candidates import (
     TeamReviewRewriteOut,
     TeamReviewsOut,
     UploadResumeOut,
-    VerificationRequestSummary,
-)
+    )
 from app.services import capabilities as caps
 from app.services import email_render
 from app.services import telemetry_events
@@ -182,7 +180,7 @@ async def upload_resume(
         # elsewhere is `sourced`, not `databank`. Databank is specifically the
         # bulk upload (POST /jobs/{id}/candidates/databank, up to 25 files);
         # this single-file route predates it and describes a candidate the
-        # recruiter procured from outside ReadyPick.
+        # recruiter procured from outside Vivekium.
         source_type=SOURCE_TYPE_SOURCED,
     )
     session.add(link)
@@ -263,13 +261,8 @@ async def get_profile(
         if scoped_profile_link is None:
             raise HTTPException(status_code=404, detail="No profile for this candidate")
 
-    vrs = (
-        await session.execute(
-            select(VerificationRequest)
-            .where(VerificationRequest.profile_id == profile.id)
-            .order_by(VerificationRequest.employer_seq)
-        )
-    ).scalars().all()
+    # The tenant-owned verification_requests read that sat here is RETIRED
+    # (vivekium C8); the recruiter's verification surface is the BGV panel.
     return ProfileOut(
         id=profile.id,
         candidate=CandidateOut.model_validate(candidate),
@@ -282,7 +275,6 @@ async def get_profile(
         aspects_json=profile.aspects_json,
         parsed_fields_json=profile.parsed_fields_json,
         aspects_completed_at=profile.aspects_completed_at,
-        verification_requests=[VerificationRequestSummary.model_validate(v) for v in vrs],
     )
 
 
@@ -345,7 +337,7 @@ async def preview_resume(
     user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> HTMLResponse:
-    """Render a DOCX resume inside ReadyPick as safe, monochrome HTML.
+    """Render a DOCX resume inside Vivekium as safe, monochrome HTML.
 
     Browsers cannot natively display Word documents. The server downloads only
     the trusted private asset already stored on the profile, extracts
@@ -830,7 +822,7 @@ async def update_pipeline_status(
     # PRD v1.0: employer verification is out of scope (§5 non-goal). A candidate
     # applies openly and completes the 40-aspect questionnaire AT application, so
     # the only forward-gate is that the questionnaire is complete — the old
-    # VerificationRequest requirement is removed so open applicants aren't blocked.
+    # The old employer-verification gate is removed so open applicants are not blocked.
     if new_status in FORWARD_STATUSES and link.source == LinkSource.fresh:
         profile = await session.get(Profile, link.profile_id) if link.profile_id else None
         if profile is None or profile.aspects_completed_at is None:
@@ -1117,4 +1109,15 @@ async def get_bgv_results(
             items.append(
                 {"shared": False, "note": "Not shared by the candidate"}
             )
-    return {"inquiries": items}
+    # Destinations two and three of the brief's "three destinations"
+    # (vivekium feature 6): the BGV record and the candidate page in the
+    # Executive Profile both read the SAME candidate_consents table the
+    # candidate's own portal reads, so the three surfaces cannot disagree.
+    # Stamps and server-authored wording only; no free text of the
+    # candidate's crosses here.
+    from app.services import consent_catalog
+
+    return {
+        "inquiries": items,
+        "consent_items": await consent_catalog.items_for(session, candidate_id),
+    }

@@ -7,12 +7,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 
-import {
-  HoverLift,
-  Reveal,
-  RevealStagger,
-  StaggerItem,
-} from "@/components/motion";
+import { Reveal, RevealStagger, StaggerItem } from "@/components/motion";
 import { FeatureCard } from "./feature-card";
 
 const FEATURES = [
@@ -58,31 +53,37 @@ export function Features() {
   return (
     <section
       id="features"
-      className="scroll-mt-20 border-y border-border bg-surface/60 py-20 lg:py-28"
+      className="scroll-mt-20 border-y border-border bg-surface/60 py-20 lg:py-24"
       aria-labelledby="features-title"
     >
       <div className="mx-auto max-w-6xl px-6 lg:px-10">
         <Reveal className="max-w-2xl">
-          <p className="text-sm font-semibold uppercase tracking-[0.16em] text-brand-600">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-brand-600">
             Platform
           </p>
           <h2
             id="features-title"
-            className="mt-3 text-balance text-2xl font-bold sm:text-3xl"
+            className="mt-4 text-balance text-2xl font-bold tracking-[-0.015em] sm:text-3xl"
           >
             Built for teams who have to defend the decision
           </h2>
-          <p className="mt-4 text-pretty text-base leading-7">
+          <p className="mt-4 text-pretty text-base">
             Everything below is in the product today, not on a roadmap.
           </p>
         </Reveal>
 
-        <RevealStagger className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        {/* `RevealStagger`, never `Stagger`: this grid is below the fold, and
+            a mount-triggered stagger would have finished before the reader
+            ever reached it. The distinction is documented in
+            components/motion/motion-primitives.tsx.
+
+            The per-card `HoverLift` is gone. Six cards rising under the
+            pointer is decoration six times over, and the card already answers
+            the pointer with its border. */}
+        <RevealStagger className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {FEATURES.map((feature) => (
             <StaggerItem key={feature.title} className="h-full">
-              <HoverLift className="h-full">
-                <FeatureCard {...feature} />
-              </HoverLift>
+              <FeatureCard {...feature} />
             </StaggerItem>
           ))}
         </RevealStagger>

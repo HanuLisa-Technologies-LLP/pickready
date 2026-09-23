@@ -122,6 +122,11 @@ PUBLIC_BY_DESIGN: dict[str, str] = {
     # The authentication endpoint itself. It cannot require authorization: it
     # is what produces the session. Rate limited instead (services/rate_limit).
     "/firebase/session": "creates the session",
+    # Authorized by a FRESH Firebase ID token in the body, verified before
+    # anything is read, and it acts only on the uid that token names. A cookie
+    # dependency would defeat it: the session it revokes may already be
+    # expired, and it only ever removes access.
+    "/password-changed": "verified Firebase ID token, revokes only",
     # Authorized by a single-use, short-lived context_token in the body, minted
     # by /firebase/session moments earlier.
     "/select-context": "single-use context token",
@@ -138,6 +143,14 @@ PUBLIC_BY_DESIGN: dict[str, str] = {
     # handler extracts from the recipient address or the quoted body; a message
     # carrying no valid token reaches nothing.
     "/inbound-email": "signed token inside the message",
+    # The renewal link in the six-month consent letter (feature 8). The token
+    # is single use (renewal clears the stored hash), short lived, stored only
+    # as a SHA-256 hash, bound to one candidate, and accepted by this route
+    # and NOTHING else: it mints no session, identifies the holder to nothing,
+    # and its only effect is that a profile which was going to be deleted is
+    # not. A session dependency would defeat it, because the reader is by
+    # definition somebody who has not signed in for six months.
+    "/consent/renew": "single-use renewal token, keeps a profile and nothing else",
 }
 
 #: Routes that mutate ONLY the caller's own record.

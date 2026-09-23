@@ -1,4 +1,4 @@
-// Typed fetch wrapper for the ReadyPick backend.
+// Typed fetch wrapper for the Vivekium backend.
 // Routes must match docs/API_CONTRACT.md verbatim.
 import { apiErrorMessage } from "./validation-errors";
 
@@ -243,8 +243,13 @@ export const apiPut = <T>(path: string, body?: unknown) =>
   api<T>(path, { method: "PUT", body });
 export const apiPatch = <T>(path: string, body?: unknown) =>
   api<T>(path, { method: "PATCH", body });
-export const apiDelete = <T = void>(path: string) =>
-  api<T>(path, { method: "DELETE" });
+// The body is OPTIONAL and TRAILING, so all seven existing call sites are
+// unchanged. It exists because one delete in this product is authorised by
+// something the caller has to send: `DELETE /portal/me` carries the typed
+// confirmation phrase, checked on the server because a confirmation only the
+// browser checks is a speed bump rather than a guard.
+export const apiDelete = <T = void>(path: string, body?: unknown) =>
+  api<T>(path, { method: "DELETE", body });
 export const apiUpload = <T>(path: string, formData: FormData) =>
   api<T>(path, { method: "POST", formData });
 

@@ -109,6 +109,7 @@ def create_access_token(
     role: str,
     tenant_id: uuid.UUID | str | None,
     audience: str = AUDIENCE_ORG,
+    session_id: str | None = None,
 ) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
@@ -121,10 +122,15 @@ def create_access_token(
         "exp": now + timedelta(minutes=settings.jwt_access_ttl_minutes),
         "type": "access",
     }
+    if session_id:
+        payload["sid"] = session_id
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
-def create_refresh_token(user_id: uuid.UUID | str, audience: str = AUDIENCE_ORG) -> str:
+def create_refresh_token(
+    user_id: uuid.UUID | str, audience: str = AUDIENCE_ORG,
+    session_id: str | None = None,
+) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
     payload = {
@@ -135,6 +141,8 @@ def create_refresh_token(user_id: uuid.UUID | str, audience: str = AUDIENCE_ORG)
         "type": "refresh",
         "jti": secrets.token_urlsafe(16),
     }
+    if session_id:
+        payload["sid"] = session_id
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 

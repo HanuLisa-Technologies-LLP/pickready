@@ -167,6 +167,17 @@ class LiveEvaluation:
     #: an evaluation is a permanent record of the criteria it was run against,
     #: and the job's matrix may be re-frozen afterwards.
     matrix: Any = None
+    #: {competency name: the ledger SOURCE TYPES mapped to it}, from the SAME
+    #: `EvidenceView` objects the five evaluators were handed.
+    #:
+    #: Carried rather than recomputed by the report writer, because a second
+    #: pass over the ledger could legitimately see a different set: evidence is
+    #: written during scoring, and "what did the evaluators actually read" is a
+    #: question only the run that read it can answer. `evidence_confidence`
+    #: turns these into the word beside each rated line, so a confidence that
+    #: disagreed with the evaluators' own inputs would be the report describing
+    #: an evaluation that did not happen.
+    competency_sources: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def aggregate(self) -> aggregation.Aggregate | None:
@@ -380,16 +391,22 @@ async def evaluate_application(
     # minimum applied to every role regardless of what the role needs, which is
     # the free assignment section 20.3 forbids one paragraph later.
     #
-    # So this reads what the matrix declared and caps nothing where nothing was
-    # declared. That is not silently uncapped: section 12.2's dimension floors
-    # and section 14.1's unassessed-Must-have rule both still apply, and both
-    # are EVIDENCE-based rather than score-based, which is what catches the case
-    # a missing threshold would otherwise let through.
-    thresholds: dict[str, float] = {
-        item.competency: float(item.threshold)
-        for item in getattr(matrix, "items", ())
-        if getattr(item, "threshold", None) is not None
-    }
+    # SO IT IS EMPTY UNCONDITIONALLY, AND THAT IS A CORRECTION RATHER THAN THE
+    # ORIGINAL DESIGN. This used to be a comprehension over
+    # `float(item.threshold)`, which contradicted every paragraph above it and
+    # could not have worked either way: `item.threshold` is the Threshold
+    # MAPPING, and `float()` of a dict raises `TypeError`, so any frozen matrix
+    # carrying a declared threshold crashed the evaluation outright. Nothing
+    # caught it because `item.threshold` was None on the fixtures.
+    #
+    # That is not silently uncapped: section 12.2's dimension floors and
+    # section 14.1's unassessed-Must-have rule both still apply, and both are
+    # EVIDENCE-based rather than score-based, which is what catches the case a
+    # missing score threshold would otherwise let through. It stays empty until
+    # a distinct, human-approved 0-to-100 control exists to fill it, which is
+    # section 12.1's own instruction: the Hiring Manager proposes that number
+    # and the HR Manager approves it, so the platform must not invent one.
+    thresholds: dict[str, float] = {}
 
     inputs = pipeline.EvaluationInputs(
         matrix=categories,
@@ -418,7 +435,29 @@ async def evaluate_application(
         unresolved_evidence=lost,
         evidence_count=len(views),
         matrix=matrix,
+        competency_sources=_sources_by_competency(views, mapping),
     )
+
+
+def _sources_by_competency(
+    views: Sequence[EvidenceView], mapping: Mapping[str, Sequence[str]]
+) -> dict[str, tuple[str, ...]]:
+    """Which KINDS of source stand behind each competency.
+
+    Kinds, never counts and never refs. The report's confidence word is derived
+    from distinct ORIGINATORS, so what it needs is the set of source types; a
+    count would invite somebody to read "four pieces of evidence" as four
+    sources, which is the arithmetic `independence_group_for` exists to stop.
+    """
+    by_ref = {view.ref: view.source_kind for view in views}
+    out: dict[str, set[str]] = {}
+    for ref, competencies in mapping.items():
+        kind = by_ref.get(ref)
+        if not kind:
+            continue
+        for name in competencies:
+            out.setdefault(str(name), set()).add(str(kind))
+    return {name: tuple(sorted(kinds)) for name, kinds in out.items()}
 
 
 def _as_dict(item: Any) -> dict[str, Any]:

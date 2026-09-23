@@ -29,7 +29,7 @@ from app.core.security import (
     decode_token,
 )
 from app.models.enums import Role
-from app.services import rbac
+from app.services import auth_sessions, rbac
 from app.services.audit import audit
 
 ACCESS_COOKIE = "pr_access"
@@ -43,16 +43,12 @@ REFRESH_COOKIE_PATH = "/api/v1/auth"
 # question, for anything that can see cookies at path "/": "is there still a
 # refresh token behind this browser?"
 #
-# It exists because of a real defect. The access cookie is deleted by the
-# browser the moment its 15-minute Max-Age lapses, and the refresh cookie is
-# path-scoped to /api/v1/auth, so it is NOT sent to a page request like
-# /org/jobs. The Next.js middleware, which gates every portal route on cookie
-# presence, therefore saw an idle-but-perfectly-refreshable user as signed out
-# and redirected them to /login before a single API call was made. No amount of
-# silent refresh in the API client can rescue that, because the bounce happens
-# during navigation, above the API client.
+# It originally covered the gap after an access cookie's Max-Age expired, while
+# the path-scoped refresh cookie was invisible to the Next.js route gate. Both
+# access and hint are now browser-session cookies. The hint remains for clients
+# already using it, and carries no authentication authority.
 #
-# The hint cookie lives exactly as long as the refresh token, is path "/", stays
+# The hint cookie lives for the browser session, is path "/", stays
 # HttpOnly (Next middleware reads request cookies server-side, so it never needs
 # JavaScript access), and its value is a constant. Knowing it grants nothing.
 SESSION_HINT_COOKIE = "pr_session"
@@ -68,10 +64,9 @@ OUTREACH_TOKEN_TTL_DAYS = 14
 # ASSUMPTION: secure is disabled in development so the cookies work over plain
 # http://localhost; it is forced on in production. SameSite=Strict is acceptable
 # because this is a first-party SPA (no cross-site POST-back flow needs the
-# cookie). Access token lives `jwt_access_ttl_minutes` (15), refresh lives
-# `jwt_refresh_ttl_days`. Refresh tokens MUST be rotated on every use — the
-# refresh handler should mint a NEW refresh token and call set_auth_cookies,
-# not just reissue the access cookie.
+# cookie). JWT access expires in fifteen minutes; Redis expires the session
+# after thirty minutes idle, regardless of browser cookie lifetime. Refresh
+# rotation is checked atomically by the server-side session store.
 
 
 def _cookie_kwargs() -> dict:
@@ -93,34 +88,21 @@ def _cookie_kwargs() -> dict:
 
 
 def set_access_cookie(response, access: str) -> None:
-    from app.core.config import get_settings
-
-    settings = get_settings()
     response.set_cookie(
-        ACCESS_COOKIE, access, max_age=settings.jwt_access_ttl_minutes * 60,
+        ACCESS_COOKIE, access,
         path="/", **_cookie_kwargs(),
     )
 
 
 def set_auth_cookies(response, access: str, refresh: str) -> None:
-    """Set all THREE cookies. Call on login and on every refresh (rotation).
-
-    The hint cookie is rewritten alongside the refresh token so its lifetime
-    slides forward exactly as the refresh token's does. If it ever outlived the
-    refresh token the middleware would let a genuinely dead session through, and
-    the user would land on a portal page that immediately fails to load.
-    """
-    from app.core.config import get_settings
-
-    settings = get_settings()
+    """Set three browser-session cookies on login and refresh."""
     set_access_cookie(response, access)
-    refresh_max_age = settings.jwt_refresh_ttl_days * 86400
     response.set_cookie(
-        REFRESH_COOKIE, refresh, max_age=refresh_max_age,
+        REFRESH_COOKIE, refresh,
         path=REFRESH_COOKIE_PATH, **_cookie_kwargs(),
     )
     response.set_cookie(
-        SESSION_HINT_COOKIE, SESSION_HINT_VALUE, max_age=refresh_max_age,
+        SESSION_HINT_COOKIE, SESSION_HINT_VALUE,
         path="/", **_cookie_kwargs(),
     )
 
@@ -193,6 +175,22 @@ def _decode_or_401(token: str, audience: str | list[str]) -> dict:
     return payload
 
 
+async def _authenticated_user(
+    request: Request, token: str, audience: str | list[str]
+) -> CurrentUser:
+    payload = _decode_or_401(token, audience)
+    user = _payload_to_user(payload)
+    sid = payload.get("sid")
+    if sid:
+        if not await auth_sessions.validate(sid, user.user_id):
+            raise _unauthorized("Session expired or revoked")
+    elif request.cookies.get(ACCESS_COOKIE) == token:
+        # Existing cookie JWTs without a server record cannot be revoked.
+        # Explicit Authorization bearer tokens remain for service clients.
+        raise _unauthorized("Session expired or revoked")
+    return user
+
+
 # The two "internal" (staff-facing) audiences. get_current_user authenticates
 # either; the DB-session dependencies below then gate the specific portal so an
 # owner token can't act on org endpoints and vice versa.
@@ -208,7 +206,7 @@ async def get_current_user(request: Request) -> CurrentUser:
     token = _extract_token(request)
     if not token:
         raise _unauthorized()
-    return _payload_to_user(_decode_or_401(token, _INTERNAL_AUDIENCES))
+    return await _authenticated_user(request, token, _INTERNAL_AUDIENCES)
 
 
 async def get_current_candidate(request: Request) -> CurrentUser:
@@ -216,7 +214,7 @@ async def get_current_candidate(request: Request) -> CurrentUser:
     token = _extract_token(request)
     if not token:
         raise _unauthorized()
-    user = _payload_to_user(_decode_or_401(token, AUDIENCE_CANDIDATE))
+    user = await _authenticated_user(request, token, AUDIENCE_CANDIDATE)
     if user.role != Role.candidate:
         raise _unauthorized("candidate session required")
     return user
@@ -239,9 +237,11 @@ async def get_optional_candidate(request: Request) -> CurrentUser | None:
     if not token:
         return None
     try:
-        user = _payload_to_user(_decode_or_401(token, AUDIENCE_CANDIDATE))
-    except HTTPException:
-        return None
+        user = await _authenticated_user(request, token, AUDIENCE_CANDIDATE)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return None
+        raise
     if user.role != Role.candidate:
         return None
     return user
@@ -253,11 +253,13 @@ async def get_current_any(request: Request) -> CurrentUser:
     if not token:
         raise _unauthorized()
     try:
-        return _payload_to_user(
-            _decode_or_401(token, [AUDIENCE_OWNER, AUDIENCE_ORG, AUDIENCE_CANDIDATE])
+        return await _authenticated_user(
+            request, token, [AUDIENCE_OWNER, AUDIENCE_ORG, AUDIENCE_CANDIDATE]
         )
-    except HTTPException:
-        raise _unauthorized("invalid session")
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            raise _unauthorized("invalid session") from exc
+        raise
 
 
 # ── DB sessions ──────────────────────────────────────────────────────────────

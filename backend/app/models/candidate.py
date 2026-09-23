@@ -11,7 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
 from app.models.enums import (
-    LinkSource, PipelineStatus, SubmittedVia, Tier, VerificationStatus,
+    LinkSource, PipelineStatus, Tier,
 )
 
 
@@ -57,6 +57,50 @@ class Candidate(Base, UUIDPKMixin, CreatedAtMixin):
         DateTime(timezone=True), nullable=True
     )
 
+    # ── Consent renewal and the inactivity clock (migration 0100, feature 8) ─
+    # FOUR STAMPS AND NO STATUS COLUMN. The stage is derived by
+    # `services/consent_lifecycle.stage_for`, because a stored stage is a
+    # second copy of what these columns already determine, and the sweep would
+    # then erase people on the strength of a value nothing has re-checked.
+    #
+    # NULL is a real state for all four and each means one thing. The two
+    # "sent" stamps are what make the sweep safe to run LATE: a grace window
+    # starts when a letter was actually sent, so a scheduler outage delays the
+    # cycle rather than skipping somebody straight to deletion.
+    consent_renewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    consent_reminder_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    consent_final_warning_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: The INACTIVITY letter (migration 0108). A fourth stamp rather than a
+    #: reuse of the consent ones, because the two clocks are independent (C6)
+    #: and one letter must never latch the other's stage. Before it existed the
+    #: dormancy rule read one boolean and erased, with no warning at all.
+    dormancy_warning_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: The one-click renewal link, stored as a SHA-256 DIGEST and never as the
+    #: token itself, so a reader of this table cannot replay a link. Cleared by
+    #: the renewal, which is what makes it single use.
+    #: See `services/consent_renewal`.
+    consent_renewal_token_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    consent_renewal_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: Anything the candidate DID, or was sent, that means the platform is
+    #: still working for them. Read through
+    #: `consent_lifecycle.engagement_at_for` so the NULL rule cannot drift
+    #: between the sweep and anything else.
+    last_engagement_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # ── Unified candidate profile (migration 0015) ───────────────────────────
     # The 40 validation aspects, answered ONCE here as a structured form rather
     # than re-asked inside every job's assessment conversation (client decision,
@@ -69,6 +113,26 @@ class Candidate(Base, UUIDPKMixin, CreatedAtMixin):
     #: that owns the file metadata, so nothing about resume storage changes.
     main_profile_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Background verification (migration 0095). Two columns rather than a
+    # table, because they are one answer and one stamp about THIS person and
+    # they are read on every profile load.
+    #
+    # `employment_background` is the candidate's own declaration, in their own
+    # words: fresher or experienced. It is never inferred from a parsed resume,
+    # because a parsed history is evidence and this answer decides whether an
+    # offer can be blocked. NULL means the question has not been answered yet,
+    # which is distinct from either answer and never blocks anything.
+    employment_background: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    #: THE IMMUTABILITY GATE. Once stamped, `candidate_employments` is closed
+    #: to writes: the service layer refuses, and a Postgres trigger refuses
+    #: independently so a future route or a psql session cannot quietly rewrite
+    #: what an employer is being asked to confirm. Read through
+    #: `models/employment.finalized` so no caller invents a second definition
+    #: of "submitted".
+    employment_history_finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 
@@ -100,6 +164,18 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
     resume_sha256: Mapped[str | None] = mapped_column(String(64), index=True)
     resume_metadata_json: Mapped[dict | None] = mapped_column(JSONB)
     resume_text: Mapped[str | None] = mapped_column(Text)  # extracted; tsvector col in migration
+    #: The intake scan for hidden content (migration 0092, W9.2). Shape is
+    #: `services/projects/invisible_text.IntakeScan.as_json()`: which techniques
+    #: were found, how often, a bounded sample, and the recruiter-facing
+    #: sentence. It hangs off the PROFILE and not off `candidates`, because a
+    #: profile IS one resume and a candidate with three resumes needs three
+    #: answers; "has this person ever submitted a flagged file" is one join.
+    #: NULL means the resume predates the scan, which is a different fact from
+    #: a clean scan and is deliberately not backfilled to one.
+    #: IT AUTHORISES NOTHING. Nothing in the product may read it as a reason to
+    #: reject, rank or filter; it exists so a human can look and so a challenged
+    #: decision has a record.
+    intake_scan_json: Mapped[dict | None] = mapped_column(JSONB)
     aspects_json: Mapped[dict | None] = mapped_column(JSONB)  # {"1": {...}, ..., "40": {...}}
     parsed_fields_json: Mapped[dict | None] = mapped_column(JSONB)  # skills, experience, education, employment_history
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1024))  # voyage-4, EMBEDDING_DIM
@@ -125,7 +201,7 @@ class Profile(Base, UUIDPKMixin, CreatedAtMixin):
 # ── Type of procurement (2026-07-28) ─────────────────────────────────────────
 # Every candidate on a job arrived one of exactly three ways:
 #
-#   applied  : they found the role through ReadyPick and applied themselves.
+#   applied  : they found the role through Vivekium and applied themselves.
 #   sourced  : they arrived through a third-party link (LinkedIn, Naukri, a
 #              forwarded post) and applied through the public /apply page.
 #   databank : the recruitment team bulk-uploaded their resume.
@@ -265,35 +341,6 @@ def _derive_source_type(mapper, connection, target: "JobCandidateLink") -> None:
         target.source_type = SOURCE_TYPE_APPLIED
 
 
-class VerificationRequest(Base, UUIDPKMixin, CreatedAtMixin):
-    """One per previous employer (max 3, employer_seq 1–3). Fresh candidates
-    only — Databank profiles never re-enter this flow (claude.md rule 7)."""
-    __tablename__ = "verification_requests"
-    __table_args__ = (
-        UniqueConstraint("profile_id", "employer_seq", name="uq_verification_employer_seq"),
-    )
-
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
-    )
-    profile_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
-    )
-    employer_seq: Mapped[int] = mapped_column(Integer, nullable=False)  # 1..3
-    employer_email: Mapped[str] = mapped_column(String(320), nullable=False)
-    employer_name: Mapped[str | None] = mapped_column(String(255))
-    token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)  # single-use, signed
-    status: Mapped[VerificationStatus] = mapped_column(
-        Enum(VerificationStatus, native_enum=False, length=20),
-        nullable=False, default=VerificationStatus.pending,
-    )
-    submitted_via: Mapped[SubmittedVia | None] = mapped_column(
-        Enum(SubmittedVia, native_enum=False, length=15)
-    )
-    # Designation, DOJ, DOE, CTC, gross, NOC, exit formalities, BGV, proofs…
-    response_json: Mapped[dict | None] = mapped_column(JSONB)
-    override_reason: Mapped[str | None] = mapped_column(Text)  # HR override path, audit-logged
-    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Interview(Base, UUIDPKMixin, CreatedAtMixin):

@@ -32,6 +32,11 @@ PLATFORM_TIMEZONE = "Asia/Kolkata"
 #: the Terraform default by `tests/test_placeholder_secret.py`.
 PLACEHOLDER_SECRET = "PLACEHOLDER_NOT_CONFIGURED"
 
+#: The development JWT signing key. A module constant rather than a field, so a
+#: production guard can refuse it BY IDENTITY rather than guessing at length or
+#: entropy -- and so the default and the thing that rejects it cannot drift.
+DEV_JWT_SECRET = "dev-only-secret-change-me"
+
 from functools import lru_cache
 
 from pydantic import model_validator
@@ -44,12 +49,55 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://pickready:pickready@localhost:5432/pickready"
     postgres_rls_app_role: str = "pickready_app"
+    # The role migrations SET ROLE to before running DDL, or empty to skip.
+    #
+    # WHY THIS EXISTS (2026-09-11). `DATABASE_URL` used to carry the RDS MASTER
+    # credential, which `manage_master_user_password = true` hands to Secrets
+    # Manager to ROTATE on a schedule. AWS rotated it seven days after the pilot
+    # instance was created, the hand-composed DSN kept the old password, and
+    # every database connection in the product failed at once: the API, the
+    # health probe, and therefore sign-in. The DSN now carries the least
+    # privileged application role (`postgres_rls_app_role`), which owns no
+    # object and whose password nothing else rotates, exactly as
+    # `infra/modules/rds` has documented the design from the start.
+    #
+    # That role deliberately has no DDL rights, so the migration job, and ONLY
+    # the migration job, escalates to the object owner for the length of its
+    # connection. It can, because the login role is a NOINHERIT member of the
+    # owner: membership permits `SET ROLE` while NOINHERIT means an ordinary
+    # application session holds none of the owner's privileges. Left unset in
+    # every runtime that serves traffic, so the escalation is reachable from one
+    # container role and not from the API.
+    postgres_migration_role: str = ""
 
     # Connection pool (app/core/db.get_engine). The SQLAlchemy defaults (5 + 10)
     # are small enough that a few concurrent tabs queue for a connection and
     # every request in the queue reads as "slow".
-    db_pool_size: int = 20
-    db_max_overflow: int = 10
+    #
+    # THE CEILING IS THE DATABASE'S, AND THE AUTOSCALER COULD EXCEED IT.
+    # ------------------------------------------------------------------
+    # `db.t4g.micro` has 1 GiB, and RDS derives `max_connections` as
+    # LEAST(DBInstanceClassMemory/9531392, 5000), which is about 112, of which
+    # three are reserved for the superuser: roughly 109 usable.
+    #
+    # At 20 + 10 the previous values, four API tasks alone want 120. The ECS
+    # target-tracking policy scales to `local.service_count * 2` = 4 on CPU, so
+    # the failure was reachable BY LOAD: the autoscaler's response to traffic
+    # was what took the database out. And it does not fail as a pool timeout
+    # that sheds one request -- Postgres answers `FATAL: sorry, too many
+    # connections`, `/health` probes the database too, all four tasks leave the
+    # target group, and the product is fully down.
+    #
+    # 12 + 3 gives 4 x 15 = 60 at the autoscaler's own maximum, leaving room
+    # for the Lambda workers (one engine each, account concurrency 10) and the
+    # on-demand Fargate agents, which are unbounded and take one engine each.
+    #
+    # These are the numbers for THIS instance class. Moving to a larger one is
+    # the other half of the trade and raises them; the rule is that the product
+    # of tasks and (pool_size + max_overflow) stays under the usable ceiling
+    # with headroom for the workers, not that these two integers are sacred.
+    db_pool_size: int = 12
+    db_max_overflow: int = 3
     db_pool_timeout_seconds: int = 30
     db_pool_recycle_seconds: int = 1800
 
@@ -58,6 +106,91 @@ class Settings(BaseSettings):
     # no queue in it, and nothing consumes from it.
     redis_url: str = "redis://localhost:6379/0"
     technical_review_reminder_hours: int = 48
+
+    # -- Consent renewal and the inactivity rule (feature 8) ------------------
+    #
+    # The windows. `services/consent_lifecycle` REFUSES a non-positive value,
+    # because a zero window puts every candidate past every threshold the
+    # instant they register, and the thing on the other side of these numbers
+    # is the permanent erasure of a real person's profile.
+    consent_renewal_months: int = 6
+    consent_grace_days: int = 15
+    consent_inactivity_months: int = 24
+
+    # THE SWEEP WRITES TO PEOPLE BY DEFAULT AND ERASES THEM ONLY WHEN THIS IS
+    # ON, and the split is deliberate. Reminders are reversible and are the
+    # candidate's own interest; deletion is neither.
+    #
+    # Same shape as `proctoring_event_retention_days`, which is zero by default
+    # and whose sweep LOGS that it is deleting nothing so an operator can see
+    # the policy in force rather than inferring it from silence. Off here means
+    # the lifecycle runs, the letters go out, and the erasure step reports what
+    # it WOULD have erased. Turning it on is an owner decision, and it should
+    # not be taken until `last_engagement_at` has been recording for longer
+    # than `consent_inactivity_months`: before that, every dormancy answer is
+    # computed from registration, which is the safe direction for the
+    # measurement and the wrong direction for the deletion.
+    consent_auto_deletion_enabled: bool = False
+
+    # Whether to install the per-request timing and query-count middleware.
+    #
+    # OPT IN, DEFAULT OFF, AND NOT DERIVED FROM `is_production`. It used to be
+    # `if not get_settings().is_production`, and `instrumentation.py` still
+    # said in place that the middleware was "unreachable in production because
+    # [it] is not installed there". It was installed there. `is_production` is
+    # `environment == "production"` and the live deployment runs
+    # `ENVIRONMENT=pilot`, so the gate was open on the one environment it was
+    # written to close. That is the same root cause as the unsigned-webhook
+    # hole and the exposed API docs, which is why this one is not fixed by
+    # swapping in another derived property.
+    #
+    # `serves_over_https` would be wrong too: it is true of staging, where
+    # these diagnostics are wanted. So this is DEPLOYMENT DATA, the shape
+    # `email_transport` and `task_dispatch_backend` already use, with the
+    # default chosen so an environment nobody has thought about is safe.
+    #
+    # What it exposes when on: `Server-Timing` carrying an app and a SQL
+    # duration, `X-Query-Count`, and an `X-Debug-SQL: 1` request header that
+    # makes the server log every statement the request ran. The statement text
+    # only, never its bound parameters, so no candidate value reaches the log;
+    # the timing is the sharper half, because this codebase uses
+    # `hmac.compare_digest` precisely to deny the measurement that a
+    # server-computed `sql;dur` hands out with the network jitter removed.
+    expose_request_diagnostics: bool = False
+
+    # How long an employer's verification form link stays usable, counted from
+    # when the request row was written (which is the same request that
+    # dispatches the email, so it is the send date).
+    #
+    # IT HAD NO EXPIRY AT ALL. The link was single-use, and that is a different
+    # property: a link nobody ever used stayed valid for ever, in a third
+    # party's mailbox, in every mailbox that message was ever forwarded to, and
+    # in whatever archive that mail system keeps. The same argument
+    # `INBOUND_WEBHOOK_SECRET` already makes about thread tokens.
+    #
+    # THREE DAYS IS SAFE HERE ONLY BECAUSE THERE IS A DOCUMENTED WAY OUT.
+    # `POST /verification/requests/{id}/override` is, in its own docstring,
+    # "the only way a fresh candidate moves forward without an employer
+    # response", and it takes a reason and writes an audit row. Without that an
+    # expiry would convert a stale-credential risk into a dead end for a
+    # candidate who did nothing wrong, which is the worse failure.
+    #: Vivekium feature 2 (C2, owner-ruled): the ceiling on questions a
+    #: candidate is ASKED in one assessment. Pre-filled questions cost
+    #: nothing against it; the trim drops lowest-weight items past it.
+    assessment_question_ceiling: int = 40
+    verification_link_ttl_days: int = 3
+
+    # -- A fresher's own verification documents (migration 0114) -------------
+    #
+    # The brief gives a fresher academic certificates and address proof in
+    # place of employer BGV. Every ceiling on that upload is DATA here rather
+    # than a literal in the pipeline, the rule `project_*` already follows:
+    # a candidate-supplied file is hostile input, and a bound somebody can
+    # only find by reading the parser is a bound nobody can change safely.
+    bgv_document_max_bytes: int = 10 * 1024 * 1024
+    #: Per candidate PER TYPE. A degree, a diploma and a consolidated marksheet
+    #: are three legitimate academic certificates; thirty is an abuse surface.
+    bgv_documents_max_per_type: int = 6
 
     # -- Background task dispatch --------------------------------------------
     #
@@ -78,7 +211,8 @@ class Settings(BaseSettings):
     agent_invoke_read_timeout_seconds: int = 660
 
     # Auth
-    jwt_secret: str = "dev-only-secret-change-me"
+    #: Refused in production by `_refuse_an_unconfigured_jwt_secret`.
+    jwt_secret: str = DEV_JWT_SECRET
     jwt_access_ttl_minutes: int = 15
     jwt_refresh_ttl_days: int = 7
     firebase_service_account_json: str = ""
@@ -144,10 +278,20 @@ class Settings(BaseSettings):
     # log line and no empty result to notice.
     voyage_context_4: str = ""
 
-    # Retained, unread by the router. `llm_provider_keys` still holds encrypted
-    # rows for the three retired vendors and this is what decrypts them; a
-    # rollback of the consolidation needs the rows readable rather than
-    # restored from a backup.
+    # RETAINED AS KEY MATERIAL, AND NOTHING IN THIS TREE DECRYPTS WITH IT.
+    #
+    # The previous comment here said "this is what decrypts them", which was
+    # false: a tree-wide search finds no reader of this setting outside the
+    # deploy secret-hygiene test that asserts which services may hold it. The
+    # single-vendor consolidation deleted the router that used it along with
+    # the three retired providers.
+    #
+    # It is kept rather than deleted because `llm_provider_keys` still holds
+    # encrypted rows, and the key that opens them is not recoverable once the
+    # secret is dropped. What a rollback would need is this VALUE plus a
+    # decryptor somebody writes; what it must not need is a value nobody
+    # thought to keep. Stating that plainly is the difference between a
+    # deliberate retention and a grant that looks live and is not.
     llm_key_encryption_secret: str = ""
 
     # Embedding output width. Pinned to 1024 because `profiles.embedding`,
@@ -168,12 +312,49 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from_email: str = "noreply@pickready.app"
-    smtp_from_name: str = "ReadyPick"
+    smtp_from_name: str = "Vivekium"
     smtp_starttls: bool = True
     smtp_ssl: bool = False
 
     msg91_api_key: str = ""
     msg91_sender_id: str = "PCKRDY"
+
+    # ── Where a reply comes back to ──────────────────────────────────────────
+    #
+    # The domain SES receives mail for, and the domain a conversation's
+    # Reply-To is built on: `conversations+<thread_token>@<this>`. A SUBDOMAIN,
+    # never the apex, because receiving mail means owning the MX record and the
+    # apex's MX belongs to whatever mailbox the company actually reads.
+    #
+    # EMPTY MEANS NO REPLY-TO IS SET, and that is a real state rather than a
+    # broken one: a deployment that has not provisioned inbound mail still
+    # sends verification requests, and the employer's reply lands in the
+    # sender's own mailbox instead of in the thread. The code SAYS so where it
+    # matters rather than quietly producing a thread that can never receive
+    # anything (`conversations.reply_address` returns None and the caller logs
+    # the degradation once).
+    inbound_email_domain: str = ""
+
+    # THE SHARED SECRET BETWEEN THE INBOUND-MAIL LAMBDA AND THIS API.
+    #
+    # `POST /verification/inbound-email` is a PUBLIC route that writes into
+    # verification requests, BGV threads and conversations. Its only protection
+    # was that a caller had to know a per-thread token, which travels by email
+    # and is therefore in every mailbox that ever received or forwarded one of
+    # these threads. Nothing stopped a POST straight at the API, bypassing SES,
+    # the DKIM and SPF checks, and the Lambda entirely.
+    #
+    # The sibling webhooks already do this properly: the SES event webhook
+    # verifies an SNS RSA signature, and the Razorpay webhook verifies an HMAC.
+    # This one is Lambda to API, so a shared secret is enough; it does not need
+    # to prove SES sent the mail, only that OUR relay made the call.
+    #
+    # EMPTY IS A REAL STATE and is not silently equivalent to configured. With
+    # no secret set the route stays open and SAYS SO in the log, which is the
+    # same shape `inbound_email_domain` already uses: a deployment that has not
+    # been given the value behaves as it did before rather than refusing every
+    # genuine reply, and the operator can see which of the two they are in.
+    inbound_webhook_secret: str = ""
 
     # ── Outbound email transport (Corporate Email System spec section 6) ────
     #
@@ -188,6 +369,14 @@ class Settings(BaseSettings):
     #: webhook refuses any message whose TopicArn differs (spec section 8).
     #: Empty means the event endpoint refuses everything.
     ses_sns_topic_arn: str = ""
+    #: The SES configuration set every send is attached to. THIS IS WHAT MAKES
+    #: DELIVERY TRACKING EXIST: SES publishes an event only for a message sent
+    #: under a configuration set carrying an event destination, so a send
+    #: without this name attached is one whose outcome nobody ever learns.
+    #: Empty sends without one, which is correct for a deployment that has not
+    #: provisioned the set: the message is still delivered and the row simply
+    #: stays at `sent` rather than pretending to a delivery it cannot observe.
+    ses_configuration_set: str = ""
 
     # ── Corporate sender registration (Corporate Email System spec) ─────────
     #
@@ -202,11 +391,10 @@ class Settings(BaseSettings):
         "rediff.com,zoho.com,zohomail.com,yandex.com,yandex.ru,fastmail.com,"
         "tutanota.com,tuta.com,hey.com,mail.ru,inbox.com,hushmail.com"
     )
-    #: Mailbox-ownership OTP (spec section 4). 600 s sits inside the spec's
-    #: 5 to 10 minute window.
-    sender_otp_ttl_seconds: int = 600
-    sender_otp_max_attempts: int = 3
-    sender_otp_resend_cooldown_seconds: int = 45
+    # The three sender-OTP knobs (ttl, max attempts, resend cooldown) were
+    # REMOVED with the mailbox OTP on 2026-09-08, not left as dead settings. A
+    # setting nothing reads is one an operator will eventually tune expecting
+    # an effect; SES identity verification is the ownership check now.
 
     def sender_blocked_domains(self) -> frozenset[str]:
         """The blocklist, parsed once per call: lowercased, trimmed, non-empty."""
@@ -251,8 +439,21 @@ class Settings(BaseSettings):
     #
     # Proctoring is MANDATORY (principle P4). There is no enable flag: a
     # candidate who declines the consent screen does not take the assessment.
-    # The one feature flag below governs the AI-text detector only, because
-    # that signal is documented as unreliable and ships disabled.
+    # RE-AFFIRMED by the owner on 2026-09-22 ("Proctoring remains mandatory"),
+    # which is also the refusal of the pending request for a per-job on/off
+    # toggle. Do not add `proctoring_enabled`. The one feature flag below
+    # governs the AI-text detector only, because that signal is documented as
+    # unreliable and ships disabled.
+    #
+    # SUPERSEDED 2026-09-22, principle P1 ONLY. This block used to be read
+    # alongside "no media is ever stored"; the owner reversed that in the same
+    # ruling: "Media storage is required. The assessment video must be
+    # compressed and stored securely in S3, linked to the candidate
+    # assessment." The media itself is NOT configured here, because it is not
+    # a proctoring artifact: it is an assessment recording, it lives on
+    # `video_recordings`, and its ceilings are the `video_*` settings further
+    # down. What is still true of every setting in THIS block is that no
+    # module in the proctoring pipeline carries a literal.
     proctoring_max_warnings: int = 3
     # Object detection (section 3.1, 4.2).
     proctoring_object_confidence_threshold: float = 0.65
@@ -402,7 +603,7 @@ class Settings(BaseSettings):
     )
     assessment_consent_text_conversational: str = (
         "Before you begin the assessment, please understand and agree to the "
-        "following. ReadyPick collects and processes what you submit during "
+        "following. Vivekium collects and processes what you submit during "
         "the assessment: your written answers, your questions, your responses "
         "to multiple-choice and coding questions, and session data such as "
         "timings and interaction records. This information is stored, is "
@@ -423,6 +624,20 @@ class Settings(BaseSettings):
     #: transcript (no silent fallback).
     transcribe_enabled: bool = False
     transcribe_language_code: str = "en-IN"
+    #: THE TRANSCRIBE REGION IS NOT NECESSARILY THE DEPLOYMENT REGION, and that
+    #: is a fact about AWS rather than a preference: ap-south-2 (Hyderabad) has
+    #: no Transcribe endpoint at all, so a pilot deployed there must call the
+    #: service in ap-south-1 (Mumbai). Empty means `aws_region`, which is
+    #: correct wherever Transcribe exists in the deployment region.
+    transcribe_region: str = ""
+    #: A Transcribe job reads its media from, and writes its output to, a
+    #: bucket in ITS OWN region: a job running in ap-south-1 cannot read
+    #: s3://bucket when that bucket lives in ap-south-2. This names the working
+    #: bucket in `transcribe_region`. The pipeline copies the extracted audio
+    #: in, runs the job, copies the transcript back to `s3_bucket` and deletes
+    #: both working objects, so nothing accumulates here. Empty means
+    #: `s3_bucket`, which is correct only when the two regions agree.
+    transcribe_bucket: str = ""
     video_transcribe_timeout_seconds: int = 1800
     video_transcribe_poll_seconds: int = 15
     #: ffmpeg transcode settings for the long-term compressed mp4 (video spec
@@ -444,6 +659,18 @@ class Settings(BaseSettings):
     #: cover the click and a slow connection's head start.
     video_preview_url_ttl_seconds: int = 3 * 3600
     video_download_url_ttl_seconds: int = 900
+    #: How long a stored assessment recording is kept after the compressed
+    #: object was verified present (`video_recordings.stored_at`). ZERO means
+    #: the platform's existing candidate-data policy, which is deletion by
+    #: cascade with the candidate or the application plus the erasure and
+    #: job-closure paths; the platform has no time-based purge and this
+    #: setting does not invent one. A positive value enables the hourly
+    #: `pickready.purge_assessment_media`, which HEAD-confirms every deletion.
+    #: Deliberately the same shape and the same default as
+    #: `proctoring_event_retention_days`: choosing a number is an owner
+    #: decision about a customer's data, not something this code decides on
+    #: their behalf.
+    assessment_media_retention_days: int = 0
 
     # ── Project Evidence Intelligence limits ────────────────────────────────
     #
@@ -481,6 +708,90 @@ class Settings(BaseSettings):
     #: decision: no private-repository OAuth or token intake exists.
     github_api_token: str = ""
 
+    # ── Per-assessment cost telemetry (change 28D) ──────────────────────────
+    #
+    # THE PLATFORM PAYS IN DOLLARS AND THE OWNER THINKS IN RUPEES, AND THE
+    # CONVERSION BETWEEN THEM IS A SETTING RATHER THAN A CONSTANT IN A QUERY.
+    #
+    # Every price in `config/llm_providers.TOKEN_PRICES_USD_PER_MILLION` is
+    # USD; every figure the owner reasons about (the plans, the rate card, the
+    # alert below) is INR. Something has to convert, and the two dishonest
+    # places to put it are inside the aggregation query, where nobody finds it,
+    # and inside the frontend, where two surfaces immediately disagree.
+    #
+    # BE EXACT ABOUT WHAT A FIXED RATE BUYS. It is not a live FX quote and it
+    # is not fetched: it is one number, edited by a person, and the rupee
+    # figures derived from it are therefore APPROXIMATE and are labelled as
+    # such everywhere they are rendered. That is enough for the question being
+    # asked -- "is the average per-assessment cost drifting toward the
+    # threshold" -- because a rate error moves every figure in the series by
+    # the same factor and leaves the trend intact. It would NOT be enough to
+    # invoice from, and nothing invoices from it.
+    #: USD to INR. A reviewed default, not a quote.
+    usd_to_inr_rate: float = 88.0
+    #: The owner's alert line: flag a month whose AVERAGE cost per assessment
+    #: exceeds this many rupees. A flag, never a gate: nothing in the product
+    #: refuses work because this was crossed, because the work in question has
+    #: already been paid for by a customer who is owed a report.
+    assessment_cost_alert_inr: float = 150.0
+
+    # ── Retrieval, RPN-AI-UP-001 W2 ─────────────────────────────────────────
+    #
+    # FILTERED ANN RECALL IS THE DANGEROUS ONE, AND IT FAILS SILENTLY.
+    #
+    # An HNSW scan returns its top K by vector distance and the tenant
+    # predicate filters AFTERWARDS. In a multi-tenant table the scan can
+    # traverse mostly other tenants' vectors and return almost nothing for the
+    # calling tenant. It does not error. It returns a short list that reads as
+    # a legitimately sparse result, and recall degrades as tenant count grows
+    # -- worst for the smallest tenants, which are the newest customers.
+    #
+    # `hnsw.iterative_scan` makes the index keep pulling candidates until
+    # enough rows pass the predicate. `strict_order` additionally guarantees
+    # exact distance ordering, which matters here because RRF fusion reads
+    # ORDER and nothing else: a relaxed order would corrupt the one signal
+    # fusion consumes.
+    #
+    # Requires pgvector 0.8.0 or later. Measured 0.8.1 on the pilot cluster and
+    # 0.8.5 on the test image (2026-09-09), so it is available on both. It is a
+    # SETTING rather than a literal so an environment on an older pgvector can
+    # turn it off explicitly, and `off` is then a recorded deployment decision
+    # rather than a silent fallback.
+    #: `strict_order` | `relaxed_order` | `off`.
+    retrieval_hnsw_iterative_scan: str = "strict_order"
+    #: Bounds a runaway iterative scan. Without a ceiling, a query for a tenant
+    #: with no matching rows scans the whole index before returning empty.
+    retrieval_hnsw_max_scan_tuples: int = 20_000
+    #: Candidates the HNSW layer considers per query. pgvector's default is 40,
+    #: which is below the depth the fusion stage asks for.
+    retrieval_hnsw_ef_search: int = 100
+    #: How many documents one `reconcile_context_index` pass repairs. The sweep
+    #: dispatches one indexing task per document, so this bounds the fan-out of
+    #: a single hourly run rather than the work itself.
+    retrieval_index_sweep_batch: int = 200
+
+    # ── Retrieval intelligence (RPN-AI-UP-001 W6) ───────────────────────────
+    #
+    # Deployment data, one value per deployment, never a fallback chain: the
+    # same shape as TASK_DISPATCH_BACKEND and email_transport. Read through a
+    # validator that RAISES on an unrecognised value, because the failure mode
+    # of a wrong one is SILENT -- retrieval keeps working and simply gets
+    # worse, which is indistinguishable from a tenant with thin evidence.
+    #: `voyage` (the cross-encoder) or `lexical` (the deterministic pass).
+    #: Defaults to `lexical` deliberately: an environment that has not made the
+    #: decision runs the behaviour it runs today, and turning the cross-encoder
+    #: on is an explicit act.
+    retrieval_reranker: str = "lexical"
+    #: Whether a situating prefix is generated at index time.
+    retrieval_contextual_prefix: bool = True
+    #: The reranker's credential, named after the model it unlocks (rerank-2.5),
+    #: the same convention as VOYAGE_CONTEXT_4 and OPENAI_GPT_TERRA. A separate
+    #: variable from the embedding key even where the Voyage account issues one
+    #: string: it makes "the reranker is not configured" distinguishable from
+    #: "embedding is not configured", so an unset value here is a RECORDED
+    #: degradation rather than an embedding outage wearing a reranker's name.
+    voyage_rerank_2_5: str = ""
+
     # Payments  -  Razorpay Subscriptions. The Key ID is public (Checkout needs it
     # in the browser and reads it from GET /billing/config); the Key Secret and
     # the webhook secret are server-side only and never reach a response body,
@@ -488,13 +799,65 @@ class Settings(BaseSettings):
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
     razorpay_webhook_secret: str = ""
-    # ReadyPick's own GST registration number, printed on every credit-pack
+    # Vivekium's own GST registration number, printed on every credit-pack
     # invoice (Master Directive Part 5 §5.2). Configuration, not code: it is a
     # legal identifier that changes with registration, never with a release.
     readypick_gstin: str = ""
 
     # App
     environment: str = "development"
+    #: Set by terraform on the containers that SIGN (the API service and the
+    #: task worker). See `_refuse_an_unconfigured_jwt_secret`.
+    require_jwt_secret: bool = False
+
+    @model_validator(mode="after")
+    def _refuse_an_unconfigured_jwt_secret(self) -> "Settings":
+        """In production, refuse to boot without a real signing key.
+
+        ONE SECRET KEYS EVERYTHING, which is what makes this worth a boot
+        refusal rather than a warning. `jwt_secret` signs the portal session
+        cookies, the OTP hashes, the outreach links, the assessment invite
+        tokens and the signed resume URLs. A known value lets anyone mint
+        `{"aud": "pickready:owner", "role": "super_admin"}` and reach
+        `get_superadmin_db`, which is the RLS bypass scope. That is total
+        platform compromise from a default string.
+
+        AND IT COULD ARRIVE EMPTY. `_drop_placeholder_secrets` below rewrites
+        `PLACEHOLDER_NOT_CONFIGURED` to "", and PyJWT signs HS256 with an empty
+        key without complaint -- so an unprovisioned secret does not fail, it
+        silently signs. That is the exact shape of the 2026-09-06 Firebase
+        incident, where a secret CONTAINER was mistaken for a configured
+        secret, on the one credential whose blast radius is everything.
+
+        Ordered BEFORE the placeholder rewrite so the refusal can name which of
+        the two states it found. Development and test are unaffected: the
+        default is what lets a fresh clone run.
+        """
+        if (self.environment or "").strip().lower() != "production":
+            return self
+        # FIRES ONLY WHERE THE PROCESS DECLARES IT SIGNS. The first
+        # production roll (SEC-24, 2026-09-19) proved the unconditional form
+        # wrong twice in one day: it refused the MIGRATE one-shot, which
+        # signs nothing, and then took every Lambda down, because secrets
+        # are enumerated PER SERVICE and the drafting lambdas hold no
+        # signing key by design. A guard that assumes every container holds
+        # every secret is a guard against the least-privilege model itself.
+        # Terraform sets REQUIRE_JWT_SECRET on the containers that mint or
+        # verify signed material (the API service, and the task worker,
+        # which signs assessment invite links); a signer that boots without
+        # its key still refuses, which is the original guarantee, held where
+        # it is true.
+        if not self.require_jwt_secret:
+            return self
+        value = (self.jwt_secret or "").strip()
+        if not value or value == PLACEHOLDER_SECRET or value == DEV_JWT_SECRET:
+            raise ValueError(
+                "JWT_SECRET is not configured in production. It signs the "
+                "session cookies, the OTP hashes and every signed link, so a "
+                "default or empty value is a full platform compromise. Set it "
+                "in Secrets Manager and redeploy."
+            )
+        return self
 
     @model_validator(mode="after")
     def _drop_placeholder_secrets(self) -> "Settings":
@@ -537,6 +900,37 @@ class Settings(BaseSettings):
             raise ValueError("SMTP_USER must be a Gmail address")
         if self.smtp_user and self.smtp_from_email.lower() != self.smtp_user.lower():
             raise ValueError("SMTP_FROM_EMAIL must match SMTP_USER")
+        return self
+
+    @property
+    def effective_transcribe_region(self) -> str:
+        """The region the Transcribe client is built in."""
+        return (self.transcribe_region or self.aws_region or "").strip()
+
+    @property
+    def effective_transcribe_bucket(self) -> str:
+        """The bucket a Transcribe job reads and writes, in that region."""
+        return (self.transcribe_bucket or self.s3_bucket or "").strip()
+
+    @model_validator(mode="after")
+    def validate_transcribe_colocation(self) -> "Settings":
+        """Refuse the cross-region misconfiguration rather than fail per job.
+
+        Transcribe is region-local over S3, so pointing the client at another
+        region while leaving the bucket behind produces a BadRequestException
+        on EVERY recording, one at a time, hours after the deploy. Naming it
+        here makes it a boot failure a deploy can see.
+        """
+        if not self.transcribe_enabled:
+            return self
+        deployment = (self.aws_region or "").strip()
+        region = (self.transcribe_region or "").strip()
+        if region and region != deployment and not (self.transcribe_bucket or "").strip():
+            raise ValueError(
+                "TRANSCRIBE_REGION differs from AWS_REGION, so TRANSCRIBE_BUCKET "
+                "must name a bucket in TRANSCRIBE_REGION: an Amazon Transcribe "
+                "job cannot read or write a bucket in another region."
+            )
         return self
 
     @model_validator(mode="after")

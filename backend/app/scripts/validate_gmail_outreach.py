@@ -25,7 +25,7 @@ from app.workers.dispatch import dispatch
 async def _compose() -> dict:
     return await generate_outreach_email(
         candidate={
-            "name": "ReadyPick Test Candidate",
+            "name": "Vivekium Test Candidate",
             "skills_comment": (
                 "Strong evidence across Python, FastAPI, PostgreSQL, Redis, "
                 "Docker, and production API ownership."
@@ -45,7 +45,7 @@ async def _compose() -> dict:
         },
         job={"title": "Senior Backend Engineer"},
         company={
-            "name": "ReadyPick",
+            "name": "Vivekium",
             "culture": (
                 "Clear ownership, thoughtful collaboration, candid feedback, "
                 "and reliable delivery without unnecessary process."

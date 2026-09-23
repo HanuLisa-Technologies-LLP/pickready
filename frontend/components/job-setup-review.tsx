@@ -20,9 +20,11 @@
 // sent and in traces a rolling deploy is still writing, and every report
 // written before today was filed under those names.
 //
-// The SWOT intake sits above both and gates NEITHER on its own. It is an INPUT
-// to the matrix, so an intake nobody completed already shows up as a matrix
-// nobody approved; gating separately would give one problem two error messages.
+// The reporting authority SWOT intake moved to the JD tab (owner ruling,
+// 2026-09-19): it renders inside the Job SWOT Analysis panel, beside the JD it
+// is about. It still gates NOTHING on its own. It is an INPUT to the matrix,
+// so an intake nobody completed already shows up as a matrix nobody approved;
+// gating separately would give one problem two error messages.
 //
 // Everything after approval runs without human intervention. This screen
 // therefore has one job: make the outstanding work obvious, so the step does
@@ -34,9 +36,30 @@
 // previously listed the technical question bank, whose control had been deleted
 // in the same change, so it was unclearable by construction and read as a
 // removed feature still being present.
+//
+// ── THE MATRIX IS A LIST OF SKILLS, SO IT LOOKS LIKE ONE (owner, 2026-09-20) ──
+//
+// This editor used to render every entry as a horizontal CARD carrying a name,
+// a free-text "What this measures" box, a "This role requires:" caption and a
+// grade badge, in a row that scrolled sideways. Five skills filled the screen,
+// the aspects sat one under another so the three were never visible together,
+// and adding one meant a four-field form. What a recruitment team is actually
+// doing here is naming skills.
+//
+// So: an entry is a CHIP -- its name, the grade word beside it, and a remove
+// control -- the three aspects sit side by side, and the add control is one
+// line with a "Paste a list" escape hatch for the common case of typing out a
+// dozen at once.
+//
+// THE DESCRIPTION INPUT IS GONE, deliberately and in both places (add and
+// edit). It was optional, unexplained and never asked for; what a competency
+// MEANS is `observable_evidence`, which Sutra derives and nobody hand-types.
+// The COLUMN and the generated text survive: an edit sends the stored
+// description straight back, because a field disappearing from a form must not
+// be a field being erased from the record.
 
 import * as React from "react";
-import { Check, Loader2, Lock, Pencil, Plus, Trash2, Unlock } from "lucide-react";
+import { Check, Loader2, Lock, Pencil, Plus, Unlock, X } from "lucide-react";
 
 import { apiDelete, apiGet, apiPost, apiPut } from "@/lib/api";
 import { RATING_GRADES, type RatingGrade } from "@/lib/types";
@@ -46,7 +69,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "./ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { RatingLabel } from "@/components/rating-label";
-import { SwotIntakePanel } from "@/components/swot-intake";
 import { MatchingCategoriesCard } from "@/components/matching-categories";
 import { MonitoringPolicyCard } from "@/components/proctoring/monitoring-policy-card";
 import {
@@ -56,6 +78,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -77,11 +107,16 @@ const CATEGORY_LABEL: Record<Category, string> = {
 };
 
 const CATEGORY_HINT: Record<Category, string> = {
-  must_have:
-    "Capabilities the role cannot be performed without. Technical depth is assessed here.",
-  nice_to_have:
-    "Supporting capabilities that strengthen performance without being disqualifying.",
+  must_have: "The role cannot be performed without these.",
+  nice_to_have: "Helpful, but not disqualifying.",
   behavioural: "Observable workplace behaviours the role demands.",
+};
+
+/** What the one-line add control asks for, per aspect. */
+const CATEGORY_PLACEHOLDER: Record<Category, string> = {
+  must_have: "Skill or capability",
+  nice_to_have: "Skill or capability",
+  behavioural: "Behaviour",
 };
 
 /**
@@ -103,6 +138,18 @@ const MOVE_TARGETS: Category[] = ["must_have", "nice_to_have"];
 const REQUIREMENT_LEVELS: RatingGrade[] = RATING_GRADES.filter(
   (grade) => grade !== "Not Matching"
 );
+
+/** One pasted block to a list of names: newline or comma, blanks and repeats out. */
+function parseNames(raw: string): string[] {
+  return Array.from(
+    new Set(
+      raw
+        .split(/[\n,]+/)
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
+  );
+}
 
 interface Competency {
   id: string;
@@ -142,15 +189,17 @@ export interface Setup {
   framework_approved: boolean;
   /** The second half of the setup session (spec 3.2). */
   matching_categories_finalized?: boolean;
-  /** Whether the reporting authority has finished the SWOT intake. Reported,
-   *  never a gate on its own: see the header. */
-  swot_complete?: boolean;
+  swot_analysis_ready?: boolean;
   ready_for_candidates: boolean;
   /**
    * The framework has not been generated yet and the backend has just enqueued
    * one. Distinct from "generated and short of a minimum": 19 of 35 live jobs
    * were in this state with nothing retrying, and the screen rendered an empty
    * list indistinguishable from a finished, empty framework.
+   *
+   * It is also distinct from "a reviewer deleted everything", which it could
+   * not tell apart until 2026-09-20 and therefore reported as generation still
+   * running. See `_framework_repair_pending`.
    */
   framework_pending?: boolean;
 }
@@ -201,11 +250,10 @@ export function SetupStatus({ setup }: { setup: Setup }) {
           : "finish the setup review"}{" "}
         below. Applications still arrive in the meantime.
       </p>
-      {setup.swot_complete === false ? (
+      {setup.swot_analysis_ready === false ? (
         <p className="mt-2 text-xs">
-          The role intake is unfinished. It is not a blocker on its own, but the
-          matrix is written from it, so answering it first is worth the two
-          minutes.
+          Save the Job SWOT Analysis on the job description tab to supply the
+          evaluation matrix with this role&apos;s context.
         </p>
       ) : null}
       {setup.framework_pending ? (
@@ -222,9 +270,16 @@ export function SetupStatus({ setup }: { setup: Setup }) {
   );
 }
 
-// ── Framework editor (spec §6.3) ─────────────────────────────────────────────
+// ── One entry ────────────────────────────────────────────────────────────────
 
-function CompetencyRow({
+/**
+ * A matrix entry as a chip: the name, the grade word, edit and remove.
+ *
+ * Edit swaps the chip in place rather than opening anything, because the only
+ * two things editable here are a short name and a three-option grade. The
+ * stored `description` rides along untouched (see the header note).
+ */
+function CompetencyChip({
   competency,
   frozen,
   onSave,
@@ -237,82 +292,35 @@ function CompetencyRow({
 }) {
   const [editing, setEditing] = React.useState(false);
   const [name, setName] = React.useState(competency.name);
-  const [description, setDescription] = React.useState(competency.description ?? "");
   const [level, setLevel] = React.useState<RatingGrade>(competency.required_level);
   const [busy, setBusy] = React.useState(false);
 
   React.useEffect(() => {
     setName(competency.name);
-    setDescription(competency.description ?? "");
     setLevel(competency.required_level);
   }, [competency]);
 
-  if (!editing) {
+  if (editing) {
     return (
-      <div className="flex items-start justify-between gap-3 rounded-md border p-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium">{competency.name}</p>
-          {competency.description ? (
-            <p className="mt-0.5 text-xs">{competency.description}</p>
-          ) : null}
-          <p className="mt-1 text-xs">
-            This role requires: <RatingLabel label={competency.required_level} />
-          </p>
-        </div>
-        {frozen ? null : (
-          <div className="flex shrink-0 gap-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setEditing(true)}
-              aria-label={`Edit ${competency.name}`}
-            >
-              <Pencil className="h-3.5 w-3.5" aria-hidden />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await onRemove();
-                } finally {
-                  setBusy(false);
-                }
-              }}
-              aria-label={`Remove ${competency.name}`}
-            >
-              <Trash2 className="h-3.5 w-3.5" aria-hidden />
-            </Button>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-2 rounded-md border p-3">
-      <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" />
-      <Textarea
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder="What this measures"
-        rows={2}
-      />
-      <Select value={level} onValueChange={(value) => setLevel(value as RatingGrade)}>
-        <SelectTrigger>
-          <SelectValue placeholder="This role requires" />
-        </SelectTrigger>
-        <SelectContent>
-          {REQUIREMENT_LEVELS.map((grade) => (
-            <SelectItem key={grade} value={grade}>
-              {grade}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <div className="flex gap-2">
+      <div className="flex w-full min-w-[280px] max-w-full flex-wrap items-center gap-2 rounded-md border border-dashed p-2">
+        <Input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          aria-label={`Rename ${competency.name}`}
+          className="h-8 min-w-0 flex-1 text-sm"
+        />
+        <Select value={level} onValueChange={(value) => setLevel(value as RatingGrade)}>
+          <SelectTrigger className="h-8 w-[168px] text-sm" aria-label="Required level">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {REQUIREMENT_LEVELS.map((grade) => (
+              <SelectItem key={grade} value={grade}>
+                {grade}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Button
           size="sm"
           disabled={busy || !name.trim()}
@@ -322,7 +330,9 @@ function CompetencyRow({
               await onSave({
                 category: competency.category,
                 name: name.trim(),
-                description: description.trim() || null,
+                // Sent back exactly as stored. The input is gone; the record
+                // is not.
+                description: competency.description,
                 required_level: level,
               });
               setEditing(false);
@@ -337,97 +347,183 @@ function CompetencyRow({
           Cancel
         </Button>
       </div>
-    </div>
+    );
+  }
+
+  return (
+    <span
+      className={
+        "inline-flex max-w-full items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm " +
+        (frozen ? "" : "cursor-grab active:cursor-grabbing")
+      }
+      title={competency.description ?? undefined}
+    >
+      {/* Never truncated: a skill name a reviewer cannot read in full is a
+          criterion they cannot confirm. The chip wraps instead. */}
+      <span className="min-w-0 break-words font-medium">{competency.name}</span>
+      <RatingLabel label={competency.required_level} />
+      {frozen ? null : (
+        <span className="flex shrink-0 items-center">
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            aria-label={`Edit ${competency.name}`}
+            className="rounded p-0.5 hover:bg-muted"
+          >
+            <Pencil className="h-3.5 w-3.5" aria-hidden />
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await onRemove();
+              } finally {
+                setBusy(false);
+              }
+            }}
+            aria-label={`Remove ${competency.name}`}
+            className="rounded p-0.5 hover:bg-muted"
+          >
+            <X className="h-4 w-4" aria-hidden />
+          </button>
+        </span>
+      )}
+    </span>
   );
 }
 
+// ── Adding entries ───────────────────────────────────────────────────────────
+
+/**
+ * One line to add one entry, and a modal for adding many.
+ *
+ * The two are not two implementations: both end at `onAdd(names, level)`, which
+ * always posts the bulk route. A single name is the one-element case, which is
+ * also what makes re-adding a name idempotent on the server rather than a 500
+ * (see `_rows_by_name` in the API).
+ */
 function AddCompetency({
   category,
+  disabled,
   onAdd,
-  onBulkAdd,
 }: {
   category: Category;
-  onAdd: (next: { category: Category; name: string; description: string | null; required_level: RatingGrade }) => Promise<void>;
-  onBulkAdd: (next: { category: Category; names: string[]; required_level: RatingGrade }) => Promise<void>;
+  disabled: boolean;
+  onAdd: (names: string[], level: RatingGrade) => Promise<boolean>;
 }) {
-  const [open, setOpen] = React.useState(false);
   const [name, setName] = React.useState("");
-  const [description, setDescription] = React.useState("");
   const [level, setLevel] = React.useState<RatingGrade>("Matching");
+  const [pasting, setPasting] = React.useState(false);
+  const [pasted, setPasted] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const names = Array.from(
-    new Set(name.split(/[\n,]+/).map((value) => value.trim()).filter(Boolean))
+
+  const submit = React.useCallback(
+    async (raw: string, after: () => void) => {
+      const names = parseNames(raw);
+      if (names.length === 0) return;
+      setBusy(true);
+      try {
+        if (await onAdd(names, level)) after();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [level, onAdd]
   );
 
-  if (!open) {
-    return (
-      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
-        <Plus className="mr-1 h-3.5 w-3.5" aria-hidden />
-        Add to {CATEGORY_LABEL[category]}
-      </Button>
-    );
-  }
   return (
-    <div className="space-y-2 rounded-md border border-dashed p-3">
-      <Textarea
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder={
-          category === "behavioural"
-            ? "Paste one behaviour per line"
-            : "Paste one skill per line (10+ supported)"
-        }
-        rows={4}
-      />
-      <Textarea
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder="What this measures"
-        rows={2}
-      />
-      <Select value={level} onValueChange={(value) => setLevel(value as RatingGrade)}>
-        <SelectTrigger>
-          <SelectValue placeholder="This role requires" />
-        </SelectTrigger>
-        <SelectContent>
-          {REQUIREMENT_LEVELS.map((grade) => (
-            <SelectItem key={grade} value={grade}>
-              {grade}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <div className="flex gap-2">
+    <div className="mt-3 rounded-md border border-dashed p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          value={name}
+          disabled={disabled || busy}
+          placeholder={CATEGORY_PLACEHOLDER[category]}
+          aria-label={`Add to ${CATEGORY_LABEL[category]}`}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            void submit(name, () => setName(""));
+          }}
+          className="h-9 min-w-[140px] flex-1 text-sm"
+        />
+        <Select
+          value={level}
+          onValueChange={(value) => setLevel(value as RatingGrade)}
+          disabled={disabled || busy}
+        >
+          <SelectTrigger
+            className="h-9 w-[168px] text-sm"
+            aria-label={`Required level for the next ${CATEGORY_LABEL[category]} entry`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {REQUIREMENT_LEVELS.map((grade) => (
+              <SelectItem key={grade} value={grade}>
+                {grade}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Button
           size="sm"
-          disabled={busy || names.length === 0}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              if (names.length > 1) {
-                await onBulkAdd({ category, names, required_level: level });
-              } else {
-                await onAdd({
-                  category,
-                  name: names[0],
-                  description: description.trim() || null,
-                  required_level: level,
-                });
-              }
-              setName("");
-              setDescription("");
-              setOpen(false);
-            } finally {
-              setBusy(false);
-            }
-          }}
+          disabled={disabled || busy || parseNames(name).length === 0}
+          onClick={() => void submit(name, () => setName(""))}
         >
-          Add {names.length > 1 ? `${names.length} entries` : ""}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
-          Cancel
+          <Plus className="mr-1 h-3.5 w-3.5" aria-hidden />
+          Add
         </Button>
       </div>
+      <p className="mt-2 text-xs">
+        Adding many?{" "}
+        <button
+          type="button"
+          disabled={disabled || busy}
+          className="font-semibold underline underline-offset-2"
+          onClick={() => setPasting(true)}
+        >
+          Paste a list
+        </button>
+      </p>
+
+      <Dialog open={pasting} onOpenChange={setPasting}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add to {CATEGORY_LABEL[category]}</DialogTitle>
+            <DialogDescription>
+              One per line. They all come in at the level selected above, and
+              you can change any of them afterwards.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={pasted}
+            onChange={(e) => setPasted(e.target.value)}
+            aria-label={`Paste a list for ${CATEGORY_LABEL[category]}`}
+            rows={8}
+            placeholder={"Python\nSQL\nSystem design\nREST APIs"}
+          />
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={() => setPasting(false)}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              disabled={busy || parseNames(pasted).length === 0}
+              onClick={() =>
+                void submit(pasted, () => {
+                  setPasted("");
+                  setPasting(false);
+                })
+              }
+            >
+              Add {parseNames(pasted).length || ""}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -501,6 +597,46 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
       }
     },
     [load, toast]
+  );
+
+  /**
+   * Add a list of names to one aspect.
+   *
+   * The server is idempotent per name, so what the reviewer is TOLD has to be
+   * worked out here: the names already sitting in that aspect are the ones the
+   * request will not change, and saying "added 3" when one of the four was
+   * already present would be a count they can see is wrong.
+   */
+  const addNames = React.useCallback(
+    async (category: Category, names: string[], level: RatingGrade) => {
+      const present = new Set(
+        (framework?.competencies ?? [])
+          .filter((row) => row.category === category)
+          .map((row) => row.name.toLowerCase())
+      );
+      const already = names.filter((name) => present.has(name.toLowerCase()));
+      const ok = await mutate(
+        () =>
+          apiPost(`${BASE}/${jobId}/framework/bulk`, {
+            category,
+            names,
+            required_level: level,
+          }),
+        names.length > 1 ? "Couldn't add those entries" : "Couldn't add that entry"
+      );
+      if (ok && already.length > 0) {
+        toast({
+          title: `Added ${names.length - already.length} to ${CATEGORY_LABEL[category]}`,
+          description: `${already.join(", ")} ${
+            already.length === 1 ? "was" : "were"
+          } already there and ${already.length === 1 ? "was" : "were"} left as ${
+            already.length === 1 ? "it is" : "they are"
+          }.`,
+        });
+      }
+      return ok;
+    },
+    [framework, jobId, mutate, toast]
   );
 
   /**
@@ -601,10 +737,6 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
     <div className="space-y-5">
       {setup ? <SetupStatus setup={setup} /> : null}
 
-      {/* The intake comes FIRST because it is an input to everything below it:
-          the matrix is generated from the job description and this together. */}
-      <SwotIntakePanel jobId={jobId} />
-
       {/* The other half of the one setup session (spec 3.2). */}
       <MatchingCategoriesCard jobId={jobId} />
 
@@ -617,15 +749,15 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
       <MonitoringPolicyCard jobId={jobId} />
 
       {/* ── The Tatva Assessment matrix ─────────────────────────────────────── */}
-      <Card>
+      <Card id="ppi-framework" className="scroll-mt-24">
         <CardHeader>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <CardTitle>Tatva Assessment matrix</CardTitle>
               <CardDescription>
-                Generated from this job&apos;s description and the role intake above. Once
-                saved it becomes the fixed evaluation criteria for every candidate who
-                applies, which is what makes their reports comparable.
+                The capabilities every candidate for this job is assessed on.
+                Drafted from the job description and the Job SWOT Analysis, and
+                yours to change until you save it.
               </CardDescription>
             </div>
             {framework?.approved ? (
@@ -636,7 +768,7 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
             ) : null}
           </div>
         </CardHeader>
-        <CardContent className="space-y-5">
+        <CardContent className="space-y-4">
           {!framework ? (
             // The framework alone is missing (still generating, or its read
             // failed). Explain that rather than showing three empty category
@@ -649,157 +781,169 @@ export function JobSetupReview({ jobId }: { jobId: string }) {
             </p>
           ) : (
             <>
-            <p className="rounded-md border bg-muted/30 p-3 text-xs">
-              {framework.competencies.length} item
-              {framework.competencies.length === 1 ? "" : "s"} in this matrix, at
-              most {framework.maximum_items} for this grade. Candidates will be
-              asked {framework.question_target} question
-              {framework.question_target === 1 ? "" : "s"}. There is no minimum:
-              keep only what this role genuinely needs, because every item here
-              is probed at least once.
-              {frozen
-                ? null
-                : " Drag an item to reorder it, or drop it on the other list to move it between Must-have and Nice-to-have."}
-            </p>
+              <p className="rounded-md border bg-muted/30 p-3 text-xs">
+                <span className="font-semibold">
+                  {framework.competencies.length} of at most{" "}
+                  {framework.maximum_items} entries.
+                </span>{" "}
+                Every one of them is asked about, so this job&apos;s candidates
+                will answer {framework.question_target} question
+                {framework.question_target === 1 ? "" : "s"}. Keep only what the
+                role genuinely needs.
+                {frozen
+                  ? null
+                  : " Drag an entry onto the other list to move it between Must-have and Nice-to-have."}
+              </p>
 
-            {CATEGORY_ORDER.map((category) => {
-              const rows = framework.competencies.filter((row) => row.category === category);
-              const empty = rows.length === 0;
-              const droppable = !frozen && MOVE_TARGETS.includes(category);
-              return (
-                <section
-                  key={category}
-                  className={
-                    "space-y-2 rounded-md p-2 transition-colors " +
-                    (dropTarget === category ? "bg-muted ring-1 ring-inset" : "")
-                  }
-                  onDragOver={(event) => {
-                    if (!droppable || !dragging) return;
-                    // Default is "no drop"; preventing it is what makes this a
-                    // valid drop zone at all in the HTML5 drag API.
-                    event.preventDefault();
-                    setDropTarget(category);
-                  }}
-                  onDragLeave={() => {
-                    if (dropTarget === category) setDropTarget(null);
-                  }}
-                  onDrop={(event) => {
-                    if (!droppable) return;
-                    event.preventDefault();
-                    void handleDrop(category, null);
-                  }}
-                >
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <h4 className="text-sm font-semibold">{CATEGORY_LABEL[category]}</h4>
-                    <span className="text-xs">
-                      {rows.length} item{rows.length === 1 ? "" : "s"}
-                      {empty ? ", at least one needed" : ""}
-                    </span>
-                  </div>
-                  <p className="text-xs">{CATEGORY_HINT[category]}</p>
-                  {rows.map((competency) => (
-                    <div
-                      key={`drag-${competency.id}`}
-                      draggable={!frozen}
-                      onDragStart={() => setDragging(competency.id)}
-                      onDragEnd={() => {
-                        setDragging(null);
-                        setDropTarget(null);
-                      }}
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {CATEGORY_ORDER.map((category) => {
+                  const rows = framework.competencies.filter(
+                    (row) => row.category === category
+                  );
+                  const droppable = !frozen && MOVE_TARGETS.includes(category);
+                  return (
+                    <section
+                      key={category}
+                      className={
+                        "flex flex-col rounded-lg border p-3 transition-colors " +
+                        (dropTarget === category ? "bg-muted ring-1 ring-inset" : "")
+                      }
                       onDragOver={(event) => {
-                        if (frozen || !dragging || dragging === competency.id) return;
+                        if (!droppable || !dragging) return;
+                        // Default is "no drop"; preventing it is what makes
+                        // this a valid drop zone at all in the HTML5 drag API.
                         event.preventDefault();
-                        event.stopPropagation();
                         setDropTarget(category);
                       }}
-                      onDrop={(event) => {
-                        if (frozen) return;
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void handleDrop(category, competency.id);
+                      onDragLeave={() => {
+                        if (dropTarget === category) setDropTarget(null);
                       }}
-                      className={
-                        (frozen ? "" : "cursor-grab active:cursor-grabbing ") +
-                        (dragging === competency.id ? "opacity-50" : "")
-                      }
+                      onDrop={(event) => {
+                        if (!droppable) return;
+                        event.preventDefault();
+                        void handleDrop(category, null);
+                      }}
                     >
-                    <CompetencyRow
-                      key={competency.id}
-                      competency={competency}
-                      frozen={frozen}
-                      onSave={(next) =>
-                        mutate(
-                          () =>
-                            apiPut(`${BASE}/${jobId}/framework/${competency.id}`, next),
-                          "Couldn't save that change"
-                        ).then(() => undefined)
-                      }
-                      onRemove={() =>
-                        mutate(
-                          () => apiDelete(`${BASE}/${jobId}/framework/${competency.id}`),
-                          "Couldn't remove that entry"
-                        ).then(() => undefined)
-                      }
-                    />
-                    </div>
-                  ))}
-                  {frozen ? null : (
-                    <AddCompetency
-                      category={category}
-                      onAdd={(next) =>
-                        mutate(
-                          () => apiPost(`${BASE}/${jobId}/framework`, next),
-                          "Couldn't add that entry"
-                        ).then(() => undefined)
-                      }
-                      onBulkAdd={(next) =>
-                        mutate(
-                          () => apiPost(`${BASE}/${jobId}/framework/bulk`, next),
-                          "Couldn't add those entries"
-                        ).then(() => undefined)
-                      }
-                    />
-                  )}
-                </section>
-              );
-            })}
+                      <div className="flex flex-wrap items-baseline justify-between gap-2">
+                        <h4 className="text-sm font-semibold">
+                          {CATEGORY_LABEL[category]}
+                        </h4>
+                        <span className="text-xs">
+                          {rows.length} item{rows.length === 1 ? "" : "s"}
+                          {rows.length === 0 ? ", at least one needed" : ""}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 text-xs">{CATEGORY_HINT[category]}</p>
 
-            {framework.blocking_reason ? (
-              <p className="rounded-md border border-amber-600 p-3 text-xs">
-                {framework.blocking_reason}
-              </p>
-            ) : null}
+                      {rows.length > 0 ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {rows.map((competency) => (
+                            <div
+                              key={`drag-${competency.id}`}
+                              draggable={!frozen}
+                              onDragStart={() => setDragging(competency.id)}
+                              onDragEnd={() => {
+                                setDragging(null);
+                                setDropTarget(null);
+                              }}
+                              onDragOver={(event) => {
+                                if (frozen || !dragging || dragging === competency.id)
+                                  return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setDropTarget(category);
+                              }}
+                              onDrop={(event) => {
+                                if (frozen) return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                void handleDrop(category, competency.id);
+                              }}
+                              className={
+                                "max-w-full " +
+                                (dragging === competency.id ? "opacity-50" : "")
+                              }
+                            >
+                              <CompetencyChip
+                                competency={competency}
+                                frozen={frozen}
+                                onSave={(next) =>
+                                  mutate(
+                                    () =>
+                                      apiPut(
+                                        `${BASE}/${jobId}/framework/${competency.id}`,
+                                        next
+                                      ),
+                                    "Couldn't save that change"
+                                  ).then(() => undefined)
+                                }
+                                onRemove={() =>
+                                  mutate(
+                                    () =>
+                                      apiDelete(
+                                        `${BASE}/${jobId}/framework/${competency.id}`
+                                      ),
+                                    "Couldn't remove that entry"
+                                  ).then(() => undefined)
+                                }
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
 
-            <div className="flex flex-wrap gap-2">
-              {framework.approved ? (
-                <Button
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() =>
-                    void mutate(
-                      () => apiPost(`${BASE}/${jobId}/framework/reopen`),
-                      "Couldn't reopen the matrix"
-                    )
-                  }
-                >
-                  <Unlock className="mr-1.5 h-3.5 w-3.5" aria-hidden />
-                  Reopen for editing
-                </Button>
-              ) : (
-                <Button
-                  disabled={busy || Boolean(framework.blocking_reason)}
-                  onClick={async () => {
-                    const ok = await mutate(
-                      () => apiPost(`${BASE}/${jobId}/framework/finalize`),
-                      "Couldn't save the matrix"
-                    );
-                    if (ok) toast({ title: "Matrix saved" });
-                  }}
-                >
-                  Save matrix
-                </Button>
-              )}
-            </div>
+                      {frozen ? null : (
+                        <div className="mt-auto">
+                          <AddCompetency
+                            category={category}
+                            disabled={busy}
+                            onAdd={(names, level) =>
+                              addNames(category, names, level)
+                            }
+                          />
+                        </div>
+                      )}
+                    </section>
+                  );
+                })}
+              </div>
+
+              {framework.blocking_reason ? (
+                <p className="rounded-md border border-amber-600 p-3 text-xs">
+                  {framework.blocking_reason}
+                </p>
+              ) : null}
+
+              <div className="flex flex-wrap gap-2">
+                {framework.approved ? (
+                  <Button
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() =>
+                      void mutate(
+                        () => apiPost(`${BASE}/${jobId}/framework/reopen`),
+                        "Couldn't reopen the matrix"
+                      )
+                    }
+                  >
+                    <Unlock className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+                    Reopen for editing
+                  </Button>
+                ) : (
+                  <Button
+                    disabled={busy || Boolean(framework.blocking_reason)}
+                    onClick={async () => {
+                      const ok = await mutate(
+                        () => apiPost(`${BASE}/${jobId}/framework/finalize`),
+                        "Couldn't save the matrix"
+                      );
+                      if (ok) toast({ title: "Matrix saved" });
+                    }}
+                  >
+                    Save matrix
+                  </Button>
+                )}
+              </div>
             </>
           )}
         </CardContent>

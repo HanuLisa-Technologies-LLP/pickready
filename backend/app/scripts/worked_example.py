@@ -29,7 +29,7 @@ import asyncio
 import json
 
 from app.services import rating
-from app.services.hiring import company_dna, gates, situations, transformation
+from app.services.hiring import gates, situations, transformation
 from app.services.hiring.department_models import department_for
 from app.services.miti import aggregation, pipeline
 from app.services.miti.dimensions import EvidenceView
@@ -138,16 +138,6 @@ def main() -> int:
         )
     )
 
-    # ── Layer 2: the client's compiled philosophy ───────────────────────────
-    dna = company_dna.compile_artifact(
-        {
-            # "Almost always the proven one."
-            "proven_vs_potential": -2,
-            "corroboration": "No, we want it corroborated somewhere else",
-            "overall_bar": "Only people we would seriously consider hiring",
-            "stale_experience": "Within about three years",
-        }
-    )
     _h("1-7. THE SEVEN-STAGE TRANSFORMATION")
 
     baseline_item = transformation.build_item(
@@ -162,7 +152,6 @@ def main() -> int:
         category="must_have",
         department=department,
         seniority=SENIORITY,
-        company=dna,
         situation_key=situation_key,
         swot_origin=SWOT_INPUT,
     )
@@ -180,14 +169,13 @@ def main() -> int:
     print("\nStage 5  WEIGHT")
     print(THIN)
     print(f"  Layer 1  department baseline ({item.anchor_key})   x {terms['baseline_layer1']}")
-    print(f"  Layer 2  company DNA (hires proven over potential)  x {terms['company_layer2']}")
     print(f"  Layer 3  situation type ({situations.SITUATIONS[situation_key].label})       x {terms['situation_layer3']}")
     print(f"  Layer 3  this SWOT's own emphasis                   x {terms['role_layer3']}")
     print(THIN)
     print(f"  WEIGHT = {item.weight.value:.4f}")
-    print(f"  (with no Layer 2 and no Layer 3 it would be {baseline_item.weight.value:.4f})")
+    print(f"  (with no Layer 3 at all it would be {baseline_item.weight.value:.4f})")
     print(
-        f"  -> the two layers moved it by "
+        f"  -> Layer 3 moved it by "
         f"{item.weight.value - baseline_item.weight.value:+.4f}"
     )
 

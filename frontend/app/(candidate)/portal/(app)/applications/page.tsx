@@ -135,7 +135,7 @@ function Timeline({ events }: { events: StatusEvent[] }) {
           <span className="font-semibold">
             {PIPELINE_LABELS[event.status as PipelineStage] ?? event.label}
           </span>
-          <span className="ml-2 opacity-80">
+          <span className="ml-2">
             {new Date(event.at).toLocaleDateString(undefined, {
               day: "numeric",
               month: "short",
@@ -172,7 +172,7 @@ function ApplicationCard({
             >
               {application.job_title || "Untitled role"}
             </button>
-            <p className="mt-1 text-sm leading-6">
+            <p className="mt-1 text-sm">
               {application.company_name && application.company_slug ? (
                 // Links to the public employer page only when it is served.
                 <Link
@@ -191,7 +191,7 @@ function ApplicationCard({
         </div>
 
         {application.posting_end_date ? (
-          <p className="flex flex-wrap items-center gap-1.5 text-xs leading-5">
+          <p className="flex flex-wrap items-center gap-1.5 text-xs">
             <CalendarClock className="h-3.5 w-3.5 opacity-70" aria-hidden="true" />
             Applications closed {formatDate(application.posting_end_date)}
             {application.can_edit && application.days_until_edit_closes > 0 ? (
@@ -232,7 +232,7 @@ function ApplicationCard({
         </div>
 
         {!application.assessment_invited ? (
-          <p className="text-xs leading-5">
+          <p className="text-xs">
             The hiring team invites candidates to the assessment individually.
             You will be emailed if they invite you.
           </p>
@@ -293,7 +293,7 @@ export default function PortalApplicationsPage() {
         actions={
           applications.length ? (
             <ExportXlsxButton
-              fileName="readypick-my-applications"
+              fileName="vivekium-my-applications"
               rows={applications.map((application) => ({
                 role: application.job_title,
                 company: application.company_name ?? "",
@@ -341,7 +341,7 @@ export default function PortalApplicationsPage() {
                 <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-brand-600">
                   {group.title}
                 </h2>
-                <p className="mb-4 mt-1.5 text-sm leading-6">{group.blurb}</p>
+                <p className="mb-4 mt-1.5 text-sm">{group.blurb}</p>
                 <div className="grid gap-4 lg:grid-cols-2">
                   {rows.map((application) => (
                     <ApplicationCard
@@ -386,7 +386,7 @@ export default function PortalApplicationsPage() {
               ) : null}
             </div>
           ) : (
-            <p className="py-8 text-center text-sm leading-6">
+            <p className="py-8 text-center text-sm">
               This posting has closed, so its full description is no longer
               available.
             </p>

@@ -2,12 +2,12 @@
 
 // Provider Portal, the Business Development team.
 //
-// A BD user is ReadyPick's own salesperson, not a customer's employee: the row
+// A BD user is Vivekium's own salesperson, not a customer's employee: the row
 // has no tenant, which is exactly why none of the existing invite screens could
 // create one. This page is the only way to add them.
 //
 // THE ONE THING TO UNDERSTAND BEFORE EDITING: adding someone here does NOT
-// create a credential. ReadyPick never holds one. The row reserves the email
+// create a credential. Vivekium never holds one. The row reserves the email
 // address; the person becomes able to sign in when a Firebase identity exists
 // for that address and they use the normal login page. The "Signed in" column
 // is therefore load-bearing, it is the answer to "I added them, why can they
@@ -47,6 +47,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { LoadingRows } from "@/components/page-primitives";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -130,18 +131,26 @@ export default function BusinessDevelopmentPage() {
   };
 
   const save = async () => {
-    if (!editing && !EMAIL_RE.test(form.email.trim())) {
+    if (!EMAIL_RE.test(form.email.trim())) {
       setFormError("Enter a valid work email address.");
       return;
     }
     setSaving(true);
     try {
       if (editing) {
+        const emailChanged =
+          form.email.trim().toLowerCase() !== editing.email.toLowerCase();
         await apiPatch<BDUser>(`/admin/bd-users/${editing.id}`, {
+          email: emailChanged ? form.email.trim() : undefined,
           full_name: form.full_name.trim() || null,
           phone: form.phone.trim() || null,
         });
-        toast({ title: "Details updated", description: editing.email });
+        toast({
+          title: "Details updated",
+          description: emailChanged
+            ? `Sign-in moves to ${form.email.trim()}. The account is invited again until that address signs in.`
+            : editing.email,
+        });
       } else {
         await apiPost<BDUser>("/admin/bd-users", {
           email: form.email.trim(),
@@ -243,7 +252,7 @@ export default function BusinessDevelopmentPage() {
     <div>
       <PageHeader
         title="Business Development"
-        description="ReadyPick's own sales team. Adding someone here reserves the account; Firebase handles their sign-in credential."
+        description="Vivekium's own sales team. Adding someone here reserves the account; Firebase handles their sign-in credential."
         actions={
           <Button className="gap-2" onClick={openCreate}>
             <Plus className="h-4 w-4" /> Add BD member
@@ -261,6 +270,11 @@ export default function BusinessDevelopmentPage() {
             Try again
           </Button>
         </div>
+      ) : loading ? (
+        // The skeleton stands OUTSIDE the table rather than as a colSpan cell:
+        // a table row is not a valid place for a block of skeletons, and the
+        // shared primitive is what every other screen loads with.
+        <LoadingRows rows={5} label="Loading the Business Development team" />
       ) : (
         <div className="overflow-x-auto rounded-md border">
           <Table>
@@ -276,13 +290,7 @@ export default function BusinessDevelopmentPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={7} className="py-10 text-center">
-                    Loading the Business Development team…
-                  </TableCell>
-                </TableRow>
-              ) : users.length === 0 ? (
+              {users.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="py-10 text-center">
                     No Business Development accounts yet.
@@ -383,7 +391,7 @@ export default function BusinessDevelopmentPage() {
             </DialogTitle>
             <DialogDescription>
               {editing
-                ? "The email address is the identity this account signs in with, so it cannot be changed here."
+                ? "Changing the email moves sign-in to the new address: the account returns to invited, the old address loses access, and a Firebase identity must exist for the new address before its first login."
                 : "No password is set here. They sign in on the normal login page with this address, using Google or email and password."}
             </DialogDescription>
           </DialogHeader>
@@ -391,18 +399,14 @@ export default function BusinessDevelopmentPage() {
             <FormField
               label="Work email"
               htmlFor="bd-email"
-              required={!editing}
-              hint={
-                editing
-                  ? undefined
-                  : "This exact address must be the one they sign in with."
-              }
+              required
+              hint="This exact address must be the one they sign in with."
             >
               <Input
                 id="bd-email"
                 type="email"
                 value={form.email}
-                disabled={saving || Boolean(editing)}
+                disabled={saving}
                 aria-invalid={Boolean(formError)}
                 onChange={(event) => {
                   setForm({ ...form, email: event.target.value });

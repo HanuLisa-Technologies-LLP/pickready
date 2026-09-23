@@ -39,7 +39,7 @@ from sqlalchemy.sql.elements import TextClause
 
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
-from app.services import llm_router, matching, matching_categories
+from app.services import llm_router, locks, matching, matching_categories
 from app.services.agents import artifacts, gates, identity
 from app.services.matching import client_breakdown, ranking_payload
 from app.services.verification import base as verification
@@ -331,9 +331,20 @@ def test_the_report_schema_has_nowhere_for_this_metadata_to_land() -> None:
         "grade",
         "required_level",
         "remark",
+        # AMENDED 2026-09-22, change request 19. Evidence Confidence and the
+        # sources behind it are served now. They do not weaken what this test
+        # defends: both are WORDS, the confidence is one of four fixed ones,
+        # and the sources are names a reader recognises. Neither is a count of
+        # corroborating originators, which is the number they are derived from
+        # and the one thing that must not be served.
+        "evidence_confidence",
+        "evidence_sources",
     }
     for name, field in DimensionOut.model_fields.items():
-        assert field.annotation in (str, str | None), (
+        # `list[str]` joins the allowed shapes for `evidence_sources` alone.
+        # A list of words is still words: what this assertion exists to catch
+        # is an int, a float or a dict arriving on a client-facing line.
+        assert field.annotation in (str, str | None, list[str]), (
             f"DimensionOut.{name} is not a word-or-nothing field"
         )
     engineering = _engineering_keys(_publish_one().payload)
@@ -868,6 +879,16 @@ class _Harness:
 
     def _install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         ids = [profile.id for profile in self.profiles]
+
+        # The harness's fake session speaks no real SQL, and the per-job
+        # matching lock (2026-09-11) probes `pg_try_advisory_xact_lock`
+        # through it. Stubbed as acquired: this file's subject is publishing
+        # parity, and the lock itself is proven against the real database in
+        # test_matching_lock.py, including the refusal direction.
+        async def _lock_acquired(_session, _namespace, _subject):
+            return True
+
+        monkeypatch.setattr(locks, "try_advisory_lock", _lock_acquired)
 
         async def _embed(_texts):
             return [[0.1] * 1024]

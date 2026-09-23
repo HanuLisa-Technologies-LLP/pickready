@@ -47,7 +47,12 @@ ALLOWED_DOCUMENT_CONTENT_TYPES = {
 MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
 OBJECT_PREFIX = "compliance"
 
-_MIME_BY_EXTENSION = {
+#: PUBLIC, and deliberately so: `services/bgv_documents` accepts the same
+#: three scan formats for a fresher's certificates and must resolve an
+#: extension to a type the identical way. A second copy of this map is a
+#: second answer to "what is a .jpeg", and the divergence would show up as
+#: one store refusing a file the other accepted.
+MIME_BY_EXTENSION = {
     ".pdf": "application/pdf",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -86,8 +91,13 @@ def _normalise_filename(filename: str | None) -> str:
     return name
 
 
-def _assert_signature(data: bytes, extension: str) -> None:
+def assert_signature(data: bytes, extension: str) -> None:
     """Check the magic bytes, not just the extension.
+
+    PUBLIC because a candidate's certificate upload needs exactly this check
+    and must not carry a second implementation of it: a renamed executable
+    given a .pdf extension is the whole reason the check exists, and two
+    copies means one of them eventually loses a format.
 
     A renamed file is the ordinary case here (someone exports a scan and types
     a filename), and filing a corrupt PAN card that only reveals itself when
@@ -136,8 +146,8 @@ async def read_validated_document(file: UploadFile) -> tuple[bytes, str, str]:
             status.HTTP_413_CONTENT_TOO_LARGE,
             "Compliance documents must be 10 MB or smaller.",
         )
-    _assert_signature(data, extension)
-    return data, filename, _MIME_BY_EXTENSION[extension]
+    assert_signature(data, extension)
+    return data, filename, MIME_BY_EXTENSION[extension]
 
 
 def _upload_or_get_existing(

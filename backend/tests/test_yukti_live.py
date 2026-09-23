@@ -541,7 +541,7 @@ def test_the_report_payload_contains_no_digit_anywhere():
 
 
 def test_the_dashboard_cell_carries_the_number_and_names_it_separately():
-    """D8 the other way round: the Ready Pick Score renders on the dashboard.
+    """D8 the other way round: the Vivekium Score renders on the dashboard.
     Two keys, so a consumer reaching for one cannot receive the other."""
     cell = screen(CHECKABLE).dashboard_cell()
     assert cell["prescreen_grade"] in prescreen.GRADES

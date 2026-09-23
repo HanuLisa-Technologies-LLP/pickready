@@ -56,6 +56,22 @@ EMAIL_TYPES: tuple[str, ...] = (
     EMAIL_TYPE_DATABANK_INVITATION,
 )
 
+# ── Logged but never AI-drafted (migration 0114) ─────────────────────────────
+# The BGV verification request. It is DELIBERATELY not a member of
+# `EMAIL_TYPES`: every type in that tuple has a prompt in `EMAIL_TYPE_PROMPTS`
+# and is drafted by `lifecycle_email.draft`, and this one is not drafted at all
+# -- a recruiter writes it, or the deterministic template does when automation
+# sends it and there is no recruiter to review a draft. It exists as a type so
+# the message has an `email_log` row, which is the only thing a delivery event
+# can be matched back to.
+EMAIL_TYPE_BGV_VERIFICATION = "bgv_verification"
+
+NON_LIFECYCLE_EMAIL_TYPES: tuple[str, ...] = (EMAIL_TYPE_BGV_VERIFICATION,)
+
+#: Everything the `ck_email_log_type` CHECK admits. Mirrored by migration 0114
+#: -- keep both in step.
+LOGGED_EMAIL_TYPES: tuple[str, ...] = EMAIL_TYPES + NON_LIFECYCLE_EMAIL_TYPES
+
 #: Which prompt template drafts each type (app/prompts/*.txt).
 EMAIL_TYPE_PROMPTS: dict[str, str] = {
     EMAIL_TYPE_APPLICATION_CONFIRMATION: "email_application_confirmation",
@@ -148,10 +164,36 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     bounced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     complained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: SES REJECT and RENDERING_FAILURE: the message never reached a receiver
+    #: at all. Deliberately separate from `bounced_at`, which means a receiver
+    #: took it and refused it. The two have different causes and different
+    #: fixes, and one column would make them indistinguishable afterwards.
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: WHICH TRANSPORT ACTUALLY CARRIED THIS MESSAGE, recorded per row rather
+    #: than inferred from today's `settings.email_transport`. A deployment that
+    #: switches from smtp to ses would otherwise silently relabel every
+    #: historical row, and `sent` means something different under each: Gmail
+    #: reports no delivery outcome at all, so under smtp `sent` is terminal.
+    transport: Mapped[str | None] = mapped_column(String(20))
+    #: The template this body was rendered from. Stored so a bounce traces back
+    #: to the copy that produced it without re-deriving it from `email_type`,
+    #: which is a coarser thing: several templates share one type.
+    template_id: Mapped[str | None] = mapped_column(String(120))
     #: The corporate sender this message was queued under, when the recruiter
     #: chose one. SET NULL so revoking-then-deleting a sender never erases the
     #: delivery record; the send-time chokepoint in workers/tasks.py re-loads
     #: this row and refuses anything that is not `active` (spec section 11).
     sender_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("client_email_senders.id", ondelete="SET NULL")
+    )
+    #: WHICH BGV VERIFICATION THIS MESSAGE IS (migration 0114). The bounce
+    #: handler used to correlate back through the recipient ADDRESS, and one
+    #: HR mailbox confirming two candidates at the same employer is the normal
+    #: case at any large company: the address resolved to whichever
+    #: verification was sent last, silently, and the wrong candidate was told
+    #: to fix an address that worked. An address is a property of a recipient
+    #: and is never an identity of a message. SET NULL so deleting a
+    #: verification never erases the delivery record of what was sent.
+    bgv_verification_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("bgv_verifications.id", ondelete="SET NULL")
     )

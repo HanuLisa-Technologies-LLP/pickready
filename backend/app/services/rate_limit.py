@@ -44,8 +44,15 @@ import logging
 from dataclasses import dataclass
 
 from fastapi import HTTPException, Request, status
+from jwt import PyJWTError
 
 from app.core import cache
+from app.core.security import (
+    AUDIENCE_CANDIDATE,
+    AUDIENCE_ORG,
+    AUDIENCE_OWNER,
+    decode_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +69,43 @@ class Decision:
     retry_after: int
 
 
+# Both places `app.api.deps._extract_token` looks. Duplicated as a constant
+# rather than imported because `app.api.deps` imports this module's siblings and
+# a services module must not depend on the API layer.
+_ACCESS_COOKIE = "pr_access"
+
+# Every audience an access token can legitimately carry. PyJWT accepts a list
+# and matches any one of them, which is the same call `deps._decode_or_401`
+# makes for the two internal audiences.
+_ALL_AUDIENCES = [AUDIENCE_OWNER, AUDIENCE_ORG, AUDIENCE_CANDIDATE]
+
+
+def _verified_subject(request: Request) -> str | None:
+    """The authenticated user id, or None for anyone this cannot prove.
+
+    Never raises. This runs in front of every rate-limited endpoint including
+    the unauthenticated ones, so a malformed cookie must read as "anonymous"
+    rather than as a 500 on the sign-in path.
+    """
+    token = request.cookies.get(_ACCESS_COOKIE)
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[len("Bearer ") :]
+    if not token:
+        return None
+    try:
+        payload = decode_token(token, audience=_ALL_AUDIENCES)
+    except PyJWTError:
+        return None
+    # A refresh token presented here is not a session and must not share a
+    # bucket with one.
+    if payload.get("type") != "access":
+        return None
+    subject = payload.get("sub")
+    return str(subject) if subject else None
+
+
 def client_identifier(request: Request) -> str:
     """Who is being limited.
 
@@ -70,20 +114,52 @@ def client_identifier(request: Request) -> str:
     account abusing an endpoint should not be able to escape by changing
     networks.
 
-    Anonymous callers fall back to the client address. Behind the ALB the real
-    address is the first entry of `X-Forwarded-For`; the socket address is the
-    load balancer and would put every visitor in one bucket. Only the FIRST
-    entry is trusted, because the rest of that header is caller-supplied and a
-    limiter that reads it is a limiter anyone can evade.
+    Anonymous callers fall back to the client address, because the socket
+    address is the load balancer and would put every visitor in one bucket.
+
+    THE LAST ENTRY, NOT THE FIRST, AND THE DIRECTION IS THE WHOLE CONTROL.
+    ---------------------------------------------------------------------
+    This read the FIRST entry, with a docstring arguing that the rest of the
+    header is caller-supplied. That is true and it is backwards. An AWS ALB
+    APPENDS the address it observed to whatever `X-Forwarded-For` arrived, so
+    the first entry is precisely the attacker-supplied part and the last is the
+    one the load balancer saw. Reading the first meant
+    `X-Forwarded-For: <random>` on every request bought a fresh bucket, and
+    every limit in the product was one header away from unlimited.
+
+    WHY THE SUBJECT IS DECODED HERE RATHER THAN READ OFF `request.state`.
+    ---------------------------------------------------------------------
+    This used to read `request.state.rate_limit_subject`, and NOTHING EVER SET
+    IT, so the per-user branch was dead code and every authenticated caller was
+    limited by apparent IP alone. That is the fairness hole the docstring above
+    describes: one account could escape any limit by changing networks.
+
+    Setting it from the auth dependency does not work, and the reason is
+    ordering. `rate_limit` is attached as a ROUTE-LEVEL dependency
+    (`dependencies=[Depends(rate_limit(...))]`), and FastAPI solves those
+    BEFORE the endpoint signature's own dependencies, so `get_current_user` has
+    not run yet when this is called. Anything written from there would arrive
+    one dependency too late, on every request, silently.
+
+    So the subject is resolved here, from the token, and it is VERIFIED. An
+    unverified `sub` would be worse than no subject at all: the claim is
+    attacker-controlled, so anyone could name somebody else's bucket and
+    exhaust a stranger's allowance. A signature check is one HMAC and is
+    cheaper than the Redis round trip that follows it.
+
+    Any failure at all falls back to the address bucket. A request with no
+    token, an expired token or a refresh token is exactly the anonymous case.
     """
-    token_subject = getattr(request.state, "rate_limit_subject", None)
+    token_subject = _verified_subject(request)
     if token_subject:
         return f"user:{token_subject}"
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
-        first = forwarded.split(",")[0].strip()
-        if first:
-            return f"ip:{first}"
+        # The LAST entry: what this deployment's own load balancer observed.
+        # Everything to its left arrived from outside and is caller-controlled.
+        observed = forwarded.split(",")[-1].strip()
+        if observed:
+            return f"ip:{observed}"
     client = request.client
     return f"ip:{client.host}" if client else "ip:unknown"
 

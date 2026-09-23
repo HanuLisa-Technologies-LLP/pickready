@@ -1,21 +1,4 @@
-"""Session-cookie lifecycle: the idle-logout defect and its fix.
-
-The defect these tests pin down: an idle user with a valid 7-day refresh token
-was bounced to the login page. The cause was not the token, it was cookie
-VISIBILITY. `pr_access` is deleted by the browser when its 15-minute Max-Age
-lapses, and `pr_refresh` is path-scoped to /api/v1/auth so it is never sent to a
-page request like /org/jobs. The Next.js middleware gates portal routes on
-cookie presence, so it saw nothing at all and redirected before the API client
-could refresh.
-
-`pr_session` is the fix: a value-free presence hint at path "/", written and
-cleared with the refresh token. These tests assert the three properties it has
-to hold, because each one is a way the bug comes back:
-
-  1. it is written whenever a refresh token is written,
-  2. it lives exactly as long as the refresh token, never longer,
-  3. it is cleared on logout AND on any definitively dead refresh.
-"""
+"""Browser-session cookie lifecycle. Redis independently bounds idle time."""
 import pytest
 from fastapi import Response
 
@@ -76,23 +59,36 @@ def test_hint_carries_no_token_material():
     assert "refresh-token" not in cookies[SESSION_HINT_COOKIE]["value"]
 
 
-def test_hint_outlives_the_access_cookie_but_not_the_refresh_token():
-    """A hint that outlived the refresh token would admit a browser to a portal
-    page whose every API call fails, which is a worse experience than the bounce
-    it replaced."""
-    settings = get_settings()
+def test_every_auth_cookie_is_a_browser_session_cookie():
     response = Response()
     set_auth_cookies(response, "access-token", "refresh-token")
     cookies = _cookies(response)
+    for name, attrs in cookies.items():
+        assert "max-age" not in attrs, name
+        assert "expires" not in attrs, name
 
-    access_age = int(cookies[ACCESS_COOKIE]["max-age"])
-    refresh_age = int(cookies[REFRESH_COOKIE]["max-age"])
-    hint_age = int(cookies[SESSION_HINT_COOKIE]["max-age"])
 
-    assert access_age == settings.jwt_access_ttl_minutes * 60
-    assert refresh_age == settings.jwt_refresh_ttl_days * 86400
-    assert hint_age == refresh_age
-    assert hint_age > access_age
+def test_tabs_share_cookies_but_browser_close_drops_them():
+    """Cookie semantics: tab closure preserves the shared browser jar.
+
+    This simulates normal browser close. Browsers configured to restore a
+    previous session may restore session cookies too; only a live browser run
+    can characterize that browser setting.
+    """
+    response = Response()
+    set_auth_cookies(response, "access-token", "refresh-token")
+    browser_jar = _cookies(response)
+    second_tab = browser_jar.copy()
+    assert second_tab[REFRESH_COOKIE]["value"] == "refresh-token"
+    del second_tab  # tab close leaves the browser jar untouched
+    reopened_tab = browser_jar.copy()
+    assert reopened_tab[REFRESH_COOKIE]["value"] == "refresh-token"
+    assert reopened_tab[SESSION_HINT_COOKIE]["value"] == "1"
+    browser_jar = {
+        name: attrs for name, attrs in browser_jar.items()
+        if "max-age" in attrs or "expires" in attrs
+    }  # a full browser close discards session cookies
+    assert browser_jar == {}
 
 
 def test_every_auth_cookie_is_httponly():
@@ -100,6 +96,20 @@ def test_every_auth_cookie_is_httponly():
     set_auth_cookies(response, "access-token", "refresh-token")
     for name, attrs in _cookies(response).items():
         assert "httponly" in attrs, f"{name} must be HttpOnly"
+        assert attrs["samesite"].lower() in {"lax", "strict"}
+
+
+def test_https_auth_cookies_are_secure(monkeypatch):
+    from types import SimpleNamespace
+    from app.core import config
+
+    monkeypatch.setattr(config, "get_settings", lambda: SimpleNamespace(
+        serves_over_https=True, cookie_samesite="strict", cookie_domain=None,
+    ))
+    response = Response()
+    set_auth_cookies(response, "access-token", "refresh-token")
+    for attrs in _cookies(response).values():
+        assert "secure" in attrs
 
 
 def test_logout_clears_all_three_on_their_own_paths():
@@ -127,7 +137,7 @@ def test_cookie_samesite_is_validated():
     assert Settings(cookie_samesite="none", environment="production")
 
 
-def test_access_ttl_is_short_and_refresh_ttl_is_long():
+def test_access_ttl_is_short_and_idle_deadline_is_server_side():
     """The access TTL being short is FINE, and deliberately so: it limits the
     blast radius of a leaked token. It is only a problem when refresh does not
     work silently, which is what the hint cookie restores. This test exists so
@@ -136,3 +146,5 @@ def test_access_ttl_is_short_and_refresh_ttl_is_long():
     settings = get_settings()
     assert 5 <= settings.jwt_access_ttl_minutes <= 60
     assert settings.jwt_refresh_ttl_days >= 7
+    from app.services.auth_sessions import IDLE_SECONDS
+    assert IDLE_SECONDS == 30 * 60

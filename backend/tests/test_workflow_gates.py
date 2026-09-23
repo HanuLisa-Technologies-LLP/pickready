@@ -118,14 +118,22 @@ def test_the_gate_covers_every_route_that_accepts_a_band() -> None:
         )
 
 
-# ── Gate 1: Company Hiring Requirements ──────────────────────────────────────
+# ── Gate 1: the Company Profile ─────────────────────────────────────
 
-class _FakeResult:
+class _FakeScalars:
     def __init__(self, row) -> None:
         self._row = row
 
     def first(self):
         return self._row
+
+
+class _FakeResult:
+    def __init__(self, row) -> None:
+        self._row = row
+
+    def scalars(self):
+        return _FakeScalars(self._row)
 
 
 class _FakeSession:
@@ -144,34 +152,42 @@ async def test_creation_is_blocked_with_a_named_way_out() -> None:
         _FakeSession(None), uuid.uuid4()
     )
     assert blocked == company_requirements.MISSING_MESSAGE
-    # The message names the artifact and where to complete it, because
+    # The message names the page and what to write there, because
     # "job creation blocked" sends a recruiter to ask a colleague.
-    assert "Company Hiring Requirements" in blocked
-    assert "Company DNA" in blocked
+    assert "Company Profile" in blocked
 
 
 @pytest.mark.asyncio
-async def test_creation_is_allowed_once_the_requirements_are_on_record() -> None:
+async def test_creation_is_allowed_once_the_profile_says_what_the_company_does() -> None:
     assert (
         await company_requirements.creation_blocked(
-            _FakeSession((uuid.uuid4(),)), uuid.uuid4()
+            _FakeSession("We build payments infrastructure for Indian SMEs."),
+            uuid.uuid4(),
         )
         is None
     )
 
 
 @pytest.mark.asyncio
-async def test_a_draft_session_is_not_completion() -> None:
-    """Asked of the TABLE, and of the CURRENT COMPLETE row specifically.
+async def test_whitespace_is_not_content() -> None:
+    """A profile holding three spaces has told a recruiter nothing, and would
+    seed a job's About section with three spaces."""
+    for empty in (None, "", "   ", " " + chr(10) + chr(9)):
+        assert await company_requirements.is_complete(
+            _FakeSession(empty), uuid.uuid4()
+        ) is False
 
-    A half-answered instrument would hand Sutra a document with sections
-    missing rather than sections answered, so an open draft must not satisfy
-    the gate. This is the case a stamp on `tenants` would have got wrong, and
-    the product has paid for that mistake once already.
+
+@pytest.mark.asyncio
+async def test_the_gate_reads_the_table_rather_than_a_completion_stamp() -> None:
+    """Asked of the `companies` row's own text.
+
+    This is the case a stamp on `tenants` would have got wrong: a stamp can be
+    true while the section behind it is blank, and the product has paid for
+    that mistake once already. A tenant with no `companies` row at all is the
+    same answer as one whose About section is empty, because a recruiter
+    reading the refusal takes the same action either way.
     """
-    from app.models.hiring import CompanyDNA
-    from app.schemas.company_dna import STATUS_COMPLETE, STATUS_DRAFT
-
     engine = create_async_engine(get_settings().database_url)
     try:
         async with engine.connect():
@@ -198,24 +214,22 @@ async def test_a_draft_session_is_not_completion() -> None:
                     "domain": f"gate1-{tenant_id.hex[:8]}.invalid",
                 },
             )
-            session.add(
-                CompanyDNA(
-                    tenant_id=tenant_id,
-                    version=1,
-                    is_current=True,
-                    status=STATUS_DRAFT,
-                    answers_json={},
-                    artifact_json={},
-                    transcript_json=[],
-                )
-            )
-            await session.flush()
+            # No `companies` row at all: never opened the page.
             assert await company_requirements.is_complete(session, tenant_id) is False
 
-            # The same row, completed, satisfies it.
             await session.execute(
-                text("UPDATE company_dna SET status = :s WHERE tenant_id = :t"),
-                {"s": STATUS_COMPLETE, "t": str(tenant_id)},
+                text(
+                    "INSERT INTO companies (id, tenant_id, created_at) "
+                    "VALUES (gen_random_uuid(), :t, now())"
+                ),
+                {"t": str(tenant_id)},
+            )
+            # A row with an empty About section is still nothing said.
+            assert await company_requirements.is_complete(session, tenant_id) is False
+
+            await session.execute(
+                text("UPDATE companies SET about_company = :a WHERE tenant_id = :t"),
+                {"a": "We build payments infrastructure.", "t": str(tenant_id)},
             )
             assert await company_requirements.is_complete(session, tenant_id) is True
             await session.rollback()

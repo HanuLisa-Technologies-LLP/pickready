@@ -121,7 +121,7 @@ export function PostingWindowBanner({
               "Close, requirement met"
             )}
           </Button>
-          <span className="text-xs leading-5">
+          <span className="text-xs">
             Stops new applications straight away. Everyone already in your
             pipeline stays exactly where they are.
           </span>
@@ -143,7 +143,7 @@ export function PostingWindowBanner({
               "Renew for another 30 days"
             )}
           </Button>
-          <span className="text-xs leading-5">
+          <span className="text-xs">
             Everyone who already applied stays in your candidate list, marked as
             an earlier applicant.
           </span>

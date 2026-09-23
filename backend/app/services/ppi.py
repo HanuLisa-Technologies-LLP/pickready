@@ -1,6 +1,6 @@
-"""ReadyPick Profile Intelligence (PPI) -- the per-job evaluation matrix.
+"""Vivekium Profile Intelligence (PPI) -- the per-job evaluation matrix.
 
-PROPRIETARY: PPI is ReadyPick's own competency framework, derived from
+PROPRIETARY: PPI is Vivekium's own competency framework, derived from
 first-principles job analysis. It is NOT modelled on, named after, or derived
 from any licensed psychometric instrument, and no such instrument may ever be
 referenced in this file, the product UI, or the documentation.
@@ -65,10 +65,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import CandidateQuestion, JobCompetency
-from app.models.candidate import JobCandidateLink, Profile
+from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
-from app.models.job_setup import SWOT_AREAS, JobSwotIntake
-from app.services import agent_loop, llm_router, swot_intake
+from app.models.job_setup import SWOT_AREAS, JobSwotAnalysis
+from app.services import (
+    agent_loop,
+    consent_catalog,
+    job_version,
+    llm_router,
+    portable_evidence,
+)
 from app.services.assessment_formats import composition, generation
 from app.services.assessment_formats import config as format_config
 from app.services.assessment_formats import types as question_types
@@ -93,11 +99,11 @@ __all__ = [
     "REQUIRED_LEVEL_SCORES",
     "RUBRIC_SCORED_CATEGORIES",
     "generate_candidate_questions",
+    "portable_coverage",
     "framework_is_complete",
     "is_forbidden_competency",
     "load_framework",
     "matrix_is_complete",
-    "matrix_version",
     "published_matrix",
     "publish_tatva_matrix",
     "verify_matrix_for_consumer",
@@ -434,45 +440,12 @@ async def load_framework(session: AsyncSession, job_id: Any) -> list[JobCompeten
 
 # ── Sutra publishes the matrix (spec §5) ─────────────────────────────────────
 #
-# WHAT THE VERSION IS, AND WHY IT IS NOT A COLUMN
-# -----------------------------------------------
-# A regeneration DEACTIVATES the previous rows and inserts a new set in one
-# transaction, so `job_competencies` already records every generation this job
-# has had -- one batch of rows per generation, each batch sharing the
-# transaction's `created_at`. Counting batches is therefore reading the version
-# that already exists rather than maintaining a second one beside it. A counter
-# column would be a number somebody has to remember to increment, and the
-# failure when they forget is the one this whole hand-off exists to prevent: a
-# consumer using criteria it believes are current.
-#
-# It is frozen once the matrix is HM-locked because a locked matrix cannot be
-# regenerated -- `generate_framework` is idempotent, and reopening is refused
-# once anyone has been assessed. No new batch means no new version.
-
-
-def matrix_version(rows: list[JobCompetency]) -> int:
-    """This job's matrix version, counted from the generations behind it.
-
-    `rows` must be EVERY competency row for the job, active and inactive. Handed
-    only the active ones this returns 1 forever, because a regeneration
-    deactivates rather than deletes -- which is precisely the stale-version
-    reading a consumer must never make silently.
-    """
-    batches = {row.created_at for row in rows if row.created_at is not None}
-    return max(1, len(batches))
-
-
-async def _all_competencies(session: AsyncSession, job_id: Any) -> list[JobCompetency]:
-    """Every generation's rows, which is what `matrix_version` has to count."""
-    return list(
-        (
-            await session.execute(
-                select(JobCompetency)
-                .where(JobCompetency.job_id == job_id)
-                .order_by(JobCompetency.ordinal)
-            )
-        ).scalars().all()
-    )
+# The version authority is the append-only freeze binding
+# (`job_scorecard_bindings.scorecard_version`), read where the artifact is
+# published. Batch-counting over `job_competencies.created_at` was the earlier
+# answer and was DELETED with its last caller on 2026-09-23: compilation can
+# reuse rows and a human edit preserves row identity, so creation batches are
+# not versions.
 
 
 def requirement_word(required_level: Any) -> str:
@@ -532,7 +505,7 @@ def _matrix_payload(
         "grade": job.assessment_grade,
         "version": version,
         "locked": locked,
-        "jd_version": swot_intake.jd_version(job),
+        "jd_version": job_version.jd_version(job),
         "provenance": {
             "producer": identity.SUTRA,
             "job_id": str(job.id),
@@ -636,17 +609,25 @@ async def published_matrix(
 ) -> artifacts.Artifact | None:
     """The job's current matrix as a verifiable artifact, or None if it has none.
 
-    The entry point Yukti, Vaada, Miti and Siddhi use. It reads the version from
-    EVERY generation's rows and publishes only the active ones, which is the
-    pairing that makes a stale read detectable: the payload is what a consumer
-    would grade against, and the version is how many times that payload has been
-    replaced.
+    The entry point Yukti, Vaada, Miti and Siddhi use. The append-only freeze
+    binding is the version authority; row creation batches are not versions
+    because compilation can reuse rows and human edits preserve row identity.
     """
     from app.services.agents import artifacts, envelope as run_envelope, gates, identity  # noqa: PLC0415
     active = await load_framework(session, job.id)
     if not active:
         return None
-    version = matrix_version(await _all_competencies(session, job.id))
+    from app.models.job_scorecard_binding import JobScorecardBinding
+
+    current = (
+        await session.execute(
+            select(JobScorecardBinding.scorecard_version)
+            .where(JobScorecardBinding.job_id == job.id)
+            .order_by(JobScorecardBinding.freeze_sequence.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    version = int(current) if current is not None else 1
     return publish_tatva_matrix(
         job, active, version=version, correlation_id=correlation_id
     )
@@ -1000,6 +981,83 @@ async def generate_candidate_questions(
         profile=profile,
         project_evidence_block=project_evidence_block,
     )
+    # ── Resume pre-fill and the asked-question ceiling (feature 2, C2) ──────
+    # A criterion the resume already evidences (a substantive anchor AND the
+    # skill on the candidate's own parsed claim list) is recorded rather than
+    # asked; whatever would still be ASKED past the ceiling is trimmed lowest
+    # weight first, and never created at all. The trim is per candidate by
+    # ruling: the owner traded fixed-count comparability for speed, and the
+    # criteria ORDER stays deterministic per job.
+    from app.core.config import get_settings as _get_settings
+    from app.services import resume_prefill
+
+    # ── The Portable layer, mapped against THIS job's matrix (CR 23) ────────
+    #
+    # Owner ruling 2026-09-22. A criterion the candidate's PORTABLE record
+    # already establishes is recorded rather than asked, exactly as a resume
+    # pre-fill is, and for the same reason: nobody should be made to re-type a
+    # fact the platform already holds.
+    #
+    # THE CRITERION IS NEVER DROPPED FROM THE MATRIX. Its row is still
+    # created, still carries its rubric, still carries its required level and
+    # is still graded and charted. What changes is where the evidence for it
+    # came from, and `prefill_source` says so on the row. A criterion that
+    # vanished because the record covered it would be the "insufficient
+    # evidence is not negative evidence" rule failing in its other direction:
+    # an item nobody grades.
+    #
+    # PORTABLE IS TRIED FIRST, resume anchor second. A portable fact is the
+    # stronger record of the two: it carries an originator, a date and a
+    # locator, and one of its kinds was written by somebody other than the
+    # candidate. The resume anchor is the weaker fallback, not the default.
+    coverage = await portable_coverage(session, job, link)
+    covered = coverage.by_name()
+
+    text_types = frozenset(
+        {question_types.EVIDENCE_BASED, question_types.SHORT_ANSWER}
+    )
+    prefills: dict[int, str] = {}
+    sources: dict[int, str] = {}
+    for slot in slots:
+        competency = allocation[slot.index]
+        established = covered.get(competency.name)
+        if established is not None and slot.question_type in text_types:
+            prefills[slot.index] = portable_evidence.prefill_text(established)
+            sources[slot.index] = resume_prefill.PREFILL_SOURCE_PORTABLE
+            continue
+        answer = resume_prefill.evidence_for(
+            competency_name=competency.name,
+            # THE ARGUMENT THAT CLOSES THE DEFECT. Until 2026-09-22 this call
+            # passed no category at all, so a Behavioural competency whose name
+            # appeared in the parsed skills was pre-filled and skipped. Every
+            # behavioural dimension is freshly assessed, always.
+            category=competency.category,
+            resume_anchor=slot.resume_anchor,
+            parsed_fields=profile.parsed_fields_json if profile else None,
+            question_type=slot.question_type,
+            text_types=text_types,
+        )
+        if answer is not None:
+            prefills[slot.index] = answer
+            sources[slot.index] = resume_prefill.PREFILL_SOURCE_RESUME
+    trimmed = resume_prefill.trim_to_ceiling(
+        slots,
+        prefilled_indexes=set(prefills),
+        ceiling=_get_settings().assessment_question_ceiling,
+    )
+    if prefills or trimmed:
+        logger.info(
+            "ppi.questions.resume_aware link_id=%s prefilled=%d portable=%d "
+            "trimmed=%d",
+            link.id,
+            len(prefills),
+            sum(
+                1
+                for source in sources.values()
+                if source == resume_prefill.PREFILL_SOURCE_PORTABLE
+            ),
+            len(trimmed),
+        )
     rows: list[CandidateQuestion] = [
         CandidateQuestion(
             tenant_id=job.tenant_id,
@@ -1014,8 +1072,11 @@ async def generate_candidate_questions(
             resume_anchor=slot.resume_anchor,
             time_allocation_seconds=slot.time_allocation_seconds,
             weight=slot.weight,
+            prefilled_answer=prefills.get(slot.index),
+            prefill_source=sources.get(slot.index),
         )
         for slot in slots
+        if slot.index not in trimmed
     ]
     session.add_all(rows)
     await session.flush()
@@ -1030,25 +1091,101 @@ async def generate_candidate_questions(
     return rows
 
 
-async def _hiring_context(session: AsyncSession, job: Job) -> str:
-    """The hiring requirement and the SWOT session's captured points, for the
-    evidence-question writer (spec section 2.1 lists both among its inputs).
+async def portable_coverage(
+    session: AsyncSession, job: Job, link: JobCandidateLink
+) -> portable_evidence.Coverage:
+    """The Portable plus Job Specific split for one candidate on one job (CR 23).
 
-    The CAPTURED points, in the reporting authority's own terms, never the
-    raw intake prose: the same rule Sutra follows when it reads the compiled
-    artifact rather than the free text, because this string reaches a prompt
-    that decides what a candidate is asked.
+    HARVEST FIRST, THEN MAP. The harvest is deterministic extraction from rows
+    the product already holds (the parsed resume, the finalised employment
+    history, an employer's own confirmation) and it calls no model, so running
+    it here costs a few indexed statements and guarantees the split is computed
+    against what is true NOW rather than against whatever a previous
+    application happened to leave behind.
+
+    This runs inside `pickready.generate_candidate_questions`, which is already
+    a dispatched task, so no request handler waits on it.
+
+    `retake` is imported INSIDE the function. It owns `RETAKE_WINDOW_DAYS`,
+    which is the product's one "how old is too old" boundary and belongs to the
+    module that already explains it to the candidate; importing it at module
+    scope here would make this file depend on the report models for a single
+    integer.
+
+    NEITHER HALF MAY FAIL QUESTION GENERATION. A candidate is waiting on their
+    assessment; the worst honest outcome of a portable read that will not work
+    is that every criterion is asked, which is the product's behaviour from
+    before this feature and is never wrong. The failure is LOGGED with its
+    class, never swallowed into a bare pass, and an empty Coverage is a real
+    value rather than a substitute for a missing one: it says the record
+    establishes nothing, which is exactly what the caller should then act on.
     """
-    intake = (
+    from app.services import retake
+
+    if not await consent_catalog.cross_employer_reuse_allowed(
+        session, link.candidate_id
+    ):
+        # Not an error and not a degradation. The candidate was asked and
+        # either declined or was never asked, and absence of consent is never
+        # consent.
+        return portable_evidence.Coverage()
+
+    try:
+        await portable_evidence.harvest(
+            session,
+            candidate_id=link.candidate_id,
+            job_id=job.id,
+            tenant_id=job.tenant_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - recorded, never silent
+        logger.warning(
+            "ppi.portable_harvest_failed link_id=%s reason=%s",
+            link.id, type(exc).__name__, exc_info=True,
+        )
+
+    criteria = await load_framework(session, job.id)
+    if not criteria:
+        return portable_evidence.Coverage()
+    try:
+        facts = await portable_evidence.load_for_candidate(
+            session, link.candidate_id
+        )
+    except Exception as exc:  # noqa: BLE001 - recorded, never silent
+        logger.warning(
+            "ppi.portable_load_failed link_id=%s reason=%s",
+            link.id, type(exc).__name__, exc_info=True,
+        )
+        return portable_evidence.Coverage(
+            to_assess=tuple(
+                row.name
+                for row in criteria
+                if row.category not in portable_evidence.NEVER_COVERED_CATEGORIES
+            ),
+            behavioural=tuple(
+                row.name
+                for row in criteria
+                if row.category in portable_evidence.NEVER_COVERED_CATEGORIES
+            ),
+        )
+    return portable_evidence.coverage(
+        list(criteria), facts, max_age_days=retake.RETAKE_WINDOW_DAYS
+    )
+
+
+async def _hiring_context(session: AsyncSession, job: Job) -> str:
+    """The JD and saved Job SWOT document for candidate question generation."""
+    analysis = (
         await session.execute(
-            select(JobSwotIntake).where(JobSwotIntake.job_id == job.id)
+            select(JobSwotAnalysis).where(JobSwotAnalysis.job_id == job.id)
         )
     ).scalars().first()
-    captured = intake.captured() if intake is not None else {}
     return json.dumps(
         {
             "hiring_requirement": job.jd_json or {},
-            "swot": {area: captured.get(area, []) for area in SWOT_AREAS},
+            "swot": {
+                area: getattr(analysis, area) or "" if analysis is not None else ""
+                for area in SWOT_AREAS
+            },
         }
     )
 

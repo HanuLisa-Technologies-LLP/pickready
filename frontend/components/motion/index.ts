@@ -18,3 +18,9 @@ export {
   type MotionDirection,
 } from "./motion-primitives";
 export { usePrefersReducedMotion } from "./use-reduced-motion";
+export {
+  AnimatedList,
+  AnimatedListItem,
+  Collapse,
+  SwapView,
+} from "./motion-lists";

@@ -1,7 +1,7 @@
-# ReadyPick
+# Vivekium
 
-Multi-tenant recruitment and hiring-intelligence platform for Hanulisa
-Technologies LLP. Candidates apply, are ranked against the role, sit one
+Multi-tenant recruitment and hiring-intelligence platform for Varpitech LLP.
+Candidates apply, are ranked against the role, sit one
 adaptive AI assessment, and come out the other side as a **PRISM Report** a
 recruiter can act on, graded in words and never in numbers.
 
@@ -24,17 +24,21 @@ Fargate.
 ## What it does
 
 **Four portals, one platform.** The *Provider Portal* (`/admin`) is the
-ReadyPick owner console. The *Customer Portal* (`/org`) is a client company
+Vivekium owner console. The *Customer Portal* (`/org`) is a client company
 workspace. The *Candidate Portal* (`/portal`) is where applicants live. The
-*Business Development Portal* (`/bd`) is where the ReadyPick sales team works
+*Business Development Portal* (`/bd`) is where the Vivekium sales team works
 leads.
 
-**The hiring flow.** A customer creates a job as one markdown JD; the platform
-derives a per-job **Tatva Assessment** matrix (Must-have, Nice-to-have,
-Behavioural) from that job's own description, informed by a SWOT intake and the
-client's compiled Company DNA. A human reviews and freezes the matrix, and that
-freeze is the only comparability guarantee the product has. Candidates apply,
-every applicant is ranked, and the recruiter selects who is assessed.
+**The hiring flow.** A customer completes its Company Profile, creates a job as
+one markdown JD, and completes the Job SWOT. Sutra proposes a per-job **Tatva
+Assessment** matrix (Must-have, Nice-to-have, Behavioural) using the role,
+department baseline, SWOT, and relevant company context. An authorized Hiring
+Manager decides which criteria remain and may add, edit, rename, reorder, or
+reclassify them. **Save Matrix** enriches the approved criteria with assessment
+metadata and freezes a version. That human-approved version is the contract
+used for candidate assessment and reporting. Candidates apply, every applicant
+is ranked, and the recruiter selects who is assessed. Company DNA is retired;
+the Company Profile provides company context.
 
 **The assessment.** One adaptive conversation per candidate, with questions
 written fresh from the JD, the frozen matrix, that candidate's resume and their
@@ -43,7 +47,7 @@ probed on the same criteria in the same order; only the wording varies. Five
 isolated dimension evaluators score it, and a model-free aggregator turns those
 bands into a grade.
 
-**The output.** A PRISM Report (*Predictive Role Intelligence & Suitability
+**The output.** A PRISM Report (*Evidence-Based Role Intelligence & Suitability
 Mapping*) with a fixed section order, three number-free radar charts, and a
 citation chokepoint that refuses an uncited statement. Client-visible grades are
 four words only: Highly Matching, Matching, Moderately Matching, Not Matching.

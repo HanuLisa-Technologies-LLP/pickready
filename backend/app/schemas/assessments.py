@@ -64,10 +64,36 @@ class CompetencyOut(BaseModel):
     #
     # NO NUMBER CROSSES THIS BOUNDARY. `weight`, `threshold` and the four
     # multiplier terms stay on the row; what a reviewer reads is `provenance`,
-    # a list of sentences, and `force_rank`, which is an ORDER rather than a
-    # score -- the same status the radar chart's band index has had all along,
-    # and it is what §20.3's force-ranking is FOR. A weight rendered as "1.4850"
-    # would be a number a hiring manager could not usefully argue with.
+    # a list of sentences. A weight rendered as "1.4850" would be a number a
+    # hiring manager could not usefully argue with.
+    #
+    # `force_rank` WAS SERIALISED HERE UNTIL 2026-09-23, on the argument that
+    # §20.3's force-ranking is an ORDER rather than a score, the status the
+    # radar chart's band index has always had. The argument is sound and it
+    # still lost to one measurement: `grep -rn force_rank frontend/` returns
+    # NOTHING. No screen has ever drawn it.
+    #
+    # That is what separates it from the band index, which earns its exemption
+    # by being a coordinate a radar cannot be drawn without. This was an
+    # integer crossing the boundary for no reader, so it bought none of the
+    # traceability it was added for while costing the rule that keeps every
+    # other number inside -- a rule `test_platform_audit.py` pins at exactly
+    # one field, `match_percent`.
+    #
+    # THE HARNESS FOUND IT AND WAS BRIEFLY WEAKENED TO ACCOMMODATE IT. The
+    # `no_numbers_to_client` probe reads a real `framework/finalize` body and
+    # flagged `competencies[N].force_rank` as a score-shaped key; the first
+    # repair allowlisted the name. Widening a detector so an unused field can
+    # keep crossing is the green-while-broken shape this repository already
+    # has a rule about, so the field went instead and the allowlist went with
+    # it.
+    #
+    # It had been invisible because finalize used to REFUSE a matrix carrying
+    # human-added criteria, so no scenario ever got a populated body back to
+    # inspect. Repairing that path is what let the older defect be seen.
+    #
+    # The COLUMN is untouched and still ranks internally; `ordinal` carries
+    # display order to the review screen.
 
     #: Stage 2: what we would SEE if a candidate had this.
     observable_evidence: str | None = None
@@ -78,9 +104,6 @@ class CompetencyOut(BaseModel):
     #: The hiring manager's own sentence, quoted, when a Layer 3 input produced
     #: this criterion.
     swot_origin: str | None = None
-    #: §20.3's position in the force-ranking, 1..n, or null for a behavioural
-    #: competency (§20.1's scorecard has no behavioural row to rank).
-    force_rank: int | None = None
     #: Where the weight came from, in sentences. `hiring.scorecard.plain_provenance`.
     provenance: list[str] = []
 
@@ -137,52 +160,6 @@ class FrameworkOut(BaseModel):
 # ── The Reporting Authority SWOT intake (spec 5.1) ───────────────────────
 
 
-class SwotAnswerIn(BaseModel):
-    answer: str = Field(min_length=1, max_length=6000)
-
-
-class SwotIntakeOut(BaseModel):
-    """The intake conversation, as one payload.
-
-    `captured` is what the PPI agent will read; `prompt` is what the reporting
-    authority is being asked right now. Both are returned every turn so the
-    screen can show the growing picture beside the question, which is what makes
-    a four-area conversation feel finite to someone doing it unpaid.
-    """
-
-    job_id: uuid.UUID
-    status: str
-    complete: bool
-    #: strengths | weaknesses | opportunities | threats, or null when finished.
-    current_area: str | None = None
-    current_area_label: str | None = None
-    prompt: str | None = None
-    #: area -> the points captured so far, in the authority's own terms.
-    captured: dict[str, list[str]] = {}
-    areas_total: int = 4
-    areas_done: int = 0
-    # ── The rest of §18.2's session, which the four quadrants are only the
-    #    first four blocks of ──────────────────────────────────────────────
-    #: `swot_intake.PHASES`. Reported so the screen can say which block of the
-    #: session the manager is in rather than showing "Threats" through the
-    #: force-ranking, the best-performer test and the classification read-back.
-    phase: str = "areas"
-    phase_label: str | None = None
-    #: The §18.4 situation type the manager CONFIRMED, as a word, plus its
-    #: label. Never a proposal: a proposal shown as a confirmation is how the
-    #: most expensive error at intake gets made silently.
-    situation_key: str | None = None
-    situation_label: str | None = None
-    #: True while §18.5 has handed the intake back. A screen that showed this
-    #: the same as "in progress" would let a rejected intake look finished.
-    returned_for_rework: bool = False
-    #: The §18.5 rules currently refusing, by name. The SENTENCE to say is
-    #: `prompt`; these are for the progress panel.
-    outstanding_rules: list[str] = []
-    #: §18.3 probes and the other instruments already put to the manager.
-    instruments_asked: list[str] = []
-
-
 class JobSetupOut(BaseModel):
     """The one manual step in the pipeline (spec §10), as one payload.
 
@@ -191,10 +168,6 @@ class JobSetupOut(BaseModel):
     when both are stamped, and everything after that -- the candidate
     conversation, scoring, report synthesis -- runs with no further human
     involvement.
-
-    The SWOT intake is REPORTED but does not gate on its own. It is an input to
-    the matrix, so an unfinished intake already shows up as a matrix nobody has
-    approved, and gating separately would give one problem two error messages.
 
     `questions_approved` is retained and always reports the matrix's own approval
     state. It is not a third gate: it is here so a client build that still reads
@@ -210,8 +183,7 @@ class JobSetupOut(BaseModel):
     framework_approved: bool
     #: The second half of the setup session (spec §3.2).
     matching_categories_finalized: bool = False
-    #: Whether the reporting authority has finished the SWOT intake.
-    swot_complete: bool = False
+    swot_analysis_ready: bool = False
     ready_for_candidates: bool
     generated_at: datetime | None = None
     approved_at: datetime | None = None
@@ -234,6 +206,19 @@ class DimensionOut(BaseModel):
     #: parameters and technical items, which have no job-requirement shape.
     required_level: str | None = None
     remark: str
+    #: EVIDENCE CONFIDENCE (0107): High, Moderate, Low, or "Insufficient
+    #: evidence". How well corroborated the evidence behind the grade is, and
+    #: never a statement about the candidate: it is derived after scoring, from
+    #: distinct evidence ORIGINATORS, and it moves no grade.
+    #:
+    #: NULL on every row written before 0107, and nothing is substituted. A
+    #: report is immutable and the evidence set an older one was written from
+    #: cannot be reconstructed; a plausible word here would be the only
+    #: uncheckable claim on the line.
+    evidence_confidence: str | None = None
+    #: The named sources it rests on, as words a reader recognises. Empty on a
+    #: pre-0107 row, which renders as no source line rather than as none found.
+    evidence_sources: list[str] = []
 
 
 class RadarAxisOut(BaseModel):
@@ -300,6 +285,72 @@ class GapAnalysisOut(BaseModel):
     groups: list[GapGroupOut] = []
 
 
+class ValidationPointOut(BaseModel):
+    """One Recommended Human Validation Point (0107).
+
+    NOTE THE FIELD LIST. No severity, no score, no priority and no decision.
+    Order carries what ranking the section is entitled to state, exactly as the
+    Proctoring Report does, and a field an outcome could be written into is a
+    field an outcome eventually appears in.
+    """
+
+    area: str
+    #: `confidence | borderline | contradiction`. Why this area is listed, as a
+    #: code the UI can group by; the sentence a reader sees is `reason`.
+    driver: str
+    #: The evidence confidence word, where the driver is a confidence verdict.
+    #: Null rather than blank, so a renderer can tell "not about confidence"
+    #: from "confidence was empty".
+    confidence: str | None = None
+    reason: str
+    #: One interview probe. Advisory, grounded in the record, and never phrased
+    #: as an advance or reject decision.
+    probe: str
+
+
+class ValidationPointsOut(BaseModel):
+    """Recommended Human Validation Points (0107).
+
+    DELIBERATELY NOT THE GAP ANALYSIS. That section is GRADE driven and
+    unbounded; this one is CONFIDENCE and CONTRADICTION driven and stops at
+    five. A Highly Matching item resting on the candidate's own unchecked
+    account is invisible to the first and is the first row of the second.
+    """
+
+    note: str = ""
+    points: list[ValidationPointOut] = []
+    #: Said in words when nothing needs checking, rather than blank space.
+    no_points_statement: str | None = None
+
+
+class ClaimEvidenceEntryOut(BaseModel):
+    """One row of the Evidence vs Claim Summary (0107)."""
+
+    #: The competency or employer the claim bears on. May be empty: a claim the
+    #: matrix does not grade is still part of the candidate's account.
+    area: str = ""
+    #: What the candidate asserted, in the ledger's normalised wording.
+    claim: str
+    #: What was found when it was looked for. ABSENCE OF EVIDENCE IS NEVER
+    #: RENDERED AS THE CLAIM BEING FALSE: the sentence for an unevidenced claim
+    #: says in so many words that it is a gap in what was examined.
+    evidence: str
+    #: How well corroborated that evidence is, as a word.
+    confidence: str | None = None
+
+
+class ClaimEvidenceOut(BaseModel):
+    """Evidence vs Claim Summary (0107).
+
+    A CLAIM IS NOT A FACT, and this is the section that says so. It never
+    states whether a claim is true; it states what the record holds.
+    """
+
+    note: str = ""
+    entries: list[ClaimEvidenceEntryOut] = []
+    no_claims_statement: str | None = None
+
+
 class FunctionalReportOut(NumberFreeDelivery):
     # THE SERIALISER-LEVEL NUMBER BAN (spec-doc6 D8). Inherited rather than
     # asserted in the route: this model is the last shape a delivered PRISM
@@ -333,6 +384,11 @@ class FunctionalReportOut(NumberFreeDelivery):
     proctoring: ProctoringReportOut | None = None
     #: Gap Analysis & Action Plan (9.6).
     gap_analysis: GapAnalysisOut = GapAnalysisOut()
+    #: Evidence vs Claim Summary (0107). Empty on a report written before it,
+    #: which renders without the section rather than with an empty one.
+    claim_evidence: ClaimEvidenceOut = ClaimEvidenceOut()
+    #: Recommended Human Validation Points (0107). Same reading of empty.
+    validation_points: ValidationPointsOut = ValidationPointsOut()
     #: RETIRED, replaced by `gap_analysis`. Non-empty only on a report written
     #: before Draft v4, so an old report opened today still renders what it was
     #: actually written with rather than an empty section.
@@ -626,6 +682,23 @@ class ConsentTermsOut(BaseModel):
     consent_version: str
     privacy_policy_version: str
     terms_version: str
+    #: The Stage B per-item catalogue (vivekium feature 6), server-authored:
+    #: {key, stage, text, version} each. The screen renders these VERBATIM
+    #: beside the mode text and ticks them one at a time; acceptance stamps
+    #: each item individually server-side.
+    items: list[dict] = []
+
+
+class AssessmentConsentIn(BaseModel):
+    """The Stage B items the candidate actually ticked.
+
+    The keys are sent rather than a single boolean because the record has to
+    be able to say each item was agreed to separately (vivekium feature 6).
+    The server refuses anything but the complete Stage B set, so this is the
+    candidate's list of ticks and never a way to consent to a subset.
+    """
+
+    consent_keys: list[str] = []
 
 
 class ModeStateOut(BaseModel):
@@ -699,7 +772,7 @@ class SwotAnalysisSectionsIn(BaseModel):
     threats: str = Field(default="", max_length=4000)
     #: The version the editor loaded. Sent back so a save that would overwrite
     #: somebody else's newer save is refused instead of silently winning.
-    expected_version: int | None = None
+    expected_version: int = Field(ge=0)
 
 
 class SwotAnalysisGenerateIn(BaseModel):

@@ -5,7 +5,7 @@
  * -----------------------
  * The Dashboard Specification calls it out and spec-doc6 §8.1 repeats it:
  * **Pre-Screen Grade renders muted / outline only. No solid fill, no brand
- * colour, regular weight, 11px. Ready Pick Score is the only column allowed to
+ * colour, regular weight, 11px. Vivekium Score is the only column allowed to
  * look finished.**
  *
  * The reason is worth restating where the classes live, because the class

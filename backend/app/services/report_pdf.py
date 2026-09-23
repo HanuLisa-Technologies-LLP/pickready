@@ -47,7 +47,7 @@ FOOTER = "Confidential. Permanent Assessment Record."
 #: title and the expansion are set in different styles; a reader must be able to
 #: read the two lines together and get the string the spec wrote.
 REPORT_TITLE = "PRISM Report"
-REPORT_SUBTITLE = "Predictive Role Intelligence & Suitability Mapping"
+REPORT_SUBTITLE = "Evidence-Based Role Intelligence & Suitability Mapping"
 
 #: The section order (spec doc 4, part 3), and the ONLY place it is written down
 #: on this side. `render_report_pdf` walks this tuple rather than emitting
@@ -68,16 +68,30 @@ REPORT_SUBTITLE = "Predictive Role Intelligence & Suitability Mapping"
 #: The Proctoring Report is LAST (proctoring spec section 7: "Appended as the
 #: final section"). It is informational, moves no grade, and sits after every
 #: section that does, so a reader reaches the assessment before the monitoring.
+#: The Evidence vs Claim Summary sits with the rated sections and the
+#: Recommended Human Validation Points sit with the plan, which is why they are
+#: not adjacent. The first answers "what did they assert and what stands behind
+#: it", so it belongs beside the grades it annotates. The second answers "what
+#: should a person check", so it belongs beside the Gap Analysis, which is the
+#: other thing an interviewer acts on. Gap Analysis still precedes Validation,
+#: unchanged.
 SECTION_ORDER: tuple[str, ...] = (
     "ai_score",
     "overall",
     "must_have",
     "nice_to_have",
     "behavioural",
+    "claim_evidence",
     "gap_analysis",
+    "validation_points",
     "validation",
     "proctoring",
 )
+
+#: The two 0107 headings, verbatim in both renderers and in
+#: `siddhi.synthesis.SECTION_TITLES`.
+CLAIM_EVIDENCE_TITLE = "Evidence vs Claim Summary"
+VALIDATION_POINTS_TITLE = "Recommended Human Validation Points"
 
 #: The proctoring section's heading and its note, verbatim in both renderers.
 PROCTORING_TITLE = "Proctoring Report"
@@ -414,6 +428,95 @@ def _proctoring(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
     return story
 
 
+def _claim_evidence(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
+    """Evidence vs Claim Summary (0107).
+
+    Rendered with its heading even when the section is empty, for the same
+    reason the Proctoring Report is: a reader has to be able to tell a section
+    with nothing in it from a page that was cut short. A report written before
+    0107 carries neither entries nor an empty-state sentence, and prints
+    nothing at all, which is the honest rendering of a section that did not
+    exist when the document was written.
+    """
+    payload = _value(report, "claim_evidence", None) or {}
+    entries = list(_value(payload, "entries", []) or [])
+    statement = _value(payload, "no_claims_statement", None)
+    if not entries and not statement:
+        return []
+    story: list[Any] = [Paragraph(CLAIM_EVIDENCE_TITLE, styles["Section"])]
+    note = _value(payload, "note", "")
+    if note:
+        story.append(Paragraph(_text(note), styles["Body"]))
+        story.append(Spacer(1, 2 * mm))
+    if not entries:
+        story.append(Paragraph(_text(statement), styles["Body"]))
+        return story
+    for entry in entries:
+        area = _value(entry, "area", "")
+        story.append(
+            Paragraph(
+                f"<b>{_text(_value(entry, 'claim', ''))}</b>"
+                + (f"<br/><font color='#64748B'>{_text(area)}</font>" if area else ""),
+                styles["Body"],
+            )
+        )
+        story.append(Paragraph(_text(_value(entry, "evidence", "")), styles["Body"]))
+        confidence = _value(entry, "confidence", None)
+        if confidence:
+            story.append(
+                Paragraph(
+                    "<font color='#64748B'>Evidence confidence: "
+                    f"{_text(confidence)}</font>",
+                    styles["Body"],
+                )
+            )
+        story.append(Spacer(1, 2.5 * mm))
+    return story
+
+
+def _validation_points(report: Any, styles: dict[str, ParagraphStyle]) -> list[Any]:
+    """Recommended Human Validation Points (0107).
+
+    NOT the Gap Analysis above it, and the two sit apart on the page so a
+    reader meets them as different lists. That one is grade driven; this one is
+    driven by how thin the evidence is, which is why a strongly graded item can
+    appear here and never there.
+    """
+    payload = _value(report, "validation_points", None) or {}
+    points = list(_value(payload, "points", []) or [])
+    statement = _value(payload, "no_points_statement", None)
+    if not points and not statement:
+        return []
+    story: list[Any] = [Paragraph(VALIDATION_POINTS_TITLE, styles["Section"])]
+    note = _value(payload, "note", "")
+    if note:
+        story.append(Paragraph(_text(note), styles["Body"]))
+        story.append(Spacer(1, 2 * mm))
+    if not points:
+        story.append(Paragraph(_text(statement), styles["Body"]))
+        return story
+    for point in points:
+        confidence = _value(point, "confidence", None)
+        story.append(
+            Paragraph(
+                f"<b>{_text(_value(point, 'area', ''))}</b>"
+                + (
+                    f" <font color='#64748B'>Evidence confidence: "
+                    f"{_text(confidence)}</font>"
+                    if confidence
+                    else ""
+                ),
+                styles["Body"],
+            )
+        )
+        story.append(Paragraph(_text(_value(point, "reason", "")), styles["Body"]))
+        story.append(
+            Paragraph(f"&bull; {_text(_value(point, 'probe', ''))}", styles["Body"])
+        )
+        story.append(Spacer(1, 2.5 * mm))
+    return story
+
+
 def _dimension_cards(
     title: str,
     rows: Iterable[Any],
@@ -430,6 +533,27 @@ def _dimension_cards(
             label += (
                 "<br/><font color='#64748B'>Role requires: "
                 f"{_text(required)}</font>"
+            )
+        # EVIDENCE CONFIDENCE (0107), under the grade rather than beside it, so
+        # a reader cannot mistake the two words for one compound verdict. The
+        # sources are named on the next line because "Low" with nothing behind
+        # it is a judgement a reader cannot check.
+        #
+        # ABSENT ON EVERY REPORT WRITTEN BEFORE 0107, and nothing stands in for
+        # it. The report is immutable and the evidence set it was written from
+        # is not reconstructable, so the card simply carries no such line, the
+        # same way `_chart` simply does not go looking for a fourth chart.
+        confidence = _value(row, "evidence_confidence")
+        if confidence:
+            label += (
+                "<br/><font color='#64748B'>Evidence confidence: "
+                f"{_text(confidence)}</font>"
+            )
+        sources = list(_value(row, "evidence_sources", []) or [])
+        if sources:
+            label += (
+                "<br/><font color='#64748B'>Sources: "
+                f"{_text(', '.join(str(item) for item in sources))}</font>"
             )
         cards.append(
             [
@@ -496,7 +620,7 @@ def render_report_pdf(
         topMargin=16 * mm,
         bottomMargin=19 * mm,
         title=f"{REPORT_TITLE} - {candidate_name}",
-        author="ReadyPick",
+        author="Vivekium",
     )
     base = getSampleStyleSheet()
     styles = {
@@ -540,7 +664,7 @@ def render_report_pdf(
     # and authorises nothing.
     reference = _text(_value(report, "reference_code", "") or "")
     story: list[Any] = [
-        Paragraph("ReadyPick", styles["Subtitle"]),
+        Paragraph("Vivekium", styles["Subtitle"]),
         Paragraph(REPORT_TITLE, styles["Title"]),
         Paragraph(_text(REPORT_SUBTITLE), styles["Subtitle"]),
         Spacer(1, 3 * mm),
@@ -574,7 +698,9 @@ def render_report_pdf(
         "behavioural": lambda: _dimension_cards(
             "Behavioural Competencies", _value(report, "behavioural", []), styles
         ),
+        "claim_evidence": lambda: _claim_evidence(report, styles),
         "gap_analysis": lambda: _gap_analysis(report, styles),
+        "validation_points": lambda: _validation_points(report, styles),
         "validation": lambda: _validation(report, styles),
         "proctoring": lambda: _proctoring(report, styles),
     }

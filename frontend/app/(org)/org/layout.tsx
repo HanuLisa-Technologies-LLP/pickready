@@ -8,11 +8,13 @@ import Link from "next/link";
 
 import {
   Briefcase,
+  Compass,
   CreditCard,
   FileText,
-  Fingerprint,
   Gauge,
   LayoutDashboard,
+  LifeBuoy,
+  MailCheck,
   Settings,
   ShieldCheck,
   Users,
@@ -25,10 +27,6 @@ import { usePermissions } from "@/lib/use-permissions";
 import { apiGet } from "@/lib/api";
 import type { BillingOverview } from "@/lib/types";
 import { AppShell, type NavItem } from "@/components/app-shell";
-import {
-  COMPANY_DNA_ROUTE,
-  CompanyDnaGate,
-} from "@/components/company-dna/onboarding-gate";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -137,19 +135,28 @@ export default function OrgLayout({
     // hidden by a stale client-side list is a page somebody is told does not
     // exist. The page itself asks the server what this person may do and
     // renders scoped or full accordingly, which is the more honest
-    // arrangement in any case. Same reasoning as Company DNA below.
+    // arrangement in any case.
     { href: "/org/candidates", label: "Candidates", icon: Users2 },
     // Company Profile (2026-07-27 spec §3.2): the About / Work Life / Benefits
     // sections every new job snapshots into its JD.
     { href: "/org/profile", label: "Company Profile", icon: FileText },
-    // Company DNA (Layer 2). Shown to every staff role, and NOT gated on a
-    // capability here: the two Company DNA grants are rows the RBAC engine
-    // resolves server-side and are not yet in `ALL_CAPABILITIES`, so
-    // `hasCapability` cannot see them. The page itself asks the server what
-    // this person may do and renders read-only or authoring accordingly, which
-    // is the more honest arrangement in any case: a nav item hidden by a stale
-    // client-side capability list is a page somebody is told does not exist.
-    { href: COMPANY_DNA_ROUTE, label: "Company DNA", icon: Fingerprint },
+    // Drishti, the function's strategic profile (vivekium feature 1, C3).
+    // Gated on the SAME capability the route and all four endpoints require,
+    // `author_drishti_profile`, which is in ALL_CAPABILITIES so /auth/me
+    // returns it and `hasCapability` can actually see it. That last part is
+    // the reason this entry can be gated at all: the Candidates entry above
+    // is deliberately ungated precisely because its capability is NOT in that
+    // list, and a nav item hidden by a stale client-side list is a page
+    // somebody is told does not exist.
+    //
+    // The entry itself is the feature. The page, the routes and the
+    // compilation all shipped working and nothing linked to them, so a
+    // functional head could not find the screen, so no profile was ever
+    // authored, so the layer changed nothing. A capability-gated route with
+    // no way in is indistinguishable from a feature that was never built.
+    hasCapability(CAP.authorDrishtiProfile)
+      ? { href: "/org/drishti", label: "Drishti", icon: Compass }
+      : null,
     { href: "/org/dashboard", label: "Dashboard", icon: LayoutDashboard },
     // Talent Intelligence (2026-09-05 spec): the 18 operational dashboards.
     // Gated on view_intelligence_dashboards, which the RBAC engine resolves
@@ -173,17 +180,34 @@ export default function OrgLayout({
     // rule 10). The Review Screen and the Email Templates builder are gone, 
     // candidates are reviewed inline on the job page, and all six lifecycle
     // emails are AI-drafted and edited at send time rather than pre-authored.
+    // Sender Authorization. The Super Admin's decision on which addresses may
+    // speak for this company, and the ONLY surface in the portal that makes
+    // one. Gated on `authorize_email_senders`, which only the client Super
+    // Admin holds: a Recruitment Manager can propose a sender from Settings
+    // but must never be shown a control that approves one.
+    //
+    // A sidebar item rather than a settings card because it is a decision
+    // QUEUE somebody comes back to, not configuration set once. Registering a
+    // sender stays in Settings, where managing the list belongs.
+    hasCapability("authorize_email_senders")
+      ? { href: "/org/senders", label: "Sender Authorization", icon: MailCheck }
+      : null,
+    // Support (2026-09-10). Gated on `open_support_threads`, which every
+    // customer role holds by default and a tenant Super Admin can revoke; the
+    // capability is in ALL_CAPABILITIES so /auth/me returns it and
+    // `hasCapability` can actually see it. That last part is not incidental:
+    // the Candidates entry above is deliberately ungated precisely because its
+    // capability is NOT in that list, and a nav item hidden by a stale
+    // client-side list is a page somebody is told does not exist.
+    hasCapability("open_support_threads")
+      ? { href: "/org/support", label: "Support", icon: LifeBuoy }
+      : null,
     { href: "/org/settings", label: "Settings", icon: Settings },
   ].filter((item) => item !== null) as NavItem[];
 
   return (
     <AppShell title="Client-Org Portal" nav={nav}>
       <CreditStatusAlert />
-      {/* Impossible to miss for a client with no Layer 2 artifact, and gone the
-          moment there is one. It sits in the shell rather than on one page
-          because the person who needs it is not looking for it: they signed in
-          to post a job. */}
-      <CompanyDnaGate />
       {children}
     </AppShell>
   );

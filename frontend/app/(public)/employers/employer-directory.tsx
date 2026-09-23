@@ -87,7 +87,7 @@ export function EmployerDirectory() {
           Employer directory
         </p>
         <h1 className="mt-3 text-balance text-3xl font-bold sm:text-4xl">
-          Companies hiring on ReadyPick
+          Companies hiring on Vivekium
         </h1>
         <p className="mt-4 max-w-2xl text-pretty leading-7">
           Read about a company, visit its website, and apply to its open roles
@@ -149,7 +149,7 @@ export function EmployerDirectory() {
             description={
               activeSearch
                 ? "Try a shorter phrase, or clear the search to browse every company."
-                : "Companies appear here as soon as they are hiring through ReadyPick."
+                : "Companies appear here as soon as they are hiring through Vivekium."
             }
             action={
               activeSearch ? (
@@ -180,10 +180,10 @@ export function EmployerDirectory() {
                           {employer.name}
                         </h2>
                         {employer.industry ? (
-                          <p className="text-sm leading-6">{employer.industry}</p>
+                          <p className="text-sm">{employer.industry}</p>
                         ) : null}
                         {employer.website_domain ? (
-                          <p className="mt-auto flex items-center gap-1.5 text-sm leading-6">
+                          <p className="mt-auto flex items-center gap-1.5 text-sm">
                             <Globe
                               className="h-3.5 w-3.5 shrink-0 opacity-70"
                               aria-hidden="true"

@@ -114,7 +114,7 @@ const BAND_PAIRS: Array<[string, string, string]> = [
 //: 1.4.3's definition (18.66px bold / 24px regular), so the full 4.5 applies.
 const TEXT_MINIMUM = 4.5;
 
-describe("the Ready Pick Score band, light theme", () => {
+describe("the Vivekium Score band, light theme", () => {
   it.each(BAND_PAIRS)("%s is readable", (_label, fg, bg) => {
     expect(ratio(LIGHT[`${fg}-fg`], LIGHT[bg])).toBeGreaterThanOrEqual(
       TEXT_MINIMUM
@@ -135,7 +135,7 @@ describe("the Ready Pick Score band, light theme", () => {
   });
 });
 
-describe("the Ready Pick Score band, dark theme", () => {
+describe("the Vivekium Score band, dark theme", () => {
   it.each(BAND_PAIRS)("%s is readable", (_label, fg, bg) => {
     expect(
       ratio(darkToken(`${fg}-fg`), darkToken(bg))

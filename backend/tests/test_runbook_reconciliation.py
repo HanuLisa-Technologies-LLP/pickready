@@ -15,10 +15,9 @@ test is not reconciliation" -- and it is why these read the document rather than
 a constant. A test that compared the code against a second copy of the same
 assumption would have passed happily throughout.
 
-The nine sites this covers, and the section each was checked against:
+The eight sites this covers, and the section each was checked against:
 
     situations.py:37          §18.4   six situation types' weight consequences
-    company_dna.py:48         §16     the twelve-section intake instrument
     swot_quality.py:69        §18.3   the seven high-value probes, §18.5 refusals
     layers.py:47              §3.5    precedence and conflict resolution
     layers.py:177             §11.4   normalisation and clamping
@@ -35,7 +34,6 @@ from pathlib import Path
 import pytest
 
 from app.services.hiring import (
-    company_dna,
     department_models,
     layers,
     ontology,
@@ -248,104 +246,6 @@ def test_an_absent_situation_is_neutral_and_is_not_a_failed_lookup() -> None:
     assert set(modifiers.values()) == {1.0}
 
 
-# ── company_dna.py, §16 and Appendix A ───────────────────────────────────────
-
-
-def test_the_instrument_has_section_16_s_twelve_section_titles(runbook: str) -> None:
-    """Five of §16's twelve were missing from the code entirely.
-
-    The two that matter most: §16 Section 12, which the Runbook calls "the
-    highest-value input in the entire intake" and without which the calibration
-    loop of Part X can never close, and §16 Section 7, which carries the
-    client's explicit confirmation of the prohibited-filter list.
-    """
-    body = section(runbook, "16. The Company DNA Intake Instrument")
-    pattern = re.compile(
-        r"^#+\s+(?:16\.\d+\s+)?Section\s+(\d+)\s*[" + _EM_DASH + r"\-:]\s*(.+)$",
-        re.M,
-    )
-    headings = pattern.findall(body)
-    assert len(headings) == 12, f"§16 should carry twelve sections, found {headings}"
-
-    titles = [title.strip() for _number, title in headings]
-    coded = [s.title for s in company_dna.SECTIONS]
-    assert len(coded) == 12
-
-    normalised_runbook = [_normalise_title(t) for t in titles]
-    normalised_code = [_normalise_title(t) for t in coded]
-    assert normalised_code == normalised_runbook, (
-        f"§16 orders its sections {normalised_runbook}; the code has "
-        f"{normalised_code}"
-    )
-
-
-def _normalise_title(title: str) -> str:
-    return re.sub(r"[^a-z ]", "", title.lower()).strip()
-
-
-def test_section_two_carries_section_16_s_six_forced_scales(runbook: str) -> None:
-    """§16 Section 2 is a six-row table, "each answered on a forced scale, not
-    free text". The code had five, of which two were the Runbook's."""
-    body = section(runbook, "16. The Company DNA Intake Instrument")
-    # The separator characters are built from their code points, never
-    # typed: a repo-wide sweep for a dash must not rewrite the code that
-    # looks for one.
-    _EN_DASH = chr(8211)
-    rows = [
-        line
-        for line in body.split("\n")
-        if line.strip().startswith("|")
-        and (_EM_DASH in line or f"1{_EN_DASH}5" in line)
-    ]
-    assert rows, "§16 Section 2's scale table was not found"
-
-    philosophy = next(
-        s for s in company_dna.SECTIONS if s.key == "evaluation_philosophy"
-    )
-    assert len(philosophy.questions) == 6
-    assert all(q.kind == company_dna.SCALE_QUESTION for q in philosophy.questions)
-
-
-def test_the_scale_range_is_the_one_appendix_a2_prints(runbook: str) -> None:
-    """Appendix A2 prints every scale 1 to 5. The code ran -2..+2, which is the
-    same five positions relabelled and is not what a client is handed -- and it
-    made a stored 0 mean "no preference" on one scale and out of range on the
-    other, so two intakes could not be told apart in a column of integers."""
-    appendix = section(runbook, "A2. Evaluation philosophy")
-    assert "1" in appendix and "5" in appendix
-    assert (company_dna.SCALE_MIN, company_dna.SCALE_MAX) == (1, 5)
-
-
-def test_both_section_16_example_pairs_are_used_verbatim(runbook: str) -> None:
-    """§16 Section 3 prints TWO accepted/rejected pairs; the code carried one.
-
-    The second is the harder teaching example, because its rejected form is a
-    compliment rather than an abstraction and its accepted form names a
-    structural condition rather than a nicer adjective.
-    """
-    body = section(runbook, "16. The Company DNA Intake Instrument")
-    rejected = re.findall(r'>\s*Rejected:\s*"([^"]+)"', body)
-    assert len(rejected) == 2, f"§16 S3 should print two rejected examples: {rejected}"
-
-    evidence_section = next(
-        s for s in company_dna.SECTIONS if s.key == "observable_evidence"
-    )
-    coded = {e.rejected.strip().rstrip(".").lower() for e in evidence_section.examples}
-    assert coded == {r.strip().rstrip(".").lower() for r in rejected}
-
-
-def test_section_three_asks_for_the_number_of_items_the_runbook_asks_for(
-    runbook: str,
-) -> None:
-    """§16 Section 3: "The client names five to eight behaviours"."""
-    body = section(runbook, "16. The Company DNA Intake Instrument")
-    assert "five to eight" in body
-    evidence_section = next(
-        s for s in company_dna.SECTIONS if s.key == "observable_evidence"
-    )
-    assert (evidence_section.min_items, evidence_section.max_items) == (5, 8)
-
-
 def test_the_corroboration_floor_is_section_7_4_s_and_not_the_client_s(
     runbook: str,
 ) -> None:
@@ -363,15 +263,13 @@ def test_the_corroboration_floor_is_section_7_4_s_and_not_the_client_s(
     assert minimums, "§7.4's minimum-groups column was not found"
     assert min(minimums) == 2 and max(minimums) == 4
 
-    coded = {
-        company_dna.minimum_independent_groups(s)
-        for s in ("non_managerial", "managerial", "leadership", "cxo")
-    }
-    assert min(coded) == 2 and max(coded) == 4
-    # No intake answer can move it.
-    for answer in (1, 3, 5):
-        artifact = company_dna.compile_artifact({"credentials_vs_practice": answer})
-        assert artifact.independence_required == 2
+    # NOTHING IN THE PRODUCT SUPPLIES A LAYER 2 MODIFIER ANY MORE, which is
+    # the strongest possible form of "no client answer can lower this floor":
+    # `transformation.derive_threshold` takes the category and nothing else,
+    # and `layers.BOUNDS["evidence_threshold"]` stays asymmetric so a future
+    # supplier could raise the bar and could not halve it.
+    bound = layers.BOUNDS["evidence_threshold"]
+    assert (1.0 - bound.low) < (bound.high - 1.0)
 
 
 # ── swot_quality.py, §18.3 and §18.5 ─────────────────────────────────────────
@@ -788,9 +686,10 @@ def test_contract_c5_points_at_the_legitimate_disqualifier_list(runbook: str) ->
     Read literally, C5 authorised automatic filtering on exactly the attributes
     §12.4 forbids: age, caste, gender, employment gaps. Repaired in the v1.1
     editorial pass. This test exists so a future edit cannot reintroduce it, and
-    because this codebase's disqualifier compilation depends on the distinction:
-    `company_dna.compile_artifact` admits a §12.3 disqualifier and refuses a
-    §12.4 one, and the two lists swapped would invert that.
+    because this codebase's disqualifier handling depends on the distinction:
+    `observable.prohibited_in` catches a §12.4 attribute and must not catch a
+    §12.3 professional requirement, and the two lists swapped would invert
+    that.
     """
     # The heading is matched on a substring that survived the v1.1 product
     # naming normalisation ("Ready Pick" became "Ready Pick Now" in prose).
@@ -802,8 +701,7 @@ def test_contract_c5_points_at_the_legitimate_disqualifier_list(runbook: str) ->
     )
 
     # And the code follows the repaired reading in both directions.
-    artifact = company_dna.compile_artifact(
-        {"hard_disqualifiers": "Must hold a valid CA licence\nNo candidates over 45"}
-    )
-    assert "Must hold a valid CA licence" in artifact.disqualifiers
-    assert "No candidates over 45" in artifact.refused_disqualifiers
+    from app.services.hiring import observable
+
+    assert observable.prohibited_in("Must hold a valid CA licence") == []
+    assert observable.prohibited_in("No candidates over 45")

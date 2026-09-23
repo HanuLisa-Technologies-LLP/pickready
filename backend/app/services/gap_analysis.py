@@ -46,12 +46,18 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.prompts import registry
-from app.services import agent_loop, conversation_guardrails, llm_router, ppi
+from app.services import (
+    agent_loop,
+    conversation_guardrails,
+    generation_sufficiency,
+    llm_router,
+    ppi,
+)
 from app.services.rating import (
     GRADE_MODERATELY,
     GRADE_NOT,
@@ -218,9 +224,11 @@ def _fallback_probes(item: dict[str, Any], evidence: list[dict[str, str]], count
             "now and what specifically changed your view since then.",
         )
     else:
-        # No usable answer to quote. Probing the thinness itself is honest and
-        # is what the prompt instructs the model to do in the same situation;
-        # inventing a claim to reference would be the one unacceptable option.
+        # No usable answer to quote. This is now the GATED path rather than a
+        # fallback the model shares: `generation_sufficiency.gap_probe_state`
+        # refuses to run the prompt at all in this state, so these two
+        # sentences are the fixed empty-state content for the item and no model
+        # is asked to write about an absence.
         name = item["name"]
         angles = (
             f"You said little about {name}, so walk me through one worked example "
@@ -238,9 +246,26 @@ async def _write_probes(
     grade: str,
     evidence: list[dict[str, str]],
     count: int,
-) -> list[str]:
-    """Generate this gap's probes through the bounded loop. Never raises."""
+) -> tuple[list[str], str | None]:
+    """Generate this gap's probes through the bounded loop. Never raises.
+
+    Returns the probes and, when the sufficiency gate refused, the fixed
+    empty-state key that says why. The probes are never empty either way: an
+    item in the gap band with nothing recorded still gets the deterministic
+    grounded pair, which is fixed catalogue text rather than generated prose.
+    """
     fallback = _fallback_probes(item, evidence, count)
+    # THE GATE, BEFORE THE PROMPT. Asking a model to write a probe for an item
+    # the candidate never answered produces a probe about the assessment ("the
+    # answer does not establish whether they led the recovery"), which goes into
+    # a report a hiring team reads as if it were a finding about the person.
+    state = generation_sufficiency.gap_probe_state(evidence)
+    if not state.sufficient:
+        logger.info(
+            "gap_analysis.probes_gated item=%s reason=%s",
+            item.get("name"), state.reason,
+        )
+        return fallback, str(state.empty_state_key)
     asked = [row["question"] for row in evidence if row.get("question")]
     system = registry.render(
         "report_gap_probes",
@@ -330,6 +355,14 @@ async def _write_probes(
                     location=location,
                 ).defects
             )
+            # A probe that describes the evidence rather than the work. Same
+            # shape as the rule above it and the same reason: the prompt asks,
+            # and a check is what makes it hold when the pack is thinnest.
+            defects.extend(
+                generation_sufficiency.meta_commentary_defects(
+                    probe, location=location
+                )
+            )
         return agent_loop.reject_defects(*defects) if defects else agent_loop.ok()
 
     result = await agent_loop.run_loop(
@@ -346,7 +379,7 @@ async def _write_probes(
             "gap_analysis.probes_degraded item=%s reasons=%s",
             item.get("name"), list(result.reasons),
         )
-    return result.value or fallback
+    return (result.value or fallback), None
 
 
 # ── The section ──────────────────────────────────────────────────────────────
@@ -405,6 +438,9 @@ async def build_gap_analysis(
     overall_summary: str | None = None,
     overall_grade: str | None = None,
     validation: dict[str, Any] | None = None,
+    validation_points: dict[str, Any] | None = None,
+    claim_evidence: dict[str, Any] | None = None,
+    extra_nodes: Sequence[Any] = (),
 ) -> dict[str, Any]:
     """The whole section, ready to render (spec §9.6), THROUGH SIDDHI.
 
@@ -434,6 +470,15 @@ async def build_gap_analysis(
     `overall_summary`, `overall_grade` and `validation` are optional so that the
     existing synthesis call site keeps working unchanged; supplying them brings
     the Overall Assessment and the Validation section under the same chokepoint.
+
+    `validation_points`, `claim_evidence` and `extra_nodes` are the same bargain
+    for the two sections added in 0107. They are ASSEMBLED BY THE CALLER and
+    RENDERED HERE, deliberately: the caller is the only thing that can read the
+    tenant's own BGV rows, and the chokepoint is the only thing that may turn a
+    statement into delivered text. Passing the built payload through rather than
+    building it here keeps both properties without giving this module a database
+    dependency it does not otherwise have. Their absence is a normal state and
+    composes nothing rather than composing an empty section.
     """
     cap_applied = must_have_cap_applies(dimensions)
     groups: list[dict[str, Any]] = []
@@ -446,6 +491,14 @@ async def build_gap_analysis(
         for item in items:
             grade = str(grade_for_percent(item.get("score")))
             evidence = evidence_by_item.get(str(item.get("name")), [])
+            probes, empty_state_key = await _write_probes(
+                session,
+                item,
+                category,
+                grade,
+                evidence,
+                probe_count_for(category, grade),
+            )
             entries.append(
                 {
                     "name": item["name"],
@@ -453,14 +506,13 @@ async def build_gap_analysis(
                     # REUSED, not rewritten (spec §9.6). The report states one
                     # assessment of an item.
                     "remark": item.get("remark"),
-                    "probes": await _write_probes(
-                        session,
-                        item,
-                        category,
-                        grade,
-                        evidence,
-                        probe_count_for(category, grade),
-                    ),
+                    "probes": probes,
+                    # A KEY, present only when the sufficiency gate refused, so
+                    # a reader of the stored section can tell "the model wrote
+                    # these" from "nothing was recorded and these are the fixed
+                    # ones". Never a sentence: `EMPTY_STATE_COPY` owns the
+                    # wording, in one place, for every surface.
+                    "probes_empty_state": empty_state_key,
                 }
             )
         groups.append(
@@ -493,6 +545,9 @@ async def build_gap_analysis(
         overall_summary=overall_summary,
         overall_grade=overall_grade,
         validation=validation,
+        validation_points=validation_points,
+        claim_evidence=claim_evidence,
+        extra_nodes=tuple(extra_nodes),
     )
 
     return {
@@ -501,7 +556,7 @@ async def build_gap_analysis(
         "groups": groups,
         # SIDDHI'S OWN NAMESPACE ON THE IMMUTABLE ROW.
         #
-        # The citation trail and the dashboard's Ready Pick Note are properties
+        # The citation trail and the dashboard's Vivekium Note are properties
         # of the report and have to survive with it, and this dict is the one
         # JSONB column that travels from here onto `functional_skills_reports`.
         # Namespaced under one key so it is unmistakably Siddhi's rather than

@@ -16,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.models.assessment import AssessmentConversation
-from app.models.dual_mode import VideoRecording
+from app.models.dual_mode import (
+    DEFAULT_RECORDING_KIND,
+    RECORDING_KINDS,
+    VideoRecording,
+)
 from app.services.video import keys, lifecycle
 
 logger = logging.getLogger(__name__)
@@ -61,13 +65,19 @@ async def create_recording(
     *,
     candidate_id: uuid.UUID,
     source_format: str | None,
+    kind: str = DEFAULT_RECORDING_KIND,
 ) -> VideoRecording:
     """Open a recording session for this conversation.
 
     Reuses an existing open recording rather than minting a sibling: a page
     reload mid-interview must come back to the same recording, or the marks
-    already stamped would belong to a row nobody finishes.
+    already stamped would belong to a row nobody finishes. The reuse is
+    deliberately NOT narrowed by kind, because one assessment session records
+    once: a proctored video interview stores the interview recording and must
+    not also open a second camera recording of the same minutes.
     """
+    if kind not in RECORDING_KINDS:
+        raise ValueError(f"unknown recording kind {kind!r}")
     existing = await active_recording(session, conversation.id)
     if existing is not None:
         return existing
@@ -77,6 +87,7 @@ async def create_recording(
         candidate_id=candidate_id,
         job_candidate_link_id=conversation.job_candidate_link_id,
         status=lifecycle.RECORDING,
+        kind=kind,
         source_format=source_format,
         started_at=datetime.now(timezone.utc),
     )

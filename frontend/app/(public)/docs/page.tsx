@@ -40,12 +40,14 @@ import {
 } from "lucide-react";
 
 import { FadeIn, Stagger, StaggerItem } from "@/components/motion";
+import { publicPageMetadata } from "@/lib/site";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = publicPageMetadata({
+  path: "/docs",
   title: "Docs",
   description:
-    "Implementation-aligned product and technical documentation for ReadyPick.",
-};
+    "Implementation-aligned product and technical documentation for Vivekium.",
+});
 
 const CONTENTS = [
   { href: "#product", label: "Product overview" },
@@ -258,7 +260,7 @@ function SectionIntro({
       <h2 className="mt-3 text-balance text-3xl font-bold leading-tight sm:text-4xl">
         {title}
       </h2>
-      <p className="mt-5 text-pretty text-base leading-7 sm:text-lg sm:leading-8">
+      <p className="mt-5 text-pretty text-base sm:text-lg sm:leading-8">
         {body}
       </p>
     </FadeIn>
@@ -295,7 +297,7 @@ export default function DocsPage() {
               <span className="text-gradient-brand">documented as built.</span>
             </h1>
             <p className="mt-7 max-w-2xl text-pretty text-lg leading-8">
-              A code-aligned guide to what ReadyPick does, how each workspace
+              A code-aligned guide to what Vivekium does, how each workspace
               fits together, and how the platform should mature from its
               current deployment into a production-scale service.
             </p>
@@ -325,7 +327,7 @@ export default function DocsPage() {
                 <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
               </div>
               <p className="font-mono text-xs uppercase tracking-[.2em] text-teal-400">
-                readypick / system-map
+                vivekium / system-map
               </p>
               <div className="mt-8 grid gap-3">
                 {[
@@ -343,7 +345,7 @@ export default function DocsPage() {
                     </span>
                     <div>
                       <p className="font-semibold">{title}</p>
-                      <p className="mt-1 text-xs leading-5 text-white/65">
+                      <p className="mt-1 text-xs text-white/65">
                         {detail}
                       </p>
                     </div>
@@ -399,7 +401,7 @@ export default function DocsPage() {
             <SectionIntro
               eyebrow="Product documentation"
               title="Hiring operations built around evidence, not disconnected tools"
-              body="ReadyPick connects the work before and after a candidate appears: drafting the job, building the candidate set, comparing fit, inviting assessment, structuring evidence and carrying the decision through to offer and join."
+              body="Vivekium connects the work before and after a candidate appears: drafting the job, building the candidate set, comparing fit, inviting assessment, structuring evidence and carrying the decision through to offer and join."
             />
 
             <div className="mt-10 rounded-3xl border border-brand-500/25 bg-gradient-to-br from-brand-100 via-surface to-surface p-7 sm:p-9">
@@ -423,7 +425,7 @@ export default function DocsPage() {
                       "Assessment spend begins with recruiter intent",
                       "Jobs retain candidates across renewal windows",
                     ].map((item) => (
-                      <div key={item} className="flex gap-3 text-sm leading-6">
+                      <div key={item} className="flex gap-3 text-sm">
                         <CheckCircle2
                           className="mt-0.5 h-5 w-5 shrink-0 text-brand-600"
                           aria-hidden="true"
@@ -454,10 +456,10 @@ export default function DocsPage() {
                       <Label>{workspace.label}</Label>
                     </div>
                     <h3 className="mt-6 text-xl font-bold">{workspace.title}</h3>
-                    <p className="mt-3 text-sm leading-6">{workspace.body}</p>
+                    <p className="mt-3 text-sm">{workspace.body}</p>
                     <ul className="mt-5 space-y-2 border-t border-border pt-5">
                       {workspace.items.map((item) => (
-                        <li key={item} className="flex gap-2 text-sm leading-6">
+                        <li key={item} className="flex gap-2 text-sm">
                           <ChevronRight
                             className="mt-1 h-4 w-4 shrink-0 text-brand-600"
                             aria-hidden="true"
@@ -506,7 +508,7 @@ export default function DocsPage() {
                         {item.step}
                       </p>
                       <h3 className="mt-2 text-lg font-bold">{item.title}</h3>
-                      <p className="mt-2 text-sm leading-6">{item.body}</p>
+                      <p className="mt-2 text-sm">{item.body}</p>
                     </article>
                   </FadeIn>
                 ))}
@@ -571,7 +573,7 @@ export default function DocsPage() {
                 >
                   <item.icon className="h-5 w-5 text-brand-600" aria-hidden="true" />
                   <h3 className="mt-4 font-bold">{item.title}</h3>
-                  <p className="mt-2 text-sm leading-6">{item.body}</p>
+                  <p className="mt-2 text-sm">{item.body}</p>
                 </article>
               ))}
             </div>
@@ -592,7 +594,7 @@ export default function DocsPage() {
                   <p className="font-mono text-2xl font-bold text-brand-600">
                     {metric.value}
                   </p>
-                  <p className="mt-2 text-sm leading-6">{metric.label}</p>
+                  <p className="mt-2 text-sm">{metric.label}</p>
                 </div>
               ))}
             </div>
@@ -601,7 +603,7 @@ export default function DocsPage() {
                 <Gauge className="mt-0.5 h-6 w-6 shrink-0" aria-hidden="true" />
                 <div>
                   <h3 className="font-bold">Evidence roadmap</h3>
-                  <p className="mt-2 text-sm leading-6">
+                  <p className="mt-2 text-sm">
                     Production analytics should establish time-to-publish,
                     candidate review minutes, invite completion, report-to-
                     interview conversion, cost per completed assessment,
@@ -657,7 +659,7 @@ export default function DocsPage() {
                     </div>
                     <div>
                       <h3 className="font-bold">{item.title}</h3>
-                      <p className="mt-2 text-sm leading-6">{item.detail}</p>
+                      <p className="mt-2 text-sm">{item.detail}</p>
                     </div>
                   </article>
                 </StaggerItem>
@@ -678,7 +680,7 @@ export default function DocsPage() {
                     <Globe2 className="h-5 w-5 text-brand-700" aria-hidden="true" />
                     <p className="font-bold">Next.js experience</p>
                   </div>
-                  <p className="mt-3 text-sm leading-6">
+                  <p className="mt-3 text-sm">
                     Public site, Provider, Company, Candidate and BD workspaces.
                   </p>
                 </div>
@@ -692,7 +694,7 @@ export default function DocsPage() {
                     <ServerCog className="h-5 w-5 text-brand-600" aria-hidden="true" />
                     <p className="font-bold">FastAPI application</p>
                   </div>
-                  <p className="mt-3 text-sm leading-6">
+                  <p className="mt-3 text-sm">
                     Identity, capability checks, domain services and API contracts.
                   </p>
                 </div>
@@ -718,7 +720,7 @@ export default function DocsPage() {
                         aria-hidden="true"
                       />
                       <p className="mt-3 text-sm font-bold">{title as string}</p>
-                      <p className="mt-1 text-xs leading-5">{body as string}</p>
+                      <p className="mt-1 text-xs">{body as string}</p>
                     </div>
                   );
                 })}
@@ -749,7 +751,7 @@ export default function DocsPage() {
                 >
                   <item.icon className="h-5 w-5 text-brand-600" aria-hidden="true" />
                   <h3 className="mt-4 font-bold">{item.title}</h3>
-                  <p className="mt-2 text-sm leading-6">{item.body}</p>
+                  <p className="mt-2 text-sm">{item.body}</p>
                 </article>
               ))}
             </div>
@@ -793,7 +795,7 @@ export default function DocsPage() {
                 <Sparkles className="mt-0.5 h-6 w-6 shrink-0 text-brand-700" aria-hidden="true" />
                 <div>
                   <h3 className="font-bold">Production provider direction</h3>
-                  <p className="mt-2 text-sm leading-6">
+                  <p className="mt-2 text-sm">
                     Replace free-tier key rotation with a direct enterprise
                     primary vendor under contract, retain a
                     tested direct secondary, pin model versions, add quality
@@ -832,7 +834,7 @@ export default function DocsPage() {
                     />
                     <div>
                       <h3 className="font-bold">{title as string}</h3>
-                      <p className="mt-2 text-sm leading-6">{body as string}</p>
+                      <p className="mt-2 text-sm">{body as string}</p>
                     </div>
                   </article>
                 );
@@ -882,7 +884,7 @@ export default function DocsPage() {
                     ].map((item) => (
                       <div
                         key={item}
-                        className="rounded-lg border border-white/10 bg-black/15 p-3 text-xs leading-5"
+                        className="rounded-lg border border-white/10 bg-black/15 p-3 text-xs"
                       >
                         {item}
                       </div>
@@ -942,7 +944,7 @@ export default function DocsPage() {
                     </span>
                   </div>
                   <h3 className="mt-5 text-lg font-bold">{item.title}</h3>
-                  <p className="mt-2 text-sm leading-6">{item.body}</p>
+                  <p className="mt-2 text-sm">{item.body}</p>
                 </article>
               ))}
             </div>
@@ -973,7 +975,7 @@ export default function DocsPage() {
                   </span>
                   <div>
                     <h3 className="font-bold">{item.title}</h3>
-                    <p className="mt-2 text-sm leading-6">{item.body}</p>
+                    <p className="mt-2 text-sm">{item.body}</p>
                   </div>
                 </article>
               ))}
@@ -1000,7 +1002,7 @@ export default function DocsPage() {
                   href="/login?initial_context=all"
                   className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-white px-5 text-sm font-semibold text-brand-700 transition-transform hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
                 >
-                  Open ReadyPick
+                  Open Vivekium
                   <ArrowRight className="h-4 w-4" aria-hidden="true" />
                 </a>
               </div>

@@ -47,7 +47,7 @@ export function SystemCheckScreen({
           <CardTitle>{SYSTEM_CHECK_TITLE}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
-          <p className="text-sm leading-6">
+          <p className="text-sm">
             We check your camera, microphone and browser once, before the questions start.
             Nothing is recorded.
           </p>
@@ -72,12 +72,12 @@ export function SystemCheckScreen({
                   <p className="sr-only">
                     {row.passed === null ? "Not checked yet" : row.passed ? "Passed" : "Failed"}
                   </p>
-                  {row.fix ? <p className="mt-1 text-sm leading-6">{row.fix}</p> : null}
+                  {row.fix ? <p className="mt-1 text-sm">{row.fix}</p> : null}
                 </div>
               </li>
             ))}
           </ul>
-          {error ? <p className="text-sm leading-6">{error}</p> : null}
+          {error ? <p className="text-sm">{error}</p> : null}
           <div className="flex flex-wrap gap-2">
             {allPassed ? (
               <Button size="lg" onClick={onStart}>

@@ -116,8 +116,8 @@ async def dashboard_summary(
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # The client's daily working surface: eight columns over every candidate the
-# caller may see, plus the three panels the row's action columns open (Ready
-# Pick Profile, Team Review, Stage), plus the two calibration surfaces D8 and
+# caller may see, plus the three panels the row's action columns open (Vivekium
+# Profile, Team Review, Stage), plus the two calibration surfaces D8 and
 # spec-doc6 §8.2 require.
 #
 # EVERY ROUTE HERE IS AUTHORIZED BY DATA, NEVER BY A ROLE NAME
@@ -437,7 +437,7 @@ async def _latest_evaluation(session: AsyncSession, link_id: uuid.UUID) -> dict 
             sql_text(
                 "SELECT id, aggregate_json, dimension_scores, competency_scores, "
                 "       triangulation_json, gate_results_json, confidence, "
-                "       needs_human_review, scorecard_version, company_dna_version, "
+                "       needs_human_review, scorecard_version, "
                 "       situation_type, scoring_mode, completed_at "
                 "FROM evaluations WHERE link_id = :lid "
                 "ORDER BY created_at DESC, id DESC LIMIT 1"
@@ -492,7 +492,7 @@ async def ready_pick_profile(
     The raw numbers are `/calibration` below, which two roles reach and every
     read of which is logged.
 
-    404 when no Ready Pick Profile has been written. Not an empty panel: a
+    404 when no Vivekium Profile has been written. Not an empty panel: a
     panel with five blank dimensions is indistinguishable from a candidate the
     evaluators found nothing on, and the row's disabled button has already said
     the honest thing.
@@ -667,7 +667,7 @@ async def upsert_team_review(
     somebody else's remark is not refused, it is unexpressible.
 
     THIS IS ALSO THE DIVERGENCE ROUTING POINT (spec-doc6 §8.2). When the
-    verdict disagrees with the Ready Pick Score a `CalibrationRecord` is
+    verdict disagrees with the Vivekium Score a `CalibrationRecord` is
     raised and audited, which is what puts it in the Super Admin activity view.
     Nothing about that reaches the reviewer: no warning, no confirmation step,
     no second-guessing prompt, no different response. Measure, never nudge.

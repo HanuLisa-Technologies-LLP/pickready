@@ -3,7 +3,7 @@
 spec-doc6 D8 rules two things at once, and a test that checks only one of them
 is checking the easy half:
 
-  * the Ready Pick Score renders NUMERICALLY on the dashboard, in column 4 and
+  * the Vivekium Score renders NUMERICALLY on the dashboard, in column 4 and
     its hover. The product's oldest rule is "no numbers reach a client", so
     this is a deliberate, bounded exception and it needs a test saying the
     number IS there, or a well-meaning sweep deletes it;
@@ -39,7 +39,6 @@ COUNT_FIELDS = frozenset(
         "diverged",
         "rate",
         "scorecard_version",
-        "company_dna_version",
         "databank_matched",
         "fresh_sourced",
         "shortlisted",
@@ -52,7 +51,7 @@ COUNT_FIELDS = frozenset(
 #: The two schemas D8 licenses to carry an assessment number, and what each
 #: one is. Anything else with a numeric field is a leak.
 NUMERIC_SCHEMAS = {
-    "DashboardRowOut": "column 4, the Ready Pick Score (D8)",
+    "DashboardRowOut": "column 4, the Vivekium Score (D8)",
     "CalibrationDimensionOut": "the audited Super Admin / HR Manager view (D8)",
     "CalibrationInternalsOut": "the audited Super Admin / HR Manager view (D8)",
 }

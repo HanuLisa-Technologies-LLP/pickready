@@ -64,7 +64,7 @@ describe("Pre-Screen Grade", () => {
     }
   });
 
-  it("is visually distinct from the Ready Pick Score, which may look finished", () => {
+  it("is visually distinct from the Vivekium Score, which may look finished", () => {
     // The rule is comparative: the two must not read as equally authoritative.
     // Asserting only that column 3 is plain would still pass if somebody made
     // column 4 plain too, which loses the distinction from the other side.

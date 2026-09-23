@@ -22,7 +22,7 @@ class MeOut(BaseModel):
 
     `email` is READ-ONLY here: Firebase owns credentials and account recovery
     (claude.md rule 2), so changing it is a Firebase operation, never a
-    ReadyPick database write.
+    Vivekium database write.
     """
 
     id: uuid.UUID
@@ -288,6 +288,93 @@ class MarkUpdatesReadIn(BaseModel):
     """
 
     ids: list[uuid.UUID] | None = None
+
+
+class DeletionNoticeOut(BaseModel):
+    """The smart warning screen, authored by the server (feature 7).
+
+    Every string here comes from `services/account_deletion`. The screen
+    renders them and writes none of its own, for the reason
+    `components/permission-notice.tsx` exists: a client that authors copy about
+    a server-side rule keeps promising whatever it promised on the day it was
+    written, and this particular rule is irreversible.
+    """
+
+    heading: str
+    warnings: list[str]
+    confirmation_phrase: str
+    instruction: str
+
+
+class DeleteMeIn(BaseModel):
+    """DELETE /portal/me. The typed confirmation, checked on the SERVER.
+
+    A confirmation only the browser checks is a speed bump: the route is
+    reachable by anything holding the session cookie. Same shape as the
+    Provider's tenant delete, where the operator retypes the company name.
+    """
+
+    confirmation: str = Field(
+        max_length=40,
+        description="Must be the phrase from GET /portal/me/deletion-notice.",
+    )
+
+
+class DeleteMeOut(BaseModel):
+    """What the erasure actually did. Counts, never content.
+
+    Mirrors `erasure.ErasureReceipt` rather than inventing a second vocabulary
+    for the same event, so the number the candidate is shown and the number in
+    the audit row are the same number.
+    """
+
+    deleted: bool
+    #: Echoed so a support conversation can be had about a specific erasure
+    #: without anybody needing to find the candidate row, which is gone.
+    candidate_id: uuid.UUID
+    erased_at: datetime
+    chunks_deleted: int
+    profile_vectors_cleared: int
+    projects_deleted: int
+    cache_keys_deleted: int
+    sign_in_accounts_deleted: int
+    #: How many stored files (resumes, recordings, staged originals, files on
+    #: the candidate's conversations) this erasure has to remove. Reported
+    #: because the row half and the OBJECT half of an erasure finish at
+    #: different moments, and telling somebody "deleted" while an unknown
+    #: number of their documents are still queued is the kind of half-truth
+    #: `deletion_state` exists to replace.
+    objects_total: int
+    #: Where the erasure stands, from `services/deletion_requests`. It is
+    #: `rows_erased` when the request returns, which is the honest word for
+    #: "you are out of the product and your stored files are being removed";
+    #: the object pass runs in `pickready.cascade_erasure` and is swept until
+    #: every file is verifiably gone.
+    deletion_state: str
+
+
+class RenewConsentIn(BaseModel):
+    """POST /portal/consent/renew. The one-click link's own payload.
+
+    The token is the whole authorization and it authorises exactly one act. It
+    is never a session, never identifies the holder to any other route, and is
+    consumed by the renewal itself. See `services/consent_renewal`.
+    """
+
+    token: str = Field(min_length=16, max_length=200)
+
+
+class ConsentRenewedOut(BaseModel):
+    """What a renewal answers, on both the signed-in and the one-click path.
+
+    `message` is the SERVER's sentence, for the reason every other rule
+    sentence in this product is: the page must not be able to promise
+    something different from what was written.
+    """
+
+    renewed: bool
+    renewed_at: datetime
+    message: str
 
 
 class ApplicationsOut(BaseModel):

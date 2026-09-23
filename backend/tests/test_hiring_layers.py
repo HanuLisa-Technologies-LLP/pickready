@@ -18,7 +18,6 @@ from __future__ import annotations
 import pytest
 
 from app.services.hiring import (
-    company_dna,
     department_models,
     layers,
     ontology,
@@ -372,50 +371,24 @@ def test_no_situation_moves_a_dimension_its_runbook_row_does_not_name() -> None:
                 )
 
 
-def test_a_layer_2_change_moves_a_weight_in_the_output() -> None:
-    """THE acceptance criterion, and the "not just appears in a summary" half.
-
-    A company that hires for potential over proven track record must produce a
-    LOWER weight on a track-record competency, and the provenance must name the
-    layer that moved it.
-    """
-    dna = company_dna.compile_artifact(
-        {
-            # §16 S2, position 5 on "Proven delivery <-1 ... 5-> Potential".
-            "proven_vs_potential": 5,
-            "credentials_vs_practice": 5,
-        }
-    )
-    baseline = _item()
-    tuned = _item(company=dna)
-
-    assert tuned.weight.value < baseline.weight.value
-    # The NUMBER moved, and the term that moved it is named.
-    assert tuned.weight.company < 1.0
-    assert baseline.weight.company == 1.0
-    assert tuned.weight.baseline == baseline.weight.baseline, (
-        "Layer 1 must be unchanged; only the Layer 2 term moved"
-    )
-
-
-def test_the_weight_records_all_four_terms() -> None:
+def test_the_weight_records_every_term() -> None:
     """"Why is this weighted 1.62" must be answerable by reading the row, not by
     rerunning the pipeline."""
     item = _item(
-        company=company_dna.compile_artifact({"proven_vs_potential": -1}),
         situation_key="turnaround",
         role_emphasis={"Operating what they built": 1.2},
     )
     terms = item.weight.as_dict()["terms"]
     assert set(terms) == {
         "baseline_layer1",
+        # RESTORED 2026-09-19 (vivekium C3): Drishti is LAYER_COMPANY's live
+        # supplier, so the company term is stored again, 1.0 when absent.
         "company_layer2",
         "situation_layer3",
         "role_layer3",
     }
     product = (
         terms["baseline_layer1"]
-        * terms["company_layer2"]
         * terms["situation_layer3"]
         * terms["role_layer3"]
     )
@@ -431,32 +404,28 @@ def test_a_must_have_needs_more_evidence_than_a_nice_to_have() -> None:
     """Asymmetric on purpose: a Must-have graded Not Matching caps the whole
     report, so the cost of getting one wrong is asymmetric and the bar should
     be too."""
-    must = transformation.derive_threshold("must_have", None)
-    nice = transformation.derive_threshold("nice_to_have", None)
+    must = transformation.derive_threshold("must_have")
+    nice = transformation.derive_threshold("nice_to_have")
     assert must.independence_required > nice.independence_required
 
 
-def test_a_company_may_raise_the_evidence_bar_and_not_lower_it() -> None:
-    """CORRECTED. §7.4 sets the corroboration FLOOR by seniority as a Layer 1
-    table, and the intake no longer offers a question that can lower it.
+def test_the_evidence_threshold_bound_stays_asymmetric() -> None:
+    """The asymmetry that governs the evidence bar, asserted on the BOUND.
 
-    The asymmetry that survives is the one on the evidence THRESHOLD: §16 S2's
-    credentials-versus-practice scale may raise the bar freely and may lower it
-    only marginally, which is what `layers.BOUNDS["evidence_threshold"]`
-    encodes at 0.8 to 3.0.
+    Demanding more corroboration is always safe and demanding less is how a
+    Must-have bar stops being one, so `evidence_threshold` may be raised far
+    and lowered only marginally. Nothing supplies a modifier for it today, and
+    that is exactly why the bound is asserted here rather than through a
+    caller: an asymmetry with no live supplier is the one most likely to be
+    "simplified" to a symmetric range by somebody who cannot see what it was
+    protecting.
     """
-    lax = company_dna.compile_artifact({"credentials_vs_practice": 1})
-    strict = company_dna.compile_artifact({"credentials_vs_practice": 5})
-
-    assert strict.threshold_modifier > 1.0
-    assert lax.threshold_modifier < 1.0
     bound = layers.BOUNDS["evidence_threshold"]
-    assert bound.contains(lax.threshold_modifier)
-    assert bound.contains(strict.threshold_modifier)
-    # The floor a client cannot reach past: §7.4 is indexed by seniority alone.
-    assert lax.independence_required == strict.independence_required
-    assert lax.independence_required == company_dna.minimum_independent_groups(
-        "non_managerial"
+    assert bound.low > 0.5, "the bar may be lowered only marginally"
+    assert bound.high >= 2.0, "the bar may be raised freely"
+    assert (1.0 - bound.low) < (bound.high - 1.0), (
+        "the bound has become symmetric; lowering an evidence requirement is "
+        "not as safe as raising one"
     )
 
 

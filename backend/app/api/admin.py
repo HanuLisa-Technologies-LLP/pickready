@@ -13,6 +13,7 @@ SMTP via the dispatched `pickready.send_email` task (rules 4 and 5).
 
 """
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select, update
@@ -59,7 +60,7 @@ from app.schemas.admin import (
     TenantUpdateIn,
     derive_tenant_domain,
 )
-from app.services import employer_pages, rbac
+from app.services import cost_telemetry, employer_pages, rbac
 from app.services.audit import audit, record_action
 from app.services.capabilities import DEFAULT_PERMISSION_MATRIX
 from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
@@ -182,7 +183,7 @@ async def create_tenant(
 ) -> TenantCreateOut:
     """Onboard a client company and its Client Company Admin account.
 
-    The admin signs in with email/password or Google via Firebase — ReadyPick
+    The admin signs in with email/password or Google via Firebase — Vivekium
     stores no password and issues no OTP (claude.md rule 2). No sending domain
     is collected: outbound mail is SMTP (rule 5).
     """
@@ -635,12 +636,12 @@ async def invite_staff(
     inviter = await session.get(User, user.user_id)
     inviter_label = (
         (inviter.full_name or inviter.email) if inviter is not None else None
-    ) or "The ReadyPick team"
+    ) or "The Vivekium team"
     # The context keys must match the PLACEHOLDERS in that template, which is
     # the same one the company portal uses. This path was passing `tenant_name`
     # and `role`, neither of which the template names, so every Owner-console
     # invitation rendered its blanks as empty strings: "You have been invited
-    # to  on ReadyPick", " has invited you to join  as a ", "This link expires
+    # to  on Vivekium", " has invited you to join  as a ", "This link expires
     # on ." An unknown placeholder resolves to '' rather than raising
     # (email_render.substitute), so the email sent and looked delivered.
     dispatch(
@@ -732,7 +733,7 @@ async def create_bd_user(
     """Reserve a Business Development account for an email address.
 
     The account is usable as soon as its owner signs in at the normal login
-    page with this email, through Google or email/password. ReadyPick never
+    page with this email, through Google or email/password. Vivekium never
     holds the credential.
     """
     email = str(body.email)
@@ -787,6 +788,44 @@ async def update_bd_user(
     """
     bd_user = await _load_bd_user(session, bd_user_id)
     changes = body.model_dump(exclude_unset=True)
+    rebound = False
+    if changes.get("email"):
+        email = str(changes["email"]).strip()
+        if email.lower() != (bd_user.email or "").strip().lower():
+            # The same two guards the create path runs, because an edit that
+            # can mint what a create refuses is a second door.
+            duplicate = (
+                await session.execute(
+                    select(User).where(
+                        User.tenant_id.is_(None),
+                        User.role == Role.bd,
+                        func.lower(User.email) == email.lower(),
+                        User.id != bd_user.id,
+                    )
+                )
+            ).scalars().first()
+            if duplicate is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{email} already holds a Business Development account",
+                )
+            try:
+                ensure_owner_invariant(Role.bd, email)
+            except OwnerRoleViolation as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            bd_user.email = email
+            # REBIND, never a quiet field write: the email is the identity
+            # Firebase binds to (auth matches by uid OR email), so a bound
+            # account keeping its old uid would leave the OLD person signed
+            # in under the NEW address. Clearing the binding returns the row
+            # to invited; the new address binds on its first sign-in and the
+            # old one matches nothing.
+            if bd_user.firebase_uid:
+                bd_user.firebase_uid = None
+                rebound = True
+            bd_user.email_verified_at = None
+            if bd_user.status != UserStatus.disabled:
+                bd_user.status = UserStatus.invited
     if "full_name" in changes:
         bd_user.full_name = changes["full_name"]
     if "phone" in changes:
@@ -804,7 +843,8 @@ async def update_bd_user(
     await audit(
         session, tenant_id=None, actor_user_id=user.user_id,
         action="bd_user_updated", target_type="user", target_id=bd_user.id,
-        metadata={"changed": sorted(changes), "status": bd_user.status.value},
+        metadata={"changed": sorted(changes), "status": bd_user.status.value,
+                  "rebound": rebound},
     )
     return _bd_user_out(bd_user)
 
@@ -1003,6 +1043,83 @@ async def llm_stats(
         "scope": "this process, since it started",
         "cost_basis": "list price estimate, not an invoice",
     }
+
+
+# ── Per-assessment cost telemetry (change 28D) ───────────────────────────────
+
+@router.get("/cost/assessments")
+async def assessment_cost_summary(
+    month: str | None = Query(
+        None,
+        description="Calendar month as YYYY-MM in UTC. Defaults to the current one.",
+        pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
+    ),
+    session: AsyncSession = Depends(get_superadmin_db),
+) -> dict:
+    """What assessments cost the platform this month: total, average, per client.
+
+    INTERNAL ONLY, AND THE BOUNDARY IS THE AUDIENCE RATHER THAN A COMMENT.
+    Behind `get_superadmin_db`, exactly like `/admin/llm/stats`: the super_admin
+    audience, the RLS bypass scope, and an audit row for the cross-tenant read.
+    `VIEW_INTELLIGENCE_DASHBOARDS` is deliberately not what gates this, and the
+    difference matters -- that capability is held by TENANT users, so gating on
+    it would hand one customer a per-client cost breakdown of every other
+    customer. `tests/test_assessment_cost_dashboard.py` asserts that an org
+    audience and a candidate audience are both refused.
+    That is also why the per-assessment record exists on its own table rather
+    than joining the intelligence dashboards: those are read by the tenant.
+
+    WHAT THE NUMBERS ARE. Estimates, and every one of them says so in place.
+    The per-token rates come from `config/llm_providers`, which is the one
+    source and which carries an honest caveat of its own: they are unverified
+    for the two model ids in use, so what they encode reliably is the RATIO
+    between tiers rather than an absolute. Prompt-cache hits are counted and
+    are NOT discounted, because no cached-input rate is on file to discount
+    them by. The rupee figures ride on a fixed FX rate from settings, so they
+    are approximate by construction; `fx.basis` on the payload says that rather
+    than leaving a reader to assume a live quote.
+
+    WHAT IS ABSENT IS ABSENT. An average over zero assessments reports
+    `status: "unavailable"` with a reason and carries no number at all, and the
+    Rs threshold flag then answers `exceeded: null` rather than `false`: a
+    month nobody measured has not been shown to be under the line. Media and
+    proctoring cost report unavailable permanently, because the analysis
+    service is billed per account and proctoring stores no media, so there is
+    no per-assessment figure to read.
+    """
+    settings = get_settings()
+    start, end = _month_window(month)
+    return {
+        "month": f"{start.year:04d}-{start.month:02d}",
+        **await cost_telemetry.owner_cost_summary(
+            session,
+            window_start=start,
+            window_end=end,
+            usd_to_inr=settings.usd_to_inr_rate,
+            alert_threshold_inr=settings.assessment_cost_alert_inr,
+        ),
+    }
+
+
+def _month_window(month: str | None) -> tuple[datetime, datetime]:
+    """The half-open UTC window `[first of the month, first of the next)`.
+
+    UTC rather than a local zone, because the rows are stamped in UTC and a
+    window in one zone over timestamps in another silently moves a few hours of
+    spend between two months every month. Half-open so twelve of these tile a
+    year without the instant at midnight being counted twice.
+    """
+    now = datetime.now(timezone.utc)
+    year, month_number = (now.year, now.month)
+    if month is not None:
+        year, month_number = (int(month[:4]), int(month[5:7]))
+    start = datetime(year, month_number, 1, tzinfo=timezone.utc)
+    end = (
+        datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+        if month_number == 12
+        else datetime(year, month_number + 1, 1, tzinfo=timezone.utc)
+    )
+    return start, end
 
 
 # ── RBAC 7.1: transferring a customer's Super Admin seat ─────────────────────

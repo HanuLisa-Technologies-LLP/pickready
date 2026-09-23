@@ -129,7 +129,7 @@ export function AiRatingReportModal({
                     {section.title}
                     <RatingLabel label={row[section.label] as string | null} />
                   </h3>
-                  <p className="text-sm leading-6">
+                  <p className="text-sm">
                     {row[section.comment] as string}
                   </p>
                 </section>

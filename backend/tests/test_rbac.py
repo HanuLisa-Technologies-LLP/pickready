@@ -108,6 +108,16 @@ def test_the_flat_model_diverges_only_where_24_says_so() -> None:
         # corporate sender is manager-level work (the organisation-wide pair),
         # not the Recruiter's; ACTIVATING one stays the Super Admin's alone.
         "manage_email_senders",
+        # Vivekium feature 1 (Drishti). The brief names its audience in one
+        # line and excludes one role BY NAME: "MD, CEO, Functional Heads (CTO,
+        # CFO, COO). NOT the Hiring Manager." That exclusion is a product rule,
+        # so the divergence here is the rule being expressible rather than a
+        # drift. The Recruiter is refused for the complementary reason given
+        # in capabilities.py: they run a pipeline against criteria somebody
+        # else set, and a function's strategic direction is not a pipeline act.
+        # A functional head sitting in a narrower seat is pinned by the
+        # per-user overlay, never by widening the role default.
+        "author_drishti_profile",
     }
     assert differing == expected, (
         "the Recruiter and HR Manager grants diverge somewhere RBAC 24 does "

@@ -148,7 +148,7 @@ export default function AssessmentInvitePage() {
         description={forWhat ?? undefined}
       >
         <div className="space-y-5">
-          <p className="flex items-start gap-2.5 text-sm leading-6">
+          <p className="flex items-start gap-2.5 text-sm">
             <ShieldAlert
               className="mt-0.5 h-4 w-4 shrink-0 text-brand-600"
               aria-hidden="true"
@@ -192,7 +192,7 @@ export default function AssessmentInvitePage() {
         title="A fresh assessment for this role"
         description={forWhat ?? undefined}
       >
-        <p className="text-sm leading-6">
+        <p className="text-sm">
           You completed an assessment for another role recently. Each role is
           evaluated against criteria written from its own job description, so
           nothing carries across and this one starts fresh. Your answers save as
@@ -211,7 +211,7 @@ export default function AssessmentInvitePage() {
         title="You have already sent this one"
         description={forWhat ?? undefined}
       >
-        <p className="flex items-start gap-2.5 text-sm leading-6">
+        <p className="flex items-start gap-2.5 text-sm">
           <CheckCircle2
             className="mt-0.5 h-4 w-4 shrink-0 text-brand-600"
             aria-hidden="true"
@@ -238,7 +238,7 @@ export default function AssessmentInvitePage() {
 
   return (
     <AuthShell title={title} description={forWhat ?? undefined}>
-      <p className="flex items-start gap-2.5 text-sm leading-6">
+      <p className="flex items-start gap-2.5 text-sm">
         <Clock
           className="mt-0.5 h-4 w-4 shrink-0 text-brand-600"
           aria-hidden="true"

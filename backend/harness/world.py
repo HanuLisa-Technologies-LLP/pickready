@@ -1,0 +1,1094 @@
+"""Named world builders: the initial state a scenario stands on.
+
+WHY A NAME AND NOT SQL IN THE SCENARIO
+----------------------------------------
+HARNESS.md section 2 states the rule this module exists to enforce: "A scenario
+names a world builder, it does not inline SQL. Builders live in
+`harness/world.py` and are shared. A scenario that builds its own state is a
+scenario nobody can compose."
+
+The practical consequence is that a world is a PRODUCT of smaller seeds rather
+than a copy of the one above it. `single_tenant_job_with_applicant` is
+`single_tenant_published_job` plus a candidate, and that composition is why
+adding a column to `jobs` is one edit here rather than nine near-identical
+inserts across a scenario directory.
+
+WHY THE SEEDS ARE RAW SQL AND NOT THE ORM
+-------------------------------------------
+Every insert below runs under `superadmin_scope`, in explicit SQL, naming its
+columns. That is the shape `tests/test_framework_add_after_delete.py` and
+`tests/test_audit_single_insert_api.py` already use, and it is deliberate: the
+ORM would apply defaults, validators and event hooks that the PRODUCT applies
+on the write path, and a world that got its rows through the same machinery
+being tested cannot establish a state the product would refuse to create. A
+scenario that wants a job whose framework was stamped with zero rows behind it
+(the 2026-08-06 finding) needs exactly that.
+
+THE SCHEMA PREFLIGHT, AND WHY A MISSING RELATION IS `unavailable`
+-------------------------------------------------------------------
+Each builder declares the relations its world and its workload will touch.
+`preflight` asks the catalog for them BEFORE anything is inserted, and a
+missing one aborts the build with `SchemaMissing` rather than with whatever
+`UndefinedTableError` the first insert happens to raise. The runner turns that
+into `unavailable`, never `fail`, because a database that has not been migrated
+far enough has told us nothing about the product: reporting it as a failure
+would put a red scenario in front of somebody whose fix is `alembic upgrade
+head`, and reporting it as a pass is the green-while-broken outcome the whole
+harness exists to prevent.
+
+NOTHING HERE IS CLEANED UP BY TRUNCATION
+------------------------------------------
+`teardown` deletes the tenant and lets the foreign keys cascade, plus the
+handful of rows that are deliberately tenant-free (`candidates`, `profiles`,
+which span tenants through the databank). Truncating tables would destroy the
+rows every other agent working against this shared stack is relying on.
+
+Provenance: docs/spec/HARNESS.md sections 2 and 3.
+"""
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Mapping, Sequence
+
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from app.core.config import get_settings
+from app.core.db import superadmin_scope
+from app.services.hiring.department_models import (
+    DIM_ROLE_FIT,
+    DIM_TRACK_RECORD,
+    DIM_VERIFIED_COMPETENCE,
+)
+
+__all__ = [
+    "SchemaMissing",
+    "World",
+    "WorldError",
+    "build",
+    "registered",
+    "session_factory",
+    "teardown",
+]
+
+
+class WorldError(RuntimeError):
+    """A world cannot be built, with the builder and the reason named."""
+
+
+class SchemaMissing(WorldError):
+    """The database is missing a relation this world needs.
+
+    A named subclass because the runner treats it differently from every other
+    world failure: an un-migrated database is a statement about the ENVIRONMENT
+    and produces `unavailable`, while a builder that raised for any other
+    reason is a defect in the harness and produces a failure.
+    """
+
+
+#: The one instant every world is built at, so that a scenario asserting over a
+#: posting window, a profile age or a notice period reads the same value on
+#: every run. HARNESS.md section 6 requires a replay to reproduce "same clock",
+#: and a world seeded from `now()` would move underneath one. Chosen to sit
+#: comfortably inside a 30-day posting window opened by `_publish_window`.
+ANCHOR = datetime(2026, 9, 21, 9, 0, tzinfo=timezone.utc)
+
+#: One credit is 60 integer sub-units (claude.md, 2026-07-28). A world that
+#: funds a tenant grants ten of them, which is enough for any scenario here to
+#: spend without the balance reaching the gate that refuses new work.
+CREDIT_SUBUNITS = 60
+FUNDED_SUBUNITS = CREDIT_SUBUNITS * 10
+
+
+@dataclass
+class World:
+    """Everything a scenario's workload and assertions need to name a row.
+
+    `ids` is an open mapping rather than a fixed set of fields because the
+    builders genuinely differ: a cross-tenant world has two of everything and a
+    ranked-pool world has fifty links. A frozen shape would force every builder
+    to carry every other builder's nulls, and a null in that position is
+    indistinguishable from a row a builder forgot to seed.
+    """
+
+    name: str
+    ids: dict[str, Any] = field(default_factory=dict)
+    tenants: list[uuid.UUID] = field(default_factory=list)
+    candidates: list[uuid.UUID] = field(default_factory=list)
+    candidate_users: list[uuid.UUID] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    def id(self, key: str) -> Any:
+        """One named id, refusing rather than returning None for an unknown key.
+
+        None would flow straight into a URL and produce a 404 that reads as a
+        product refusal, which is the most misleading failure a harness can
+        report: the route was never asked the question the scenario wrote down.
+        """
+        if key not in self.ids:
+            known = ", ".join(sorted(self.ids)) or "nothing"
+            raise WorldError(
+                f"world {self.name!r} has no id named {key!r}; it carries {known}"
+            )
+        return self.ids[key]
+
+
+def session_factory() -> async_sessionmaker[AsyncSession]:
+    """A NullPool sessionmaker on the configured database.
+
+    NullPool for the reason `tests/dashboard_world.py` already states: an
+    asyncpg connection belongs to the event loop that opened it, and the
+    harness runs the world builder, the application under test and the state
+    reader on three different loops. A pooled connection handed across that
+    boundary fails the next caller for something the previous one did.
+    """
+    return async_sessionmaker(
+        create_async_engine(get_settings().database_url, poolclass=NullPool),
+        expire_on_commit=False,
+    )
+
+
+async def preflight(session: AsyncSession, relations: Sequence[str]) -> None:
+    """Refuse the build when the database lacks a relation this world needs."""
+    if not relations:
+        return
+    found = set(
+        (
+            await session.execute(
+                sa.text(
+                    "SELECT table_name FROM information_schema.tables "
+                    "WHERE table_schema = 'public' AND table_name = ANY(:names)"
+                ),
+                {"names": list(relations)},
+            )
+        )
+        .scalars()
+        .all()
+    )
+    missing = sorted(set(relations) - found)
+    if missing:
+        raise SchemaMissing(
+            f"the database is missing {', '.join(missing)}. This world cannot "
+            "be built and nothing about the product has been measured. Migrate "
+            "the test database (`alembic upgrade head`) and run it again."
+        )
+
+
+# ── Seeds, composed by the builders below ────────────────────────────────────
+
+
+async def _seed_tenant(
+    session: AsyncSession, world: World, *, key: str, is_demo: bool = False
+) -> uuid.UUID:
+    tenant = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            "INSERT INTO tenants (id, name, domain, spf_dkim_status, is_demo) "
+            "VALUES (:id, :name, :domain, 'pending', :demo)"
+        ),
+        {
+            "id": str(tenant),
+            "name": f"Harness-{tenant.hex[:8]}",
+            "domain": f"{tenant.hex[:12]}.harness.test",
+            "demo": is_demo,
+        },
+    )
+    world.ids[key] = tenant
+    world.tenants.append(tenant)
+    return tenant
+
+
+async def _seed_staff(
+    session: AsyncSession,
+    world: World,
+    *,
+    key: str,
+    tenant: uuid.UUID,
+    role: str = "client",
+) -> uuid.UUID:
+    user = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            "INSERT INTO users (id, tenant_id, email, full_name, role, status) "
+            "VALUES (:id, :tid, :email, :name, :role, 'active')"
+        ),
+        {
+            "id": str(user),
+            "tid": str(tenant),
+            "email": f"{user.hex[:12]}@harness.test",
+            "name": "Anita Rao",
+            "role": role,
+        },
+    )
+    world.ids[key] = user
+    return user
+
+
+async def _seed_company_profile(
+    session: AsyncSession, tenant: uuid.UUID, *, about: str | None
+) -> None:
+    """The Gate 1 row: `companies.about_company`, asked of the TABLE.
+
+    `about` may be None deliberately. A scenario that asserts job creation is
+    refused without a profile needs the row to exist and the section to be
+    empty, because an absent `companies` row and a blank `about_company` are
+    two different states and the gate reads the second.
+    """
+    await session.execute(
+        sa.text(
+            "INSERT INTO companies (id, tenant_id, about_company, work_life, "
+            " benefits_text) VALUES (:id, :tid, :about, :life, :benefits)"
+        ),
+        {
+            "id": str(uuid.uuid4()),
+            "tid": str(tenant),
+            "about": about,
+            "life": "Four days in the office, one remote." if about else None,
+            "benefits": "Health cover for the family." if about else None,
+        },
+    )
+
+
+async def _fund(session: AsyncSession, tenant: uuid.UUID, *, subunits: int) -> None:
+    await session.execute(
+        sa.text(
+            "INSERT INTO credit_ledger (id, tenant_id, event_type, "
+            " subunits_delta, idempotency_key) "
+            "VALUES (:id, :tid, 'grant', :delta, :key)"
+        ),
+        {
+            "id": str(uuid.uuid4()),
+            "tid": str(tenant),
+            "delta": subunits,
+            "key": f"harness-grant-{tenant.hex}",
+        },
+    )
+
+
+async def _seed_job(
+    session: AsyncSession,
+    world: World,
+    *,
+    key: str,
+    tenant: uuid.UUID,
+    created_by: uuid.UUID | None,
+    title: str = "Platform Engineer",
+    published: bool = True,
+    lifecycle_state: str = "DRAFT",
+    assessment_status: str = "questions_pending_review",
+    framework_generated_at: datetime | None = None,
+    closed_at: datetime | None = None,
+) -> uuid.UUID:
+    job = uuid.uuid4()
+    start = ANCHOR - timedelta(days=2) if published else ANCHOR
+    await session.execute(
+        sa.text(
+            "INSERT INTO jobs (id, tenant_id, title, jd_json, jd_markdown, "
+            " status, lifecycle_state, assessment_status, assessment_grade, "
+            " created_by, posting_start_date, ratified_at, "
+            " framework_generated_at, closed_at, experience_min_years, "
+            " experience_max_years) "
+            "VALUES (:id, :tid, :title, CAST(:jd AS jsonb), :md, :status, "
+            " :life, :astatus, 'non_managerial', :by, :start, :ratified, :fga, "
+            " :closed, 3, 7)"
+        ),
+        {
+            "id": str(job),
+            "tid": str(tenant),
+            "title": title,
+            "jd": '{"skills": ["Python", "PostgreSQL"]}',
+            "md": (
+                "## The role\nOwns the payments platform and its two services "
+                "end to end.\n\n## Skills\nPython, PostgreSQL."
+            ),
+            "status": "ratified" if published else "draft",
+            "life": lifecycle_state,
+            "astatus": assessment_status,
+            "by": None if created_by is None else str(created_by),
+            "start": start,
+            # `ratified_at IS NOT NULL` IS THE PUBLISHED GATE, not the status
+            # word beside it. `portal._published_job_or_404` reads this column
+            # and nothing else, so a world that set `status = 'ratified'` and
+            # left the stamp NULL produced a job the recruiter could see and
+            # the candidate could not, and every candidate-side scenario 404'd
+            # in a way that read as a product refusal.
+            "ratified": start if published else None,
+            "fga": framework_generated_at,
+            "closed": closed_at,
+        },
+    )
+    world.ids[key] = job
+    return job
+
+
+#: Which of the five evaluation dimensions each aspect's items are derived
+#: onto. Imported from the department model rather than typed, so a renamed
+#: dimension breaks the world loudly instead of leaving it seeding a string
+#: `scorecard.freeze` will later refuse for a reason nobody can see.
+_DIMENSION_FOR_CATEGORY: dict[str, str] = {
+    "must_have": DIM_VERIFIED_COMPETENCE,
+    "nice_to_have": DIM_TRACK_RECORD,
+    "behavioural": DIM_ROLE_FIT,
+}
+
+
+async def _seed_competencies(
+    session: AsyncSession,
+    world: World,
+    *,
+    key: str,
+    tenant: uuid.UUID,
+    job: uuid.UUID,
+    names: Sequence[str],
+    category: str = "must_have",
+) -> None:
+    ids: list[uuid.UUID] = []
+    for ordinal, name in enumerate(names, start=1):
+        row = uuid.uuid4()
+        await session.execute(
+            sa.text(
+                "INSERT INTO job_competencies (id, tenant_id, job_id, category, "
+                " name, required_level, ordinal, is_active, observable_evidence, "
+                " dimension, evidence_sources, assessment_method, weight, "
+                " threshold_json, provenance_json) "
+                "VALUES (:id, :tid, :job, :cat, :name, 82, :ord, TRUE, :eve, "
+                " :dim, CAST(:sources AS jsonb), 'structured_probe', :weight, "
+                " CAST(:threshold AS jsonb), CAST(:provenance AS jsonb))"
+            ),
+            {
+                "id": str(row),
+                "tid": str(tenant),
+                "job": str(job),
+                "cat": category,
+                "name": name,
+                "ord": ordinal,
+                "eve": f"Has shipped work resting on {name} and can walk through it.",
+                # THE SEVEN STAGES, SEEDED, because `scorecard.freeze` refuses
+                # any item whose `weight` is NULL or whose `dimension` is
+                # empty: nothing enters the matrix without completing all of
+                # them, and a partially transformed item is one whose grade
+                # rests on a stage nobody ran. A world that seeded a name and a
+                # level alone produced a job that could never be finalised, so
+                # every finalisation scenario would have been measuring the
+                # seed rather than the route.
+                "dim": _DIMENSION_FOR_CATEGORY[category],
+                "sources": '["resume", "assessment_conversation"]',
+                "weight": round(1.0 / max(len(names), 1), 6),
+                "threshold": '{"evidence_threshold": 2}',
+                "provenance": (
+                    '{"terms": {"baseline_layer1": 1.0, "situation_layer3": 1.0,'
+                    ' "role_layer3": 1.0}, "raw_value": 1.0,'
+                    ' "situation_key": "gap_fill"}'
+                ),
+            },
+        )
+        ids.append(row)
+    world.ids[key] = ids
+
+
+async def _seed_candidate(
+    session: AsyncSession,
+    world: World,
+    *,
+    key: str,
+    resume_text: str = "Eight years on Python services. Owned a PostgreSQL migration.",
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """A candidate, their portal user, and a main profile carrying a resume.
+
+    `candidates` and `profiles` are deliberately TENANT-FREE (claude.md,
+    2026-09-12: one employment history, per-tenant verification), so they are
+    removed by id in `teardown` rather than by a tenant cascade.
+    """
+    candidate = uuid.uuid4()
+    user = uuid.uuid4()
+    profile = uuid.uuid4()
+    email = f"{candidate.hex[:12]}@harness.test"
+    await session.execute(
+        sa.text(
+            "INSERT INTO users (id, tenant_id, email, full_name, role, status) "
+            "VALUES (:id, NULL, :email, 'Rohit Nair', 'candidate', 'active')"
+        ),
+        {"id": str(user), "email": email},
+    )
+    await session.execute(
+        sa.text(
+            "INSERT INTO candidates (id, tenant_id, user_id, full_name, email, "
+            " city, consent_databank) "
+            "VALUES (:id, NULL, :uid, 'Rohit Nair', :email, 'Bengaluru', TRUE)"
+        ),
+        {"id": str(candidate), "uid": str(user), "email": email},
+    )
+    # THE STORAGE METADATA IS NOT DECORATION, it is what makes the resume
+    # REUSABLE. `portal._main_resume_profile` returns the main profile only
+    # when `resume_public_id` is set, and `copy_resume_metadata` refuses a
+    # source missing the url or the filename. A world that seeded resume TEXT
+    # alone produced a candidate whose apply attempt answered 422 "No main
+    # resume to reuse", which reads as a product defect and is a seed defect.
+    # No bytes are written: nothing on the apply path reads the object, and an
+    # upload here would make every scenario depend on MinIO being reachable.
+    await session.execute(
+        sa.text(
+            "INSERT INTO profiles (id, candidate_id, resume_text, "
+            " resume_storage_provider, resume_public_id, resume_url, "
+            " resume_original_filename, resume_mime_type, resume_size_bytes, "
+            " resume_uploaded_at, resume_sha256) "
+            "VALUES (:id, :cid, :text, 's3', :public_id, :url, :filename, "
+            " 'application/pdf', 84211, :at, :digest)"
+        ),
+        {
+            "id": str(profile),
+            "cid": str(candidate),
+            "text": resume_text,
+            "public_id": f"resumes/{profile.hex}.pdf",
+            "url": f"s3://harness/resumes/{profile.hex}.pdf",
+            "filename": "rohit-nair-resume.pdf",
+            "at": ANCHOR - timedelta(days=30),
+            "digest": profile.hex + candidate.hex,
+        },
+    )
+    await session.execute(
+        sa.text("UPDATE candidates SET main_profile_id = :pid WHERE id = :id"),
+        {"pid": str(profile), "id": str(candidate)},
+    )
+    world.ids[key] = candidate
+    world.ids[f"{key}_user"] = user
+    world.ids[f"{key}_profile"] = profile
+    world.candidates.append(candidate)
+    world.candidate_users.append(user)
+    return candidate, user, profile
+
+
+async def _seed_link(
+    session: AsyncSession,
+    world: World,
+    *,
+    key: str,
+    tenant: uuid.UUID,
+    job: uuid.UUID,
+    candidate: uuid.UUID,
+    profile: uuid.UUID,
+    status: str = "applied",
+    source_type: str = "applied",
+    match_score: float | None = 74.0,
+) -> uuid.UUID:
+    link = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            "INSERT INTO job_candidate_links (id, tenant_id, job_id, "
+            " candidate_id, profile_id, source, status, source_type, "
+            " match_score, tier, created_at) "
+            # `source` is `LinkSource`, whose only values are `fresh` and
+            # `databank`; `source_type` is the separate applied/sourced/databank
+            # provenance of 2026-07-28. Seeding 'applied' into the first of them
+            # raised `LookupError: 'applied' is not among the defined enum
+            # values` inside SQLAlchemy's row processor, which is the same shape
+            # as the defect `PipelineStatus`'s own docstring records.
+            "VALUES (:id, :tid, :job, :cid, :pid, 'fresh', :status, :stype, "
+            " :score, :tier, :at)"
+        ),
+        {
+            "id": str(link),
+            "tid": str(tenant),
+            "job": str(job),
+            "cid": str(candidate),
+            "pid": str(profile),
+            "status": status,
+            "stype": source_type,
+            "score": match_score,
+            "tier": None if match_score is None else "matching",
+            "at": ANCHOR - timedelta(days=1),
+        },
+    )
+    world.ids[key] = link
+    return link
+
+
+async def _seed_conversation(
+    session: AsyncSession,
+    world: World,
+    *,
+    key: str,
+    tenant: uuid.UUID,
+    job: uuid.UUID,
+    link: uuid.UUID,
+    invited: bool = True,
+) -> uuid.UUID:
+    conversation = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            "INSERT INTO assessment_conversations (id, tenant_id, job_id, "
+            " job_candidate_link_id, grade, status, next_question_index, "
+            " invitation_sent_at) "
+            "VALUES (:id, :tid, :job, :link, 'non_managerial', 'active', 0, :inv)"
+        ),
+        {
+            "id": str(conversation),
+            "tid": str(tenant),
+            "job": str(job),
+            "link": str(link),
+            "inv": ANCHOR if invited else None,
+        },
+    )
+    world.ids[key] = conversation
+    return conversation
+
+
+# ── The builders ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Builder:
+    """One named world, with the relations it needs stated up front.
+
+    `relations` covers the world's own inserts AND what its workload will reach:
+    a funded tenant means the billing path is walked, so `credit_lots` belongs
+    here even though nothing below inserts into it. Declaring it on the WORLD
+    rather than on the scenario is what keeps `scenario.py` parse only.
+    """
+
+    name: str
+    relations: tuple[str, ...]
+    seed: Callable[[AsyncSession, World, Mapping[str, Any]], Any]
+    describes: str
+
+
+def _override(overrides: Mapping[str, Any], key: str, default: Any) -> Any:
+    return overrides.get(key, default)
+
+
+async def _no_state(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    """Nothing at all, for a scenario whose subject is not a row.
+
+    Real and named rather than achieved by leaving `given.world` out, because
+    the loader requires a world and a scenario that quietly declared none would
+    be indistinguishable from one whose builder failed to run.
+    """
+    world.notes.append("no database state was seeded")
+
+
+async def _funded_tenant(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    tenant = await _seed_tenant(
+        session, world, key="tenant", is_demo=bool(_override(overrides, "tenant.is_demo", False))
+    )
+    await _seed_staff(session, world, key="staff", tenant=tenant)
+    await _seed_company_profile(
+        session,
+        tenant,
+        about=_override(
+            overrides,
+            "company.about_company",
+            "We run settlement infrastructure for twelve Indian banks.",
+        ),
+    )
+    await _fund(
+        session, tenant, subunits=int(_override(overrides, "credits.subunits", FUNDED_SUBUNITS))
+    )
+
+
+async def _published_job(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    await _funded_tenant(session, world, overrides)
+    await _seed_job(
+        session,
+        world,
+        key="job",
+        tenant=world.id("tenant"),
+        created_by=world.id("staff"),
+        lifecycle_state=str(_override(overrides, "job.lifecycle_state", "PUBLISHED")),
+        assessment_status=str(
+            _override(overrides, "job.assessment_status", "ready_for_candidates")
+        ),
+        framework_generated_at=ANCHOR - timedelta(hours=6),
+    )
+
+
+async def _job_with_generated_matrix(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    await _published_job(session, world, overrides)
+    # ALL THREE ASPECTS, because every one of them is graded, remarked and
+    # charted on every PRISM report and `scorecard.freeze` refuses a matrix
+    # with an empty one. A world seeding Must-have alone made every finalize
+    # scenario answer 422 about Nice-to-have, which is a true refusal about a
+    # question the scenario was not asking.
+    aspects = {
+        "must_have": _override(
+            overrides,
+            "matrix.names",
+            ["Python", "PostgreSQL", "Distributed systems", "Incident response"],
+        ),
+        "nice_to_have": _override(
+            overrides, "matrix.nice_to_have_names", ["Terraform", "Kafka"]
+        ),
+        "behavioural": _override(
+            overrides,
+            "matrix.behavioural_names",
+            ["Ownership under ambiguity", "Written communication"],
+        ),
+    }
+    combined: list[uuid.UUID] = []
+    for category, names in aspects.items():
+        await _seed_competencies(
+            session,
+            world,
+            key=f"{category}_competencies",
+            tenant=world.id("tenant"),
+            job=world.id("job"),
+            names=[str(name) for name in names],
+            category=category,
+        )
+        combined.extend(world.id(f"{category}_competencies"))
+    # `competencies` is EVERY item, because the step that empties the matrix
+    # has to empty all of it: `_framework_repair_pending` asks `load_framework`,
+    # which spans the three aspects, so leaving one aspect behind would not
+    # reach the state the 2026-09-21 defect lives in.
+    world.ids["competencies"] = combined
+
+
+async def _job_with_applicant(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    await _job_with_generated_matrix(session, world, overrides)
+    candidate, _user, profile = await _seed_candidate(
+        session,
+        world,
+        key="candidate",
+        resume_text=str(
+            _override(
+                overrides,
+                "candidate.resume_text",
+                "Eight years on Python services. Owned a PostgreSQL migration.",
+            )
+        ),
+    )
+    await _seed_link(
+        session,
+        world,
+        key="link",
+        tenant=world.id("tenant"),
+        job=world.id("job"),
+        candidate=candidate,
+        profile=profile,
+        status=str(_override(overrides, "link.status", "applied")),
+    )
+
+
+async def _job_with_invited_candidate(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    await _job_with_applicant(session, world, overrides)
+    await _seed_conversation(
+        session,
+        world,
+        key="conversation",
+        tenant=world.id("tenant"),
+        job=world.id("job"),
+        link=world.id("link"),
+    )
+
+
+async def _job_with_unapplied_candidate(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    """A published job and a candidate who has NOT applied to it yet.
+
+    The apply path is the thing under test, so seeding the link would leave the
+    scenario asserting over a row the harness wrote rather than one the product
+    did.
+    """
+    await _job_with_generated_matrix(session, world, overrides)
+    await _seed_candidate(
+        session,
+        world,
+        key="candidate",
+        resume_text=str(
+            _override(
+                overrides,
+                "candidate.resume_text",
+                "Eight years on Python services. Owned a PostgreSQL migration.",
+            )
+        ),
+    )
+
+
+async def _seed_candidate_questions(
+    session: AsyncSession,
+    world: World,
+    *,
+    tenant: uuid.UUID,
+    job: uuid.UUID,
+    link: uuid.UUID,
+    competencies: Sequence[uuid.UUID],
+    count: int,
+) -> None:
+    """The one question stream, seeded rather than generated.
+
+    Seeded directly for the reason `tests/test_conversation_flow.py` already
+    records: calling the real generator would couple every completion and
+    billing assertion to the matrix allocation, which is measured elsewhere,
+    and with no model credential it would run the deterministic fallback whose
+    question COUNT is a separate question from whether the charge fires once.
+
+    `rubric_json` is an empty object rather than absent: a question whose
+    rubric was written with it is the whole reason a generated question is
+    sound (claude.md, 2026-08-06), and a NULL here would put the scorer on the
+    unanswered path for a reason the scenario did not ask about.
+    """
+    ids: list[uuid.UUID] = []
+    for ordinal in range(count):
+        question = uuid.uuid4()
+        await session.execute(
+            sa.text(
+                "INSERT INTO candidate_questions (id, tenant_id, job_id, "
+                " job_candidate_link_id, competency_id, ordinal, prompt, "
+                " rubric_json, generated_at, question_type) "
+                "VALUES (:id, :tid, :job, :link, :comp, :ord, :prompt, "
+                " '{}'::jsonb, :at, 'short_answer')"
+            ),
+            {
+                "id": str(question),
+                "tid": str(tenant),
+                "job": str(job),
+                "link": str(link),
+                "comp": str(competencies[ordinal % len(competencies)]),
+                "ord": ordinal,
+                "prompt": (
+                    f"Walk through a time you owned the {ordinal + 1}th hardest "
+                    "part of a platform migration."
+                ),
+                "at": ANCHOR - timedelta(hours=1),
+            },
+        )
+        ids.append(question)
+    world.ids["questions"] = ids
+
+
+async def _assessment_in_progress(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    """An invited candidate, their questions, and a live proctoring session.
+
+    THE PROCTORING ROW IS NOT OPTIONAL AND IS NOT A CONVENIENCE. Monitoring is
+    mandatory and `proctoring.gate.require_active` runs FIRST in `respond`, so
+    a world without it would make every turn answer 403 and the scenario would
+    be measuring the gate rather than the billing. Seeding the row the consent
+    screen would have written is what keeps the path under test the path a real
+    candidate takes; stubbing the gate would make the scenario pass on a route
+    nobody can reach.
+    """
+    await _job_with_generated_matrix(session, world, overrides)
+    candidate, _user, profile = await _seed_candidate(session, world, key="candidate")
+    link = await _seed_link(
+        session,
+        world,
+        key="link",
+        tenant=world.id("tenant"),
+        job=world.id("job"),
+        candidate=candidate,
+        profile=profile,
+        status="assessment_invited",
+    )
+    count = int(_override(overrides, "questions.count", 2))
+    if count < 1:
+        raise WorldError(
+            f"world 'assessment_in_progress' was asked for {count} questions. "
+            "A conversation with none completes on its first turn, which would "
+            "make the completion assertion true for the wrong reason."
+        )
+    await _seed_candidate_questions(
+        session,
+        world,
+        tenant=world.id("tenant"),
+        job=world.id("job"),
+        link=link,
+        competencies=world.id("must_have_competencies"),
+        count=count,
+    )
+    conversation = await _seed_conversation(
+        session,
+        world,
+        key="conversation",
+        tenant=world.id("tenant"),
+        job=world.id("job"),
+        link=link,
+    )
+    await session.execute(
+        sa.text(
+            "UPDATE assessment_conversations SET started_at = :at WHERE id = :id"
+        ),
+        {"at": ANCHOR, "id": str(conversation)},
+    )
+    await session.execute(
+        sa.text(
+            "INSERT INTO proctoring_sessions (id, tenant_id, conversation_id, "
+            " job_candidate_link_id, candidate_id, job_id, consented_at, "
+            " started_at, outcome) "
+            "VALUES (:id, :tid, :conv, :link, :cid, :job, :at, :at, 'active')"
+        ),
+        {
+            "id": str(uuid.uuid4()),
+            "tid": str(world.id("tenant")),
+            "conv": str(conversation),
+            "link": str(link),
+            "cid": str(candidate),
+            "job": str(world.id("job")),
+            "at": ANCHOR,
+        },
+    )
+
+
+async def _two_tenants(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    """Two customers, one job each, and a staff principal in the first only.
+
+    The whole point of the pair is that the second tenant's job id is a real,
+    live, readable row for somebody else. A cross-tenant assertion against an
+    id that does not exist anywhere would pass against a product with no
+    isolation at all, because both answers are 404.
+    """
+    for suffix in ("a", "b"):
+        tenant = await _seed_tenant(session, world, key=f"tenant_{suffix}")
+        staff = await _seed_staff(session, world, key=f"staff_{suffix}", tenant=tenant)
+        await _seed_company_profile(
+            session, tenant, about="We build logistics software for two ports."
+        )
+        await _fund(session, tenant, subunits=FUNDED_SUBUNITS)
+        await _seed_job(
+            session,
+            world,
+            key=f"job_{suffix}",
+            tenant=tenant,
+            created_by=staff,
+            title=f"Platform Engineer ({suffix.upper()})",
+            lifecycle_state="PUBLISHED",
+            assessment_status="ready_for_candidates",
+        )
+    # The names the scenarios read. `tenant` is the one the caller acts as, so
+    # every generic probe resolves to tenant A without each scenario spelling
+    # out which half of the pair it means.
+    world.ids["tenant"] = world.id("tenant_a")
+    world.ids["staff"] = world.id("staff_a")
+    world.ids["job"] = world.id("job_a")
+
+
+async def _ranked_pool(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    """One job with many applicants, for the ordering and latency scenarios."""
+    await _job_with_generated_matrix(session, world, overrides)
+    size = int(_override(overrides, "pool.size", 40))
+    if size < 1:
+        raise WorldError(
+            f"world 'ranked_pool' was asked for {size} candidates. A pool of "
+            "none would make every ordering assertion vacuously true."
+        )
+    links: list[uuid.UUID] = []
+    for index in range(size):
+        candidate, _user, profile = await _seed_candidate(
+            session,
+            world,
+            key=f"pool_candidate_{index}",
+            resume_text=(
+                f"{4 + index % 11} years on Python services and data pipelines."
+            ),
+        )
+        link = await _seed_link(
+            session,
+            world,
+            key=f"pool_link_{index}",
+            tenant=world.id("tenant"),
+            job=world.id("job"),
+            candidate=candidate,
+            profile=profile,
+            # Spread deterministically across the four bands so the ordering
+            # assertion has something to order. `index % 37` rather than a
+            # random draw: `seed_mock_data.py` makes the same choice, and for
+            # the same reason.
+            match_score=float(40 + (index * 37) % 55),
+        )
+        links.append(link)
+    world.ids["pool_links"] = links
+    world.ids["link"] = links[0]
+    world.ids["candidate"] = world.id("pool_candidate_0")
+    world.ids["candidate_user"] = world.id("pool_candidate_0_user")
+
+
+_CORE = (
+    "tenants",
+    "users",
+    "companies",
+    "credit_ledger",
+    "role_permissions",
+)
+_JOB = _CORE + ("jobs", "job_competencies")
+_APPLIED = _JOB + ("candidates", "profiles", "job_candidate_links")
+
+#: Walked by any workload that reaches the credit gate or charges a credit.
+#: Declared on the world rather than on the scenario: `scenario.py` is parse
+#: only and must stay runnable with no database behind it.
+_BILLING = ("credit_lots", "credit_lot_draws")
+
+_BUILDERS: dict[str, Builder] = {
+    "no_state": Builder(
+        "no_state",
+        (),
+        _no_state,
+        "nothing seeded; for a scenario whose subject is not a row",
+    ),
+    "funded_tenant": Builder(
+        "funded_tenant",
+        _CORE + _BILLING,
+        _funded_tenant,
+        "one customer with a company profile and a funded credit pool",
+    ),
+    "published_job": Builder(
+        "published_job",
+        _JOB,
+        _published_job,
+        "a funded customer with one published job, no matrix rows",
+    ),
+    "job_with_generated_matrix": Builder(
+        "job_with_generated_matrix",
+        _JOB,
+        _job_with_generated_matrix,
+        "a published job whose Tatva matrix carries four Must-have items",
+    ),
+    "job_with_applicant": Builder(
+        "job_with_applicant",
+        _APPLIED + ("pipeline_status", "candidate_updates", "audit_log"),
+        _job_with_applicant,
+        "a published job with one applicant sitting at `applied`",
+    ),
+    "job_with_unapplied_candidate": Builder(
+        "job_with_unapplied_candidate",
+        _APPLIED,
+        _job_with_unapplied_candidate,
+        "a published job and a registered candidate who has not applied",
+    ),
+    "job_with_invited_candidate": Builder(
+        "job_with_invited_candidate",
+        _APPLIED + ("assessment_conversations",) + _BILLING,
+        _job_with_invited_candidate,
+        "an applicant the hiring team has invited to the assessment",
+    ),
+    "assessment_in_progress": Builder(
+        "assessment_in_progress",
+        _APPLIED
+        + (
+            "assessment_conversations",
+            "assessment_messages",
+            "candidate_questions",
+            "proctoring_sessions",
+            "telemetry_events",
+        )
+        + _BILLING,
+        _assessment_in_progress,
+        "an invited candidate mid-assessment, with questions and a live "
+        "proctoring session",
+    ),
+    "two_tenants_one_job_each": Builder(
+        "two_tenants_one_job_each",
+        _JOB,
+        _two_tenants,
+        "two customers with a live job each, for a cross-tenant read",
+    ),
+    "ranked_pool": Builder(
+        "ranked_pool",
+        _APPLIED,
+        _ranked_pool,
+        "one job with a pool of applicants spread across the four bands",
+    ),
+}
+
+
+def registered() -> tuple[str, ...]:
+    """Every world name, for a scenario author and for the error above."""
+    return tuple(sorted(_BUILDERS))
+
+
+def describe(name: str) -> str:
+    builder = _BUILDERS.get(name)
+    if builder is None:
+        raise WorldError(
+            f"unknown world {name!r}; the registry holds {', '.join(registered())}"
+        )
+    return builder.describes
+
+
+async def build(
+    name: str,
+    overrides: Mapping[str, Any],
+    *,
+    sessions: async_sessionmaker[AsyncSession],
+) -> World:
+    """Resolve a world name to real database state.
+
+    One transaction, committed, because the workload reads it back over HTTP
+    through a DIFFERENT connection and an uncommitted seed would be invisible
+    to it. That is the same reason the state reader is a second connection: the
+    harness never lets one session's uncommitted view stand in for what the
+    database actually holds.
+    """
+    builder = _BUILDERS.get(name)
+    if builder is None:
+        raise WorldError(
+            f"unknown world {name!r}; the registry holds {', '.join(registered())}"
+        )
+    unknown = sorted(
+        key for key in overrides if not isinstance(key, str) or not key.strip()
+    )
+    if unknown:
+        raise WorldError(f"world {name!r}: overrides carry an unusable key {unknown}")
+    world = World(name=name)
+    async with sessions() as session:
+        async with session.begin():
+            async with superadmin_scope(session):
+                await preflight(session, builder.relations)
+                await builder.seed(session, world, overrides)
+    return world
+
+
+async def teardown(
+    world: World, *, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """Remove everything this world created, and nothing else.
+
+    Deleting by id rather than truncating, because this stack is shared: a
+    truncation would take out the rows every other suite running against it is
+    standing on. The tenant cascade covers jobs, links, competencies and audit
+    rows; `candidates` and `profiles` are tenant-free by design and are removed
+    explicitly.
+
+    The ORDER is load bearing. `profiles.candidate_id` cascades from
+    `candidates`, so the candidate goes first and takes its profiles with it;
+    the candidate's portal `users` row carries no tenant and so survives the
+    tenant cascade, and it is removed LAST because the candidate row references
+    it.
+    """
+    async with sessions() as session:
+        async with session.begin():
+            async with superadmin_scope(session):
+                for tenant in world.tenants:
+                    await session.execute(
+                        sa.text("DELETE FROM tenants WHERE id = :id"),
+                        {"id": str(tenant)},
+                    )
+                if world.candidates:
+                    await session.execute(
+                        sa.text("DELETE FROM candidates WHERE id = ANY(:ids)"),
+                        {"ids": [str(item) for item in world.candidates]},
+                    )
+                if world.candidate_users:
+                    await session.execute(
+                        sa.text("DELETE FROM users WHERE id = ANY(:ids)"),
+                        {"ids": [str(item) for item in world.candidate_users]},
+                    )

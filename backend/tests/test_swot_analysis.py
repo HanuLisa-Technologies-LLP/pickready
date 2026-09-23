@@ -24,8 +24,10 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from pydantic import ValidationError
 
 from app.models.job import Job
+from app.schemas.assessments import SwotAnalysisSectionsIn
 from app.models.job_setup import (
     SWOT_ANALYSIS_EDITED,
     SWOT_ANALYSIS_FAILED,
@@ -42,6 +44,14 @@ DRAFT = {
     "opportunities": "Adjacent platform engineers convert into this role.",
     "threats": "Two competitors are hiring the same profile this quarter.",
 }
+
+
+def test_save_payload_requires_the_version_the_editor_loaded():
+    with pytest.raises(ValidationError):
+        SwotAnalysisSectionsIn.model_validate(DRAFT)
+    assert SwotAnalysisSectionsIn.model_validate(
+        {**DRAFT, "expected_version": 0}
+    ).expected_version == 0
 
 
 class FakeResult:
@@ -65,11 +75,14 @@ class FakeSession:
         self.rows = {JobSwotAnalysis: analysis, _IntakeMarker: intake}
         self.added: list[object] = []
         self.flushes = 0
+        self.locked_analysis_reads = 0
         self._user = user
 
     async def execute(self, statement):
         entity = statement.column_descriptions[0]["entity"]
         if entity is JobSwotAnalysis:
+            if statement._for_update_arg is not None:
+                self.locked_analysis_reads += 1
             return FakeResult(self.rows[JobSwotAnalysis])
         return FakeResult(self.rows[_IntakeMarker])
 
@@ -80,6 +93,9 @@ class FakeSession:
 
     async def flush(self):
         self.flushes += 1
+        row = self.rows[JobSwotAnalysis]
+        if row is not None and row.version is None:
+            row.version = 0
 
     async def get(self, model, pk):  # pragma: no cover - not reached here
         return self._user
@@ -178,6 +194,21 @@ async def test_a_human_save_persists_and_latches_the_edited_flag():
     assert saved.status == SWOT_ANALYSIS_EDITED
     assert saved.last_modified_by == editor
     assert saved.version == 2
+    assert session.locked_analysis_reads == 1
+
+
+async def test_first_save_seeds_an_empty_document_at_version_zero():
+    job = a_job()
+    session = FakeSession(analysis=None)
+
+    saved = await swot_analysis.save(
+        session, job, DRAFT, editor_id=uuid.uuid4(), expected_version=0
+    )
+
+    assert saved.sections() == DRAFT
+    assert saved.version == 1
+    assert saved.status == SWOT_ANALYSIS_EDITED
+    assert session.locked_analysis_reads >= 2
 
 
 async def test_a_cleared_section_is_genuinely_cleared():
@@ -206,6 +237,27 @@ async def test_a_save_against_a_version_that_moved_is_refused():
     # The refusal wrote nothing.
     assert row.version == 4
     assert row.human_edited is False
+    assert session.locked_analysis_reads == 1
+
+
+async def test_two_editors_cannot_overwrite_one_another():
+    job = a_job()
+    row = an_analysis(version=0)
+    session = FakeSession(analysis=row)
+    first = {**DRAFT, "strengths": "First editor's change."}
+    second = {**DRAFT, "strengths": "Second editor's change."}
+
+    await swot_analysis.save(
+        session, job, first, editor_id=uuid.uuid4(), expected_version=0
+    )
+    with pytest.raises(swot_analysis.VersionConflict):
+        await swot_analysis.save(
+            session, job, second, editor_id=uuid.uuid4(), expected_version=0
+        )
+
+    assert row.strengths == first["strengths"]
+    assert row.version == 1
+    assert session.locked_analysis_reads == 2
 
 
 # ── Regeneration cannot silently destroy human work (section 26, 32) ────────

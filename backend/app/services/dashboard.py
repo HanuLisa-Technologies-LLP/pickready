@@ -11,25 +11,25 @@ nothing here calls a model.
 
 THE EIGHT COLUMNS, IN THE SPECIFIED ORDER
 -----------------------------------------
-Candidate, Source, Pre-Screen Grade, Ready Pick Score, Ready Pick Note,
-Ready Pick Profile, Team Review, Stage. `COLUMNS` below is that order as data,
+Candidate, Source, Pre-Screen Grade, Vivekium Score, Vivekium Note,
+Vivekium Profile, Team Review, Stage. `COLUMNS` below is that order as data,
 so the API, the table and the tab-order test all read one list rather than
 three copies of it.
 
 FOUR OF THE EIGHT ARE FILLED BY AGENTS THAT ARE NOT ON A LIVE PATH YET
 -----------------------------------------------------------------------
-Pre-Screen Grade (Yukti), Ready Pick Score and Ready Pick Profile (Miti's
-`Evaluation`), Ready Pick Note (Siddhi). Every one of them has a DOCUMENTED
+Pre-Screen Grade (Yukti), Vivekium Score and Vivekium Profile (Miti's
+`Evaluation`), Vivekium Note (Siddhi). Every one of them has a DOCUMENTED
 PENDING STATE in the specification, and this module renders exactly that state
 when the data is absent. It never substitutes a default, a placeholder or a
-plausible-looking value: a dashboard that shows `— · Pending Ready Pick
+plausible-looking value: a dashboard that shows `— · Pending Vivekium
 Profile` is telling the truth, and one that shows `50 · Consider with
 Reservations` because nothing was there is the failure this whole surface
 exists to prevent.
 
 TWO NUMBERS RULES, AND THEY POINT IN OPPOSITE DIRECTIONS
 ---------------------------------------------------------
-spec-doc6 D8 rules that the Ready Pick Score renders NUMERICALLY here, in
+spec-doc6 D8 rules that the Vivekium Score renders NUMERICALLY here, in
 column 4 and its hover, and that it must be impossible for that number to
 enter a delivered PRISM Report. So this module is the one place in the product
 that deliberately puts a 0-100 score in front of a client, and
@@ -43,7 +43,7 @@ The Dashboard specification's band is a FIFTH vocabulary at cut-points 85 / 72
 / 60, against `rating.py`'s 90 / 75 / 60. They are not two scales for one
 thing, which is the mistake `services/tiers.py` made and was corrected for:
 they are two different artifacts by D8's own reasoning. `rating.GRADES` is the
-assessment grade that reaches the delivered report; the Ready Pick band is a
+assessment grade that reaches the delivered report; the Vivekium band is a
 dashboard triage label that may never reach it, and the two vocabularies share
 no word (`test_dashboard_vocabulary.py` asserts that, so neither can ever be
 mistaken for the other on screen).
@@ -136,9 +136,9 @@ COLUMN_SCREEN_READER_LABELS: dict[str, str] = {
     COLUMN_CANDIDATE: "Candidate Code Name",
     COLUMN_SOURCE: "Source",
     COLUMN_PRE_SCREEN_GRADE: "Pre-Screen Grade, early signal",
-    COLUMN_READY_PICK_SCORE: "Ready Pick Score",
-    COLUMN_READY_PICK_NOTE: "Ready Pick Note",
-    COLUMN_READY_PICK_PROFILE: "Ready Pick Profile",
+    COLUMN_READY_PICK_SCORE: "Vivekium Score",
+    COLUMN_READY_PICK_NOTE: "Vivekium Note",
+    COLUMN_READY_PICK_PROFILE: "Vivekium Profile",
     COLUMN_TEAM_REVIEW: "Team Review",
     COLUMN_STAGE: "Stage",
 }
@@ -204,7 +204,7 @@ def pre_screen_label(grade: str | None) -> str:
         ) from exc
 
 
-# ── Column 4: the Ready Pick Score ───────────────────────────────────────────
+# ── Column 4: the Vivekium Score ───────────────────────────────────────────
 
 BAND_STRONG = "ready_to_pick_strong"
 BAND_READY = "ready_to_pick"
@@ -228,7 +228,7 @@ BAND_LABELS: dict[str, str] = {
     BAND_RESERVATIONS: "Consider with Reservations",
     BAND_NOT_RECOMMENDED: "Not Recommended",
     BAND_UNDER_REVIEW: "Under Review",
-    BAND_PENDING: "Pending Ready Pick Profile",
+    BAND_PENDING: "Pending Vivekium Profile",
 }
 
 #: What a screen reader announces. "Under Review" is the one the specification
@@ -241,7 +241,7 @@ BAND_SCREEN_READER_LABELS: dict[str, str] = {
     BAND_RESERVATIONS: "Consider with Reservations",
     BAND_NOT_RECOMMENDED: "Not Recommended",
     BAND_UNDER_REVIEW: "Status: Under Review, awaiting integrity disposition",
-    BAND_PENDING: "Status: Pending Ready Pick Profile, assessment in progress",
+    BAND_PENDING: "Status: Pending Vivekium Profile, assessment in progress",
 }
 
 #: Scored bands only, best first, with the inclusive lower bound the
@@ -261,7 +261,7 @@ BAND_ORDER: tuple[str, ...] = tuple(band for band, _ in BAND_CUTPOINTS)
 
 
 def band_for_score(score: float | int | None) -> str:
-    """The column 4 band for a Ready Pick Score.
+    """The column 4 band for a Vivekium Score.
 
     Boundaries are INCLUSIVE UPWARD, matching claude.md rule 8 and
     `rating.grade_for_percent`: exactly 85 is Ready to Pick, Strong. Checked
@@ -343,7 +343,7 @@ SCORE_RANGE_UNAVAILABLE = (
 )
 
 
-# ── Column 5: the Ready Pick Note ────────────────────────────────────────────
+# ── Column 5: the Vivekium Note ────────────────────────────────────────────
 #
 # ONE PRODUCER, TWO CONSUMERS. `siddhi/synthesis.ready_pick_note` computes the
 # sentence ONCE and writes it to `evaluations.aggregate_json` under this key.
@@ -370,7 +370,7 @@ SCORE_RANGE_UNAVAILABLE = (
 # the dashboard's one number reaches a client through its own schema.
 READY_PICK_NOTE_KEY = "why_this_candidate"
 
-NOTE_PENDING = "Ready Pick Profile not written yet."
+NOTE_PENDING = "Vivekium Profile not written yet."
 NOTE_UNDER_REVIEW = (
     "Held for integrity review. No note is written until a person has "
     "dispositioned the finding."
@@ -466,7 +466,7 @@ def _order_by(sort: str | None, direction: str | None) -> str:
 
 # ── The two artefacts, as two types (spec-doc6 C10) ──────────────────────────
 #
-# "Ready Pick Profile" is the dashboard's evidence panel over an `Evaluation`.
+# "Vivekium Profile" is the dashboard's evidence panel over an `Evaluation`.
 # "PRISM Report" is the delivered, immutable, employer-facing document, a
 # `functional_skills_reports` row. spec-doc6 §8.2 requires the codebase to stop
 # using the names interchangeably and to enforce the distinction with types
@@ -580,11 +580,11 @@ class DashboardPage:
 #: says "Awaiting Profile"; this is the sentence behind it, which is what a
 #: screen reader announces and what a tooltip shows.
 PROFILE_PENDING_REASON = (
-    "The Ready Pick Profile has not been written yet. This says nothing about "
+    "The Vivekium Profile has not been written yet. This says nothing about "
     "the PRISM Report, which is a different document."
 )
 PROFILE_PENDING_UNDER_REVIEW = (
-    "The Ready Pick Profile is held while an integrity finding awaits a human "
+    "The Vivekium Profile is held while an integrity finding awaits a human "
     "disposition."
 )
 
@@ -651,7 +651,7 @@ _ASSESSMENT_VIDEO_JOINS = """
         LIMIT 1
     ) conv ON true
     LEFT JOIN LATERAL (
-        SELECT vr.status
+        SELECT vr.status, vr.media_deleted_at
         FROM video_recordings vr
         WHERE vr.job_candidate_link_id = link.id
         ORDER BY vr.created_at DESC, vr.id DESC
@@ -855,6 +855,7 @@ async def candidates_page(
                     conv.mode              AS assessment_mode,
                     conv.status            AS conversation_status,
                     vid.status             AS video_recording_status,
+                    vid.media_deleted_at   AS video_media_deleted_at,
                     EXISTS (
                         SELECT 1 FROM functional_skills_reports fsr
                          WHERE fsr.job_candidate_link_id = link.id
@@ -1000,12 +1001,13 @@ def assemble_row(row: Mapping[str, Any]) -> DashboardRow:
             has_proctoring_session=bool(row.get("has_proctoring_session")),
         ),
         video_status=video_access.video_status_word(
-            row.get("video_recording_status")
+            row.get("video_recording_status"),
+            media_deleted=row.get("video_media_deleted_at") is not None,
         ),
     )
 
 
-# ── The Ready Pick Profile panel ─────────────────────────────────────────────
+# ── The Vivekium Profile panel ─────────────────────────────────────────────
 
 
 def profile_panel(
@@ -1081,7 +1083,6 @@ def profile_panel(
         "under_integrity_review": under_integrity_review,
         "needs_human_review": bool(evaluation.get("needs_human_review")),
         "scorecard_version": evaluation.get("scorecard_version"),
-        "company_dna_version": evaluation.get("company_dna_version"),
         "evaluated_at": evaluation.get("completed_at"),
         "scoring_mode": evaluation.get("scoring_mode"),
     }

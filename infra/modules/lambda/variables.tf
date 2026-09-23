@@ -6,6 +6,22 @@ variable "environment" {
   type = string
 }
 
+variable "account_id" {
+  description = <<-EOT
+    The AWS account these functions live in.
+
+    PASSED IN RATHER THAN LOOKED UP. `data "aws_caller_identity"` calls STS,
+    which means the OFFLINE PLAN cannot evaluate it: `infra/plan-offline.sh`
+    runs against account 000000000000 in region xx-plan-1 with dummy
+    credentials and has never contacted AWS, so an STS call there fails DNS
+    resolution and takes the whole plan with it. The plan is the only pre-apply
+    check this repository has, and a check that cannot run is a check nobody
+    reads. `scheduler` already takes the account id this way for the same
+    reason.
+  EOT
+  type        = string
+}
+
 variable "region" {
   type = string
 }
@@ -87,6 +103,41 @@ variable "functions" {
     run_task_role_arns            = optional(list(string), [])
     run_task_cluster_arn          = optional(string, null)
     run_task_task_definition_arns = optional(list(string), [])
+    #: Grants lambda:InvokeFunction on exactly these functions, named by their
+    #: KEY in this same map rather than by ARN.
+    #
+    # A KEY, NOT AN ARN, AND THAT IS THE WHOLE DESIGN. The ARN is built from
+    # `local.function_names`, a pure local over the keys of this variable.
+    # Taking an ARN as input would mean an environment writing
+    # `module.lambda.function_arns["task-worker"]` into `module.lambda`'s own
+    # input, which is a cycle; and a `for_each` keyed on an ARN cannot be
+    # planned, which is the trade the `ecs` module already makes.
+    #
+    # WHY IT EXISTS. A Route.LAMBDA task that DISPATCHES another Route.LAMBDA
+    # task is a Lambda invoking a Lambda, and `readypick-task-worker` invokes
+    # ITSELF: one function serves every short task. Nothing needed this until
+    # `pickready.reconcile_context_index` had to queue one
+    # `pickready.index_document` per unindexed document. Every earlier sweep
+    # dispatched to Route.ECS, which goes through the `ecs:RunTask` grant above
+    # and is a different permission entirely, so the gap stayed invisible until
+    # a sweep fanned out to its own function and production answered
+    # AccessDeniedException.
+    invokable_function_keys = optional(list(string), [])
+    #: Grants s3:GetObject under exactly these object prefixes, written as
+    #: full object ARNs ("arn:aws:s3:::bucket/prefix/*").
+    #
+    # A BUCKET NAME AND NOT A MODULE OUTPUT. The inbound-mail bucket lives in
+    # `ses_inbound`, which must SUBSCRIBE this function and therefore depends
+    # on it; taking the bucket's ARN from that module's output would be a
+    # cycle. A bucket name is deterministic, so the environment composes the
+    # ARN from the same string both modules are given. The same trade
+    # `run_task_task_definition_arns` already makes.
+    #
+    # GetObject only. The function reads one message and forwards it; it never
+    # lists the bucket (which would enumerate every customer's correspondence)
+    # and never deletes (the lifecycle rule owns expiry, and a function that
+    # could delete could destroy a reply before anybody read it).
+    s3_read_object_arns = optional(list(string), [])
   }))
 
   validation {
@@ -137,6 +188,35 @@ variable "functions" {
     ])
     error_message = "A function granted ecs:RunTask must name both the cluster it may run tasks in and the task definitions it may run."
   }
+}
+
+variable "function_secret_environment" {
+  description = <<-EOT
+    {function key -> {ENV_NAME -> value}} for values that are CREDENTIALS and
+    must still be delivered as plain Lambda environment variables.
+
+    ALMOST ALWAYS EMPTY, AND IT HAS TO STAY THAT WAY. `functions[*].secrets`
+    is the normal path: the ARNs go in the environment, the values do not, and
+    the function fetches them at cold start with the policy the `secrets`
+    module built. A Lambda environment variable is readable through
+    `GetFunctionConfiguration` by anything holding it, so a credential here is
+    a credential materialised where it did not need to be.
+
+    ONE FUNCTION NEEDS IT, and the reason is what that function IS.
+    `readypick-inbound-email` is a zip of one file importing the standard
+    library and boto3, because anything that can send mail to the reply domain
+    reaches it: it holds no database credential, no model key and no secret
+    grant at all, and what a stranger can reach is one file a reviewer reads in
+    full. Handing it a Secrets Manager grant and a fetch at cold start would
+    widen exactly the function this platform keeps narrowest, to deliver a
+    value whose entire job is to be shown to our own API.
+
+    The value is still minted by Terraform and still stored in Secrets Manager
+    -- this is a second delivery of the same value to the one consumer that
+    cannot read it from there, not a second source of truth.
+  EOT
+  type        = map(map(string))
+  default     = {}
 }
 
 variable "secret_policy_arns" {

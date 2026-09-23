@@ -8,7 +8,8 @@
 // the accepted formats and size limit, nothing about where the bytes land.
 
 import * as React from "react";
-import { FileText, Upload } from "lucide-react";
+import { FileText, FileUp, Upload } from "lucide-react";
+import { EmptyState } from "@/components/page-primitives";
 
 import { apiGet, apiUploadWithProgress } from "@/lib/api";
 import { apiErrorMessage } from "@/lib/validation-errors";
@@ -122,10 +123,12 @@ export function MainResumeCard({
             </div>
           </div>
         ) : (
-          <p className="text-sm">
-            No main resume yet. Upload one so you can apply without attaching a
-            file each time.
-          </p>
+          <EmptyState
+            icon={FileUp}
+            title="No main resume yet"
+            description="Upload one so you can apply without attaching a file each time."
+            className="py-10"
+          />
         )}
 
         <div className="space-y-2">

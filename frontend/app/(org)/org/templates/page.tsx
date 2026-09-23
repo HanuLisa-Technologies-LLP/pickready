@@ -97,9 +97,12 @@ export default function EmailTemplatesPage() {
           {loading ? (
             <LoadingRows rows={3} className="p-1" label="Loading templates" />
           ) : templates.length === 0 ? (
-            <p className="px-3 py-6 text-center text-sm">
-              No templates yet. Create your first one.
-            </p>
+            <EmptyState
+              icon={Mail}
+              title="No templates yet"
+              description="Create your first one."
+              className="border-0 px-3 py-8"
+            />
           ) : (
             <ul className="space-y-1" aria-label="Templates">
               {templates.map((t) => {

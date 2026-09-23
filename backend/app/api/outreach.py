@@ -39,6 +39,7 @@ from app.schemas.outreach import (
     SkippedRecipient,
 )
 from app.services import capabilities as caps
+from app.services import engagement
 from app.services import outreach_content
 from app.services.audit import audit
 from app.workers import status as task_status
@@ -350,6 +351,15 @@ async def send_outreach(
             continue
         queued.append(rec.email)
         task_ids.append(task.id)
+        # THE CANDIDATE DID NOT HAVE TO DO ANYTHING FOR THIS TO COUNT. Feature
+        # 8 treats a job-matching email the candidate RECEIVES as engagement,
+        # because it resets the retention clock for somebody the platform is
+        # still actively putting in front of employers. Recorded here rather
+        # than in the delivery task on purpose: the delivery task sends EVERY
+        # letter, including the one warning them that an unused profile is
+        # about to be removed, and stamping engagement there would make that
+        # warning cancel the very clock it exists to announce.
+        await engagement.record_engagement_by_id(session, rec.candidate_id)
 
     if not queued:
         raise HTTPException(

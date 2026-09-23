@@ -1,0 +1,41 @@
+id: safety.the_release_gate_blocks_what_it_cannot_measure
+version: 1
+tier: safety
+description: >
+  `app/evaluation/release_gate.py` is put through its whole three-way contract:
+  a result carrying no chance-corrected agreement BLOCKS, one below the floor
+  FAILS, one clearing it PASSES. The first is the load-bearing one and it is
+  the reason this scenario exists at all -- until the harness, a repository
+  wide search found the gate referenced by nothing except its own test, and a
+  gate nothing calls is a gate nobody notices breaking. The specific way it
+  breaks is silent: somebody makes UNAVAILABLE permissive during a red build,
+  and from that moment it waves every release through while showing green.
+tags: [release-gate, unavailable, wiring]
+
+given:
+  world: no_state
+
+workload:
+  - exercise_the_release_gate
+  - probe_health
+
+expect:
+  output:
+    - facts.release_gate.unmeasured.outcome == unavailable
+    - facts.release_gate.unmeasured.releasable == false
+    - facts.release_gate.below_floor.outcome == fail
+    - facts.release_gate.clearing.outcome == pass
+    # DERIVED FROM THE W7.2 PROBE, not typed: worst pooled self-disagreement
+    # 0.03, times a multiplier of three. Pinned so a change to either factor is
+    # a decision rather than a drift.
+    - facts.release_gate.noise_band == 0.09
+    - status.probe_health == [200, 200]
+  trajectory:
+    - release_gate_exercised
+  prohibited:
+    - a_number_reached_a_client
+    - a_model_credential_was_configured
+  evaluators:
+    - release_gate
+    - functional_correctness
+    - safety_and_policy

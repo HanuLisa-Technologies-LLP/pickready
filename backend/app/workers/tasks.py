@@ -4,8 +4,6 @@
   pickready.send_sms(phone, message)
   pickready.run_matching(job_id)
   pickready.parse_resume(profile_id)
-  pickready.send_verification_requests(profile_id)
-  pickready.parse_verification_reply(verification_request_id, raw_email_text)
   pickready.refresh_dashboard_views()
 
 All slow work happens here, never inline in a request handler (claude.md rule
@@ -53,10 +51,7 @@ from app.services.sms_service import (
 from app.models import (
     Candidate,
     Profile,
-    SubmittedVia,
     Tenant,
-    VerificationRequest,
-    VerificationStatus,
 )
 from app.workers.dispatch import dispatch
 from app.workers.registry import Route, task
@@ -145,6 +140,8 @@ async def _deliver_email(
     text: str | None = None,
     attachments: list[dict] | None = None,
     sender=None,
+    correlation: dict | None = None,
+    reply_to: str | None = None,
 ) -> str | None:
     """One door to the outbound transport (Corporate Email System spec
     section 6). The transport is DEPLOYMENT DATA (`settings.email_transport`,
@@ -155,6 +152,13 @@ async def _deliver_email(
     From on the authenticated mailbox, so the corporate sender travels as
     Reply-To and From stays the Gmail address (assumption recorded in
     smtp_service._build_message). Returns the provider message id.
+
+    An EXPLICIT `reply_to` overrides both, and there is exactly one caller:
+    a conversation's own reply address, which is what routes an employer's
+    answer back into the thread it belongs to. It wins over the corporate
+    sender deliberately -- a reply that reached the sender's mailbox instead of
+    the thread is a reply the product cannot see, and a recruiter would sit
+    waiting for an answer that had already arrived somewhere else.
 
     ASSUMPTION (spec section 6): under "ses" with no corporate sender, the
     configured `smtp_from_email` address doubles as the platform's SES-verified
@@ -172,6 +176,11 @@ async def _deliver_email(
             html=html,
             text=text,
             attachments=attachments,
+            reply_to=reply_to,
+            # SES-ONLY, and deliberately not plumbed into the SMTP path: these
+            # become SES message tags, which have no SMTP equivalent. Handing
+            # them to Gmail would mean inventing headers nothing ever reads.
+            correlation=correlation,
         )
     return await smtp_send(
         from_email=settings.smtp_from_email,
@@ -181,7 +190,7 @@ async def _deliver_email(
         html=html,
         text=text,
         attachments=attachments,
-        reply_to=sender.email if sender is not None else None,
+        reply_to=reply_to or (sender.email if sender is not None else None),
     )
 
 
@@ -192,6 +201,8 @@ async def _send_email_async(
     template_name: str,
     context: dict,
     attachments: list[dict] | None = None,
+    reply_to: str | None = None,
+    email_log_id: str | None = None,
 ) -> dict[str, str]:
     from app.services import email_render
 
@@ -256,6 +267,7 @@ async def _send_email_async(
             html=html_body,
             text=body,
             attachments=attachments,
+            reply_to=reply_to,
         ) or ""
     except DeliveryError as err:
         delivery_status = "failed"
@@ -274,6 +286,35 @@ async def _send_email_async(
         )
         raise
     finally:
+        # SETTLE THE email_log ROW, when the caller made one. Without this the
+        # row stays `queued` for ever and an SES event cannot find it: the
+        # webhook matches on `provider_message_id`, which only the delivery
+        # attempt knows. A binding written at send time and never settled is a
+        # correlation that looks present and resolves nothing, which is worse
+        # than an absent one because it reads as working.
+        #
+        # In the `finally` deliberately: `delivery_status` is already correct
+        # on both the success and the failure path, so one write covers both
+        # and cannot disagree with the audit row written beside it.
+        if email_log_id:
+            await session.execute(
+                text(
+                    "UPDATE email_log SET status = :status, "
+                    " provider_message_id = COALESCE(:mid, provider_message_id), "
+                    " transport = :transport, "
+                    " sent_at = CASE WHEN :status = 'sent' THEN now() "
+                    "            ELSE sent_at END, "
+                    " failed_at = CASE WHEN :status = 'failed' THEN now() "
+                    "              ELSE failed_at END "
+                    "WHERE id = :id"
+                ),
+                {
+                    "id": email_log_id,
+                    "status": delivery_status,
+                    "mid": message_id or None,
+                    "transport": settings.email_transport,
+                },
+            )
         # Log delivery to audit_log (ESD §11). NEVER include `context`  -  it may
         # carry OTP codes. Template name + recipient + status + failure taxonomy.
         await _audit(
@@ -309,8 +350,15 @@ def send_email(
     template_name: str,
     context: dict,
     attachments: list[dict] | None = None,
+    reply_to: str | None = None,
+    email_log_id: str | None = None,
 ):
     """attachments: [{"filename": str, "content": <base64 str>}] (SMTP MIME part).
+
+    `reply_to` is optional and TRAILING, so every existing four-argument
+    dispatch keeps working unchanged -- including any message already in flight
+    during a rolling deploy, which is the reason it is not inserted earlier in
+    the list.
 
     tenant_id None = platform-level email (e.g. Owner OTP): default template,
     default SMTP sender. Interview invites and verification emails also route
@@ -324,7 +372,8 @@ def send_email(
     async def _task():
         async with _worker_session() as session:
             return await _send_email_async(
-                session, tenant_id, to, template_name, context, attachments
+                session, tenant_id, to, template_name, context, attachments,
+                reply_to=reply_to, email_log_id=email_log_id,
             )
 
     try:
@@ -415,12 +464,27 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
             html=to_html(row.body),
             text=row.body,
             sender=sender,
+            # Correlation for the SES event that comes back minutes later.
+            # `notification_id` IS the email_log row id: that is the record an
+            # event has to find, so naming anything else here would leave the
+            # tag pointing at something the webhook does not look up.
+            correlation={
+                "tenant_id": row.tenant_id,
+                "sender_id": row.sender_id,
+                "candidate_id": row.candidate_id,
+                "job_id": row.job_id,
+                "notification_id": row.id,
+            },
         )
     except PermanentDeliveryError as err:
         # Terminal: record it and do NOT re-raise, so the retry budget is not
         # burned on something that can never succeed.
         row.status = STATUS_FAILED
         row.error = err.error_name
+        # STAMPED ON THE FAILURE PATH TOO. A row that failed still went out
+        # over a transport, and knowing which one is most of the diagnosis.
+        row.failed_at = datetime.now(timezone.utc)
+        row.transport = get_settings().email_transport
         await session.commit()
         log_delivery_error("lifecycle_email", err)
         await _audit(
@@ -436,6 +500,11 @@ async def _send_lifecycle_email_async(session: AsyncSession, email_log_id: str) 
 
     row.status = STATUS_SENT
     row.sent_at = datetime.now(timezone.utc)
+    # RECORDED PER ROW, never inferred later from the current setting: a
+    # deployment that switches transport would otherwise relabel history, and
+    # `sent` means different things under each (terminal under smtp, awaiting
+    # a delivery event under ses).
+    row.transport = get_settings().email_transport
     row.error = None
     # The provider id is what a later SES delivery/bounce/complaint event is
     # matched back on (spec section 8). The SMTP Message-ID is recorded too;
@@ -643,11 +712,17 @@ def run_matching(ctx: TaskContext, job_id: str):
     # modal. They go through the SAME run-status record that carries the
     # terminal state, so the progress and the outcome come from one place: a
     # task that has finished cannot still be showing a stage as running.
-    progress = matching_progress.Progress(publish=ctx.publish)
+    # The run id is ALSO the activity operation id. The browser holds it
+    # before the task is picked up, so every payload is attributable from the
+    # first poll and a second run cannot repaint this one (Case 3 section 24).
+    progress = matching_progress.Progress(
+        publish=ctx.publish, operation_id=ctx.run_id
+    )
 
     async def _task():
         async with _worker_session() as session:
             scored = await matching.run_matching(session, job_id, progress=progress)
+            progress.complete()
             logger.info("matching.complete job_id=%s scored=%d", job_id, scored)
             # Report synthesis used to run INLINE here, in a plain loop with no
             # try/except, for every completed conversation on the job -- on
@@ -722,16 +797,15 @@ def compile_tatva_matrix(job_id: str, replace: bool = False, correlation_id: str
     is not cosmetic. The old task ran `ppi.generate_framework`, which asked one
     model for a whole matrix in one pass and assembled one out of the JD's own
     noun phrases when the model was unavailable. This one runs
-    `hiring.scorecard.compile_matrix`: Layer 1's department model, Layer 2's
-    compiled Company DNA and Layer 3's validated SWOT, through the seven stages,
-    with every weight's terms stored on the row it produced.
+    `hiring.scorecard.compile_matrix`: Layer 1's department model and Layer 3's
+    validated SWOT, through the seven stages, with every weight's terms stored
+    on the row it produced.
 
-    IT CAN REFUSE, AND THE REFUSAL IS THE POINT. A job whose client has no
-    Company DNA, or whose Hiring Manager has not finished the SWOT session, gets
-    a `ScorecardInputMissing` naming what is outstanding. That is NOT retried:
-    no amount of waiting supplies a Company DNA artifact, and five backoff
-    attempts against a missing input is five log lines that look like a bug in
-    this task. The setup screen is what surfaces the block to the person who can
+    IT CAN REFUSE, AND THE REFUSAL IS THE POINT. A job whose Hiring Manager has
+    not finished the SWOT session gets a `ScorecardInputMissing` naming what is
+    outstanding. That is NOT retried: no amount of waiting finishes somebody
+    else's session, and five backoff attempts against a missing input is five
+    log lines that look like a bug in this task. The setup screen is what surfaces the block to the person who can
     clear it.
 
     It approves nothing. The matrix stays a draft until the Hiring Manager
@@ -774,13 +848,12 @@ def compile_tatva_matrix(job_id: str, replace: bool = False, correlation_id: str
             await session.commit()
             logger.info(
                 "job_setup.matrix_compiled job_id=%s grade=%s items=%d rejected=%d "
-                "situation=%s dna_version=%d",
+                "situation=%s",
                 job_id,
                 job.assessment_grade,
                 len(result.items),
                 len(result.rejections),
                 result.situation_key,
-                result.company_dna_version,
             )
     _run(_task())
 
@@ -870,13 +943,16 @@ def reconcile_job_setup():
     indefinitely -- the next tick picks up where this one stopped.
 
     WHAT IT NO LONGER DOES (2026-08-29): repair every job it finds. Sutra
-    refuses to compile without a completed SWOT session and a compiled Company
-    DNA, and most jobs with no matrix now have no matrix for exactly that
-    reason. A sweep that logged a warning per job per tick would turn a normal
-    waiting state into recurring noise, and noise is how the nineteen-job
-    failure stayed invisible in the first place. So a blocked job is counted and
-    reported once per tick in aggregate, and only a job whose inputs are ready
-    is retried.
+    refuses to compile without a saved Job SWOT Analysis, and most jobs with
+    no matrix now have no matrix for exactly that reason. (Until 2026-09-23
+    this sentence named a second precondition, the compiled company instrument
+    withdrawn on 2026-09-09. It had not been one since that day. The line
+    outlived the removal sweep because the sweep read one line at a time and
+    the name here happened to wrap across two.) A sweep that logged a warning
+    per job per tick would turn a normal waiting state into recurring noise,
+    and noise is how the nineteen-job failure stayed invisible in the first
+    place. So a blocked job is counted and reported once per tick in
+    aggregate, and only a job whose inputs are ready is retried.
 
     Deliberately NOT scoped to a tenant. The defect was never tenant-specific;
     it only looked that way because the three demo tenants were seeded by a
@@ -884,6 +960,7 @@ def reconcile_job_setup():
     """
     from app.models.assessment import JobCompetency
     from app.models.job import Job
+    from app.models.job_setup import JobSwotAnalysis
     from app.services.hiring import pipeline_halt, scorecard
 
     #: Bounded per tick. Each job is at most one model call, so 25 is a few
@@ -909,7 +986,14 @@ def reconcile_job_setup():
                     select(Job)
                     .where(
                         Job.archived_at.is_(None),
-                        Job.swot_completed_at.is_not(None),
+                        select(JobSwotAnalysis.job_id)
+                        .where(
+                            JobSwotAnalysis.job_id == Job.id,
+                            (JobSwotAnalysis.strengths.is_not(None)
+                             | JobSwotAnalysis.weaknesses.is_not(None)
+                             | JobSwotAnalysis.opportunities.is_not(None)
+                             | JobSwotAnalysis.threats.is_not(None)),
+                        ).exists(),
                         ~has_framework,
                     )
                     .order_by(Job.created_at)
@@ -1015,6 +1099,31 @@ def run_functional_assessment(link_id: str):
 
     Nothing is lost by waiting. The transcript is the evidence and it is already
     stored; the report is written from it whenever the customer tops up.
+
+    ONE RUN PER APPLICATION, ENFORCED ACROSS PROCESSES
+    ---------------------------------------------------
+    Five call sites dispatch this task: the assessment route, proctoring
+    ingestion, the video pipeline, the credit-hold release sweep and the
+    reconciler. `Route.ECS` starts one Fargate container per dispatch, so two of
+    them firing for one application are two processes sharing nothing but the
+    database, and `services/coalescing` cannot see across that boundary by its
+    own stated design.
+
+    `uq_functional_report_link` already stops two REPORTS existing. What it does
+    not stop is the cost and the damage of getting there. Both runs spend Miti's
+    five evaluators and Siddhi's synthesis before the constraint fires at
+    COMMIT; the loser then raises, and `max_attempts=2` runs the entire chain
+    again; and on that retry the row EXISTS, so the writer takes its UPDATE
+    branch and rewrites a report that may already have been delivered. Reports
+    are immutable in this product and a retake writes a NEW report beside the
+    old one, so a race rewriting one in place is that rule failing without a
+    sound.
+
+    So the second run RETURNS. That is not an error and not a degradation: the
+    first run is doing exactly what the second came to do. The lock is
+    transaction scoped, released by this task's own commit or by the rollback
+    that replaces it, with no `finally` to forget and no leak when a container
+    is killed mid-run.
     """
     from app.models.assessment import (
         AssessmentConversation,
@@ -1024,12 +1133,23 @@ def run_functional_assessment(link_id: str):
     )
     from app.models.candidate import JobCandidateLink
     from app.models.job import Job
-    from app.services import credits
+    from app.services import credits, locks
     from app.services.functional_assessment import run_assessment
     from app.services.report_evidence import persist_skill_evidence
 
     async def _task():
         async with _worker_session() as session:
+            # BEFORE the work, never after. A lock taken after the model calls
+            # would report a duplicate rather than prevent one, the same
+            # argument `require_frozen_matrix` makes for running G1 ahead of
+            # the scoring graph rather than behind it.
+            if not await locks.try_advisory_lock(session, locks.SCORING, link_id):
+                logger.info(
+                    "functional_assessment.already_running link_id=%s "
+                    "another run holds the scoring lock, returning",
+                    link_id,
+                )
+                return
             link = await session.get(JobCandidateLink, uuid.UUID(str(link_id)))
             if link is None:
                 raise ValueError(f"Application {link_id} not found")
@@ -1284,6 +1404,128 @@ def purge_proctoring_events():
 
 
 @task(
+    name="pickready.purge_assessment_media",
+    route=Route.LAMBDA,
+)
+def purge_assessment_media():
+    """Hourly retention sweep over stored assessment recordings.
+
+    `assessment_media_retention_days` is zero by default, and zero means the
+    platform's existing candidate-data policy applies: media leaves with the
+    candidate erasure, the job closure deletion and the tenant cascade, and
+    nothing is deleted early. The task then LOGS that and does nothing, so an
+    operator reading the worker log can see the policy in force rather than
+    inferring it from silence. The same shape `purge_proctoring_events`
+    already has, for the same reason.
+
+    It asks the TABLE (`stored_at` older than the window and
+    `media_deleted_at` still null), never a timestamp on something else, and
+    every deletion is HEAD-confirmed. One recording at a time, committing as
+    it goes: a single transaction over the whole backlog would roll back
+    deletions the object store has already performed and leave the counters
+    disagreeing with the store.
+    """
+    from app.services import assessment_media_retention as media_retention
+
+    async def _task():
+        days = get_settings().assessment_media_retention_days
+        if days <= 0:
+            logger.info(
+                "assessment_media.purge_noop retention follows the platform "
+                "cascade policy"
+            )
+            return
+        async with _worker_session() as session:
+            expired = await media_retention.expired_recordings(
+                session, retention_days=days
+            )
+            purged = 0
+            incomplete = 0
+            for recording in expired:
+                outcome = await media_retention.delete_media_for_recording(
+                    session, recording
+                )
+                await session.commit()
+                if outcome.finished and outcome.failure is None:
+                    purged += 1
+                else:
+                    incomplete += 1
+            logger.info(
+                "assessment_media.purged recordings=%d incomplete=%d "
+                "older_than_days=%d",
+                purged, incomplete, days,
+            )
+    _run(_task())
+
+
+@task(
+    name="pickready.purge_closed_job_assessments",
+    route=Route.LAMBDA,
+)
+def purge_closed_job_assessments():
+    """Delete a closed job's assessment data once its thirty days are up.
+
+    Change request 22, owner ruling 2026-09-22, which REVERSED the 2026-09-18
+    ruling that `POST /jobs/{id}/close` deleted inline. Closure now withholds
+    and schedules; this is the half that makes "thirty days" a fact rather
+    than a sentence in a dialog. Without it the data is retained for ever and
+    the promise made to every assessed candidate is quietly broken, silently,
+    because a retention window with no sweep behind it produces exactly the
+    same empty log as one with nothing to delete.
+
+    IT ASKS THE TABLE (`assessment_purge_due_at` past and
+    `assessment_purged_at` still null), never a last-swept stamp on something
+    else (rule 8). That is what makes it idempotent: a job the purge finished
+    is never enumerated again, and a job whose object store refused comes back
+    on the very next run with its attempt counter one higher.
+
+    ONE JOB PER TRANSACTION, COMMITTING AS IT GOES, the rule the candidate
+    erasure sweep and the media sweep both follow: a single transaction over
+    the whole backlog would roll back row deletions whose S3 objects the store
+    has already destroyed, leaving reports that point at media that is gone.
+
+    NEVER GIVES UP and has no attempt ceiling, for the reason
+    `services/deletion_requests` states in place. Past
+    `ATTEMPTS_BEFORE_ALARM` the log line becomes an error, so a job the object
+    store keeps refusing is loud rather than merely present.
+    """
+    from app.services import deletion_requests, job_assessment_retention
+
+    async def _task():
+        purged = incomplete = 0
+        async with _worker_session() as session:
+            due = await job_assessment_retention.jobs_due_for_purge(session)
+            for job in due:
+                outcome = await job_assessment_retention.purge_job(session, job)
+                job_id = job.id
+                attempts = job.assessment_purge_attempts
+                failure = job.assessment_purge_last_failure
+                await session.commit()
+                if outcome.completed:
+                    purged += 1
+                    continue
+                incomplete += 1
+                message = (
+                    "job_assessment_retention.unfinished job_id=%s remaining=%d "
+                    "attempts=%d failure=%s"
+                )
+                if attempts >= deletion_requests.ATTEMPTS_BEFORE_ALARM:
+                    logger.error(
+                        message, job_id, outcome.media_remaining, attempts, failure
+                    )
+                else:
+                    logger.warning(
+                        message, job_id, outcome.media_remaining, attempts, failure
+                    )
+            if due:
+                logger.info(
+                    "job_assessment_retention.swept due=%d purged=%d incomplete=%d",
+                    len(due), purged, incomplete,
+                )
+    _run(_task())
+
+
+@task(
     name="pickready.release_held_assessments",
     route=Route.LAMBDA,
     max_attempts=3,
@@ -1450,6 +1692,680 @@ def parse_resume(profile_id: str):
             await resume_parsing.parse_resume(session, profile_id)
             logger.info("resume.parsed profile_id=%s", profile_id)
     _run(_task())
+    # AFTER the parse, and as a SEPARATE dispatch. `resume_parsing` commits its
+    # own transaction, so by here `profiles.resume_text` is durable and the
+    # indexer reads the text that was actually stored rather than the text this
+    # invocation happened to hold. Separate rather than inline because indexing
+    # embeds, and an embedding provider outage must not turn a successful parse
+    # into a retried one: the resume is parsed either way, and the hourly sweep
+    # repairs an index write that never happened.
+    dispatch("pickready.index_document", args=["resume", str(profile_id)])
+
+
+# ── The retrieval index (RPN-AI-UP-001 W2) ───────────────────────────────────
+#
+# `services/rag/index.index_document` existed, was correct, and had NO CALLER
+# for its entire life. So `context_chunks` was empty in every environment, and
+# retrieval over an empty table returns nothing SILENTLY -- the lexical
+# retriever ORs its terms and fusion tolerates an empty list, so the failure
+# looks exactly like a query with no good matches. These two tasks are what
+# make the index exist.
+
+@task(
+    name="pickready.index_document",
+    route=Route.LAMBDA,
+    max_attempts=3,
+    backoff_seconds=2.0,
+)
+def index_document(source_type: str, source_id: str):
+    """Index one document into the chunk index.
+
+    Seconds of work over one document, so Lambda. Dispatched from every place a
+    document's text becomes final -- a parsed resume, a published or edited JD,
+    a finished assessment -- and never run inline, because indexing embeds and
+    an interactive request must not wait on an embedding provider.
+
+    IDEMPOTENT BY CONSTRUCTION, which is what makes the retry budget safe.
+    `index_document` upserts on (source_type, source_id, ordinal) and re-embeds
+    only chunks whose `content_sha256` changed, so a redelivery of this message
+    costs one SELECT and writes nothing.
+
+    A document that resolves to None is a no-op and NOT a failure: the row may
+    have been deleted between the dispatch and the run, the JD may still be a
+    draft, the resume may not be parsed yet. Raising on those would spend three
+    attempts against a state that is not going to change on its own.
+    """
+    from app.services.rag import index as rag_index, sources as rag_sources
+
+    async def _task():
+        async with _worker_session() as session:
+            document = await rag_sources.load(
+                session, source_type=source_type, source_id=uuid.UUID(str(source_id))
+            )
+            if document is None:
+                logger.info(
+                    "rag.index.nothing_to_index source_type=%s source_id=%s",
+                    source_type,
+                    source_id,
+                )
+                return
+            result = await rag_index.index_document(
+                session,
+                tenant_id=document.tenant_id,
+                source_type=document.source_type,
+                source_id=document.source_id,
+                document=document.text,
+                chunks=document.chunks,
+            )
+            await session.commit()
+            # `degraded` is logged rather than raised: the text IS indexed and
+            # the keyword half of retrieval works on it, because `content_tsv`
+            # is generated by Postgres and never depended on the model. What is
+            # missing is the vector, and the sweep does not repair that, so
+            # this line is the only record that a chunk is lexically searchable
+            # and semantically invisible.
+            logger.info(
+                "rag.index.written source_type=%s source_id=%s written=%d "
+                "unchanged=%d deleted=%d embedded=%d degraded=%s",
+                document.source_type,
+                document.source_id,
+                result.written,
+                result.unchanged,
+                result.deleted,
+                result.embedded,
+                result.degraded,
+            )
+    _run(_task())
+
+
+@task(
+    name="pickready.sweep_consent_lifecycle",
+    route=Route.LAMBDA,
+)
+def sweep_consent_lifecycle():
+    """Consent renewal, the final warning, and the inactivity rule (feature 8).
+
+    THE LETTERS ALWAYS GO OUT. THE ERASURE IS GATED, AND THE SPLIT IS THE WHOLE
+    DESIGN. A reminder is reversible and is in the candidate's own interest;
+    permanent erasure is neither, so it runs only when
+    `consent_auto_deletion_enabled` is set. Off, this task still computes who
+    WOULD be erased and logs the count, which is the same shape
+    `purge_proctoring_events` uses: an operator reading the worker log can see
+    the policy in force rather than inferring it from silence.
+
+    That default is not timidity. Until `last_engagement_at` has been recorded
+    for longer than `consent_inactivity_months`, every dormancy answer is
+    computed from REGISTRATION, so a genuinely active candidate reads as
+    dormant. The measurement is safe from day one; the deletion is not.
+
+    ONE ROW AT A TIME, COMMITTING AS IT GOES, and never one bulk statement. A
+    sweep over the whole databank that failed half way through a single
+    transaction would roll back the letters it had already sent, and the next
+    run would send them again to everybody who had received one. Per candidate,
+    the stamp and its letter land together or neither does.
+
+    Both clocks are evaluated INDEPENDENTLY (C6): consent expiry and dormancy
+    are different facts, and the erasure records WHICH applied, so a complaint
+    can always be answered with the reason.
+    """
+    from app.core.config import get_settings
+    from app.models.candidate import Candidate
+    from app.services import consent_lifecycle as cl
+    from app.services import consent_renewal, erasure
+
+    async def _task():
+        settings = get_settings()
+        thresholds = cl.Thresholds(
+            renewal_months=settings.consent_renewal_months,
+            grace_days=settings.consent_grace_days,
+            inactivity_months=settings.consent_inactivity_months,
+        )
+        deletion_armed = settings.consent_auto_deletion_enabled
+        now = cl.utcnow()
+        reminded = warned = erased = would_erase = 0
+        dormancy_warned = 0
+
+        async with _worker_session() as session:
+            candidates = (
+                await session.execute(select(Candidate))
+            ).scalars().all()
+
+            for candidate in candidates:
+                consented_at = cl.consented_at_for(
+                    created_at=candidate.created_at,
+                    renewed_at=candidate.consent_renewed_at,
+                )
+                stage = cl.stage_for(
+                    now=now,
+                    consented_at=consented_at,
+                    reminder_sent_at=candidate.consent_reminder_sent_at,
+                    final_warning_sent_at=candidate.consent_final_warning_at,
+                    thresholds=thresholds,
+                )
+                # THE INACTIVITY CLOCK NOW HAS A LETTER AND A WINDOW. It used
+                # to be one boolean: dormant, erased, with no warning of any
+                # kind and no way for the person to stop it. The stage is
+                # gated on the warning having ACTUALLY been sent, exactly as
+                # the consent stages are, so a scheduler outage delays the
+                # letter instead of skipping somebody to deletion.
+                dormancy = cl.dormancy_stage_for(
+                    now=now,
+                    last_engagement_at=cl.engagement_at_for(
+                        created_at=candidate.created_at,
+                        last_engagement_at=candidate.last_engagement_at,
+                    ),
+                    warning_sent_at=candidate.dormancy_warning_sent_at,
+                    thresholds=thresholds,
+                )
+
+                reason = None
+                if dormancy == cl.DORMANCY_DELETION_DUE:
+                    reason = cl.REASON_DORMANT
+                elif stage == cl.STAGE_DELETION_DUE:
+                    reason = cl.REASON_CONSENT_EXPIRED
+
+                if reason is not None:
+                    if not deletion_armed:
+                        would_erase += 1
+                        continue
+                    # THE ONE CANONICAL DELETION WORKFLOW. The two reasons are
+                    # reasons recorded on the same erasure, not two engines:
+                    # the record captures the object keys before the rows go,
+                    # the cascade runs, and the objects are finished by the
+                    # same resumable pass `DELETE /portal/me` uses.
+                    request = await erasure.open_deletion_request(
+                        session, candidate.id, reason=reason
+                    )
+                    receipt = await erasure.cascade_erasure(
+                        session, candidate.id, reason=reason
+                    )
+                    await erasure.mark_rows_erased(session, request)
+                    await erasure.run_object_deletion(session, request)
+                    state = request.state
+                    await session.commit()
+                    erased += 1
+                    logger.info(
+                        "consent.erased candidate_id=%s reason=%s "
+                        "sign_in_accounts=%d deletion_state=%s",
+                        receipt.candidate_id,
+                        reason,
+                        receipt.sign_in_accounts_deleted,
+                        state,
+                    )
+                    continue
+
+                if dormancy == cl.DORMANCY_WARNING_DUE and candidate.email:
+                    candidate.dormancy_warning_sent_at = now
+                    await session.commit()
+                    dispatch(
+                        "pickready.send_email",
+                        args=[
+                            None,
+                            candidate.email,
+                            "dormancy_deletion_warning",
+                            {},
+                        ],
+                    )
+                    dormancy_warned += 1
+                    # AT MOST ONE LETTER PER CANDIDATE PER SWEEP. The two
+                    # clocks are independent and can both come due, and two
+                    # letters about deletion in one morning reads as a fault
+                    # rather than as diligence. Skipping the consent letter
+                    # here costs a day, because its stage is latched on a
+                    # stamp that was not written: tomorrow's sweep sends it.
+                    continue
+
+                # THE STAMP IS WRITTEN BEFORE THE LETTER IS DISPATCHED, and
+                # that ordering is deliberate. `dispatch` RAISES, so a failed
+                # enqueue leaves a stamp and no letter: the candidate keeps the
+                # full window and is simply not written to, which costs them
+                # nothing. The other order risks a letter with no stamp, and
+                # the next sweep would send it again, and the one after that,
+                # for ever.
+                #
+                # THE TOKEN IS MINTED AND STORED IN THE SAME UNIT OF WORK AS
+                # THE STAMP, and its URL is built in the same expression that
+                # reads the address it is sent to. That pairing is the whole
+                # mitigation for the hazard the templates' own comment names:
+                # a per-candidate slot in a letter the sweep sends inside a
+                # loop is a slot a loop variable eventually fills with the
+                # wrong person's value. Here the address and the link come
+                # from one row in one statement, and there is no intermediate
+                # variable that could survive an iteration.
+                if stage == cl.STAGE_REMINDER_DUE and candidate.email:
+                    minted = consent_renewal.mint(now=now)
+                    await consent_renewal.store_token(session, candidate.id, minted)
+                    candidate.consent_reminder_sent_at = now
+                    await session.commit()
+                    dispatch(
+                        "pickready.send_email",
+                        args=[
+                            None,
+                            candidate.email,
+                            "consent_renewal_reminder",
+                            {"renewal_url": consent_renewal.renewal_url(minted.token)},
+                        ],
+                    )
+                    reminded += 1
+                elif stage == cl.STAGE_FINAL_WARNING_DUE and candidate.email:
+                    minted = consent_renewal.mint(now=now)
+                    await consent_renewal.store_token(session, candidate.id, minted)
+                    candidate.consent_final_warning_at = now
+                    await session.commit()
+                    dispatch(
+                        "pickready.send_email",
+                        args=[
+                            None,
+                            candidate.email,
+                            "consent_final_warning",
+                            {"renewal_url": consent_renewal.renewal_url(minted.token)},
+                        ],
+                    )
+                    warned += 1
+
+        logger.info(
+            "consent.sweep reminded=%d warned=%d dormancy_warned=%d erased=%d "
+            "would_erase=%d deletion_armed=%s",
+            reminded,
+            warned,
+            dormancy_warned,
+            erased,
+            would_erase,
+            deletion_armed,
+        )
+        if would_erase and not deletion_armed:
+            logger.warning(
+                "consent.sweep_not_armed %d candidate(s) meet a deletion "
+                "threshold and NONE were erased. Set "
+                "CONSENT_AUTO_DELETION_ENABLED once last_engagement_at has "
+                "been recorded for longer than the inactivity window.",
+                would_erase,
+            )
+
+    _run(_task())
+
+
+@task(
+    name="pickready.sweep_bgv_reminders",
+    route=Route.LAMBDA,
+)
+def sweep_bgv_reminders():
+    """Email 3 of the vivekium BGV flow: the day-3 non-response chase.
+
+    Finds every verification whose request went out at least
+    `verification_link_ttl_days` ago with no response and no chase yet, tells
+    the CANDIDATE (with the HR address partially masked), and stamps
+    `reminder_sent_at` so the letter goes exactly once. Committing per row,
+    the consent sweep's rule: the stamp and its letter land together or
+    neither does.
+
+    The candidate is told rather than the recruiter because the candidate is
+    the one who can act: it is their former employer, and the brief's own
+    template asks them to contact that HR team directly.
+    """
+    from app.core.config import get_settings
+    from app.services import bgv_delivery, bgv_form
+
+    async def _task():
+        ttl_days = get_settings().verification_link_ttl_days
+        chased = 0
+        async with _worker_session() as session:
+            rows = (
+                (
+                    # The three days run from CONFIRMED DELIVERY, not from
+                    # the send, and a bounced request is never chased: sending
+                    # somebody to argue with an HR team that received nothing
+                    # spends their credibility on a failure we caused. The
+                    # predicate lives in bgv_delivery beside the Python clock
+                    # it has to agree with, and a test drives both over the
+                    # same rows.
+                    await session.execute(
+                        text(bgv_delivery.reminder_due_sql()),
+                        {"days": ttl_days},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            for row in rows:
+                if not row["candidate_email"]:
+                    continue
+                dispatch(
+                    "pickready.send_email",
+                    args=[
+                        str(row["tenant_id"]),
+                        row["candidate_email"],
+                        "bgv_no_response",
+                        {
+                            "candidate_name": row["full_name"] or "there",
+                            "masked_hr_email": bgv_form.masked_email(
+                                row["hr_email"]
+                            ),
+                        },
+                    ],
+                )
+                await session.execute(
+                    text(
+                        "UPDATE bgv_verifications SET reminder_sent_at = now() "
+                        "WHERE id = :vid"
+                    ),
+                    {"vid": str(row["id"])},
+                )
+                await session.commit()
+                chased += 1
+        logger.info("bgv.reminder_sweep chased=%d", chased)
+
+    _run(_task())
+
+
+@task(
+    name="pickready.bgv_auto_maintenance",
+    route=Route.LAMBDA,
+)
+def bgv_auto_maintenance(candidate_id: str, employment_id: str):
+    """Feature 5's wiring: an appended employer fires its own verification.
+
+    Dispatched by `POST /bgv/me/employers`. For every tenant already
+    verifying this candidate, opens the new employer's verification and
+    sends the deterministic inquiry with its form link. Seconds of SQL and
+    dispatches, so Lambda; `_worker_session` because the tenants involved
+    span the candidate's whole databank reach.
+    """
+    from app.services import bgv_maintenance
+
+    async def _task():
+        async with _worker_session() as session:
+            opened = await bgv_maintenance.auto_open_verifications(
+                session,
+                candidate_id=uuid.UUID(candidate_id),
+                employment_id=uuid.UUID(employment_id),
+            )
+            await session.commit()
+        logger.info(
+            "bgv.auto_maintenance candidate=%s employment=%s opened=%d",
+            candidate_id,
+            employment_id,
+            opened,
+        )
+
+    _run(_task())
+
+
+# ── Erasure and learning revocation (RPN-AI-UP-001 W9.5, W3.6) ───────────────
+
+@task(
+    name="pickready.cascade_erasure",
+    route=Route.LAMBDA,
+)
+def cascade_erasure(
+    candidate_id: str,
+    actor_user_id: str | None = None,
+    request_id: str | None = None,
+):
+    """Erase one candidate: rows, VECTORS, caches and STORED OBJECTS (W9.5).
+
+    RESUMABLE, AND THE THIRD ARGUMENT IS WHAT MAKES IT SO. Called with a
+    `request_id` it picks a `candidate_deletion_requests` record up wherever it
+    was left: `pending` means the database half never ran, `rows_erased` means
+    only the objects are outstanding, `completed` means somebody else finished
+    it and this call is a redelivery. Called without one, as the AI runtime's
+    own call sites do, it opens its own record first, so there is exactly one
+    shape of erasure in the product rather than an orchestrated one and a bare
+    one that forgets the files.
+
+    A handful of statements, a Redis scan and a bounded set of object deletes,
+    so Lambda.
+
+    THE VECTORS ARE THE POINT. An embedding is not a one-way hash: published
+    inversion work recovers 50 to 70% of input words from popular sentence
+    embeddings, and because the model is public and queryable, a dictionary
+    attack against stolen vectors is practical. An erasure that deleted the
+    rows and left `profiles.embedding` behind would leave the candidate's
+    resume recoverable from a column nobody thinks of as personal data.
+
+    `worker_session` runs with `app.bypass_rls = 'on'`, which this needs: a
+    candidate spans tenants via the databank, and their chunks may sit under a
+    tenant the erasing operator is not scoped to.
+    """
+    from app.models.deletion import CandidateDeletionRequest
+    from app.services import deletion_requests, erasure
+
+    async def _task():
+        async with _worker_session() as session:
+            request = None
+            if request_id is not None:
+                request = await session.get(
+                    CandidateDeletionRequest, uuid.UUID(request_id)
+                )
+                if request is None:
+                    # LOUD, not skipped. A dispatch naming a record that does
+                    # not exist means either the transaction that opened it
+                    # rolled back after the enqueue, or something deleted the
+                    # only thing that still knows which objects have to go.
+                    # Both are worth an alarm; neither is worth pretending an
+                    # erasure completed.
+                    raise LookupError(
+                        f"no deletion request {request_id}, so there is "
+                        "nothing to resume and no record of what was owed"
+                    )
+            if request is None:
+                request = await erasure.open_deletion_request(
+                    session,
+                    candidate_id,
+                    reason=deletion_requests.REASON_CANDIDATE_REQUESTED,
+                    requested_by_user_id=actor_user_id,
+                )
+
+            receipt = None
+            if request.state == deletion_requests.STATE_PENDING:
+                receipt = await erasure.cascade_erasure(
+                    session, request.candidate_id, actor_user_id=actor_user_id
+                )
+                await erasure.mark_rows_erased(session, request)
+                await session.commit()
+                logger.info("erasure.cascaded candidate_id=%s", candidate_id)
+
+            outcome = await erasure.run_object_deletion(session, request)
+            state = request.state
+            objects_deleted = request.objects_deleted
+            objects_total = request.objects_total
+            await session.commit()
+            logger.info(
+                "erasure.request candidate_id=%s state=%s objects=%d/%d "
+                "failure=%s",
+                candidate_id,
+                state,
+                objects_deleted,
+                objects_total,
+                outcome.failure,
+            )
+            return {
+                "candidate_id": str(request.candidate_id),
+                "deletion_request_id": str(request.id),
+                "state": state,
+                "objects_deleted": objects_deleted,
+                "objects_total": objects_total,
+                "receipt": receipt.as_json() if receipt is not None else None,
+            }
+    return _run(_task())
+
+
+@task(
+    name="pickready.reconcile_candidate_erasures",
+    route=Route.LAMBDA,
+)
+def reconcile_candidate_erasures():
+    """Finish every erasure that is not finished (feature 7, change 15).
+
+    THE STATE THIS EXISTS FOR IS `rows_erased`: the person is out of the
+    database and some of their stored files are not out of the object store.
+    Before the deletion record existed that state was not merely unrepaired,
+    it was UNDETECTABLE: the erasure was one inline transaction, the objects
+    were never touched at all, and nothing anywhere held a list of what was
+    owed.
+
+    It asks the TABLE, never a timestamp, which is the rule
+    `reconcile_context_index` states and the reason
+    `reconcile_project_intake` exists in the same shape: a dispatch that never
+    arrived leaves no trace, so the only durable record of outstanding work is
+    the row that describes it.
+
+    NEVER GIVES UP. There is no attempt ceiling and no terminal failure state,
+    because "we stopped trying to delete this person's documents" is not an
+    outcome this product may reach. What a persistent failure moves is the
+    attempt counter, and past `ATTEMPTS_BEFORE_ALARM` the log line becomes an
+    error so a stuck request is loud rather than merely present.
+
+    ONE REQUEST AT A TIME, COMMITTING AS IT GOES, the consent sweep's rule: a
+    single transaction over the whole backlog would roll back the deletions it
+    had already confirmed and leave counters that disagree with the store.
+    """
+    from app.models.deletion import CandidateDeletionRequest
+    from app.services import deletion_requests, erasure
+
+    async def _task():
+        resumed = completed = stuck = 0
+        async with _worker_session() as session:
+            requests = (
+                await session.execute(
+                    select(CandidateDeletionRequest)
+                    .where(
+                        CandidateDeletionRequest.state
+                        != deletion_requests.STATE_COMPLETED
+                    )
+                    .order_by(CandidateDeletionRequest.requested_at)
+                )
+            ).scalars().all()
+
+            for request in requests:
+                resumed += 1
+                if request.state == deletion_requests.STATE_PENDING:
+                    # The rows were never erased: the process died between
+                    # opening the record and running the cascade. Finish what
+                    # the person asked for rather than leaving them half in.
+                    await erasure.cascade_erasure(
+                        session, request.candidate_id, reason=request.reason
+                    )
+                    await erasure.mark_rows_erased(session, request)
+                await erasure.run_object_deletion(session, request)
+                state = request.state
+                attempts = request.deletion_attempts
+                failure = request.last_failure
+                candidate_id = request.candidate_id
+                remaining = request.objects_total - request.objects_deleted
+                await session.commit()
+
+                if state == deletion_requests.STATE_COMPLETED:
+                    completed += 1
+                    continue
+                stuck += 1
+                message = (
+                    "erasure.unfinished candidate_id=%s remaining=%d "
+                    "attempts=%d failure=%s"
+                )
+                if attempts >= deletion_requests.ATTEMPTS_BEFORE_ALARM:
+                    logger.error(
+                        message, candidate_id, remaining, attempts, failure
+                    )
+                else:
+                    logger.warning(
+                        message, candidate_id, remaining, attempts, failure
+                    )
+
+        if resumed:
+            logger.info(
+                "erasure.reconcile resumed=%d completed=%d unfinished=%d",
+                resumed,
+                completed,
+                stuck,
+            )
+    _run(_task())
+
+
+@task(
+    name="pickready.revoke_learnings_from_source",
+    route=Route.LAMBDA,
+)
+def revoke_learnings_from_source(
+    tenant_id: str, source: str, source_version: str | None = None
+):
+    """Withdraw every learning traceable to one source (W3.6).
+
+    Deactivates, never deletes: the question a reviewer asks afterwards is what
+    the system had believed and when it stopped, and a deleted row cannot
+    answer it. Scoped to ONE tenant, which is only expressible because W3.5
+    made `agent_learnings.tenant_id` NOT NULL -- before that there was no way
+    to revoke a compromised source without revoking everybody's.
+    """
+    from app.services.memory import experience
+
+    async def _task():
+        async with _worker_session() as session:
+            revoked = await experience.revoke_learnings_from_source(
+                session,
+                tenant_id=tenant_id,
+                source=source,
+                source_version=source_version,
+            )
+            await session.commit()
+            logger.info(
+                "memory.learnings_revoked tenant_id=%s source=%s revoked=%d",
+                tenant_id, source, revoked,
+            )
+            return {"revoked": revoked}
+    return _run(_task())
+
+
+@task(
+    name="pickready.reconcile_context_index",
+    route=Route.LAMBDA,
+)
+def reconcile_context_index():
+    """Hourly: find documents with text and no chunks, and index them.
+
+    IT ASKS THE TABLE, NOT A TIMESTAMP. The question is "which documents have
+    no chunk rows", answered relationally with a NOT EXISTS, which is the
+    question `reconcile_job_setup` learned to ask after 19 of 35 live jobs
+    carried a generation timestamp and zero competency rows.
+
+    It exists because the call sites cannot cover their own failure. A dispatch
+    that was never accepted, a Lambda that died before committing, a resume
+    parsed by a release that predates this task -- none of those leaves a
+    trace, and an unindexed resume is invisible to retrieval forever, because
+    nothing would ever ask again.
+
+    Deliberately NOT a staleness check. `chunking.source_version` is a hash
+    over Python's whitespace normalisation, and recomputing it in SQL would be
+    a second implementation whose disagreement is invisible: the sweep would
+    re-index everything on every pass and the only symptom would be a bill.
+    Staleness is the call sites' job, into an indexer already incremental by
+    content hash.
+    """
+    from app.services.rag import sources as rag_sources
+
+    async def _task():
+        async with _worker_session() as session:
+            limit = get_settings().retrieval_index_sweep_batch
+            missing = await rag_sources.pending(session, limit=limit)
+            orphaned = await rag_sources.unindexable_count(session)
+        for source_type, source_id in missing:
+            dispatch("pickready.index_document", args=[source_type, str(source_id)])
+        # Always logged, including the all-zero case. A sweep that logs nothing
+        # when it finds nothing is indistinguishable from a sweep that is not
+        # running, and this codebase has already paid for that once.
+        logger.info(
+            "rag.reconcile.swept queued=%d limit=%d unindexable=%d",
+            len(missing),
+            limit,
+            orphaned,
+        )
+        if orphaned:
+            logger.warning(
+                "rag.reconcile.unindexable_profiles count=%d "
+                "reason=resume_text_with_no_source_tenant_id",
+                orphaned,
+            )
+    _run(_task())
 
 
 # ── Project Evidence Intelligence ────────────────────────────────────────────
@@ -1573,103 +2489,6 @@ def reconcile_project_intake():
 
 
 # ── Employer verification (ESD §10) ─────────────────────────────────────────
-
-@task(
-    name="pickready.send_verification_requests",
-    route=Route.LAMBDA,
-    max_attempts=3,
-)
-def send_verification_requests(profile_id: str):
-    """Send tokenized verification-form links to the (up to 3) previous
-    employers. VerificationRequest rows with tokens must already exist."""
-    async def _task():
-        settings = get_settings()
-        async with _worker_session() as session:
-            profile = await session.get(Profile, uuid.UUID(str(profile_id)))
-            if profile is None:
-                raise ValueError(f"Profile {profile_id} not found")
-            candidate = await session.get(Candidate, profile.candidate_id)
-            candidate_name = (candidate.full_name or candidate.email) if candidate else ""
-
-            requests = (
-                (
-                    await session.execute(
-                        select(VerificationRequest).where(
-                            VerificationRequest.profile_id == profile.id,
-                            VerificationRequest.status == VerificationStatus.pending,
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            if not requests:
-                logger.info(
-                    "verification.no_pending_requests profile_id=%s", profile_id
-                )
-                return
-
-            for vr in requests:
-                link = f"{settings.frontend_url}/verify-employment/{vr.token}"
-                await _send_email_async(
-                    session,
-                    str(vr.tenant_id),
-                    vr.employer_email,
-                    "verification",
-                    {
-                        "candidate_name": candidate_name,
-                        "employer_name": vr.employer_name or "",
-                        "verification_link": link,
-                    },
-                )
-    _run(_task())
-
-
-@task(
-    name="pickready.parse_verification_reply",
-    route=Route.LAMBDA,
-    max_attempts=3,
-)
-def parse_verification_reply(verification_request_id: str, raw_email_text: str):
-    """Fallback path: employer replied by email instead of using the form  - 
-    LLM-extract the reply into the same structured schema (ESD §10.2)."""
-    from app.services import verification_parsing
-
-    async def _task():
-        async with _worker_session() as session:
-            vr = await session.get(
-                VerificationRequest, uuid.UUID(str(verification_request_id))
-            )
-            if vr is None:
-                raise ValueError(
-                    f"VerificationRequest {verification_request_id} not found"
-                )
-            if vr.status != VerificationStatus.pending:
-                # Already submitted via form or overridden  -  form wins, don't clobber.
-                logger.info(
-                    "verification.reply_ignored id=%s status=%s",
-                    verification_request_id, vr.status.value,
-                )
-                return
-
-            parsed = await verification_parsing.parse_reply(raw_email_text, session=session)
-            vr.response_json = parsed
-            vr.status = VerificationStatus.submitted
-            vr.submitted_via = SubmittedVia.email_reply
-            vr.responded_at = datetime.now(timezone.utc)
-            await session.commit()
-            await _audit(
-                session,
-                str(vr.tenant_id),
-                "verification.reply_parsed",
-                "verification_request",
-                str(vr.id),
-                {"submitted_via": "email_reply"},
-            )
-    _run(_task())
-
-
-# ── Billing + credits (killer-spec Parts 2 and 3) ───────────────────────────
 
 @task(
     name="pickready.reconcile_assessment_credits",
@@ -1807,6 +2626,183 @@ def send_credit_warning_email(tenant_id: str, level: int):
 
 
 @task(
+    name="pickready.expire_credit_lots",
+    route=Route.LAMBDA,
+)
+def expire_credit_lots(limit: int = 500):
+    """Materialise every credit lot that has passed its expiry.
+
+    Change request 25. A lot reaching its expiry writes an `expiry` ledger
+    debit for whatever was left on it, so `balance = SUM(subunits_delta)`
+    stays the single definition of the balance and the statement says why it
+    fell. `credit_lots.expire_due` is also called by every gate and by the
+    billing summary, so an ACTIVE customer's balance is already exact when
+    they look at it. This sweep exists for the customer nobody is looking at:
+    without it their balance would overstate until the next time somebody
+    happened to read it, and the Provider Portal's cross-tenant overview would
+    be reading those stale figures.
+
+    Asks the TABLE, never a "last swept" stamp: a sweep keyed on a timestamp
+    skips exactly the tenant whose previous run died between the stamp and the
+    work. Idempotent per lot three times over; see `expire_due`.
+
+    DAILY, and the interval is not load-bearing: expiry is materialised on
+    every read and every deduction, so running late costs a stale number on an
+    idle account and can never let an expired credit be spent.
+
+    Committing per tenant, the consent sweep's rule: a tenant's lot zeroing
+    and its ledger debit land together or neither does, and one tenant's
+    failure does not discard the work already done for the others.
+    """
+    from app.services import credit_lots
+
+    async def _task():
+        swept = 0
+        subunits = 0
+        async with _worker_session() as session:
+            tenant_ids = await credit_lots.tenants_with_due_lots(session, limit)
+            for tenant_id in tenant_ids:
+                expired = await credit_lots.expire_due(session, tenant_id)
+                await session.commit()
+                if expired:
+                    swept += 1
+                    subunits += expired
+        logger.info(
+            "credits.expiry_sweep tenants=%d subunits=%d", swept, subunits
+        )
+        return {"tenants": swept, "subunits": subunits}
+
+    return _run(_task())
+
+
+def _expiry_line(summary) -> str:
+    """The one sentence about validity in the usage summary.
+
+    Three states, and they are genuinely different facts rather than three
+    phrasings of one. A customer holding only pre-change credits is told their
+    credits do not expire, because that is still true for them and telling
+    them otherwise would be the letter contradicting their own invoices. A
+    customer with nothing expiring soon is told nothing about a date, because
+    a warning about one three months out is noise. Only the third state gets
+    a date.
+    """
+    if summary.expiring_soon_credits > 0 and summary.next_expiry_at is not None:
+        return (
+            "Expiring within the next month: "
+            f"{summary.expiring_soon_credits} credits, "
+            f"the first on {summary.next_expiry_at:%d %b %Y}."
+        )
+    if summary.non_expiring_credits == summary.balance_credits:
+        return "Your credits do not expire."
+    return "Nothing in your balance expires within the next month."
+
+
+@task(
+    name="pickready.sweep_subscription_usage_alerts",
+    route=Route.LAMBDA,
+)
+def sweep_subscription_usage_alerts(limit: int = 200):
+    """The month 10 and month 11 informational usage summary.
+
+    Change request 27. PURELY INFORMATIONAL: it writes exactly one column,
+    `tenants.usage_alert_last_month`, which exists only so the letter cannot
+    be sent twice. It does not renew, cancel, charge, grant or change a
+    subscription status, and `tests/test_subscription_usage_alerts.py` asserts
+    that by reading every subscription column back after the sweep.
+
+    The month is CLAIMED before the letter is dispatched, in one checked
+    UPDATE. That ordering is deliberate and is the same trade
+    `_sync_warning_flags` makes: claiming first means a crash between the
+    claim and the dispatch costs a customer one informational email, while
+    dispatching first would mean two sweeps racing send two.
+
+    DAILY, because the windows it measures are months. Running late delays the
+    letter by a day; it can never duplicate one.
+    """
+    from app.models.billing import (
+        CREDIT_PACK_LABELS,
+        STARTER_PACK_PRICE_INR,
+        STARTER_PACK_SLUG,
+        STARTER_PACK_TOTAL_CREDITS,
+    )
+    from app.services import subscription_usage
+
+    async def _task():
+        sent = 0
+        now = datetime.now(timezone.utc)
+        async with _worker_session() as session:
+            due = await subscription_usage.due_tenants(
+                session, now=now, limit=limit
+            )
+            for tenant_id, month in due:
+                row = (
+                    await session.execute(
+                        text(
+                            "SELECT u.email, t.name FROM users u "
+                            "JOIN tenants t ON t.id = u.tenant_id "
+                            "WHERE u.tenant_id = :tid AND u.role = 'client' "
+                            "AND u.status <> 'disabled' AND u.email IS NOT NULL "
+                            "ORDER BY u.created_at LIMIT 1"
+                        ),
+                        {"tid": str(tenant_id)},
+                    )
+                ).mappings().first()
+                if row is None:
+                    # No account admin to write to. Say so rather than
+                    # claiming the month: a tenant who gains an admin next
+                    # week should still get the summary while it is true.
+                    logger.warning(
+                        "billing.usage_summary_no_recipient tenant=%s", tenant_id
+                    )
+                    continue
+                if not await subscription_usage.claim_month(
+                    session, tenant_id, month
+                ):
+                    continue
+                summary = await subscription_usage.build_summary(
+                    session, tenant_id, month
+                )
+                await session.commit()
+                dispatch(
+                    "pickready.send_email",
+                    args=[
+                        str(tenant_id),
+                        row["email"],
+                        "subscription_usage_summary",
+                        {
+                            "company_name": row["name"],
+                            "subscription_month": str(month),
+                            "assessments_used": str(summary.assessments_used),
+                            "assessments_remaining": str(
+                                summary.assessments_remaining
+                            ),
+                            "balance_credits": str(summary.balance_credits),
+                            "rollover_credits": str(summary.rollover_credits),
+                            "average_credits": str(
+                                summary.average_credits_per_assessment
+                            ),
+                            "expiry_line": _expiry_line(summary),
+                            "starter_pack_label": CREDIT_PACK_LABELS[
+                                STARTER_PACK_SLUG
+                            ],
+                            "starter_pack_credits": str(
+                                STARTER_PACK_TOTAL_CREDITS
+                            ),
+                            "starter_pack_price": f"{STARTER_PACK_PRICE_INR:,}",
+                            "billing_url": (
+                                f"{get_settings().frontend_url}/org/billing"
+                            ),
+                        },
+                    ],
+                )
+                sent += 1
+        logger.info("billing.usage_summary_sweep sent=%d", sent)
+        return {"sent": sent}
+
+    return _run(_task())
+
+
+@task(
     name="pickready.send_credit_invoice_email",
     route=Route.LAMBDA,
 )
@@ -1876,6 +2872,19 @@ def send_credit_invoice_email(purchase_id: str):
                         ),
                         "invoice_number": purchase.invoice_number or "",
                         "total_inr": f"{purchase.total_inr:,}",
+                        # From the stored row, never the constant: an
+                        # invoice issued before change request 25 carries
+                        # NULL and keeps saying what it said when it was
+                        # issued.
+                        "validity_sentence": (
+                            "These credits never expire."
+                            if purchase.credit_validity_months is None
+                            else (
+                                "These credits are valid for "
+                                f"{purchase.credit_validity_months} months "
+                                "from the date of this invoice."
+                            )
+                        ),
                         "billing_url": f"{get_settings().frontend_url}/org/billing",
                     },
                 ],
@@ -1944,9 +2953,27 @@ def refresh_dashboard_views():
                         " '00000000-0000-0000-0000-000000000000', false)"
                     )
                 )
-                await conn.execute(
-                    text("REFRESH MATERIALIZED VIEW CONCURRENTLY dashboard_job_metrics")
-                )
+                # THROUGH THE FUNCTION, NEVER THE STATEMENT. `REFRESH
+                # MATERIALIZED VIEW` requires OWNERSHIP, and since the
+                # 2026-09-11 credential split this connection is
+                # `pickready_app`, a least-privileged NOINHERIT role that
+                # deliberately owns nothing. Issued directly it raised
+                # "must be owner of materialized view dashboard_job_metrics"
+                # on every run for a week, and the only symptom was a
+                # CloudWatch alarm whose SNS subscription was unconfirmed.
+                #
+                # Migration 0099 defines `refresh_dashboard_job_metrics()` as
+                # SECURITY DEFINER, owned by the object owner, with EXECUTE
+                # granted to this role and to nothing else. One capability,
+                # rather than the `SET ROLE` that would have handed a scheduled
+                # background task everything the owner can do.
+                #
+                # The function sets the two GUCs above itself, so a caller
+                # cannot forget the bypass and silently rebuild the view empty.
+                # Setting them here as well is deliberate redundancy: this task
+                # must keep working against a database where 0099 has not been
+                # applied yet, which during a rolling deploy is every database.
+                await conn.execute(text("SELECT refresh_dashboard_job_metrics()"))
         finally:
             await engine.dispose()
     _run(_task())
@@ -2136,3 +3163,156 @@ def process_assessment_video(recording_id: str):
             await processing.process_recording(session, uuid.UUID(str(recording_id)))
 
     _run(_task())
+
+
+@task(
+    name="pickready.notify_support_message",
+    route=Route.LAMBDA,
+    max_attempts=2,
+)
+def notify_support_message(thread_id: str, message_id: str):
+    """Tell the other side of a support thread that a message arrived.
+
+    Route.LAMBDA: this is work measured in seconds. It resolves recipients and
+    hands each one to `pickready.send_email`, which owns delivery, the
+    transport choice and the retry policy. Two hops rather than one because the
+    fan-out and the send are different failures: one recipient's address
+    bouncing must not stop the others being told.
+
+    WHO IS TOLD DEPENDS ON WHO WROTE
+    ----------------------------------
+    A STAFF message goes to the customer who opened the thread. A CUSTOMER
+    message goes to every Vivekium staff member holding
+    `handle_support_threads`, asked of the permission ROWS through the rbac
+    engine rather than branched on by role name, so a future support role is a
+    seeded row instead of an edit to this function.
+
+    A recipient with no email is SKIPPED and counted, never silently dropped:
+    a fan-out that told nobody and a fan-out that told everybody produce the
+    same empty log otherwise, which is the failure `dispatch` raising was added
+    to make visible.
+
+    NOTHING ABOUT A CANDIDATE IS IN THE PAYLOAD, and nothing could be. The
+    email carries the thread's subject, the customer's name and a link. The
+    message BODY is deliberately not included: it is free text a human typed,
+    it may quote something a customer pasted, and an email is the one copy of
+    it this product cannot recall. The recipient signs in to read it.
+    """
+    from app.models.support import SIDE_STAFF, SupportMessage, SupportThread
+    from app.models.tenant import Tenant
+    from app.models.user import User
+    from app.services import rbac
+    from app.services.capabilities import HANDLE_SUPPORT_THREADS
+
+    async def _task():
+        async with _worker_session() as session:
+            message = await session.get(SupportMessage, uuid.UUID(str(message_id)))
+            thread = await session.get(SupportThread, uuid.UUID(str(thread_id)))
+            if message is None or thread is None:
+                # Not an error: a thread deleted with its tenant between the
+                # dispatch and the invocation is an ordinary race, and there is
+                # nobody left to notify. Logged so it is not invisible.
+                logger.info(
+                    "support.notify_skipped reason=row_gone thread=%s", thread_id
+                )
+                return {"notified": 0, "skipped": 0, "reason": "row_gone"}
+
+            tenant = await session.get(Tenant, thread.tenant_id)
+            company_name = getattr(tenant, "name", "") or "your organisation"
+
+            if message.author_side == SIDE_STAFF:
+                recipients = await _support_customer_recipients(session, thread)
+                template = "support_reply_to_customer"
+                url = f"{get_settings().frontend_url}/org/support/{thread.id}"
+            else:
+                recipients = await _support_staff_recipients(
+                    session, rbac, User, HANDLE_SUPPORT_THREADS
+                )
+                template = "support_message_for_staff"
+                url = f"{get_settings().frontend_url}/admin/support/{thread.id}"
+
+            notified = 0
+            skipped = 0
+            for email in recipients:
+                if not (email or "").strip():
+                    skipped += 1
+                    continue
+                dispatch(
+                    "pickready.send_email",
+                    args=[
+                        # The staff notification is a PLATFORM email and
+                        # carries no tenant, so it uses the default sender
+                        # rather than the customer's own verified one: sending
+                        # Vivekium's internal queue notice as the customer
+                        # would be wrong in both directions.
+                        str(thread.tenant_id)
+                        if message.author_side == SIDE_STAFF
+                        else None,
+                        email,
+                        template,
+                        {
+                            "company_name": company_name,
+                            "subject_line": thread.subject,
+                            "support_url": url,
+                        },
+                    ],
+                )
+                notified += 1
+
+            logger.info(
+                "support.notified thread=%s side=%s notified=%d skipped=%d",
+                thread_id, message.author_side, notified, skipped,
+            )
+            return {"notified": notified, "skipped": skipped}
+
+    return _run(_task())
+
+
+async def _support_customer_recipients(session, thread) -> list[str]:
+    """The person who opened the thread, or the tenant's Super Admin.
+
+    The fallback matters: `opened_by_user_id` is ON DELETE SET NULL, so a
+    thread whose author has left the company would otherwise notify nobody and
+    a reply would sit unread for as long as the customer took to look.
+    """
+    from app.models.user import User
+
+    if thread.opened_by_user_id:
+        opener = await session.get(User, thread.opened_by_user_id)
+        if opener is not None and (opener.email or "").strip():
+            return [opener.email]
+    rows = await session.execute(
+        select(User.email)
+        .where(
+            User.tenant_id == thread.tenant_id,
+            User.role == "client",
+            User.status != "disabled",
+            User.email.isnot(None),
+        )
+        .order_by(User.created_at)
+        .limit(1)
+    )
+    return [email for (email,) in rows]
+
+
+async def _support_staff_recipients(session, rbac, User, capability) -> list[str]:
+    """Every platform user the permission ROWS say may handle support.
+
+    Asked of the engine per user rather than filtered by role name here, so the
+    answer honours the per-user overlay: somebody whose access was pinned off
+    stops being paged without anybody editing this task.
+    """
+    rows = await session.execute(
+        select(User.id, User.email, User.role)
+        .where(
+            User.tenant_id.is_(None),
+            User.status != "disabled",
+            User.email.isnot(None),
+        )
+        .order_by(User.created_at)
+    )
+    recipients: list[str] = []
+    for user_id, email, role in rows:
+        if await rbac.has_capability(session, None, role, capability, user_id):
+            recipients.append(email)
+    return recipients

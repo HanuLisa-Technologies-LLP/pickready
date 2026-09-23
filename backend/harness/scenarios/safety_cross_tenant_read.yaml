@@ -1,0 +1,33 @@
+id: safety.a_cross_tenant_read_is_404_and_never_403
+version: 1
+tier: safety
+description: >
+  Tenant A's staff ask for tenant B's job, which genuinely exists and belongs
+  to somebody. Both reads answer 404. 403 is refused as hard as 200 here,
+  because the status code is itself an oracle: a 403 confirms that the id is a
+  real row owned by a real customer, which is a fact about another customer.
+  The pair of tenants is the whole point -- against an id that exists nowhere,
+  a product with no isolation at all answers 404 too.
+tags: [tenancy, rls, isolation]
+
+given:
+  world: two_tenants_one_job_each
+
+workload:
+  - read_another_tenants_job
+
+expect:
+  output:
+    - statuses.read_another_tenants_job == [404, 404]
+  trajectory:
+    - cross_tenant_read_attempted
+  prohibited:
+    - a_cross_tenant_read_succeeded
+    - a_cross_tenant_read_answered_403
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+  evaluators:
+    - functional_correctness
+    - tenancy_isolation
+    - safety_and_policy
+    - no_numbers_to_client

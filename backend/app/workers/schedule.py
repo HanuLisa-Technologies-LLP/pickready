@@ -118,6 +118,157 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
             "which is the platform's current posture."
         ),
     ),
+    ScheduledTask(
+        rule="readypick-purge-assessment-media",
+        task="pickready.purge_assessment_media",
+        interval_minutes=60,
+        why=(
+            "Deletes nothing while `assessment_media_retention_days` is zero, "
+            "which is the platform's current posture. The owner ruling of "
+            "2026-09-22 requires stored assessment media to have a retention "
+            "and deletion lifecycle, and a retention window with no sweep "
+            "behind it is a paragraph rather than a policy."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-reconcile-context-index",
+        task="pickready.reconcile_context_index",
+        interval_minutes=60,
+        why=(
+            "Finds documents that have text and no chunk rows, and indexes "
+            "them. Asks the TABLE with a NOT EXISTS, never a timestamp. It "
+            "covers the one failure the call sites cannot: a dispatch that "
+            "never arrived leaves no trace, and an unindexed resume is "
+            "invisible to retrieval forever because nothing would ever ask "
+            "again."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-release-held-assessments",
+        task="pickready.release_held_assessments",
+        interval_minutes=60,
+        why=(
+            "A completed conversation with no report is a candidate who did "
+            "the work and a customer who was charged for it, with nothing to "
+            "show. The task was REGISTERED and dispatched only from the two "
+            "credit-grant call sites, so it repaired a hold that a top-up "
+            "cleared and nothing else: a dispatch that never arrived, a "
+            "container killed mid-scoring, or a run that raised past its "
+            "attempts left the report missing permanently, because the only "
+            "thing that would ever have asked again was the top-up that had "
+            "already happened. It asks the TABLE with an outer join, never a "
+            "status column. Scheduling it was UNSAFE until the scoring lock "
+            "existed: with no tenant argument the sweep also matches "
+            "conversations that finished seconds ago and are being scored "
+            "right now, and dispatching those would have manufactured the "
+            "duplicate scoring run it is supposed to repair."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-purge-closed-job-assessments",
+        task="pickready.purge_closed_job_assessments",
+        interval_minutes=60,
+        why=(
+            "Change request 22, owner ruling 2026-09-22: closing a job no "
+            "longer deletes its assessment data inline, it withholds it for "
+            "thirty days. This sweep is the half that makes the thirty days "
+            "real, and without it the promise made to every assessed "
+            "candidate is broken SILENTLY, because a retention window with "
+            "no sweep produces the same empty log as one with nothing to "
+            "delete. HOURLY rather than daily, even though the window is "
+            "measured in days: it deletes stored objects one network call at "
+            "a time, and a store that refuses has to be retried inside the "
+            "same day rather than once. Running LATE is safe and running "
+            "TWICE is safe: it asks the table for jobs whose window has "
+            "passed and whose data is still here, so a second pass over a "
+            "finished job finds nothing."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-sweep-consent-lifecycle",
+        task="pickready.sweep_consent_lifecycle",
+        interval_minutes=1440,
+        why=(
+            "Consent renewal, the final warning and the inactivity rule "
+            "(feature 8). DAILY rather than hourly because every window it "
+            "measures is counted in days or months, so twenty four more runs "
+            "a day would change nobody's outcome and would only widen the "
+            "blast radius of a mistake in a task that can erase a profile. "
+            "Running LATE is safe by construction: a grace window starts when "
+            "a letter was actually sent, so an outage delays the cycle rather "
+            "than skipping somebody to deletion. The erasure half is gated on "
+            "`consent_auto_deletion_enabled`, which defaults to off, and the "
+            "sweep LOGS what it would have erased so the posture is visible "
+            "rather than inferred from silence."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-reconcile-candidate-erasures",
+        task="pickready.reconcile_candidate_erasures",
+        interval_minutes=60,
+        why=(
+            "An erasure has two halves that fail independently: the database "
+            "rows, which one transaction settles, and the STORED OBJECTS, "
+            "which an object store settles one network call at a time. The "
+            "second half used to be missing entirely, so a resume and an "
+            "assessment recording survived a deletion whose own warning "
+            "screen said they had not. This finishes every "
+            "`candidate_deletion_requests` row that is not complete, asking "
+            "the TABLE rather than a timestamp, and it NEVER gives up: "
+            "there is no terminal failure state, because 'we stopped trying "
+            "to delete this person's documents' is not an outcome this "
+            "product may reach. Hourly rather than daily because the window "
+            "it closes is one in which a person who asked to be erased is "
+            "only half erased."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-sweep-bgv-reminders",
+        task="pickready.sweep_bgv_reminders",
+        interval_minutes=1440,
+        why=(
+            "Email 3 of the vivekium BGV flow: the day-3 chase for an "
+            "employer who has not answered a verification request. DAILY "
+            "because the window is measured in days; each row is chased "
+            "exactly once (reminder_sent_at is the latch), so running late "
+            "delays the letter rather than duplicating it. The candidate is "
+            "told with the HR address partially masked, because they are the "
+            "one who can nudge their own former employer."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-expire-credit-lots",
+        task="pickready.expire_credit_lots",
+        interval_minutes=1440,
+        why=(
+            "Change request 25: a credit lot reaching its three-month expiry "
+            "writes the ledger debit for whatever was left on it, so the "
+            "balance stays the plain SUM of the ledger and the statement says "
+            "why it fell. Every gate and the billing summary already expire "
+            "on read, so an ACTIVE customer's balance is exact when they look "
+            "at it; this sweep is for the account nobody is looking at, whose "
+            "figure the Provider Portal's cross-tenant overview reads. DAILY, "
+            "and the interval is not load-bearing: running late costs a stale "
+            "number on an idle account and can never let an expired credit be "
+            "spent, because the deduction path expires first."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-sweep-subscription-usage-alerts",
+        task="pickready.sweep_subscription_usage_alerts",
+        interval_minutes=1440,
+        why=(
+            "Change request 27: the month 10 and month 11 usage summary. "
+            "PURELY INFORMATIONAL, and it writes exactly one column, the "
+            "once-only latch that stops the letter being sent twice. DAILY "
+            "because the window is a subscription MONTH, so running late "
+            "delays the letter by a day and can never duplicate it. It is "
+            "keyed on the TABLE (subscription_started_at against now), never "
+            "on a last-swept stamp, so a run that died between the claim and "
+            "the send does not silently skip the tenant it died on."
+        ),
+    ),
+
 )
 
 RULE_NAMES: tuple[str, ...] = tuple(entry.rule for entry in SCHEDULE)

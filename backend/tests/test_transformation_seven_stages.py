@@ -30,7 +30,6 @@ def _weight(value: float = 1.0) -> transformation.Weight:
     return transformation.Weight(
         value=value,
         baseline=1.0,
-        company=1.0,
         situation=1.0,
         role=1.0,
         baseline_source="test",
@@ -91,7 +90,7 @@ def test_stage_one_a_nameless_item_is_refused() -> None:
 
 def test_stage_two_no_observable_evidence_is_refused() -> None:
     """Without it the criterion is an adjective, and an adjective cannot be
-    probed or evidenced -- the same bar Company DNA section 3 enforces."""
+    probed or evidenced -- the same bar `observable.is_observable` enforces."""
     assert transformation.STAGE_OBSERVABLE in _item(observable_evidence="  ").missing_stages()
 
 
@@ -183,11 +182,11 @@ def test_a_role_specific_item_carries_no_anchor_and_that_is_honest() -> None:
     assert item.anchor_key is None
 
 
-def test_the_weight_keeps_all_four_terms_it_was_built_from() -> None:
+def test_the_weight_keeps_every_term_it_was_built_from() -> None:
     """"Why is this weighted 1.62" is answered by reading the row rather than
     by rerunning the pipeline. That is the acceptance criterion, not a
     nicety."""
     weight = _item().weight
-    for term in ("baseline", "company", "situation", "role"):
+    for term in ("baseline", "situation", "role"):
         assert getattr(weight, term) is not None, term
     assert dataclasses.asdict(weight)["provenance"]["raw_value"] is not None

@@ -79,7 +79,7 @@ def test_the_eight_columns_are_in_the_specified_scanning_order():
     """Scanning order follows decision logic, not backend computation order.
 
     Pinned as a literal list rather than as a length, because the value being
-    protected is the ORDER: Ready Pick Score sitting after Ready Pick Note
+    protected is the ORDER: Vivekium Score sitting after Vivekium Note
     would still be eight columns and would break the triage read.
     """
     assert dashboard.COLUMNS == (
@@ -150,7 +150,7 @@ def test_the_pre_screen_vocabulary_contains_no_rejecting_value():
     }
 
 
-# ── Column 4: the Ready Pick Score ───────────────────────────────────────────
+# ── Column 4: the Vivekium Score ───────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -232,7 +232,7 @@ def test_an_unassessed_candidate_is_pending_and_never_zero():
     assembled = dashboard.assemble_row(row())
     assert assembled.ready_pick_score is None
     assert assembled.band == dashboard.BAND_PENDING
-    assert assembled.band_label == "Pending Ready Pick Profile"
+    assert assembled.band_label == "Pending Vivekium Profile"
     assert assembled.band != dashboard.BAND_NOT_RECOMMENDED
 
 
@@ -303,7 +303,7 @@ def test_no_score_range_is_invented():
     assert "no uncertainty interval" in assembled.score_range_note.lower()
 
 
-# ── Column 5: the Ready Pick Note ────────────────────────────────────────────
+# ── Column 5: the Vivekium Note ────────────────────────────────────────────
 
 
 def test_the_note_is_pending_until_siddhi_writes_one():
@@ -342,7 +342,7 @@ def test_the_dashboard_never_imports_the_report_schemas():
 
 
 def test_the_note_is_read_from_the_evaluation_not_from_the_report():
-    """spec-doc6 C15: the row's pending state refers to the Ready Pick Profile,
+    """spec-doc6 C15: the row's pending state refers to the Vivekium Profile,
     not to the delivered PRISM Report. Sourcing this cell from
     `functional_skills_reports` would make it a statement about the document."""
     assembled = dashboard.assemble_row(
@@ -364,7 +364,7 @@ def test_a_blank_note_is_pending_rather_than_an_empty_cell():
     assert assembled.note_is_pending
 
 
-# ── Column 6: the Ready Pick Profile ─────────────────────────────────────────
+# ── Column 6: the Vivekium Profile ─────────────────────────────────────────
 
 
 def test_the_profile_button_is_disabled_with_a_reason_before_a_profile_exists():
@@ -469,7 +469,7 @@ def test_all_three_source_values_render(monkeypatch):
         assert assembled.source_label == dashboard.SOURCE_LABELS[value]
 
 
-# ── The Ready Pick Profile panel ─────────────────────────────────────────────
+# ── The Vivekium Profile panel ─────────────────────────────────────────────
 
 
 def test_the_panel_shows_named_ratings_and_no_raw_dimension_number():
@@ -500,7 +500,7 @@ def test_the_panel_shows_named_ratings_and_no_raw_dimension_number():
     )
     flat = repr(panel)
     for leaked in ("raw_composite", "adjusted_composite", "category_scores", "78.4"):
-        assert leaked not in flat, f"{leaked} reached the Ready Pick Profile panel"
+        assert leaked not in flat, f"{leaked} reached the Vivekium Profile panel"
     ratings = {d["dimension"]: d["rating"] for d in panel["dimensions"]}
     assert ratings["verified_competence"] == "strong"
     # A dimension the evaluators never reached is UNRATED, not `absent`.

@@ -18,15 +18,15 @@ to state up front:
 
 | The workflow calls it | The product calls it | Why they are the same thing |
 |---|---|---|
-| Company Hiring Requirements | **Company DNA** (`services/hiring/company_dna.py`) | A company-level statement of what this organisation considers a strong hire, gathered behind guiding questions rather than an empty textbox, editable afterwards, and used as an input to matching and ranking. That is the Company DNA instrument, in twelve sections. |
+| Company Hiring Requirements | **Company Profile** (`companies.about_company`, `work_life`, `benefits_text`) | A company-level statement of what this organisation is, gathered behind guiding questions rather than an empty textbox, editable afterwards, and read by every job this client posts. Every new job snapshots it at creation. |
 | Executive Profile | **PRISM Report** (`services/siddhi/`) | The consolidated, decision-oriented view of one candidate, produced once their assessment completes. It already exists, is immutable, and has a fixed section order. |
 | Pre-Assessment Report | **Pre-Screen Grade / AI Score** (`services/hiring/prescreen.py`) | Yukti's resume-stage evaluation against the job, before any assessment. spec-doc6 C9 already settled that these two names are one artifact. |
 
 **No fourth artifact was created for any of them.** One implementation per
-concept: a second free-text "hiring requirements" box beside Company DNA would
-immediately disagree with it about which one Sutra reads, and a second
-consolidated candidate document beside the PRISM Report would force a choice
-about which one a recruiter is looking at.
+concept: a second free-text "hiring requirements" box beside the Company
+Profile would immediately disagree with it about which one a job is derived
+from, and a second consolidated candidate document beside the PRISM Report
+would force a choice about which one a recruiter is looking at.
 
 ---
 
@@ -87,20 +87,25 @@ applicant until they complete the flow themselves.
 Each gate is a real check with tests, not documentation. Where it lives is
 named, because a gate whose enforcement nobody can find is a paragraph.
 
-### Gate 1 — Company Hiring Requirements before a job can be created
+### Gate 1 — the Company Profile before a job can be created
 
-A client cannot create a job until their Company DNA session is complete.
+A client cannot create a job until their Company Profile says what the company
+does.
 
 - **Enforced by** `services/hiring/company_requirements.creation_blocked`,
-  called at the top of `POST /jobs`. 409 with a message that names the artifact
-  and where to complete it.
-- **Asked of the TABLE**: the current row with `status = complete`. Not a
-  timestamp on the tenant. An open draft does not satisfy it, because the
-  compiled artifact does not exist until the session closes.
-- **At CREATE, not at publish.** The requirements are what the JD generator,
-  the SWOT session and the scorecard derivation all read, so a job drafted
-  without them was drafted against nothing. Refusing at publish would let a
-  recruiter write a whole JD first.
+  called at the top of `POST /jobs`. 409 with a message that names the page and
+  what to write there.
+- **Asked of the TABLE**: the `companies` row's own `about_company`, stripped.
+  Not a completion stamp on the tenant. A stamp can be true while the text is
+  blank; the text cannot. Whitespace is not content, because a profile holding
+  three spaces would seed a job's About section with three spaces.
+- **`about_company` only.** Work Life and Benefits are fields a company may
+  legitimately leave empty, and refusing job creation over a section whose
+  absence costs nothing downstream would be a gate nobody could defend.
+- **At CREATE, not at publish.** The profile seeds this job's own narrative
+  sections and is what the JD generator reads, so a job drafted without it was
+  drafted against nothing. Refusing at publish would let a recruiter write a
+  whole JD first.
 - **Not retroactive.** A job created before the client completed theirs stays
   created. The gate is on the act; retro-invalidating a live job would close a
   posting candidates are already applying to.
@@ -130,6 +135,16 @@ A client cannot create a job until their Company DNA session is complete.
 Already built. `api/jobs._publication_blocked` refuses publication while
 `swot_completed_at` is null or the Tatva matrix is not frozen, and it asks the
 table rather than a stamp.
+
+The Job SWOT and JD feed Sutra's initial Tatva proposal. The authorized Hiring
+Manager may then add, edit, rename, reorder, reclassify, or remove criteria.
+Those decisions remain authoritative when the system derives internal evidence,
+assessment, weight, and threshold metadata. Save Matrix validates and freezes
+the reviewed criteria as a version; a candidate's assessment uses that exact
+frozen contract. A later revision must preserve the contract already used by
+earlier assessments. Company Profile supplies company-level context through
+the job's snapshotted narrative. The retired Company DNA feature has no gate or
+input in this path.
 
 ### Gate 4 — the recruiter posts, and only with everything in place
 
@@ -290,10 +305,10 @@ page nobody opens again.
 - **No "Executive Profile" table.** The PRISM Report is that artifact and it is
   already immutable with a fixed section order. A second one would force a
   choice about which document a recruiter is reading.
-- **No second Company Hiring Requirements field.** Company DNA is it. Sutra
-  reads the COMPILED artifact by design, because an unbounded client-authored
-  string in a prompt that decides what every candidate is graded on is an
-  injection surface.
+- **No second Company Hiring Requirements field.** The Company Profile is it,
+  and it is already the thing every new job snapshots at creation. A second
+  company-level box would immediately disagree with it about which one a job
+  is derived from.
 - **No "invited" pipeline stage between sourced and applied.** `email_log`
   already records who was written to and when. A stage meaning "we emailed
   them" is a stage nothing can leave except by the same edge, and it would let

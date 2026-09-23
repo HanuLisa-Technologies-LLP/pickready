@@ -2,13 +2,30 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
+/**
+ * `label` names the table for assistive tech AND turns the scroll box into a
+ * keyboard-reachable region.
+ *
+ * Both halves are one decision. A table wider than its container scrolls
+ * sideways, and a mouse user drags it while a keyboard user cannot reach the
+ * columns at all: a scrollable box has to be focusable (WCAG 2.1.1), and a
+ * focusable box has to be a named region or it is an unexplained tab stop.
+ * So the region is OPT IN through this one prop rather than applied to every
+ * table, which would have added a silent tab stop to each of the fifteen.
+ */
 const Table = React.forwardRef<
   HTMLTableElement,
-  React.HTMLAttributes<HTMLTableElement>
->(({ className, ...props }, ref) => (
-  <div className="relative w-full overflow-x-auto rounded-xl border border-border bg-surface">
+  React.HTMLAttributes<HTMLTableElement> & { label?: string }
+>(({ className, label, ...props }, ref) => (
+  <div
+    className="relative w-full overflow-x-auto rounded-xl border border-border bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+    {...(label
+      ? { role: "region", "aria-label": label, tabIndex: 0 }
+      : {})}
+  >
     <table
       ref={ref}
+      aria-label={label}
       className={cn(
         "w-full caption-bottom text-sm [font-variant-numeric:tabular-nums]",
         className
@@ -81,9 +98,14 @@ TableRow.displayName = "TableRow";
 const TableHead = React.forwardRef<
   HTMLTableCellElement,
   React.ThHTMLAttributes<HTMLTableCellElement>
->(({ className, ...props }, ref) => (
+  // `scope="col"` is the DEFAULT, not something fifteen call sites have to
+  // remember. Without it a `<th>` in a wide table is ambiguous, and a screen
+  // reader reading a cell cannot reliably say which column it belongs to. A
+  // caller that needs `scope="row"` still overrides it through `...props`.
+>(({ className, scope = "col", ...props }, ref) => (
   <th
     ref={ref}
+    scope={scope}
     className={cn(
       "h-11 px-4 text-left align-middle text-xs font-semibold uppercase tracking-wide text-muted-foreground [&:has([role=checkbox])]:pr-0",
       className

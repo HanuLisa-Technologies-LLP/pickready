@@ -30,7 +30,7 @@ GOOD_SWOT = {
 }
 
 
-def test_a_complete_swot_intake_passes() -> None:
+def test_a_complete_swot_passes() -> None:
     assert gates.bodha_gate(GOOD_SWOT).passed
 
 

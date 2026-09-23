@@ -15,6 +15,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -28,6 +29,27 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
+
+#: The CHECK on `assessment_conversations.end_reason`: Vaada's six named stop
+#: conditions, spelled out here and again in migration 0116.
+#:
+#: LITERALS RATHER THAN AN IMPORT OF `interviewer.STOP_CONDITIONS`, which is
+#: where the vocabulary is authored. A model module reading an attribute off a
+#: service module at import time is the exact shape `tests/test_import_graph`
+#: exists to refuse: `interviewer` sits on the service graph, and the read
+#: becomes `partially initialized module` the first time a cycle reaches it
+#: from the other side. The two lists are held in step by
+#: `tests/test_vaada_end_reason`, which compares this constraint, the
+#: migration and the vocabulary against each other, the same way capability
+#: seeds and Runbook data are kept honest.
+END_REASON_VALUES: tuple[str, ...] = (
+    "floor_reached",
+    "every_dimension_covered",
+    "no_probe_outstanding",
+    "no_conflict_outstanding",
+    "evidence_sufficient",
+    "prompts_exhausted",
+)
 
 
 class TechnicalQuestion(Base, UUIDPKMixin, CreatedAtMixin):
@@ -217,6 +239,10 @@ class CandidateQuestion(Base, UUIDPKMixin, CreatedAtMixin):
     payload_json: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+    # Resume pre-fill (migration 0104, vivekium feature 2 under C2): the
+    # answer recorded instead of asking, and its provenance. NULL = asked.
+    prefilled_answer: Mapped[str | None] = mapped_column(Text)
+    prefill_source: Mapped[str | None] = mapped_column(String(30))
     resume_anchor: Mapped[str | None] = mapped_column(Text)
     #: Suggested time, in seconds. Bounds the assessment's total length per
     #: role (composition rule 6); shown to the candidate as guidance only.
@@ -335,6 +361,12 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     __tablename__ = "assessment_conversations"
     __table_args__ = (
         UniqueConstraint("job_candidate_link_id", name="uq_assessment_conversation_link"),
+        CheckConstraint(
+            "end_reason IS NULL OR end_reason IN ({})".format(
+                ", ".join(f"'{word}'" for word in END_REASON_VALUES)
+            ),
+            name="ck_assessment_conversations_end_reason",
+        ),
         Index("ix_assessment_conversations_job", "job_id"),
     )
 
@@ -421,6 +453,33 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # ── Why this session ended (migration 0116, change request 28B) ──────────
+    # The assessment has stopped early on evidence coverage since 2026-08-23:
+    # `ppi.conversation_may_close` decides it and the question ceiling is a
+    # ceiling rather than a target. What the product could not answer is WHICH
+    # of the two endings a given session had, because the decision lived in a
+    # log line and log lines are retained, not queried per candidate. Without
+    # it "ended at 14 of 20" and "ended at 14 of 14" read identically in the
+    # table, and the second is a truncated interview while the first is the
+    # feature working.
+    #
+    # One of `interviewer.STOP_CONDITIONS`, mirrored by a CHECK constraint.
+    # NULL means NOT RECORDED, never "no reason": every row written before
+    # this column existed carries NULL, and so does a video-mode session,
+    # whose completion is the end of a processing pipeline rather than a
+    # stopping decision (`services/video/processing`), and a session
+    # terminated by proctoring, which did not stop, it was stopped. A zero
+    # value or a default word there would be an assertion about a decision
+    # that was never made.
+    #
+    # INTERNAL. It is provenance for the recruitment team and the operator, in
+    # the same class as `interview_telemetry`'s counters: it says something
+    # about how much of the matrix a candidate was asked, which is exactly the
+    # kind of fact a candidate would read as a verdict. No candidate-facing or
+    # employer-facing schema serialises it, and `tests/test_vaada_end_reason`
+    # sweeps the response schemas to keep it that way.
+    end_reason: Mapped[str | None] = mapped_column(String(40))
 
     # ── Credit reconciliation (migration 0026) ───────────────────────────────
     # The daily reconciliation job charges an abandoned assessment once and only
@@ -541,6 +600,21 @@ class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     #: they were found in: a finding's detail can quote the report, and this row
     #: is far more widely readable than the report it describes.
     review_findings_json: Mapped[list | None] = mapped_column(JSONB)
+    #: PROVENANCE (0094): the model id that wrote the delivered prose, resolved
+    #: at write time from the closed MODEL_FOR_TASK mapping for
+    #: `report_synthesis`. NULL means either "written before provenance was
+    #: recorded" or "no model produced this" (a deterministic-fallback run),
+    #: and both readings are deliberate: a fallback report naming a model would
+    #: claim work that never happened. Never backfilled.
+    model_id: Mapped[str | None] = mapped_column(Text)
+    #: PROVENANCE (0094): the registry labels of the versioned prompts this run
+    #: used, `name@declared+digest`, semicolon separated. HONEST ABOUT ITS OWN
+    #: LIMIT: the remark system prompt lives inline in
+    #: `functional_assessment.bounded_remark` rather than in the registry, so
+    #: its version is the deployed image, not this column, and the column
+    #: records only what the registry actually versions. NULL under the same
+    #: two readings as `model_id`.
+    prompt_version: Mapped[str | None] = mapped_column(Text)
     validation_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     #: RETIRED. The Gap Analysis & Action Plan replaced this section entirely
     #: (spec §9.6). Nothing writes it any more and it was deliberately not
@@ -553,6 +627,16 @@ class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     gap_analysis_json: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+    #: Recommended Human Validation Points (0107). Three to five areas where a
+    #: person should look before deciding, driven by EVIDENCE CONFIDENCE and by
+    #: contradictions, not by grade. NULLABLE and never backfilled: a report
+    #: written before 0107 has no such section and renders without one rather
+    #: than with an invented one.
+    validation_points_json: Mapped[dict | None] = mapped_column(JSONB)
+    #: Evidence vs Claim Summary (0107). The material claims, what evidence was
+    #: identified for each, and how well corroborated that evidence is. Same
+    #: NULL reading as the column above.
+    claim_evidence_json: Mapped[dict | None] = mapped_column(JSONB)
     synthesized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
@@ -588,3 +672,17 @@ class ReportDimension(Base, UUIDPKMixin, CreatedAtMixin):
     required_level: Mapped[int | None] = mapped_column(Integer)
     remark: Mapped[str] = mapped_column(Text, nullable=False)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: EVIDENCE CONFIDENCE (0107): `high | moderate | low | insufficient`, the
+    #: aggregator's own four words. It reports how well corroborated this line's
+    #: evidence base is and it MOVES NOTHING: `score` above was decided before
+    #: this was computed, and `services/evidence_confidence` imports no scorer.
+    #:
+    #: NULL means the row was written before 0107. It is never backfilled,
+    #: because the evidence set an older report was written from cannot be
+    #: reconstructed and writing a plausible word into it would state a finding
+    #: about an evidence base nobody assembled.
+    evidence_confidence: Mapped[str | None] = mapped_column(String(12))
+    #: The source KEYS behind it (`resume`, `answer`, `bgv` ...), never the
+    #: client-facing labels. Labels are copy and copy gets corrected; a label
+    #: frozen into an immutable row could not be.
+    evidence_sources: Mapped[list | None] = mapped_column(JSONB)

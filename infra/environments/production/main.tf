@@ -38,22 +38,17 @@ terraform {
     }
   }
 
-  # REMOTE STATE, WITH LOCKING. Commented out because it must be bootstrapped
-  # once by hand -- Terraform cannot create the bucket that holds its own state
-  # -- and an uncommented backend block pointing at a bucket that does not exist
-  # makes `terraform init` fail for everybody, including somebody who only
-  # wanted to validate.
+  # REMOTE STATE IS IN `backend.tf`, NOT HERE, AND NOT COMMENTED OUT.
   #
-  # `terraform validate` and `plan -backend=false` work without it, which is
-  # exactly the mode this phase runs in.
+  # This block used to be a commented-out backend block with a note saying the
+  # bucket had to be bootstrapped first. The bucket has existed since
+  # 2026-09-04 and the comment stayed, so every `terraform init` in CI silently
+  # initialised the LOCAL backend and every apply would have started from empty
+  # state on an ephemeral runner. Read `backend.tf` for what that costs.
   #
-  # backend "s3" {
-  #   bucket       = "readypick-tfstate"
-  #   key          = "production/terraform.tfstate"
-  #   region       = "ap-south-1"
-  #   encrypt      = true
-  #   use_lockfile = true # S3-native locking; DynamoDB is no longer needed
-  # }
+  # It lives in its own file so `infra/plan-offline.sh` can plan a copy of this
+  # directory with that one file omitted, which is what lets a plan run with no
+  # credentials and no network.
 }
 
 provider "aws" {
@@ -102,6 +97,27 @@ locals {
   # http: the hop is task to task inside a private subnet, the same reasoning
   # the load balancer's target groups already follow.
   analysis_service_url = "http://analysis.${local.internal_namespace}:8100"
+
+  # ── The Redis node ids, for the alarms that watch them ───────────────────
+  #
+  # COMPUTED HERE RATHER THAN READ BACK OFF THE MODULE, and that is a plan-time
+  # constraint rather than a preference. A replication group's member cluster
+  # list is a resource attribute that does not exist until apply, and a
+  # `for_each` over an unknown set cannot be planned at all. The same rule
+  # `enable_alb_alarms` follows, and the same rule that keeps
+  # `invokable_function_keys` naming functions by key.
+  #
+  # The ids are deterministic: ElastiCache names the members of a replication
+  # group `<group id>-001`, `-002`, and the group id is `<project>-<environment>`
+  # (see `infra/modules/elasticache`). The replica count is a local rather than
+  # a literal in the module block below so that the two cannot disagree, which
+  # would show up as an alarm on a node that does not exist sitting in
+  # INSUFFICIENT_DATA for ever and reading as quiet.
+  redis_replica_count = 1
+  redis_cluster_ids = toset([
+    for index in range(1 + local.redis_replica_count) :
+    format("%s-%03d", "${var.project}-${local.environment}", index + 1)
+  ])
 
   tags = {
     Project     = var.project
@@ -179,6 +195,54 @@ data "aws_iam_policy_document" "kms" {
     # SCOPED TO THIS ACCOUNT. A service principal with no account condition is
     # the confused-deputy shape: the principal reads as narrow because it is a
     # named AWS service, and it is reachable from any account using that service.
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [var.account_id]
+    }
+  }
+
+  # THE SERVICES THAT PUBLISH TO THE KMS-ENCRYPTED ALARM TOPIC.
+  #
+  # ADDED 2026-09-17, AND WITHOUT IT THE ALARMS ABOVE ARE DECORATIVE.
+  # `aws_sns_topic.alarms` sets `kms_master_key_id` to this key, so publishing
+  # to it is a KMS operation as well as an SNS one. The topic POLICY already
+  # allowed `cloudwatch.amazonaws.com` to publish; the KEY policy did not allow
+  # it to encrypt, so the publish is refused by KMS after passing the topic
+  # policy. Nothing about that is visible from the alarm: it transitions to
+  # ALARM exactly as it should and the notification is simply never delivered.
+  # An alarm nobody receives is indistinguishable from a healthy system.
+  #
+  # Two principals, enumerated, and deliberately NOT merged into the
+  # encrypt-at-rest statement above: these two encrypt a MESSAGE in transit
+  # through SNS, not this environment's stored data, and they need two actions
+  # rather than six. `budgets.amazonaws.com` is here for the same reason --
+  # `aws_budgets_budget.monthly` notifies through this same topic.
+  statement {
+    sid    = "ServicesThatPublishToTheEncryptedAlarmTopic"
+    effect = "Allow"
+    principals {
+      type = "Service"
+      identifiers = [
+        "cloudwatch.amazonaws.com",
+        "budgets.amazonaws.com",
+      ]
+    }
+    # GenerateDataKey to encrypt the notification, Decrypt because SNS reads it
+    # back on delivery. Nothing else: neither principal has any business
+    # creating a grant against this key.
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey*",
+    ]
+    resources = ["*"]
+
+    # The same account condition every other service principal in this file
+    # carries, and it is safe to rely on here for a concrete reason: the SNS
+    # topic policy ALREADY conditions the CloudWatch publish on
+    # `AWS:SourceAccount`. If that key were not populated on these calls,
+    # delivery would already be blocked one layer earlier, so this condition
+    # cannot be the thing that silently breaks it.
     condition {
       test     = "StringEquals"
       variable = "aws:SourceAccount"
@@ -273,6 +337,14 @@ module "rds" {
   multi_az              = true
   backup_retention_days = 30
 
+  # BOTH GUARDS STATED RATHER THAN INHERITED (2026-09-17). They default to the
+  # safe value in the module now, and stating them here is what makes turning
+  # one off a visible line in a diff rather than a default quietly changing.
+  #
+  # Production. There is nothing to weigh here.
+  deletion_protection = true
+  skip_final_snapshot = false
+
   kms_key_id  = aws_kms_key.this.key_id
   kms_key_arn = aws_kms_key.this.arn
 
@@ -292,7 +364,7 @@ module "elasticache" {
   # the proctoring warning counter and the run-status record, not just a cache.
   # The proctoring gate answers 503 rather than silently not warning, so losing
   # Redis is a candidate mid-assessment whose next question never arrives.
-  replica_count = 1
+  replica_count = local.redis_replica_count
 
   kms_key_arn = aws_kms_key.this.arn
 
@@ -532,9 +604,33 @@ module "ecs" {
         OPENAI_GPT_TERRA              = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA               = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4              = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5             = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
         FIREBASE_SERVICE_ACCOUNT_JSON = module.secrets.secret_arns["FIREBASE_SERVICE_ACCOUNT_JSON"]
         RAZORPAY_KEY_SECRET           = module.secrets.secret_arns["RAZORPAY_KEY_SECRET"]
-        LLM_KEY_ENCRYPTION_SECRET     = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        # WITHOUT THIS THE BILLING WEBHOOK CANNOT VERIFY A SIGNATURE.
+        # The secret existed in `module.secrets` and was mounted on nothing,
+        # and the handler used to fall through and PROCESS an unsigned event
+        # when it was absent, which made credit issuance an unauthenticated
+        # POST. The handler now refuses when it is missing, so the absence is
+        # loud instead of silent, and this line is what makes it present.
+        RAZORPAY_WEBHOOK_SECRET   = module.secrets.secret_arns["RAZORPAY_WEBHOOK_SECRET"]
+        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        # THE INBOUND WEBHOOK'S SHARED SECRET. `POST /verification/inbound-email`
+        # is a PUBLIC route that writes into verification requests, BGV threads
+        # and conversations, and its only protection was that a caller had to
+        # know a per-thread token -- which travels by email, so it exists in
+        # every mailbox that ever received or forwarded one of these threads.
+        # An empty setting leaves the route OPEN and logs
+        # `verification.inbound_unauthenticated` on every call.
+        #
+        # MOUNTED HERE EVEN THOUGH NOTHING IN THIS ENVIRONMENT RELAYS MAIL.
+        # SES receiving and the inbound-mail function live in the pilot
+        # composition only, so with the secret set this route accepts nobody
+        # here, which is the correct answer for an endpoint with no legitimate
+        # caller. The alternative -- leaving it unset because "nothing uses it"
+        # -- is an environment whose public write endpoint is open and whose
+        # openness is invisible in a diff.
+        INBOUND_WEBHOOK_SECRET = module.secrets.secret_arns["INBOUND_WEBHOOK_SECRET"]
       }
     }
 
@@ -580,6 +676,7 @@ module "ecs" {
         OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5         = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
         LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
       }
     }
@@ -699,6 +796,7 @@ module "lambda" {
   project     = var.project
   environment = local.environment
   region      = var.region
+  account_id  = var.account_id
 
   vpc_subnet_ids     = module.network.private_subnet_ids
   security_group_ids = [module.network.ecs_security_group_id]
@@ -716,14 +814,22 @@ module "lambda" {
 
   functions = {
     "task-worker" = {
-      package              = "image"
-      description          = "Every short background task: delivery, resume parsing, the reconciliation sweeps."
-      image_uri            = "${module.ecr.repository_urls["backend"]}:${var.image_tag}"
-      handler              = "app.workers.entrypoints.lambda_worker.lambda_handler"
-      memory_mb            = 1024
-      timeout_seconds      = 600
-      reserved_concurrency = var.reserve_lambda_concurrency ? 40 : null
-      secret_policy_key    = "task-worker"
+      package     = "image"
+      description = "Every short background task: delivery, resume parsing, the reconciliation sweeps."
+      image_uri   = "${module.ecr.repository_urls["backend"]}:${var.image_tag}"
+      handler     = "app.workers.entrypoints.lambda_worker.lambda_handler"
+      # ITSELF, AND ONLY ITSELF. A Route.LAMBDA sweep that fans out to
+      # Route.LAMBDA work is this function invoking this function: one function
+      # serves every short task. `pickready.reconcile_context_index` is the
+      # first task in the product that does it, and production answered
+      # AccessDeniedException because no earlier sweep had ever needed the
+      # grant -- every previous one dispatched to Route.ECS, which goes through
+      # ecs:RunTask and is a different permission.
+      invokable_function_keys = ["task-worker"]
+      memory_mb               = 1024
+      timeout_seconds         = 600
+      reserved_concurrency    = var.reserve_lambda_concurrency ? 40 : null
+      secret_policy_key       = "task-worker"
       # The SAME map the ECS services use. ECS injects these; Lambda has no
       # equivalent, so the function fetches them at cold start with the
       # policy below. Only the ARNs are here.
@@ -733,6 +839,7 @@ module "lambda" {
         OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
         OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
         VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5         = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
         SMTP_PASSWORD             = module.secrets.secret_arns["SMTP_PASSWORD"]
         TAVILY_API_KEY            = module.secrets.secret_arns["TAVILY_API_KEY"]
         MSG91_API_KEY             = module.secrets.secret_arns["MSG91_API_KEY"]
@@ -895,6 +1002,81 @@ module "scheduler" {
       task            = "pickready.purge_proctoring_events"
       rate_expression = "rate(60 minutes)"
     }
+    # Stored assessment media has a retention and deletion lifecycle by owner
+    # ruling (2026-09-22). Deletes nothing while
+    # `assessment_media_retention_days` is zero, which is the current posture;
+    # the rule exists so enabling the window is a setting change rather than a
+    # deploy, and so the sweep cannot be the half that was forgotten.
+    "readypick-purge-assessment-media" = {
+      task            = "pickready.purge_assessment_media"
+      rate_expression = "rate(60 minutes)"
+    }
+    # Change request 22, owner ruling 2026-09-22: closing a job WITHHOLDS its
+    # assessment data for thirty days instead of deleting it inline, and this
+    # sweep is the half that makes the thirty days real. The Terraform half of
+    # the entry in app/workers/schedule.py; tests/test_schedule_parity.py
+    # fails on drift, and this is the SILENT direction of that failure -- a
+    # retention window with no rule behind it produces the same empty log as
+    # one with nothing to delete, while every assessed candidate's promise
+    # quietly stops being kept. Hourly, because it deletes stored objects one
+    # network call at a time and a store that refuses must be retried inside
+    # the same day.
+    "readypick-purge-closed-job-assessments" = {
+      task            = "pickready.purge_closed_job_assessments"
+      rate_expression = "rate(60 minutes)"
+    }
+    "readypick-sweep-consent-lifecycle" = {
+      task            = "pickready.sweep_consent_lifecycle"
+      rate_expression = "rate(1440 minutes)"
+    }
+    # Email 3 of the vivekium BGV flow (feature 4): the day-3 chase for an
+    # employer who has not answered. Daily; reminder_sent_at is the
+    # once-only latch, so running late delays the letter, never duplicates.
+    # The object half of an erasure (feature 7, change 15). The Terraform half
+    # of the entry in app/workers/schedule.py; tests/test_schedule_parity.py
+    # fails on drift. Hourly, and it never gives up: a request that cannot be
+    # finished is escalated in the log, never abandoned.
+    "readypick-reconcile-candidate-erasures" = {
+      task            = "pickready.reconcile_candidate_erasures"
+      rate_expression = "rate(60 minutes)"
+    }
+    "readypick-sweep-bgv-reminders" = {
+      task            = "pickready.sweep_bgv_reminders"
+      rate_expression = "rate(1440 minutes)"
+    }
+    # RPN-AI-UP-001 W2.2. The Terraform half of the entry in
+    # app/workers/schedule.py. tests/test_schedule_parity.py fails on drift,
+    # because an entry in Python with no rule here is the SILENT half: a sweep
+    # does nothing when there is nothing to repair, so "not running" and
+    # "nothing to do" produce the same empty log.
+    "readypick-reconcile-context-index" = {
+      task            = "pickready.reconcile_context_index"
+      rate_expression = "rate(60 minutes)"
+    }
+    # Registered since the credit work and scheduled by nothing until now: it
+    # was dispatched only when a bundle was granted, so a report lost to a
+    # failed dispatch or a killed container stayed lost, for a candidate who
+    # had done the work and a customer who had been charged.
+    "readypick-release-held-assessments" = {
+      task            = "pickready.release_held_assessments"
+      rate_expression = "rate(60 minutes)"
+    }
+    # Change request 25. A credit lot reaching its three-month expiry writes
+    # the ledger debit for whatever was left on it, so the balance stays the
+    # plain SUM of the ledger. Every gate already expires on read, so this is
+    # for the idle account whose figure the Provider overview reads. The
+    # Terraform half of the entry in app/workers/schedule.py.
+    "readypick-expire-credit-lots" = {
+      task            = "pickready.expire_credit_lots"
+      rate_expression = "rate(1440 minutes)"
+    }
+    # Change request 27. The month 10 and month 11 usage summary, purely
+    # informational: it writes one latch column and no subscription state.
+    # Daily, because the window it measures is a subscription month.
+    "readypick-sweep-subscription-usage-alerts" = {
+      task            = "pickready.sweep_subscription_usage_alerts"
+      rate_expression = "rate(1440 minutes)"
+    }
   }
 
   tags = local.tags
@@ -943,6 +1125,32 @@ data "aws_iam_policy_document" "alarm_topic" {
       values   = [var.account_id]
     }
   }
+
+  # THE BUDGET NOTIFIES THROUGH THIS TOPIC, so it needs to be allowed to
+  # publish to it. Same shape and same confused-deputy condition as the two
+  # statements above; `aws:SourceArn` is added because AWS's own documented
+  # example for a Budgets notification topic carries it, and a budget ARN is
+  # the one thing that can narrow this further.
+  statement {
+    sid     = "AllowBudgetNotifications"
+    effect  = "Allow"
+    actions = ["SNS:Publish"]
+    principals {
+      type        = "Service"
+      identifiers = ["budgets.amazonaws.com"]
+    }
+    resources = [aws_sns_topic.alarms.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceAccount"
+      values   = [var.account_id]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "AWS:SourceArn"
+      values   = ["arn:aws:budgets::${var.account_id}:budget/*"]
+    }
+  }
 }
 
 resource "aws_sns_topic_policy" "alarms" {
@@ -981,6 +1189,106 @@ module "observability" {
   # the agent's own `ecs_task.failed` line is the only report of the failure.
   agent_log_group_name = module.ecs.log_group_names["agent"]
 
+  # ADDED 2026-09-17. Both were visible on the dashboard and watched by
+  # nothing. See the module for what each alarm catches.
+  #
+  # The connection threshold is roughly 80 percent of what RDS derives from
+  # this instance class: db.m7g.large (8 GiB, ~901 connections).
+  # It is stated per environment because the ceiling is a property of the
+  # instance and a shared default would be wrong everywhere but here.
+  db_connection_alarm_threshold = 720
+
+  # Computed in `locals` rather than read off the module, because a
+  # `for_each` over a resource attribute that is unknown until apply cannot
+  # be planned.
+  redis_cluster_ids = local.redis_cluster_ids
+
   kms_key_arn = aws_kms_key.this.arn
   tags        = local.tags
+}
+
+# ── The bill ────────────────────────────────────────────────────
+#
+# THERE WAS NO BUDGET AND NO BILLING ALARM ANYWHERE IN THIS REPOSITORY, in any
+# environment, before 2026-09-17.
+#
+# That gap is not the same shape as a missing operational alarm. Every alarm
+# above watches something that breaks loudly; cost does the opposite. A runaway
+# NAT gateway, a Fargate service that scaled up and never came back down, a
+# model-calling task retrying in a loop, an S3 prefix whose lifecycle rule does
+# not reach it -- all of them look exactly like a working system, for a whole
+# month, until an invoice arrives. This platform already runs several things
+# that cannot scale to zero (Fargate says so in its own module comment), so the
+# floor is real and the ceiling is unwatched.
+#
+# THE LIMIT IS A VARIABLE AND ITS DEFAULT IS NOT A JUDGEMENT ABOUT THIS
+# ENVIRONMENT. Read `var.monthly_budget_usd`: it is deliberately conservative
+# so that an unset value alerts EARLY and noisily rather than late and quietly,
+# and the owner is expected to replace it with a real number.
+#
+# NO COST FILTER, AND THAT IS DELIBERATE.
+#
+# The obvious refinement is to scope the budget to this environment's resources
+# with a `TagKeyValue` filter on `Environment`. It is not used, because a cost
+# allocation tag has to be ACTIVATED in the Billing console before it appears
+# in cost data at all, and Terraform cannot do that. A filter on an
+# unactivated tag matches nothing, so the budget reports a spend of zero and
+# never notifies -- a billing alarm that is silent because it is misconfigured
+# is worse than none, since it also stops anybody from looking.
+#
+# So this measures the ACCOUNT. If the three environments share one account,
+# all three budgets watch the same total and the owner will get duplicate
+# notifications at the lowest limit of the three: noisy, visible, and safe.
+# Separate accounts per environment is the real answer, and adding the tag
+# filter is correct the day somebody has activated the tag and can say so.
+resource "aws_budgets_budget" "monthly" {
+  name = "${var.project}-${local.environment}-monthly"
+
+  budget_type = "COST"
+  time_unit   = "MONTHLY"
+  # The provider takes this as a string. Converted here rather than declaring
+  # the variable as a string, so a non-numeric value fails in the variable and
+  # not in an API call.
+  limit_amount = tostring(var.monthly_budget_usd)
+  limit_unit   = "USD"
+
+  # `time_period_start` is deliberately omitted. The provider computes it, and
+  # a hardcoded date is a value that is wrong from the day after it is written
+  # and produces drift on every plan thereafter.
+
+  # THREE NOTIFICATIONS, AND THE FORECAST ONE IS THE ONLY USEFUL ONE.
+  #
+  # An ACTUAL notification arrives after the money is spent, which for a
+  # monthly budget can be three weeks after the thing that caused it started.
+  # FORECASTED fires when the run rate says the month will end over the limit,
+  # which is days rather than weeks, and it is the notification that can still
+  # change the outcome. The two actual thresholds are kept because a forecast
+  # is a prediction and a spend is a fact.
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 80
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [aws_sns_topic.alarms.arn]
+  }
+
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "ACTUAL"
+    subscriber_sns_topic_arns = [aws_sns_topic.alarms.arn]
+  }
+
+  notification {
+    comparison_operator       = "GREATER_THAN"
+    threshold                 = 100
+    threshold_type            = "PERCENTAGE"
+    notification_type         = "FORECASTED"
+    subscriber_sns_topic_arns = [aws_sns_topic.alarms.arn]
+  }
+
+  # The topic must be able to accept a publish from Budgets before a
+  # notification is created against it, and the key must be able to encrypt it.
+  depends_on = [aws_sns_topic_policy.alarms]
 }

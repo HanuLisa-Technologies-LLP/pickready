@@ -172,7 +172,7 @@ async def create_subscription(
     payload: dict[str, Any] = {
         "plan_id": plan_id,
         "total_count": total_count,
-        # Razorpay emails the customer its own receipts. ReadyPick sends its
+        # Razorpay emails the customer its own receipts. Vivekium sends its
         # own lifecycle mail, so this stays off to avoid two messages for one
         # event.
         "customer_notify": 0,

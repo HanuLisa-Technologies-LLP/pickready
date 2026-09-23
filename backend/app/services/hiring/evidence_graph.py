@@ -82,7 +82,7 @@ TRIANGULATION IS COUNTED BY ORIGINATOR, NOT BY DOCUMENT
 --------------------------------------------------------
 `corroborated_by` is 38.1's six independence GROUPS minus the candidate's own
 `self_written` claim, because a claim cannot corroborate itself (5.4). Two of
-the remaining five are not reachable inside a ReadyPick assessment today and
+the remaining five are not reachable inside a Vivekium assessment today and
 `corroboration_targets` says so rather than dropping them: a competency the
 platform can probe and cannot confirm is one Miti must hold confidence down on.
 """
@@ -580,7 +580,7 @@ def node_for_competency(
 #: 38.1 source 1. The candidate's own claim, and never its own corroboration.
 SELF_WRITTEN_GROUP = "self_written"
 
-#: Independence groups a ReadyPick assessment can actually produce today.
+#: Independence groups a Vivekium assessment can actually produce today.
 #: `self_structured` is the application's validation fields (38.1 source 2) and
 #: `assessment` is the conversation itself (source 3).
 #:

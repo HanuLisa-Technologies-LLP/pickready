@@ -1,4 +1,4 @@
-"""Consumption interfaces: how the rest of ReadyPick reads project evidence.
+"""Consumption interfaces: how the rest of Vivekium reads project evidence.
 
 Two consumers, two shapes, one source:
 

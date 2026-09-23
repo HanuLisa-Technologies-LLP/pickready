@@ -1,0 +1,35 @@
+id: smoke.a_job_can_be_created
+version: 1
+tier: smoke
+description: >
+  A recruiter with a funded credit pool and a filled-in Company Profile creates
+  a job, and the row is there afterwards when a second connection looks. Gate 1
+  and the credit gate both run for real on this path, which is why the world
+  seeds a profile and a grant rather than a demo flag.
+tags: [jobs, smoke, gate]
+
+given:
+  world: funded_tenant
+
+workload:
+  - create_job
+
+expect:
+  state:
+    - jobs.count_for_tenant == 1
+  output:
+    - status.create_job == 201
+    - facts.created_job_id is not null
+    - body.create_job.title == "Staff Platform Engineer"
+  trajectory:
+    - job_create_attempted
+    - job_created
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client
+    - cost

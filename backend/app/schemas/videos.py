@@ -19,6 +19,29 @@ import uuid
 from pydantic import BaseModel
 
 
+class SessionMediaStartOut(BaseModel):
+    """The recording opened for a proctored session (owner ruling 2026-09-22).
+
+    Deliberately NOT `VideoStartOut`: that schema carries the interview's
+    served question list, and a proctored conversational session asks its
+    questions one turn at a time through `respond`. Returning an empty
+    question list there would be a shape that reads as "this interview has no
+    questions".
+
+    It carries the same two CEILINGS the interview start does, because the
+    browser has to know them before it opens a MediaRecorder, and a client
+    that guessed would discover the limit only when the upload was refused.
+    No bucket name and no object key, like every other schema in this file.
+    """
+
+    conversation_id: uuid.UUID
+    recording_id: uuid.UUID
+    #: A `services/video/lifecycle` status; `recording` on a fresh open.
+    status: str
+    max_upload_bytes: int
+    max_duration_seconds: int
+
+
 class VideoAccessOut(BaseModel):
     """The Executive Profile / dashboard view of one application's video."""
 

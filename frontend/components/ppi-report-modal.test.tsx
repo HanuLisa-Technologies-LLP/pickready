@@ -147,7 +147,7 @@ describe("PPIReportModal PDF export", () => {
 
     expect(screen.getByRole("heading", { name: "PRISM Report" })).toBeTruthy();
     expect(
-      screen.getByText("Predictive Role Intelligence & Suitability Mapping")
+      screen.getByText("Evidence-Based Role Intelligence & Suitability Mapping")
     ).toBeTruthy();
     expect(screen.getByText(/Fixture Candidate/)).toBeTruthy();
     // The code identifies a row on a printed page; it authorises nothing, so it

@@ -1,4 +1,4 @@
-"""Provider Portal — the ReadyPick owner's console over its CUSTOMERS.
+"""Provider Portal — the Vivekium owner's console over its CUSTOMERS.
 
     Provider Portal   this module: the platform owner's dashboard
     Customer Portal   a client company's own dashboard (api/companies.py)
@@ -26,9 +26,20 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy import func, or_, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin import STAFF_ROLES
+from app.core.config import get_settings
+from app.models.invite import (
+    StaffInvite,
+    build_invite_link,
+    generate_invite_token,
+    hash_invite_token,
+    invite_expiry,
+)
+from app.services.owner import OwnerRoleViolation, ensure_owner_invariant
+from app.workers.dispatch import dispatch
 from app.api.deps import CurrentUser, get_current_user, get_superadmin_db
 from app.models.compliance import DOCUMENT_GROUPS, DOCUMENT_LABELS, ComplianceDocument
 from app.models.enums import Role, UserStatus
@@ -49,6 +60,8 @@ from app.schemas.provider import (
     CustomerTeamMemberOut,
     CustomerUpdateIn,
     PrimaryContactOut,
+    PrimaryContactSetIn,
+    PrimaryContactSetOut,
     document_slots,
 )
 from app.services import provider_analytics
@@ -432,6 +445,150 @@ async def update_customer(
     return await _updated_detail(session, tenant)
 
 
+@router.put(
+    "/customers/{customer_id}/primary-contact",
+    response_model=PrimaryContactSetOut,
+)
+async def set_primary_contact(
+    customer_id: uuid.UUID,
+    body: PrimaryContactSetIn,
+    user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_superadmin_db),
+) -> PrimaryContactSetOut:
+    """Set or change the customer's primary contact, and (re)send the invite.
+
+    THE ONE CARVE-OUT from read-only-by-absence, by owner decision 2026-09-11,
+    and the reason is stated where the rule bends: the primary contact is not
+    the customer's own data in the sense the rule protects, it is the door
+    INTO the tenant. Onboarding collects the email once; after that a typo, an
+    expired invite, or a seeded tenant with no address at all left a customer
+    permanently unreachable, and no route anywhere could repair it.
+
+    The behaviour matrix, chosen so nothing quiet ever happens to an identity:
+
+      * no client user exists      -> create one (invited), send the invite
+      * exists, never signed in    -> update details, revoke prior pending
+                                      invites, send a fresh one
+      * signed in, email UNCHANGED -> name/phone edit only, no email sent
+      * signed in, email CHANGED   -> REBIND: the Firebase binding is cleared,
+                                      the row returns to invited, the old
+                                      address matches nothing from now on, and
+                                      the new address binds on its first
+                                      sign-in. This is the Provider-mediated
+                                      hand-over RBAC section 7.1 asks for, and
+                                      it is audited and serialized (`rebound`)
+                                      rather than implied.
+    """
+    tenant = await _load_customer(session, customer_id)
+    email = str(body.email).strip()
+    try:
+        ensure_owner_invariant(Role.client, email)
+    except OwnerRoleViolation as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    contacts = await _primary_contacts(session, [tenant.id])
+    contact = contacts.get(tenant.id)
+
+    # Another user of THIS tenant already holding the address (any role) would
+    # make the login lookup ambiguous inside the tenant. Cross-tenant reuse is
+    # fine and supported: one person may hold accounts in several workspaces.
+    duplicate = (
+        await session.execute(
+            select(User).where(
+                User.tenant_id == tenant.id,
+                func.lower(User.email) == email.lower(),
+                User.id != (contact.id if contact is not None else None),
+            )
+        )
+    ).scalars().first()
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{email} already belongs to another member of {tenant.name}",
+        )
+
+    rebound = False
+    if contact is None:
+        contact = User(
+            tenant_id=tenant.id,
+            role=Role.client,
+            email=email,
+            phone=body.phone,
+            full_name=body.full_name or tenant.name,
+            status=UserStatus.invited,
+        )
+        session.add(contact)
+        await session.flush()
+        email_changed = True
+    else:
+        email_changed = email.lower() != (contact.email or "").strip().lower()
+        if email_changed:
+            contact.email = email
+            contact.email_verified_at = None
+            if contact.firebase_uid:
+                # REBIND, never a quiet field write: auth matches by uid OR
+                # email, so a bound account keeping its old uid would leave
+                # the OLD person signed in under the NEW address.
+                contact.firebase_uid = None
+                rebound = True
+            if contact.status != UserStatus.disabled:
+                contact.status = UserStatus.invited
+        if body.full_name is not None:
+            contact.full_name = body.full_name
+        if body.phone is not None:
+            contact.phone = body.phone
+
+    # An invite is owed whenever the account cannot currently sign in as this
+    # address: a fresh contact, a corrected email, or a plain re-send on a
+    # never-bound account. A bound account with an unchanged email gets none,
+    # because there is nothing to invite them to.
+    invite_sent = contact.firebase_uid is None
+    if invite_sent:
+        # At most ONE pending invite per user (StaffInvite docstring): revoke
+        # anything outstanding so a stale token to a wrong address dies here.
+        await session.execute(
+            sa_update(StaffInvite)
+            .where(
+                StaffInvite.user_id == contact.id,
+                StaffInvite.accepted_at.is_(None),
+                StaffInvite.revoked_at.is_(None),
+            )
+            .values(revoked_at=datetime.now(timezone.utc))
+        )
+        token = generate_invite_token()
+        session.add(
+            StaffInvite(
+                tenant_id=tenant.id,
+                user_id=contact.id,
+                email=email,
+                role=Role.client.value,
+                token_hash=hash_invite_token(token),
+                invited_by=user.user_id,
+                expires_at=invite_expiry(),
+            )
+        )
+        await session.flush()
+        dispatch(
+            "pickready.send_email",
+            args=[str(tenant.id), email, "client_invite",
+                  {"tenant_name": tenant.name,
+                   "invite_link": build_invite_link(
+                       get_settings().frontend_url, token
+                   )}],
+        )
+
+    await session.flush()
+    await audit(
+        session, tenant_id=tenant.id, actor_user_id=user.user_id,
+        action="primary_contact_set", target_type="user", target_id=contact.id,
+        metadata={"email": email, "invite_sent": invite_sent,
+                  "rebound": rebound},
+    )
+    return PrimaryContactSetOut(
+        contact=_contact_out(contact), invite_sent=invite_sent, rebound=rebound
+    )
+
+
 @router.patch("/customers/{customer_id}/archive", response_model=CustomerDetailOut)
 async def archive_customer(
     customer_id: uuid.UUID,
@@ -667,7 +824,7 @@ async def classification_review_queue(
 ) -> list[ClassificationReviewItem]:
     """Jobs whose classification landed in the §4.4 tentative band
     (stem-score 0.30–0.79) or came from the engine-error fallback, newest
-    first, for manual verification by the Hanulisa team."""
+    first, for manual verification by the Varpitech team."""
     from app.models.job import Job
 
     rows = (

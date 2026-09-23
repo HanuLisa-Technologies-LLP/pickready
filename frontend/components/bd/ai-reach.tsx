@@ -3,7 +3,7 @@
 // AI Reach: find companies that are hiring, in two clearly separated segments.
 //
 // SEGMENT ORDER IS NOT COSMETIC. "Similar to our customers" is computed from
-// ReadyPick's own customer database and makes no network call at all, so it is
+// Vivekium's own customer database and makes no network call at all, so it is
 // asked for first and it keeps working on a deployment with no web search key.
 // "From the internet" is the agentic Tavily segment, time boxed at 30 seconds
 // on the server. The two FAIL INDEPENDENTLY: an internet timeout must never
@@ -118,7 +118,7 @@ export function AIReachPage() {
         actions={
           <div className="flex flex-wrap gap-2">
             {result ? <ExportXlsxButton
-              fileName="readypick-ai-reach"
+              fileName="vivekium-ai-reach"
               rows={[
                 ...result.similar_to_customers.jobs.map((job) => ({
                   segment: "Similar to our customers",
@@ -247,10 +247,10 @@ export function AIReachPage() {
         </div>
       ) : result ? (
         <div className="mt-8 space-y-10">
-          {/* Computed from ReadyPick's own customers. Rendered first, always. */}
+          {/* Computed from Vivekium's own customers. Rendered first, always. */}
           <Segment
             title="Similar to our customers"
-            hint="Matched against ReadyPick's customer database."
+            hint="Matched against Vivekium's customer database."
             icon={Users}
             segment={result.similar_to_customers}
           />
@@ -344,10 +344,16 @@ function statusWord(status: BDSegmentStatus): string {
 }
 
 function JobCard({ job }: { job: BDJobCard }) {
-  // The posting link when it is confidently known, the company site otherwise.
-  // A guessed job URL is worse than no job URL, so the API sends null instead.
-  const href = job.job_url ?? job.company_url;
   const tags = [job.company, job.city, job.industry].filter(Boolean) as string[];
+  // Derived rather than trusted: the domain label on the official-site link
+  // must describe THAT link, and source_domain describes whichever URL the
+  // backend considered primary.
+  let companyDomain: string | null = null;
+  try {
+    companyDomain = new URL(job.company_url).hostname.replace(/^www\./, "");
+  } catch {
+    companyDomain = null;
+  }
 
   return (
     <article className="rounded-lg border p-4 transition-colors hover:border-brand-600/40 hover:bg-brand-100/40">
@@ -380,8 +386,8 @@ function JobCard({ job }: { job: BDJobCard }) {
             <a
               href={`mailto:${job.contact_email}`}
               target="_blank"
-              rel="noreferrer"
-              className="mt-1 block text-brand-700 underline underline-offset-4"
+              rel="noopener noreferrer"
+              className="mt-1 block text-brand-700 underline underline-offset-4 dark:text-brand-200"
             >
               {job.contact_email}
             </a>
@@ -391,7 +397,7 @@ function JobCard({ job }: { job: BDJobCard }) {
             <a
               href={job.contact_source_url}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="mt-2 inline-flex items-center gap-1 text-xs underline underline-offset-4"
             >
               Verify source
@@ -400,18 +406,44 @@ function JobCard({ job }: { job: BDJobCard }) {
           ) : null}
         </div>
       ) : (
-        <p className="mt-4 text-xs">No verified public company contact found.</p>
+        // Not a dead end. "No verified contact found" alone read as the whole
+        // card having failed, when the card cannot exist WITHOUT the official
+        // site: point the rep at the route that does exist.
+        <p className="mt-4 text-xs">
+          No hiring mailbox is published on the pages we retrieved. Reach this
+          company through its official site below.
+        </p>
       )}
-      <a
-        href={href}
-        target="_blank"
-        rel="noreferrer"
-        className="mt-4 flex items-center gap-1.5 text-xs font-semibold text-brand-700 underline underline-offset-4"
-      >
-        <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-        {job.job_url ? "Open the job posting" : "Open the company website"}
-        {job.source_domain ? ` (${job.source_domain})` : ""}
-      </a>
+      {/* The official site is FIRST-CLASS, always rendered: a card without a
+          company_url is dropped server-side, so this link always works. The
+          posting link is separate rather than folded into one label, because
+          "which of two different pages does this open" should never depend on
+          reading the suffix. Links carry a dark-theme colour explicitly:
+          brand-700 is a dark navy and disappears on the BD surface, which is
+          exactly what made working links read as disabled. */}
+      <div className="mt-4 space-y-1.5">
+        <a
+          href={job.company_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1.5 text-xs font-semibold text-brand-700 underline underline-offset-4 dark:text-brand-200"
+        >
+          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+          Official company site{companyDomain ? ` (${companyDomain})` : ""}
+        </a>
+        {job.job_url ? (
+          <a
+            href={job.job_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1.5 text-xs font-semibold text-brand-700 underline underline-offset-4 dark:text-brand-200"
+          >
+            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+            Open the job posting
+            {job.source_domain ? ` (${job.source_domain})` : ""}
+          </a>
+        ) : null}
+      </div>
     </article>
   );
 }

@@ -198,7 +198,7 @@ def test_the_calibration_view_carries_the_numbers_and_the_profile_panel_does_not
     )
     flat = repr(panel)
     for number in ("81.0", "74.5", "0.92", "78.0", str(miti_dimensions.band_for("strong"))):
-        assert number not in flat, f"{number} reached the Ready Pick Profile panel"
+        assert number not in flat, f"{number} reached the Vivekium Profile panel"
 
 
 def test_every_dimension_appears_in_the_view_even_when_unrated():

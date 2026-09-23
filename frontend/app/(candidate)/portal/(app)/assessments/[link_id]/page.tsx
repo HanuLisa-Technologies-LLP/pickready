@@ -89,12 +89,15 @@ export default function UnifiedAssessmentPage() {
     [linkId]
   );
 
-  const accept = React.useCallback(async () => {
+  const accept = React.useCallback(async (consentKeys: string[]) => {
     setBusy(true);
     setError(null);
     try {
+      // The ticked items travel with the request: each one is stamped
+      // separately server-side, and the server refuses a short list.
       const updated = await apiPost<AssessmentModeState>(
-        `/api/v2/assessments/conversations/links/${linkId}/consent`
+        `/api/v2/assessments/conversations/links/${linkId}/consent`,
+        { consent_keys: consentKeys }
       );
       setState(updated);
       setStep("assessment");
@@ -111,7 +114,7 @@ export default function UnifiedAssessmentPage() {
 
   if (step === "loading") {
     return (
-      <div className="mx-auto flex max-w-2xl items-center gap-3 py-16 text-sm leading-6">
+      <div className="mx-auto flex max-w-2xl items-center gap-3 py-16 text-sm">
         <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
         Loading your assessment...
       </div>
@@ -126,7 +129,7 @@ export default function UnifiedAssessmentPage() {
             <CardTitle>This assessment is not available</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-sm leading-6">{error}</p>
+            <p className="text-sm">{error}</p>
           </CardContent>
         </Card>
       </div>
@@ -142,7 +145,7 @@ export default function UnifiedAssessmentPage() {
           onSelect={(mode) => void select(mode)}
         />
         {error ? (
-          <p role="alert" className="mx-auto max-w-3xl text-sm font-medium leading-6">
+          <p role="alert" className="mx-auto max-w-3xl text-sm font-medium">
             {error}
           </p>
         ) : null}
@@ -156,7 +159,7 @@ export default function UnifiedAssessmentPage() {
         terms={state.consent}
         busy={busy}
         error={error}
-        onAccept={() => void accept()}
+        onAccept={(consentKeys) => void accept(consentKeys)}
         onDecline={() => {
           setError(null);
           setStep("mode");

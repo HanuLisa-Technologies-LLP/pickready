@@ -39,6 +39,8 @@ from app.models.tenant import Tenant
 from app.schemas.jobs import (
     ApprovalOut,
     ApproveIn,
+    AssessmentDisputeIn,
+    AssessmentRetentionOut,
     CompensationIn,
     DatabankInviteIn,
     DatabankInviteOut,
@@ -67,6 +69,7 @@ from uuid import uuid4 as _uuid4
 from app.services import approval_fsm as fsm
 from app.services import capabilities as caps
 from app.services import credits
+from app.services import job_assessment_retention
 from app.services import job_candidates
 from app.services import job_posting
 from app.services import candidate_updates
@@ -74,7 +77,7 @@ from app.services import hiring_pipeline
 from app.services import rbac
 from app.services import status_hygiene
 from app.services import telemetry_events
-from app.services.audit import audit
+from app.services.audit import audit, record_action
 from app.workers import agent_client
 from app.workers.dispatch import dispatch
 
@@ -358,10 +361,11 @@ async def create_job(
             ),
         )
 
-    # ── Gate 1: Company Hiring Requirements must exist (workflow §18) ───────
-    # The company-level artifact every job on this tenant is derived against.
+    # ── Gate 1: the Company Profile must say something (workflow §18) ──────
+    # The company-level statement every job on this tenant is derived from,
+    # and the one this job's own narrative sections are seeded from below.
     # Asked of the TABLE, and only at the moment of creation: a job created
-    # before the client completed theirs stays created.
+    # before the client wrote their profile stays created.
     from app.services.hiring import company_requirements  # noqa: PLC0415
 
     blocked = await company_requirements.creation_blocked(session, user.tenant_id)
@@ -508,14 +512,15 @@ async def create_job(
     # the technical-bank half that used to share this task -- the job was
     # silently unusable forever. Nineteen live jobs were in exactly that state.
     # NOT ENQUEUED HERE ANY MORE (2026-08-29). Sutra compiles the Tatva matrix
-    # from Bodha's completed SWOT session and the client's compiled Company DNA;
-    # at job creation neither exists, so a task fired here would refuse on every
-    # job the moment it ran. The compile is enqueued by the SWOT session's own
-    # completion (`api/assessments.respond_swot_intake`), which is the event
-    # that actually produces its input, and `pickready.reconcile_job_setup`
-    # sweeps for a job whose session finished and whose matrix never landed.
+    # from the Job SWOT Analysis document; at job creation that does not exist,
+    # so a task fired here would refuse on every job the moment it ran. The
+    # compile is enqueued when the SWOT document lands
+    # (`api/assessments._enqueue_matrix_from_swot`, on generate, save and
+    # restore), which is the event that actually produces its input, and
+    # `pickready.reconcile_job_setup` sweeps for a job whose SWOT exists and
+    # whose matrix never landed.
     # The two halves of job setup are generated IN PARALLEL (spec §10): the PPI
-    # matrix from the JD and the SWOT intake, the Matching category list from
+    # matrix from the JD and the SWOT document, the Matching category list from
     # the JD. Two tasks rather than one, and that split is not stylistic. A
     # single task that generated both would take the gating half down with any
     # failure in the other, which is the exact coupling that left nineteen live
@@ -676,6 +681,12 @@ async def publish_job(
         },
     )
     dispatch("pickready.run_matching", args=[str(job.id)])
+    # The JD is public and final at this point, so it becomes retrievable
+    # (RPN-AI-UP-001 W2.1). At publish rather than at draft save: a draft is
+    # edited repeatedly, and indexing every intermediate state would re-embed a
+    # document nobody can apply to yet. `index_document` is incremental by
+    # content hash, so a later edit re-embeds only the paragraphs that moved.
+    dispatch("pickready.index_document", args=["jd", str(job.id)])
 
     out = PublishJobOut.model_validate(job)
     out.jd_markdown = jd_markdown_for(job) or None
@@ -701,12 +712,6 @@ async def _publication_blocked(session: AsyncSession, job: Job) -> str | None:
     """
     from app.services.hiring import scorecard  # noqa: PLC0415
 
-    if job.swot_completed_at is None:
-        return (
-            "The Hiring Manager has not finished the SWOT session for this "
-            "role, so the evaluation criteria do not exist yet. A published job "
-            "would take applications nobody could assess."
-        )
     matrix = await scorecard.load_frozen_matrix(session, job.id)
     if matrix is None:
         return (
@@ -760,20 +765,23 @@ async def send_jd_to_hiring_manager(
     previous = job.lifecycle_state
     job.lifecycle_state = target.value
     await session.flush()
-    row = await audit(
+    # Every column in the one INSERT: the application role has no UPDATE grant
+    # on audit_log, so a post-flush attribute write aborts the transaction at
+    # commit, after the response has already left (the SWOT false-409 bug).
+    await record_action(
         session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
         action="jd_sent_to_hiring_manager",
-        target_type="job",
-        target_id=job.id,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
+        previous_state={"lifecycle_state": previous},
+        new_state={"lifecycle_state": job.lifecycle_state},
         metadata={"title": job.title},
     )
-    row.job_id = job.id
-    row.actor_role = user.role.value
-    row.correlation_id = job.correlation_id
-    row.previous_state = {"lifecycle_state": previous}
-    row.new_state = {"lifecycle_state": job.lifecycle_state}
     logger.info(
         "jobs.sent_to_hiring_manager job_id=%s by=%s correlation_id=%s",
         job.id, user.user_id, job.correlation_id,
@@ -852,9 +860,30 @@ async def close_job(
     The 30 days are the LONGEST a posting runs, never the shortest. A client
     who fills the role on day 18 says so here, and from that instant the public
     link 404s, the job leaves every candidate's board and no new application is
-    accepted. Everything the hiring team already has is untouched: the ranked
-    list, the reports, the pipeline stages and the candidates mid-assessment
-    all continue exactly as before, which is why this is not `archive`.
+    accepted.
+
+    SUPERSEDED IN PART, 2026-09-18 (vivekium C5, owner-ruled final): this
+    docstring used to promise "the reports ... continue exactly as before".
+    They do not. Closing the job now PERMANENTLY ERASES its assessment data,
+    the PRISM reports, the Tatva scores and the transcripts, because Stage B
+    consent item 3 told every assessed candidate exactly that would happen.
+    `erasure.job_closure_erasure` says precisely what goes and what stays
+    (the ranked list, the pipeline history, the billing record and the
+    consent records all remain). THERE IS NO REOPEN, so this deletion is as
+    final as the closure itself; the confirmation UI must say so.
+
+    SUPERSEDED AGAIN, 2026-09-22 (change request 22, owner ruling), and the
+    part that reverses is WHEN. Closure no longer deletes anything. It
+    WITHHOLDS: the employer and the recruiter lose access at this instant, the
+    data is retained for thirty days, and
+    `pickready.purge_closed_job_assessments` deletes it permanently at the end
+    of that window. The owner's reason is this docstring's own next paragraph:
+    there is no reopen, so an immediate irreversible delete left a misclick, a
+    wrong job id and a dispute raised the following week with nothing to
+    examine. The candidate's promise is unchanged and still kept, which is why
+    the window has a hard end rather than an operator's discretion.
+    `services/job_assessment_retention` owns the whole lifecycle, the access
+    gate and the dispute path.
 
     WHY IT IS `publish_job` AND NOT A NEW CAPABILITY. Opening a posting to the
     public and closing it again are the same authority over the same thing, and
@@ -889,8 +918,25 @@ async def close_job(
     # RBAC 17's terminal state. Written here rather than inferred, for the same
     # reason publication writes PUBLISHED: a derived state records no actor.
     job.lifecycle_state = hiring_pipeline.JobLifecycleState.CLOSED_ARCHIVED.value
+    # The closure STARTS the clock, in the same transaction, so a close that
+    # rolls back schedules nothing and a close that commits can never leave
+    # the data reachable. Stamped from `closed_at` rather than from a second
+    # `now()`, because two clocks read a microsecond apart would put the
+    # promise and the act it was made about on different days at midnight.
+    job.assessment_purge_due_at = job_assessment_retention.purge_due_at(
+        job.closed_at
+    )
     await session.flush()
     await _invalidate_public_job(job.id)
+    await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action=job_assessment_retention.ACTION_PENDING_DELETION,
+        target_type="job",
+        target_id=job.id,
+        metadata=job_assessment_retention.describe(job).as_json(),
+    )
     await audit(
         session,
         tenant_id=user.tenant_id,
@@ -963,6 +1009,170 @@ async def _notify_applicants_of_closure(session: AsyncSession, job: Job) -> None
             "job_id": str(job.id),
         },
     )
+
+
+def _retention_out(job: Job) -> AssessmentRetentionOut:
+    """One serializer for all three retention routes.
+
+    The refusal sentence travels from `job_assessment_retention` rather than
+    being written here, so the screen, the 410 body and the gate can never
+    disagree about what a closed job's records are: one author, the rule
+    `components/permission-notice.tsx` already follows on the other side.
+    """
+    state = job_assessment_retention.describe(job)
+    return AssessmentRetentionOut(
+        state=state.state,
+        closed_at=state.closed_at,
+        purge_due_at=state.purge_due_at,
+        purged_at=state.purged_at,
+        dispute_open=state.dispute_open,
+        days_remaining=state.days_remaining,
+        message=state.message(),
+        dispute_reason=(
+            job.assessment_dispute_reason if state.dispute_open else None
+        ),
+    )
+
+
+@router.get(
+    "/{job_id}/assessment-retention", response_model=AssessmentRetentionOut
+)
+async def assessment_retention(
+    job_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.VIEW_REVIEW_SCREEN)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> AssessmentRetentionOut:
+    """Where this job's assessment data is in its thirty day lifecycle.
+
+    Readable by anyone who may open the review screen, DELIBERATELY WIDER than
+    the dispute capability that can act on it. A recruiter who clicks into a
+    closed job and finds the report gone has to be told what happened and by
+    when it can still be recovered; answering that question only to the person
+    who can already recover it would leave everybody else with a 410 and no
+    explanation, which is the exact silence the Updates feed exists to end.
+
+    It carries no candidate detail and no count of assessed people, only
+    dates. See `AssessmentRetentionOut`.
+    """
+    job = await _get_visible_job(session, user, job_id)
+    return _retention_out(job)
+
+
+@router.post(
+    "/{job_id}/assessment-dispute", response_model=AssessmentRetentionOut
+)
+async def open_assessment_dispute(
+    job_id: uuid.UUID,
+    body: AssessmentDisputeIn,
+    user: CurrentUser = Depends(
+        require_capability(caps.RETRIEVE_DISPUTED_ASSESSMENT)
+    ),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> AssessmentRetentionOut:
+    """THE DISPUTE PATH: the one way back into a closed job's assessment data.
+
+    It is an UNLOCK rather than a second reader, and that is rule 5 doing the
+    design. A dispute endpoint that returned the report itself would be a
+    second PRISM serializer, a second transcript pager and a second set of
+    no-numbers decisions, and the day the two disagreed the recruiter and the
+    disputing party would be reading different documents about the same
+    person. Instead this records the dispute on the job, and the existing
+    report, PDF and transcript routes answer again for a caller who holds this
+    capability, through the one gate in
+    `job_assessment_retention.require_readable`.
+
+    IT DOES NOT EXTEND THE THIRTY DAYS. The window is a promise made to the
+    candidate as well as to the employer, and a dispute that could push the
+    deletion out would let an unresolved argument keep a person's assessment
+    alive indefinitely. A dispute opened on day twenty nine has one day, and
+    the response says so in `days_remaining`.
+
+    Refused once the data is gone, with the server's own sentence: offering to
+    open a dispute over records that no longer exist would be a control that
+    can only ever disappoint.
+    """
+    job = await _get_visible_job(session, user, job_id)
+    state = job_assessment_retention.describe(job)
+    if state.state == job_assessment_retention.STATE_LIVE:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This job is still open, so its assessment records are "
+                "available in the normal way."
+            ),
+        )
+    if not state.retrievable:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail=state.message())
+    previous = _retention_out(job).model_dump(mode="json")
+    now = datetime.now(timezone.utc)
+    job.assessment_dispute_opened_at = now
+    job.assessment_dispute_opened_by = user.user_id
+    job.assessment_dispute_reason = body.reason
+    await session.flush()
+    await record_action(
+        session,
+        action=job_assessment_retention.ACTION_DISPUTE_OPENED,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        previous_state=previous,
+        new_state=_retention_out(job).model_dump(mode="json"),
+        # The opener's own words, recorded with the act rather than beside it.
+        metadata={"reason": body.reason},
+    )
+    logger.info(
+        "jobs.assessment_dispute_opened job_id=%s by=%s", job.id, user.user_id
+    )
+    return _retention_out(job)
+
+
+@router.delete(
+    "/{job_id}/assessment-dispute", response_model=AssessmentRetentionOut
+)
+async def close_assessment_dispute(
+    job_id: uuid.UUID,
+    user: CurrentUser = Depends(
+        require_capability(caps.RETRIEVE_DISPUTED_ASSESSMENT)
+    ),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> AssessmentRetentionOut:
+    """Lock the records again once the dispute is settled.
+
+    Exists because the unlock otherwise runs to the end of the window by
+    default, and an access grant nobody can hand back is one people stop
+    treating as exceptional. Closing a dispute that is not open is a no-op
+    rather than a 409: the end state the caller asked for is the end state
+    they get, and refusing it would only encourage a retry loop.
+    """
+    job = await _get_visible_job(session, user, job_id)
+    if job.assessment_dispute_opened_at is None:
+        return _retention_out(job)
+    previous = _retention_out(job).model_dump(mode="json")
+    job.assessment_dispute_opened_at = None
+    job.assessment_dispute_opened_by = None
+    # The reason is KEPT. It is why the records were read, and clearing it
+    # would leave the audit trail as the only place a reviewer could find out,
+    # which is exactly why the columns exist in the first place.
+    await session.flush()
+    await record_action(
+        session,
+        action=job_assessment_retention.ACTION_DISPUTE_CLOSED,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        previous_state=previous,
+        new_state=_retention_out(job).model_dump(mode="json"),
+    )
+    logger.info(
+        "jobs.assessment_dispute_closed job_id=%s by=%s", job.id, user.user_id
+    )
+    return _retention_out(job)
 
 
 @router.get(

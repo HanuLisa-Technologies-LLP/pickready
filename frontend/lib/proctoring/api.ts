@@ -167,3 +167,55 @@ export function isClientFault(error: unknown): boolean {
     error.status !== 429
   );
 }
+
+// ── The proctored session's recording (owner ruling, 2026-09-22) ────────────
+//
+// These three call the ASSESSMENT routes, not the proctoring ones, and the
+// prefix difference is the design rather than an accident: the recording is an
+// assessment artifact stored on `video_recordings`, and the proctoring service
+// neither writes it nor reads it. Opening it is its own route because the
+// server decides the recording's kind; uploading and finalizing reuse the
+// video interview's routes verbatim, because there is one upload path for
+// assessment media and one processing task behind it.
+
+const ASSESSMENTS_BASE = "/api/v2/assessments";
+
+/** Mirrors `backend/app/schemas/videos.SessionMediaStartOut`. No bucket name
+ *  and no object key, like every other media response in this product. */
+export interface SessionMediaStartOut {
+  conversation_id: string;
+  recording_id: string;
+  status: string;
+  max_upload_bytes: number;
+  max_duration_seconds: number;
+}
+
+/** Open the recording for a proctored conversational session. A 409 means
+ *  this assessment is a video interview, which already records itself. */
+export function startSessionMedia(linkId: string): Promise<SessionMediaStartOut> {
+  return apiPost<SessionMediaStartOut>(
+    `${ASSESSMENTS_BASE}/conversations/links/${linkId}/session-media/start`
+  );
+}
+
+export function uploadSessionMedia(
+  conversationId: string,
+  blob: Blob
+): Promise<unknown> {
+  const form = new FormData();
+  const extension = blob.type.includes("mp4") ? "mp4" : "webm";
+  form.append("file", blob, `recording.${extension}`);
+  return apiFetch(
+    `${ASSESSMENTS_BASE}/conversations/${conversationId}/video/upload`,
+    { method: "POST", body: form }
+  ).then((response) => {
+    if (!response.ok) throw new ApiError(response.status, null);
+    return response.json();
+  });
+}
+
+export function finalizeSessionMedia(conversationId: string): Promise<unknown> {
+  return apiPost<unknown>(
+    `${ASSESSMENTS_BASE}/conversations/${conversationId}/video/finalize`
+  );
+}

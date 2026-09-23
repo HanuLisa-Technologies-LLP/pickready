@@ -1,4 +1,4 @@
-# ReadyPick, top-level task runner (spec-doc6 §3.2).
+# Vivekium, top-level task runner (spec-doc6 §3.2).
 #
 #   make test               backend suite against the containerised test stack
 #   make test-integration   only the tests that touch real Postgres/Redis/S3

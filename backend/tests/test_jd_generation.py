@@ -25,7 +25,7 @@ _SAMPLE_BRIEF = {
     "requirements": ["Design scalable APIs", "Mentor juniors"],
     "skills": ["Python", "FastAPI", "Postgres"],
     "experience": "5",
-    "company_context": "Hanulisa Technologies builds recruitment software.",
+    "company_context": "Varpitech Technologies builds recruitment software.",
     "department": "Engineering",
     "level": "Senior",
 }

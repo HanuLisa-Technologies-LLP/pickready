@@ -160,7 +160,7 @@ export function LoginFlow({
       title={contexts ? "Choose your workspace" : title}
       description={
         contexts
-          ? "This email belongs to more than one ReadyPick workspace."
+          ? "This email belongs to more than one Vivekium workspace."
           : description
       }
       footer={
@@ -185,9 +185,9 @@ export function LoginFlow({
               className="w-full rounded-xl border border-border bg-surface px-4 py-3 text-left shadow-card transition-colors duration-150 hover:border-brand-600/50 hover:bg-brand-100/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50"
             >
               <span className="block text-sm font-semibold">
-                {context.tenant_name ?? "ReadyPick"}
+                {context.tenant_name ?? "Vivekium"}
               </span>
-              <span className="mt-0.5 block text-xs opacity-80">
+              <span className="mt-0.5 block text-xs">
                 {ROLE_LABEL[context.role]}
               </span>
             </button>

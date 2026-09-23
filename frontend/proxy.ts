@@ -7,18 +7,10 @@ import type { NextRequest } from "next/server";
 /**
  * Which cookies count as "this browser still has a session".
  *
- * `pr_access` is deleted by the browser the moment its 15-minute Max-Age
- * lapses. `pr_refresh` is path-scoped to /api/v1/auth so it is never sent to a
- * page request like /org/jobs, which means this middleware CANNOT see it, the
- * old `cookies.has("pr_refresh")` check here was dead code that never once
- * returned true. The result: an idle user with a perfectly valid 7-day refresh
- * token was redirected to /login on their next click, before the API client
- * ever got the chance to refresh silently.
- *
- * `pr_session` fixes that. It is set and cleared by the backend alongside the
- * refresh token, lives at path "/", and holds no token material at all, it
- * only says a refresh token exists. Presence still grants nothing: the page it
- * admits calls /auth/me, and a session that cannot refresh is cleared there.
+ * Both `pr_access` and `pr_session` are browser-session cookies at path "/".
+ * The refresh cookie stays scoped to /api/v1/auth. Presence grants nothing:
+ * the page calls /auth/me, which checks the signed JWT and server-side idle
+ * deadline. An expired access JWT can refresh while the browser stays open.
  */
 const SESSION_COOKIES = ["pr_access", "pr_session"] as const;
 
@@ -30,6 +22,29 @@ const PUBLIC_PREFIXES = [
   "/login",
   "/register", // candidate self sign-up (register first, log in later)
   "/docs", // public product and technical documentation
+  // THE REST OF THE PUBLIC SITE, WHICH WAS BEING REDIRECTED TO SIGN-IN.
+  //
+  // This list is a deny-by-default allowlist, and five genuinely public pages
+  // were missing from it, so a signed-out visitor asking for any of them got a
+  // 307 to /login. Two consequences, and the second is the serious one:
+  //
+  //  * The site footer links to /about and /insights on every public page, so
+  //    the marketing site dead-ended at a sign-in form.
+  //  * /privacy and /terms are LEGAL pages. A privacy policy nobody can read
+  //    without an account is not a published privacy policy.
+  //
+  // It was also about to get worse rather than better: `app/robots.ts` now
+  // allows all five and `app/sitemap.ts` lists them, so a crawler following the
+  // sitemap would have been handed a redirect to a login form for every URL it
+  // had just been invited to index.
+  //
+  // Found by probing the deployed site. Every route below was checked to exist
+  // under `app/(public)/`.
+  "/about",
+  "/insights",
+  "/privacy",
+  "/terms",
+  "/employers", // the public employer directory and each employer page
   "/join", // tokenized staff invitation acceptance
   // Public job application link. The JD must be readable WITHOUT an account
   // (FR-3.5); the page itself gates submission on a verified candidate
@@ -37,6 +52,11 @@ const PUBLIC_PREFIXES = [
   "/apply",
   "/portal/outreach", // public tokenized outreach completion
   "/verify-employment", // public employer verification form
+  // The one-click consent renewal link (feature 8). It MUST render
+  // signed-out: the reader is by definition somebody who has not signed in
+  // for six months, and bouncing them to /login is exactly the friction that
+  // makes their profile get deleted instead of kept.
+  "/keep-profile",
   // Assessment invitation landing. It MUST render signed-out: its whole
   // job is to resolve the token and then send the candidate through
   // /login carrying itself as `next`. Gating it here would bounce them
@@ -139,6 +159,17 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
+    // `robots.txt`, `sitemap.xml` and `opengraph-image` are EXCLUDED, and this
+    // was found in production rather than in a test. They are GENERATED routes
+    // rather than files under `public/`, so they fall inside the matcher, and
+    // this middleware is deny-by-default: anything outside PUBLIC_PREFIXES
+    // without a session is redirected to /login. Every one of them therefore
+    // answered a crawler with a 307 to the sign-in page.
+    //
+    // That is worse than not shipping them at all. `robots.txt` is the one file
+    // whose entire job is to be read by something that has no session and never
+    // will, so the disallow rules protecting /org, /portal, /admin and the
+    // tokenised links were never delivered to anybody.
     // All app routes except static assets and Next internals.
     //
     // `api` is excluded deliberately. Those paths are not pages: they are the
@@ -148,6 +179,27 @@ export const config = {
     // API call with a 307 to /login, so the browser would receive an HTML
     // redirect where it expected JSON and every 401-triggered silent refresh
     // would break instead of refreshing.
-    "/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
+    //
+    // `llms.txt` is excluded for exactly the same reason and was added with
+    // the same care: it is a generated route, so it sits inside the matcher,
+    // and a file whose only reader is an unauthenticated agent must never be
+    // answered with a redirect to a sign-in form.
+    //
+    // `__/auth` and `__/firebase` are the Firebase Auth helper endpoints,
+    // proxied to <project>.firebaseapp.com by the rewrites in next.config.js
+    // so the sign-in popup can run on this origin. They are loaded by a
+    // browser that BY DEFINITION has no session yet; answering them with a
+    // 307 to /login would break every sign-in the moment the auth domain
+    // moves to this host.
+    // `icon` and `apple-icon` joined this list on 2026-09-20 with the icons
+    // themselves. They are GENERATED routes (`app/icon.tsx`,
+    // `app/apple-icon.tsx`), so they carry no file extension and the
+    // extension clause below does not cover them, exactly like
+    // `opengraph-image`. A browser requests a favicon with no session on the
+    // very first paint, so without this every tab icon would 307 to /login
+    // and render nothing. That is not hypothetical: `robots.txt`,
+    // `sitemap.xml` and `opengraph-image` all shipped broken this precise way
+    // while every local test passed.
+    "/((?!api|__/auth|__/firebase|_next/static|_next/image|favicon.ico|icon|apple-icon|robots.txt|sitemap.xml|llms.txt|opengraph-image|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)",
   ],
 };

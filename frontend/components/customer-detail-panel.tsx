@@ -8,7 +8,8 @@
 // the same asymmetry the API enforces by not exposing the routes.
 
 import * as React from "react";
-import { Building2, Mail, Phone, PhoneCall, User as UserIcon } from "lucide-react";
+import { Building2, Mail, Phone, PhoneCall, User as UserIcon, Users } from "lucide-react";
+import { EmptyState } from "@/components/page-primitives";
 
 import { API_BASE } from "@/lib/api";
 import type { CustomerDetail } from "@/lib/types";
@@ -80,7 +81,7 @@ export function CustomerDetailPanel({
             {customer?.name ?? "Customer"}
           </DialogTitle>
           <DialogDescription>
-            Everything ReadyPick holds for this customer. Contact details, team
+            Everything Vivekium holds for this customer. Contact details, team
             and documents are maintained by the customer and shown here
             read-only.
           </DialogDescription>
@@ -169,9 +170,12 @@ export function CustomerDetailPanel({
                 {customer.team_size === 1 ? "member" : "members"})
               </h3>
               {customer.team.length === 0 ? (
-                <p className="text-sm">
-                  No team members yet.
-                </p>
+                <EmptyState
+                  icon={Users}
+                  title="No team members yet"
+                  description="People appear here once this customer invites them into their workspace."
+                  className="py-10"
+                />
               ) : (
                 <ul className="divide-y rounded-md border">
                   {customer.team.map((member) => (

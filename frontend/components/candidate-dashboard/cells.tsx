@@ -4,7 +4,7 @@
  * The eight columns' cells. One component per column, in the specified order.
  *
  * Split out of the table so each cell's rule is testable on its own: the
- * Pre-Screen Grade's styling rule, the Ready Pick Score's pending and
+ * Pre-Screen Grade's styling rule, the Vivekium Score's pending and
  * under-review states, and the Note's truncation are each a property of one
  * component rather than of a row.
  */
@@ -52,7 +52,7 @@ export function CandidateCell({ row }: { row: DashboardRow }) {
     <div className="min-w-0">
       <p className="truncate text-[13.5px] font-bold leading-5">{row.full_name}</p>
       <span className="group inline-flex items-center gap-1">
-        <span className="select-all font-mono text-[11px] leading-4 text-foreground/80">
+        <span className="select-all font-mono text-[11px] leading-4">
           {row.system_id}
         </span>
         <button
@@ -69,7 +69,7 @@ export function CandidateCell({ row }: { row: DashboardRow }) {
           {copied ? "Candidate code copied" : ""}
         </span>
       </span>
-      <p className="truncate text-[11px] leading-4 text-foreground/80">
+      <p className="truncate text-[11px] leading-4">
         {row.job_title}
       </p>
     </div>
@@ -115,7 +115,7 @@ export function PreScreenGradeCell({ row }: { row: DashboardRow }) {
   );
 }
 
-/* ── Column 4: Ready Pick Score ──────────────────────────────────────────── */
+/* ── Column 4: Vivekium Score ──────────────────────────────────────────── */
 
 export function ReadyPickScoreCell({ row }: { row: DashboardRow }) {
   const scoreless = BANDS_WITHOUT_A_SCORE.has(row.band);
@@ -169,7 +169,7 @@ export function ReadyPickScoreCell({ row }: { row: DashboardRow }) {
   );
 }
 
-/* ── Column 5: Ready Pick Note ───────────────────────────────────────────── */
+/* ── Column 5: Vivekium Note ───────────────────────────────────────────── */
 
 export function NoteCell({ row }: { row: DashboardRow }) {
   return (
@@ -193,7 +193,7 @@ export function NoteCell({ row }: { row: DashboardRow }) {
   );
 }
 
-/* ── Column 6: Ready Pick Profile ────────────────────────────────────────── */
+/* ── Column 6: Vivekium Profile ────────────────────────────────────────── */
 
 export function ProfileButton({
   row,
@@ -213,11 +213,11 @@ export function ProfileButton({
       className={cn("h-8", !available && "cursor-not-allowed")}
       aria-label={
         available
-          ? `Open the Ready Pick Profile for ${row.full_name}`
-          : `Ready Pick Profile not available for ${row.full_name}`
+          ? `Open the Vivekium Profile for ${row.full_name}`
+          : `Vivekium Profile not available for ${row.full_name}`
       }
     >
-      {available ? "Ready Pick Profile" : "Awaiting Profile"}
+      {available ? "Vivekium Profile" : "Awaiting Profile"}
     </Button>
   );
   if (available) return button;

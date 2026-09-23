@@ -391,6 +391,49 @@ def test_the_provider_router_never_deletes_a_customer() -> None:
     assert not any("DELETE" in methods for _path, methods in _provider_routes())
 
 
+#: EVERY write the Provider may perform, pinned as an exact set.
+#:
+#: "Read-only by absence" stops meaning anything the moment a second carve-out
+#: can be added without a conversation. An inequality ("no document writes", "no
+#: deletes") only forbids the shapes somebody thought of; this forbids all of
+#: them, so widening the Provider's reach becomes a test change with a
+#: justification attached rather than a route somebody added on a Friday.
+PROVIDER_WRITES = {
+    ("/customers/{customer_id}", "PATCH"),
+    ("/customers/{customer_id}/archive", "PATCH"),
+    # THE ONE CARVE-OUT over customer data (owner decision, 2026-09-11). The
+    # primary contact is not the customer's own data in the sense the rule
+    # protects: it is the DOOR into the tenant. Onboarding collected the
+    # address once, and a typo, an expired invitation or a tenant seeded
+    # without one left a customer permanently unreachable, with no route in the
+    # product able to repair it. Its behaviour is pinned in
+    # `test_primary_contact.py`, including the rebind, which is the part with
+    # consequences.
+    ("/customers/{customer_id}/primary-contact", "PUT"),
+    # Vivekium's own commercial classification of a job, which the client
+    # never sees and cannot set. Permitted strictly before the first completed
+    # assessment (Part 3 rule 5), so it edits Vivekium's own record of the
+    # engagement rather than the customer's data.
+    ("/jobs/{job_id}/reclassify", "POST"),
+}
+
+
+def test_the_provider_writes_exactly_these_and_nothing_else() -> None:
+    actual = {
+        (path, method)
+        for path, methods in _provider_routes()
+        for method in methods
+        if method in {"POST", "PUT", "PATCH", "DELETE"}
+    }
+    assert actual == PROVIDER_WRITES, (
+        "The Provider's write surface changed. Read-only by absence is the "
+        "rule; a new entry here needs a reason recorded beside it, the way the "
+        "primary-contact carve-out does.\n"
+        f"  added:   {sorted(actual - PROVIDER_WRITES)}\n"
+        f"  removed: {sorted(PROVIDER_WRITES - actual)}"
+    )
+
+
 # ── Who may file a compliance document ───────────────────────────────────────
 
 def test_every_customer_role_may_manage_compliance_documents() -> None:

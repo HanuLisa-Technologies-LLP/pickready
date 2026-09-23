@@ -12,7 +12,7 @@ import { Card, CardContent } from "@/components/ui/card";
  *
  * It is deliberately quiet. One centred card on the canvas, the brand lockup
  * above it, and a very low-contrast dot field behind. The lockup already
- * contains its own wordmark, so no text "ReadyPick" is rendered beside it.
+ * contains its own wordmark, so no text "Vivekium" is rendered beside it.
  *
  * A Server Component, so a page can render the frame without the sign-in form's
  * client boundary reaching the whole route.
@@ -41,7 +41,12 @@ export function AuthShell({
         className="pointer-events-none absolute -top-28 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-brand-500/20 blur-3xl"
       />
 
-      <div className={cn("relative z-10 w-full max-w-md", className)}>
+      {/* A LANDMARK, BECAUSE THIS PAGE IS ALL CONTENT AND HAD NONE. Sign in,
+          register and join rendered the `h1` and the whole form inside plain
+          divs, so a screen reader's landmark list was empty and "jump to main"
+          had nowhere to go. There is no navigation to skip past here, so the
+          landmark is the whole fix; no skip link is added. */}
+      <main className={cn("relative z-10 w-full max-w-md", className)}>
         {/* Master directive §0 removed the Three.js logomark from every
             surface. The flat lockup is the brand mark, full stop. */}
         <div className="mb-7 flex justify-center">
@@ -55,7 +60,7 @@ export function AuthShell({
                 {title}
               </h1>
               {description ? (
-                <p className="text-pretty text-sm leading-6">{description}</p>
+                <p className="text-pretty text-sm">{description}</p>
               ) : null}
             </div>
             {children}
@@ -63,9 +68,9 @@ export function AuthShell({
         </Card>
 
         {footer ? (
-          <div className="mt-6 text-center text-sm leading-6">{footer}</div>
+          <div className="mt-6 text-center text-sm">{footer}</div>
         ) : null}
-      </div>
+      </main>
     </div>
   );
 }
@@ -75,7 +80,7 @@ export function AuthDivider({ label = "or" }: { label?: string }) {
   return (
     <div className="flex items-center gap-3">
       <span className="h-px flex-1 bg-border" />
-      <span className="text-xs font-medium uppercase tracking-[0.12em] opacity-70">
+      <span className="text-xs font-medium uppercase tracking-[0.12em]">
         {label}
       </span>
       <span className="h-px flex-1 bg-border" />

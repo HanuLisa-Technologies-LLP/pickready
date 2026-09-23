@@ -18,6 +18,7 @@ import { Download, Eye, FileText, Trash2, Upload } from "lucide-react";
 
 import type { ComplianceDocumentType, ComplianceSlot } from "@/lib/types";
 import { Button } from "@/components/ui/button";
+import { ConfirmButton } from "@/components/confirm-button";
 
 /** Matches services/document_storage.ALLOWED_DOCUMENT_EXTENSIONS. */
 const ACCEPT = ".pdf,.jpg,.jpeg,.png";
@@ -58,9 +59,9 @@ export function ComplianceDocumentsSection({
 
   return (
     <section className="space-y-8">
-      <p className="text-sm leading-6">
+      <p className="text-sm">
         {editable
-          ? `Filed by your company and visible to ReadyPick. ${UPLOAD_HINT}`
+          ? `Filed by your company and visible to Vivekium. ${UPLOAD_HINT}`
           : "Filed by the customer's HR Head. Read-only."}
       </p>
 
@@ -131,14 +132,14 @@ function ComplianceRow({
         <div className="min-w-0">
           <p className="text-sm font-semibold">{slot.label}</p>
           {document ? (
-            <p className="truncate text-xs leading-5">
+            <p className="truncate text-xs">
               {document.file_name}
               {size ? ` · ${size}` : ""} · Uploaded
               {document.uploaded_by_name ? ` by ${document.uploaded_by_name}` : ""}{" "}
               on {new Date(document.uploaded_at).toLocaleDateString()}
             </p>
           ) : (
-            <p className="text-xs font-medium leading-5 opacity-80">
+            <p className="text-xs font-medium">
               Not Available Yet
             </p>
           )}
@@ -189,15 +190,17 @@ function ComplianceRow({
         ) : null}
 
         {document && onRemove ? (
-          <Button
+          <ConfirmButton
             variant="outline"
             size="sm"
-            
             disabled={busy}
-            onClick={() => void onRemove(slot.document_type)}
+            title={`Remove the ${slot.label}?`}
+            description="The uploaded file is deleted and the slot goes back to Not Available Yet. You would need the original document to put it back."
+            confirmLabel="Remove"
+            onConfirm={() => void onRemove(slot.document_type)}
           >
-            <Trash2 className="h-3.5 w-3.5" /> Remove
-          </Button>
+            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> Remove
+          </ConfirmButton>
         ) : null}
       </div>
     </li>

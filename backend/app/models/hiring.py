@@ -2,8 +2,7 @@
 
 spec-doc5 asks for "the core objects from Runbook §59 (`Role`, `Scorecard`,
 `Candidate`, `Evaluation`, `CalibrationRecord`) as your PostgreSQL schema
-baseline for this layer, extended with a `CompanyDNA` object ... and a `Claim` /
-`EvidenceNode` pair".
+baseline for this layer, extended with a `Claim` / `EvidenceNode` pair".
 
 THREE OF THOSE FIVE ALREADY EXIST UNDER OTHER NAMES, AND THEY ARE NOT DUPLICATED
 ---------------------------------------------------------------------------------
@@ -27,8 +26,6 @@ meant `tenants`.
 
 SO WHAT IS ACTUALLY NEW HERE IS THREE THINGS:
 
-    CompanyDNA          Layer 2. Client-scoped, versioned, referenced by every
-                        job under that client. Nothing like it existed.
     Evaluation          The Miti run itself, with `dimension_scores` and
                         `competency_scores` carrying `evidence_refs[]`. The
                         existing `functional_skills_reports` is the DELIVERED
@@ -78,79 +75,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
 
 __all__ = [
-    "CompanyDNA",
     "Evaluation",
     "ReviewDisposition",
     "CalibrationRecord",
 ]
-
-
-class CompanyDNA(Base, UUIDPKMixin, CreatedAtMixin):
-    """LAYER 2: one client's hiring philosophy, compiled and versioned.
-
-    VERSIONED RATHER THAN UPDATED IN PLACE, and the reason is the same one that
-    makes a report immutable. Every job generated under version 3 was scored
-    against version 3's weights and thresholds; overwriting the row would make
-    "what criteria was this candidate actually graded under" unanswerable for
-    every job already run. `is_current` marks the one new jobs read; the others
-    stay, unread, exactly as `technical_questions` does.
-
-    `answers_json` is the RAW intake and `artifact_json` is the COMPILED output.
-    Both are kept and they are not interchangeable: Sutra reads only the
-    artifact (spec-doc5 §A.3 is explicit that it must "never [read] the client's
-    free-text preferences directly"), while the answers are what a recompilation
-    runs over when the compiler itself changes.
-
-    The one-per-tenant-per-version uniqueness is what stops a double-submit from
-    creating two version 4s that disagree.
-    """
-
-    __tablename__ = "company_dna"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "version", name="uq_company_dna_version"),
-        Index("ix_company_dna_current", "tenant_id", "is_current"),
-    )
-
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
-    )
-    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    #: Exactly one row per tenant carries this. Enforced by a partial unique
-    #: index in the migration rather than here, because SQLAlchemy cannot
-    #: express `WHERE is_current` in a UniqueConstraint.
-    is_current: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false"
-    )
-    #: draft while the session is running, complete once compiled.
-    status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="draft", server_default="draft"
-    )
-    #: ON DELETE SET NULL: an HR manager can leave, and their departure must not
-    #: take with it the philosophy every job for that client is built on. Same
-    #: reasoning as `job_swot_intakes.conducted_by`.
-    conducted_by: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
-    )
-    #: {question_key: answer}. The RAW intake.
-    answers_json: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default="{}"
-    )
-    #: `company_dna.CompanyDNA.as_dict()`. What Sutra reads.
-    artifact_json: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default="{}"
-    )
-    #: What was SAID. Kept for the same reason the SWOT transcript is: the
-    #: artifact is what the system uses and the transcript is what a person can
-    #: check it against.
-    transcript_json: Mapped[list] = mapped_column(
-        JSONB, nullable=False, default=list, server_default="[]"
-    )
-    #: The question the client is currently looking at. Same
-    #: `pending_prompt` mechanism `JobSwotIntake` and `AssessmentConversation`
-    #: use, so the transcript records what was actually read rather than what
-    #: was next in the list.
-    pending_prompt: Mapped[str | None] = mapped_column(Text)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Evaluation(Base, UUIDPKMixin, CreatedAtMixin):
@@ -201,10 +129,6 @@ class Evaluation(Base, UUIDPKMixin, CreatedAtMixin):
     )
     #: The matrix version this was run against. COPIED.
     scorecard_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    #: The Company DNA version in force at the time. Also copied, so a client
-    #: who later changes their philosophy does not retroactively change what an
-    #: existing evaluation was run under.
-    company_dna_version: Mapped[int | None] = mapped_column(Integer)
     situation_type: Mapped[str | None] = mapped_column(String(30))
 
     #: {dimension: {band, evidence_refs[], insufficient_evidence}}.
@@ -364,7 +288,7 @@ class CalibrationRecord(Base, UUIDPKMixin, CreatedAtMixin):
     #: What KIND of calibration signal this row is (migration 0069).
     #: `outcome` is the original meaning, a hiring outcome observed months
     #: later. `team_review_divergence` is a reviewer whose verdict disagreed
-    #: with the Ready Pick Score (spec-doc6 8.2). Both answer "was the grade
+    #: with the Vivekium Score (spec-doc6 8.2). Both answer "was the grade
     #: right?", which is why they share a table rather than splitting into two
     #: places a calibration analysis would have to join.
     source: Mapped[str] = mapped_column(

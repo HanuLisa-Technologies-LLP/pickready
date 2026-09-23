@@ -8,7 +8,7 @@ export type Role =
   | "recruiter"
   | "hiring_manager"
   | "candidate"
-  // Business Development: ReadyPick's own sales staff. Platform staff, so
+  // Business Development: Vivekium's own sales staff. Platform staff, so
   // tenant_id is always null on this user.
   | "bd";
 
@@ -20,6 +20,7 @@ export interface User {
   email: string;
   email_verified: boolean;
   phone_verified: boolean;
+  password_enabled?: boolean;
   workspace_name: string;
 }
 
@@ -57,7 +58,7 @@ export function isContextsResponse(
     && (res as AuthContextsResponse).contexts.length > 0;
 }
 
-// ---- Provider Portal (the ReadyPick owner's view of its customers) ----
+// ---- Provider Portal (the Vivekium owner's view of its customers) ----
 //
 // A "customer" is one onboarded client company. It is the same underlying row
 // the Owner console has always called a tenant, `Tenant` below stays for the
@@ -233,7 +234,7 @@ export interface StaffMember {
 }
 
 /**
- * Row from GET /admin/bd-users, ReadyPick's own Business Development team.
+ * Row from GET /admin/bd-users, Vivekium's own Business Development team.
  *
  * There is no tenant on this record and there never will be: a BD user is
  * platform staff. `signed_in` is false until Firebase binds an identity on the
@@ -588,7 +589,17 @@ export interface RankedCandidate {
   /** The application's Profile. Resumes live in private storage, so this is
    *  the handle the viewer and the download endpoint are keyed on. */
   profile_id?: string | null;
-  resume_url?: string | null;
+  /**
+   * Whether a resume exists, and NOT where it is.
+   *
+   * This replaced `resume_url`, which carried the raw `s3://bucket/key`
+   * object reference. A browser cannot fetch that, so the only thing this
+   * screen ever did with it was ask whether it was truthy, while it handed
+   * every recruiter's browser the bucket name and the object key for nothing.
+   * The resume itself is read through the authorized proxy route, built by
+   * `resumeTabUrl` from `profile_id` plus the two descriptive fields below.
+   */
+  has_resume?: boolean;
   resume_filename?: string | null;
   resume_mime_type?: string | null;
   has_report: boolean;
@@ -596,7 +607,7 @@ export interface RankedCandidate {
   /** Where this applicant came from (spec §1.1). */
   application_source?: "direct" | "sourced" | null;
   /** How this candidate was procured. Applied means they came through
-   *  ReadyPick themselves, sourced means a third-party link, databank means
+   *  Vivekium themselves, sourced means a third-party link, databank means
    *  the recruitment team uploaded them in bulk. All three are parsed,
    *  matched and assessed identically; this is display and filtering only. */
   source_type: CandidateProcurement;
@@ -650,6 +661,24 @@ export interface RankedCandidate {
   /** "Ready" / "Processing" / "Failed" / "No recording". Metadata only; the
    *  words come from the server so the table never invents a state. */
   video_status?: string;
+  /** The Executive Profile Match Score (vivekium feature 3, column 2). The
+   *  ONE number a client surface may show, per the 2026-09-18 rule-1
+   *  amendment; null until the matching pipeline has scored the link. */
+  match_percent?: number | null;
+  /** "Within range" / "Above range" / "Below range", or null for "Not
+   *  stated". Derived server-side; nothing here computes a comparison. */
+  ctc_match_label?: string | null;
+  /** The brief's notice bucket ("Immediate", "Within 30 days", ...), or
+   *  null when the candidate stated none. */
+  notice_period_label?: string | null;
+  /** "Match" / "Partial match" / "No match", or null when either the JD or
+   *  the candidate is silent about education. */
+  education_match_label?: string | null;
+  /** Raw derived BGV status ('verified' | 'pending' | ...), for logic. */
+  bgv_status?: string;
+  /** "Done" / "Pending" / "Not Started" / "Not Required" / "Not Confirmed",
+   *  server-worded; detail lives inside the candidate's profile only. */
+  bgv_status_label?: string;
 }
 
 export interface RankedCandidatesResponse {
@@ -898,23 +927,6 @@ export interface AspectResponse {
   answer: string | number | boolean | null;
 }
 
-export interface VerificationRequest {
-  id: string;
-  employer_email: string;
-  status: string;
-  designation?: string | null;
-  doj?: string | null;
-  doe?: string | null;
-  last_drawn_ctc?: string | null;
-  last_drawn_gross?: string | null;
-  noc_status?: string | null;
-  exit_formalities_complete?: boolean | null;
-  bgv_status?: string | null;
-  proofs_details?: string | null;
-  prior_experience_details?: string | null;
-  overridden?: boolean;
-  override_reason?: string | null;
-}
 
 export interface CandidateProfile {
   id?: string;
@@ -934,13 +946,11 @@ export interface CandidateProfile {
     gender?: string;
   } | null;
   aspects?: AspectResponse[] | null;
-  verification?: VerificationRequest[] | null;
   resume_url?: string | null;
   resume_original_filename?: string | null;
   resume_mime_type?: string | null;
   parsed_fields_json?: CandidateProfile["resume_fields"];
   aspects_json?: Record<string, string | number | boolean | null> | null;
-  verification_requests?: VerificationRequest[] | null;
 }
 
 // ---- Portal ----
@@ -988,23 +998,7 @@ export interface PortalApplication {
 
 // ---- Verification form (public) ----
 
-export interface VerificationFormInfo {
-  candidate_name: string;
-  fields?: string[];
-}
 
-export interface VerificationFormSubmission {
-  designation: string;
-  doj: string;
-  doe: string;
-  last_drawn_ctc: string;
-  last_drawn_gross: string;
-  noc_status: string;
-  exit_formalities_complete: boolean;
-  bgv_status: string;
-  proofs_details: string;
-  prior_experience_details: string;
-}
 
 // ---- Dashboard ----
 
@@ -1412,22 +1406,35 @@ export interface BgvList {
 
 export type EmailSenderStatus =
   | "pending_verification"
-  | "email_verified"
   | "active"
-  | "verification_expired"
   | "disabled"
-  | "revoked";
+  | "revoked"
+  | "rejected"
+  // Retired with the mailbox OTP on 2026-09-08 and KEPT IN THE UNION, because
+  // rows written before it still carry them. A union missing a value the API
+  // can return makes every consumer of that row a type error or, worse, an
+  // empty render.
+  | "email_verified"
+  | "verification_expired";
 
 export interface EmailSender {
   id: string;
   name: string;
   email: string;
   status: EmailSenderStatus;
+  // Retained for rows verified under the withdrawn mailbox check. Nothing
+  // sets it any more; the provider's own identity verification is the
+  // ownership check now.
   email_verified: boolean;
-  authorized_by: string | null;
   authorized_at: string | null;
   created_at: string;
-  updated_at: string;
+  /** Whether mail would actually leave for this address, asked of the
+   *  provider at read time. Never a stored copy: the answer changes without
+   *  this product being told. */
+  can_send: boolean;
+  /** One plain sentence for the Super Admin. Deliberately carries no AWS
+   *  vocabulary: not SES, not an identity, not DKIM. */
+  sending_detail: string;
 }
 
 export interface EmailSenderList {
@@ -1437,23 +1444,35 @@ export interface EmailSenderList {
 }
 
 /** The code itself is never in a response; it travels only to the mailbox. */
-export interface EmailSenderOtpIssue {
-  sender_id: string;
-  status: EmailSenderStatus;
-  resend_cooldown_seconds: number;
-  expires_in_seconds: number;
-}
+// EmailSenderOtpIssue was REMOVED on 2026-09-08 with the sender mailbox OTP.
 
-export interface EmailSenderVerifyResult {
-  verified: boolean;
-  reason: string;
-  attempts_remaining: number;
-  status: EmailSenderStatus;
-}
+// EmailSenderVerifyResult went with it: nothing verifies a code any more.
 
 // ── Dual-mode assessment (2026-09-05 spec) ──────────────────────────────────
 
 export type AssessmentMode = "conversational" | "video_interview";
+
+/** One consent item, server-authored (vivekium feature 6). The version is the
+ *  wording's, bumped whenever the text changes, and it is stored with the
+ *  tick so a later rewording cannot re-describe an agreement already given. */
+export interface ConsentCatalogueItem {
+  key: string;
+  stage: string;
+  text: string;
+  version: number;
+  /** Whether declining it stops the candidate. The stage says WHEN an item is
+   *  asked; this says what refusing costs. An optional item never blocks. */
+  required: boolean;
+}
+
+/** A consent item as the candidate's own record shows it: the current wording
+ *  beside what they actually agreed to and when. `wording_current` false means
+ *  their standing consent is to words that have since been replaced. */
+export interface ConsentItemStatus extends ConsentCatalogueItem {
+  consented_at: string | null;
+  consented_version: number | null;
+  wording_current: boolean;
+}
 
 /** One mode's consent terms, exactly as the server will stamp them. */
 export interface AssessmentConsentTerms {
@@ -1462,6 +1481,9 @@ export interface AssessmentConsentTerms {
   consent_version: string;
   privacy_policy_version: string;
   terms_version: string;
+  /** The Stage B per-item catalogue, rendered verbatim on the screen;
+   *  acceptance stamps each item individually server-side. */
+  items?: ConsentCatalogueItem[];
 }
 
 /** Where the session stands in the mode/consent flow. */
@@ -1534,6 +1556,81 @@ export interface VideoDelivery {
   expires_in_seconds: number;
   disposition: "inline" | "attachment";
   filename: string | null;
+}
+
+// ── In-product support (2026-09-10) ─────────────────────────────────────────
+//
+// Two audiences, one conversation. `SupportThread` is what a customer sees of
+// their own thread; `ProviderSupportThread` adds the fact Vivekium staff need
+// and the customer already knows, which is WHOSE thread it is.
+//
+// The status names WHO OWES THE NEXT MOVE, which is the only thing a support
+// queue is ever sorted by. "awaiting_customer" rather than "pending" so a
+// reader cannot get the direction backwards.
+
+export type SupportThreadStatus = "open" | "awaiting_customer" | "resolved";
+
+export type SupportMessageSide = "customer" | "staff";
+
+export interface SupportMessage {
+  id: string;
+  /** Stored at write time, never re-derived from the author's current role. */
+  author_side: SupportMessageSide;
+  /** Null once the author's account is gone. Rendered as an absence, never as
+   *  "Deleted user", which is a claim about what happened to them. */
+  author_name: string | null;
+  body: string;
+  created_at: string;
+}
+
+export interface SupportThread {
+  id: string;
+  subject: string;
+  status: SupportThreadStatus;
+  created_at: string;
+  last_message_at: string;
+  /** Operational: about a queue, never about a person. */
+  message_count: number;
+}
+
+export interface SupportThreadDetail extends SupportThread {
+  messages: SupportMessage[];
+}
+
+export interface ProviderSupportThread extends SupportThread {
+  tenant_id: string;
+  tenant_name: string;
+  /** The first staff member who replied. Claimed by replying; there is no
+   *  separate claim action. */
+  assigned_to: string | null;
+  assigned_to_name: string | null;
+}
+
+export interface ProviderSupportThreadDetail extends ProviderSupportThread {
+  messages: SupportMessage[];
+}
+
+export interface SupportThreadPage {
+  items: SupportThread[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+}
+
+export interface ProviderSupportThreadPage {
+  items: ProviderSupportThread[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+  /** Threads waiting on Vivekium across every customer, UNNARROWED by the
+   *  page filters: it answers how much is owed, not how much is on screen. */
+  open_total: number;
 }
 
 // ---- The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ----

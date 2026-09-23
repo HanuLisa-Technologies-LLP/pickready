@@ -1,7 +1,7 @@
 # READY PICK NOW
 # HIRING PHILOSOPHY & INTELLIGENCE RUNBOOK
 
-**Version 1.3 — The Standard Runbook**
+**Version 1.4 — The Standard Runbook**
 **Owner:** Hanulisa Technologies LLP · Ready Pick Now
 **Classification:** Proprietary & Confidential — Internal + Controlled Client Disclosure
 **Document type:** Operating doctrine, decision engine specification, and delivery standard
@@ -13,14 +13,14 @@
 | Field | Value |
 |---|---|
 | Document ID | RPN-PHIL-001 |
-| Version | 1.3 |
-| Date | 2026-08-29 (v1.3 substantive revision). The v1.0 issue date was not recorded in the source document and has not been invented here. |
+| Version | 1.4 |
+| Date | 2026-09-09 (v1.4 substantive revision). The v1.0 issue date was not recorded in the source document and has not been invented here. |
 | Owner | Hanulisa Technologies LLP (legal entity) · Ready Pick Now (product) |
 | Status | Standard (binding on all delivery pods and all engine releases) |
 | Supersedes | All prior evaluation notes, ranking heuristics, and ad-hoc scoring sheets |
 | Review cadence | Quarterly, plus mandatory review after every calibration cycle |
 | Change authority | Ready Pick Now Hiring Standards Board (see §4.6) |
-| Companion artefacts | Company DNA Intake Instrument · Role SWOT Instrument · Department Evidence Graphs · Validation Question Banks · Recruiter Dossier Template · Calibration Ledger |
+| Companion artefacts | Role SWOT Instrument · Department Evidence Graphs · Validation Question Banks · Recruiter Dossier Template · Calibration Ledger |
 
 ### Amendment log
 
@@ -28,6 +28,7 @@
 |---|---|---|---|---|
 | 1.0 | Not recorded | All | Initial standard issued | Hiring Standards Board |
 | 1.3 | 2026-08-29 | 5.4 note; 6.4; 10.6; 10.11; 11.1; 11.4; 11.5 (new); 12.1; 18.5; 20.3; 21.10; 38.3; 57.3; Part VI preamble; Appendix A3 | SUBSTANTIVE revision closing every remaining open question, on the product owner's instruction. Part VI's false "eleven-section structure" claim replaced with a required core and an optional remainder, matching what 67.8 already conceded; competency menus declared ORDERED so Layer 1 has a per-competency baseline; a competency-to-dimension rule added so Miti can route without fifteen tables; no prerequisite edges, stated. 11.5 added distinguishing the additive DIMENSION vector from the multiplicative COMPETENCY multiplier (old 11.5 renumbered 11.6). 11.4 step 5 now iterates to a fixed point, closing a case where renormalising a clamped vector pushed a pinned weight back through its ceiling. 11.1 gained the seniority-band to four-grade mapping. 20.3 gained default weights for counts of one, two and three. 18.5's must-have trigger became "more than two thirds" instead of the literal "every". 12.1 gained the composition rule (delivered band is the minimum of every ceiling that fires) and states that a competency threshold has no Layer 1 default. 21.10's "Suspend D2" removed: it breached 11.4's no-zero rule, drove D1 above its ceiling, and was redundant because 11.1's fresher rows already floor D2. 10.6's band_width renamed band_half_width. 10.11's Candidate A band recentred on its own RPS. 6.4 and 57.3 citations corrected. 58 gained the ontology governance rules. 38.3 gained a session bound. Appendix A3 made a repeating field. Every edit is itemised in RUNBOOK_EDITS.md section 10. | Substantive (owner-directed) |
+| 1.4 | 2026-09-09 | Front matter; TOC; 4.4; 9.3; 11.2; 41; 47.2; 55; 56; 58; 60; 61; Part IV (15, 16, 17); Appendix A; Appendix F; Appendix G | SUBSTANTIVE, on the product owner's instruction: the Company DNA instrument is WITHDRAWN. Part IV (15 Purpose and principle, 16 The Company DNA Intake Instrument, 17 Compiling Company DNA into engine configuration) and Appendix A are removed in full, and every cross-reference to them with them. 61 SOP-01 becomes client onboarding around the Company Profile, which is the artefact the product now reads and the one job creation is gated on. SECTION NUMBERS ARE NOT RENUMBERED: 103 citations in the engine's own data name them, and renumbering would silently repoint every one. 15 to 17 are therefore absent rather than reused, and Part IV no longer exists. NO weight, threshold, multiplier, band boundary, tier definition, cap, floor, probe or accepted/rejected example pair outside Part IV was changed; 11.2's bounds table is untouched and only its introductory sentence stops naming the withdrawn instrument as the supplier. | Substantive (owner-directed) |
 | 1.2 | 2026-08-29 | 5.4; 6.1; 10.5; 10.7; 11.1; 11.3 | SUBSTANTIVE revision, on the product owner's instruction, closing gaps that spec-doc6 section 2.1 had required be proposed rather than applied. 11.3 now bounds all six 18.4 situation types and states the arrow multipliers, so Scale-up and Succession can be weighted at all. Three 11.1 baselines that breached the 11.4 clamp were corrected (Mechanical Fresher D1 0.42, Trades Entry D1 0.44, Data Fresher D2 0.04); every row still sums to 1.00. 10.5's slopes are exact fractions with an outer cap, closing a case where the multiplier reached 1.0004 against its own stated 1.00 ceiling. 6.1 clamps an adjusted tier strength to [0.05, 1.00]. 5.4 rules that an unlisted pair is not independent and that "Weakly" does not increment the count. 10.7 states that its "Insufficient" and 6.7's both bind. Each edit is itemised in RUNBOOK_EDITS.md section 7 with the open question it closes. | Substantive (owner-directed) |
 | 1.1 | 2026-08-29 | Front matter; §2; §6.3; §16; Appendices D, E, F; new table of contents and changelog | Editorial revision under spec-doc6 section 2.1. Front matter completed; table of contents added; §16's twelve subsections numbered §16.1-§16.12, which resolves the §16.3 cross-reference in §51; Appendix D and Appendix E subsections renumbered D.1-D.4 and E.1-E.7 so they stop colliding with the dimension names D1-D5 and the tier names E0-E5; two cross-references repaired (C5 cited §12.4, the PROHIBITED disqualifier list, where it means §12.3, the legitimate one; §6.3 cited §11.4 for adverse-impact monitoring, which is §52.5); product naming normalised; glossary extended with the canonical spellings. Every edit is itemised in RUNBOOK_EDITS.md. No weight, threshold, multiplier, band boundary, tier definition, cap, floor, intake question or example pair was changed. | Editorial (no Standards Board decision required) |
 
@@ -45,7 +46,7 @@ Read it by role:
 | Delivery pod recruiter | Parts 0, I, II, VII, IX, XIII | II, VI (your departments), VIII | Evidence collection quality; override discipline |
 | Delivery pod coordinator | Parts II, VII, XIII | VII, XIII | Chain of custody; validation completion; flags raised |
 | Engineering / AI team | Parts II, III, XII | II, III, VI, XII | Faithful implementation of the scoring contract |
-| Client HR Manager / CHRO | Parts 0, I, IV, V, IX, XI | IV, V | Company DNA accuracy; scorecard approval; overrides |
+| Client HR Manager / CHRO | Parts 0, I, V, IX, XI | V | Scorecard approval; overrides |
 | Client Hiring Manager | Part V | V | Truthful SWOT; force-ranking; calibration review |
 
 **The three-layer rule.** Nothing in this runbook works in isolation. Every evaluation is the product of three layers:
@@ -92,10 +93,6 @@ A lower layer may **tune** a higher layer within declared bounds. A lower layer 
   - [12. Thresholds, gates and disqualifiers](#12-thresholds-gates-and-disqualifiers)
   - [13. Contradiction handling](#13-contradiction-handling)
   - [14. Confidence, abstention and escalation](#14-confidence-abstention-and-escalation)
-- [**PART IV — LAYER 2: THE COMPANY HIRING PHILOSOPHY**](#part-iv-layer-2-the-company-hiring-philosophy)
-  - [15. Purpose and principle](#15-purpose-and-principle)
-  - [16. The Company DNA Intake Instrument](#16-the-company-dna-intake-instrument)
-  - [17. Compiling Company DNA into engine configuration](#17-compiling-company-dna-into-engine-configuration)
 - [**PART V — LAYER 3: ROLE SWOT INTELLIGENCE**](#part-v-layer-3-role-swot-intelligence)
   - [18. Why SWOT, and why it must not stay a form](#18-why-swot-and-why-it-must-not-stay-a-form)
   - [19. The transformation pipeline](#19-the-transformation-pipeline)
@@ -159,7 +156,6 @@ A lower layer may **tune** a higher layer within declared bounds. A lower layer 
   - [68. Deliberate choices that will be questioned](#68-deliberate-choices-that-will-be-questioned)
   - [69. What would falsify this approach](#69-what-would-falsify-this-approach)
 - [**APPENDICES**](#appendices)
-  - [Appendix A — The Company DNA Intake Instrument (field form)](#appendix-a-the-company-dna-intake-instrument-field-form)
   - [Appendix B — The Role SWOT Instrument (field form)](#appendix-b-the-role-swot-instrument-field-form)
   - [Appendix C — The Scorecard Template](#appendix-c-the-scorecard-template)
   - [Appendix D — Validation probe bank (starter set, all departments)](#appendix-d-validation-probe-bank-starter-set-all-departments)
@@ -405,7 +401,7 @@ The configuration is **frozen at the moment scoring begins** and versioned. If a
 1. Recruiter drafts JD from role request
         ↓
 2. System generates the Role SWOT instrument, pre-populated from
-   Company DNA (L2) + department model (L1) + JD draft
+   Department model (L1) + JD draft
         ↓
 3. Hiring Manager completes SWOT in a structured working session
    (async permitted; live session strongly preferred for senior roles)
@@ -430,7 +426,6 @@ The configuration is **frozen at the moment scoring begins** and versioned. If a
 | Complete Role SWOT | assist | ✔ own | ✔ | assist | — |
 | Propose weights | ✔ | ✔ | ✔ | ✔ | — |
 | **Approve scorecard** | — | — | ✔ **only** | — | — |
-| Edit Company DNA (L2) | — | — | ✔ | assist | — |
 | Add a hard disqualifier | propose | propose | ✔ approve | propose | audit |
 | Override a candidate ranking | ✔ (logged) | ✔ (logged) | ✔ | ✔ (logged) | audit |
 | Clear an authenticity flag | — | — | ✔ | ✔ (with note) | audit |
@@ -951,7 +946,6 @@ This is where the SWOT does its work. It is the dimension most systems omit enti
 - Operating-environment match: structure, ambiguity tolerance, resourcing level, process maturity
 - Stakeholder and collaboration model match
 - Practical constraints: location, notice period, compensation band, work model, travel, shift
-- Company-DNA behaviours (Layer 2), expressed as observable evidence
 
 **Critical discipline:** "culture fit" is banned as a criterion. It is unobservable, unfalsifiable, and a well-documented vector for homophily bias. It is replaced by **observable working-context evidence**: "has operated effectively with no dedicated QA function," "has delivered under a regulated approval cycle," "has built a function from zero rather than inheriting one."
 
@@ -1364,7 +1358,7 @@ inventing one, because inventing a row means inventing weights.
 
 ### 11.2 Layer 2 modifiers (company)
 
-The client's Company DNA may shift weights within declared bounds:
+A Layer 2 declaration may shift weights within declared bounds:
 
 | Company declaration | Effect | Bound |
 |---|---|---|
@@ -1716,167 +1710,6 @@ Never as a probability of success — we have not earned that claim. Always as *
 > "Low confidence — strong assessment performance, but we could not verify the claimed team-leadership scope; two reference requests went unanswered. Ask about this directly in your first interview."
 
 The second statement is more valuable to a client than a confident number would be, and it is honest.
-
----
-
-# PART IV — LAYER 2: THE COMPANY HIRING PHILOSOPHY
-
-*Captured once per client. Reusable across every role. This is the client's hiring DNA, compiled into engine configuration.*
-
-## 15. Purpose and principle
-
-Most hiring platforms treat client preference as free text shown to a model. That fails silently: the model may or may not apply it, differently each run, with no audit trail. Ready Pick Now compiles Company DNA into **declared, bounded, versioned configuration** — every statement the client makes must map to a concrete engine effect, or it is not captured.
-
-**The compilation rule:** *If a client statement cannot be expressed as (a) a weight modifier, (b) an evidence requirement, (c) a threshold, (d) a disqualifier, (e) a sourcing instruction, or (f) a dossier presentation preference — it is context for the recruiter, not configuration for the engine, and it is labelled as such.*
-
-## 16. The Company DNA Intake Instrument
-
-Administered to the HR Manager / CHRO in a 90-minute structured session. Twelve sections.
-
-### 16.1 Section 1 — Organisational context
-
-| Field | Why it matters |
-|---|---|
-| Headcount, growth rate, funding/ownership stage | Sets the "environment match" reference for D3 |
-| Industry and regulatory exposure | Drives D4 floor, background-check requirements, credential logic |
-| Locations and work model per location | D3 practical constraints |
-| Attrition rate and where it concentrates | Informs risk register and calibration expectations |
-| Time-to-hire reality (not aspiration) | Sets evidence-collection depth achievable |
-| Interview capacity per role per week | Determines shortlist size that is actually usable |
-
-### 16.2 Section 2 — Evaluation philosophy
-
-Each answered on a forced scale, not free text.
-
-| Question | Scale | Maps to |
-|---|---|---|
-| Proven delivery vs. potential | 1 (all proven) — 5 (heavy potential) | D2/D5 modifier |
-| Specialist depth vs. generalist range | 1–5 | Competency weighting within D1 |
-| Credentials vs. demonstrated practice | 1–5 | Evidence tier preferences within D1 |
-| Stability vs. velocity of prior moves | 1–5 | Tenure reading rules (§8.4) |
-| Internal training capacity | 1–5 | D1/D5 modifier |
-| Tolerance for non-traditional backgrounds | 1–5 | Exploration slot count; pedigree cap |
-
-### 16.3 Section 3 — What "good" looks like here, as observable evidence
-
-The client names **five to eight behaviours** their strongest performers demonstrably show. Each must be written as observable evidence, not as a trait.
-
-> Rejected: "Ownership mindset."
-> Accepted: "Has taken a project from unclear brief to shipped outcome without a defined process being handed to them, and can describe the decisions they made when nobody told them what to do."
-
-> Rejected: "Team player."
-> Accepted: "Has worked in a matrixed structure where they had responsibility without authority, and can describe how they secured commitment from people who did not report to them."
-
-The recruiter is responsible for enforcing this conversion. It is the single highest-leverage part of the whole intake, because unobservable criteria are exactly where bias enters.
-
-### 16.4 Section 4 — What fails here
-
-The mirror question, and often more informative: *describe two or three people who looked strong on paper and did not work out. What was the actual failure mode?* Failure modes convert into **risk probes** in the validation instrument and into risk-register items in the dossier.
-
-### 16.5 Section 5 — Non-negotiables and constraints
-
-- Statutory and policy requirements (background verification, drug screening where lawful and applied uniformly, licensure)
-- Notice-period tolerance
-- Compensation bands by level, and flexibility
-- Location / relocation / work-model rules
-- Any genuinely binary requirement, each tested against §12.3
-
-### 16.6 Section 6 — Process shape
-
-- Number and type of interview stages the client will actually run
-- Who makes the final decision
-- Whether the client will run their own assessments (avoid duplication)
-- Turnaround commitments — because a slow client process changes which candidates remain available, and the dossier should say so
-
-### 16.7 Section 7 — Diversity and inclusion commitments
-
-Captured as **process commitments**, never as quotas applied to scoring:
-- Slate composition goals at the *sourcing* stage
-- Structured-evaluation commitments
-- Any adverse-impact reporting the client wants
-- Explicit confirmation of the prohibited-disqualifier list (§12.4)
-
-### 16.8 Section 8 — Data, consent and privacy
-
-- What candidate data the client may receive and retain
-- Consent language the client requires
-- Retention period and deletion obligations
-- Cross-border transfer constraints
-- Whether references may be contacted before or only after an offer stage
-
-### 16.9 Section 9 — Compensation and offer reality
-
-Not used in scoring. Used in the **risk register**: a candidate whose market value exceeds the band is a retention/counter-offer risk that the client should know about before investing interview time. Salary history is never collected or used as a ranking input (§12.4).
-
-### 16.10 Section 10 — Sourcing preferences
-
-Where to look. Explicitly separated from how to score (§8.9 corollary). Target companies, target industries, and talent-pool preferences live here and are applied at sourcing only.
-
-### 16.11 Section 11 — Dossier presentation preferences
-
-Depth of dossier, format, whether the client wants raw evidence attached, named vs. anonymised first-pass review, and language.
-
-### 16.12 Section 12 — Historical calibration data
-
-If the client can supply it: past hires, who succeeded, who did not, and on what dimension the failure occurred. This is the highest-value input in the entire intake and is worth pursuing hard. It converts our weight baselines from professional judgement into client-specific evidence.
-
-## 17. Compiling Company DNA into engine configuration
-
-### 17.1 The compilation table
-
-Every Company DNA session produces this artefact, which is what the engine actually reads:
-
-```yaml
-company_id: CL-0000
-dna_version: v1
-effective_from: 2026-09-01
-
-weight_modifiers:
-  D2: +0.04        # "proven over potential" = 2/5
-  D5: -0.04
-  D4: +0.03        # regulated industry
-
-evidence_requirements:
-  - competency_class: leadership
-    minimum_tier: E4
-    rationale: "Client's two prior failures were leadership-scope misreads"
-  - all_roles:
-    reference_minimum: 2
-    reference_timing: pre_offer_allowed
-
-behavioural_competencies:            # from Section 3, as observable evidence
-  - id: CDNA-01
-    statement: "Has taken a project from unclear brief to shipped outcome…"
-    default_weight_in_D3: 0.20
-    assessment_route: structured_behavioural_probe
-
-risk_probes:                          # from Section 4
-  - "Probe for reliance on defined process; client's failures were
-     strong performers who stalled without structure."
-
-hard_constraints:
-  - work_authorisation: required
-  - background_verification: required_pre_offer
-
-prohibited_filters_confirmed: true
-pedigree_cap: 0.05                    # default retained
-exploration_slots: 2
-
-sourcing_preferences:                 # NOT scoring inputs
-  target_industries: [...]
-
-presentation:
-  dossier_depth: full
-  first_pass: anonymised
-```
-
-### 17.2 Review cadence
-
-Company DNA is reviewed every six months, and immediately on: leadership change, funding or ownership change, entry into a new regulatory regime, a significant attrition event, or two consecutive calibration cycles showing systematic mismatch.
-
-### 17.3 The DNA drift check
-
-Each quarter, compare declared DNA against **revealed preference**: what the client actually shortlisted, interviewed, rejected and hired. Where the two diverge materially, the DNA is wrong and the client is told. This conversation — "you told us you hire for potential, but you have rejected every candidate without direct domain experience" — is one of the most valuable things Ready Pick Now delivers, and no similarity-ranking product can have it.
 
 ---
 
@@ -3454,7 +3287,7 @@ Overrides in the category "recruiter judgement (uncategorised)" are permitted bu
 | Observation | Diagnosis | Action |
 |---|---|---|
 | Override rate >20% in a department | Weights or rubric miscalibrated for that function | Standards Board reviews the department model |
-| Override rate >30% for one client | Company DNA is inaccurate or incomplete | Re-run Layer 2 intake |
+| Override rate >30% for one client | The role scorecards for this client are inaccurate or incomplete | Re-run Layer 3 intake |
 | Override rate >30% for one recruiter across clients | Individual calibration issue or a genuine insight the model lacks | Shadow review; determine which |
 | Overrides cluster on one demographic direction | **Fairness incident** | Immediate fairness review; escalate to Standards Board |
 | Override rate <3% sustained | Rubber-stamping — humans have disengaged | Introduce blind spot-checks |
@@ -3632,7 +3465,6 @@ Held after the first shortlist of every role, and quarterly at relationship leve
 
 **Quarterly (60 minutes):**
 - Our predictions vs. their outcomes, honestly presented including misses
-- Company DNA drift check (§17.3)
 - Weight adjustments proposed and agreed
 - Process friction: completion rates, candidate feedback, turnaround
 
@@ -3753,7 +3585,7 @@ Candidates are told, before evaluation: that AI-assisted evaluation is used; wha
 
 1. **The rules live in configuration, not in prompts.** Weights, thresholds, tiers and disqualifiers are structured data the engine reads. Anything expressed only in natural-language instruction to a model will apply inconsistently and cannot be audited.
 2. **Every model call has a narrow, verifiable job.** Broad "evaluate this candidate" calls produce unauditable results. Narrow calls ("extract claims," "rate this evidence against this rubric anchor," "identify inconsistencies between these two texts") produce checkable ones.
-3. **Retrieval supplies rules, not judgement.** RAG injects the applicable department model, Company DNA and role scorecard. It does not decide.
+3. **Retrieval supplies rules, not judgement.** RAG injects the applicable department model and role scorecard. It does not decide.
 4. **Every output carries its provenance.** No score exists without a link to the evidence and the rule that produced it.
 5. **Determinism where possible.** Weighted aggregation, threshold application and gating are arithmetic, not inference. Only rubric rating and text analysis require a model.
 6. **The pipeline must be replayable.** Given the same evidence and the same configuration version, the same result must be reproducible.
@@ -3763,7 +3595,7 @@ Candidates are told, before evaluation: that AI-assisted evaluation is used; wha
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ 0. CONFIGURATION RESOLUTION                                  │
-│    Company DNA (L2) + role scorecard (L3) + department model  │
+│    Role scorecard (L3) + department model (L1)                 │
 │    (L1) + seniority + jurisdiction → frozen config vN         │
 │    GATE G1: scorecard approved?                               │
 └──────────────────────────────────────────────────────────────┘
@@ -3859,7 +3691,6 @@ Candidates are told, before evaluation: that AI-assisted evaluation is used; wha
 
 **What is retrieved, per evaluation:**
 - The department competency model and rubric anchors for the relevant seniority
-- The Company DNA compilation artefact (§17.1)
 - The frozen role scorecard and weight vector
 - Jurisdiction rules for licensure, data and disqualifier legality
 - The validation probe bank for the relevant competencies
@@ -3935,7 +3766,7 @@ CalibrationRecord:
 | Stage | Window | Deliverable | Exit benchmark |
 |---|---|---|---|
 | **1. Encode the taxonomy** | 0–60 days | Five dimensions; evidence tiers; six to eight department models with rubric anchors; baseline weight matrix | Two recruiters independently scoring the same 20 candidates agree within 8 RPS points on 80% of cases |
-| **2. Intake compilation** | 30–90 days | Company DNA instrument + compiler; SWOT instrument + transformation pipeline; scorecard with force-ranking and approval gate | 100% of active roles have an approved ≤6-competency force-ranked scorecard; zero "everything is a must-have" configs |
+| **2. Intake compilation** | 30–90 days | SWOT instrument + transformation pipeline; scorecard with force-ranking and approval gate | 100% of active roles have an approved ≤6-competency force-ranked scorecard; zero "everything is a must-have" configs |
 | **3. Authenticity layer** | 60–120 days | Triangulation agent; contradiction taxonomy; independence counting; authenticity score; flag review queue | Flag precision ≥60%; zero auto-rejections; every flag human-dispositioned |
 | **4. Explainability** | 90–150 days | Evidence graph with full citation enforcement; dossier generator; candidate feedback path | 100% of delivered dossiers pass the uncited-statement check |
 | **5. Calibration loop** | 120–210 days | Outcome capture; calibration ledger; quarterly cycle; per-client review | First full cycle completed; RPS demonstrably out-predicts a similarity baseline on advancement, with 6-month data collection underway |
@@ -3947,22 +3778,21 @@ CalibrationRecord:
 
 # PART XIII — OPERATING PROCEDURES
 
-## 61. SOP-01 · Client onboarding (Layer 2 capture)
+## 61. SOP-01 · Client onboarding
 
 ```
-D+0   Kickoff. Explain the three-layer model and the Decision Contract.
-D+2   Company DNA session (90 min) with HR Manager/CHRO.
-D+3   Recruiter drafts the DNA compilation artefact (§17.1).
-      EVERY statement must map to a concrete engine effect or be
-      labelled "recruiter context only."
-D+5   HR Manager reviews and approves the compilation.
+D+0   Kickoff. Explain the layered model and the Decision Contract.
+D+1   Client authors its Company Profile: what the organisation does,
+      what working there is like, and what it offers.
 D+5   Prohibited-filter confirmation signed.
 D+5   Data, consent and retention terms confirmed.
-D+7   Historical calibration data requested (chase persistently — it is
-      the highest-value input available).
+D+7   Historical calibration data requested (chase persistently —
+      it is the highest-value input available).
 ```
 
-**Quality bar:** if the DNA compilation contains more than two "recruiter context only" items in the evaluation-philosophy section, the session was not structured enough. Re-run it.
+**Quality bar:** the Company Profile must describe the organisation in
+terms a candidate could act on. A profile that says only what the company
+sells has not been written for the person reading the job.
 
 ## 62. SOP-02 · Role intake and configuration
 
@@ -4156,87 +3986,6 @@ Stated in advance, per Axiom 13:
 
 # APPENDICES
 
-## Appendix A — The Company DNA Intake Instrument (field form)
-
-**Client:** ________________  **Respondent:** ________________  **Date:** ______
-
-### A1. Context
-1. Headcount, growth rate, ownership/funding stage
-2. Industry and regulatory exposure
-3. Locations; work model per location
-4. Annual attrition, and where it concentrates
-5. Actual (not target) time-to-hire, by level
-6. Interview capacity per role per week
-
-### A2. Evaluation philosophy (forced scales, 1–5)
-7. Proven delivery ←1 … 5→ Potential
-8. Specialist depth ←1 … 5→ Generalist range
-9. Credentials ←1 … 5→ Demonstrated practice
-10. Stability of prior moves ←1 … 5→ Velocity/change
-11. Internal training capacity: none ←1 … 5→ substantial
-12. Tolerance for non-traditional backgrounds: low ←1 … 5→ high
-
-### A3. What "good" looks like — observable evidence only (5–8 items)
-> Format: "Has [done X] and can [describe/demonstrate Y]"
->
-> **This is a REPEATING field, minimum five, maximum eight.** The printed form
-> previously showed five blanks for a range that goes to eight, which a paper
-> form resolves in the margin and a screen cannot. Five is the floor and is
-> enforced: fewer than five is refused with the count named, because a client
-> who can only produce three observable behaviours has described a role rather
-> than a standard. Items six to eight are offered and optional. Above eight the
-> field stops accepting, for §20.2's reason: a list nobody can rank is the same
-> as no list.
-13. ______________________________________________
-14. ______________________________________________
-15. ______________________________________________
-16. ______________________________________________
-17. ______________________________________________
-
-### A4. Failure modes
-18. Describe two or three hires who looked strong and did not work out. What was the actual failure? *(This produces risk probes — press for specifics.)*
-
-### A5. Non-negotiables
-19. Statutory/policy requirements
-20. Notice-period tolerance
-21. Compensation bands by level, and flexibility
-22. Location/relocation/work-model rules
-23. Any genuinely binary requirement *(each tested against §12.3)*
-
-### A6. Process
-24. Interview stages actually run
-25. Final decision-maker
-26. Client-run assessments (to avoid duplication)
-27. Turnaround commitments
-
-### A7. Diversity commitments (process, not quotas)
-28. Slate composition goals at sourcing
-29. Adverse-impact reporting wanted?
-30. Prohibited-filter list confirmed and signed? ☐
-
-### A8. Data and consent
-31. Data the client may receive/retain
-32. Required consent language
-33. Retention period
-34. Cross-border constraints
-35. Reference timing: pre-offer permitted? ☐ Yes ☐ No
-
-### A9. Offer reality
-36. Band vs. market position by level
-37. Known counter-offer patterns
-
-### A10. Sourcing preferences *(sourcing only — never scoring)*
-38. Target industries/companies
-39. Talent pools to prioritise
-
-### A11. Presentation
-40. Dossier depth; anonymised first pass? ☐; language
-
-### A12. Historical calibration data
-41. Past hires with outcomes — available? ☐ *(Pursue hard.)*
-
----
-
 ## Appendix B — The Role SWOT Instrument (field form)
 
 **Role:** ________________ **Department:** ________ **Seniority:** ________
@@ -4414,7 +4163,7 @@ Our ranked #1 declined at offer stage due to a counter-offer — a risk the doss
 | **Exploration slot** | A deliberately included high-variance candidate, labelled as such |
 | **Gate (G1–G4)** | Mandatory checkpoints: configuration, evidence, integrity, delivery |
 | **Independence group** | A class of evidence that could not have been produced by one act of candidate preparation |
-| **Layer 1 / 2 / 3** | Ready Pick Now Hiring Philosophy / Company DNA / Role SWOT |
+| **Layer 1 / 3** | Ready Pick Now Hiring Philosophy / Role SWOT |
 | **Materiality** | Whether a claim matters to the decision; determines verification obligation |
 | **NOT_PROVIDED** | Evidence was requested and not supplied — distinct from UNKNOWN |
 | **Ready Pick Score (RPS)** | The final composite, reported with a band and a confidence label |
@@ -4433,7 +4182,6 @@ One spelling per concept. Code, tests, documents, UI strings and log messages us
 | Wordmark and domain-facing brand | ReadyPick (readypick.ai) | Readypick, readypick, Ready-Pick |
 | Legal entity | Hanulisa Technologies LLP | Hanulisa Technologies, Hanulisa LLP |
 | Layer 1 | Ready Pick Now Hiring Philosophy | Ready Pick Hiring Philosophy, Ready Pick philosophy |
-| Layer 2 | Company DNA | company DNA, Company Hiring DNA |
 | Layer 3 | Role SWOT | role SWOT, SWOT intelligence |
 | Composite score | Ready Pick Score (RPS) | Ready Pick Now Score, RP Score |
 | Dimension 1 | D1 — Verified Competence | Competence, D1 Competency |
@@ -4445,7 +4193,7 @@ One spelling per concept. Code, tests, documents, UI strings and log messages us
 | Gates | G1 Configuration gate; G2 Evidence gate; G3 Integrity gate; G4 Delivery gate | Gate 1-4, Checkpoint 1-4 |
 | Situation types | Gap-fill; Turnaround; Scale-up; Greenfield; Steady-state; Succession | Gap fill, Scale up, Steady state, Green-field |
 | Layers | Layer 1 / Layer 2 / Layer 3, abbreviated L1 / L2 / L3 | Tier 1, Level 1 |
-| Instruments | Company DNA Intake Instrument; Role SWOT Instrument; Scorecard; Validation questionnaire; Recruiter dossier | DNA form, SWOT form, score sheet |
+| Instruments | Role SWOT Instrument; Scorecard; Validation questionnaire; Recruiter dossier | SWOT form, score sheet |
 | Independence groups | self_written; self_structured; assessment; artefact; live; third_party | self, docs, interview |
 | Claim statuses | Corroborated; Partially corroborated; Uncorroborated; Contradicted | verified, unverified |
 | Evidence states | UNKNOWN; NOT_PROVIDED; WEAK; CONTRADICTED | missing, n/a, absent |
@@ -4461,10 +4209,10 @@ One spelling per concept. Code, tests, documents, UI strings and log messages us
 
   WE DO NOT RANK RESUMES. WE BUILD EVIDENCE FOR DECISIONS.
 
-  THREE LAYERS            FIVE DIMENSIONS           SIX EVIDENCE TIERS
+  TWO LAYERS              FIVE DIMENSIONS           SIX EVIDENCE TIERS
   ─────────────           ───────────────           ──────────────────
   1  RPN philosophy       D1 Verified competence    E5 Third-party verified
-  2  Company DNA          D2 Track record & impact  E4 Demonstrated live
+                          D2 Track record & impact  E4 Demonstrated live
   3  Role SWOT            D3 Role & context fit     E3 Structured response
                           D4 Authenticity           E2 Candidate artefact
                           D5 Trajectory             E1 Specific self-report
@@ -4497,6 +4245,7 @@ Editorial revisions are recorded here and itemised, edit by edit, in `RUNBOOK_ED
 |---|---|---|---|---|
 | 1.0 | Not recorded | Issue | Initial standard issued. | Hiring Standards Board |
 | 1.1 | 2026-08-29 | Editorial | Front matter completed (Date and Owner rows; version raised to 1.1). Table of contents added. §16's twelve subsections numbered §16.1-§16.12, repairing the §16.3 cross-reference in §51. Two cross-references repaired: C5 in §2 cited §12.4, the PROHIBITED disqualifier list, where the sentence means §12.3, the legitimate one; and §6.3 cited §11.4 for adverse-impact monitoring, which is §52.5. Appendix D and Appendix E subsections renumbered D.1-D.4 and E.1-E.7 so they no longer collide with the dimension names D1-D5 and the tier names E0-E5. Product naming normalised to 'Ready Pick Now'. Layer 1's name normalised to one spelling. 'Company DNA' capitalised consistently. Glossary extended with a canonical-spellings table. NO weight, threshold, multiplier, band boundary, tier definition, cap, floor, intake question, probe or accepted/rejected example pair was changed. | Editorial |
+| 1.4 | 2026-09-09 | Substantive | The Company DNA instrument is WITHDRAWN on the product owner's instruction. Part IV (sections 15, 16 and 17) and Appendix A are removed in full; section 61's SOP-01 is rewritten around the Company Profile, which is the artefact the product reads and the one job creation is gated on; every cross-reference to the removed sections goes with them. Section numbers are NOT renumbered, so 15 to 17 are absent rather than reused: the engine's YAML mirror carries 103 citations by section number and renumbering would repoint every one silently. The mirror lost `company_dna_instrument.yaml` and one duplicate rule in `disqualifiers.yaml` in the same change. | Substantive (owner-directed) |
 
 **Mechanical content of this document is mirrored in `backend/app/services/hiring/runbook_data/` as YAML, every entry citing `RPN-PHIL-001 §N`.** `backend/tests/test_runbook_parity.py` fails if the two drift in either direction. Change this document and the data files in the same commit.
 

@@ -4,7 +4,7 @@
     every export format, and asserts no numeric score, band value, percentage,
     or dimension figure is present. This is the enforcement of D8."
 
-    spec-doc6 D8: the Ready Pick Score "renders in the candidate list and
+    spec-doc6 D8: the Vivekium Score "renders in the candidate list and
     nowhere else. It must be technically impossible for it to enter a delivered
     report."
 
@@ -415,7 +415,7 @@ def test_a_number_hidden_at_every_depth_is_found(mutate, where) -> None:
     assert any(v.rule == numbers.RULE_NUMERIC_FIELD for v in violations)
 
 
-# ── The Ready Pick Score, specifically ───────────────────────────────────────
+# ── The Vivekium Score, specifically ───────────────────────────────────────
 
 
 def test_an_undeclared_score_never_enters_the_json_response_at_all() -> None:
@@ -600,7 +600,7 @@ def test_the_candidates_own_submission_may_carry_numbers() -> None:
 
 def test_a_score_smuggled_into_the_validation_section_is_still_refused() -> None:
     """The verbatim exemption relaxes the numeric-field rule and hands over to
-    the score-shaped-key rule. A Ready Pick Score does not become acceptable by
+    the score-shaped-key rule. A Vivekium Score does not become acceptable by
     being put somewhere the candidate's own answers live."""
     payload = _payload()
     payload["validation"]["ready_pick_score"] = 82

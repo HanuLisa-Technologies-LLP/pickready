@@ -37,13 +37,12 @@ from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
 from app.models.job_setup import (
     SWOT_ANALYSIS_SECTIONS,
-    SWOT_AREAS,
     JobSwotAnalysis,
-    JobSwotIntake,
 )
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.assessments import (
+    AssessmentConsentIn,
     AssessmentModeIn,
     BulkCompetencyIn,
     CompetencyIn,
@@ -57,6 +56,7 @@ from app.schemas.assessments import (
     VideoQuestionOut,
     VideoRecordingStatusOut,
     VideoStartOut,
+    ClaimEvidenceOut,
     DimensionOut,
     FrameworkOut,
     FunctionalReportOut,
@@ -69,24 +69,32 @@ from app.schemas.assessments import (
     SwotAnalysisGenerateIn,
     SwotAnalysisOut,
     SwotAnalysisSectionsIn,
-    SwotAnswerIn,
-    SwotIntakeOut,
     TranscriptAnswerDetailOut,
     TranscriptExchangeOut,
     TranscriptOut,
+    ValidationPointsOut,
 )
+# The proctored session's recording start. It lives beside the client-portal
+# video schemas rather than with the assessment ones because it is the
+# candidate-side half of the SAME artifact those schemas deliver, and both
+# halves are bound by the same rule: no bucket name and no object key.
+from app.schemas.videos import SessionMediaStartOut
 from app.services import capabilities as caps
 from app.services import rbac
-from app.services.hiring import pipeline_halt, scorecard, situations, swot_quality
+from app.services.hiring import pipeline_halt, scorecard, swot_quality
 from app.services import (
     answer_classification,
     assessment_consent,
+    evidence_confidence,
     assessment_invite,
+    consent_catalog,
     conversation_guardrails,
+    cost_telemetry,
     credit_reconciliation,
     hiring_pipeline,
     interview_telemetry,
     interviewer,
+    job_assessment_retention,
     job_posting,
     ppi,
     ppi_interview,
@@ -94,7 +102,7 @@ from app.services import (
     retake,
     retention_consent,
     swot_analysis,
-    swot_intake,
+    job_version,
     telemetry_events,
     tenant_cache,
 )
@@ -104,6 +112,8 @@ from app.services import (
 from app.models.dual_mode import (
     MODE_CONVERSATIONAL,
     MODE_VIDEO_INTERVIEW,
+    RECORDING_PROCTORED_SESSION,
+    RECORDING_VIDEO_INTERVIEW,
     VideoRecording,
 )
 from app.services.video import lifecycle as video_lifecycle
@@ -112,7 +122,7 @@ from app.services.video import storage as video_storage
 from app.services.assessment_formats import rendering as format_rendering
 from app.services.assessment_formats import scoring as format_scoring
 from app.services.assessment_formats import types as question_types
-from app.services.audit import audit
+from app.services.audit import audit, record_action, record_agent_action
 # PROCTORING IS MANDATORY (proctoring-spec-doc.md, principle P4). The gate is
 # this module's only import-time dependency on the proctoring package; the
 # behaviour recorder and the report loader are reached inside the handlers
@@ -194,7 +204,9 @@ async def _refresh_setup_status(session: AsyncSession, job: Job) -> None:
     await session.flush()
 
 
-def _setup_out(job: Job, *, framework_pending: bool = False) -> JobSetupOut:
+def _setup_out(
+    job: Job, *, framework_pending: bool = False, swot_analysis_ready: bool = False
+) -> JobSetupOut:
     approved = job.framework_approved_at is not None
     return JobSetupOut(
         job_id=job.id,
@@ -208,7 +220,7 @@ def _setup_out(job: Job, *, framework_pending: bool = False) -> JobSetupOut:
         questions_approved=approved,
         framework_approved=approved,
         matching_categories_finalized=job.matching_categories_finalized_at is not None,
-        swot_complete=job.swot_completed_at is not None,
+        swot_analysis_ready=swot_analysis_ready,
         ready_for_candidates=job.assessment_status == READY_FOR_CANDIDATES,
         generated_at=job.framework_generated_at,
         approved_at=job.framework_approved_at,
@@ -235,20 +247,30 @@ async def _framework_repair_pending(session: AsyncSession, job: Job) -> bool:
     timestamp was being treated as evidence that work happened, which is the
     exact failure this repo has a standing rule about.
 
-    CHANGED 2026-08-29. It no longer enqueues unconditionally. Sutra refuses to
-    compile without a completed SWOT session, so a job whose intake is still
-    running has no matrix for a perfectly good reason, and enqueueing a task
-    that is certain to refuse would fill the log with a normal waiting state.
-    The enqueue is now conditioned on the one input this layer can see; every
-    other refusal is Sutra's and is surfaced by `_setup_out`'s own fields.
+    Sutra now reads the saved Job SWOT document. A historic intake completion
+    stamp is not evidence that the document exists, so check the actual row.
     """
     rows = await ppi.load_framework(session, job.id)
     if rows:
         return False
-    if job.swot_completed_at is None:
-        # Nothing to enqueue. The setup screen says the SWOT session is
-        # outstanding, which is the actionable half of this state.
-        return True
+    # A MATRIX A HUMAN EMPTIED IS NOT A MATRIX THAT WAS NEVER WRITTEN, and the
+    # ACTIVE rows alone cannot tell them apart -- deletion here is soft, so both
+    # states read as zero. Asked of the active rows only, this told a hiring
+    # manager who had just cleared the generated items "we are still preparing
+    # the evaluation criteria ... refresh the page shortly" and re-enqueued
+    # Sutra, which would have put the items they had deliberately removed back.
+    # One row of any kind is proof the generator landed, so from here the real
+    # blocker -- "Must-have has no items" -- is what they are told.
+    ever = (
+        await session.execute(
+            select(JobCompetency.id).where(JobCompetency.job_id == job.id).limit(1)
+        )
+    ).scalars().first()
+    if ever is not None:
+        return False
+    analysis = await swot_analysis.get(session, job)
+    if analysis is None or not analysis.has_content:
+        return False
     dispatch(
         "pickready.compile_tatva_matrix",
         args=[str(job.id)],
@@ -265,7 +287,12 @@ async def job_setup(
     session: AsyncSession = Depends(get_tenant_db),
 ) -> JobSetupOut:
     job = await _staff_job(session, user, job_id)
-    return _setup_out(job, framework_pending=await _framework_repair_pending(session, job))
+    analysis = await swot_analysis.get(session, job)
+    return _setup_out(
+        job,
+        framework_pending=await _framework_repair_pending(session, job),
+        swot_analysis_ready=bool(analysis and analysis.has_content),
+    )
 
 
 # ── The technical question bank: REMOVED 2026-08-06 ──────────────────────────
@@ -319,7 +346,6 @@ def _competency_out(row: JobCompetency) -> CompetencyOut:
         assessment_method=row.assessment_method,
         disqualifier=row.disqualifier,
         swot_origin=row.swot_origin,
-        force_rank=row.force_rank,
         provenance=scorecard.plain_provenance(item) if item is not None else [],
     )
 
@@ -399,6 +425,130 @@ def _reject_culture(name: str) -> None:
         raise HTTPException(status_code=422, detail=ppi.FORBIDDEN_COMPETENCY_DETAIL)
 
 
+# ── Adding a name back that was removed ─────────────────────────────────────
+#
+# DELETION HERE IS SOFT AND THE UNIQUE CONSTRAINT IS NOT.
+#
+# `remove_competency` sets `is_active = False` rather than issuing a DELETE,
+# because a generated candidate question may already reference the row.
+# `uq_job_competency_name` is on (job_id, category, name) with NO predicate, so
+# a name the recruiter removed a minute ago still occupies its slot. Inserting
+# it again therefore raised `UniqueViolationError` and the route answered 500.
+#
+# Measured in pilot on 2026-09-20: a hiring manager cleared the six generated
+# Must-have items, pasted their own five, and got "API error 500" twice with
+# nothing on the screen explaining it. The paste is the product's normal way in
+# and the deleted rows were invisible, so from their seat the form simply did
+# not work. The bulk route had NO test of any kind, which is why it shipped.
+#
+# The row is REVIVED instead. And a name already sitting in the aspect is
+# returned UNTOUCHED rather than refused: a paste of thirty skills where two
+# are already present must not discard the other twenty-eight, and the caller's
+# intent -- "this aspect should contain these names" -- is already satisfied
+# for those two. Nothing is silently dropped, because every requested name is
+# in the response and in the matrix afterwards; what is deliberately NOT done
+# is overwrite an existing item's required level from a paste, since that would
+# quietly restate a criterion the reviewer had already set.
+
+
+async def _rows_by_name(
+    session: AsyncSession, job_id: uuid.UUID, category: str, names: list[str]
+) -> dict[str, JobCompetency]:
+    """Every row holding one of these names in this aspect, ACTIVE OR NOT."""
+    if not names:
+        return {}
+    rows = (
+        await session.execute(
+            select(JobCompetency).where(
+                JobCompetency.job_id == job_id,
+                JobCompetency.category == category,
+                JobCompetency.name.in_(names),
+            )
+        )
+    ).scalars().all()
+    return {row.name: row for row in rows}
+
+
+def _revive(
+    row: JobCompetency,
+    *,
+    description: str | None,
+    required_level: int,
+    ordinal: int,
+) -> JobCompetency:
+    """Bring a soft-deleted row back as the entry the caller just asked for.
+
+    The stages Sutra derived (`dimension`, `weight`, `provenance_json`, ...) are
+    deliberately left ALONE. They describe a criterion the pipeline derived, and
+    the name coming back is the same name; clearing them would turn a revived
+    item into one with no provenance, and inventing new ones would claim a
+    derivation that did not run.
+    """
+    row.is_active = True
+    row.description = description
+    row.required_level = required_level
+    row.ordinal = ordinal
+    row.updated_at = datetime.now(timezone.utc)
+    return row
+
+
+def _invalidate_derived_criterion(row: JobCompetency) -> None:
+    """A changed human decision needs fresh technical evidence at Save Matrix.
+
+    The draft remains editable and readable. Clearing the derived fields makes
+    stale evidence impossible to mistake for evidence of the new name/category.
+    Save Matrix derives them in the same transaction as the freeze.
+
+    `swot_origin` IS CLEARED HERE, AND IT IS THE ONE THAT WOULD HAVE LIED.
+    It carries the reporting authority's own SWOT sentence, and
+    `scorecard.plain_provenance` renders it to the reviewer verbatim as
+    `You said: "..."`. It is NOT cleared by `_revive`, and the difference is
+    the whole point: a revived row is the SAME name coming back, so the
+    sentence still refers to it. A rename is a different criterion wearing the
+    row's identity, and carrying the sentence across would attribute
+    "Kubernetes operations" to a criterion now called "Incident command" --
+    a fabricated citation on the one screen this whole contract exists to make
+    trustworthy. Enrichment re-derives from the human's name with no SWOT
+    anchor, which is an honest absence rather than a borrowed one.
+    """
+    row.dimension = None
+    row.observable_evidence = None
+    row.evidence_sources = None
+    row.assessment_method = None
+    row.weight = None
+    row.threshold_json = None
+    row.disqualifier = None
+    row.provenance_json = None
+    row.anchor_key = None
+    row.force_rank = None
+    row.swot_origin = None
+    # `description` IS THE MIRROR OF `observable_evidence`, so it goes with it.
+    #
+    # The 2026-09-20 ruling removed the description input from the add and the
+    # edit controls, and the edit route echoes the STORED value back so that a
+    # field missing from a form is not a field erased from the record. That
+    # protects against erasure caused by the form. It does not make the text
+    # survive a change of identity: what a competency MEANS is derived from its
+    # name, so the sentence describing "Kubernetes operations" is not a
+    # description of "Incident command". Leaving the mirror populated while its
+    # source is NULL is two fields that must agree, disagreeing, and the one a
+    # reviewer actually reads on the card is the stale one. Enrichment writes
+    # both again from the human's name at Save Matrix.
+    row.description = None
+
+
+async def _next_ordinal(
+    session: AsyncSession, job_id: uuid.UUID, category: str
+) -> int:
+    return (
+        await session.execute(
+            select(func.coalesce(func.max(JobCompetency.ordinal), 0)).where(
+                JobCompetency.job_id == job_id, JobCompetency.category == category
+            )
+        )
+    ).scalar_one() + 1
+
+
 def _reject_frozen(job: Job) -> None:
     """A saved framework is the job's fixed evaluation criteria (spec §6.3).
 
@@ -428,23 +578,31 @@ async def add_competency(
     _reject_frozen(job)
     if body.category == ppi.CATEGORY_BEHAVIOURAL:
         _reject_culture(body.name)
-    ordinal = (
-        await session.execute(
-            select(func.coalesce(func.max(JobCompetency.ordinal), 0)).where(
-                JobCompetency.job_id == job.id, JobCompetency.category == body.category
-            )
+    existing = (
+        await _rows_by_name(session, job.id, body.category, [body.name])
+    ).get(body.name)
+    if existing is not None and existing.is_active:
+        # Already exactly what was asked for. See `_rows_by_name`.
+        return _competency_out(existing)
+    ordinal = await _next_ordinal(session, job.id, body.category)
+    if existing is not None:
+        row = _revive(
+            existing,
+            description=body.description,
+            required_level=ppi.required_level_score(body.required_level),
+            ordinal=ordinal,
         )
-    ).scalar_one() + 1
-    row = JobCompetency(
-        tenant_id=job.tenant_id,
-        job_id=job.id,
-        category=body.category,
-        name=body.name,
-        description=body.description,
-        required_level=ppi.required_level_score(body.required_level),
-        ordinal=ordinal,
-    )
-    session.add(row)
+    else:
+        row = JobCompetency(
+            tenant_id=job.tenant_id,
+            job_id=job.id,
+            category=body.category,
+            name=body.name,
+            description=body.description,
+            required_level=ppi.required_level_score(body.required_level),
+            ordinal=ordinal,
+        )
+        session.add(row)
     await session.flush()
     await _invalidate_framework(job)
     return _competency_out(row)
@@ -470,26 +628,34 @@ async def add_competencies_bulk(
     if body.category == ppi.CATEGORY_BEHAVIOURAL:
         for name in names:
             _reject_culture(name)
-    ordinal = (
-        await session.execute(
-            select(func.coalesce(func.max(JobCompetency.ordinal), 0)).where(
-                JobCompetency.job_id == job.id,
-                JobCompetency.category == body.category,
+    level = ppi.required_level_score(body.required_level)
+    existing = await _rows_by_name(session, job.id, body.category, names)
+    ordinal = await _next_ordinal(session, job.id, body.category) - 1
+    rows: list[JobCompetency] = []
+    for name in names:
+        found = existing.get(name)
+        if found is not None and found.is_active:
+            # Already in this aspect. Returned so the caller sees the whole
+            # requested set, and left untouched so a paste cannot restate a
+            # level the reviewer set deliberately. See `_rows_by_name`.
+            rows.append(found)
+            continue
+        ordinal += 1
+        if found is not None:
+            rows.append(
+                _revive(found, description=None, required_level=level, ordinal=ordinal)
             )
-        )
-    ).scalar_one()
-    rows = [
-        JobCompetency(
+            continue
+        fresh = JobCompetency(
             tenant_id=job.tenant_id,
             job_id=job.id,
             category=body.category,
             name=name,
-            required_level=ppi.required_level_score(body.required_level),
-            ordinal=ordinal + index,
+            required_level=level,
+            ordinal=ordinal,
         )
-        for index, name in enumerate(names, start=1)
-    ]
-    session.add_all(rows)
+        session.add(fresh)
+        rows.append(fresh)
     await session.flush()
     await _invalidate_framework(job)
     return [_competency_out(row) for row in rows]
@@ -510,10 +676,31 @@ async def update_competency(
         raise HTTPException(status_code=404, detail="Competency not found")
     if body.category == ppi.CATEGORY_BEHAVIOURAL:
         _reject_culture(body.name)
+    # The same slot `_rows_by_name` exists for: renaming an item onto a name
+    # that aspect already holds -- including one only soft-deleted, which the
+    # reviewer cannot see -- violates `uq_job_competency_name`. Refused with the
+    # reason rather than left to surface as a 500.
+    clash = (await _rows_by_name(session, job.id, body.category, [body.name])).get(
+        body.name
+    )
+    if clash is not None and clash.id != row.id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f'"{body.name}" is already an entry under '
+                f"{ppi.CATEGORY_LABELS[body.category]} on this job."
+            ),
+        )
+    # The identity question is asked BEFORE the assignment, and the
+    # invalidation happens AFTER it, so the edit form's own echo of the stored
+    # description cannot survive a rename it no longer describes.
+    reidentified = row.name != body.name or row.category != body.category
     row.category = body.category
     row.name = body.name
     row.description = body.description
     row.required_level = ppi.required_level_score(body.required_level)
+    if reidentified:
+        _invalidate_derived_criterion(row)
     row.updated_at = datetime.now(timezone.utc)
     await session.flush()
     await _invalidate_framework(job)
@@ -554,11 +741,11 @@ async def finalize_framework(
     refuses to reopen it once anyone has been, and gate G1 starts answering yes.
 
     RBAC §20 makes it an EXPLICIT transition and says what it has to record:
-    the user who finalized it, the timestamp, the relevant version and the
-    relevant hiring-criteria version. All four are written -- two onto the job,
-    two onto the append-only Company DNA binding -- and then again onto the
-    audit row, because the columns answer "what is in force" and the audit row
-    answers "what happened and who did it".
+    the user who finalized it, the timestamp and the relevant criteria version.
+    All three are written -- two onto the job, one onto the append-only
+    scorecard binding -- and then again onto the audit row, because the columns
+    answer "what is in force" and the audit row answers "what happened and who
+    did it".
 
     Authorised through `rbac.require_authorized` rather than
     `require_capability`, and the difference is the point: this route names a
@@ -591,37 +778,38 @@ async def finalize_framework(
     job.criteria_version = matrix.version
     await _refresh_setup_status(session, job)
     rows = await ppi.load_framework(session, job.id)
-    row = await audit(
+    # Every column in the one INSERT: the application role has no UPDATE grant
+    # on audit_log, so a post-flush attribute write aborts the transaction at
+    # commit, after the response has already left (the SWOT false-409 bug).
+    await record_action(
         session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
         action="role_definition_finalized",
-        target_type="job",
-        target_id=job.id,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
+        new_state={"lifecycle_state": job.lifecycle_state},
         metadata={
             "counts": {
                 category: sum(1 for item in rows if item.category == category)
                 for category in ppi.CATEGORIES
             },
-            # RBAC §20's four required facts, in the row as well as the columns.
-            "jd_version": swot_intake.jd_version(job),
+            # RBAC §20's required facts, in the row as well as the columns.
+            "jd_version": job_version.jd_version(job),
             "criteria_version": matrix.version,
-            "company_dna_version": matrix.company_dna_version,
             "situation_key": matrix.situation_key,
         },
     )
-    row.job_id = job.id
-    row.actor_role = user.role.value
-    row.correlation_id = job.correlation_id
-    row.new_state = {"lifecycle_state": job.lifecycle_state}
     await _invalidate_framework(job)
     logger.info(
         "assessments.role_definition_finalized job_id=%s by=%s criteria_version=%d "
-        "dna_version=%s correlation_id=%s",
+        "correlation_id=%s",
         job.id,
         user.user_id,
         matrix.version,
-        matrix.company_dna_version,
         job.correlation_id,
     )
     return await _framework_out(session, job)
@@ -636,25 +824,54 @@ async def reopen_framework(
     """Reopen a saved framework for editing, and close the job to new
     conversations while it is open.
 
-    Refused once any candidate has been graded against it: those reports state
-    a grade against criteria that would silently change underneath them, and a
-    report is immutable.
+    REFUSED ONCE AN ASSESSMENT CONTRACT HAS BEEN ISSUED, AND NOT BEFORE.
+
+    The test is whether any candidate on this job has been INVITED, which is
+    what an `assessment_conversations` row is, or has had per-candidate
+    questions written against the frozen matrix. Either one means a person is
+    being measured against these exact criteria, and a report is immutable, so
+    changing the criteria underneath them would make two reports on one job
+    incomparable. That is the one property the freeze exists to guarantee.
+
+    IT IS DELIBERATELY NOT "ANY LINKED CANDIDATE". Applying is not being
+    assessed: a `job_candidate_links` row is created by an application, a
+    sourced upload or a databank import, none of which reads a competency. A
+    guard on the link would stop a hiring manager correcting a typo the moment
+    the first CV arrives, on a job nobody has been invited to, and there is no
+    reopen after that. Somebody who applies before a revision and is invited
+    after it is assessed against the revision, which is the currently approved
+    contract and the only one that was ever used on them.
+
+    AND IT IS DELIBERATELY NOT "ANY REPORT", WHICH IS WHAT IT USED TO BE. A
+    report exists only at the END of an assessment, so between invitation and
+    synthesis the matrix was reopenable underneath a candidate who was already
+    answering questions derived from it. Their questions came from one version
+    and their grade would have been written against another, with nothing
+    recording that it had happened.
     """
     job = await _staff_job(session, user, job_id)
-    assessed = (
+    contracted = (
         await session.execute(
-            select(func.count())
-            .select_from(FunctionalSkillsReport)
-            .where(FunctionalSkillsReport.job_id == job.id)
+            select(
+                select(func.count())
+                .select_from(AssessmentConversation)
+                .where(AssessmentConversation.job_id == job.id)
+                .scalar_subquery()
+                + select(func.count())
+                .select_from(CandidateQuestion)
+                .where(CandidateQuestion.job_id == job.id)
+                .scalar_subquery()
+            )
         )
     ).scalar_one()
-    if assessed:
+    if contracted:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Candidates have already been assessed against this framework, so "
-                "it can no longer be changed. Reports state a grade against these "
-                "exact criteria and are never rewritten."
+                "Candidates on this job have already been invited to an "
+                "assessment against these criteria, so the matrix can no "
+                "longer be changed. A report states a grade against the exact "
+                "criteria it was written from and is never rewritten."
             ),
         )
     job.framework_approved_at = None
@@ -730,6 +947,7 @@ async def reorder_framework(
                 # Must-have and Nice-to-have, and the refusal above is what
                 # keeps it that way. A check on a branch that cannot be taken
                 # reads as protection and provides none.
+                _invalidate_derived_criterion(row)
                 row.category = group.category
                 moved += 1
             row.ordinal = ordinal
@@ -742,143 +960,6 @@ async def reorder_framework(
         job.id, len(body.groups), moved,
     )
     return await _framework_out(session, job)
-
-
-# ── Bodha: the Hiring Manager SWOT session (Runbook §18) ───────────────────
-# The Layer 3 intake, run once per job before Sutra can compile anything. Four
-# quadrants, §18.3's seven high-value probes, §18.2's force-ranking and
-# disqualifier confirmation, §18.5's best-performer test, and §18.4's situation
-# classification read back for explicit confirmation.
-#
-# RBAC §10.4 makes the SWOT a Hiring-Manager-controlled field, so these routes
-# authorise on EDIT_SWOT through the full RBAC chain (tenant, assignment,
-# lifecycle state) rather than on CREATE_JOB. RBAC §9.4 names "job-role SWOT
-# analysis" among the things a Recruiter "MUST NOT be able to authoritatively
-# modify", and §11 is separately clear that the Hiring Manager cannot REJECT the
-# JD -- Bodha handing a SWOT back for rework is a different act and is what
-# §18.5 requires.
-
-
-def _swot_out(job: Job, intake: JobSwotIntake, prompt: str | None) -> SwotIntakeOut:
-    area = swot_intake.current_area(intake)
-    quality = dict(intake.quality_json or {})
-    return SwotIntakeOut(
-        job_id=job.id,
-        status=intake.status,
-        complete=swot_intake.is_complete(intake),
-        current_area=area,
-        current_area_label=swot_intake.AREA_LABELS.get(area) if area else None,
-        prompt=prompt,
-        captured=intake.captured(),
-        areas_total=len(SWOT_AREAS),
-        areas_done=min(intake.area_index, len(SWOT_AREAS)),
-        phase=intake.phase,
-        phase_label=swot_intake.PHASE_LABELS.get(intake.phase),
-        situation_key=intake.situation_key,
-        situation_label=(
-            situations.SITUATIONS[intake.situation_key].label
-            if situations.is_valid(intake.situation_key)
-            else None
-        ),
-        returned_for_rework=intake.phase == swot_intake.PHASE_REWORK,
-        # The §18.5 rules currently refusing, by NAME. The sentence to say is
-        # `prompt`; a screen that rendered both would say the same thing twice.
-        outstanding_rules=[
-            str(entry.get("rule"))
-            for entry in (quality.get("rejections") or [])
-            if entry.get("rule")
-        ],
-        instruments_asked=[str(key) for key in (intake.probes_asked or [])],
-    )
-
-
-@router.get("/jobs/{job_id}/swot", response_model=SwotIntakeOut)
-async def get_swot_intake(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> SwotIntakeOut:
-    job = await _staff_job(session, user, job_id)
-    intake = await swot_intake.get_or_create(session, job, conducted_by=user.user_id)
-    prompt = await swot_intake.open_question(session, job, intake)
-    return _swot_out(job, intake, prompt)
-
-
-@router.post("/jobs/{job_id}/swot/respond", response_model=SwotIntakeOut)
-async def respond_swot_intake(
-    job_id: uuid.UUID,
-    body: SwotAnswerIn,
-    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> SwotIntakeOut:
-    """Record one answer and return the next question.
-
-    CLOSING THE SESSION IS WHAT ACTIVATES SUTRA. §18.5's six rejection rules are
-    the only exit: an intake that trips one is handed back with the sentence
-    that says what is wanted, and nothing is enqueued. An intake that passes
-    them publishes Bodha's `swot_evidence` artifact and enqueues the seven-stage
-    compile.
-
-    The compile is a CELERY TASK, never inline. It is a model call plus a dozen
-    table lookups, and a hiring manager who has just finished a ninety-minute
-    session should not watch it run.
-
-    Regeneration is refused once the matrix is frozen, so a late intake cannot
-    move the criteria underneath a report that already states a grade against
-    them; `scorecard.compile_matrix` raises rather than overwriting.
-    """
-    job = await _staff_job(session, user, job_id)
-    intake = await swot_intake.get_or_create(session, job, conducted_by=user.user_id)
-    if swot_intake.is_complete(intake):
-        return _swot_out(job, intake, None)
-
-    try:
-        prompt = await swot_intake.submit_answer(session, job, intake, body.answer)
-    except pipeline_halt.PipelineHalted as halt:
-        raise HTTPException(
-            status_code=503, detail=pipeline_halt.http_detail(halt)
-        ) from halt
-
-    if swot_intake.is_complete(intake):
-        row = await audit(
-            session,
-            tenant_id=user.tenant_id,
-            actor_user_id=user.user_id,
-            action="swot_session_completed",
-            target_type="job",
-            target_id=job.id,
-            metadata={
-                "situation_key": intake.situation_key,
-                "captured": {
-                    area: len(points) for area, points in intake.captured().items()
-                },
-                "instruments": list(intake.probes_asked or []),
-                "best_performer_excluded": intake.best_performer_excluded,
-            },
-        )
-        row.job_id = job.id
-        row.actor_role = user.role.value
-        row.correlation_id = job.correlation_id
-        # RBAC §34: an AI-initiated mutation is attributable to BOTH the human
-        # principal and the agent that executed it. `actor_user_id` stays the
-        # human, always.
-        row.agent_name = "bodha"
-        if job.framework_approved_at is None:
-            dispatch(
-                "pickready.compile_tatva_matrix",
-                args=[str(job.id)],
-                kwargs={
-                    "replace": True,
-                    "correlation_id": job.correlation_id or "",
-                },
-            )
-            await _invalidate_framework(job)
-            logger.info(
-                "assessments.swot_complete_matrix_enqueued job_id=%s situation=%s",
-                job.id,
-                intake.situation_key,
-            )
-    return _swot_out(job, intake, prompt)
 
 
 # ── The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ──
@@ -969,6 +1050,19 @@ async def _swot_analysis_out(
     )
 
 
+async def _enqueue_matrix_from_swot(session: AsyncSession, job: Job, row: JobSwotAnalysis) -> None:
+    """Start Sutra when a saved SWOT exists and no matrix has been written."""
+    if not row.has_content or job.framework_approved_at is not None:
+        return
+    if await ppi.load_framework(session, job.id):
+        return
+    dispatch(
+        "pickready.compile_tatva_matrix",
+        args=[str(job.id)],
+        kwargs={"correlation_id": job.correlation_id or ""},
+    )
+
+
 @router.get("/jobs/{job_id}/swot-analysis", response_model=SwotAnalysisOut)
 async def get_swot_analysis(
     job_id: uuid.UUID,
@@ -1023,25 +1117,35 @@ async def generate_swot_analysis(
         return out
 
     row_out = await _swot_analysis_out(session, user, job, row)
-    entry = await audit(
+    # ONE INSERT, never an UPDATE. The audit columns (job_id, actor_role,
+    # correlation_id, agent_name) must be set BEFORE the row is flushed:
+    # `audit()` flushes on return, so mutating the returned row afterwards
+    # emits `UPDATE audit_log`, which the app role has REVOKED (0001/0014,
+    # binding since the 2026-09-11 credential split). That UPDATE failed the
+    # COMMIT after the 200 had already been sent, the whole transaction rolled
+    # back, and the client's copy of `version` ran one ahead of the row --
+    # which is exactly the false "Someone else saved this SWOT" 409 on the
+    # next save. `record_agent_action` writes every column in the one INSERT.
+    # RBAC 34: an AI-initiated mutation is attributable to BOTH the human who
+    # asked for it and the agent that executed it. `actor_user_id` stays the
+    # human, always.
+    await record_agent_action(
         session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
         action="job_swot_analysis_generated",
-        target_type="job",
-        target_id=job.id,
+        agent_name="bodha",
+        principal_user_id=user.user_id,
+        principal_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
         metadata={
             "version": row.version,
             "replaced_human_edits": bool(body.confirm_overwrite and row.human_edited),
         },
     )
-    entry.job_id = job.id
-    entry.actor_role = user.role.value
-    entry.correlation_id = job.correlation_id
-    # RBAC 34: an AI-initiated mutation is attributable to BOTH the human who
-    # asked for it and the agent that executed it. `actor_user_id` stays the
-    # human, always.
-    entry.agent_name = "bodha"
+    await _enqueue_matrix_from_swot(session, job, row)
     return row_out
 
 
@@ -1070,18 +1174,21 @@ async def save_swot_analysis(
     except swot_analysis.VersionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    entry = await audit(
+    # One INSERT carrying every audit column: see the generate route for why a
+    # post-flush mutation of the audit row is an UPDATE the app role cannot run.
+    await record_action(
         session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
         action="job_swot_analysis_edited",
-        target_type="job",
-        target_id=job.id,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
         metadata={"version": row.version},
     )
-    entry.job_id = job.id
-    entry.actor_role = user.role.value
-    entry.correlation_id = job.correlation_id
+    await _enqueue_matrix_from_swot(session, job, row)
     return await _swot_analysis_out(session, user, job, row)
 
 
@@ -1097,23 +1204,51 @@ async def restore_swot_analysis(
         row = await swot_analysis.restore_previous(session, job)
     except swot_analysis.SwotAnalysisError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    entry = await audit(
+    # One INSERT carrying every audit column: see the generate route for why a
+    # post-flush mutation of the audit row is an UPDATE the app role cannot run.
+    await record_action(
         session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
         action="job_swot_analysis_restored",
-        target_type="job",
-        target_id=job.id,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
         metadata={"version": row.version},
     )
-    entry.job_id = job.id
-    entry.actor_role = user.role.value
-    entry.correlation_id = job.correlation_id
+    await _enqueue_matrix_from_swot(session, job, row)
     return await _swot_analysis_out(session, user, job, row)
 
 
 
 # ── The PPI Assessment Report (spec §9) ──────────────────────────────────────
+
+
+async def _require_assessment_records_readable(
+    session: AsyncSession, user: CurrentUser, link: JobCandidateLink
+) -> None:
+    """THE JOB-CLOSURE ACCESS GATE (change request 22, 2026-09-22).
+
+    Closing a job no longer deletes its assessment data on the spot; it
+    WITHHOLDS it for thirty days and then a sweep deletes it. That makes
+    inaccessibility something the read path has to enforce rather than
+    something the absence of a row enforced for free, so every staff-facing
+    read of a report, a PDF or a transcript asks here.
+
+    Called AFTER the tenant check and BEFORE the artifact is loaded, the
+    ordering `services/tools` states: a refusal that ran the handler first has
+    already read the row it was refusing to show.
+
+    The CANDIDATE's own routes deliberately do not call this. The employer
+    closing a requisition withholds the record from the employer; it was never
+    a reason to take a person's own assessment away from them.
+    """
+    job = await session.get(Job, link.job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    await job_assessment_retention.require_readable(session, user, job)
 
 
 @router.get("/reports/links/{link_id}", response_model=FunctionalReportOut)
@@ -1125,6 +1260,7 @@ async def get_report(
     link = await session.get(JobCandidateLink, link_id)
     if link is None or link.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Report not found")
+    await _require_assessment_records_readable(session, user, link)
     report = (
         await session.execute(select(FunctionalSkillsReport).where(FunctionalSkillsReport.job_candidate_link_id == link.id))
     ).scalars().first()
@@ -1145,6 +1281,17 @@ async def get_report(
             grade=rating_label(row.score) or GRADES[-1],
             required_level=grade_for_percent(row.required_level),
             remark=row.remark,
+            # EVIDENCE CONFIDENCE (0107). The stored code becomes a word HERE,
+            # server side, for the same reason `score` becomes a grade here: a
+            # code that crossed the boundary is a code somebody eventually
+            # renders directly. A row written before 0107 carries None and
+            # `display_word` returns None for it rather than inventing one.
+            evidence_confidence=evidence_confidence.display_word(
+                row.evidence_confidence
+            ),
+            evidence_sources=list(
+                evidence_confidence.source_labels(row.evidence_sources)
+            ),
         )
 
     grouped: dict[str, list[DimensionOut]] = {}
@@ -1206,6 +1353,16 @@ async def get_report(
         validation=report.validation_json,
         proctoring=proctoring,
         gap_analysis=GapAnalysisOut.model_validate(report.gap_analysis_json or {}),
+        # An EMPTY model, not None, when the column is NULL. The two sections
+        # were added in 0107 and every report written before it has neither;
+        # a client walking the section order must find an empty section it can
+        # skip rather than a missing key it has to guard.
+        claim_evidence=ClaimEvidenceOut.model_validate(
+            report.claim_evidence_json or {}
+        ),
+        validation_points=ValidationPointsOut.model_validate(
+            report.validation_points_json or {}
+        ),
         # Populated only where Gap Analysis is not: a pre-Draft-v4 report shows
         # what it was actually written with rather than an empty section.
         suggested_interview_questions=(
@@ -1235,6 +1392,12 @@ async def download_report_pdf(
     link = await session.get(JobCandidateLink, link_id)
     if link is None or link.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Report not found")
+    # Asked again rather than relied on through `get_report` above, the same
+    # defensiveness the tenant check two lines up already applies: a gate that
+    # only holds because of the order two calls happen in is a gate the next
+    # reordering deletes without a diff that looks like a deletion. The Job is
+    # in the session identity map by now, so the second ask is free.
+    await _require_assessment_records_readable(session, user, link)
     candidate = await session.get(Candidate, link.candidate_id)
     # The candidate decides whether their assessment is retained beyond this
     # job (Consent & Privacy spec, 2026-09-05): Download enabled only on an
@@ -1249,7 +1412,7 @@ async def download_report_pdf(
     tenant = await session.get(Tenant, link.tenant_id)
     candidate_name = (candidate.full_name if candidate else None) or "Candidate"
     job_title = (job.title if job else None) or "Role"
-    tenant_name = (tenant.name if tenant else None) or "ReadyPick customer"
+    tenant_name = (tenant.name if tenant else None) or "Vivekium customer"
     # ReportLab is heavy and PDF downloads are infrequent; keep it off the API
     # startup path so ordinary requests do not pay its import cost.
     from app.services.report_pdf import render_report_pdf
@@ -1467,6 +1630,7 @@ async def get_transcript(
     link = await session.get(JobCandidateLink, link_id)
     if link is None or link.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Application not found")
+    await _require_assessment_records_readable(session, user, link)
     conversation = (
         await session.execute(
             select(AssessmentConversation).where(
@@ -2201,7 +2365,26 @@ async def _ensure_conversation_ready(
     )
 
 
-@router.post("/conversations/links/{link_id}/start", response_model=ConversationOut)
+# Abuse control and COST control, not authorization (services/rate_limit).
+#
+# Every turn of an assessment conversation invokes a model, so this pair was the
+# most expensive unthrottled surface in the product: an authenticated candidate
+# session, or a stolen one, could drive unbounded model spend and exhaust the
+# shared per-credential rate limit at the provider, which starves OTHER tenants'
+# assessments because `llm_router`'s circuit breaker is keyed by credential.
+#
+# The numbers are set well above a real assessment and well below a flood. A
+# non-managerial assessment is 45 questions answered by a person typing prose,
+# so a handful of starts and a few dozen turns a minute cannot be reached by
+# somebody doing the assessment, and a candidate who legitimately retries a
+# failed send is nowhere near either ceiling. Now that `client_identifier`
+# resolves a verified subject, each candidate gets their own bucket rather than
+# sharing one with every other candidate behind the same office address.
+@router.post(
+    "/conversations/links/{link_id}/start",
+    response_model=ConversationOut,
+    dependencies=[Depends(rate_limit("assessment_start", limit=10, window=60))],
+)
 async def start_conversation(
     link_id: uuid.UUID,
     user: CurrentUser = Depends(get_current_candidate),
@@ -2260,6 +2443,10 @@ async def start_conversation(
                 target=hiring_pipeline.ASSESSMENT_IN_PROGRESS,
             )
     prompts = await _conversation_prompts(session, job, link)
+    # Pre-filled questions are consumed BEFORE anything is served, so the
+    # first thing this candidate ever sees is a question the resume could
+    # not answer for them (feature 2, C2).
+    await _consume_prefilled_questions(session, job, conversation, prompts)
     index = min(conversation.next_question_index, len(prompts))
 
     # THE FIRST QUESTION IS WRITTEN HERE, and it has to be.
@@ -2332,6 +2519,86 @@ async def _resume_excerpt(session: AsyncSession, link: JobCandidateLink) -> str:
             select(Profile.resume_text).where(Profile.id == link.profile_id)
         )
     ).scalar_one_or_none() or ""
+
+
+async def _consume_prefilled_questions(
+    session: AsyncSession,
+    job: Job,
+    conversation: AssessmentConversation,
+    prompts: list[tuple[str, str, str, CandidateQuestion]],
+) -> int:
+    """Record every consecutive pre-filled question instead of asking it.
+
+    Feature 2 (C2, owner-ruled): a question whose criterion the resume
+    already evidences carries `prefilled_answer`, and the conversation
+    writes that exchange, agent prompt, then the labelled answer, exactly
+    where a typed answer would land (the label names WHICH source, so the
+    transcript says where the words came from), advances the index and moves
+    on. The scorer reads the same rows it always reads; billing and
+    completion fire at the same chokepoints, because the index moves through
+    the same gate.
+
+    Since CR 23 (2026-09-22) there are two pre-fill sources: the resume anchor
+    and the candidate's PORTABLE record. Both land here identically on purpose,
+    because the mechanism is the same one and a second recording path would be
+    a second place for billing and completion to disagree.
+    """
+    from app.services import resume_prefill
+
+    consumed = 0
+    while (
+        conversation.pending_prompt is None
+        and conversation.completed_at is None
+        and conversation.next_question_index < len(prompts)
+    ):
+        aspect, key, prompt_text, row = prompts[conversation.next_question_index]
+        prefilled = getattr(row, "prefilled_answer", None)
+        if not prefilled:
+            break
+        ordinal = (
+            await session.execute(
+                select(func.count()).select_from(AssessmentMessage).where(
+                    AssessmentMessage.conversation_id == conversation.id
+                )
+            )
+        ).scalar_one()
+        candidate_message = AssessmentMessage(
+            tenant_id=job.tenant_id,
+            conversation_id=conversation.id,
+            ordinal=ordinal + 2,
+            speaker="candidate",
+            domain=aspect,
+            question_key=key,
+            content=prefilled,
+            # The label says WHICH pre-fill produced this, not merely that one
+            # did. Since CR 23 there are two sources (the resume anchor and
+            # the candidate's portable record) and reading one as the other
+            # would misreport where an answer came from, which is the whole
+            # job of a transcript label.
+            answer_label=resume_prefill.answer_label_for(row.prefill_source),
+        )
+        session.add_all([
+            AssessmentMessage(
+                tenant_id=job.tenant_id, conversation_id=conversation.id,
+                ordinal=ordinal + 1, speaker="agent", domain=aspect,
+                question_key=key, content=prompt_text,
+            ),
+            candidate_message,
+        ])
+        await session.flush()
+        await _write_answer_record(
+            session, job, conversation, row.id, candidate_message,
+            answer_json={"text": prefilled, "source": row.prefill_source or "resume"},
+            auto_score=None, evaluation=None,
+            now=datetime.now(timezone.utc), paused_ms=0,
+            question_type=row.question_type,
+        )
+        conversation.delivered_prompt = None
+        conversation.next_question_index += 1
+        consumed += 1
+    if consumed:
+        await session.flush()
+    return consumed
 
 
 async def _write_next_question(
@@ -2497,7 +2764,13 @@ async def _transcript_rows(
     return [{"speaker": speaker, "content": content} for speaker, content in rows]
 
 
-@router.post("/conversations/{conversation_id}/respond", response_model=ConversationOut)
+# See the note on `start_conversation` above. This is the one that actually
+# costs money per call: one model invocation per turn.
+@router.post(
+    "/conversations/{conversation_id}/respond",
+    response_model=ConversationOut,
+    dependencies=[Depends(rate_limit("assessment_turn", limit=40, window=60))],
+)
 async def respond(
     conversation_id: uuid.UUID,
     body: ConversationMessageIn,
@@ -2512,6 +2785,21 @@ async def respond(
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     link, job = await _candidate_link(session, user, conversation.job_candidate_link_id)
+    # THE TURN'S MODEL SPEND IS BILLED TO THIS APPLICATION.
+    #
+    # Bound here, the moment the application is known and before anything can
+    # call a model, and drained by the single `cost_telemetry.flush` near the
+    # end of this handler. It is a plain tally rather than a context manager
+    # wrapped around four hundred lines: `contextvars` are per asyncio task and
+    # FastAPI gives every request its own, so nothing set here can reach
+    # another request, and the shape stays readable.
+    #
+    # A turn that raises after a model call loses that turn's counters, and
+    # that is the accepted cost rather than an oversight: this record is an
+    # OBSERVATION of work, the same class as `observability.trace`, and a turn
+    # that raised has already failed the candidate in front of it. Failing the
+    # turn to protect the counter would be exactly backwards.
+    turn_usage = cost_telemetry.begin()
     # A terminated conversation takes no further answer. The proctoring gate
     # below refuses too, through the session's outcome; this is the status the
     # ingestion pipeline wrote on the conversation itself, checked first
@@ -2896,11 +3184,59 @@ async def respond(
             interviewer.STOP_NO_CONFLICT_OUTSTANDING in coverage.stop_conditions
         )
 
-    if (
-        conversation.next_question_index >= len(prompts) or evidence_complete
-    ) and not conversation.pending_prompt:
+    # Consume any pre-filled questions the advance just reached (feature 2,
+    # C2): recorded, never asked, and if the tail of the interview is all
+    # pre-filled this walks the index to the end so completion and the
+    # charge fire in the same block below, on the same request.
+    await _consume_prefilled_questions(session, job, conversation, prompts)
+    # Read AFTER the consumption above, which can walk the index to the end.
+    prompts_exhausted = conversation.next_question_index >= len(prompts)
+    if (prompts_exhausted or evidence_complete) and not conversation.pending_prompt:
         conversation.status = "completed"
         conversation.completed_at = datetime.now(timezone.utc)
+        # WHICH of the two endings this was, on the row (change request 28B).
+        #
+        # DERIVED FROM THE BRANCH THAT ALREADY DECIDED, never re-evaluated.
+        # `ppi.conversation_may_close` is still the only thing that can end an
+        # assessment early; this reads the decision it made rather than asking
+        # a second question that could answer differently, which is the
+        # duplicate decider `interviewer.stop_conditions` refuses to become.
+        #
+        # Exhaustion is checked FIRST, and the two are not symmetric. An early
+        # close requires `asked < total_written`, so the pair is mutually
+        # exclusive at the moment `evidence_complete` is computed; the
+        # pre-filled consumption above can then walk the index to the end, and
+        # a session that reached its last written question did not stop early
+        # whatever was true a few lines earlier. `prompts_exhausted` is the
+        # claim that can be checked against the row afterwards, so it wins.
+        #
+        # `every_dimension_covered` rather than `floor_reached` for the other
+        # branch, and the difference is the whole point of the feature: the
+        # floor is PERMISSION to stop, not a reason for stopping. Recording
+        # the floor would read as "we stopped at the minimum", which is the
+        # fail-style early exit this product deliberately does not do.
+        conversation.end_reason = (
+            interviewer.STOP_PROMPTS_EXHAUSTED
+            if prompts_exhausted
+            else interviewer.STOP_EVERY_DIMENSION_COVERED
+        )
+        # The same fact for a reader of the logs, with the three numbers that
+        # make it legible. Internal: `interview_telemetry`'s header is what
+        # forbids any of this reaching a response schema, and the end reason
+        # falls under it for a reason of its own, since how much of the matrix
+        # somebody was asked is precisely what a candidate would read as a
+        # verdict on their answers.
+        interview_telemetry.record_end(
+            interview_telemetry.EndEvent(
+                conversation_id=str(conversation.id),
+                end_reason=conversation.end_reason,
+                questions_asked=conversation.next_question_index,
+                questions_written=len(prompts),
+                floor=ppi.min_questions(
+                    job.assessment_grade, job.role_classification
+                ),
+            )
+        )
         # Master Directive Part 2 section 5.1: EV_INT_COMPLETED, the AI
         # assessment interview session ending. Feeds the TTF evaluation
         # segment (services/metrics.py); never allowed to fail the completion.
@@ -2925,6 +3261,17 @@ async def respond(
             job_candidate_link_id=link.id,
         )
         dispatch("pickready.run_functional_assessment", args=[str(link.id)])
+        # The transcript is final now, so it becomes retrievable evidence
+        # (RPN-AI-UP-001 W2.1). Keyed on the LINK, like the recruiter
+        # transcript route, because the transcript outlives any one
+        # conversation row and every consumer of assessment evidence already
+        # holds a link id.
+        #
+        # AFTER completion and never per turn: a live conversation grows
+        # between two reads by design, so indexing mid-assessment would put
+        # half a transcript in the index and re-embed it on every answer. Same
+        # rule that keeps `extract_assessment` uncached.
+        dispatch("pickready.index_document", args=["assessment", str(link.id)])
     await session.flush()
     next_index = conversation.next_question_index
 
@@ -2942,6 +3289,27 @@ async def respond(
         await _write_next_question(
             session, job, link, conversation, prompts, next_index
         )
+
+    # Everything this turn spent, onto the application's cost record. AFTER
+    # `_write_next_question`, which is itself a model call and the second most
+    # expensive thing in the turn; flushing before it would under-report every
+    # interview by one composed question per turn, which is a systematic error
+    # rather than a rounding one.
+    #
+    # `questions_asked` is the conversation's own index, an absolute reading
+    # rather than a count of turns. The two genuinely differ: a follow-up and a
+    # re-ask are turns that advance no question, and reporting them as
+    # questions would make the cost record disagree with the progress label the
+    # candidate is looking at.
+    await cost_telemetry.flush(
+        session,
+        scope=cost_telemetry.AssessmentScope(
+            tenant_id=job.tenant_id, job_id=job.id, link_id=link.id
+        ),
+        tally=turn_usage,
+        conversation_turns=1,
+        questions_asked=conversation.next_question_index,
+    )
 
     # A pending follow-up is what the candidate sees next. The progress label
     # deliberately keeps counting BASE questions, so a probe does not make the
@@ -3155,6 +3523,9 @@ async def _mode_state(
             consent_version=terms.consent_version,
             privacy_policy_version=terms.privacy_policy_version,
             terms_version=terms.terms_version,
+            # Stage B items (vivekium feature 6), served so the screen never
+            # authors consent copy of its own.
+            items=consent_catalog.stage_payload(consent_catalog.STAGE_ASSESSMENT),
         ),
     )
 
@@ -3204,6 +3575,7 @@ async def select_assessment_mode(
 @router.post("/conversations/links/{link_id}/consent", response_model=ModeStateOut)
 async def accept_assessment_consent(
     link_id: uuid.UUID,
+    body: AssessmentConsentIn,
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> ModeStateOut:
@@ -3212,10 +3584,17 @@ async def accept_assessment_consent(
     Only acceptance is recorded; a decline collects nothing and stores
     nothing, the candidate simply does not start. Idempotent per (session,
     mode): the first acceptance is the audit answer.
+
+    The body carries the Stage B items the candidate ticked, and the service
+    refuses anything short of the whole set (vivekium feature 6: each item is
+    consented individually).
     """
     link, _job, conversation = await _candidate_conversation(session, user, link_id)
     await assessment_consent.record_consent(
-        session, conversation, candidate_id=link.candidate_id
+        session,
+        conversation,
+        candidate_id=link.candidate_id,
+        consent_keys=body.consent_keys,
     )
     return await _mode_state(session, conversation)
 
@@ -3263,7 +3642,11 @@ async def start_video_interview(
                 target=hiring_pipeline.ASSESSMENT_IN_PROGRESS,
             )
     recording = await video_recordings.create_recording(
-        session, conversation, candidate_id=link.candidate_id, source_format=None
+        session,
+        conversation,
+        candidate_id=link.candidate_id,
+        source_format=None,
+        kind=RECORDING_VIDEO_INTERVIEW,
     )
     prompts = await _conversation_prompts(session, job, link)
     settings = _get_settings()
@@ -3277,6 +3660,63 @@ async def start_video_interview(
             )
             for index, (_aspect, _key, _stored, row) in enumerate(prompts)
         ],
+        max_upload_bytes=settings.video_max_upload_bytes,
+        max_duration_seconds=settings.video_max_duration_seconds,
+    )
+
+
+@router.post(
+    "/conversations/links/{link_id}/session-media/start",
+    response_model=SessionMediaStartOut,
+)
+async def start_session_media(
+    link_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> SessionMediaStartOut:
+    """Open the proctored session's recording (owner ruling, 2026-09-22).
+
+    THE GATE IS THE PROCTORING GATE, and that is the whole authorization
+    story: media is captured during a proctored assessment and at no other
+    time, so a session that may not proceed may not be recorded either. There
+    is no enable flag here, because there is no enable flag for proctoring
+    (principle P4, re-affirmed by the same ruling).
+
+    A VIDEO INTERVIEW IS REFUSED, not silently accepted. In that mode the
+    interview recording already captures the same camera for the same
+    minutes and is already stored, compressed and served through the same
+    routes; opening a second recording would store the candidate twice and
+    give the hiring team two artifacts to choose between.
+
+    The browser then uses the EXISTING upload, finalize and status routes.
+    They are not duplicated for this kind: one recording lifecycle, one
+    upload path, one processing task, and the row's `kind` is what decides
+    which half of the pipeline the bytes take.
+    """
+    link, job, conversation = await _candidate_conversation(session, user, link_id)
+    await proctoring_gate.require_active(session, conversation)
+    if conversation.mode == MODE_VIDEO_INTERVIEW:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This assessment is a video interview, and that recording is "
+                "already the stored record of the session."
+            ),
+        )
+    await assessment_consent.require_consent(session, conversation)
+    await _ensure_conversation_ready(session, job, link)
+    recording = await video_recordings.create_recording(
+        session,
+        conversation,
+        candidate_id=link.candidate_id,
+        source_format=None,
+        kind=RECORDING_PROCTORED_SESSION,
+    )
+    settings = _get_settings()
+    return SessionMediaStartOut(
+        conversation_id=conversation.id,
+        recording_id=recording.id,
+        status=recording.status,
         max_upload_bytes=settings.video_max_upload_bytes,
         max_duration_seconds=settings.video_max_duration_seconds,
     )

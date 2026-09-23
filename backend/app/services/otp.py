@@ -160,6 +160,9 @@ class RateLimiter:
         return count > 0 and expires_at > self._clock()
 
 
+#: Connect and read timeout for the limiter's Redis client, in seconds.
+_REDIS_TIMEOUT_SECONDS = 1
+
 _limiter: RateLimiter | None = None
 
 
@@ -170,7 +173,21 @@ def get_limiter() -> RateLimiter:
         try:
             import redis.asyncio as aioredis
 
-            client = aioredis.from_url(get_settings().redis_url, decode_responses=True)
+            # EXPLICIT SOCKET TIMEOUTS, and the "fail open to memory" design
+            # above is exactly why they are load bearing. Every RateLimiter
+            # method wraps its Redis call in `except Exception` and falls
+            # through to the in-process counter, but an unreachable Redis does
+            # not raise, it BLOCKS: with no timeout the fallback never runs and
+            # the sign-in request hangs instead of degrading. One second, the
+            # same bound `app/core/cache.py` uses, because a rate-limit counter
+            # is on an interactive request path and a slow limiter is worse
+            # than a per-process one.
+            client = aioredis.from_url(
+                get_settings().redis_url,
+                decode_responses=True,
+                socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
+                socket_timeout=_REDIS_TIMEOUT_SECONDS,
+            )
         except Exception:  # noqa: BLE001 — package/connection unavailable (dev/tests)
             client = None
         _limiter = RateLimiter(client)
@@ -601,7 +618,7 @@ async def request_otp(
             dispatch(
                 "pickready.send_sms",
                 args=[target.destination,
-                      f"Your ReadyPick OTP is {code}. Valid for "
+                      f"Your Vivekium OTP is {code}. Valid for "
                       f"{settings.otp_ttl_minutes} minutes."],
             )
         channels_sent.append(target.channel.value)

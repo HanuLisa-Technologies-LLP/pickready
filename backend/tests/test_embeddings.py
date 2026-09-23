@@ -28,7 +28,21 @@ class _Settings:
 
 
 class _NoKey:
+    """Settings with no embedding credential, on a NON-production deployment.
+
+    `is_production` is stated rather than omitted. `embed` refuses the
+    pseudo-random fallback in production (see
+    `tests/test_embeddings_production_guard.py`), so a double without this
+    attribute raises `AttributeError` from inside the guard -- which is a
+    stale test double, not a defect in the guard.
+
+    It is False here deliberately: these two tests are ABOUT the dev fallback,
+    which only exists off production. Adding the attribute as True would make
+    them assert the fallback's shape while the code refuses to produce one.
+    """
+
     voyage_context_4 = ""
+    is_production = False
 
 
 def test_the_embedding_credential_is_read_from_exactly_one_named_variable() -> None:

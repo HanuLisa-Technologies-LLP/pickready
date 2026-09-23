@@ -1,0 +1,39 @@
+id: adversarial.an_out_of_order_transition_is_refused_and_writes_nothing
+version: 1
+tier: adversarial
+description: >
+  An application at `applied` is pushed straight to `offer_extended`. The FSM
+  has no such edge and `apply_transition` is the single chokepoint all six
+  pipeline callers reach, so the move is refused BEFORE the first write. Each
+  stage carries a promise -- `assessment_completed` means a report exists --
+  and the transition emails reference it, so an out of order event that landed
+  would leave the pipeline asserting something no artifact supports.
+tags: [pipeline, fsm, out-of-order]
+
+given:
+  world: job_with_applicant
+
+workload:
+  - skip_the_pipeline
+
+expect:
+  state:
+    # A refusal that had already written is a refusal in name only, so the
+    # status, the append-only history and the candidate's feed are all read
+    # back from the second connection.
+    - job_candidate_links.status == applied
+    - pipeline_status.count_for_link == 0
+    - candidate_updates.count_for_link == 0
+  output:
+    - status.skip_the_pipeline == 409
+  trajectory:
+    - illegal_transition_attempted
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+    - an_automatic_rejection_occurred
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

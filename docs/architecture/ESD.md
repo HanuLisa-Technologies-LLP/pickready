@@ -186,8 +186,8 @@ Credit-ledger mutations, Razorpay webhooks, batch work, and task completion path
 - derived project evidence (`candidate_projects`), carrying evidence
   dimensions, evidence units, the AI interpretation in its own column, and the
   deletion ledger for temporary originals;
-- the compiled Company DNA artifact and the per-job binding recording which
-  version a scorecard was frozen against;
+- the append-only per-job binding recording which scorecard version was
+  frozen and when (`job_scorecard_bindings`);
 - the shared evidence ledger (`evidence_items`, `evidence_claims`,
   `evidence_claim_links`), which stores a REFERENCE to where a sentence lives
   and never the sentence;
@@ -269,7 +269,7 @@ BD sessions use the owner audience but carry no customer tenant context and are 
 
 ### 7.3 Session storage
 
-Access, refresh, and session-hint values are stored in secure HTTP-only cookies. Refresh rotation and logout are server-controlled. Browser JavaScript does not need direct access to bearer tokens.
+Access, refresh, and session-hint values are HTTP-only browser-session cookies with no Max-Age or Expires. They use Secure on HTTPS and SameSite=Strict by default. The access JWT expires after 15 minutes; a Redis session record enforces 30 minutes of inactivity independently of the cookies. Refresh rotation is atomic, and logout or a password change revokes the server record. Firebase identity is kept only in browser memory during an open tab; browser storage holds no identity token. Every app load validates the session through `/auth/me`.
 
 `tenants` and `users` have enabled and forced PostgreSQL RLS. Ordinary company
 sessions see only their selected tenant. Login, refresh, and workspace
@@ -580,16 +580,27 @@ Assessment completion deducts one credit synchronously and queues report generat
 ### 12.4 The hiring intelligence layer
 
 Five stages, each a package under `app/services/`, wired into the live path
-through `api/assessments.py`, `api/jobs.py`, `api/dashboard.py`,
-`api/company_dna.py` and `workers/tasks.py`.
+through `api/assessments.py`, `api/jobs.py`, `api/dashboard.py` and
+`workers/tasks.py`.
 
 | Stage | Package | Boundary it enforces |
 |---|---|---|
-| Bodha | `services/hiring` (SWOT, `company_dna`) | Situation classification is read back with its consequence and confirmed by a human before the session closes |
-| Sutra | `services/hiring/scorecard`, `transformation` | Seven stages per item; `Item.is_complete` refuses at build, not later |
+| Bodha | `services/hiring` (SWOT) | Situation classification is read back with its consequence and confirmed by a human before the session closes |
+| Sutra | `services/hiring/scorecard`, `transformation` | Proposes and enriches Tatva items through seven stages. The Hiring Manager controls the final criterion set, names, categories, order, and exposed importance controls; Save Matrix validates derived metadata and freezes the reviewed version |
 | Yukti | `services/hiring/prescreen`, `services/matching` | Resume-only grading; never sees conversation content |
 | Miti | `services/miti` | Five evaluators over a frozen input; the aggregator imports no router |
 | Siddhi | `services/siddhi` | `Section.render` is the only path to text and raises on an uncited statement |
+
+Tatva uses one criterion representation, `job_competencies`. Sutra proposes
+the initial rows and derives internal assessment fields. The authorized Hiring
+Manager controls which rows exist and their product-facing names, categories,
+order, and exposed importance settings. Save Matrix enriches incomplete
+technical fields without reversing those choices, validates the complete
+matrix, and writes an append-only freeze binding. Downstream assessment reads
+the frozen version; reopening a draft cannot change the contract already used
+by a candidate. Company Profile supplies job narrative context; optional
+Drishti is separate functional context. Company DNA has no current runtime
+table, endpoint, weight source, or assessment dependency.
 
 Four structural properties, each asserted by a test rather than documented and
 hoped for:

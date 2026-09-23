@@ -3,9 +3,8 @@
 // Password change for accounts that actually HAVE a password.
 //
 // Firebase owns credentials and recovery (claude.md rule 2), this component
-// therefore talks to the Firebase client SDK directly and never to a ReadyPick
-// endpoint. There is no password column in our database and this does not
-// create one.
+// therefore changes the credential through the Firebase SDK. The app then
+// revokes every server-side session for this user. No password is stored here.
 //
 // Visibility rule (client decision, 2026-07-27): the card renders ONLY when the
 // signed-in Firebase user carries the "password" provider. A Google-only
@@ -16,11 +15,13 @@ import { Eye, EyeOff } from "lucide-react";
 import {
   EmailAuthProvider,
   reauthenticateWithCredential,
+  signInWithEmailAndPassword,
   updatePassword,
-  type User as FirebaseUser,
 } from "firebase/auth";
 
 import { firebaseAuth } from "@/lib/firebase";
+import { apiPost } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import { useToast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -105,29 +106,35 @@ function PasswordInput({
 
 export function ChangePasswordCard() {
   const { toast } = useToast();
-  // `null` = still resolving the Firebase user; `false` = no password provider.
-  const [account, setAccount] = React.useState<FirebaseUser | null | false>(null);
+  const { user } = useAuth();
   const [current, setCurrent] = React.useState("");
   const [next, setNext] = React.useState("");
   const [confirm, setConfirm] = React.useState("");
+  const [needsRevocation, setNeedsRevocation] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    // onAuthStateChanged rather than a one-shot read: on a cold load the SDK
-    // restores the session asynchronously, so currentUser is briefly null.
-    return firebaseAuth.onAuthStateChanged((user) => {
-      const hasPassword = Boolean(
-        user?.providerData.some((provider) => provider.providerId === "password")
-      );
-      setAccount(hasPassword && user ? user : false);
-    });
-  }, []);
-
-  if (account === null || account === false) return null;
+  if (!user?.password_enabled) return null;
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (needsRevocation) {
+      setSaving(true);
+      try {
+        const account = firebaseAuth.currentUser;
+        if (!account) throw new Error("Firebase identity is no longer available");
+        await apiPost("/auth/password-changed", {
+          id_token: await account.getIdToken(true),
+        });
+        await firebaseAuth.signOut();
+        window.location.assign("/login");
+      } catch {
+        setError("Password changed, but session revocation could not be confirmed. Retry to finish signing out everywhere.");
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
     const invalid = validateNewPassword(next, confirm);
     if (invalid) {
       setError(invalid);
@@ -137,24 +144,39 @@ export function ChangePasswordCard() {
       setError("Enter your current password.");
       return;
     }
-    if (!account.email) {
+    if (!user.email) {
       setError("This account has no email address to re-authenticate with.");
       return;
     }
     setSaving(true);
     setError(null);
     try {
-      // Firebase requires a recent login before a password change;
-      // re-authenticating with the current password is that proof.
-      await reauthenticateWithCredential(
-        account,
-        EmailAuthProvider.credential(account.email, current)
-      );
+      // Firebase identity is in memory only. In a newly opened tab, sign in
+      // with the current password; in the original tab, reauthenticate it.
+      let account = firebaseAuth.currentUser;
+      if (!account || account.email?.toLowerCase() !== user.email.toLowerCase()) {
+        account = (await signInWithEmailAndPassword(firebaseAuth, user.email, current)).user;
+      } else {
+        await reauthenticateWithCredential(
+          account, EmailAuthProvider.credential(user.email, current)
+        );
+      }
       await updatePassword(account, next);
+      setNeedsRevocation(true);
+      try {
+        await apiPost("/auth/password-changed", {
+          id_token: await account.getIdToken(true),
+        });
+      } catch {
+        setError("Password changed, but session revocation could not be confirmed. Retry to finish signing out everywhere.");
+        return;
+      }
       setCurrent("");
       setNext("");
       setConfirm("");
-      toast({ title: "Password changed" });
+      await firebaseAuth.signOut();
+      toast({ title: "Password changed. Sign in again." });
+      window.location.assign("/login");
     } catch (changeError) {
       const message = passwordChangeError(changeError);
       setError(message);
@@ -182,7 +204,7 @@ export function ChangePasswordCard() {
             <PasswordInput
               id="password-current"
               value={current}
-              disabled={saving}
+              disabled={saving || needsRevocation}
               autoComplete="current-password"
               onChange={setCurrent}
             />
@@ -196,7 +218,7 @@ export function ChangePasswordCard() {
             <PasswordInput
               id="password-new"
               value={next}
-              disabled={saving}
+              disabled={saving || needsRevocation}
               autoComplete="new-password"
               onChange={setNext}
             />
@@ -205,7 +227,7 @@ export function ChangePasswordCard() {
             <PasswordInput
               id="password-confirm"
               value={confirm}
-              disabled={saving}
+              disabled={saving || needsRevocation}
               autoComplete="new-password"
               onChange={setConfirm}
             />
@@ -215,8 +237,8 @@ export function ChangePasswordCard() {
               {error}
             </p>
           ) : null}
-          <Button type="submit" disabled={saving || !current || !next || !confirm}>
-            {saving ? "Changing" : "Change password"}
+          <Button type="submit" disabled={saving || (!needsRevocation && (!current || !next || !confirm))}>
+            {saving ? "Working" : needsRevocation ? "Finish signing out everywhere" : "Change password"}
           </Button>
         </form>
       </CardContent>

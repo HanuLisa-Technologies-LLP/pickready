@@ -9,7 +9,6 @@ import {
   isNetworkError,
   onForbidden,
   resetRefreshBackoff,
-  tryRefresh,
 } from "@/lib/api";
 import { firebaseAuth } from "@/lib/firebase";
 import type { Capability, Role, User } from "@/lib/types";
@@ -17,13 +16,10 @@ import type { Capability, Role, User } from "@/lib/types";
 /**
  * How often a visible tab re-validates its session.
  *
- * The access cookie lives 15 minutes and the refresh cookie 7 days. Without
- * this, a tab left open past the access TTL kept a stale `user` in memory and
- * only discovered the expiry on its next API call, and any transient failure
- * there read as "logged out". Re-validating well inside the access TTL keeps
- * the cookie rotated for as long as the tab is actually being used.
+ * A user action may validate the session at most once per interval. A passive
+ * tab must never keep the server's thirty-minute idle deadline alive.
  */
-const SESSION_POLL_MS = 10 * 60 * 1000;
+const ACTIVITY_REVALIDATE_MS = 5 * 60 * 1000;
 
 /**
  * The shortest gap between two capability revalidations triggered by
@@ -171,28 +167,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [revalidateCapabilities]
   );
 
-  // Keep a live tab's session fresh: rotate on a timer, and again whenever the
-  // tab is brought back to the foreground (a laptop that slept through the
-  // access TTL comes back with a usable session instead of a dead one).
+  // Only actual interaction renews the idle deadline. A timer or a bare
+  // visibility event would keep a forgotten tab signed in indefinitely.
   React.useEffect(() => {
     if (typeof window === "undefined") return;
-
-    const revalidate = () => {
-      if (document.visibilityState !== "visible") return;
-      // Nothing to keep alive when nobody is signed in. Polling regardless is
-      // what filled the dev logs with an endless /auth/me 401 + /auth/refresh
-      // 401 pair from every tab parked on the login page.
-      if (!userRef.current) return;
-      void tryRefresh().then(() => refreshRef.current());
+    let lastValidation = Date.now();
+    const onActivity = () => {
+      if (!userRef.current || document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - lastValidation < ACTIVITY_REVALIDATE_MS) return;
+      lastValidation = now;
+      void refreshRef.current();
     };
-
-    const timer = window.setInterval(revalidate, SESSION_POLL_MS);
-    document.addEventListener("visibilitychange", revalidate);
-    window.addEventListener("online", revalidate);
+    window.addEventListener("pointerdown", onActivity);
+    window.addEventListener("keydown", onActivity);
     return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", revalidate);
-      window.removeEventListener("online", revalidate);
+      window.removeEventListener("pointerdown", onActivity);
+      window.removeEventListener("keydown", onActivity);
     };
   }, []);
 

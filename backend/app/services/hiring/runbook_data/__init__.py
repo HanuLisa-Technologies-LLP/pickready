@@ -59,7 +59,6 @@ _DIR = pathlib.Path(__file__).resolve().parent
 
 _NAMES: Tuple[str, ...] = (
     "bands",
-    "company_dna_instrument",
     "department_models",
     "dimensions",
     "disqualifiers",
@@ -166,14 +165,6 @@ def bands() -> Dict[str, Any]:
     return load("bands")
 
 
-def company_dna_instrument() -> Dict[str, Any]:
-    """The twelve-section Company DNA intake instrument (Layer 2).
-
-    Runbook sections 15, 16.1 to 16.12, 17.1 to 17.3 and Appendix A.
-    """
-    return load("company_dna_instrument")
-
-
 def department_models() -> Dict[str, Any]:
     """Department competency models and the Layer 1 baseline weight matrix.
 
@@ -237,7 +228,6 @@ __all__ = [
     "SOURCE_KEY",
     "all_names",
     "bands",
-    "company_dna_instrument",
     "department_models",
     "dimensions",
     "disqualifiers",

@@ -26,6 +26,7 @@ import {
 } from "@/components/page-primitives";
 import { PermissionMatrixModal } from "@/components/permission-matrix-modal";
 import { Button } from "@/components/ui/button";
+import { ConfirmButton } from "@/components/confirm-button";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/components/ui/form";
 import { Badge } from "@/components/ui/badge";
@@ -312,7 +313,7 @@ export default function StaffPage() {
                 <DialogDescription>
                   {inviteResult
                     ? "Share this single-use link if the email does not arrive."
-                    : "They will create or use a ReadyPick account with email/password or Google."}
+                    : "They will create or use a Vivekium account with email/password or Google."}
                 </DialogDescription>
               </DialogHeader>
               {inviteResult ? (
@@ -337,19 +338,36 @@ export default function StaffPage() {
                           type="button"
                           variant="outline"
                           className="gap-1"
-                          onClick={async () => {
-                            await navigator.clipboard.writeText(
-                              inviteResult.invite_link || ""
-                            );
-                            setCopied(true);
+                          onClick={() => {
+                            // `navigator.clipboard` is undefined over plain
+                            // http and rejects when the page is not focused.
+                            // Awaiting it bare threw out of the handler and
+                            // left the button saying "Copy" with no reason,
+                            // for the one link that cannot be recovered from
+                            // anywhere else on this screen.
+                            void navigator.clipboard
+                              ?.writeText(inviteResult.invite_link || "")
+                              .then(
+                                () => setCopied(true),
+                                () =>
+                                  toast({
+                                    variant: "destructive",
+                                    title: "Copy failed",
+                                    description:
+                                      "Select the link above and copy it by hand.",
+                                  })
+                              );
                           }}
                         >
                           {copied ? (
-                            <Check className="h-4 w-4" />
+                            <Check className="h-4 w-4" aria-hidden="true" />
                           ) : (
-                            <Copy className="h-4 w-4" />
+                            <Copy className="h-4 w-4" aria-hidden="true" />
                           )}
                           {copied ? "Copied" : "Copy"}
+                          <span role="status" className="sr-only">
+                            {copied ? "Invitation link copied to clipboard" : ""}
+                          </span>
                         </Button>
                       </div>
                     </FormField>
@@ -538,15 +556,19 @@ export default function StaffPage() {
                               <RotateCcw className="h-3.5 w-3.5" /> Reactivate
                             </Button>
                           ) : (
-                            <Button
+                            <ConfirmButton
                               variant="outline"
                               size="sm"
                               className="gap-1"
                               disabled={workingId === member.id}
-                              onClick={() => void deactivate(member)}
+                              title={`Deactivate ${member.full_name || member.email}?`}
+                              description="They lose access to this workspace immediately. Their jobs, notes and history stay. You can invite them back later."
+                              confirmLabel="Deactivate"
+                              onConfirm={() => void deactivate(member)}
                             >
-                              <UserX className="h-3.5 w-3.5" /> Deactivate
-                            </Button>
+                              <UserX className="h-3.5 w-3.5" aria-hidden="true" />{" "}
+                              Deactivate
+                            </ConfirmButton>
                           )}
                         </div>
                       </TableCell>
@@ -619,15 +641,18 @@ export default function StaffPage() {
                         Reactivate
                       </Button>
                     ) : (
-                      <Button
+                      <ConfirmButton
                         variant="outline"
                         size="sm"
                         disabled={workingId === member.id}
-                        onClick={() => void deactivate(member)}
+                        title={`Deactivate ${member.full_name || member.email}?`}
+                        description="They lose access to this workspace immediately. Their jobs, notes and history stay. You can invite them back later."
+                        confirmLabel="Deactivate"
+                        onConfirm={() => void deactivate(member)}
                       >
                         <UserX className="h-3.5 w-3.5" aria-hidden="true" />{" "}
                         Deactivate
-                      </Button>
+                      </ConfirmButton>
                     )}
                   </div>
                 </RowCard>

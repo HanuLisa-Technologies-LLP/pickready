@@ -23,7 +23,8 @@
 // complete whether or not anybody opens this section.
 
 import * as React from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, History } from "lucide-react";
+import { EmptyState } from "@/components/page-primitives";
 
 import { ApiError, apiGet } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -247,9 +248,12 @@ export function CustomerActivitySection({ customerId }: { customerId: string }) 
           ) : null}
 
           {rows !== null && rows.length === 0 && !error ? (
-            <p className="text-sm">
-              No recorded activity for this customer yet.
-            </p>
+            <EmptyState
+              icon={History}
+              title="No recorded activity yet"
+              description="Actions taken on this customer appear here as they happen."
+              className="py-10"
+            />
           ) : null}
 
           {rows && rows.length > 0 ? (

@@ -393,6 +393,33 @@ async def ranked_candidates(
                     l.archived_at           AS archived_at,
                     l.match_breakdown_json  AS breakdown,
                     l.validation_json       AS validation,
+                    -- The Executive Profile Match Score (vivekium feature 3,
+                    -- column 2). The ONE sanctioned number on a client
+                    -- surface, under the 2026-09-18 owner amendment to rule 1
+                    -- recorded in claude.md. Everything else on this row
+                    -- stays words.
+                    l.match_score           AS match_score,
+                    -- The comparison inputs for the derived columns
+                    -- (services/recruiter_columns): the job's declared CTC
+                    -- range and its JD education sentence.
+                    j.compensation_json     AS compensation,
+                    j.jd_json->>'education' AS jd_education,
+                    -- BGV Status (column 7): the three inputs
+                    -- bgv_workflow.derive_status counts. candidate_employments
+                    -- is tenant-free by design (0095); bgv_verifications is
+                    -- filtered to THIS job's tenant, the same scope
+                    -- bgv_workflow.candidate_status reads.
+                    c.employment_background AS employment_background,
+                    (
+                        SELECT COUNT(*) FROM candidate_employments ce
+                         WHERE ce.candidate_id = c.id
+                    )                       AS bgv_employer_count,
+                    (
+                        SELECT COALESCE(array_agg(bv.status), '{{}}')
+                          FROM bgv_verifications bv
+                         WHERE bv.candidate_id = c.id
+                           AND bv.tenant_id = j.tenant_id
+                    )                       AS bgv_statuses,
                     -- The tenant, for the reference code. Selected rather than
                     -- taken from the session so the code is derived from the
                     -- row's own owner and cannot be built from a caller's
@@ -415,6 +442,7 @@ async def ranked_candidates(
                     sess.mode               AS assessment_mode,
                     sess.status             AS conversation_status,
                     vid.status              AS video_recording_status,
+                    vid.media_deleted_at    AS video_media_deleted_at,
                     EXISTS (
                         SELECT 1 FROM proctoring_reports pr
                         JOIN proctoring_sessions psess
@@ -454,7 +482,7 @@ async def ranked_candidates(
                     LIMIT 1
                 ) sess ON TRUE
                 LEFT JOIN LATERAL (
-                    SELECT vr.status
+                    SELECT vr.status, vr.media_deleted_at
                     FROM video_recordings vr
                     WHERE vr.job_candidate_link_id = l.id
                     ORDER BY vr.created_at DESC, vr.id DESC
@@ -488,9 +516,25 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
     "not scored" instead of rendering a silent blank.
     """
     from app.models.candidate import SOURCE_TYPE_APPLIED, source_type_label
-    from app.services import hiring_pipeline, reference_code
+    from app.services import (
+        bgv_workflow,
+        hiring_pipeline,
+        recruiter_columns,
+        reference_code,
+    )
 
     status = hiring_pipeline.normalize(row["status"])
+    # Column 7's input, derived once per row from the same three counts the
+    # offer gate reads (bgv_workflow.candidate_status), fetched in the page
+    # query rather than per candidate.
+    # `.get()` rather than indexing, the file's own precedent: a caller
+    # holding a pre-existing row shape (test fixtures, notably) reads the
+    # honest empty state rather than crashing.
+    bgv_status = bgv_workflow.derive_status(
+        background=row.get("employment_background"),
+        employer_count=int(row.get("bgv_employer_count") or 0),
+        statuses=list(row.get("bgv_statuses") or []),
+    )
     source_type = row["source_type"] or SOURCE_TYPE_APPLIED
     return {
         "link_id": row["link_id"],
@@ -533,7 +577,24 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
         "source": row["source"],
         "tier": row["tier"],
         "archived_at": row["archived_at"],
-        "resume_url": row["resume_url"],
+        # A STORAGE URI MUST NOT CROSS AN API BOUNDARY, and this row used to
+        # carry one. `profiles.resume_url` is an `s3://bucket/key` reference:
+        # a browser cannot fetch it, so the client only ever used it as a
+        # "does this candidate have a resume" flag, while it spent the whole
+        # time handing every recruiter's browser the bucket name and the
+        # object key. That is the same rule the video surfaces already
+        # follow ("no bucket name and no object key crosses an API
+        # boundary"), and it was being broken here by a field nothing needed.
+        #
+        # So the flag is a BOOLEAN, which is the whole of what the column was
+        # answering, and the resume itself is read through
+        # /candidates/profiles/{profile_id}/resume-file, which re-authorizes,
+        # mints a short-lived token and streams the bytes. The filename and
+        # the MIME type stay: the first is what a person sees in their
+        # Downloads folder and the second is what decides whether the DOCX
+        # renderer or the raw file is the right target. Neither names a
+        # bucket.
+        "has_resume": bool(row["resume_url"]),
         "resume_filename": row["resume_filename"],
         "resume_mime_type": row["resume_mime_type"],
         # The PPI Report button is only actionable once a report exists.
@@ -558,7 +619,8 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
             has_proctoring_session=bool(row.get("has_proctoring_session")),
         ),
         "video_status": video_access.video_status_word(
-            row.get("video_recording_status")
+            row.get("video_recording_status"),
+            media_deleted=row.get("video_media_deleted_at") is not None,
         ),
         # Old Profile / New Profile. Presentation and billing only: an Old
         # Profile is ranked, listed and openable exactly like a new one.
@@ -583,6 +645,36 @@ def _row_payload(row: Any, level: str, job_id: Any = None) -> dict[str, Any]:
         # of the 38 profile answers a candidate fills in once and reuses across
         # every job must be visible here too).
         "validation_answers": validation_answers(row["validation"], row["profile_form"]),
+        # ── The seven-column additions (vivekium feature 3, 2026-09-18) ──────
+        # Column 2: the Executive Profile Match Score, a percentage. The ONE
+        # exception to "no number reaches a client", amended by the owner in
+        # claude.md on 2026-09-18 with test_platform_audit changed in the same
+        # commit. Rendered as an integer; a link the matching pipeline has not
+        # reached yet is None and renders "Not scored".
+        "match_percent": (
+            int(round(row.get("match_score")))
+            if row.get("match_score") is not None
+            else None
+        ),
+        # Columns 3, 4, 5 and 7: derived words, never stored, all from
+        # services/recruiter_columns. None means "Not stated": no comparison
+        # exists, and pretending one does would sit a fabricated word beside a
+        # hiring decision. Column 6 (Resume Link) needs no new field: the
+        # frontend opens /candidates/profiles/{profile_id}/resume-file.
+        "ctc_match_label": recruiter_columns.ctc_match(
+            row["validation"].get("expected_ctc")
+            if isinstance(row.get("validation"), dict) else None,
+            row.get("compensation"),
+        ),
+        "notice_period_label": recruiter_columns.notice_period_bucket(
+            row["validation"].get("notice_period")
+            if isinstance(row.get("validation"), dict) else None,
+        ),
+        "education_match_label": recruiter_columns.education_match(
+            row.get("profile_form"), row.get("jd_education")
+        ),
+        "bgv_status": bgv_status,
+        "bgv_status_label": recruiter_columns.bgv_status_word(bgv_status),
         **ranking_payload(row["breakdown"]),
     }
 

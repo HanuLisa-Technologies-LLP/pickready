@@ -66,8 +66,8 @@ const HEADERS: Array<[key: string, label: string, className: string]> = [
   ["candidate", "Candidate", "min-w-[220px]"],
   ["source", "Source", "hidden md:table-cell"],
   ["pre_screen_grade", "Pre-Screen", "hidden md:table-cell"],
-  ["ready_pick_score", "Ready Pick Score", "min-w-[210px]"],
-  ["ready_pick_note", "Ready Pick Note", "hidden lg:table-cell"],
+  ["ready_pick_score", "Vivekium Score", "min-w-[210px]"],
+  ["ready_pick_note", "Vivekium Note", "hidden lg:table-cell"],
   ["ready_pick_profile", "Profile", ""],
   ["team_review", "Team Review", ""],
   ["stage", "Stage", ""],
@@ -188,8 +188,8 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
                 setPage(1);
               }}
             >
-              <option value="score:desc">Ready Pick Score, highest first</option>
-              <option value="score:asc">Ready Pick Score, lowest first</option>
+              <option value="score:desc">Vivekium Score, highest first</option>
+              <option value="score:asc">Vivekium Score, lowest first</option>
               <option value="name:asc">Name</option>
               <option value="added:desc">Date added, newest first</option>
               <option value="source:asc">Source</option>
@@ -279,7 +279,7 @@ export function CandidateDashboard({ jobId }: CandidateDashboardProps) {
         {/* The horizontal scroll lives HERE, on the table's own container, so a
             wide table never makes the page scroll sideways. */}
         <div className="overflow-x-auto rounded-xl border">
-          <Table>
+          <Table label="Candidates">
             <TableHeader>
               <TableRow>
                 {HEADERS.map(([key, label, className]) => (

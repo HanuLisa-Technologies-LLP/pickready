@@ -289,7 +289,7 @@ export function VideoInterview({ linkId }: { linkId: string }) {
 
   if (phase === "starting") {
     return (
-      <div className="mx-auto flex max-w-2xl items-center gap-3 py-16 text-sm leading-6">
+      <div className="mx-auto flex max-w-2xl items-center gap-3 py-16 text-sm">
         <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
         Preparing your video interview...
       </div>
@@ -304,7 +304,7 @@ export function VideoInterview({ linkId }: { linkId: string }) {
             <CardTitle>The video interview could not start</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <p className="text-sm leading-6">{startError}</p>
+            <p className="text-sm">{startError}</p>
             <Button onClick={() => void start()}>Try again</Button>
           </CardContent>
         </Card>
@@ -328,11 +328,11 @@ export function VideoInterview({ linkId }: { linkId: string }) {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <p className="text-sm leading-6">
+            <p className="text-sm">
               {processing?.message ??
                 "Your recording was uploaded and is being processed."}
             </p>
-            <p className="text-sm leading-6">
+            <p className="text-sm">
               You can leave this page; processing continues on its own.
             </p>
             <Button variant="outline" asChild>
@@ -362,13 +362,13 @@ export function VideoInterview({ linkId }: { linkId: string }) {
                     style={{ width: `${uploadPercent}%` }}
                   />
                 </div>
-                <p className="text-sm leading-6">
+                <p className="text-sm">
                   Keep this page open until the upload finishes.
                 </p>
               </>
             ) : (
               <>
-                <p role="alert" className="flex items-start gap-2 text-sm leading-6">
+                <p role="alert" className="flex items-start gap-2 text-sm">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                   <span>{uploadError}</span>
                 </p>
@@ -405,7 +405,7 @@ export function VideoInterview({ linkId }: { linkId: string }) {
             Recording {formatElapsed(elapsed)}
           </span>
         </div>
-        <p className="flex items-center gap-2 text-sm leading-6">
+        <p className="flex items-center gap-2 text-sm">
           <Video className="h-4 w-4" aria-hidden />
           Answer out loud. Your whole interview is one recording.
         </p>
@@ -417,22 +417,22 @@ export function VideoInterview({ linkId }: { linkId: string }) {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
-          <p className="text-base leading-7">{current.prompt}</p>
+          <p className="text-base">{current.prompt}</p>
           {options ? (
             <ul className="space-y-2">
               {options.map((option) => (
-                <li key={option.id} className="flex gap-3 text-sm leading-6">
+                <li key={option.id} className="flex gap-3 text-sm">
                   <span aria-hidden className="mt-2 h-1 w-4 shrink-0 bg-teal-600" />
                   <span>{option.text}</span>
                 </li>
               ))}
             </ul>
           ) : null}
-          <p className="text-sm leading-6">
+          <p className="text-sm">
             {timeAllocationPhrase(current.question.time_allocation_seconds)}
           </p>
           {markError ? (
-            <p role="alert" className="text-sm font-medium leading-6">
+            <p role="alert" className="text-sm font-medium">
               {markError}
             </p>
           ) : null}
@@ -447,7 +447,7 @@ export function VideoInterview({ linkId }: { linkId: string }) {
               </Button>
             )}
           </div>
-          <p className="text-sm leading-6">
+          <p className="text-sm">
             You cannot return to an earlier question, just as in a live
             interview.
           </p>

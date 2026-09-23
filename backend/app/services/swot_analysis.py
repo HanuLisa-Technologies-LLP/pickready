@@ -56,7 +56,6 @@ from app.models.job_setup import (
     SWOT_ANALYSIS_NOT_GENERATED,
     SWOT_ANALYSIS_SECTIONS,
     JobSwotAnalysis,
-    JobSwotIntake,
 )
 from app.prompts import registry
 from app.services import llm_router
@@ -87,22 +86,34 @@ class VersionConflict(RuntimeError):
 
 # ── Reading and creating the row ────────────────────────────────────────────
 
-async def get(session: AsyncSession, job: Job) -> JobSwotAnalysis | None:
+async def get(
+    session: AsyncSession, job: Job, *, for_update: bool = False
+) -> JobSwotAnalysis | None:
+    query = select(JobSwotAnalysis).where(JobSwotAnalysis.job_id == job.id)
+    if for_update:
+        query = query.with_for_update()
     return (
-        await session.execute(
-            select(JobSwotAnalysis).where(JobSwotAnalysis.job_id == job.id)
-        )
+        await session.execute(query)
     ).scalar_one_or_none()
 
 
-async def get_or_create(session: AsyncSession, job: Job) -> JobSwotAnalysis:
+async def get_or_create(
+    session: AsyncSession, job: Job, *, for_update: bool = False
+) -> JobSwotAnalysis:
     """The row for this job, created empty if it does not exist yet.
 
     An empty row is the `not_generated` state rather than a missing resource:
     the SWOT tab exists for every job, and a reader with view access must see
     the empty state rather than a 404 that reads as "this job is broken".
     """
-    existing = await get(session, job)
+    existing = await get(session, job, for_update=for_update)
+    if existing is not None:
+        return existing
+    # A missing document can be opened in two tabs at once. Serialize its
+    # creation on the parent job, then check again after the lock is acquired.
+    # This also makes the first save see the version that GET actually seeded.
+    await session.execute(select(Job.id).where(Job.id == job.id).with_for_update())
+    existing = await get(session, job, for_update=for_update)
     if existing is not None:
         return existing
     row = JobSwotAnalysis(
@@ -144,23 +155,6 @@ async def build_context(session: AsyncSession, job: Job) -> dict[str, str]:
     elif jd.get("experience_years") is not None:
         experience = f"{jd.get('experience_years')} years"
 
-    intake = (
-        await session.execute(
-            select(JobSwotIntake).where(JobSwotIntake.job_id == job.id)
-        )
-    ).scalar_one_or_none()
-    intake_points = ""
-    if intake is not None:
-        captured = {
-            area: _listed(getattr(intake, area, None), limit=8)
-            for area in SWOT_ANALYSIS_SECTIONS
-        }
-        intake_points = "\n".join(
-            f"{area.capitalize()} the reporting authority named: {text}"
-            for area, text in captured.items()
-            if text
-        )
-
     return {
         "title": _clean(job.title),
         "department": _clean(job.department),
@@ -175,7 +169,6 @@ async def build_context(session: AsyncSession, job: Job) -> dict[str, str]:
         "about_company": _clean(job.about_company),
         "work_life": _clean(job.work_life),
         "benefits": _clean(job.benefits),
-        "intake_points": intake_points,
     }
 
 
@@ -197,7 +190,6 @@ def _user_message(context: dict[str, str]) -> str:
         ("Work life", "work_life"),
         ("Benefits", "benefits"),
         ("Job description", "jd_document"),
-        ("From the hiring manager's SWOT intake", "intake_points"),
     ]
     lines = [f"{label}: {context[key]}" for label, key in labels if context.get(key)]
     return "\n".join(lines)
@@ -304,7 +296,7 @@ async def generate(
     model call, and a confirmation prompt that appears after a thirty-second
     wait is a confirmation nobody reads.
     """
-    row = await get_or_create(session, job)
+    row = await get_or_create(session, job, for_update=True)
     if row.human_edited and row.has_content and not confirm_overwrite:
         raise HumanEditsWouldBeLost(
             "This SWOT has been edited by your team. Regenerating replaces "
@@ -351,7 +343,7 @@ async def save(
     expected_version: int | None = None,
 ) -> JobSwotAnalysis:
     """Persist a human's four sections. Raises `VersionConflict` on a stale save."""
-    row = await get_or_create(session, job)
+    row = await get_or_create(session, job, for_update=True)
     if expected_version is not None and expected_version != row.version:
         raise VersionConflict(
             "Someone else saved this SWOT while you were editing. Reload to "
@@ -374,7 +366,7 @@ async def save(
 
 async def restore_previous(session: AsyncSession, job: Job) -> JobSwotAnalysis:
     """Put back the human content the last confirmed regeneration replaced."""
-    row = await get_or_create(session, job)
+    row = await get_or_create(session, job, for_update=True)
     snapshot = dict(row.previous_json or {})
     if not any(_clean(snapshot.get(name)) for name in SWOT_ANALYSIS_SECTIONS):
         raise SwotAnalysisError("There is no earlier version to restore.")

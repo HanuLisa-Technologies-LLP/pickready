@@ -9,7 +9,7 @@
 // inline rather than failing later at send time.
 
 import * as React from "react";
-import { Mails } from "lucide-react";
+import { Mails, Users } from "lucide-react";
 
 import type { CandidateLink } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
@@ -30,6 +30,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { TierBadge } from "@/components/tier-badge";
+import { EmptyState } from "@/components/page-primitives";
 
 export interface CandidateSelectionProps {
   links: CandidateLink[];
@@ -152,9 +153,16 @@ export function CandidateSelection({
           <TableBody>
             {links.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} className="text-center">
-                  No candidates linked to this job yet. Upload resumes or run
-                  matching to populate the pool.
+                {/* EmptyState renders INSIDE the cell: the table header is
+                    meaningful here (it explains what the pool will hold), so
+                    the frame stays and the cell carries the shared state. */}
+                <TableCell colSpan={4} className="p-0">
+                  <EmptyState
+                    icon={Users}
+                    title="No candidates linked to this job yet"
+                    description="Upload resumes or run matching to populate the pool."
+                    className="border-0"
+                  />
                 </TableCell>
               </TableRow>
             ) : (

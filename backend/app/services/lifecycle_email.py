@@ -37,6 +37,28 @@ WORD LABELS AND SCORES
 No email ever carries a score, percentage, band, or rank; the prompts forbid it
 explicitly and `strengths` is passed in as prose, never as numbers. A candidate
 must not be able to reverse-engineer their internal rating from an email.
+
+SUFFICIENCY IS DECIDED BEFORE THE PROMPT RUNS (2026-09-09)
+---------------------------------------------------------
+`ai-upgrade-spec-doc.md` "case 2". Six of the thirteen email types make ONE
+evidence-backed claim: the shortlist names two strengths, three carry a link the
+candidate has to be able to click, and the interview confirmation states a time.
+`_PROMPT_DEFAULTS` exists so a prompt always renders, which means a claim with
+nothing behind it arrives at the model as a plausible-looking placeholder rather
+than as an absence: `strengths` reads "strong, relevant experience for this
+role" and the prompt says "Name TWO specific strengths drawn from the evidence
+above". A model asked to do that has been asked to invent two.
+
+`generation_sufficiency.lifecycle_email_state` now answers that in ordinary code
+before a prompt is rendered. Insufficient means the deterministic template is
+sent, which makes no claim it cannot keep, and the returned draft carries the
+fixed empty-state KEY saying which claim was missing. That is the same
+degradation path this module already had for a provider outage, reached for a
+different and better reason.
+
+The remaining seven types are not gated because they make no evidence-backed
+claim at all: a rejection, a receipt, a hold and a welcome are true from the
+pipeline transition alone.
 """
 from __future__ import annotations
 
@@ -64,7 +86,12 @@ from app.models.email_log import (
     EMAIL_TYPE_PROMPTS,
     EMAIL_TYPES,
 )
-from app.services import agent_loop, conversation_guardrails, llm_router
+from app.services import (
+    agent_loop,
+    conversation_guardrails,
+    generation_sufficiency,
+    llm_router,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +112,11 @@ _PROMPT_DEFAULTS: dict[str, dict[str, Any]] = {
         "assessment_link": "",
     },
     EMAIL_TYPE_SHORTLIST: {
-        "strengths": "strong, relevant experience for this role",
+        # The SAME literal the sufficiency gate treats as "nothing recorded",
+        # named once rather than typed here and again in `api/emails`. A default
+        # that a gate has to recognise and a gate that has to recognise a default
+        # must not be two independent strings.
+        "strengths": generation_sufficiency.GENERIC_STRENGTHS_PLACEHOLDER,
         "next_steps": "the team will be in touch to arrange an interview",
     },
     EMAIL_TYPE_DATABANK_INVITATION: {"application_link": ""},
@@ -438,7 +469,7 @@ def _fallback_body(email_type: str, ctx: dict[str, Any]) -> str:
         f"The {job} job has been waiting for your review since it was created. "
         "Until it is reviewed, candidates cannot be assessed against this role.\n\n"
         + (f"{link}\n\n" if link else "")
-        + ", ReadyPick"
+        + ", Vivekium"
     )
 
 
@@ -475,6 +506,25 @@ async def draft(
     generated_by_ai = False
     subject: str | None = None
     body: str | None = None
+
+    # THE GATE, BEFORE THE PROMPT IS EVEN RENDERED. An insufficient verdict is
+    # not a failure and is not logged as one: it is the correct answer for this
+    # email, and the template below is the email that gets sent.
+    state = generation_sufficiency.lifecycle_email_state(email_type, ctx)
+    if not state.sufficient:
+        logger.info(
+            "lifecycle_email.gated email_type=%s empty_state=%s reason=%s",
+            email_type, state.empty_state_key, state.reason,
+        )
+        subject, body = fallback_draft(email_type, ctx)
+        return {
+            "email_type": email_type,
+            "subject": subject,
+            "body": repair_link(email_type, ctx, body),
+            "html": to_html(repair_link(email_type, ctx, body)),
+            "generated_by_ai": False,
+            "empty_state_key": state.empty_state_key,
+        }
 
     try:
         rendered = prompts.render(EMAIL_TYPE_PROMPTS[email_type], **ctx)
@@ -542,6 +592,17 @@ async def draft(
             # Deterministic, like every other criterion here: the moment this
             # matters most is when the provider is having a bad day.
             reasons.extend(link_defects(email_type, ctx, draft_body))
+            # An email that describes the record instead of addressing the
+            # person. Checked, not merely forbidden by the prompt, for the same
+            # reason the number rule and the link rule are: this is a candidate's
+            # inbox and there is no reviewer between here and it once a recruiter
+            # presses send.
+            reasons.extend(
+                defect.detail
+                for defect in generation_sufficiency.meta_commentary_defects(
+                    f"{draft_subject}\n{draft_body}"
+                )
+            )
             return agent_loop.reject(*reasons) if reasons else agent_loop.ok()
 
         result = await agent_loop.run_loop(
@@ -576,6 +637,10 @@ async def draft(
         "body": body,
         "html": to_html(body),
         "generated_by_ai": generated_by_ai,
+        # None on this path by construction: the gate returned early when it
+        # refused. Present so every caller reads the same shape rather than
+        # having to know which branch produced its draft.
+        "empty_state_key": None,
     }
 
 

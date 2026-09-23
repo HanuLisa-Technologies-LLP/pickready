@@ -178,22 +178,98 @@ def test_a_real_value_is_left_alone(monkeypatch) -> None:
         get_settings.cache_clear()
 
 
+def _generated_secret_names() -> list[str]:
+    """The secrets Terraform MINTS rather than waits for a human to supply.
+
+    Read from the Terraform for the same reason `_secret_names` is: a list kept
+    by hand here would drift, and the direction it drifts in is a generated
+    secret that nothing is checking.
+    """
+    source = TERRAFORM_VARS.read_text(encoding="utf-8")
+    start = source.index('variable "generated_secret_names"')
+    block = source[start : source.index("\n}", start)]
+    default = block[block.index("default") :]
+    return re.findall(r'"([A-Z0-9_]+)"', default)
+
+
+def _version_block(name: str) -> str:
+    """One version resource, WITH ITS COMMENTS REMOVED.
+
+    The same trade `test_deploy_secret_hygiene._code` makes. The generated
+    resource's comment NAMES the `ignore_changes` it deliberately does not
+    have, and a substring search over the raw text matches the explanation.
+    Deleting the explanation to satisfy a test would be the wrong repair: it is
+    the most valuable thing in the block.
+    """
+    source = (TERRAFORM_VARS.parent / "main.tf").read_text(encoding="utf-8")
+    start = source.index(f'resource "aws_secretsmanager_secret_version" "{name}"')
+    block = source[start : source.index("\n}\n", start)]
+    return re.sub(r"^\s*#.*$", "", block, flags=re.MULTILINE)
+
+
 def test_the_terraform_seeds_a_version_and_never_overwrites_it() -> None:
     """Two properties, and the second is the one that costs money to get wrong.
 
     A `secret_string` Terraform owned would revert a real value on the next
     apply, silently: the plan reads as a one-line change to a sensitive
     attribute, which shows as `(sensitive value)`.
-    """
-    source = (TERRAFORM_VARS.parent / "main.tf").read_text(encoding="utf-8")
-    start = source.index('resource "aws_secretsmanager_secret_version" "placeholder"')
-    block = source[start : source.index("\n}\n", start)]
 
-    assert "for_each = aws_secretsmanager_secret.this" in block, (
-        "the placeholder version is not created for every secret; the ones it "
-        "misses stop their whole task from starting"
+    AMENDED 2026-09-17. There are TWO version resources now, and the invariant
+    this file exists for is unchanged: every secret has a version before any
+    task starts against it. What split is OWNERSHIP. A credential a vendor
+    issued is a human's to put in and Terraform's to leave alone, which is what
+    `ignore_changes` says. `INBOUND_WEBHOOK_SECRET` has no issuer outside this
+    platform -- it is a value one half shows to the other -- so Terraform mints
+    it, and there `ignore_changes` would be the bug.
+    """
+    placeholder = _version_block("placeholder")
+
+    assert "for_each = local.supplied" in placeholder, (
+        "the placeholder version is not created for every human-supplied "
+        "secret; the ones it misses stop their whole task from starting"
     )
-    assert "ignore_changes = [secret_string]" in block, (
+    assert "ignore_changes = [secret_string]" in placeholder, (
         "Terraform owns the secret value and will revert whatever a human put "
         "there on the next apply"
+    )
+
+
+def test_the_generated_secrets_carry_a_real_value_and_terraform_keeps_it() -> None:
+    """The other half of the same guarantee.
+
+    A generated secret left on the sentinel is worse than an unconfigured
+    vendor key. `INBOUND_WEBHOOK_SECRET` empty means
+    `POST /verification/inbound-email` stays open to anybody who knows a thread
+    token, and thread tokens travel by email.
+    """
+    generated = _version_block("generated")
+
+    assert "for_each = local.generated" in generated
+    assert "random_password.generated[each.key].result" in generated, (
+        "the generated version does not carry the minted value, so the secret "
+        "would hold nothing"
+    )
+    assert "ignore_changes" not in generated, (
+        "Terraform is the authority for a value it minted. Ignoring changes "
+        "means a replaced password never reaches Secrets Manager, so the API "
+        "keeps checking the old value while the relay sends the new one."
+    )
+
+
+def test_the_two_halves_partition_the_secret_list() -> None:
+    """Neither a secret with two versions racing for AWSCURRENT, nor one with
+    none at all."""
+    names = set(_secret_names())
+    generated = set(_generated_secret_names())
+
+    assert generated, "nothing is generated; the split would be decoration"
+    assert generated <= names, (
+        f"{sorted(generated - names)} is generated with no container to hold it"
+    )
+
+    source = (TERRAFORM_VARS.parent / "main.tf").read_text(encoding="utf-8")
+    assert "supplied = toset([" in source, "`local.supplied` is gone"
+    assert "if !contains(var.generated_secret_names, name)" in source, (
+        "`local.supplied` no longer excludes the generated names, so a "
+        "generated secret would get a sentinel version as well as its real one"
     )

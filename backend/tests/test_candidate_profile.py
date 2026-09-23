@@ -177,6 +177,7 @@ def test_clean_answers_rejects_everything_not_in_the_definition() -> None:
 async def test_profile_form_round_trips_and_drops_unknown_input() -> None:
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
+    from app.services import consent_catalog
     from app.models import Candidate
 
     engine, factory = await _factory_or_skip()
@@ -198,7 +199,10 @@ async def test_profile_form_round_trips_and_drops_unknown_input() -> None:
             async with s.begin():
                 async with superadmin_scope(s):
                     saved = await portal_mod.save_profile_form(
-                        portal_mod.ProfileFormIn(answers=dict(FORM_ANSWERS)),
+                        portal_mod.ProfileFormIn(
+                            answers=dict(FORM_ANSWERS),
+                            consent_keys=list(consent_catalog.STAGE_A_KEYS),
+                        ),
                         user=user, session=s,
                     )
         assert saved.complete is True
@@ -224,6 +228,7 @@ async def test_apply_snapshots_the_profile_form_onto_the_application(monkeypatch
     """A candidate never retypes the 40 answers: applying copies them across."""
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
+    from app.services import consent_catalog
     from app.models import Candidate, Profile
 
     async def fake_store(_resume):
@@ -242,7 +247,10 @@ async def test_apply_snapshots_the_profile_form_onto_the_application(monkeypatch
             async with s.begin():
                 async with superadmin_scope(s):
                     await portal_mod.save_profile_form(
-                        portal_mod.ProfileFormIn(answers=dict(FORM_ANSWERS)),
+                        portal_mod.ProfileFormIn(
+                            answers=dict(FORM_ANSWERS),
+                            consent_keys=list(consent_catalog.STAGE_A_KEYS),
+                        ),
                         user=user, session=s,
                     )
                     out = await portal_mod.apply_to_job(
@@ -277,6 +285,7 @@ async def test_main_resume_replaces_without_rewriting_past_applications(monkeypa
     """Replacing the main resume must not mutate an already-submitted one."""
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
+    from app.services import consent_catalog
     from app.models import Candidate, Profile
 
     urls = iter([
@@ -348,6 +357,7 @@ async def test_job_board_search_bypasses_relevance_filtering() -> None:
     """Search must find a role by name whether or not the profile says it fits."""
     from app.api import portal as portal_mod
     from app.core.db import superadmin_scope
+    from app.services import consent_catalog
 
     engine, factory = await _factory_or_skip()
     fx = _Fixture()

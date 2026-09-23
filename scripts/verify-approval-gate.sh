@@ -45,18 +45,80 @@ fi
 
 echo "Checking that the '${ENVIRONMENT_NAME}' environment has a required reviewer."
 
-response="$(gh api "repos/${REPO}/environments/${ENVIRONMENT_NAME}" 2>/dev/null || true)"
+# A 403 AND A 404 ARE DIFFERENT FACTS, AND THIS SCRIPT USED TO REPORT BOTH AS
+# "the environment does not exist".
+#
+# `2>/dev/null || true` threw away the only thing that distinguished them, so
+# any error produced an empty string and one message. That mattered, because a
+# 403 was the case that actually happened: reading
+# `/repos/{owner}/{repo}/environments/{name}` needs the `administration: read`
+# scope and the job granted the workflow default of `contents: read`. Every run
+# of this check reported a missing environment, correctly failed the build, and
+# sent whoever read it to create an environment that already existed -- while
+# never once looking at a reviewer configuration.
+#
+# It failed CLOSED, so nothing unsafe was deployed. A check that is right for
+# the wrong reason is still not a check: the day somebody creates the
+# environment and the message does not change, the next move is to delete the
+# check.
+error_output="$(mktemp)"
+trap 'rm -f "$error_output"' EXIT
 
-if [ -z "$response" ]; then
-  cat <<NOTE >&2
+set +e
+response="$(gh api "repos/${REPO}/environments/${ENVIRONMENT_NAME}" 2>"$error_output")"
+api_status=$?
+set -e
 
-FAIL: the '${ENVIRONMENT_NAME}' environment does not exist.
+if [ "$api_status" -ne 0 ] || [ -z "$response" ]; then
+  if grep -q "HTTP 403\|Resource not accessible" "$error_output"; then
+    cat <<NOTE >&2
+
+FAIL: this job cannot READ the '${ENVIRONMENT_NAME}' environment (HTTP 403).
+
+Nothing is known about the gate either way. That is a failure and not a pass:
+"we could not check" and "it is configured" are the two answers this script
+exists to keep apart.
+
+DO NOT "FIX" THIS BY ADDING `administration: read` TO THE JOB'S permissions
+BLOCK. That is what an earlier version of this very message advised, somebody
+followed it on 2026-09-17, and it broke every workflow run in the repository
+for five days: `administration` is not one of the scopes `permissions:`
+accepts, an unknown key there fails the workflow file at validation before any
+job starts, and the pull_request trigger stops firing with it.
+
+The scope is unobtainable from GITHUB_TOKEN by design. GET
+/repos/{owner}/{repo}/environments/{name} requires administration:read, and an
+Actions token cannot be granted it under any configuration.
+
+So this check needs a PAT. Create a fine-grained token with Read access to
+repository Administration, store it as the APPROVAL_GATE_TOKEN secret, and this
+job passes it as GH_TOKEN.
+
+$(cat "$error_output")
+NOTE
+    exit 1
+  fi
+
+  if grep -q "HTTP 404\|Not Found" "$error_output" || [ -z "$response" ]; then
+    cat <<NOTE >&2
+
+FAIL: the '${ENVIRONMENT_NAME}' environment does not exist (HTTP 404).
 
 A job declaring \`environment: ${ENVIRONMENT_NAME}\` against a non-existent
 environment runs WITHOUT a gate. The workflow file reads as gated and is not,
 which is precisely the GCP-phase finding spec-doc5 §D.5 names.
 
 Create it under Settings > Environments and add a required reviewer.
+NOTE
+    exit 1
+  fi
+
+  cat <<NOTE >&2
+
+FAIL: could not read the '${ENVIRONMENT_NAME}' environment, and the reason is
+neither a 403 nor a 404. Reported verbatim rather than guessed at:
+
+$(cat "$error_output")
 NOTE
   exit 1
 fi

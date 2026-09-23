@@ -170,7 +170,7 @@ async def test_each_tenant_holds_its_own_super_admin() -> None:
 
     This is the case a global uniqueness rule would break, and it would break
     it invisibly: every test written against one seeded tenant would pass, and
-    the failure would arrive as the second customer ReadyPick ever onboards.
+    the failure would arrive as the second customer Vivekium ever onboards.
     The fixture seeds a Super Admin in each of two tenants, so the seed itself
     is the assertion.
     """

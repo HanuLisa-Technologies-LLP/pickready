@@ -1,12 +1,13 @@
 """Firebase identity exchange and legacy context-selection endpoints.
 
-Firebase proves identity; ReadyPick remains authoritative for application
+Firebase proves identity; Vivekium remains authoritative for application
 roles, tenant isolation, capabilities, and its portal-scoped sessions.
 """
 import uuid
 from datetime import datetime, timezone
 
 import jwt as pyjwt
+from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, or_, select
 from fastapi.responses import JSONResponse
@@ -46,12 +47,13 @@ from app.schemas.auth import (
     SelectContextIn,
     UserOut,
 )
-from app.services import otp as otp_service
+from app.services import auth_sessions, otp as otp_service
 from app.services import firebase_auth
 from app.services import rbac
 from app.services.rate_limit import rate_limit
 from app.services.audit import (
     AUTH_CONTEXT_SELECTED,
+    AUTH_LOGIN_REFUSED,
     AUTH_LOGIN_SUCCEEDED,
     AUTH_OTP_FAILED,
     record_auth_event,
@@ -126,6 +128,58 @@ async def _finalize_single(
     database role/permissions stay authoritative (claude.md rule 2)."""
     if user.status == UserStatus.disabled:
         raise HTTPException(status_code=403, detail="Account unavailable")
+
+    # A BOUND ACCOUNT IS NEVER SILENTLY REBOUND TO A DIFFERENT IDENTITY.
+    #
+    # This line used to be an unconditional `user.firebase_uid = identity.uid`,
+    # and that was account takeover. The caller resolves a user by EMAIL as well
+    # as by uid (see the match filters in `firebase_session`), and Firebase
+    # email/password signup does not verify the address, so anyone who knew a
+    # staff member's email could register it with Firebase, sign in, present the
+    # token here, and have this line hand them that person's role and tenant.
+    # The victim's uid was overwritten in the same statement, so they lost the
+    # account at the moment the attacker gained it.
+    #
+    # Binding a NULL uid is the legitimate first-login path and still happens.
+    # Rebinding a uid that is already set to a different one is not a login, it
+    # is a change of who owns the account, and this product already has a
+    # deliberate, audited route for that: the Provider's primary-contact rebind,
+    # which CLEARS the uid, returns the row to `invited`, revokes the pending
+    # invite and sends a fresh one. A silent rebind here bypassed all four of
+    # those steps.
+    #
+    # So the refusal is not a dead end: an account whose Firebase identity
+    # genuinely changed is recovered through that route.
+    # THE CONDITION IS "UNVERIFIED", NOT "DIFFERENT", AND THE DISTINCTION IS
+    # THE WHOLE FIX. A first draft refused every rebind, which is wrong twice:
+    # a Google identity always carries a verified email, and control of the
+    # address is exactly the proof the email match rests on, so refusing it
+    # buys nothing; and the platform OWNER is resolved from a configured email
+    # with no administrator above them, so a blanket refusal would lock them
+    # out permanently the first time their Firebase uid changed, with no
+    # recovery path at all.
+    #
+    # An UNVERIFIED password identity proves nothing about the address, and
+    # that is the case this exists to refuse.
+    if (
+        user.firebase_uid
+        and user.firebase_uid != identity.uid
+        and not identity.email_verified
+    ):
+        await record_auth_event(
+            session, action=AUTH_LOGIN_REFUSED, actor_user_id=user.id,
+            tenant_id=user.tenant_id,
+            metadata={"reason": "firebase_uid_rebind_refused",
+                      "provider": identity.provider},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This account is already linked to a different sign-in. "
+                "Ask your administrator to re-issue your invitation."
+            ),
+        )
+
     user.firebase_uid = identity.uid
     user.auth_providers = sorted(set((user.auth_providers or []) + [identity.provider]))
     if identity.email_verified:
@@ -152,11 +206,7 @@ async def _finalize_single(
             status_code=409, detail="This sign-in could not be linked to an account"
         ) from exc
     audience = audience_for_role(user.role)
-    _set_auth_cookies(
-        response,
-        create_access_token(user.id, user.role.value, user.tenant_id, audience=audience),
-        create_refresh_token(user.id, audience=audience),
-    )
+    await _issue_session(response, user, audience)
     return OTPVerifyOut(
         user=await _user_out(session, user),
         capabilities=await _capabilities(session, user),
@@ -194,7 +244,14 @@ async def firebase_session(
     Every failure is a clean 401/403/409/422 — never a 500.
     """
     settings = get_settings()
-    identity = firebase_auth.verify_id_token(body.id_token)
+    # `firebase_admin`'s client is SYNCHRONOUS and `check_revoked=True`
+    # forces a network round trip to the Firebase Admin API on every
+    # verification, so calling it directly blocked the event loop for the
+    # whole trip, on the busiest path in the product. Every other blocking
+    # vendor call in this tree is already offloaded (document_storage,
+    # ses_service, email_senders/eligibility); this was the one that was
+    # missed. `HTTPException` propagates out of the threadpool unchanged.
+    identity = await run_in_threadpool(firebase_auth.verify_id_token, body.id_token)
 
     # ── Owner invariant (claude.md rule 2 + services/owner.py) ──────────────
     # The platform-owner email resolves ONLY to the seeded super_admin. It is
@@ -267,6 +324,14 @@ async def firebase_session(
         session.add(user)
         await session.flush()
         from app.models.candidate import Candidate
+        # NO CONSENT IS WRITTEN HERE, DELIBERATELY. Vivekium feature 6 asks
+        # for Stage A "at registration, before candidate profile creation
+        # completes", and this is a Firebase sign-in: the candidate has seen
+        # no consent wording and ticked nothing, so a row written here would
+        # record an agreement that never happened. Profile creation COMPLETES
+        # at PUT /portal/me/profile-form, which is where the items are shown,
+        # ticked individually and stamped, and which refuses to report a
+        # profile complete while either of them is outstanding.
         session.add(Candidate(
             tenant_id=None, user_id=user.id, email=user.email, phone=user.phone,
             full_name=user.full_name,
@@ -314,7 +379,7 @@ async def _user_out(session: AsyncSession, user: User) -> UserOut:
     elif user.role == Role.candidate:
         workspace_name = "Candidate workspace"
     else:
-        workspace_name = "ReadyPick"
+        workspace_name = "Vivekium"
     return UserOut(
         id=user.id,
         role=user.role,
@@ -323,6 +388,7 @@ async def _user_out(session: AsyncSession, user: User) -> UserOut:
         email=user.email,
         email_verified=user.email_verified_at is not None,
         phone_verified=user.phone_verified_at is not None,
+        password_enabled="password" in (user.auth_providers or []),
         workspace_name=workspace_name,
     )
 
@@ -351,6 +417,22 @@ async def _capabilities(session: AsyncSession, user: User) -> list[str]:
 # (SameSite=Strict, httponly, secure-in-prod, refresh path-scoped) — a single
 # source of truth next to the cookie-name constants.
 _set_auth_cookies = set_auth_cookies
+
+
+async def _issue_session(response: Response, user: User, audience: str) -> None:
+    """Create the server record before exposing its signed browser cookies."""
+    sid = auth_sessions.new_id()
+    access = create_access_token(
+        user.id, user.role.value, user.tenant_id, audience=audience,
+        session_id=sid,
+    )
+    refresh_token = create_refresh_token(user.id, audience=audience, session_id=sid)
+    jti = pyjwt.decode(
+        refresh_token, get_settings().jwt_secret,
+        algorithms=[ALGORITHM], audience=audience,
+    )["jti"]
+    await auth_sessions.create(sid, user.id, jti, refresh_token)
+    _set_auth_cookies(response, access, refresh_token)
 
 
 async def register_candidate(
@@ -470,7 +552,7 @@ async def verify_otp(
             context_token=result.context_token,
         )
     if result.authenticated:
-        _set_auth_cookies(response, result.access_token, result.refresh_token)
+        await _issue_session(response, result.user, audience_for_role(result.user.role))
         return OTPVerifyOut(
             user=await _user_out(session, result.user),
             capabilities=await _capabilities(session, result.user),
@@ -557,7 +639,7 @@ async def select_context(
             },
         )
         await session.commit()
-        _set_auth_cookies(response, result.access_token, result.refresh_token)
+        await _issue_session(response, result.user, audience_for_role(result.user.role))
         return OTPVerifyOut(
             user=selected_workspace,
             capabilities=await _capabilities(session, result.user),
@@ -588,7 +670,23 @@ def _dead_session(detail: str) -> JSONResponse:
     return dead
 
 
-@router.post("/refresh")
+# Abuse control, not authorization (services/rate_limit). A refresh token is a
+# long random JWT and is not brute forceable in practice, so this is not about
+# guessing one: it is that an unthrottled endpoint doing a database round trip
+# per call is a resource-exhaustion vector, and this was the one auth route the
+# sweep that added `auth_exchange` missed.
+#
+# The window is deliberately generous. A legitimate browser refreshes roughly
+# once per access-token lifetime (fifteen minutes), and several tabs of one
+# session can refresh at once after a laptop wakes, so a tight limit here would
+# sign real people out. Thirty per minute is far above that and far below a
+# useful flood. Now that `client_identifier` resolves a verified subject, an
+# authenticated caller gets their own bucket rather than sharing their office
+# address with every colleague.
+@router.post(
+    "/refresh",
+    dependencies=[Depends(rate_limit("auth_refresh", limit=30, window=60))],
+)
 async def refresh(
     request: Request,
     response: Response,
@@ -611,7 +709,7 @@ async def refresh(
             continue
         except pyjwt.PyJWTError:
             return _dead_session("Invalid refresh token")
-    if payload is None or payload.get("type") != "refresh":
+    if payload is None or payload.get("type") != "refresh" or not payload.get("sid") or not payload.get("jti"):
         return _dead_session("Invalid refresh token")
 
     user = await session.get(User, uuid.UUID(payload["sub"]))
@@ -621,17 +719,63 @@ async def refresh(
     # Rotate BOTH tokens on every refresh (refresh-token rotation), preserving
     # the token's audience.
     access = create_access_token(
-        user.id, user.role.value, user.tenant_id, audience=payload["aud"]
+        user.id, user.role.value, user.tenant_id, audience=payload["aud"],
+        session_id=payload["sid"],
     )
-    refresh_token = create_refresh_token(user.id, audience=payload["aud"])
+    refresh_candidate = create_refresh_token(
+        user.id, audience=payload["aud"], session_id=payload["sid"]
+    )
+    new_jti = pyjwt.decode(
+        refresh_candidate, get_settings().jwt_secret,
+        algorithms=[ALGORITHM], audience=payload["aud"],
+    )["jti"]
+    refresh_token = await auth_sessions.rotate(
+        payload["sid"], user.id, payload["jti"], new_jti, refresh_candidate,
+    )
+    if refresh_token is None:
+        return _dead_session("Session expired or revoked")
     set_auth_cookies(response, access, refresh_token)
     return {"refreshed": True}
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict:
+async def logout(request: Request, response: Response) -> dict:
+    for name in (REFRESH_COOKIE, "pr_access"):
+        token = request.cookies.get(name)
+        if not token:
+            continue
+        try:
+            payload = pyjwt.decode(
+                token, get_settings().jwt_secret, algorithms=[ALGORITHM],
+                audience=[AUDIENCE_OWNER, AUDIENCE_ORG, AUDIENCE_CANDIDATE],
+                options={"verify_exp": False},
+            )
+        except pyjwt.PyJWTError:
+            continue
+        if payload.get("sid") and payload.get("sub"):
+            await auth_sessions.revoke(payload["sid"], payload["sub"])
+            break
     clear_auth_cookies(response)
     return {"logged_out": True}
+
+
+@router.post("/password-changed")
+async def password_changed(
+    body: FirebaseSessionIn,
+    response: Response,
+    session: AsyncSession = Depends(get_identity_session),
+) -> dict:
+    """Fresh Firebase proof revokes app sessions even if this cookie expired."""
+    identity = await run_in_threadpool(firebase_auth.verify_id_token, body.id_token)
+    users = (await session.execute(
+        select(User.id).where(User.firebase_uid == identity.uid)
+    )).scalars().all()
+    if not users:
+        raise HTTPException(status_code=401, detail="Unknown account")
+    for user_id in users:
+        await auth_sessions.revoke_all(user_id)
+    clear_auth_cookies(response)
+    return {"sessions_revoked": True}
 
 
 @router.get("/me", response_model=MeOut)
