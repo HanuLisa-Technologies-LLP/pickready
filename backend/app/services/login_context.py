@@ -3,7 +3,7 @@
 WHAT THIS IS
 ------------
 Firebase proves WHO somebody is (claude.md rule 2); this module answers WHERE
-they may go. One identifier (an email, occasionally a phone) can belong to
+they may go. One identifier (an email) can belong to
 several `users` rows across roles and tenants: three portals, one login. So a
 proven identity resolves to either exactly one eligible user (sign them in) or
 several (show a workspace chooser, carrying a short-lived single-use
@@ -39,7 +39,7 @@ from typing import Sequence
 
 import jwt as pyjwt
 from redis.exceptions import RedisError
-from sqlalchemy import or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import cache
@@ -245,12 +245,22 @@ class SelectionResult:
 
 
 async def find_users(session: AsyncSession, identifier: str) -> list[User]:
-    """ALL users whose email OR phone equals the identifier, across roles and
-    tenants (unified login, contract rev 2). Ordering keeps the context list
-    stable between requests."""
+    """ALL users whose email equals the identifier, case-insensitively, across
+    roles and tenants (unified login, contract rev 2). Ordering keeps the
+    context list stable between requests.
+
+    EMAIL ONLY. This used to match `users.phone` too, and a phone number is
+    not an identity this product proves any more (phone sign-in was removed):
+    two people sharing a number in imported data would each have been offered
+    the other's workspace, which is the cross-person chooser the deleted
+    phone-reuse refusal in `api/auth` existed to stop. Case-insensitive because
+    `firebase_session` matches the same way, and the two answers to "which
+    accounts share this address" must agree.
+    """
+    address = identifier.strip().lower()
     stmt = (
         select(User)
-        .where(or_(User.email == identifier, User.phone == identifier))
+        .where(func.lower(User.email) == address)
         .order_by(User.created_at, User.id)
     )
     return list((await session.execute(stmt)).scalars().all())

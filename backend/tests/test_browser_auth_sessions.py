@@ -38,6 +38,15 @@ class Store:
     async def hset(self, key, mapping):
         self.hashes.setdefault(key, {}).update(mapping)
 
+    async def hget(self, key, field):
+        self._alive(key)
+        return self.hashes.get(key, {}).get(field)
+
+    def remaining(self, key):
+        """Seconds left before `key` expires, or None when it has no TTL."""
+        deadline = self.deadlines.get(key)
+        return None if deadline is None else deadline - self.now
+
     async def expire(self, key, ttl):
         self.deadlines[key] = self.now + int(ttl)
 
@@ -64,14 +73,15 @@ class Store:
             await self.expire(session_key, args[1])
             await self.expire(index_key, args[1])
             return 1
-        _, old_jti, new_jti, new_token, previous_until, now, ttl = args
+        _, old_jti, new_jti, new_token, previous_until, now, ttl, touch = args
         if record["jti"] == old_jti:
             record.update(jti=new_jti, token=new_token,
                           previous_jti=old_jti, previous_until=str(previous_until))
         elif record["previous_jti"] != old_jti or int(record["previous_until"]) < now:
             return None
-        await self.expire(session_key, ttl)
-        await self.expire(index_key, ttl)
+        if touch == "1":
+            await self.expire(session_key, ttl)
+            await self.expire(index_key, ttl)
         return record["token"]
 
 
@@ -91,9 +101,12 @@ class Pipeline:
             await getattr(self.store, name)(*args, **kwargs)
 
 
-def request_with_cookies(**cookies):
+def request_with_cookies(activity=False, **cookies):
     value = "; ".join(f"{key}={token}" for key, token in cookies.items())
-    return Request({"type": "http", "headers": [(b"cookie", value.encode())]})
+    headers = [(b"cookie", value.encode())]
+    if activity:
+        headers.append((b"x-user-activity", b"1"))
+    return Request({"type": "http", "headers": headers})
 
 
 def cookie(response, name):
@@ -124,13 +137,13 @@ async def test_idle_timeout_is_server_side_and_activity_slides_it(store, user):
     response = Response()
     await auth._issue_session(response, user, AUDIENCE_ORG)
     access = cookie(response, ACCESS_COOKIE)
-    request = request_with_cookies(**{ACCESS_COOKIE: access})
+    request = request_with_cookies(activity=True, **{ACCESS_COOKIE: access})
     assert (await _authenticated_user(request, access, AUDIENCE_ORG)).user_id == user.id
     sid = decode_token(access, AUDIENCE_ORG)["sid"]
     store.now += 29 * 60
-    assert await auth_sessions.validate(sid, user.id)
+    assert await auth_sessions.validate(sid, user.id, touch=True)
     store.now += 30 * 60 + 1
-    assert not await auth_sessions.validate(sid, user.id)
+    assert not await auth_sessions.validate(sid, user.id, touch=True)
 
 
 @pytest.mark.asyncio
@@ -141,7 +154,7 @@ async def test_two_tabs_refresh_one_browser_session_without_stranding_either(sto
     session = SimpleNamespace(get=lambda _model, _id: _async_user(user))
     first = Response()
     second = Response()
-    request = request_with_cookies(**{REFRESH_COOKIE: old_refresh})
+    request = request_with_cookies(activity=True, **{REFRESH_COOKIE: old_refresh})
     assert await auth.refresh(request, first, session) == {"refreshed": True}
     assert await auth.refresh(request, second, session) == {"refreshed": True}
     assert cookie(first, REFRESH_COOKIE) == cookie(second, REFRESH_COOKIE)

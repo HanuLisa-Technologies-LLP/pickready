@@ -638,22 +638,28 @@ async def test_the_double_runs_the_products_own_session_scripts(monkeypatch) -> 
     sid = auth_sessions.new_id()
     await auth_sessions.create(sid, user, "jti-1", "token-1")
 
-    assert await auth_sessions.validate(sid, user) is True
-    assert await auth_sessions.validate(sid, uuid.uuid4()) is False
+    assert await auth_sessions.validate(sid, user, touch=True) is True
+    assert await auth_sessions.validate(sid, user, touch=False) is True
+    assert await auth_sessions.validate(sid, uuid.uuid4(), touch=True) is False
+    assert await auth_sessions.validate(sid, uuid.uuid4(), touch=False) is False
 
-    rotated = await auth_sessions.rotate(sid, user, "jti-1", "jti-2", "token-2")
+    rotated = await auth_sessions.rotate(
+        sid, user, "jti-1", "jti-2", "token-2", touch=True
+    )
     assert rotated == "token-2"
 
     # A racing tab presenting the PRIOR jti inside the grace window is handed
     # the winner's token rather than being logged out.
-    assert await auth_sessions.rotate(sid, user, "jti-1", "jti-3", "token-3") == (
-        "token-2"
-    )
+    assert await auth_sessions.rotate(
+        sid, user, "jti-1", "jti-3", "token-3", touch=False
+    ) == "token-2"
     # A jti that was never current and is not the graced one gets nothing.
-    assert await auth_sessions.rotate(sid, user, "jti-9", "jti-4", "token-4") is None
+    assert await auth_sessions.rotate(
+        sid, user, "jti-9", "jti-4", "token-4", touch=False
+    ) is None
 
     await auth_sessions.revoke_all(user)
-    assert await auth_sessions.validate(sid, user) is False
+    assert await auth_sessions.validate(sid, user, touch=False) is False
 
 
 @pytest.mark.asyncio
@@ -704,7 +710,7 @@ async def test_redis_down_makes_the_session_store_refuse_rather_than_fail_open(
         assert await cache.set(cache.key("harness", "probe"), {"a": 1}) is False
 
         with pytest.raises(HTTPException) as caught:
-            await auth_sessions.validate("sid", uuid.uuid4())
+            await auth_sessions.validate("sid", uuid.uuid4(), touch=True)
     assert caught.value.status_code == 503
 
 
