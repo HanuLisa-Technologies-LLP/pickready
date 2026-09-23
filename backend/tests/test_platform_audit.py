@@ -193,8 +193,8 @@ def test_smtp_settings_only_accept_gmail() -> None:
 # ── No OTP in any portal UI ────────────────────────────────────────────────
 
 def test_no_otp_copy_reaches_any_portal() -> None:
-    """Firebase owns authentication. The MSG91 SMS send-path is retained as a
-    feature (claude.md rule 2) but must not appear as a login step in any UI.
+    """Firebase owns authentication, and no one-time-code login step may
+    appear in any UI (the SMS send path itself leaves in Phase 7 Wave B).
 
     THE ONE EXEMPTION IS GONE, AND THE RULE IS WHOLE AGAIN (2026-09-08). It
     was granted on 2026-09-05 for the corporate sender's mailbox-verification
@@ -207,10 +207,6 @@ def test_no_otp_copy_reaches_any_portal() -> None:
     pattern = re.compile(r"\botp\b|one[- ]time password|verification code", re.IGNORECASE)
     offenders: list[str] = []
     for path in _frontend_sources():
-        # The legacy input component is retained but must stay unreferenced;
-        # that is asserted separately below.
-        if path.name == "otp-input.tsx":
-            continue
         for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
             if stripped.startswith("//") or stripped.startswith("*"):
@@ -220,16 +216,17 @@ def test_no_otp_copy_reaches_any_portal() -> None:
     assert not offenders, f"OTP copy present in: {offenders}"
 
 
-def test_the_legacy_otp_input_is_not_wired_into_any_page() -> None:
-    """Retained, not reachable. A component nobody imports cannot put an OTP
-    step back into a portal by accident."""
+def test_the_legacy_code_input_component_is_deleted() -> None:
+    """It was retained unreachable until 2026-09-24 and is now deleted. A
+    component that does not exist cannot put a code step back into a portal,
+    and nothing may reach for it by name either."""
+    assert not (FRONTEND / "components" / ("otp" + "-input.tsx")).exists()
     importers = [
         str(path.relative_to(FRONTEND))
         for path in _frontend_sources()
-        if path.name != "otp-input.tsx"
-        and "otp-input" in path.read_text(encoding="utf-8")
+        if ("otp" + "-input") in path.read_text(encoding="utf-8")
     ]
-    assert not importers, f"otp-input is imported by: {importers}"
+    assert not importers, f"the deleted component is named by: {importers}"
 
 
 # ── The vivekium forbidden terms (C7, owner-ruled final 2026-09-18) ─────────
