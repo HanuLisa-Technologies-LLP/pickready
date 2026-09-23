@@ -104,7 +104,6 @@ __all__ = [
     "is_forbidden_competency",
     "load_framework",
     "matrix_is_complete",
-    "matrix_version",
     "published_matrix",
     "publish_tatva_matrix",
     "verify_matrix_for_consumer",
@@ -441,45 +440,12 @@ async def load_framework(session: AsyncSession, job_id: Any) -> list[JobCompeten
 
 # ── Sutra publishes the matrix (spec §5) ─────────────────────────────────────
 #
-# WHAT THE VERSION IS, AND WHY IT IS NOT A COLUMN
-# -----------------------------------------------
-# A regeneration DEACTIVATES the previous rows and inserts a new set in one
-# transaction, so `job_competencies` already records every generation this job
-# has had -- one batch of rows per generation, each batch sharing the
-# transaction's `created_at`. Counting batches is therefore reading the version
-# that already exists rather than maintaining a second one beside it. A counter
-# column would be a number somebody has to remember to increment, and the
-# failure when they forget is the one this whole hand-off exists to prevent: a
-# consumer using criteria it believes are current.
-#
-# It is frozen once the matrix is HM-locked because a locked matrix cannot be
-# regenerated -- `generate_framework` is idempotent, and reopening is refused
-# once anyone has been assessed. No new batch means no new version.
-
-
-def matrix_version(rows: list[JobCompetency]) -> int:
-    """This job's matrix version, counted from the generations behind it.
-
-    `rows` must be EVERY competency row for the job, active and inactive. Handed
-    only the active ones this returns 1 forever, because a regeneration
-    deactivates rather than deletes -- which is precisely the stale-version
-    reading a consumer must never make silently.
-    """
-    batches = {row.created_at for row in rows if row.created_at is not None}
-    return max(1, len(batches))
-
-
-async def _all_competencies(session: AsyncSession, job_id: Any) -> list[JobCompetency]:
-    """Every generation's rows, which is what `matrix_version` has to count."""
-    return list(
-        (
-            await session.execute(
-                select(JobCompetency)
-                .where(JobCompetency.job_id == job_id)
-                .order_by(JobCompetency.ordinal)
-            )
-        ).scalars().all()
-    )
+# The version authority is the append-only freeze binding
+# (`job_scorecard_bindings.scorecard_version`), read where the artifact is
+# published. Batch-counting over `job_competencies.created_at` was the earlier
+# answer and was DELETED with its last caller on 2026-09-23: compilation can
+# reuse rows and a human edit preserves row identity, so creation batches are
+# not versions.
 
 
 def requirement_word(required_level: Any) -> str:
