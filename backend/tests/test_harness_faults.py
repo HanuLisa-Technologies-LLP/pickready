@@ -331,16 +331,17 @@ async def test_a_credential_failure_trips_the_breaker_on_the_first_occurrence(
 
 
 @pytest.mark.asyncio
-async def test_a_partial_response_is_accepted_and_arrives_truncated(
+async def test_a_partial_response_is_refused_after_one_larger_retry(
     router_key,
 ) -> None:
-    """Truncation is NOT a failure class, and that is the finding.
+    """Truncation IS a failure class since 2026-09-24, and this replaced the
+    test that pinned the opposite.
 
-    `finish_reason` of "length" is outside `REFUSAL_FINISH_REASONS`, so the
-    router accepts it and the caller receives a short answer with nothing
-    marking it as cut. This fault exists so a scenario can ask what each
-    generative caller does with one, and the assertion here is that the fault
-    reproduces the condition faithfully rather than that the product handles it.
+    The fault cuts EVERY call, so the one larger-budget retry is cut too and the
+    call must end in `ResponseTruncated`, a subclass of the error every caller
+    already degrades on. The cut text must not appear anywhere in what the
+    caller receives, because half a sentence read as a whole one is exactly the
+    defect the fault layer found on its first run.
     """
     authored = str(
         load_fixture("openai/chat_completion_terra_reasoning.json").body["choices"][0][
@@ -349,13 +350,15 @@ async def test_a_partial_response_is_accepted_and_arrives_truncated(
     )
 
     with faults.model_failure("partial"):
-        answer = await llm_router.invoke_llm(
-            _PROSE_TASK, _messages(), timeout=2.0, total_budget=2.0
-        )
+        with pytest.raises(llm_router.ResponseTruncated) as excinfo:
+            await llm_router.invoke_llm(
+                _PROSE_TASK, _messages(), timeout=2.0, total_budget=10.0
+            )
 
-    assert answer
-    assert len(answer) < len(authored)
-    assert authored.startswith(answer)
+    assert isinstance(excinfo.value, LLMUnavailableError)
+    assert "truncated" in str(excinfo.value)
+    cut = authored[:40]
+    assert cut not in str(excinfo.value)
 
 
 @pytest.mark.asyncio

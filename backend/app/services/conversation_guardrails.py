@@ -94,7 +94,7 @@ _REPORT_PRIORITY: tuple[str, ...] = (
 NEUTRALISED = "[content removed]"
 
 #: What replaces anything that looks like a secret. Short and unmistakable, so
-#: a human reading a LangSmith trace can see that redaction happened.
+#: a human reading the stored prompt or a log can see that redaction happened.
 REDACTED = "[redacted]"
 
 #: Said to the candidate when a turn is refused. Plain, no accusation, and it
@@ -431,7 +431,7 @@ def _scan(
     """Advance both strings through one family of patterns.
 
     Two substitutions, not one: `sanitized` keeps a visible marker so a human
-    reading the prompt or the LangSmith trace can see that something was
+    reading the prompt can see that something was
     neutralised, while `residue` deletes the match outright. Only `residue` is
     measured for substance -- counting the marker's own words as content would
     let a one-line attack look like an answer.

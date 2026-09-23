@@ -386,7 +386,7 @@ SECRETS = [
 def test_a_pasted_secret_is_redacted_and_the_answer_still_counts(
     answer: str, secret: str
 ) -> None:
-    """Redaction protects the CANDIDATE: prompts are traced to LangSmith and a
+    """Redaction protects the CANDIDATE: prompts are sent to a vendor and a
     pasted key must not be stored or sent onward. It is not a rule the
     candidate broke, so the turn is not refused for it."""
     result = inspect_answer(answer)

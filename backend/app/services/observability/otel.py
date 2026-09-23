@@ -3,12 +3,15 @@
 WHERE IT ATTACHES, AND WHY THERE
 --------------------------------
 Every LLM call in this product already goes through
-`llm_router.invoke_llm(task_type, ...)`, and LangSmith tracing
-(`services/tracing.trace_llm`) is already attached exactly there for exactly
-that reason. This module is designed to hang off the same single call site: one
-`with genai_span(...)` around the router's existing wrapper. Four decorated
+`llm_router.invoke_llm(task_type, ...)`, and this module hangs off that single
+call site: one `with genai_span(...)` around the router's call. Four decorated
 call sites would be four things to remember on the fifth agent; one chokepoint
 cannot be forgotten.
+
+THIS IS THE ONLY TRACER. The product ran a second, vendor-hosted tracer beside
+it until 2026-09-24, when the owner ruled OpenTelemetry only. `agent_loop_span`
+below is what replaced that tracer's loop-level parent run, so the loop still
+has one span above the model calls it makes.
 
 TWO HONEST CAVEATS ABOUT THE CONVENTIONS THEMSELVES
 ---------------------------------------------------
@@ -64,8 +67,7 @@ they infer from an empty dashboard. It is not a swallowed error.
 
 A BROKEN EXPORTER DEGRADES TO AN UNTRACED CALL, NEVER A FAILED ONE
 -------------------------------------------------------------------
-Same rule the LangSmith integration already follows, for the same reason:
-observability is not worth an outage, and a traced call and an untraced call
+Observability is not worth an outage, and a traced call and an untraced call
 must be indistinguishable to the caller. Every path that touches the SDK is
 wrapped, and a failure leaves the pipeline disabled and logged.
 """
@@ -90,6 +92,7 @@ from opentelemetry.trace import Span, StatusCode, Tracer, TracerProvider
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AgentLoopSpan",
     "ATTR_AGENT",
     "ATTR_PROMPT_DIGEST",
     "ATTR_PROMPT_VERSION",
@@ -103,6 +106,7 @@ __all__ = [
     "OPERATION_INVOKE_AGENT",
     "OPERATION_DURATION_BUCKETS",
     "TOKEN_USAGE_BUCKETS",
+    "agent_loop_span",
     "configure_from_environment",
     "disable",
     "enable",
@@ -212,6 +216,42 @@ _ALLOWED_METRIC_ATTRIBUTES = frozenset(
         ATTR_TASK_TYPE,
         ATTR_AGENT,
         ATTR_ROUTE,
+    }
+)
+
+#: The agent loop's own span. INTERNAL, not a GenAI operation: a loop is the
+#: bounded generate/evaluate/revise cycle ABOVE the model calls it makes, and
+#: each of those calls already has its GenAI span as a child. So these names are
+#: Vivekium-prefixed and live under a THIRD allowlist rather than widening the
+#: GenAI one, whose exact membership `tests/test_otel_no_content.py` pins.
+ATTR_LOOP_NAME = "readypick.loop.name"
+ATTR_LOOP_MAX_ATTEMPTS = "readypick.loop.max_attempts"
+ATTR_LOOP_DEADLINE_SECONDS = "readypick.loop.deadline_seconds"
+ATTR_LOOP_MAX_GENERATED_TOKENS = "readypick.loop.max_generated_tokens"
+ATTR_LOOP_ATTEMPTS = "readypick.loop.attempts"
+ATTR_LOOP_DEGRADED = "readypick.loop.degraded"
+ATTR_LOOP_ELAPSED_MS = "readypick.loop.elapsed_ms"
+ATTR_LOOP_GENERATED_TOKENS = "readypick.loop.generated_tokens"
+#: Defect TYPES only, never a defect's `detail`. A detail can quote the output
+#: it rejected, and the output was written from a candidate's answers; the
+#: same rule `observability/trace._SAFE_STAGE_KEYS` applies to stored traces.
+ATTR_LOOP_DEFECT_TYPES = "readypick.loop.defect_types"
+
+#: Everything a loop span may carry. Counts, bounds, a boolean, a loop name the
+#: code chose and a list of defect type names the code chose: nothing a model
+#: or a candidate wrote.
+_ALLOWED_LOOP_SPAN_ATTRIBUTES = frozenset(
+    {
+        ATTR_LOOP_NAME,
+        ATTR_LOOP_MAX_ATTEMPTS,
+        ATTR_LOOP_DEADLINE_SECONDS,
+        ATTR_LOOP_MAX_GENERATED_TOKENS,
+        ATTR_LOOP_ATTEMPTS,
+        ATTR_LOOP_DEGRADED,
+        ATTR_LOOP_ELAPSED_MS,
+        ATTR_LOOP_GENERATED_TOKENS,
+        ATTR_LOOP_DEFECT_TYPES,
+        ATTR_ERROR_TYPE,
     }
 )
 
@@ -550,8 +590,7 @@ def genai_span(
     """Trace one GenAI operation. Yields a handle, or None when disabled.
 
     THE ENTRY POINT. This is what `llm_router.invoke_llm` wraps its call in,
-    beside the existing `tracing.trace_llm`, and it is the only public way to
-    start a span here.
+    and it is the only public way to start a GenAI span here.
 
     `operation` is one of `OPERATION_CHAT`, `OPERATION_EXECUTE_TOOL`,
     `OPERATION_INVOKE_AGENT` or `OPERATION_EMBEDDINGS`. An unrecognised value is
@@ -567,8 +606,8 @@ def genai_span(
     The span name follows the conventions' own rule, `{operation} {model}`, so
     it reads as "chat gpt-5.6-terra" in a backend that groups by span name.
 
-    Yields None when export is off, exactly as `tracing.trace_llm` does, so a
-    caller writes the same `if handle is not None` it already writes.
+    Yields None when export is off, so a caller writes `if handle is not None`
+    and never has to ask whether tracing is configured.
     """
     if operation not in _OPERATIONS:
         raise ValueError(
@@ -625,3 +664,116 @@ def genai_span(
             manager.__exit__(None, None, None)
         except Exception:  # noqa: BLE001 -- observability never fails a call
             logger.debug("otel.span_exit_failed")
+
+
+class AgentLoopSpan:
+    """The handle `agent_loop.run_loop` records its outcome on.
+
+    Failure tolerant for the reason every writer in this module is: a loop must
+    not be able to tell a traced run from an untraced one.
+    """
+
+    __slots__ = ("_span",)
+
+    def __init__(self, span: Span) -> None:
+        self._span = span
+
+    def end(
+        self,
+        *,
+        attempts: int,
+        degraded: bool,
+        elapsed_ms: int,
+        generated_tokens: int,
+        defect_types: Sequence[str],
+        error_type: str | None,
+    ) -> None:
+        """Record what the loop did. Counts, a flag, type names; never content.
+
+        `error_type` is an exception CLASS NAME, the only error text this
+        module ever carries, and a degraded run marks the span failed so a
+        dashboard counting failed loops does not need to know the attribute.
+        """
+        attributes = _filter(
+            {
+                ATTR_LOOP_ATTEMPTS: attempts,
+                ATTR_LOOP_DEGRADED: degraded,
+                ATTR_LOOP_ELAPSED_MS: elapsed_ms,
+                ATTR_LOOP_GENERATED_TOKENS: generated_tokens,
+                ATTR_LOOP_DEFECT_TYPES: tuple(sorted({str(t) for t in defect_types})),
+                ATTR_ERROR_TYPE: error_type,
+            },
+            _ALLOWED_LOOP_SPAN_ATTRIBUTES,
+        )
+        try:
+            self._span.set_attributes(attributes)
+            if degraded:
+                self._span.set_status(StatusCode.ERROR)
+        except Exception:  # noqa: BLE001 -- observability never fails a call
+            logger.debug("otel.loop_end_failed")
+
+
+@contextlib.contextmanager
+def agent_loop_span(
+    name: str,
+    *,
+    max_attempts: int,
+    deadline_seconds: float,
+    max_generated_tokens: int,
+) -> Iterator[AgentLoopSpan | None]:
+    """Trace one bounded agent loop as an INTERNAL span. None when disabled.
+
+    The model calls the loop makes open their own GenAI spans inside this one,
+    so a trace reads as one loop and its attempts. `name` is the loop name the
+    CODE chose (`run_loop(name=...)`), never anything a model or a candidate
+    wrote, and the span name is `agent_loop {name}` so a backend grouping by
+    span name separates the loops with no per-loop wiring.
+
+    An exception from the body is recorded by class name and re-raised
+    unchanged; `run_loop` never raises, so in practice what is recorded is the
+    outcome the loop reports through `AgentLoopSpan.end`.
+    """
+    pipeline = _pipeline_or_none()
+    if pipeline is None:
+        yield None
+        return
+
+    attributes = _filter(
+        {
+            ATTR_LOOP_NAME: name,
+            ATTR_LOOP_MAX_ATTEMPTS: max_attempts,
+            ATTR_LOOP_DEADLINE_SECONDS: deadline_seconds,
+            ATTR_LOOP_MAX_GENERATED_TOKENS: max_generated_tokens,
+        },
+        _ALLOWED_LOOP_SPAN_ATTRIBUTES,
+    )
+    try:
+        manager = pipeline.tracer.start_as_current_span(
+            f"agent_loop {name}", attributes=attributes
+        )
+        span = manager.__enter__()
+    except Exception as exc:  # noqa: BLE001 -- see the module docstring
+        logger.info("otel.loop_span_unavailable error=%s", type(exc).__name__)
+        yield None
+        return
+
+    try:
+        yield AgentLoopSpan(span)
+    except BaseException as exc:
+        # Observe, never change: record the class name and re-raise unchanged.
+        try:
+            span.set_attributes(
+                _filter(
+                    {ATTR_ERROR_TYPE: type(exc).__name__},
+                    _ALLOWED_LOOP_SPAN_ATTRIBUTES,
+                )
+            )
+            span.set_status(StatusCode.ERROR)
+        except Exception:  # noqa: BLE001 -- observability never fails a call
+            logger.debug("otel.loop_record_error_failed")
+        raise
+    finally:
+        try:
+            manager.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001 -- observability never fails a call
+            logger.debug("otel.loop_span_exit_failed")

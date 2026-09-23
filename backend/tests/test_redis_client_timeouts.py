@@ -50,11 +50,6 @@ REQUIRED_KEYWORDS = ("socket_connect_timeout", "socket_timeout")
 
 #: Clients that never run inside a request, with the reason. Not oversights.
 OPERATOR_SCRIPTS_BY_DESIGN: dict[str, str] = {
-    "scripts/validate_auth.py": (
-        "an operator-run CLI validator that clears a developer's own OTP "
-        "counters; nothing serves a request behind it, so a hang blocks the "
-        "terminal it was typed into and no user anywhere waits on it"
-    ),
     "scripts/validate_stack.py": (
         "the stack validator's own Redis PING probe, run by a person from a "
         "shell to answer whether the infrastructure is up; a hang there is the "
@@ -117,14 +112,24 @@ def test_the_sweep_actually_finds_redis_clients() -> None:
 
     A matcher that found nothing would pass for ever and protect nothing. The
     floor is above the ledger's size so the ledger cannot be what satisfies it,
-    and two modules are named outright: `core/cache.py` is the one client every
-    tenant-scoped read now goes through, and `workers/status.py` is the one the
-    polling screens read.
+    and one module is named outright: `core/redis_loop.py` builds the client
+    every tenant-scoped cache read, every run-status poll and the web-search
+    breaker go through (since 2026-09-24 those three share it rather than each
+    building their own, so the floor moved from five to four with that reason).
     """
     sites = _client_sites()
-    assert len(sites) >= 5, f"only {sorted(sites)} matched; the sweep is broken"
-    assert "core/cache.py" in sites
-    assert "workers/status.py" in sites
+    assert len(sites) >= 4, f"only {sorted(sites)} matched; the sweep is broken"
+    assert "core/redis_loop.py" in sites
+
+
+def test_the_loop_bound_callers_build_no_client_of_their_own() -> None:
+    """The three modules that share `LoopBoundRedis` must not grow a second,
+    process-global client back: that is exactly the warm-worker defect."""
+    sites = _client_sites()
+    for module in ("core/cache.py", "workers/status.py", "services/web_research.py"):
+        assert module not in sites, module
+        source = (BACKEND_APP / module).read_text(encoding="utf-8")
+        assert "LoopBoundRedis(" in source, module
 
 
 def test_every_redis_client_bounds_its_socket() -> None:
@@ -168,8 +173,9 @@ def test_the_hot_path_has_exactly_one_client() -> None:
 
 def test_the_ledger_does_not_grow() -> None:
     """An exemption list anybody may append to is not a rule."""
+    # `scripts/validate_auth.py` left the ledger on 2026-09-24: its Redis
+    # client only reset the retired code-login counters, and went with them.
     assert set(OPERATOR_SCRIPTS_BY_DESIGN) == {
-        "scripts/validate_auth.py",
         "scripts/validate_stack.py",
     }
     for reason in OPERATOR_SCRIPTS_BY_DESIGN.values():

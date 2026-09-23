@@ -63,6 +63,7 @@ from urllib.parse import urlparse
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
+from app.core.redis_loop import LoopBoundRedis
 from app.services.llm_router import LLMUnavailableError, invoke_llm
 from app.prompts import registry
 
@@ -172,7 +173,13 @@ _COOLDOWN_SECONDS = 5 * 60
 
 _BREAKER_FAILURE_KEY = "pickready:web-research:breaker:failures"
 _BREAKER_OPEN_KEY = "pickready:web-research:breaker:open"
-_redis_client: Any | None = None
+#: Loop-bound since 2026-09-24. It was one client for the process, and the
+#: company-profile agent runs each invocation under its own event loop, so the
+#: second invocation's breaker reads and writes met a dead loop's pool and were
+#: reduced to warnings while the breaker silently stopped counting.
+_BREAKER_CLIENT = LoopBoundRedis(
+    name="web_research_breaker", socket_timeout=1, connect_timeout=1
+)
 
 UNCONFIGURED_MESSAGE = (
     "Web search is not configured on this deployment, so the internet results "
@@ -210,28 +217,12 @@ class WebResearchError(RuntimeError):
 
 
 def _breaker_redis():
-    """Shared breaker store. A Redis outage fails open, never per-replica."""
-    global _redis_client
-    if _redis_client is None:
-        try:
-            import redis.asyncio as redis_asyncio
+    """Shared breaker store. A Redis outage fails open, never per-replica.
 
-            from app.core.config import get_settings
-
-            _redis_client = redis_asyncio.from_url(
-                get_settings().redis_url,
-                encoding="utf-8",
-                decode_responses=True,
-                socket_connect_timeout=1,
-                socket_timeout=1,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "web_research.breaker_store_unavailable error=%s",
-                type(exc).__name__,
-            )
-            return None
-    return _redis_client
+    None when no client can be built for the running loop; `LoopBoundRedis`
+    logs that at warning, once per loop.
+    """
+    return _BREAKER_CLIENT.client()
 
 
 async def reset_breaker() -> bool:

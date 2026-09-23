@@ -22,12 +22,11 @@ would deserialize into the wrong thing.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any, Awaitable, Callable
 
-from app.core.config import get_settings
+from app.core.redis_loop import LoopBoundRedis
 
 log = logging.getLogger(__name__)
 
@@ -42,9 +41,10 @@ TTL_PRICING_PLANS = 3600       # 1 hour — changes on a migration, not on a cli
 TTL_CANDIDATE_PROFILE = 3600   # 1 hour — static between the candidate's edits
 TTL_SHORT = 60
 
-_client: Any = None
-_client_loop: Any = None
-_unavailable = False
+#: The one loop-bound client for the cache, the rate limiter and the session
+#: store (all three reach it through `_redis()`, which is also the seam the
+#: harness and the tests substitute).
+_CLIENT = LoopBoundRedis(name="cache", socket_timeout=1, connect_timeout=1)
 
 
 def key(*parts: Any) -> str:
@@ -56,47 +56,18 @@ def key(*parts: Any) -> str:
 
 
 def _redis():
-    """Lazily-built async Redis client, or None if Redis is unreachable.
+    """The async Redis client for the running loop, or None if none can be built.
 
-    `_unavailable` latches so a Redis outage costs one failed connection rather
-    than one per request — the whole point is to never make things slower.
+    REBUILT ON A NEW EVENT LOOP, the rule the realtime hub was taught on
+    2026-09-16: a redis-py pool's connections belong to the loop that opened
+    them. `core/redis_loop.LoopBoundRedis` is the one implementation of that
+    rule, shared with `workers/status` and the web-search breaker; a build
+    failure is logged at warning and latched for the current loop only.
 
-    REBUILT ON A NEW EVENT LOOP, which is the same rule `proctoring/state.py`
-    follows and the same one the realtime hub was taught on 2026-09-16: a
-    process-wide singleton holding asyncio state is a bug class this repository
-    has already written down. A redis-py connection pool's connections belong
-    to the loop that opened them, so a client carried into a second loop fails
-    every call. One uvicorn process has one loop and never notices; a test
-    session and a worker that runs `asyncio.run` per task both do.
+    Kept as a function rather than exposing the object, because it is the seam
+    the harness's `redis_down` fault and a dozen tests substitute.
     """
-    global _client, _client_loop, _unavailable
-    if _unavailable:
-        return None
-    try:
-        loop: Any = asyncio.get_running_loop()
-    except RuntimeError:
-        # Called from synchronous code. There is no pool to mismatch yet, so
-        # the existing client is as good as a new one.
-        loop = _client_loop
-    if _client is not None and _client_loop is not loop:
-        _client = None
-    if _client is None:
-        try:
-            import redis.asyncio as redis_asyncio
-
-            _client = redis_asyncio.from_url(
-                get_settings().redis_url,
-                encoding="utf-8",
-                decode_responses=True,
-                socket_connect_timeout=1,
-                socket_timeout=1,
-            )
-            _client_loop = loop
-        except Exception as exc:  # noqa: BLE001 — cache must never break a request
-            log.warning("cache.unavailable %s", type(exc).__name__)
-            _unavailable = True
-            return None
-    return _client
+    return _CLIENT.client()
 
 
 async def get(cache_key: str) -> Any | None:
@@ -214,12 +185,5 @@ async def get_or_set(
 
 
 async def close() -> None:
-    """Release the connection pool at shutdown."""
-    global _client, _client_loop
-    _client_loop = None
-    if _client is not None:
-        try:
-            await _client.aclose()
-        except Exception:  # noqa: BLE001
-            pass
-        _client = None
+    """Release the connection pool at shutdown. Never raises; failures are logged."""
+    await _CLIENT.aclose()

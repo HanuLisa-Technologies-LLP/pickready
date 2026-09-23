@@ -31,7 +31,7 @@ from app.models.tenant import AuditLog, Tenant
 from app.models.user import User
 from app.schemas.auth import FirebaseSessionIn, SelectContextIn
 from app.services import firebase_auth
-from app.services.otp import decode_context_token
+from app.services.login_context import decode_context_token
 from app.services.firebase_auth import FirebaseIdentity, assert_provider_allowed
 from fastapi import HTTPException, Response
 

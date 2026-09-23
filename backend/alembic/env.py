@@ -99,9 +99,10 @@ def _do_run_migrations(connection: Connection) -> None:
         role = _migration_role()
         if role is not None:
             connection.exec_driver_sql(f'SET ROLE "{role}"')
-        # Migrations are a trusted, tenant-agnostic maintenance context — the
-        # same standing the app already grants Celery workers and the Super
-        # Admin console — so they reach through the SAME explicit escape hatch
+        # Migrations are a trusted, tenant-agnostic maintenance context (the
+        # same standing the app already grants background task sessions,
+        # `workers/runtime.worker_session`, and the Super Admin console), so
+        # they reach through the SAME explicit escape hatch
         # those paths use (`core/db.superadmin_scope`): app.bypass_rls = 'on'.
         #
         # Without it, every data migration that touches a tenant-scoped table

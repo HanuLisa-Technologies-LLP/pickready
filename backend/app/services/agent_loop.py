@@ -69,7 +69,7 @@ from difflib import SequenceMatcher
 from itertools import combinations
 from typing import Any, Awaitable, Callable, Generic, Sequence, TypeVar
 
-from app.services import tracing
+from app.services.observability import otel
 
 logger = logging.getLogger(__name__)
 
@@ -418,19 +418,18 @@ async def run_loop(
     deadline_seconds: float = INTERACTIVE_DEADLINE,
     max_generated_tokens: int = INTERACTIVE_TOKEN_BUDGET,
 ) -> LoopResult[T]:
-    """Run a bounded loop and emit one loop-level LangSmith chain trace.
+    """Run a bounded loop inside one INTERNAL OpenTelemetry span.
 
-    Individual model attempts remain traced as child LLM calls by
-    ``llm_router``. The parent trace contains no prompt or candidate content;
-    it records attempts, cost, deterministic gate status and typed defects.
+    Individual model attempts remain traced as child GenAI spans by
+    ``llm_router``. The loop span contains no prompt or candidate content; it
+    records attempts, budget, deterministic gate status and the TYPES of the
+    defects found, never a defect's detail (which can quote the output).
     """
-    with tracing.trace_agent_loop(
+    with otel.agent_loop_span(
         name,
-        metadata={
-            "max_attempts": max_attempts,
-            "deadline_seconds": deadline_seconds,
-            "max_generated_tokens": max_generated_tokens,
-        },
+        max_attempts=max_attempts,
+        deadline_seconds=deadline_seconds,
+        max_generated_tokens=max_generated_tokens,
     ) as run:
         result = await _run_loop_inner(
             name=name,
@@ -448,15 +447,8 @@ async def run_loop(
                 degraded=result.degraded,
                 elapsed_ms=result.elapsed_ms,
                 generated_tokens=result.generated_tokens,
-                defects=[
-                    {
-                        "type": defect.type,
-                        "location": defect.location,
-                        "detail": defect.detail,
-                    }
-                    for defect in result.defects
-                ],
-                error=result.error,
+                defect_types=[defect.type for defect in result.defects],
+                error_type=result.error,
             )
         return result
 

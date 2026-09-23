@@ -4,7 +4,7 @@ The SECOND real transport, never a fallback: `settings.email_transport`
 selects "smtp" or "ses" per deployment, and the two are never chained. This
 module owns only the SES transport plus SES-specific failure classification;
 the resilience taxonomy (PermanentDeliveryError / TransientDeliveryError) is
-imported from `app.services.sms_service` exactly as `smtp_service` imports
+imported from `app.services.delivery_errors` exactly as `smtp_service` imports
 it, so the task layer's retry policy is identical whichever transport a
 deployment runs.
 
@@ -38,7 +38,7 @@ import re
 from typing import Any
 
 from app.core.config import get_settings
-from app.services.sms_service import (
+from app.services.delivery_errors import (
     PermanentDeliveryError,
     TransientDeliveryError,
 )

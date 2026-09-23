@@ -1,8 +1,9 @@
 """Visibility into what an agent did: traces, failure categories, latency SLAs.
 
 The rule that shapes all of it: identifiers, counts and timings cross this
-boundary, and content never does. A trace row is far more widely readable than
-a LangSmith project, and prompts carry a real candidate's answers.
+boundary, and content never does. A trace row or an exported span is far more
+widely readable than the database it came from, and prompts carry a real
+candidate's answers.
 """
 from __future__ import annotations
 

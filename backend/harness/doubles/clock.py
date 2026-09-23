@@ -2,7 +2,7 @@
 
 HARNESS.md section 4 lists clock movement as a fault and names this module as
 "one implementation replacing the two hand rolled `FakeClock` classes". Those
-two live in `tests/test_otp.py` and `tests/test_otp_dual.py`, are
+two lived in the retired code-login tests (deleted 2026-09-24), were
 byte-for-byte identical to each other, and each answers exactly one question:
 what does `time.time()` say. That was enough for a fixed window counter and is
 not enough for a harness, which has to move a DATE as well as a duration and
@@ -22,10 +22,11 @@ bug rather than a fault.
 
 CALLABLE, BECAUSE THAT IS THE SHAPE THE PRODUCT ALREADY TAKES
 --------------------------------------------------------------
-`services/otp.RateLimiter` takes `clock=` and calls it for epoch seconds. This
-class is callable with that exact contract, so it drops into that seam without
-an adapter, which is what makes it a replacement rather than a third
-implementation.
+A `clock=` seam takes a zero-argument callable and calls it for epoch seconds
+(the retired code-login limiter was the first such seam; it was deleted on
+2026-09-24). This class is callable with that exact contract, so it drops into
+such a seam without an adapter, which is what makes it a replacement rather
+than a third implementation.
 """
 from __future__ import annotations
 
@@ -84,8 +85,7 @@ class Clock:
         return self._monotonic
 
     def __call__(self) -> float:
-        """Epoch seconds, so this instance IS the `clock=` argument
-        `services/otp.RateLimiter` already takes."""
+        """Epoch seconds, so this instance IS a `clock=` argument."""
         return self.time()
 
     # ── Moving ───────────────────────────────────────────────────────────────

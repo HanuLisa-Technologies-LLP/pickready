@@ -311,13 +311,10 @@ LEGACY_FALLBACK_FILES: frozenset[str] = frozenset(
 LEGACY_SWALLOWER_FILES: frozenset[str] = frozenset(
     {
         "api/candidates.py",
-        "core/cache.py",
         "scripts/eval_trajectory.py",
-        "scripts/validate_auth.py",
         "services/document_storage.py",
         "services/interview_telemetry.py",
         "services/jd_generation.py",
-        "services/otp.py",
         "services/razorpay.py",
         "services/tenant_cache.py",
     }

@@ -9,9 +9,10 @@
  * serve the few who click Subscribe. `loadCheckout()` injects it on first use
  * and every later call reuses the same promise.
  *
- * The Key ID comes from GET /billing/config at runtime, never from a build-time
- * NEXT_PUBLIC_ variable, so there is one source of truth and the frontend never
- * needs the .env file. The Key SECRET has no path into this file: the signature
+ * The Key ID arrives at runtime on the server's own subscribe and purchase
+ * responses (`razorpay_key_id`), never from a build-time NEXT_PUBLIC_
+ * variable, so there is one source of truth and the frontend never needs the
+ * .env file. The Key SECRET has no path into this file: the signature
  * that proves a payment is verified server-side by POST /billing/checkout/verify.
  */
 

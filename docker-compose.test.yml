@@ -79,12 +79,13 @@ services:
     # `redis7` parameter-group family. See CONTRIBUTING.md.
     image: redis:7.2-alpine
     # noeviction, NOT allkeys-lru, matching
-    # `infra/modules/elasticache/main.tf` and the standing rule in CLAUDE.md:
-    # this is the Celery broker, not a cache. Under memory pressure the LRU
-    # default silently evicts queued TASKS, and the symptom is work that was
-    # accepted and never happened with nothing recording the drop. The test
-    # environment carries production's semantics or it is testing something
-    # else.
+    # `infra/modules/elasticache/main.tf` and the standing rule in CLAUDE.md.
+    # Redis stopped being a task broker when Celery was removed (2026-09-05),
+    # and noeviction stayed for a reason of its own: it holds the proctoring
+    # warning counter and the session store, and LRU would silently evict a
+    # live assessment's warnings or a signed-in person's session under memory
+    # pressure with nothing recording the drop. The test environment carries
+    # production's semantics or it is testing something else.
     command: ["redis-server", "--maxmemory-policy", "noeviction", "--save", ""]
     ports:
       - "6381:6379"
