@@ -495,12 +495,13 @@ def redis_down() -> Iterator[FaultSpec]:
     to the caller. `redis.asyncio.from_url` raises, which is what the four
     modules that build their OWN client would meet.
 
-    THE LIMIT, STATED: a module holding an ALREADY BUILT client keeps it.
-    `proctoring/state` and `workers/status` cache theirs in a module global, so
-    a scenario that exercised them before applying this fault still reaches a
-    live client. `cache._redis` is the seam HARNESS.md names and is the one that
-    covers `rate_limit`, `auth_sessions` and the cache itself; the rest is
-    covered only from a cold process.
+    THE LIMIT, STATED: a module holding an ALREADY BUILT client keeps it for
+    the rest of that event loop. `proctoring/state` caches its own, and
+    `workers/status` and the web-search breaker hold a `core/redis_loop`
+    client, so a scenario that exercised them earlier IN THE SAME LOOP still
+    reaches a live client; a new loop rebuilds through the patched factory.
+    `cache._redis` is the seam HARNESS.md names and is the one that covers
+    `rate_limit`, `auth_sessions` and the cache itself.
 
     What the scenario asserts is the DIVERGENT behaviour: the cache degrades to
     a miss, `rate_limit` fails open by design, and `auth_sessions` answers 503
