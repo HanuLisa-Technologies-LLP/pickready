@@ -48,11 +48,8 @@ import hashlib
 import json
 import logging
 import re
-import uuid
-from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Mapping, Sequence, TypedDict
+from typing import Any, Mapping, Sequence, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy import delete, select, text
@@ -80,6 +77,8 @@ from app.services import (
     ppi,
     ppi_interview,
 )
+from app.services.assessment_pipeline import evidence as answer_evidence
+from app.services.assessment_pipeline.types import AnswerRecord
 from app.services.assessment_questions import budget as question_budget
 from app.services.assessment_questions import generate as question_generation
 from app.services import evidence_confidence
@@ -428,259 +427,45 @@ def answers_by_key(transcript: list[dict[str, Any]] | None) -> dict[str, list[st
     return grouped
 
 
-# ── Miti's evidence ledger writes (spec 13, 47) ──────────────────────────────
+# ── Miti's evidence ledger, at scoring time (spec 13, 47) ────────────────────
 #
-# Every substantive answer Miti grades is recorded as one addressable piece of
-# evidence and attached to a claim for the matrix item it was probing. Until
-# 2026-08-24 the ledger existed, was migrated and was tested, and NOTHING in a
-# live path wrote to it -- so the question a recruiter actually asks when they
-# disagree with a grade ("what did you read?") still had no answer.
-#
-# Four rules govern every line below, and each names the failure it prevents.
-
-
-#: Locator relevance for an answer given directly to a question probing this
-#: item. INTERNAL ENGINEERING METADATA (ledger docstring, and the standing
-#: no-numbers rule): it orders evidence inside a prompt and inside an operator
-#: view, it is never a score, and it never reaches a response schema.
-_DIRECT_ANSWER_RELEVANCE = 1.0
-
-#: Written into every provenance payload so an operator reading a ledger row can
-#: tell which agent concluded it without joining anything.
-_MITI = "miti"
-
-
-@dataclass(frozen=True)
-class AnswerRef:
-    """WHERE one candidate answer lives, plus the turn it was given on.
-
-    Note what it does not carry beyond this module: `content` is read here only
-    to decide whether the answer is substantive, and it is never handed to the
-    ledger. The ledger stores a locator; a copy of the sentence in a table that
-    anyone with database access can read would be a quiet route around the
-    `view_review_screen` capability that guards the transcript itself.
-    """
-
-    message_id: uuid.UUID
-    turn: int
-    content: str
-    answered_at: datetime | None
-
-
-async def _answer_locators(
-    session: AsyncSession | None, link: JobCandidateLink | None
-) -> dict[str, list[AnswerRef]]:
-    """Every candidate answer on this application, keyed exactly as the scorer
-    keys them.
-
-    READ FROM THE DATABASE, NOT FROM THE TRANSCRIPT PASSED IN. The transcript
-    `run_assessment` receives is assembled by its callers, and the two that
-    exist today (`workers.tasks.run_functional_assessment` and
-    `scripts.validate_ppi`) build it without row ids. Deriving locators from
-    whatever shape a caller happened to send would mean the ledger silently
-    recorded nothing on the one path that matters, which is the exact failure
-    -- a feature that is wired, green and inert -- this whole change exists to
-    end.
-    """
-    if session is None or link is None:
-        return {}
-    rows = (
-        await session.execute(
-            select(
-                AssessmentMessage.id,
-                AssessmentMessage.ordinal,
-                AssessmentMessage.question_key,
-                AssessmentMessage.content,
-                AssessmentMessage.created_at,
-            )
-            .join(
-                AssessmentConversation,
-                AssessmentConversation.id == AssessmentMessage.conversation_id,
-            )
-            .where(
-                AssessmentConversation.job_candidate_link_id == link.id,
-                AssessmentMessage.speaker == "candidate",
-            )
-            .order_by(AssessmentMessage.ordinal)
-        )
-    ).all()
-    located: dict[str, list[AnswerRef]] = {}
-    for message_id, ordinal, question_key, content, created_at in rows:
-        if not question_key:
-            continue
-        located.setdefault(str(question_key), []).append(
-            AnswerRef(
-                message_id=message_id,
-                turn=int(ordinal or 0),
-                content=str(content or ""),
-                answered_at=created_at,
-            )
-        )
-    return located
-
-
-@asynccontextmanager
-async def _savepoint(session: Any) -> AsyncIterator[None]:
-    """Run the ledger writes inside a SAVEPOINT.
-
-    A plain try/except is not enough on its own. If an INSERT reaches Postgres
-    and fails, the surrounding transaction is aborted, and every later statement
-    in it -- the report row, the dimension rows, the credit reconciliation the
-    caller commits afterwards -- fails too. Swallowing the exception would then
-    turn "the ledger write failed" into "the candidate's report was lost", which
-    is the opposite of the rule this code is written to honour.
-
-    A session without `begin_nested` (a stub in a test) simply runs the body, so
-    the guarantee degrades to the try/except around this and never to a crash.
-    """
-    nested = getattr(session, "begin_nested", None)
-    if nested is None:
-        yield
-        return
-    async with nested():
-        yield
+# Every substantive answer Miti grades is filed as one addressable piece of
+# evidence on a claim for the skill it was probing. The WRITER is
+# `assessment_pipeline.evidence.record_answer_evidence`, the only one in the
+# product; the conversation calls it per answer, and this pass calls it again
+# as a BACKFILL for every located answer. The writer is idempotent, so an
+# answer already filed during the conversation is a no-op here.
 
 
 async def _record_answer_evidence(
     state: "AssessmentState",
     competency: JobCompetency,
     question: CandidateQuestion | None,
-    refs: list[AnswerRef],
+    refs: list[AnswerRecord],
 ) -> None:
-    """Record the answers behind one item's grade, and attach them to its claim.
+    """Backfill the ledger for one item's answers through THE writer.
 
-    A LEDGER FAILURE MUST NEVER FAIL SCORING. This runs while a report is being
-    written for work a candidate has already done and a customer has already
-    been charged for; an audit trail that could destroy the artifact it exists to
-    explain would be worse than no audit trail. Every exception is logged and
-    dropped, and the savepoint above is what keeps "dropped" from meaning "the
-    rest of the transaction dies too".
-
-    ONLY SUBSTANTIVE ANSWERS BECOME EVIDENCE, decided by `answer_quality` --
-    the SAME classifier the scorer itself uses two lines up the stack. A second
-    substance check here would be a second set of thresholds to keep in step,
-    and the day they drifted the ledger would claim evidence for a grade the
-    scorer had already treated as unanswered.
-
-    EVIDENCE FIRST, THEN THE CLAIM, THEN THE ATTACHMENT. A claim with no live
-    evidence under it is CRITICAL to `contradictions.detect` (a conclusion
-    nothing stands behind), so creating the claim first and failing on the
-    evidence would manufacture the most serious finding the system has out of a
-    transient write error.
+    A LEDGER FAILURE NEVER FAILS SCORING: the writer runs each answer in a
+    savepoint and absorbs a database failure (logged with its traceback), so
+    the report for work a candidate has already done cannot be lost to it.
     """
-    # Imported INSIDE the function, never at module scope. `app.services.evidence`
-    # sits on an import cycle (tests/test_import_graph.py names it), and a
-    # module-level import here closed one before: the full suite went green while
-    # a single test file went red, because pytest happened to initialise the
-    # other side first.
-    from app.services.evidence import ledger
-    from app.services.evidence import negative as negative_evidence
-    from app.services.miti import claims as claim_model
-
     session = state.get("session")
     link = state.get("link")
     job = state.get("job")
     if session is None or link is None or job is None:
         return
-    substantive = [ref for ref in refs if answer_quality.is_substantive(ref.content)]
-    if not substantive:
-        return
-
-    try:
-        async with _savepoint(session):
-            claim_id: uuid.UUID | None = None
-            for ref in substantive:
-                evidence_id = await ledger.record_evidence(
-                    session,
-                    tenant_id=job.tenant_id,
-                    job_id=job.id,
-                    link_id=link.id,
-                    source_type=ledger.SOURCE_ANSWER,
-                    source_id=ref.message_id,
-                    # A LOCATOR, built by the ledger's own helper. Assembling
-                    # this string by hand at a call site is how the sentence
-                    # itself eventually gets pasted in.
-                    ref=ledger.text_ref(
-                        table="assessment_messages", row_id=ref.message_id
-                    ),
-                    # The candidate said it, unprompted, in their own words.
-                    # Not `validated`: nobody has confirmed it against anything,
-                    # and promoting it would let the product's own transcript
-                    # read as corroboration of itself.
-                    trust=ledger.TRUST_OBSERVED,
-                    relevance=_DIRECT_ANSWER_RELEVANCE,
-                    provenance={
-                        "agent": _MITI,
-                        "candidate_id": str(link.candidate_id),
-                        "competency_id": str(competency.id),
-                        "competency_category": competency.category,
-                        "question_id": str(question.id) if question else None,
-                        "conversation_turn": ref.turn,
-                        "recorded_at": datetime.now(timezone.utc).isoformat(),
-                        # A FACT ABOUT THE TEXT, decided while the text is in
-                        # hand, because it is the only moment anything holds
-                        # it: the ledger stores a locator and never the
-                        # sentence. Runbook section 6.1 separates E0
-                        # ("unverifiable self-claim") from E1 ("self-report
-                        # containing checkable specifics") on exactly this, and
-                        # section 14.1's abstention rule reads the tier.
-                        "has_specifics": claim_model.has_specifics(ref.content),
-                    },
-                    freshness_payload=ledger.freshness(ref.answered_at),
-                )
-                # W6.6: WHICH SIDE of the claim this answer sits on, decided
-                # while the text is in hand. "I have not used Kafka" is a
-                # substantive answer (answer_classification has said so since
-                # 2026-08-05) AND it is counter-evidence, and until 2026-09-10
-                # it was filed as SUPPORT for the claim it explicitly denies.
-                # The detector is deterministic and conservative; its one
-                # consumer is the contradiction report that routes the report
-                # to a person, so a false positive costs a human one look and
-                # never a candidate a grade. Insufficient evidence is NOT
-                # negative evidence: a non-answer never reaches this loop and
-                # keeps costing confidence, not score, exactly as before.
-                disclaimed = negative_evidence.disclaimed_terms(
-                    ref.content, competency.name
-                )
-                if claim_id is None:
-                    claim_id = await ledger.record_claim(
-                        session,
-                        tenant_id=job.tenant_id,
-                        job_id=job.id,
-                        link_id=link.id,
-                        subject="candidate",
-                        dimension=competency.name,
-                        # The ledger's OWN normalised wording, written by the
-                        # product. Lifting a phrase out of the answer would put
-                        # the candidate's sentence in the one table that must
-                        # never hold it.
-                        claim=(
-                            f"the candidate demonstrated {competency.name} in "
-                            "the assessment conversation"
-                        ),
-                    )
-                await ledger.attach_evidence(
-                    session,
-                    tenant_id=job.tenant_id,
-                    claim_id=claim_id,
-                    evidence_id=evidence_id,
-                    stance=(
-                        ledger.STANCE_CONTRADICTS
-                        if disclaimed
-                        else ledger.STANCE_SUPPORTS
-                    ),
-                )
-                if disclaimed:
-                    logger.info(
-                        "functional_assessment.negative_evidence link_id=%s "
-                        "competency_id=%s terms=%s",
-                        link.id, competency.id, disclaimed,
-                    )
-    except Exception:  # noqa: BLE001 -- see the docstring
-        logger.warning(
-            "functional_assessment.evidence_not_recorded link_id=%s competency_id=%s",
-            getattr(link, "id", None), competency.id, exc_info=True,
-        )
+    await answer_evidence.backfill_answer_evidence(
+        session,
+        tenant_id=job.tenant_id,
+        job_id=job.id,
+        link_id=link.id,
+        candidate_id=link.candidate_id,
+        skill_id=competency.id,
+        skill_name=competency.name,
+        skill_bucket=competency.category,
+        question_id=question.id if question is not None else None,
+        records=refs,
+    )
 
 
 async def _uncertainty_from_evidence(
@@ -1302,8 +1087,8 @@ class AssessmentState(TypedDict, total=False):
     matching: list[dict[str, Any]]
     ppi: list[dict[str, Any]]
     ppi_mode: str
-    #: {question_key: [AnswerRef]}. Where each answer LIVES, never what it says.
-    answer_refs: dict[str, list[AnswerRef]]
+    #: {question_key: [AnswerRecord]}. Where each answer LIVES, never what it says.
+    answer_refs: dict[str, list[AnswerRecord]]
     #: {question id: AssessmentAnswer}. The structured record behind each
     #: answer: the objective score written on submission, the evaluation
     #: written here.
@@ -1382,7 +1167,7 @@ async def _score_item(
     competency: JobCompetency,
     questions: list[CandidateQuestion],
     answers: dict[str, list[str]],
-    locators: dict[str, list[AnswerRef]] | None = None,
+    locators: dict[str, list[AnswerRecord]] | None = None,
     structured: dict[str, AssessmentAnswer] | None = None,
 ) -> tuple[int, list[str], bool]:
     """Score one matrix item. Returns (score, the answers used, degraded).
@@ -1582,7 +1367,12 @@ async def ppi_scoring_node(state: AssessmentState) -> dict:
     locators = state.get("answer_refs")
     if locators is None:
         try:
-            locators = await _answer_locators(state.get("session"), state.get("link"))
+            session, link = state.get("session"), state.get("link")
+            locators = (
+                await answer_evidence.answer_records(session, link.id)
+                if session is not None and link is not None
+                else {}
+            )
         except Exception:  # noqa: BLE001
             logger.warning(
                 "functional_assessment.locators_unavailable link_id=%s",

@@ -362,6 +362,21 @@ def parse_text_ref(ref: str) -> tuple[str, str, str | None]:
 # gone, and a policy alone cannot express "this job, this candidate".
 
 
+#: The live evidence row a (tenant, application, source, locator) already has.
+#: `IS NOT DISTINCT FROM` because `link_id` is NULL for evidence about the role.
+_EXISTING_EVIDENCE = """
+    SELECT id FROM evidence_items
+     WHERE tenant_id = :tenant_id
+       AND link_id IS NOT DISTINCT FROM :link_id
+       AND source_type = :source_type
+       AND source_id = :source_id
+       AND text_ref = :text_ref
+       AND status = :status
+     ORDER BY created_at, id
+     LIMIT 1
+"""
+
+
 async def record_evidence(
     session: AsyncSession,
     *,
@@ -376,44 +391,85 @@ async def record_evidence(
     provenance: Mapping[str, Any] | None = None,
     freshness_payload: Mapping[str, Any] | None = None,
 ) -> uuid.UUID:
-    """Write one evidence item and return its id.
+    """Write one evidence item and return its id, or return the id of the LIVE
+    item that already records the same source at the same locator.
 
     `ref` is a locator built by `text_ref`. The parameter is deliberately not
     called `text`: the name is the last place a rule like this can be stated
     before somebody passes the wrong thing.
+
+    IDEMPOTENT, BECAUSE EVERY WRITER RUNS MORE THAN ONCE. The per-answer
+    writer runs during the conversation and again as the scoring backfill; a
+    scoring run is retried; a dispatch is delivered at least once. Two rows for
+    one answer read to anything counting support as two pieces of
+    corroboration, and they are one. So an existing ACTIVE row with the same
+    (tenant, application, source type, source id, locator) is returned
+    unchanged: its provenance and freshness describe the first recording and
+    are not rewritten by a repeat. A superseded or revoked row is history and
+    never matches.
+
+    THE READ ALONE WOULD RACE, so answers have a second line. Migration 0118's
+    partial unique index `ux_evidence_items_live_answer` holds one live answer
+    row per (tenant, application, message), and the INSERT names it as its
+    conflict arbiter: two concurrent writers of one message produce one row,
+    the loser waits for the winner's commit and then reads the winner's id.
+    Any other source type never conflicts on that index and keeps the
+    read-then-insert, which is sequentially idempotent.
     """
     _require(source_type, SOURCE_TYPES, "source_type")
     _require(trust, TRUST_LEVELS, "trust")
+    identity = {
+        "tenant_id": str(tenant_id),
+        "link_id": str(link_id) if link_id else None,
+        "source_type": source_type,
+        "source_id": str(source_id),
+        "text_ref": ref,
+        "status": STATUS_ACTIVE,
+    }
+    existing = (await session.execute(text(_EXISTING_EVIDENCE), identity)).scalar_one_or_none()
+    if existing is not None:
+        return uuid.UUID(str(existing))
     evidence_id = uuid.uuid4()
-    await session.execute(
-        text(
-            """
-            INSERT INTO evidence_items (
-                id, tenant_id, job_id, link_id, source_type, source_id,
-                text_ref, provenance, freshness, trust, relevance, status
-            ) VALUES (
-                :id, :tenant_id, :job_id, :link_id, :source_type, :source_id,
-                :text_ref, CAST(:provenance AS jsonb), CAST(:freshness AS jsonb),
-                :trust, :relevance, :status
-            )
-            """
-        ),
-        {
-            "id": str(evidence_id),
-            "tenant_id": str(tenant_id),
-            "job_id": str(job_id),
-            "link_id": str(link_id) if link_id else None,
-            "source_type": source_type,
-            "source_id": str(source_id),
-            "text_ref": ref,
-            "provenance": _json(provenance or {}),
-            "freshness": _json(freshness_payload or {}),
-            "trust": trust,
-            "relevance": float(relevance),
-            "status": STATUS_ACTIVE,
-        },
-    )
-    return evidence_id
+    inserted = (
+        await session.execute(
+            text(
+                """
+                INSERT INTO evidence_items (
+                    id, tenant_id, job_id, link_id, source_type, source_id,
+                    text_ref, provenance, freshness, trust, relevance, status
+                ) VALUES (
+                    :id, :tenant_id, :job_id, :link_id, :source_type, :source_id,
+                    :text_ref, CAST(:provenance AS jsonb), CAST(:freshness AS jsonb),
+                    :trust, :relevance, :status
+                )
+                ON CONFLICT (tenant_id, link_id, source_id)
+                    WHERE source_type = 'answer' AND status = 'active'
+                          AND link_id IS NOT NULL
+                DO NOTHING
+                RETURNING id
+                """
+            ),
+            {
+                **identity,
+                "id": str(evidence_id),
+                "job_id": str(job_id),
+                "provenance": _json(provenance or {}),
+                "freshness": _json(freshness_payload or {}),
+                "trust": trust,
+                "relevance": float(relevance),
+            },
+        )
+    ).scalar_one_or_none()
+    if inserted is not None:
+        return uuid.UUID(str(inserted))
+    # A concurrent writer recorded this answer first. Its row is the answer.
+    winner = (await session.execute(text(_EXISTING_EVIDENCE), identity)).scalar_one_or_none()
+    if winner is None:
+        raise LedgerError(
+            f"evidence for {source_type} {source_id} conflicted on insert and no "
+            "live row could be read back"
+        )
+    return uuid.UUID(str(winner))
 
 
 async def supersede_evidence(

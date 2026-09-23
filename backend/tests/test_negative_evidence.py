@@ -79,11 +79,13 @@ def test_the_disclaimed_term_is_reported_for_provenance() -> None:
 # ── The wiring, asserted over the source ────────────────────────────────────
 
 def _write_site_source() -> str:
+    """The ONE ledger writer for answers (since 2026-09-24), which the
+    conversation calls per answer and the scoring pass calls as a backfill."""
     import inspect
 
-    import app.services.functional_assessment as fa
+    from app.services.assessment_pipeline import evidence
 
-    return inspect.getsource(fa)
+    return inspect.getsource(evidence.record_answer_evidence)
 
 
 def test_the_stance_is_decided_per_answer_at_the_one_write_site() -> None:
@@ -98,12 +100,14 @@ def test_the_stance_is_decided_per_answer_at_the_one_write_site() -> None:
 
 
 def test_non_answers_still_never_reach_the_ledger() -> None:
-    """Absent evidence stays absent. The recording loop iterates SUBSTANTIVE
-    answers only, so a non-answer cannot acquire a stance of either kind, and
-    the insufficient-evidence path keeps costing confidence rather than
-    score."""
+    """Absent evidence stays absent. The writer returns before any write for
+    a non-substantive answer, so a non-answer cannot acquire a stance of either
+    kind, and the insufficient-evidence path keeps costing confidence rather
+    than score."""
     source = _write_site_source()
-    assert "for ref in substantive:" in source
+    guard = "if not answer_quality.is_substantive(text):\n        return"
+    assert guard in source
+    assert source.index(guard) < source.index("record_evidence(")
 
 
 def test_the_detector_reaches_no_scorer_and_no_score_reaches_it() -> None:
