@@ -92,6 +92,7 @@ RESOURCELESS_ACTIONS = {
 #: shapes: a new resource policy has to be added here, with its reason.
 RESOURCE_POLICY_DOCUMENTS = {
     "kms": "a KMS key policy. Its `Resource` can only be the key it is attached to, and the `kms:*` grant to the account root is what makes the key manageable at all.",
+    "sandbox_s3_endpoint": "the code sandbox's S3 GATEWAY ENDPOINT policy (modules/code_sandbox). Its principal is necessarily everyone who routes through that one endpoint, because an ECR layer download is a presigned URL and the Amazon Linux package repository is read anonymously, so no identity can be named. The endpoint is reachable only from the sandbox route table, and the restriction that matters is the statement's own: s3:GetObject on two named buckets and nothing else.",
 }
 
 #: AWS managed policies whose grant crosses the whole account. Checked by name,

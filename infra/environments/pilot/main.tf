@@ -548,6 +548,11 @@ module "network" {
   # buying yet, at roughly $32 a month each.
   single_nat_gateway = true
 
+  # The code sandbox host reaches ECR, Secrets Manager and Logs through the
+  # existing interface endpoints. Empty while `judge0_enabled` is false, which
+  # leaves the endpoints group exactly as it is.
+  endpoint_client_security_group_ids = var.judge0_enabled ? [module.code_sandbox[0].host_security_group_id] : []
+
   tags = local.tags
 }
 
@@ -2004,6 +2009,74 @@ module "observability" {
 
   kms_key_arn = aws_kms_key.this.arn
   tags        = local.tags
+}
+
+# ── The code sandbox (Judge0 CE), DISABLED BY DEFAULT ────────────────────────
+#
+# Candidate code runs on this host and nowhere else. `judge0_enabled` defaults
+# to false, so an apply with the defaults creates NOTHING here and changes
+# nothing above (the network module's extra endpoint client list stays empty).
+# The rollout is staged and each stage is its own reviewed plan:
+#
+#   A1  judge0_enabled = true            subnet, route table, S3 endpoint, NACL,
+#                                        groups, role, registries, token, alarms.
+#                                        The one change to an existing resource
+#                                        is the endpoints group admitting the
+#                                        host group.
+#   A2  judge0_instance_enabled = true   the instance, after the images are
+#       + ami + digests                  mirrored (scripts/mirror-judge0-images.sh).
+#   B   client wiring                    `client_security_group_id` on the API,
+#                                        the task worker and the agent, the
+#                                        token mount and JUDGE0_URL, with
+#                                        CODE_EXECUTION_BACKEND still disabled.
+#                                        NOT in this change: see the runbook.
+#   C   CODE_EXECUTION_BACKEND = judge0  only after the sandbox verification
+#                                        task is green.
+#
+# docs/operations/JUDGE0_RUNBOOK.md is the procedure and the cost estimate.
+
+module "code_sandbox" {
+  source = "../../modules/code_sandbox"
+  count  = var.judge0_enabled ? 1 : 0
+
+  project     = var.project
+  environment = local.environment
+  region      = var.region
+
+  vpc_id            = module.network.vpc_id
+  availability_zone = var.availability_zones[0]
+  # 10.0.30.0/24: the private tier is 10+i and the data tier 20+i, so 30 is
+  # clear of both for as many zones as this VPC will ever have.
+  sandbox_cidr_block                    = cidrsubnet(module.network.vpc_cidr_block, 8, 30)
+  private_subnet_cidr_blocks            = module.network.private_subnet_cidr_blocks
+  data_subnet_cidr_blocks               = module.network.data_subnet_cidr_blocks
+  interface_endpoints_security_group_id = module.network.endpoints_security_group_id
+
+  register_in_namespace    = true
+  discovery_namespace_id   = module.ecs.discovery_namespace_id
+  discovery_namespace_name = local.internal_namespace
+
+  create_instance = var.judge0_instance_enabled
+  ami_id          = var.judge0_ami_id
+  instance_type   = var.judge0_instance_type
+  image_digests   = var.judge0_image_digests
+
+  kms_key_arn     = aws_kms_key.this.arn
+  kms_key_id      = aws_kms_key.this.key_id
+  alarm_topic_arn = aws_sns_topic.alarms.arn
+
+  tags = local.tags
+}
+
+# The instance lives inside the module the first switch creates, so the second
+# switch alone would create nothing, silently. A check block rather than a
+# cross-variable validation keeps this file valid on every Terraform version
+# `required_version` admits; the plan prints the warning.
+check "judge0_instance_needs_the_module" {
+  assert {
+    condition     = !var.judge0_instance_enabled || var.judge0_enabled
+    error_message = "judge0_instance_enabled is true but judge0_enabled is false, so no sandbox instance will be created."
+  }
 }
 
 # ── The bill ────────────────────────────────────────────────────

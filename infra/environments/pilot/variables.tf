@@ -323,3 +323,38 @@ variable "monthly_budget_usd" {
     error_message = "A budget of zero or less notifies on the first cent of spend, every month, for ever, which is how a billing alert gets muted."
   }
 }
+
+# ── The code sandbox (Judge0 CE) ─────────────────────────────────────────────
+#
+# Both switches default to FALSE, so an apply with defaults creates nothing.
+# docs/operations/JUDGE0_RUNBOOK.md is the staged rollout these drive.
+
+variable "judge0_enabled" {
+  description = "Create the code sandbox's network, groups, role, registries, token and alarms (runbook stage A1). The instance itself needs `judge0_instance_enabled` as well."
+  type        = bool
+  default     = false
+}
+
+variable "judge0_instance_enabled" {
+  description = "Create the sandbox instance (stage A2). Needs `judge0_enabled`, a pinned `judge0_ami_id`, and the three image digests printed by scripts/mirror-judge0-images.sh."
+  type        = bool
+  default     = false
+}
+
+variable "judge0_ami_id" {
+  description = "Amazon Linux 2023 x86_64 AMI id for the sandbox host, PINNED. Never a lookup: a newly published image must not replace the host in an apply nobody meant as a replacement. Empty until stage A2."
+  type        = string
+  default     = ""
+}
+
+variable "judge0_instance_type" {
+  description = "t3.medium is the reviewed size (4 GiB: Judge0 server, two workers, Postgres, Redis and a JVM compile)."
+  type        = string
+  default     = "t3.medium"
+}
+
+variable "judge0_image_digests" {
+  description = "{judge0, judge0-postgres, judge0-redis} -> sha256 digest in this environment's mirror registries. Empty until stage A2."
+  type        = map(string)
+  default     = {}
+}

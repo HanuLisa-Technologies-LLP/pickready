@@ -294,12 +294,15 @@ resource "aws_security_group" "endpoints" {
   description = "Interface VPC endpoints"
   vpc_id      = aws_vpc.this.id
 
+  # The description is deliberately unchanged from before the extra groups
+  # existed: an inline rule whose description changes is revoked and
+  # re-authorised, and with the list empty this block must plan as no change.
   ingress {
     description     = "HTTPS from the application tier"
     from_port       = 443
     to_port         = 443
     protocol        = "tcp"
-    security_groups = [aws_security_group.ecs.id]
+    security_groups = concat([aws_security_group.ecs.id], var.endpoint_client_security_group_ids)
   }
 
   tags = merge(var.tags, { Name = "${local.name}-endpoints" })

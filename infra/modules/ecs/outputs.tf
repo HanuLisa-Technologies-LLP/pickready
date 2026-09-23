@@ -34,6 +34,11 @@ output "discovery_service_names" {
   value       = { for name, service in aws_service_discovery_service.this : name => "${service.name}.${var.discovery_namespace}" }
 }
 
+output "discovery_namespace_id" {
+  description = "The private DNS namespace's id, for a host outside ECS that registers under the same internal names (the code sandbox). Null when no namespace is created."
+  value       = one(aws_service_discovery_private_dns_namespace.this[*].id)
+}
+
 # The on-demand families, for the Lambda that starts them. The trigger is given
 # the FAMILY name rather than a revision ARN on purpose: RunTask against a
 # family uses the newest ACTIVE revision, so a deploy that registers a new task
