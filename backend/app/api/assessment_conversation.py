@@ -1458,7 +1458,7 @@ async def respond(
 
             # One structured line per turn. Labels, keys and timings only, never
             # answer or question text: an ordinary log is far more widely readable
-            # than a LangSmith trace, and prompts carry a real candidate's answers.
+            # than a trace, and prompts carry a real candidate's answers.
             interview_telemetry.record_turn(
                 interview_telemetry.TurnEvent(
                     conversation_id=str(conversation.id),
