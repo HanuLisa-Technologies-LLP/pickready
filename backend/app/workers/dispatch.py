@@ -177,9 +177,70 @@ def dispatch(
     sites read the same and a reviewer can see that only the transport changed.
     """
     spec = resolve(name)
+    return _send(spec, str(uuid.uuid4()), tuple(args or ()), dict(kwargs or {}))
+
+
+def dispatch_after_commit(
+    session: Any,
+    name: str,
+    *,
+    args: Sequence[Any] | None = None,
+    kwargs: dict[str, Any] | None = None,
+) -> TaskHandle:
+    """Hand `name` off to run once `session`'s transaction COMMITS.
+
+    The handle, with its client-side id, is returned NOW, so a route can put
+    the polling id in its response exactly as it does with `dispatch`; an id
+    that no run has claimed yet reads as PENDING (`workers/status`), which is
+    what it is. The invoke itself happens from SQLAlchemy's `after_commit`
+    (`core/after_commit.on_commit`):
+
+    - A rolled-back transaction dispatches NOTHING. A task about a row that
+      was never stored is the failure this exists to remove.
+    - The task can never start before the rows it reads are visible, which a
+      dispatch placed before `get_tenant_db`'s commit could not promise.
+    - Everything that can fail for a PROGRAMMING reason is checked here,
+      inside the request, where raising is correct: the task name resolves,
+      the configured backend is valid, and the arguments are JSON. What is
+      left for the commit hook is the invoke itself.
+    - A `DispatchError` from that invoke is LOGGED at ERROR with the task
+      name and run id, never raised out of `commit()`: the write is durable
+      by then, and raising would answer 500 to a request that succeeded. Each
+      converted call site names the sweep that repairs a lost invoke.
+
+    Never call this and then raise: the raise rolls the transaction back and
+    the dispatch goes with it. Return a state the client can act on instead.
+    """
+    from app.core.after_commit import on_commit
+
+    spec = resolve(name)
+    backend()
     args = tuple(args or ())
     kwargs = dict(kwargs or {})
     run_id = str(uuid.uuid4())
+    # Serialise now so a non-JSON argument is a TypeError in the request
+    # rather than a logged failure after the commit.
+    json.dumps(payload_for(run_id, spec, args, kwargs))
+
+    def _send_after_commit() -> None:
+        _send(spec, run_id, args, kwargs)
+
+    on_commit(
+        session,
+        _send_after_commit,
+        label=f"dispatch task={spec.name} run_id={run_id}",
+    )
+    return TaskHandle(id=run_id, name=spec.name, route=spec.route)
+
+
+def _send(
+    spec: TaskSpec,
+    run_id: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> TaskHandle:
+    """The transport. Shared by `dispatch` and `dispatch_after_commit` so the
+    two can never disagree about what a dispatch IS."""
     body = payload_for(run_id, spec, args, kwargs)
 
     mode = backend()
