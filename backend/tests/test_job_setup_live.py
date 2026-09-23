@@ -606,7 +606,7 @@ def _run_swot(
 
 
 def _compile(sessions, job_id: str) -> Any:
-    """Run Sutra in a committed session, as the Celery worker would."""
+    """Run Sutra in a committed session, as a background task run would."""
 
     async def _go():
         async with sessions() as session:

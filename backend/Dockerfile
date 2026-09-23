@@ -1,7 +1,8 @@
-# Shared image for the backend API, the Celery worker, beat and migrations
-# (ESD 15). One image, four entrypoints, so dependency drift between them is
-# impossible. The role is chosen by the container args: see
-# docker-entrypoint.sh.
+# Shared image for the backend API, the on-demand assessment agent, the Lambda
+# functions that run backend code and the migration job (ESD 15). One image,
+# several entrypoints, so dependency drift between them is impossible. The role
+# is chosen by the container args: see docker-entrypoint.sh, which also records
+# the Celery roles this image used to carry until 2026-09-04.
 
 # ---------------------------------------------------------------------------
 # builder: compiles wheels. build-essential and libpq-dev are ~300 MB of
