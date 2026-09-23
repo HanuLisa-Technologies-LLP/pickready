@@ -44,8 +44,11 @@ name: CI and AWS deploy
 on:
   push:
     branches: [main]
+  # The production line is a PR base too. Work reaches it through phase PRs,
+  # and a PR into the line that pilot is deployed from with no checks on it is
+  # the gap the 2026-09-23 audit (Part 2, P0) named.
   pull_request:
-    branches: [main]
+    branches: [main, integrate/pr6-rbac-stem-swot]
   workflow_dispatch:
 
 # Never let two deploys interleave. Without this, two pushes in quick succession
@@ -900,7 +903,10 @@ jobs:
   pilot-build-and-push:
     name: Build and push to ECR (pilot)
     needs: [backend-tests, harness, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
-    if: vars.PILOT_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.event_name != 'pull_request'
+    # A manual dispatch may only build from main or a tag. A dispatch of any
+    # other branch producing a deployable image is how production drifted from
+    # main (2026-09-23 audit, Part 2, P0).
+    if: vars.PILOT_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -1087,7 +1093,10 @@ jobs:
   build-and-push:
     name: Build and push to ECR
     needs: [backend-tests, harness, code-quality, frontend-checks, analysis-service-tests, security-scan, terraform]
-    if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.event_name != 'pull_request'
+    # A manual dispatch may only build from main or a tag. A dispatch of any
+    # other branch producing a deployable image is how production drifted from
+    # main (2026-09-23 audit, Part 2, P0).
+    if: vars.AWS_DEPLOY_ENABLED == 'true' && vars.AWS_REGION != '' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:

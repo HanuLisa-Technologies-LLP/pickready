@@ -75,6 +75,19 @@ infra/environments/*/tfplan*
 .claude/skills/high-end-visual-design/
 .claude/skills/redesign-existing-projects/
 .claude/skills/img2threejs/
+.claude/skills/animate-expo/
+.claude/skills/animate/
+.claude/skills/animation-vocabulary/
+.claude/skills/apple-design/
+.claude/skills/ask-sonner/
+.claude/skills/emil-design-eng/
+.claude/skills/find-animation-opportunities/
+.claude/skills/improve-animations/
+.claude/skills/mobile-native/
+.claude/skills/pick-ui-library/
+.claude/skills/prototype/
+.claude/skills/review-animations/
+.claude/skills/write-swift/
 .github/skills/
 .agents/skills/
 
@@ -114,3 +127,11 @@ graphify-out/
 # file already makes about backend/coverage.json. Retention is bounded by
 # `--keep-last`, so this directory does not grow without limit.
 harness-runs/
+
+# Another coding agent's local state, same argument as the vendored skills
+# above: it is tooling on one developer's machine, never part of the product.
+.codex/
+
+# Release planning scratch written by the coding agent during a release. The
+# commits and CLAUDE.md are the durable record; these are working notes.
+.claude/vivekium-release/
