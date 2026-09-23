@@ -28,9 +28,13 @@ async def _noop_session():
     yield SimpleNamespace()
 
 from app.services import sms_service
-from app.services.sms_service import (
+from app.services.delivery_errors import (
     PermanentDeliveryError,
     TransientDeliveryError,
+)
+# The MSG91 response classifiers leave with the SMS module in Phase 7 Wave B;
+# until then they are still live code and still tested here.
+from app.services.sms_service import (
     classify_exception,
     classify_response,
     parse_error_body,

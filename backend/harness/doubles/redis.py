@@ -211,7 +211,7 @@ class InMemoryRedis:
     # -- Expiry commands ------------------------------------------------------
 
     async def expire(self, key: str, seconds: int, nx: bool = False) -> bool:
-        """EXPIRE, with the `nx` modifier `services/otp` uses.
+        """EXPIRE, with the `nx` modifier redis-py accepts.
 
         `nx` sets a deadline only when the key has none, which is how a fixed
         window is pinned to its FIRST request rather than sliding forward on

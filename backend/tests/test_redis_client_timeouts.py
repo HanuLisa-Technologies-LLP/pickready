@@ -50,11 +50,6 @@ REQUIRED_KEYWORDS = ("socket_connect_timeout", "socket_timeout")
 
 #: Clients that never run inside a request, with the reason. Not oversights.
 OPERATOR_SCRIPTS_BY_DESIGN: dict[str, str] = {
-    "scripts/validate_auth.py": (
-        "an operator-run CLI validator that clears a developer's own OTP "
-        "counters; nothing serves a request behind it, so a hang blocks the "
-        "terminal it was typed into and no user anywhere waits on it"
-    ),
     "scripts/validate_stack.py": (
         "the stack validator's own Redis PING probe, run by a person from a "
         "shell to answer whether the infrastructure is up; a hang there is the "
@@ -178,8 +173,9 @@ def test_the_hot_path_has_exactly_one_client() -> None:
 
 def test_the_ledger_does_not_grow() -> None:
     """An exemption list anybody may append to is not a rule."""
+    # `scripts/validate_auth.py` left the ledger on 2026-09-24: its Redis
+    # client only reset the retired code-login counters, and went with them.
     assert set(OPERATOR_SCRIPTS_BY_DESIGN) == {
-        "scripts/validate_auth.py",
         "scripts/validate_stack.py",
     }
     for reason in OPERATOR_SCRIPTS_BY_DESIGN.values():

@@ -1,28 +1,12 @@
-"""Outbound delivery providers: MSG91 SMS + the failure taxonomy shared with
-the Resend email path in app.workers.tasks.
+"""The MSG91 SMS sender and the provider-response classification it uses.
 
-Why this module exists
-----------------------
-Before this, `_resend_send` called `resp.raise_for_status()`, which raises an
-`httpx.HTTPStatusError` whose string form is just
-``Client error '403 Forbidden' for url ...`` — Resend's JSON body (which says
-*exactly* what is wrong and how to fix it) was thrown away. Diagnosing a
-delivery outage therefore required re-probing the API by hand. Every failure
-now carries the provider's status + parsed body, and is classified as either:
+LEFT FOR ITS WAVE-B DELETION. SMS was the login one-time-code channel, and
+that flow is retired; `pickready.send_sms` has no dispatcher. The delivery
+failure taxonomy that used to be defined here moved to
+`services/delivery_errors` on 2026-09-24, because both email transports
+depended on it and it must outlive this module.
 
-  PermanentDeliveryError — the same request will fail forever (bad/unverified
-      sender domain, recipient not allowed by a restricted key, malformed
-      recipient, bad credentials). Retrying is pure waste and hides the real
-      error behind N identical log lines. Fail fast, log one loud actionable
-      line, write an audit row.
-
-  TransientDeliveryError — may succeed later (429 rate-limit, 5xx, timeouts,
-      connection errors). Retried by the task runtime with EXPONENTIAL backoff,
-      max 3 attempts.
-
-SECURITY (ESD §16): API keys, OTP codes and message bodies are never logged.
-Provider error bodies are logged, but those contain only provider-side
-validation text, never our payload.
+SECURITY (ESD §16): API keys, codes and message bodies are never logged.
 """
 from __future__ import annotations
 
@@ -32,6 +16,16 @@ from typing import Any
 import httpx
 
 from app.core.config import get_settings
+# The taxonomy lives in `services/delivery_errors` since 2026-09-24, so the
+# email transports no longer import it from the SMS module. Re-exported here
+# ONLY for `workers/tasks.py`, which still imports it from this address
+# until the SMS task and this module are deleted together.
+from app.services.delivery_errors import (  # noqa: F401 -- re-exported
+    DeliveryError,
+    PermanentDeliveryError,
+    TransientDeliveryError,
+    log_delivery_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,57 +37,6 @@ HTTP_TIMEOUT = 30.0
 MAX_DELIVERY_ATTEMPTS = 3          # 1 initial attempt + 2 retries
 RETRY_BACKOFF_BASE_SECONDS = 5     # 5s, 10s, 20s … (exponential, jittered)
 RETRY_BACKOFF_MAX_SECONDS = 300
-
-
-class DeliveryError(Exception):
-    """Base class for outbound email/SMS delivery failures.
-
-    Carries the provider's own error body so the operator never has to re-probe
-    the API to find out what happened.
-    """
-
-    permanent: bool = False
-
-    def __init__(
-        self,
-        provider: str,
-        status: int | None,
-        error_name: str | None,
-        message: str,
-        hint: str = "",
-    ) -> None:
-        self.provider = provider
-        self.status = status
-        self.error_name = error_name or ""
-        self.provider_message = message
-        self.hint = hint
-        super().__init__(
-            f"{provider} send failed: status={status} name={self.error_name!r} "
-            f"message={message!r}" + (f" | ACTION: {hint}" if hint else "")
-        )
-
-    def as_audit_metadata(self) -> dict[str, Any]:
-        """Secret-free dict for the audit_log row."""
-        return {
-            "provider": self.provider,
-            "status": self.status,
-            "error_name": self.error_name,
-            "provider_message": self.provider_message[:500],
-            "hint": self.hint,
-            "permanent": self.permanent,
-        }
-
-
-class PermanentDeliveryError(DeliveryError):
-    """Will never succeed on retry — do not burn retries on it."""
-
-    permanent = True
-
-
-class TransientDeliveryError(DeliveryError):
-    """May succeed later — the task runtime retries with exponential backoff."""
-
-    permanent = False
 
 
 # ── Failure classification ───────────────────────────────────────────────────
@@ -193,33 +136,6 @@ def classify_exception(provider: str, exc: Exception) -> DeliveryError:
     return TransientDeliveryError(
         provider, None, type(exc).__name__, str(exc) or repr(exc)
     )
-
-
-def log_delivery_error(channel: str, err: DeliveryError, **fields: Any) -> None:
-    """One loud, greppable, secret-free line per failure.
-
-    Permanent failures log at ERROR with the operator action attached;
-    transient ones log at WARNING since a retry is coming.
-    """
-    extra = " ".join(f"{k}={v}" for k, v in fields.items())
-    line = (
-        "%s.delivery_failed kind=%s provider=%s status=%s error_name=%s "
-        "provider_message=%r %s%s"
-    )
-    args = (
-        channel,
-        "permanent" if err.permanent else "transient",
-        err.provider,
-        err.status,
-        err.error_name or "-",
-        err.provider_message,
-        extra,
-        f" | ACTION: {err.hint}" if err.hint else "",
-    )
-    if err.permanent:
-        logger.error(line, *args)
-    else:
-        logger.warning(line, *args)
 
 
 # ── MSG91 SMS ────────────────────────────────────────────────────────────────

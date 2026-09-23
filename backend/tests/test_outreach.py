@@ -198,7 +198,8 @@ def test_present_smtp_config_has_no_warning(monkeypatch) -> None:
         outreach_api,
         "get_settings",
         lambda: type(
-            "S", (), {"missing_delivery_keys": lambda self: ["MSG91_API_KEY"]}
+            # A missing NON-SMTP key must not read as an SMTP warning.
+            "S", (), {"missing_delivery_keys": lambda self: ["OTHER_PROVIDER_KEY"]}
         )(),
     )
     ok, warning = outreach_api._delivery_status()
