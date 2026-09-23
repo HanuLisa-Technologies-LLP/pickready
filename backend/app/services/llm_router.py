@@ -47,6 +47,13 @@ rather than only when:
     `LLMUnavailableError` so every existing caller still degrades rather than
     500ing, carrying `needs_human_review` for the callers that want to tell
     "unreachable" from "read it and declined".
+  * a TRUNCATED response (`finish_reason: "length"`) is never returned. It is
+    retried ONCE at double the completion budget, capped by
+    `MAX_COMPLETION_TOKENS_CEILING` and priced against the cost ceiling before
+    the retry starts; a second cut raises `ResponseTruncated`, another
+    `LLMUnavailableError` subclass. Until 2026-09-24 the cut text was handed
+    back as a complete answer: half a JSON document to a structured caller and
+    half a sentence to a prose one.
   * a SCHEMA VIOLATION, when the caller passed a `validate`, is retried with the
     validator's own message fed back VERBATIM through
     `agent_loop.reflection_text`. That is the only class whose retry carries a
@@ -180,6 +187,9 @@ from app.config.llm_providers import (
     FAILURE_REFUSAL,
     FAILURE_SCHEMA_VIOLATION,
     FAILURE_TIMEOUT,
+    FAILURE_TRUNCATED,
+    MAX_COMPLETION_TOKENS_CEILING,
+    MAX_TRUNCATION_RETRIES,
     FAILURE_TRANSPORT,
     FAILURE_UNCLASSIFIED,
     JSON_OBJECT_RESPONSE_FORMAT,
@@ -194,6 +204,7 @@ from app.config.llm_providers import (
     is_priced,
     is_refusal_finish_reason,
     is_retryable_status,
+    is_truncation_finish_reason,
     jittered_backoff_seconds,
     max_tokens_for,
     model_for,
@@ -203,7 +214,7 @@ from app.config.llm_providers import (
     timeout_for,
     total_budget_for,
 )
-from app.services import context_budget, cost_telemetry, tracing
+from app.services import context_budget, cost_telemetry
 from app.services.observability import otel
 from app.services.agent_loop import reflection_text
 from app.services.reliability import vendor_contract
@@ -276,6 +287,31 @@ class ModelRefusal(LLMUnavailableError):
         #: The vendor's own short reason. A `finish_reason` or the API's
         #: `refusal` string, never a candidate's text.
         self.reason = reason
+
+
+class ResponseTruncated(LLMUnavailableError):
+    """The vendor answered and was CUT OFF at the completion budget, twice.
+
+    A SUBCLASS for the reason `ModelRefusal` is one: every caller already
+    catches `LLMUnavailableError` and degrades to its deterministic behaviour,
+    which is the right answer to "no complete answer arrived". What the subclass
+    adds is the ability to tell a truncation from an outage, because only a
+    truncation is fixed by editing a `TASK_MAX_TOKENS` row.
+
+    The cut text is NEVER attached. It is model output derived from a prompt
+    that carries a real candidate's answers, and half of it is not an answer.
+
+    Not a person's problem, unlike a refusal: nothing about the content was
+    declined, so it does not ask for human review.
+    """
+
+    needs_human_review = False
+
+    def __init__(self, message: str, *, max_completion_tokens: int) -> None:
+        super().__init__(message)
+        #: The budget the LAST attempt was cut at, so a log line names the
+        #: number the task's row needs to exceed.
+        self.max_completion_tokens = max_completion_tokens
 
 
 # ── Credential ───────────────────────────────────────────────────────────────
@@ -784,6 +820,11 @@ class _Result:
         return bool(self.refusal) or is_refusal_finish_reason(self.finish_reason)
 
     @property
+    def is_truncated(self) -> bool:
+        """The model stopped at the completion budget rather than finishing."""
+        return is_truncation_finish_reason(self.finish_reason)
+
+    @property
     def refusal_reason(self) -> str:
         """A short reason, from the vendor's own vocabulary. Never content.
 
@@ -1107,6 +1148,14 @@ class _RouteContext:
     refusal_reason: str | None = None
     #: Set by a timeout. A timeout's outcome is UNKNOWN rather than absent.
     unknown_outcome: bool = False
+    #: How many truncation retries this call has made, bounded by
+    #: `MAX_TRUNCATION_RETRIES`. Each one doubles `max_tokens` above.
+    truncations: int = 0
+    #: True when the LAST attempt came back truncated, read by
+    #: `_invoke_llm_inner` to raise `ResponseTruncated` rather than the generic
+    #: exhaustion error. Cleared by any later attempt that fails differently, so
+    #: the exception names what actually ended the call.
+    truncated: bool = False
 
 
 class RouterState(TypedDict, total=False):
@@ -1267,6 +1316,9 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
             latency_ms=elapsed * 1000,
             )
         _record_failure(ctx.key, terminal=recovery.trips_breaker_immediately)
+        # The last thing that happened is no longer a truncation, so the error
+        # this call eventually raises must not claim it was.
+        ctx.truncated = False
         if recovery.outcome_is_unknown:
             ctx.unknown_outcome = True
         # The message names the classification and the status, and NEVER the
@@ -1423,6 +1475,47 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
         )
         return {"attempts": attempts, "error": "__terminal__"}
 
+    if result.is_truncated:
+        # A TRUNCATED RESPONSE IS NOT AN ANSWER, and it is never returned. The
+        # credential worked and the vendor served the call, so the breaker is
+        # already cleared above and stays cleared. What is wrong is the budget,
+        # so the one retry worth making carries a larger one (W4.1's
+        # "different request, not a different schedule" rule).
+        #
+        # The cut text goes NOWHERE: not into `ctx.errors`, not into the log
+        # line, not back to the model as feedback. It is model output written
+        # from a prompt that carries a real candidate's answers.
+        cut_at = ctx.max_tokens
+        ctx.truncated = True
+        ctx.errors.append(
+            f"{FAILURE_TRUNCATED} (finish_reason=length, "
+            f"max_completion_tokens={cut_at})"
+        )
+        logger.warning(
+            "llm_router.truncated task=%s model=%s attempt=%d max_tokens=%d",
+            ctx.task_type, ctx.model, attempts, cut_at,
+        )
+        larger = min(cut_at * 2, MAX_COMPLETION_TOKENS_CEILING)
+        if ctx.truncations >= MAX_TRUNCATION_RETRIES:
+            ctx.errors.append(
+                f"still truncated after {ctx.truncations} larger-budget "
+                f"retry; the task's TASK_MAX_TOKENS row is too small"
+            )
+            return {"attempts": attempts, "error": "__terminal__"}
+        if larger <= cut_at:
+            ctx.errors.append(
+                f"max_completion_tokens={cut_at} is already at the "
+                f"{MAX_COMPLETION_TOKENS_CEILING} ceiling; a retry could not "
+                f"ask for more"
+            )
+            return {"attempts": attempts, "error": "__terminal__"}
+        # `should_continue` prices the NEXT attempt with this larger budget
+        # before it starts, so a doubled budget the cost ceiling cannot afford
+        # is refused rather than attempted.
+        ctx.max_tokens = larger
+        ctx.truncations += 1
+        return {"attempts": attempts, "error": FAILURE_TRUNCATED}
+
     if ctx.validate is not None:
         try:
             ctx.validate(result.content)
@@ -1439,6 +1532,7 @@ async def _attempt(state: RouterState) -> dict[str, Any]:
             # candidate's own words. So the record carries the exception CLASS
             # and the prompt carries the sentence.
             ctx.feedback = str(exc)
+            ctx.truncated = False
             ctx.errors.append(f"{FAILURE_SCHEMA_VIOLATION} ({type(exc).__name__})")
             logger.info(
                 "llm_router.schema_violation task=%s model=%s attempt=%d error=%s",
@@ -1514,15 +1608,11 @@ async def invoke_llm(
     in as many words.
 
     Returns the assistant text. Raises `LLMUnavailableError` when the vendor
-    could not serve the call within its budget, or `ModelRefusal` (a subclass,
-    so an existing `except LLMUnavailableError` still degrades) when the vendor
-    answered and declined.
+    could not serve the call within its budget, `ModelRefusal` when the vendor
+    answered and declined, or `ResponseTruncated` when every answer it gave was
+    cut off at the completion budget. The last two are subclasses, so an
+    existing `except LLMUnavailableError` still degrades.
     """
-    # One traced run per logical call, named after the task type, so the
-    # dashboard separates the scorers from report synthesis from the interviewer
-    # with no per-agent wiring. It wraps the WHOLE call rather than one attempt:
-    # what matters operationally is whether this call eventually produced an
-    # answer and how long it took, not that attempt two was rate limited.
     if validate is not None and not response_format_json:
         raise ValueError(
             "validate is only accepted with response_format_json=True: a "
@@ -1530,31 +1620,25 @@ async def invoke_llm(
             "feedback the router sends back says 'return the corrected result "
             "in the same JSON shape'"
         )
-    # The GenAI span sits INSIDE the LangSmith one and wraps the SAME call, so
-    # the two observability systems describe one unit of work and cannot
-    # disagree about whether it succeeded. `model_for` is resolved here rather
-    # than left inside: a span with no `gen_ai.request.model` is unqueryable in
-    # every GenAI dashboard. It is the identical pure lookup `_invoke_llm_inner`
-    # makes as its first statement, so an unknown task type still raises the
-    # identical error from the identical function, one frame earlier.
-    with tracing.trace_llm(task_type, messages=messages) as run:
-        with otel.genai_span(
-            otel.OPERATION_CHAT,
-            request_model=model_for(task_type),
-            task_type=task_type,
-        ):
-            try:
-                result = await _invoke_llm_inner(
-                    task_type, messages, response_format_json, timeout, total_budget,
-                    validate,
-                )
-            except Exception as exc:  # noqa: BLE001 -- re-raised immediately
-                if run is not None:
-                    run.end(error=f"{type(exc).__name__}: {exc}")
-                raise
-            if run is not None:
-                run.end(output=result)
-            return result
+    # ONE span per logical call, and it is the only tracer (OpenTelemetry only,
+    # owner ruling 2026-09-24; the second, vendor-hosted tracer that used to
+    # wrap this is deleted). It wraps the WHOLE call rather than one attempt: what
+    # matters operationally is whether this call eventually produced an answer
+    # and how long it took, not that attempt two was rate limited. `model_for`
+    # is resolved here rather than left inside: a span with no
+    # `gen_ai.request.model` is unqueryable in every GenAI dashboard. It is the
+    # identical pure lookup `_invoke_llm_inner` makes as its first statement, so
+    # an unknown task type still raises the identical error from the identical
+    # function, one frame earlier.
+    with otel.genai_span(
+        otel.OPERATION_CHAT,
+        request_model=model_for(task_type),
+        task_type=task_type,
+    ):
+        return await _invoke_llm_inner(
+            task_type, messages, response_format_json, timeout, total_budget,
+            validate,
+        )
 
 
 async def _invoke_llm_inner(
@@ -1567,7 +1651,7 @@ async def _invoke_llm_inner(
 ) -> str:
     """The retry loop itself.
 
-    Split out so `invoke_llm` is only the tracing wrapper, and so a tracing
+    Split out so `invoke_llm` is only the span wrapper, and so a tracing
     failure can never be mistaken for a router bug.
     """
     model = model_for(task_type)  # raises ValueError on an unknown task type
@@ -1654,6 +1738,12 @@ async def _invoke_llm_inner(
             f"{PROVIDER} declined task_type={task_type} on {model}: "
             f"{'; '.join(ctx.errors)}",
             reason=ctx.refusal_reason,
+        )
+    if ctx.truncated:
+        raise ResponseTruncated(
+            f"{PROVIDER} truncated task_type={task_type} on {model}: "
+            f"{'; '.join(ctx.errors)}",
+            max_completion_tokens=ctx.max_tokens,
         )
     raise LLMUnavailableError(
         f"{PROVIDER} exhausted for task_type={task_type}: {'; '.join(ctx.errors)}",

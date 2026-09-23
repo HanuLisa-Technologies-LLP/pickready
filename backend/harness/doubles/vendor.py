@@ -23,10 +23,11 @@ mutation of the authored success body:
              disagreement `vendor_contract.check_openai_response` names in its
              own error text, because a chunk carries a `delta` where the parser
              reads a `message` and yields an empty string rather than raising.
-  partial    `finish_reason` becomes "length" and the content is cut. This is
-             not a refusal (`REFUSAL_FINISH_REASONS` is refusal and
-             content_filter), so the router ACCEPTS it, which is the finding
-             worth being able to inject: truncation arrives as a short answer.
+  partial    `finish_reason` becomes "length" and the content is cut. Not a
+             refusal: the router classifies it as `truncated`, retries once at
+             a larger completion budget, and raises `ResponseTruncated` when
+             the retry is cut too. Until 2026-09-24 it ACCEPTED the cut text,
+             which is the finding this fault was built to expose.
 
 Deriving rather than authoring keeps one source of truth for the envelope. If
 the success fixture changes shape, these two change with it instead of becoming

@@ -783,6 +783,14 @@ FAILURE_TIMEOUT = "timeout"
 FAILURE_CONTEXT_OVERFLOW = "context_overflow"
 FAILURE_REFUSAL = "refusal"
 FAILURE_SCHEMA_VIOLATION = "schema_violation"
+#: The vendor answered and stopped because it reached `max_completion_tokens`
+#: (`finish_reason: "length"`). The credential worked and the vendor served the
+#: call, so this is not a transport failure; but the body is HALF an answer, and
+#: returning it as a complete one hands a JSON caller a document that does not
+#: parse and a prose caller half a sentence. The harness's first fault run
+#: (2026-09-22) found the router accepting it, and a scenario pinned the defect
+#: until this class existed.
+FAILURE_TRUNCATED = "truncated"
 #: Anything this router cannot place. A `VendorContractViolation` is the live
 #: example: it is not an HTTP status, not a timeout and not a transport error,
 #: and it must not be retried. Naming it is what stops it inheriting the
@@ -800,6 +808,7 @@ STRATEGY_COMPRESS_AND_RETRY = "compress_context_and_retry"
 STRATEGY_ROUTE_TO_HUMAN = "route_to_human"
 STRATEGY_REPROMPT_WITH_VALIDATOR_MESSAGE = "reprompt_with_the_validator_message"
 STRATEGY_SURFACE_UNCLASSIFIED = "surface_an_unclassified_failure"
+STRATEGY_RETRY_WITH_LARGER_COMPLETION_BUDGET = "retry_with_a_larger_completion_budget"
 
 
 @dataclass(frozen=True)
@@ -913,6 +922,19 @@ RECOVERY_FOR_FAILURE: dict[str, Recovery] = {
             "and this is the only class whose retry carries a different prompt"
         ),
     ),
+    FAILURE_TRUNCATED: Recovery(
+        strategy=STRATEGY_RETRY_WITH_LARGER_COMPLETION_BUDGET,
+        retry=True,
+        rewrites_the_request=True,
+        why=(
+            "the model ran out of completion budget, so an identical retry "
+            "reproduces the same cut; the one attempt worth making carries a "
+            "larger max_completion_tokens, bounded by MAX_TRUNCATION_RETRIES "
+            "and MAX_COMPLETION_TOKENS_CEILING and priced against the cost "
+            "ceiling before it starts. The breaker is not tripped: the "
+            "credential and the vendor both worked"
+        ),
+    ),
     FAILURE_UNCLASSIFIED: Recovery(
         strategy=STRATEGY_SURFACE_UNCLASSIFIED,
         retry=False,
@@ -964,12 +986,38 @@ VENDOR_ERROR_ALLOWED_FIELDS: tuple[str, ...] = ("code", "type")
 REFUSAL_FINISH_REASONS: frozenset[str] = frozenset({"refusal", "content_filter"})
 
 
+#: `finish_reason` values that mean the model was CUT OFF rather than finished.
+#: `length` is the published value for "reached `max_completion_tokens`".
+TRUNCATION_FINISH_REASONS: frozenset[str] = frozenset({"length"})
+
+#: How many times one logical call may retry a truncated response at a larger
+#: completion budget. ONE: the retry doubles the budget, and a response that is
+#: still cut at twice what the task was sized for belongs to a task whose
+#: `TASK_MAX_TOKENS` row is wrong, which a second doubling would hide rather
+#: than fix. The `llm_router.truncated` log line is what makes that row visible.
+MAX_TRUNCATION_RETRIES = 1
+
+#: The largest `max_completion_tokens` a truncation retry may ask for. Twice the
+#: largest reviewed row in `TASK_MAX_TOKENS`, derived rather than typed, so the
+#: ceiling moves with the table: a retry may double any task's budget once, and
+#: no retry may ask for more than the product's largest task was ever sized for,
+#: doubled. The cost ceiling still prices the doubled budget BEFORE the retry
+#: starts, so this bounds the request and `TASK_COST_CEILING_USD` bounds the bill.
+MAX_COMPLETION_TOKENS_CEILING = 2 * max(
+    max(TASK_MAX_TOKENS.values()), DEFAULT_MAX_TOKENS
+)
+
+
 def is_context_overflow_code(code: str | None) -> bool:
     return bool(code) and str(code) in CONTEXT_OVERFLOW_ERROR_CODES
 
 
 def is_refusal_finish_reason(finish_reason: str | None) -> bool:
     return bool(finish_reason) and str(finish_reason) in REFUSAL_FINISH_REASONS
+
+
+def is_truncation_finish_reason(finish_reason: str | None) -> bool:
+    return bool(finish_reason) and str(finish_reason) in TRUNCATION_FINISH_REASONS
 
 
 # ── Cost attribution ─────────────────────────────────────────────────────────

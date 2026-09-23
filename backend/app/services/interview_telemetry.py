@@ -2,7 +2,7 @@
 
 WHY THIS EXISTS, AND WHY TRACING WAS NOT ENOUGH
 -----------------------------------------------
-`services/tracing.py` puts a LangSmith run around every LLM call at the one
+`observability/otel.genai_span` puts a span around every LLM call at the one
 chokepoint, `llm_router.invoke_llm`. That answers "was the model called, did it
 answer, how long did it take". It cannot answer anything about the INTERVIEW,
 because a conversation is not an LLM call: it is a sequence of turns, some of
@@ -48,12 +48,12 @@ Logged: conversation id, turn index, question KEY, domain, the answer's
 classification LABEL, the action taken, two booleans and a duration.
 
 NEVER logged, under any setting: answer text, question text, candidate name,
-candidate email. `tracing.py` already establishes that prompt and completion
-TEXT does not leave the process without an explicit opt-in, because a prompt
-carries a real candidate's answers and a real JD. This module holds the same
-line and holds it harder: an ordinary application log is read by far more people
-than a LangSmith project, and there is no flag here to loosen it because there
-is no operational question that needs the text to answer it.
+candidate email. `observability/otel` already establishes that prompt and
+completion TEXT never leaves the process on a span, because a prompt carries a
+real candidate's answers and a real JD. This module holds the same line: an
+ordinary application log is read by far more people than a trace store, and
+there is no flag here to loosen it because there is no operational question
+that needs the text to answer it.
 
 IT MUST NEVER RAISE
 -------------------

@@ -1,0 +1,44 @@
+id: adversarial.a_truncated_model_response_is_refused
+version: 2
+tier: adversarial
+description: >
+  A response carrying `finish_reason: "length"` is HALF an answer, and the
+  router must never hand it to a caller as a whole one. Version 1 of this
+  scenario (`adversarial.a_truncated_model_response_is_accepted_as_an_answer`)
+  pinned the opposite: the fault layer found on its first run that the router
+  accepted a truncated body, and the scenario recorded the finding so the
+  behaviour could not change silently. It changed deliberately on 2026-09-24:
+  truncation is its own failure class (`FAILURE_TRUNCATED`), retried at most
+  once at a larger completion budget and then raised as `ResponseTruncated`, a
+  subclass of the error every caller already degrades on. The fault truncates
+  EVERY call, so the retry is cut too and the call must end refused, with the
+  degradation recorded and no cut text reaching the caller.
+tags: [llm-router, truncation, vendor-contract, resilience]
+
+given:
+  world: no_state
+
+faults:
+  - model_failure: {kind: partial}
+
+workload:
+  - call_a_model
+
+expect:
+  output:
+    - facts.model_error is not null
+    - facts.model_text is null
+    - facts.model_error contains truncated
+    - degradations.count == 1
+    - degradations.kinds == [model_unavailable]
+  trajectory:
+    - model_call_refused
+  prohibited:
+    # Silent survival is a finding, not a pass (HARNESS.md section 4).
+    - a_fault_went_unrecorded
+    - a_model_credential_was_configured
+    - a_number_reached_a_client
+  evaluators:
+    - degradation_honesty
+    - recovery
+    - safety_and_policy

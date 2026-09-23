@@ -97,7 +97,7 @@ LIVE: dict[str, str] = {
     ),
     "app.services.observability": (
         "RPN-AI-UP-001 W4.6, wired 2026-09-09. llm_router.invoke_llm opens a "
-        "GenAI span at the same chokepoint LangSmith tracing already used, and "
+        "GenAI span at the one model-call chokepoint, and "
         "_attempt reports the token counts against it. Before that the trace "
         "module was reached only from reasoning/runner.py and recorded nothing."
     ),

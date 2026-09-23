@@ -143,6 +143,7 @@ def test_the_recovery_table_is_the_one_the_specification_states() -> None:
         "context_overflow": ("compress_context_and_retry", True, False),
         "refusal": ("route_to_human", False, False),
         "schema_violation": ("reprompt_with_the_validator_message", True, False),
+        "truncated": ("retry_with_a_larger_completion_budget", True, False),
         "unclassified": ("surface_an_unclassified_failure", False, False),
     }
     assert set(llm_providers.RECOVERY_FOR_FAILURE) == set(expected)
@@ -155,15 +156,16 @@ def test_the_recovery_table_is_the_one_the_specification_states() -> None:
         ), failure
 
 
-def test_only_two_classes_rewrite_the_request() -> None:
+def test_only_three_classes_rewrite_the_request() -> None:
     """The property that separates a semantic recovery from a schedule. Every
-    other class sends the same thing again, later."""
+    other class sends the same thing again, later. A truncation joined the set
+    on 2026-09-24: its retry carries a larger `max_completion_tokens`."""
     rewriting = {
         failure
         for failure, recovery in llm_providers.RECOVERY_FOR_FAILURE.items()
         if recovery.rewrites_the_request
     }
-    assert rewriting == {"context_overflow", "schema_violation"}
+    assert rewriting == {"context_overflow", "schema_violation", "truncated"}
 
 
 def test_only_a_timeout_leaves_the_outcome_unknown() -> None:
@@ -348,6 +350,101 @@ async def test_a_refusal_does_not_trip_the_breaker(monkeypatch) -> None:
             "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
         )
     assert not llm_router._is_cooling_down(_RouterKey(api_key="k-test", fingerprint="fp1"))
+
+
+# ── Truncation: half an answer is not an answer ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_response_is_retried_once_at_double_the_completion_budget(
+    monkeypatch,
+) -> None:
+    """Mutation check: without the truncation branch the router returns the cut
+    text on the first attempt and `sent` has one entry."""
+    sent = _install_transport(
+        monkeypatch,
+        [
+            (200, _completion('{"half": "an ans', finish_reason="length")),
+            (200, _completion('{"whole": "answer"}')),
+        ],
+    )
+    result = await llm_router.invoke_llm(
+        "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+    )
+    assert result == '{"whole": "answer"}'
+    assert len(sent) == 2
+    first, second = (body["max_completion_tokens"] for body in sent)
+    assert first == llm_providers.max_tokens_for("rerank")
+    assert second == first * 2, "the retry must carry a LARGER budget, not the same one"
+
+
+@pytest.mark.asyncio
+async def test_a_response_truncated_twice_raises_and_never_returns_the_cut_text(
+    monkeypatch,
+) -> None:
+    sent = _install_transport(
+        monkeypatch,
+        [(200, _completion("CUT-TEXT-FROM-THE-MODEL", finish_reason="length"))],
+    )
+    with pytest.raises(llm_router.ResponseTruncated) as excinfo:
+        await llm_router.invoke_llm(
+            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+        )
+    assert len(sent) == 1 + llm_providers.MAX_TRUNCATION_RETRIES
+    assert "truncated" in str(excinfo.value)
+    assert "CUT-TEXT-FROM-THE-MODEL" not in str(excinfo.value)
+    assert excinfo.value.needs_human_review is False
+    assert excinfo.value.max_completion_tokens == 2 * llm_providers.max_tokens_for(
+        "rerank"
+    )
+    # The credential worked and the vendor answered: condemning the key would
+    # take the whole tier off models for a sizing problem.
+    assert not llm_router._is_cooling_down(_RouterKey(api_key="k-test", fingerprint="fp1"))
+
+
+@pytest.mark.asyncio
+async def test_a_truncation_still_degrades_for_a_caller_that_catches_the_base_class(
+    monkeypatch,
+) -> None:
+    _install_transport(
+        monkeypatch, [(200, _completion("cut", finish_reason="length"))]
+    )
+    with pytest.raises(LLMUnavailableError):
+        await llm_router.invoke_llm(
+            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_truncation_retry_that_cannot_fit_the_cost_ceiling_is_not_attempted(
+    monkeypatch,
+) -> None:
+    """The doubled budget is priced BEFORE the retry starts. A ceiling that fits
+    the first attempt and not a doubled one gets exactly one request."""
+    first_worst_case = llm_providers.estimate_cost_usd(
+        llm_providers.MODEL_LUNA, 64, llm_providers.max_tokens_for("rerank")
+    )
+    monkeypatch.setitem(
+        llm_providers.TASK_COST_CEILING_USD, "rerank", first_worst_case * 1.5
+    )
+    sent = _install_transport(
+        monkeypatch, [(200, _completion("cut", finish_reason="length"))]
+    )
+    with pytest.raises(llm_router.ResponseTruncated) as excinfo:
+        await llm_router.invoke_llm(
+            "rerank", [{"role": "user", "content": "hi"}], total_budget=1000.0
+        )
+    assert len(sent) == 1
+    assert "cost ceiling reached" in str(excinfo.value)
+
+
+def test_the_truncation_ceiling_is_derived_from_the_largest_reviewed_budget() -> None:
+    assert llm_providers.MAX_COMPLETION_TOKENS_CEILING == 2 * max(
+        max(llm_providers.TASK_MAX_TOKENS.values()), llm_providers.DEFAULT_MAX_TOKENS
+    )
+    assert llm_providers.is_truncation_finish_reason("length")
+    assert not llm_providers.is_truncation_finish_reason("stop")
+    assert not llm_providers.is_truncation_finish_reason(None)
 
 
 def test_an_empty_answer_is_not_read_as_a_refusal() -> None:

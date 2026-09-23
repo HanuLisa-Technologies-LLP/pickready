@@ -279,13 +279,17 @@ would block on a number nobody agreed to.
 Recorded here rather than in a commit message, because each one is a property
 somebody will otherwise re-discover.
 
-- **A truncated model response is ACCEPTED as an answer.** `finish_reason:
-  "length"` is outside `REFUSAL_FINISH_REASONS`, so `llm_router` returns the cut
-  text and nothing marks it as cut off. Pinned by
-  `adversarial.a_truncated_model_response_is_accepted_as_an_answer`, which
-  records a FINDING rather than a guarantee: if the router starts refusing a
-  truncated response, that scenario fails and somebody decides it deliberately
-  instead of discovering it in a report with half a sentence in it.
+- **A truncated model response was ACCEPTED as an answer. FIXED 2026-09-24.**
+  `finish_reason: "length"` was outside `REFUSAL_FINISH_REASONS`, so
+  `llm_router` returned the cut text and nothing marked it as cut off. The
+  finding was pinned by
+  `adversarial.a_truncated_model_response_is_accepted_as_an_answer` so it could
+  only change deliberately, and it did: truncation is now its own failure class
+  (`FAILURE_TRUNCATED`), retried once at double the completion budget (priced
+  against the cost ceiling first) and then raised as `ResponseTruncated`. The
+  scenario was flipped rather than deleted, and is now
+  `adversarial.a_truncated_model_response_is_refused`: the fault cuts every
+  call, so the call must end refused with the degradation recorded.
 - **A vendor fault has to supply a credential to reach the transport.**
   `key_for_model` returns None when the key is unset and the router refuses
   before it builds a request, so with no credential a `model_failure` fault
