@@ -129,7 +129,7 @@ def test_validation_is_not_asked_in_the_conversation() -> None:
     """
     import inspect
 
-    from app.api import assessments
+    from app.api import assessment_conversation as assessments
 
     source = inspect.getsource(assessments._conversation_prompts)
     assert "validation" not in source.lower().replace("validation_json", "")
@@ -156,9 +156,13 @@ def test_the_preset_bank_routes_are_gone() -> None:
     404s, and a 404 is indistinguishable from a typo in a test. This checks that
     nothing is REGISTERED, which is the actual claim.
     """
-    from app.api import assessments
+    from app.api import assessment_conversation, assessment_recording, assessments
 
-    paths = {route.path for route in assessments.router.routes}
+    paths = {
+        route.path
+        for module in (assessments, assessment_conversation, assessment_recording)
+        for route in module.router.routes
+    }
     assert "/jobs/{job_id}/questions" not in paths
     assert "/jobs/{job_id}/questions/{question_id}" not in paths
     assert "/jobs/{job_id}/finalize" not in paths

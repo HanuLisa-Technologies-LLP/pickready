@@ -17,7 +17,7 @@ the scorer already handles.
 import inspect
 import re
 
-from app.api import assessments
+from app.api import assessment_conversation as assessments
 from app.services import functional_assessment
 
 

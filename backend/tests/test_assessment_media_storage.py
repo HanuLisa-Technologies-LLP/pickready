@@ -442,8 +442,19 @@ def test_the_proctored_recording_start_is_gated_by_the_proctoring_gate() -> None
     """Media is captured during a proctored assessment and at no other time,
     so a session that may not proceed may not be recorded. And there is no
     enable flag next to it: P4 was re-affirmed by the same ruling."""
-    source = (APP / "api" / "assessments.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    # The recording routes were carved out of `api/assessments.py` on
+    # 2026-09-24 (PLAN-p3 WP0); the flag sweep covers all three modules.
+    source = "\n".join(
+        (APP / "api" / name).read_text(encoding="utf-8")
+        for name in (
+            "assessments.py",
+            "assessment_conversation.py",
+            "assessment_recording.py",
+        )
+    )
+    tree = ast.parse(
+        (APP / "api" / "assessment_recording.py").read_text(encoding="utf-8")
+    )
     function = next(
         node for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "start_session_media"

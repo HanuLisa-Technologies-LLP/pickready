@@ -316,7 +316,7 @@ def test_the_state_log_carries_counts_and_words_only() -> None:
 def test_conversation_may_close_still_governs_early_stopping() -> None:
     """The addition is an `and`, never a replacement, and the source is where
     that has to be checked: a passing end state cannot tell the two apart."""
-    from app.api import assessments
+    from app.api import assessment_conversation as assessments
 
     source = inspect.getsource(assessments.respond)
     assert "ppi.conversation_may_close(" in source
@@ -341,7 +341,7 @@ def test_the_conflicting_dimensions_are_read_from_the_ledger() -> None:
     """THE MITI SIDE OF THE LOOP. Whether two readings disagree is a question
     about the evidence ledger, not about the transcript, so it is read from the
     ledger rather than guessed at from what the candidate typed."""
-    from app.api import assessments
+    from app.api import assessment_conversation as assessments
 
     source = inspect.getsource(assessments._ledger_dimension_flags)
     assert "load_claims" in source
@@ -357,7 +357,7 @@ def test_an_unavailable_ledger_never_stalls_a_conversation() -> None:
     """The dangerous direction. A ledger outage that made every conversation
     refuse to close would strand every candidate in the product
     mid-assessment."""
-    from app.api import assessments
+    from app.api import assessment_conversation as assessments
 
     source = inspect.getsource(assessments._ledger_dimension_flags)
     assert "except Exception" in source
@@ -368,7 +368,7 @@ def test_the_coverage_read_counts_matrix_items_and_not_questions() -> None:
     """Several questions can probe one matrix item, and a follow-up is filed
     under its parent's key, so counting questions would let a third of the
     matrix look like full coverage."""
-    from app.api import assessments
+    from app.api import assessment_conversation as assessments
 
     source = inspect.getsource(assessments._coverage_rows)
     assert "JOIN job_competencies c ON c.id = q.competency_id" in source
@@ -383,7 +383,7 @@ def test_the_state_never_reaches_a_response_schema() -> None:
     """Internal engineering metadata, exactly like the ledger's `relevance`. The
     counts here order work and explain a decision to an operator; the standing
     no-numbers rule covers them as it covers a score."""
-    from app.api import assessments
+    from app.api import assessment_conversation as assessments
 
     source = inspect.getsource(assessments.respond)
     returned = source[source.index("return ConversationOut(") :]

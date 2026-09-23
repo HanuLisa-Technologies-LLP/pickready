@@ -42,6 +42,11 @@ PROCTORING_MODULE = "app.services.proctoring"
 PERMITTED_IMPORTERS: dict[str, str] = {
     "api/proctoring.py": "the routes themselves",
     "api/assessments.py": "the gate on the conversation, and the report join",
+    # Carved out of api/assessments.py on 2026-09-24 (PLAN-p3 WP0), carrying
+    # the same narrow permission: the gate on the conversation and on the
+    # recording start, and nothing else.
+    "api/assessment_conversation.py": "the gate on the conversation",
+    "api/assessment_recording.py": "the gate on the recording start",
     "services/report_pdf.py": "renders the report's final section",
     "workers/tasks.py": "the three proctoring tasks",
     "schemas/proctoring.py": "reads the event vocabulary for its validator",
@@ -175,7 +180,14 @@ def test_the_assessment_api_uses_proctoring_only_as_a_gate_and_a_report() -> Non
     narrow: it may ask whether the conversation may proceed and attach the
     finished report. It may not read a warning count, an event or a session's
     behaviour profile into anything it computes."""
-    source = (APP / "api" / "assessments.py").read_text(encoding="utf-8")
+    source = "\n".join(
+        (APP / "api" / name).read_text(encoding="utf-8")
+        for name in (
+            "assessments.py",
+            "assessment_conversation.py",
+            "assessment_recording.py",
+        )
+    )
     for banned in (
         "warnings_used",
         "ProctoringEvent",

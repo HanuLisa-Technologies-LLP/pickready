@@ -108,7 +108,9 @@ def test_object_keys_are_ids_only_and_a_hostile_mime_cannot_escape() -> None:
 #: module, and the package's own internals. The pipeline WRITES the shared
 #: transcript records; everything that scores reads those, mode-blind.
 PERMITTED_IMPORTERS = {
-    "api/assessments.py",
+    # The video routes, carved out of api/assessments.py on 2026-09-24
+    # (PLAN-p3 WP0); api/assessments.py no longer imports the package.
+    "api/assessment_recording.py",
     "workers/tasks.py",
     # The client-side delivery/metadata layer (2026-09-05 dashboard/Executive
     # Profile/video spec). It reads the lifecycle constants and the per-link
@@ -343,7 +345,8 @@ def _user(fx: _Fx):
 
 
 def _patch_link(monkeypatch, fx: _Fx) -> None:
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
+    from app.api import assessment_recording
     from app.models import Job
     from app.models.candidate import JobCandidateLink
 
@@ -353,6 +356,9 @@ def _patch_link(monkeypatch, fx: _Fx) -> None:
         return link, job
 
     monkeypatch.setattr(mod, "_candidate_link", _resolve)
+    # The recording routes were carved into their own module and bind the
+    # helper by name, so the fake is installed on both.
+    monkeypatch.setattr(assessment_recording, "_candidate_link", _resolve)
 
 
 @pytest.mark.asyncio
@@ -360,7 +366,8 @@ async def test_starting_either_mode_without_consent_is_refused(monkeypatch) -> N
     """The gate, in both directions (spec 3.1). The proctoring session exists,
     the invitation exists, the questions exist; the ONLY missing thing is the
     assessment consent row, and that alone answers 409."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
+    from app.api import assessment_recording
 
     engine, factory = await _factory_or_skip()
     fx = _Fx()
@@ -391,7 +398,7 @@ async def test_starting_either_mode_without_consent_is_refused(monkeypatch) -> N
             async with s.begin():
                 async with superadmin_scope(s):
                     with pytest.raises(HTTPException) as video:
-                        await mod.start_video_interview(
+                        await assessment_recording.start_video_interview(
                             fx.link_id, user=_user(fx), session=s
                         )
         assert video.value.status_code == 409
@@ -447,7 +454,7 @@ async def test_consent_records_the_versions_in_force(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_the_mode_freezes_once_the_assessment_has_begun(monkeypatch) -> None:
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
     from app.schemas.assessments import AssessmentModeIn

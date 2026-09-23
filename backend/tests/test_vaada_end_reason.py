@@ -91,7 +91,7 @@ def _no_probes(monkeypatch) -> None:
     decided to ask, and a test that cannot say which turn it is asserting about
     is not asserting anything.
     """
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
 
     async def _none(**kwargs):
         return None
@@ -107,7 +107,7 @@ async def test_running_out_of_questions_is_recorded_as_exhaustion(
     monkeypatch,
 ) -> None:
     """One question, answered once. Nothing stopped early; there was no more."""
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
 
@@ -162,7 +162,7 @@ async def test_stopping_on_coverage_is_recorded_as_the_reason_it_stopped(
     stopped at the minimum", which is the fail-style early exit this product
     deliberately does not do.
     """
-    from app.api import assessments as mod
+    from app.api import assessment_conversation as mod
     from app.core.db import superadmin_scope
     from app.models.assessment import AssessmentConversation
     from app.services import ppi
