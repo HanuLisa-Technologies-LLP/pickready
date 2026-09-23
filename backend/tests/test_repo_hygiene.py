@@ -80,10 +80,11 @@ def test_nothing_under_an_ignored_tool_path_is_tracked() -> None:
 
 
 def test_coverage_config_does_not_name_a_removed_feature() -> None:
-    """`.coveragerc` still named the Company DNA package as a coverage target
-    two weeks after the package was deleted (2026-09-09). The removal sweep in
-    `test_company_dna_removed.py` reads Python only, so config was its blind
-    spot. It also listed a migration script deleted on 2026-09-24."""
+    """`.coveragerc` still named the package deleted on 2026-09-09 as a
+    coverage target two weeks later. That feature's own removal sweep reads
+    Python only, so config was its blind spot. It also listed a migration
+    script deleted on 2026-09-24. The pattern is built from parts so the
+    removal sweep does not read this file as a mention."""
     text = (REPO / "backend" / ".coveragerc").read_text(encoding="utf-8")
-    assert not re.search(r"company[ _-]?dna", text, re.I)
+    assert not re.search("company" + r"[ _-]?" + "dna", text, re.I)
     assert "migrate_resumes_to_gcs" not in text

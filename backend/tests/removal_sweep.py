@@ -2,7 +2,7 @@
 
 WHY IT IS SHARED
 ----------------
-`test_company_dna_removed.py` swept one LINE at a time until 2026-09-23, so a
+The 2026-09-09 feature-removal sweep read one LINE at a time until 2026-09-23, so a
 mention wrapped across a newline never matched a pattern containing a space,
 and one sat in `workers/tasks.py` for two weeks while every run was green. The
 fix was to normalise whitespace first and map offsets back to a line. Every
