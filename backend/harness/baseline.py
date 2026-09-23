@@ -117,19 +117,28 @@ class Threshold:
         ratio = self.max_increase_ratio
         if ratio is None:
             raise ThresholdError(f"threshold {self.metric!r} carries no bound")
+        if self.min_baseline is not None and baseline < self.min_baseline:
+            # Too small to say anything about, AND THIS INCLUDES ZERO. The
+            # floor is checked before the zero rule below because they answer
+            # different metrics: the zero rule exists for a COUNT, where zero
+            # is the healthy permanent state and any rise is the event. A
+            # metric that declared a floor has said its ratio means nothing
+            # below that scale, and a zero baseline is below that scale --
+            # a sub-second scenario recorded as 0 that comes back as 1 is
+            # exactly the machine noise the floor was written to absorb, and
+            # checking zero first fired the gate on it (2026-09-23, CI).
+            # Reported as no regression rather than as unavailable: the metric
+            # WAS compared and the comparison was inconclusive, which is a
+            # different statement from "nothing could be measured", and the
+            # count metrics beside it in the same comparison are still doing
+            # their job.
+            return False
         if baseline <= 0.0:
             # A ratio against zero has no meaning. Any rise off a zero baseline
             # is reported, because the alternative is a metric that can never
             # regress once it has touched zero, which is the state a healthy
             # count metric sits in permanently.
             return observed > 0.0
-        if self.min_baseline is not None and baseline < self.min_baseline:
-            # Too small to say anything about. Reported as no regression rather
-            # than as unavailable: the metric WAS compared and the comparison
-            # was inconclusive, which is a different statement from "nothing
-            # could be measured", and the count metrics beside it in the same
-            # comparison are still doing their job.
-            return False
         return (observed - baseline) / baseline > ratio
 
     def describe_bound(self, baseline: float) -> str:
@@ -138,13 +147,15 @@ class Threshold:
         ratio = self.max_increase_ratio
         if ratio is None:
             raise ThresholdError(f"threshold {self.metric!r} carries no bound")
-        if baseline <= 0.0:
-            return "no rise off a zero baseline"
         if self.min_baseline is not None and baseline < self.min_baseline:
+            # Before the zero rule, mirroring `exceeded_by`: a declared floor
+            # covers zero too.
             return (
                 f"not applied: a baseline of {baseline:g} is below the "
                 f"{self.min_baseline:g} floor this ratio needs to mean anything"
             )
+        if baseline <= 0.0:
+            return "no rise off a zero baseline"
         return f"at most {baseline * (1.0 + ratio):g}"
 
 

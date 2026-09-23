@@ -731,6 +731,14 @@ def test_a_ratio_bound_is_not_applied_below_its_floor() -> None:
     assert "not applied" in threshold.describe_bound(1.0)
     assert threshold.exceeded_by(20.0, 40.0) is True
     assert threshold.describe_bound(20.0) == "at most 30"
+    # ZERO IS BELOW THE FLOOR TOO. The any-rise-off-zero rule exists for a
+    # count metric, whose healthy permanent state is zero; a duration that
+    # baselined at 0 is a sub-second scenario, and 0 to 1 second is the
+    # machine noise the floor absorbs. Checking zero before the floor fired
+    # the gate on exactly that (2026-09-23, CI), which is the fires-on-noise
+    # failure this docstring opens with.
+    assert threshold.exceeded_by(0.0, 1.0) is False
+    assert "not applied" in threshold.describe_bound(0.0)
 
 
 def test_a_floor_beside_an_absolute_bound_is_refused() -> None:
