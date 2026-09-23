@@ -151,9 +151,9 @@ describe("the job page", () => {
           Node.DOCUMENT_POSITION_FOLLOWING
       ).toBeTruthy();
     }
-    // The retired matrix editor and categories card are not on the page.
-    expect(screen.queryByText(/Tatva Assessment matrix/)).toBeNull();
-    expect(screen.queryByText(/Matching categories/i)).toBeNull();
+    // The retired criteria editor and ranking category card are not on the
+    // page: nothing on it says "matrix" or "categories" any more.
+    expect(container.textContent ?? "").not.toMatch(/matrix|categories/i);
   });
 
   it("edits the JD as one document through the document route", async () => {

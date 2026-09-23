@@ -5,8 +5,8 @@
  *
  * WHAT THIS REPLACED
  * ------------------
- * The Tatva Assessment matrix editor and the Matching Categories editor are
- * gone. What a recruiter reviews now is one list of skills in three buckets,
+ * The old criteria editor and the resume-ranking category editor are gone.
+ * What a recruiter reviews now is one list of skills in three buckets,
  * Must-have, Nice-to-have and Behavioural, at most five each. Sutra drafts it
  * from the JD, the saved SWOT and the Company Profile; the team adds, pastes,
  * renames, moves and removes; Save Skills writes the hidden assessment context

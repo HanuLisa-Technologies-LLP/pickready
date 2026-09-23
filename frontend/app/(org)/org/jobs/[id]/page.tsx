@@ -23,8 +23,8 @@
 //     are a separate, smaller form through PATCH /jobs/{id}.
 //   * `level`. The grade and the experience band replaced it; the badge reads
 //     "Grade", never "Level".
-//   * The Tatva matrix editor and the Matching Categories card
-//     (`JobSetupReview`). The Skills panel replaces both.
+//   * The criteria editor and the resume-ranking category card that used to
+//     sit in the Candidates tab. The Skills panel replaces both.
 //
 // Deliberately absent, per the spec: the "Added by HR after ratification"
 // metadata, the notes textbox, the approval-status display, and the separate
@@ -1025,7 +1025,7 @@ export default function OrgJobDetailPage() {
       ) : null}
 
       {/* The Skills step (D1): what every candidate is assessed against. It
-          replaced the Tatva matrix editor and the Matching Categories card. */}
+          replaced the old criteria editor and the ranking category card. */}
       {job ? (
         <JobSkillsPanel
           jobId={job.id}
