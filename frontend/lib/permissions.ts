@@ -100,6 +100,19 @@ export const CAP = {
    * to stop: the courtesy and the gate have to agree.
    */
   authorDrishtiProfile: "author_drishti_profile",
+  /**
+   * The job's skills, one capability per bucket (Vivekium release, Phase 1).
+   * Editing a skill is the Hiring Manager's authority, not `create_job`'s:
+   * the skills are what every candidate on the job is assessed against. The
+   * skills payload carries the per-job answer (`can_edit` per bucket,
+   * `can_save`); these are the capability half `resolvePermission` falls back
+   * to while it loads.
+   */
+  editMustHaveSkills: "edit_must_have_skills",
+  editNiceToHaveSkills: "edit_nice_to_have_skills",
+  editBehaviouralCompetencies: "edit_behavioural_competencies",
+  /** Save Skills: writes the hidden assessment context and makes the job invitable. */
+  finalizeRoleDefinition: "finalize_role_definition",
 } as const;
 
 export type CapabilityName = (typeof CAP)[keyof typeof CAP];

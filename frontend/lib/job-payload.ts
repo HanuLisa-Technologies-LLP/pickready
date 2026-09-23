@@ -47,37 +47,31 @@ export const skillsToArray = (value: string): string[] =>
     .filter(Boolean);
 
 /**
- * Pull the per-section strings the API still stores out of the one markdown
- * document. The server does the same parse authoritatively; this keeps the
- * created job's structured fields populated without asking the recruiter to
- * fill seven boxes again.
+ * The body of `POST /jobs`. It creates a DRAFT and nothing else.
+ *
+ * WHY THERE IS NO `publish` ARGUMENT ANY MORE (Vivekium release, Phase 1)
+ * ---------------------------------------------------------------------
+ * This helper used to take `publish = true` from the Create Job screen, and
+ * the server published the job inside the create call under `create_job`
+ * alone. That skipped the real gate: `POST /jobs/{id}/publish` requires the
+ * `publish_job` capability and a saved JD, a saved SWOT and saved skills, and
+ * it is the only path that dispatches the JD indexing. A job went live with no
+ * skills, a DRAFT lifecycle state and no index. Publishing is now a separate
+ * step on the job page (`components/job-publish-card.tsx`), and the server
+ * refuses `publish: true` on create loudly rather than ignoring it.
+ *
+ * WHY THE PER-SECTION `jd` FIELDS ARE GONE
+ * ----------------------------------------
+ * The markdown document is canonical and the server derives every section
+ * from it. Deriving them here as well was a second parser that could
+ * disagree with the first. What stays under `jd` are the two values that are
+ * NOT in the document: who the role reports to, and the skills the recruiter
+ * typed to seed the draft.
+ *
+ * `level` is not sent and never was from this form; the experience band and
+ * the grade replaced it.
  */
-export function sectionsFromMarkdown(markdown: string): Record<string, string> {
-  const sections: Record<string, string> = {};
-  let current = "";
-  for (const rawLine of markdown.split("\n")) {
-    const heading = rawLine.match(/^\s{0,3}#{1,6}\s+(.+?)\s*$/);
-    if (heading) {
-      current = heading[1].trim().toLowerCase();
-      sections[current] = "";
-      continue;
-    }
-    if (current) sections[current] += `${rawLine}\n`;
-  }
-  for (const key of Object.keys(sections)) sections[key] = sections[key].trim();
-  return sections;
-}
-
-/** Strip list markers so a bullet block round-trips as clean lines. */
-const asLines = (block: string | undefined): string =>
-  (block ?? "")
-    .split("\n")
-    .map((line) => line.replace(/^\s*[-*+]\s+/, "").trim())
-    .filter(Boolean)
-    .join("\n");
-
-export function buildJobCreatePayload(form: JobFormValues, publish = false) {
-  const sections = sectionsFromMarkdown(form.jd_markdown);
+export function buildJobCreatePayload(form: JobFormValues) {
   return {
     title: form.title.trim(),
     department: form.department.trim() || null,
@@ -86,16 +80,9 @@ export function buildJobCreatePayload(form: JobFormValues, publish = false) {
     experience_min_years: optionalNumber(form.experience_min_years),
     experience_max_years: optionalNumber(form.experience_max_years),
     jd_markdown: form.jd_markdown.trim() || null,
-    publish,
     jd: {
-      description: sections["description"] || form.jd_markdown.trim() || null,
       reporting_to: form.reporting_to.trim() || null,
-      role: sections["role"] || null,
-      responsibilities: asLines(sections["responsibilities"]) || null,
-      accountabilities: asLines(sections["accountabilities"]) || null,
-      education: sections["education"] || null,
       skills: skillsToArray(form.skills),
-      experience_years: optionalNumber(form.experience_min_years),
     },
   };
 }
