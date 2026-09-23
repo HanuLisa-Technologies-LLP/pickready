@@ -22,8 +22,10 @@ by the calling test with its reason, never inferred by a heuristic.
 """
 from __future__ import annotations
 
+import functools
 import pathlib
 import re
+import subprocess
 from collections.abc import Iterable
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
@@ -54,6 +56,27 @@ DEFAULT_ROOTS: tuple[pathlib.Path, ...] = (
 _NEVER_SWEPT_PARTS = frozenset({"__pycache__", "node_modules", ".terraform", ".next"})
 
 
+@functools.lru_cache(maxsize=1)
+def _repository_files() -> frozenset[pathlib.Path]:
+    """Tracked files plus untracked files git does NOT ignore.
+
+    A gitignored file is generated output nobody reviews in a diff (an offline
+    `terraform plan` dump, a build tree), so a hit in one is not a live
+    reference. Asked of git rather than hardcoded, the same rule the impeccable
+    gate follows, so the exclusion cannot drift from `.gitignore`. A new file
+    that is not yet committed IS swept: it is exactly what a sweep exists to
+    catch. There is no fallback when git is unavailable; a sweep that silently
+    widened or narrowed its scope would be a blind spot.
+    """
+    listed = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=REPO,
+        check=True,
+        capture_output=True,
+    ).stdout.decode("utf-8")
+    return frozenset((REPO / name).resolve() for name in listed.split("\0") if name)
+
+
 def _files(roots: Iterable[pathlib.Path]) -> Iterable[pathlib.Path]:
     for root in roots:
         if root.is_file():
@@ -63,6 +86,8 @@ def _files(roots: Iterable[pathlib.Path]) -> Iterable[pathlib.Path]:
             continue
         for path in root.rglob("*"):
             if not path.is_file() or path.suffix not in SWEPT_SUFFIXES:
+                continue
+            if path.resolve() not in _repository_files():
                 continue
             parts = set(path.parts)
             if _NEVER_SWEPT_PARTS & parts:
