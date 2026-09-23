@@ -65,3 +65,17 @@ ses_receiving_regions = [
   "ca-central-1", "eu-central-1", "eu-west-1", "eu-west-2", "eu-north-1",
   "sa-east-1",
 ]
+
+# PILOT-ONLY. The code sandbox is DISABLED by default in the real environment;
+# the offline plan switches BOTH stages on so CI plans every resource of
+# infra/modules/code_sandbox rather than skipping the module. The AMI id is all
+# zeros and the digests are sha256 of nothing in particular, the same
+# never-real shape as every value above.
+judge0_enabled          = true
+judge0_instance_enabled = true
+judge0_ami_id           = "ami-00000000000000000"
+judge0_image_digests = {
+  "judge0"          = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  "judge0-postgres" = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  "judge0-redis"    = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+}

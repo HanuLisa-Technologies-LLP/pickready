@@ -1,0 +1,287 @@
+#!/bin/bash
+# First-boot bootstrap for the Vivekium code sandbox (Judge0 CE 1.13.1).
+#
+# Rendered by infra/modules/code_sandbox. It carries NO SECRET: user data is
+# readable through the EC2 API and the instance metadata service, so the only
+# credential this host holds (the Judge0 API token) is read from Secrets
+# Manager at every start into /run (tmpfs), and Judge0's own database and
+# Redis passwords are generated here and never leave the box.
+#
+# The host has NO route to the internet. Packages come from the Amazon Linux
+# 2023 repositories over the S3 gateway endpoint; images come from this
+# environment's ECR over the interface endpoints; logs leave through the Logs
+# endpoint. Anything else a process on this host tries to reach fails.
+#
+# Order: packages, configuration, units, then cgroup v1 through grubby and a
+# reboot. Judge0 1.13.1's isolate sandbox requires cgroup v1, and
+# judge0-preflight.service refuses to start the stack on every boot unless the
+# kernel and Docker both report it. Judge0 never runs half-configured.
+set -euo pipefail
+
+install -d -m 0755 /var/log/judge0
+LOG=/var/log/judge0/judge0.log
+# Both the shipped log AND the serial console, so `aws ec2 get-console-output`
+# shows how far a first boot got even before the log agent is running.
+exec > >(tee -a "$LOG" >/dev/console) 2>&1
+echo "$(date -u +%FT%TZ) judge0-bootstrap phase=start"
+
+dnf install -y docker amazon-cloudwatch-agent
+
+install -d -m 0755 /etc/docker
+cat >/etc/docker/daemon.json <<'DAEMON'
+{
+  "log-driver": "local",
+  "log-opts": {"max-size": "10m", "max-file": "3"},
+  "live-restore": true
+}
+DAEMON
+
+install -d -m 0700 /etc/judge0
+cat >/etc/judge0/judge0.conf.base <<'JUDGE0CONF'
+${judge0_conf}
+JUDGE0CONF
+chmod 0600 /etc/judge0/judge0.conf.base
+
+if [ ! -f /etc/judge0/local.env ]; then
+  umask 077
+  {
+    echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+    echo "REDIS_PASSWORD=$(openssl rand -hex 24)"
+    echo "SECRET_KEY_BASE=$(openssl rand -hex 64)"
+  } >/etc/judge0/local.env
+  umask 022
+fi
+
+cat >/etc/judge0/host.env <<'HOSTENV'
+AWS_REGION=${region}
+TOKEN_SECRET_ARN=${token_secret_arn}
+REGISTRY=${registry}
+JUDGE0_IMAGE=${server_image}
+POSTGRES_IMAGE=${postgres_image}
+REDIS_IMAGE=${redis_image}
+HOSTENV
+chmod 0600 /etc/judge0/host.env
+
+# ── judge0-preflight: cgroup v1 or nothing ───────────────────────────────────
+cat >/usr/local/sbin/judge0-preflight <<'PREFLIGHT'
+#!/bin/bash
+set -euo pipefail
+LOG=/var/log/judge0/judge0.log
+fs_type=$(stat -fc %T /sys/fs/cgroup)
+docker_cgroup=$(docker info --format '{{.CgroupVersion}}')
+if [ "$fs_type" != "tmpfs" ] || [ "$docker_cgroup" != "1" ]; then
+  echo "$(date -u +%FT%TZ) judge0-preflight verdict=refused cgroup_fs=$fs_type docker_cgroup=$docker_cgroup" >>"$LOG"
+  # A container left from an earlier boot must not come back on its own
+  # restart policy on a host that no longer meets the requirement.
+  for c in $(docker ps -aq --filter label=judge0.stack=1); do docker rm -f "$c" >/dev/null; done
+  exit 1
+fi
+echo "$(date -u +%FT%TZ) judge0-preflight verdict=ok cgroup_fs=$fs_type docker_cgroup=$docker_cgroup" >>"$LOG"
+PREFLIGHT
+
+# ── judge0-stack-start / stop ────────────────────────────────────────────────
+cat >/usr/local/sbin/judge0-stack-start <<'START'
+#!/bin/bash
+set -euo pipefail
+LOG=/var/log/judge0/judge0.log
+set -a
+. /etc/judge0/host.env
+. /etc/judge0/local.env
+set +a
+
+install -d -m 0700 /run/judge0
+token=$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$TOKEN_SECRET_ARN" --query SecretString --output text)
+umask 077
+{
+  cat /etc/judge0/judge0.conf.base
+  cat /etc/judge0/local.env
+  echo "AUTHN_TOKEN=$token"
+  echo "AUTHZ_TOKEN=$token"
+} >/run/judge0/judge0.conf
+printf 'POSTGRES_DB=judge0\nPOSTGRES_USER=judge0\nPOSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD" >/run/judge0/db.env
+printf 'REDIS_PASSWORD=%s\n' "$REDIS_PASSWORD" >/run/judge0/redis.env
+unset token
+umask 022
+
+aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
+docker pull -q "$JUDGE0_IMAGE" >/dev/null
+docker pull -q "$POSTGRES_IMAGE" >/dev/null
+docker pull -q "$REDIS_IMAGE" >/dev/null
+
+docker network inspect judge0 >/dev/null 2>&1 || docker network create judge0 >/dev/null
+# Containers never reach the instance metadata service. The hop limit of one
+# already stops a bridged packet; this is the second fence.
+iptables -C DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null || iptables -I DOCKER-USER -d 169.254.169.254/32 -j DROP
+
+for c in judge0-server judge0-workers db redis; do
+  if docker inspect "$c" >/dev/null 2>&1; then docker rm -f "$c" >/dev/null; fi
+done
+
+common="--network judge0 --label judge0.stack=1 --restart on-failure:10 --log-driver local"
+docker run -d --name db $common --env-file /run/judge0/db.env -v judge0-db:/var/lib/postgresql/data "$POSTGRES_IMAGE" >/dev/null
+docker run -d --name redis $common --env-file /run/judge0/redis.env "$REDIS_IMAGE" \
+  bash -c 'docker-entrypoint.sh --appendonly no --requirepass "$REDIS_PASSWORD"' >/dev/null
+docker run -d --name judge0-server $common --privileged -p 2358:2358 \
+  -v /run/judge0/judge0.conf:/judge0.conf:ro "$JUDGE0_IMAGE" >/dev/null
+docker run -d --name judge0-workers $common --privileged \
+  -v /run/judge0/judge0.conf:/judge0.conf:ro "$JUDGE0_IMAGE" ./scripts/workers >/dev/null
+echo "$(date -u +%FT%TZ) judge0-stack status=started" >>"$LOG"
+START
+
+cat >/usr/local/sbin/judge0-stack-stop <<'STOP'
+#!/bin/bash
+set -euo pipefail
+for c in $(docker ps -aq --filter label=judge0.stack=1); do docker rm -f "$c" >/dev/null; done
+echo "$(date -u +%FT%TZ) judge0-stack status=stopped" >>/var/log/judge0/judge0.log
+STOP
+
+# ── judge0-health: one line per minute while down, one line on recovery ─────
+cat >/usr/local/sbin/judge0-health <<'HEALTH'
+#!/bin/bash
+set -uo pipefail
+LOG=/var/log/judge0/judge0.log
+STATE=/run/judge0/health.state
+token=$(sed -n 's/^AUTHN_TOKEN=//p' /run/judge0/judge0.conf 2>/dev/null)
+if [ -n "$token" ] && curl -fsS -m 5 -o /dev/null -H "X-Auth-Token: $token" -H "X-Auth-User: $token" http://127.0.0.1:2358/workers; then
+  if [ "$(cat "$STATE" 2>/dev/null)" != "up" ]; then
+    echo "$(date -u +%FT%TZ) judge0-health status=up" >>"$LOG"
+  fi
+  echo up >"$STATE"
+else
+  echo "$(date -u +%FT%TZ) judge0-health status=down" >>"$LOG"
+  echo down >"$STATE"
+fi
+HEALTH
+
+# ── judge0-prune: no run outlives an hour on this host ──────────────────────
+cat >/usr/local/sbin/judge0-prune <<'PRUNE'
+#!/bin/bash
+set -euo pipefail
+deleted=$(docker exec db psql -U judge0 -d judge0 -tAc "WITH gone AS (DELETE FROM submissions WHERE created_at < now() - interval '1 hour' RETURNING 1) SELECT count(*) FROM gone")
+echo "$(date -u +%FT%TZ) judge0-prune deleted=$deleted" >>/var/log/judge0/judge0.log
+PRUNE
+
+chmod 0700 /usr/local/sbin/judge0-preflight /usr/local/sbin/judge0-stack-start \
+  /usr/local/sbin/judge0-stack-stop /usr/local/sbin/judge0-health /usr/local/sbin/judge0-prune
+
+# ── systemd ──────────────────────────────────────────────────────────────────
+cat >/etc/systemd/system/judge0-preflight.service <<'UNIT'
+[Unit]
+Description=Refuse to start Judge0 unless cgroup v1 is in effect
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/judge0-preflight
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat >/etc/systemd/system/judge0-stack.service <<'UNIT'
+[Unit]
+Description=Judge0 CE server, workers, Postgres and Redis
+Requires=docker.service judge0-preflight.service
+After=docker.service judge0-preflight.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/judge0-stack-start
+ExecStop=/usr/local/sbin/judge0-stack-stop
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat >/etc/systemd/system/judge0-health.service <<'UNIT'
+[Unit]
+Description=Judge0 liveness probe
+Requisite=judge0-stack.service
+After=judge0-stack.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/judge0-health
+UNIT
+
+cat >/etc/systemd/system/judge0-health.timer <<'UNIT'
+[Unit]
+Description=Judge0 liveness probe, every minute
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+cat >/etc/systemd/system/judge0-prune.service <<'UNIT'
+[Unit]
+Description=Delete Judge0 submissions older than one hour
+Requisite=judge0-stack.service
+After=judge0-stack.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/judge0-prune
+UNIT
+
+cat >/etc/systemd/system/judge0-prune.timer <<'UNIT'
+[Unit]
+Description=Delete Judge0 submissions older than one hour, hourly
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+# ── CloudWatch agent: the host's own log, nothing from Judge0's containers ──
+# Judge0's request logs can carry request bodies, which means hidden stdin, so
+# container logs stay on the box (docker "local" driver, bounded) and are
+# never shipped. Only the lines these scripts write leave the host.
+cat >/opt/aws/amazon-cloudwatch-agent/etc/judge0-host.json <<'CWAGENT'
+{
+  "agent": {"region": "${region}", "logfile": "/var/log/judge0/cloudwatch-agent.log"},
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/judge0/judge0.log",
+            "log_group_name": "${log_group_name}",
+            "log_stream_name": "{instance_id}",
+            "retention_in_days": -1
+          }
+        ]
+      }
+    }
+  }
+}
+CWAGENT
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/judge0-host.json
+
+systemctl daemon-reload
+systemctl enable docker.service judge0-preflight.service judge0-stack.service judge0-health.timer judge0-prune.timer
+
+# ── cgroup v1, then reboot once ──────────────────────────────────────────────
+# AWS documents this for AL2023 and also says it is not a recommended or
+# supported configuration and will be removed in a future major release. The
+# preflight unit is what makes that risk visible instead of silent.
+if [ "$(stat -fc %T /sys/fs/cgroup)" = "tmpfs" ]; then
+  echo "$(date -u +%FT%TZ) judge0-bootstrap phase=done cgroup=v1"
+  systemctl start judge0-stack.service judge0-health.timer judge0-prune.timer
+else
+  grubby --update-kernel=ALL --args="systemd.unified_cgroup_hierarchy=0"
+  echo "$(date -u +%FT%TZ) judge0-bootstrap phase=reboot reason=cgroup_v1"
+  systemctl reboot
+fi

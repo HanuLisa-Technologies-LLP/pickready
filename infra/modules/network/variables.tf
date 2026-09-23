@@ -101,6 +101,25 @@ variable "interface_endpoints" {
   ]
 }
 
+variable "endpoint_client_security_group_ids" {
+  description = <<-EOT
+    Security groups OUTSIDE the application tier that may reach the interface
+    endpoints on 443. Empty by default, which leaves the endpoints group
+    exactly as it was.
+
+    It is an input here rather than a rule attached from the caller because the
+    endpoints group declares its rules INLINE, and Terraform documents that
+    inline rules and standalone rule resources on one group overwrite each
+    other: a standalone rule would be removed by the next apply of this module
+    and re-added by the next apply of the caller, for ever. The code sandbox
+    host is the one member today; it pulls its images from ECR, reads its one
+    secret and ships its logs through these endpoints because it has no route
+    to the internet.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

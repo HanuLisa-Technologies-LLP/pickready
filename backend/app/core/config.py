@@ -37,6 +37,38 @@ PLACEHOLDER_SECRET = "PLACEHOLDER_NOT_CONFIGURED"
 #: entropy -- and so the default and the thing that rejects it cannot drift.
 DEV_JWT_SECRET = "dev-only-secret-change-me"
 
+#: The coding languages the product knows how to offer. A deployment chooses a
+#: subset in `CODE_EXECUTION_LANGUAGES`; a key outside this set is refused at
+#: boot. `services/code_execution/languages.py` holds one spec per key and a
+#: test pins the two against each other.
+CODE_EXECUTION_LANGUAGE_KEYS = ("python", "java", "cpp", "javascript")
+
+#: The two real code-execution backends. See `Settings.code_execution_backend`.
+CODE_EXECUTION_BACKENDS = ("judge0", "disabled")
+
+
+def _parse_pairs(raw: str, setting: str) -> list[tuple[str, str]]:
+    """Split a "key:value,key:value" setting, refusing a malformed entry.
+
+    Empty input is an empty list. A duplicate key is refused rather than
+    letting the later one win silently.
+    """
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for chunk in (raw or "").split(","):
+        entry = chunk.strip()
+        if not entry:
+            continue
+        key, sep, value = entry.partition(":")
+        key, value = key.strip().lower(), value.strip()
+        if not sep or not key or not value:
+            raise ValueError(f"{setting} entry {entry!r} is not key:value")
+        if key in seen:
+            raise ValueError(f"{setting} names {key!r} twice")
+        seen.add(key)
+        pairs.append((key, value))
+    return pairs
+
 from functools import lru_cache
 
 from pydantic import model_validator
@@ -526,6 +558,59 @@ class Settings(BaseSettings):
     #: purge of events older than that many days. Owner decision.
     proctoring_event_retention_days: int = 0
 
+    # ── Code execution (Phase 4, `services/code_execution`) ─────────────────
+    #
+    # CANDIDATE CODE NEVER RUNS IN THIS PROCESS. These settings describe a
+    # sandbox on a separate host that holds no application secret; the backend
+    # only talks to it over HTTP inside the VPC.
+    #
+    # ONE BACKEND PER DEPLOYMENT, NEVER A FALLBACK CHAIN, the same shape as
+    # `email_transport` and `TASK_DISPATCH_BACKEND`. `disabled` is the default
+    # and a real state: every surface records "code execution unavailable"
+    # rather than pretending a program ran. The test double is NOT selectable
+    # here; it is installed only through `code_execution.override_provider`,
+    # which refuses in production.
+    code_execution_backend: str = "disabled"
+    #: The languages a coding question may be written in. Keys only; every key
+    #: must be one of `CODE_EXECUTION_LANGUAGE_KEYS`.
+    code_execution_languages: str = "python,java,cpp,javascript"
+    #: Per-run limits sent with EVERY submission. The sandbox's own MAX_* caps
+    #: (`infra/modules/code_sandbox/judge0.conf.tftpl`) are the second fence;
+    #: `code_execution.limits.HOST_MAXIMA` mirrors them and a test pins both.
+    code_execution_cpu_seconds: float = 2.0
+    code_execution_cpu_extra_seconds: float = 0.5
+    code_execution_wall_seconds: float = 5.0
+    code_execution_memory_mb: int = 256
+    code_execution_stack_kb: int = 65536
+    #: Bounds a fork bomb. JVM threads count against it, hence not single digits.
+    code_execution_max_processes: int = 60
+    #: Bounds stdout on the host: the sandbox writes stdout to a file, so the
+    #: file-size limit IS the output limit.
+    code_execution_max_file_kb: int = 1024
+    #: How much of stdout, stderr and compiler output the app keeps. Display
+    #: truncation only; the enforcement is `code_execution_max_file_kb`.
+    code_execution_max_output_chars: int = 4000
+    #: Per-language CPU and wall multipliers ("key:factor,..."). A JVM start
+    #: costs more than a Python start and must not read as a slow solution.
+    code_execution_cpu_multipliers: str = "java:2.0,javascript:1.5"
+    #: HTTP bounds for every sandbox call. An unreachable host that HANGS
+    #: defeats every error handler around it, so both are explicit.
+    code_execution_connect_timeout_seconds: float = 2.0
+    code_execution_request_timeout_seconds: float = 5.0
+    code_execution_poll_seconds: float = 0.5
+    #: The sandbox's address inside the VPC, e.g. a Cloud Map name. Empty means
+    #: unavailable, which is NOT a boot refusal: an optional feature must not
+    #: take the API down. `code_execution.is_enabled()` answers False instead.
+    judge0_url: str = ""
+    #: Mounted from Secrets Manager as `JUDGE0_AUTH_TOKEN`
+    #: (`<project>-<environment>/JUDGE0_AUTH_TOKEN`, created by
+    #: `infra/modules/code_sandbox`). Sent as both the authentication and the
+    #: authorization header; never logged.
+    judge0_auth_token: str = ""
+    #: Adapter-only language ids ("key:id,..."). Checked against the sandbox's
+    #: own `GET /languages` by the operator verification task.
+    judge0_language_ids: str = "python:71,java:62,cpp:54,javascript:63"
+
     # ── Assessment question formats (assessment-spec-doc.md) ────────────────
     #
     # Composition is enforced in code, not suggested in a prompt: evidence
@@ -942,6 +1027,87 @@ class Settings(BaseSettings):
             raise ValueError("EMAIL_TRANSPORT must be smtp or ses")
         object.__setattr__(self, "email_transport", value)
         return self
+
+    @model_validator(mode="after")
+    def validate_code_execution(self) -> "Settings":
+        """Refuse a malformed code-execution configuration at boot.
+
+        A typo in the backend name must not silently select anything, and a
+        malformed language or limit map would otherwise fail on the first
+        candidate who presses Run, one request at a time. A MISSING URL or
+        token is deliberately NOT refused here: `is_enabled()` answers False
+        and every surface records the feature as unavailable.
+        """
+        backend = (self.code_execution_backend or "").strip().lower()
+        if backend not in CODE_EXECUTION_BACKENDS:
+            raise ValueError("CODE_EXECUTION_BACKEND must be judge0 or disabled")
+        object.__setattr__(self, "code_execution_backend", backend)
+
+        languages = self.code_execution_language_list
+        unknown = [key for key in languages if key not in CODE_EXECUTION_LANGUAGE_KEYS]
+        if unknown or not languages:
+            raise ValueError(
+                "CODE_EXECUTION_LANGUAGES must list at least one of "
+                f"{', '.join(CODE_EXECUTION_LANGUAGE_KEYS)}; unknown: {unknown}"
+            )
+        # Reading the properties parses them; a malformed value raises here.
+        multipliers = self.code_execution_cpu_multiplier_map
+        for key, factor in multipliers.items():
+            if key not in languages:
+                raise ValueError(f"CODE_EXECUTION_CPU_MULTIPLIERS names {key!r}, which is not configured")
+            if factor < 1.0:
+                raise ValueError("a CODE_EXECUTION_CPU_MULTIPLIERS factor must be at least 1.0")
+        ids = self.judge0_language_id_map
+        if backend == "judge0":
+            missing = [key for key in languages if key not in ids]
+            if missing:
+                raise ValueError(f"JUDGE0_LANGUAGE_IDS has no id for {missing}")
+
+        positive = {
+            "CODE_EXECUTION_CPU_SECONDS": self.code_execution_cpu_seconds,
+            "CODE_EXECUTION_WALL_SECONDS": self.code_execution_wall_seconds,
+            "CODE_EXECUTION_MEMORY_MB": self.code_execution_memory_mb,
+            "CODE_EXECUTION_STACK_KB": self.code_execution_stack_kb,
+            "CODE_EXECUTION_MAX_PROCESSES": self.code_execution_max_processes,
+            "CODE_EXECUTION_MAX_FILE_KB": self.code_execution_max_file_kb,
+            "CODE_EXECUTION_MAX_OUTPUT_CHARS": self.code_execution_max_output_chars,
+            "CODE_EXECUTION_CONNECT_TIMEOUT_SECONDS": self.code_execution_connect_timeout_seconds,
+            "CODE_EXECUTION_REQUEST_TIMEOUT_SECONDS": self.code_execution_request_timeout_seconds,
+            "CODE_EXECUTION_POLL_SECONDS": self.code_execution_poll_seconds,
+        }
+        for name, value in positive.items():
+            if value <= 0:
+                raise ValueError(f"{name} must be greater than zero")
+        if self.code_execution_cpu_extra_seconds < 0:
+            raise ValueError("CODE_EXECUTION_CPU_EXTRA_SECONDS must not be negative")
+        if self.code_execution_wall_seconds < self.code_execution_cpu_seconds:
+            raise ValueError("CODE_EXECUTION_WALL_SECONDS must be at least CODE_EXECUTION_CPU_SECONDS")
+        return self
+
+    @property
+    def code_execution_language_list(self) -> list[str]:
+        """The configured coding languages, in the order they were listed."""
+        keys = [part.strip().lower() for part in (self.code_execution_languages or "").split(",")]
+        return list(dict.fromkeys(key for key in keys if key))
+
+    @property
+    def code_execution_cpu_multiplier_map(self) -> dict[str, float]:
+        parsed: dict[str, float] = {}
+        for key, value in _parse_pairs(self.code_execution_cpu_multipliers, "CODE_EXECUTION_CPU_MULTIPLIERS"):
+            try:
+                parsed[key] = float(value)
+            except ValueError as exc:
+                raise ValueError(f"CODE_EXECUTION_CPU_MULTIPLIERS value for {key!r} is not a number") from exc
+        return parsed
+
+    @property
+    def judge0_language_id_map(self) -> dict[str, int]:
+        parsed: dict[str, int] = {}
+        for key, value in _parse_pairs(self.judge0_language_ids, "JUDGE0_LANGUAGE_IDS"):
+            if not value.isdigit():
+                raise ValueError(f"JUDGE0_LANGUAGE_IDS value for {key!r} is not a positive integer")
+            parsed[key] = int(value)
+        return parsed
 
     @model_validator(mode="after")
     def validate_cookie_policy(self) -> "Settings":

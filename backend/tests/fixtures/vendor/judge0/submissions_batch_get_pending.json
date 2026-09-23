@@ -1,0 +1,43 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): status ids 1 (In Queue) and 2 (Processing) mean the run has not finished.",
+    "observed": false,
+    "notes": "One finished entry beside one still processing: the batch as a whole is still pending."
+  },
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "submissions": [
+      {
+        "token": "d85cd024-1548-4165-96c7-7bc88673f194",
+        "status": {
+          "id": 3,
+          "description": "Accepted"
+        },
+        "stdout": "NQo=",
+        "stderr": null,
+        "compile_output": null,
+        "time": "0.012",
+        "wall_time": "0.031",
+        "memory": 3264,
+        "memory_limit": 262144
+      },
+      {
+        "token": "3b2c1a90-7d4e-4f0a-9c1e-2a5b6c7d8e9f",
+        "status": {
+          "id": 2,
+          "description": "Processing"
+        },
+        "stdout": null,
+        "stderr": null,
+        "compile_output": null,
+        "time": null,
+        "wall_time": null,
+        "memory": null,
+        "memory_limit": 262144
+      }
+    ]
+  }
+}

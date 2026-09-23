@@ -1,0 +1,14 @@
+{
+  "_provenance": {
+    "authored_from": "Judge0 CE 1.13.1 published API documentation (ce.judge0.com, the Submissions and System and Configuration sections): a submission arriving while the queue holds MAX_QUEUE_SIZE entries answers 503 with this error.",
+    "observed": false,
+    "notes": "Retryable: the queue drains."
+  },
+  "status": 503,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "error": "queue is full"
+  }
+}
