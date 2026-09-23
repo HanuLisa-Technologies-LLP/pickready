@@ -84,6 +84,13 @@ SCORING = "functional_assessment.scoring"
 #: in the same minute used to buy two full runs of the model chain writing
 #: the same rows. The subject is the job id.
 MATCHING = "matching.run"
+#: One writer of a job's skills contract at a time: every skills edit, the
+#: save, and the lock at the first candidate start. The subject is the job id.
+#: Unlike the two above this one WAITS (`advisory_xact_lock`), because the
+#: second caller is not duplicating the first one's work: it is a different
+#: write that must observe the first one's result, above all a skills edit
+#: arriving while a candidate's start is locking the contract.
+SKILLS = "job_skills.contract"
 
 #: Postgres advisory lock keys are signed 64-bit. BLAKE2b rather than Python's
 #: `hash()`, which is salted per process by default: two containers would
@@ -126,6 +133,24 @@ async def try_advisory_lock(
             )
         ).scalar()
     )
+
+
+async def advisory_xact_lock(
+    session: AsyncSession, namespace: str, subject: str | uuid.UUID
+) -> None:
+    """Take the lock, WAITING for it if another transaction holds it.
+
+    The blocking sibling of `try_advisory_lock`, for writers that must
+    serialise rather than deduplicate (see `SKILLS`). Same key, same
+    transaction scope: released by COMMIT or ROLLBACK, nothing to forget.
+
+    NEVER HOLD IT ACROSS A MODEL CALL. The wait is bounded by the holder's
+    transaction, and a holder waiting on a provider would make every other
+    writer of that job wait on the provider too. Callers do their model work
+    first and take this lock only around the writes.
+    """
+    key = advisory_key(namespace, subject)
+    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
 
 
 @asynccontextmanager

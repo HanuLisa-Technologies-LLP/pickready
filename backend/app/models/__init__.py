@@ -109,6 +109,7 @@ from app.models.job_setup import (
     SWOT_ANALYSIS_EDITED,
     SWOT_ANALYSIS_FAILED,
     SWOT_ANALYSIS_GENERATED,
+    SWOT_ANALYSIS_GENERATING,
     SWOT_ANALYSIS_NOT_GENERATED,
     SWOT_ANALYSIS_SECTIONS,
     SWOT_AREAS,
@@ -140,6 +141,9 @@ from app.models.hiring import (
 # and when. Read by `orchestration/versioning` to answer what a candidate
 # applied under.
 from app.models.job_scorecard_binding import JobScorecardBinding
+# The immutable skills contract locked at a job's first assessment start
+# (migration 0118). Read by `services/assessment_contract`.
+from app.models.job_skill_snapshot import JobSkillSnapshot
 from app.models.user import OTPChallenge, User
 
 __all__ = [
@@ -205,6 +209,7 @@ __all__ = [
     "SWOT_ANALYSIS_EDITED",
     "SWOT_ANALYSIS_FAILED",
     "SWOT_ANALYSIS_GENERATED",
+    "SWOT_ANALYSIS_GENERATING",
     "SWOT_ANALYSIS_NOT_GENERATED",
     "SWOT_ANALYSIS_SECTIONS",
     "SWOT_AREAS",
@@ -237,6 +242,7 @@ __all__ = [
     "Evaluation",
     "ReviewDisposition",
     "JobScorecardBinding",
+    "JobSkillSnapshot",
     "AgentLearning",
     "AgentToolApprovalRule",
     "ContextChunk",
