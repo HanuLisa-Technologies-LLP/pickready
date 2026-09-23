@@ -11,6 +11,7 @@ import {
   resetRefreshBackoff,
 } from "@/lib/api";
 import { firebaseAuth } from "@/lib/firebase";
+import { installInteractionTracking, markInteraction } from "@/lib/user-activity";
 import type { Capability, Role, User } from "@/lib/types";
 
 /**
@@ -169,6 +170,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Only actual interaction renews the idle deadline. A timer or a bare
   // visibility event would keep a forgotten tab signed in indefinitely.
+  //
+  // The server renews only for a request carrying the activity header, which
+  // `lib/api.ts` attaches within a few seconds of a recorded interaction. The
+  // tracking is installed ONCE here, in the capture phase, so the mark lands
+  // before any page handler fires its request. The revalidation below marks
+  // explicitly as well: it runs on an interaction by construction, and its
+  // /auth/me is what keeps a person who is reading or typing (and so sending
+  // no other request) signed in.
+  React.useEffect(() => installInteractionTracking(), []);
+
   React.useEffect(() => {
     if (typeof window === "undefined") return;
     let lastValidation = Date.now();
@@ -177,6 +188,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const now = Date.now();
       if (now - lastValidation < ACTIVITY_REVALIDATE_MS) return;
       lastValidation = now;
+      markInteraction(now);
       void refreshRef.current();
     };
     window.addEventListener("pointerdown", onActivity);

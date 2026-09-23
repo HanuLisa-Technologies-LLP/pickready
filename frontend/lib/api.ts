@@ -1,5 +1,6 @@
 // Typed fetch wrapper for the Vivekium backend.
 // Routes must match docs/API_CONTRACT.md verbatim.
+import { ACTIVITY_HEADER, activityHeaders } from "./user-activity";
 import { apiErrorMessage } from "./validation-errors";
 
 /**
@@ -71,7 +72,10 @@ export function isAuthError(error: unknown): boolean {
 }
 
 async function rawFetch(path: string, opts: RequestOptions): Promise<Response> {
-  const headers: Record<string, string> = {};
+  // The idle deadline renews only for a request that follows a real
+  // interaction (lib/user-activity.ts). This is also the refresh's path, so a
+  // poll's 401 repaired by a refresh renews nothing either.
+  const headers: Record<string, string> = { ...activityHeaders() };
   let body: BodyInit | undefined;
   if (opts.formData) {
     body = opts.formData;
@@ -260,7 +264,8 @@ export const apiUpload = <T>(path: string, formData: FormData) =>
  * WHY IT EXISTS. `api()` parses JSON, so anything binary or multipart could not
  * use it and reached for a bare `fetch` instead, and every one of those call
  * sites quietly lost the silent refresh. That is the whole of the reported "AI
- * features return 401": the access cookie has a 15-minute Max-Age, a recruiter
+ * features return 401": the access JWT expires after fifteen minutes (the
+ * cookie itself is a browser-session cookie with no Max-Age), a recruiter
  * reading a JD or working through a candidate list is idle for longer than that
  * routinely, and the next thing they click is a resume upload, a databank
  * upload or a resume preview, all three of which were raw fetches. The session
@@ -276,10 +281,16 @@ export async function apiFetch(
 ): Promise<Response> {
   const base = path.startsWith("/api/") ? API_ORIGIN : API_BASE;
   const url = `${base}${path}`;
-  const request: RequestInit = { credentials: "include", cache: "no-store", ...init };
-  let res = await fetch(url, request);
+  const send = (): Promise<Response> => {
+    const headers = new Headers(init.headers);
+    for (const [name, value] of Object.entries(activityHeaders())) {
+      headers.set(name, value);
+    }
+    return fetch(url, { credentials: "include", cache: "no-store", ...init, headers });
+  };
+  let res = await send();
   if (res.status === 401 && (await tryRefresh())) {
-    res = await fetch(url, request);
+    res = await send();
   }
   return res;
 }
@@ -306,6 +317,8 @@ export function apiUploadWithProgress<T>(
       const request = new XMLHttpRequest();
       request.open(method, `${base}${path}`);
       request.withCredentials = true;
+      const activity = activityHeaders()[ACTIVITY_HEADER];
+      if (activity) request.setRequestHeader(ACTIVITY_HEADER, activity);
       request.upload.onprogress = (event) => {
         if (event.lengthComputable) {
           onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
