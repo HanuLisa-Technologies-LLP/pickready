@@ -89,11 +89,12 @@ def downgrade() -> None:
                 sa.text(
                     "INSERT INTO role_permissions "
                     "(id, tenant_id, role, capability, allowed) "
-                    "SELECT gen_random_uuid(), NULL, :role, :capability, true "
+                    "SELECT gen_random_uuid(), NULL, CAST(:role AS varchar), "
+                    "CAST(:capability AS varchar), true "
                     "WHERE NOT EXISTS ("
                     "  SELECT 1 FROM role_permissions "
-                    "  WHERE tenant_id IS NULL AND role = :role "
-                    "    AND capability = :capability)"
+                    "  WHERE tenant_id IS NULL AND role = CAST(:role AS varchar) "
+                    "    AND capability = CAST(:capability AS varchar))"
                 ),
                 {"role": role, "capability": capability},
             )

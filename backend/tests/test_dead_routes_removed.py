@@ -275,3 +275,47 @@ async def test_the_database_holds_no_grant_for_a_retired_capability() -> None:
     finally:
         await engine.dispose()
     assert count == 0
+
+
+async def test_the_downgrade_reseeds_the_global_rows_and_the_upgrade_removes_them() -> None:
+    """The downgrade had never run, and its first run failed: asyncpg could
+    not type a bind parameter used both as a SELECT output and in a varchar
+    comparison. Executed here on the real schema inside a transaction that is
+    rolled back, so the migrated test database is left as it was."""
+    module = _migration()
+    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
+
+    def _count(sync_conn) -> dict[str, int]:
+        rows = sync_conn.execute(
+            text(
+                "SELECT capability, count(*) FROM role_permissions "
+                "WHERE tenant_id IS NULL AND capability = ANY(:retired) "
+                "GROUP BY capability"
+            ),
+            {"retired": list(module.RETIRED_CAPABILITIES)},
+        ).all()
+        return {row[0]: row[1] for row in rows}
+
+    def _round_trip(sync_conn) -> tuple[dict[str, int], dict[str, int]]:
+        sync_conn.exec_driver_sql("SELECT set_config('app.bypass_rls', 'on', true)")
+        module.op = type("_Op", (), {"get_bind": staticmethod(lambda: sync_conn)})
+        module.downgrade()
+        module.downgrade()  # idempotent: NOT EXISTS keeps one row per role
+        after_downgrade = _count(sync_conn)
+        module.upgrade()
+        return after_downgrade, _count(sync_conn)
+
+    try:
+        async with engine.connect() as conn:
+            transaction = await conn.begin()
+            try:
+                after_downgrade, after_upgrade = await conn.run_sync(_round_trip)
+            finally:
+                await transaction.rollback()
+    finally:
+        await engine.dispose()
+    expected = len(module._PREVIOUS_GLOBAL_ROLES)
+    assert after_downgrade == {
+        capability: expected for capability in module.RETIRED_CAPABILITIES
+    }
+    assert after_upgrade == {}
