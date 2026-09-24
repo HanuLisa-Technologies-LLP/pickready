@@ -1,7 +1,7 @@
 """Candidate communications: the outbox, the default sender, candidate unread.
 
-Revision ID: 0122_candidate_comms
-Revises: 0121_candidate_identity
+Revision ID: 0121_candidate_comms
+Revises: 0120_candidate_identity
 
 Phase 6 WP6-C (messaging and email). Every step is additive except the last,
 and the last is guarded.
@@ -53,8 +53,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
-revision = "0122_candidate_comms"
-down_revision = "0121_candidate_identity"
+revision = "0121_candidate_comms"
+down_revision = "0120_candidate_identity"
 branch_labels = None
 depends_on = None
 

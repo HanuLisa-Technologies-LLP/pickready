@@ -7,7 +7,7 @@ BGV inquiry reference in the body.
 
 THE TENANT-OWNED EMPLOYER-VERIFICATION SYSTEM IS RETIRED (vivekium C8,
 owner-ruled 2026-09-18). Its routes and tasks went on 2026-09-18, and its
-table went with migration 0122, which drops it only when EMPTY and raises
+table went with migration 0121, which drops it only when EMPTY and raises
 otherwise. The surviving system is the candidate-owned one:
 candidate_employments, bgv_verifications and the seven-item checkbox form at
 /bgv/form/{token}.

@@ -6,7 +6,7 @@ so the older tenant-owned one goes the way the 2026-09-09 and
 2026-09-10 removals went,
 with a sweep rather than a memory.
 
-AMENDED Phase 6 (CONTRACT v3): the TABLE is dropped too, by migration 0122,
+AMENDED Phase 6 (CONTRACT v3): the TABLE is dropped too, by migration 0121,
 and only when it is EMPTY. The upgrade RAISES naming the count when a row
 exists, because deleting what an employer actually said about a verification
 that really ran is an owner decision, never a migration's. Pilot counted zero
@@ -109,7 +109,7 @@ def test_the_retired_frontend_intake_is_gone() -> None:
 
 
 def test_the_retired_table_is_dropped_from_the_migrated_schema() -> None:
-    """Migration 0122 dropped it, read from the database rather than from the
+    """Migration 0121 dropped it, read from the database rather than from the
     migration file: a guard that raised, or a drop that was skipped, would
     leave the file saying one thing and the schema another."""
     from app.core.config import get_settings
@@ -137,4 +137,4 @@ def test_the_retired_table_is_dropped_from_the_migrated_schema() -> None:
         loop.close()
     if exists is None:
         pytest.skip("no database reachable -- the schema cannot be read")
-    assert exists is False, "verification_requests still exists after migration 0122"
+    assert exists is False, "verification_requests still exists after migration 0121"

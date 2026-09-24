@@ -19,7 +19,7 @@ company has picked one.
 
 ONCE, WHEN IT MUST BE ONCE
 --------------------------
-`dedupe_key` is UNIQUE in the database (migration 0122) and the insert is
+`dedupe_key` is UNIQUE in the database (migration 0121) and the insert is
 `ON CONFLICT DO NOTHING`, so a redelivered task, a double dispatch and a sweep
 that raced a live request all collapse to one row. The key names the STAGE of
 an automatic email (`assessment_reminder:<link>:72`), which is what lets the

@@ -2,7 +2,7 @@
 
 Draft for the orchestrator to fold into the release's single top section.
 Written in the file's own voice; nothing here edits `claude.md` directly.
-Migration `0122_candidate_comms` (the orchestrator re-chains it).
+Migration `0121_candidate_comms` (the orchestrator re-chains it).
 
 ## ONE WRITER OF CANDIDATE EMAIL, AND IT DECIDES THE SENDER
 
@@ -73,7 +73,7 @@ reminders at all.
   `ON CONFLICT DO NOTHING`. `application_confirmation:<link>`,
   `assessment_reminder:<link>:<stage hours>`, `message_notification:<message>`.
   Human sends carry no key: writing to somebody twice on purpose is allowed.
-  Migration 0122 backfills the key onto the EARLIEST existing row per
+  Migration 0121 backfills the key onto the EARLIEST existing row per
   application and type, the row the old check protected.
 - **The reconciliation passes the STAGE** (`queue_reminder(link, elapsed,
   stage_hours)`) and dispatches after its commit. Derived from elapsed time
@@ -144,7 +144,7 @@ reply subdomain, a staged apply). Do not describe it as verified live.
 
 `POST /verification/outreach` (no screen sent it; it mailed a link to the
 forty-question form) is deleted with `OutreachIn/Out`. `verification_requests`
-is DROPPED by migration 0122 **only when EMPTY**: the upgrade RAISES naming the
+is DROPPED by migration 0121 **only when EMPTY**: the upgrade RAISES naming the
 count otherwise, because deleting what an employer said about a verification
 that really ran is an owner decision, never a migration's (CONTRACT v3 counted
 zero in pilot). The downgrade recreates the table exactly, with RLS FORCE, the

@@ -2,7 +2,7 @@
 
 Draft for the orchestrator to fold into the release's single top section.
 Written in the file's own voice; nothing here edits `claude.md` directly.
-Migration `0121_candidate_identity` (the orchestrator re-chains it).
+Migration `0120_candidate_identity` (the orchestrator re-chains it).
 
 ## ONE PERSON, ONE CANDIDATE RECORD, RESOLVED ONE WAY
 
@@ -26,7 +26,7 @@ carrying somebody else's address resolved to THEIR recruiter-sourced record.
   gets a record of its own and links nothing, deliberately: it proved nothing
   about the address. The call is idempotent and also repairs an account whose
   record an administrator erased.
-- **One user owns at most one record, by the database.** Migration 0121 makes
+- **One user owns at most one record, by the database.** Migration 0120 makes
   `candidates.user_id` UNIQUE where set, behind a guard that RAISES naming the
   count if any user already owns two (merging is an owner decision; pilot had
   one candidate and no duplicates on 2026-09-24).

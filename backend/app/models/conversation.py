@@ -160,7 +160,7 @@ class Conversation(Base, UUIDPKMixin, CreatedAtMixin):
     thread_token: Mapped[str] = mapped_column(String(64), nullable=False)
     #: Denormalised so a conversation list sorts without touching messages.
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    #: THE CANDIDATE'S READ WATERMARK (migration 0122). A candidate has no
+    #: THE CANDIDATE'S READ WATERMARK (migration 0121). A candidate has no
     #: tenant and is never a `conversation_participants` row, and a candidate
     #: thread has exactly one candidate, so their watermark lives on the
     #: thread. Moved forward only, like a participant's `last_read_at`.

@@ -6,7 +6,7 @@ THE DEFECTS (audit Part 1 section 3 item 24)
   unread badge: `inbound` counted every message the company had EVER sent, so
   it could never go down. A candidate is not a `conversation_participants`
   row, so their read watermark lives on the thread
-  (`conversations.candidate_last_read_at`, migration 0122).
+  (`conversations.candidate_last_read_at`, migration 0121).
 * A retried send could become a second message. The server was already
   idempotent on `client_token`; what it did not do was notice a token REUSED
   for different words, which a composer that kept its token across an edit

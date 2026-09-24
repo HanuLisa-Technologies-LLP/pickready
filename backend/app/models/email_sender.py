@@ -64,7 +64,7 @@ class ClientEmailSender(Base, UUIDPKMixin, CreatedAtMixin):
     __tablename__ = "client_email_senders"
     __table_args__ = (
         Index("ix_client_email_senders_tenant", "tenant_id", "created_at"),
-        # Migration 0122: at most ONE default sender per tenant.
+        # Migration 0121: at most ONE default sender per tenant.
         Index(
             "uq_client_email_sender_default",
             "tenant_id",
@@ -99,7 +99,7 @@ class ClientEmailSender(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
     authorized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    #: THE SENDER AUTOMATIC EMAILS GO OUT UNDER (migration 0122). A
+    #: THE SENDER AUTOMATIC EMAILS GO OUT UNDER (migration 0121). A
     #: confirmation or a reminder has no request to name a sender in, so
     #: without a default a corporate sender could never be used for them.
     #: Only an ACTIVE sender may hold it, and every transition away from

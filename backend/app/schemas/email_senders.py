@@ -34,7 +34,7 @@ class SenderOut(BaseModel):
     #: SES, not an identity, not DKIM, not a verification status. The client is
     #: told whether the address can send and who completes the setup if not.
     sending_detail: str
-    #: The sender automatic emails go out under (migration 0122). At most one
+    #: The sender automatic emails go out under (migration 0121). At most one
     #: per tenant, and only ever an active one.
     is_default: bool = False
 

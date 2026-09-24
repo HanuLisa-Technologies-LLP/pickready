@@ -49,7 +49,7 @@ candidate record is the `candidates` row whose `user_id` is theirs.
 | When is an email address matched? | At SIGN-IN only, and only when Firebase reports the address verified. | `candidate_identity.link_on_sign_in` |
 | Which record does a verified sign-in link? | The OLDEST unlinked record with that address, compared case-insensitively. Audited `candidate_linked`. | same |
 | What does an unverified sign-in get? | A record of its own. It links nothing, because it proved nothing about the address. | same |
-| How many records may one user own? | One. `uq_candidates_user_id` (unique where set), migration 0121. | database |
+| How many records may one user own? | One. `uq_candidates_user_id` (unique where set), migration 0120. | database |
 | Which record does an upload attach to? | The signed-in record first, then the oldest, case-insensitively. | `candidate_identity.find_canonical_by_email` |
 
 **There is no request-time email fallback.** A resolver that matches

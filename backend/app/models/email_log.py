@@ -65,7 +65,7 @@ EMAIL_TYPES: tuple[str, ...] = (
 # the message has an `email_log` row, which is the only thing a delivery event
 # can be matched back to.
 EMAIL_TYPE_BGV_VERIFICATION = "bgv_verification"
-# ── The message notification (migration 0122) ────────────────────────────────
+# ── The message notification (migration 0121) ────────────────────────────────
 # Sent when a recruiter writes to a candidate in the portal. Fixed copy from
 # `services/candidate_message_notifications`, never drafted by a model, so it
 # is not a lifecycle type either.
@@ -77,7 +77,7 @@ NON_LIFECYCLE_EMAIL_TYPES: tuple[str, ...] = (
 )
 
 #: Everything the `ck_email_log_type` CHECK admits. Mirrored by migrations
-#: 0114 and 0122 -- keep them in step.
+#: 0114 and 0121 -- keep them in step.
 LOGGED_EMAIL_TYPES: tuple[str, ...] = EMAIL_TYPES + NON_LIFECYCLE_EMAIL_TYPES
 
 #: Which prompt template drafts each type (app/prompts/*.txt).
@@ -130,7 +130,7 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
         Index("ix_email_log_job", "job_id"),
         Index("ix_email_log_candidate", "candidate_id"),
         Index("ix_email_log_conversation", "conversation_id"),
-        # Migration 0122. One row per dedupe key: a redelivered automatic
+        # Migration 0121. One row per dedupe key: a redelivered automatic
         # email is refused by the database, not by a lookup that races.
         Index(
             "uq_email_log_dedupe_key",
@@ -220,14 +220,14 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
     bgv_verification_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("bgv_verifications.id", ondelete="SET NULL")
     )
-    #: WHAT MAKES AN AUTOMATIC EMAIL IDEMPOTENT (migration 0122). Written by
+    #: WHAT MAKES AN AUTOMATIC EMAIL IDEMPOTENT (migration 0121). Written by
     #: `services/email_outbox` only, and it names the STAGE, never just the
     #: type: `assessment_reminder:<link>:24` and `...:72` are two emails, which
     #: is exactly what "any row of this type" could not express, and why the
     #: 72 hour reminder was never sent. NULL for a human-sent email, which may
     #: legitimately be sent twice.
     dedupe_key: Mapped[str | None] = mapped_column(String(200))
-    #: The candidate thread this email is part of (migration 0122). Set when a
+    #: The candidate thread this email is part of (migration 0121). Set when a
     #: person sent it, or when it announces a message in that thread; its
     #: Reply-To is then the thread's own address, so an emailed answer lands in
     #: the conversation instead of a mailbox nobody watches. SET NULL so a
@@ -236,7 +236,7 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
         UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL")
     )
     #: When a send worker CLAIMED this row, moving it from `queued` to
-    #: `processing` in one conditional UPDATE (migration 0122). Two
+    #: `processing` in one conditional UPDATE (migration 0121). Two
     #: invocations for one row cannot both claim it, so a redelivered or
     #: re-dispatched send never mails a candidate twice. A row still
     #: `processing` long after its claim may or may not have been sent, and it

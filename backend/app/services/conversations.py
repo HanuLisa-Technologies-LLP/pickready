@@ -638,7 +638,7 @@ async def list_messages(
 # A candidate is never a `conversation_participants` row: they have no tenant,
 # and the participant table is the tenant's directory of who is in a thread.
 # A candidate thread has exactly ONE candidate, so their watermark lives on the
-# thread row (`candidate_last_read_at`, migration 0122). Every function here is
+# thread row (`candidate_last_read_at`, migration 0121). Every function here is
 # called with a candidate id the ROUTE resolved from the session, and filters
 # by it; none of them trusts a conversation id on its own.
 

@@ -22,7 +22,7 @@ THE RULES, AND WHERE EACH ONE IS ENFORCED
   is verified (`link_on_sign_in`). An unverified identity gets a record of its
   own and is linked to nothing: it proved nothing about the address, so
   treating the address as proof would hand it a stranger's history.
-* One user, one candidate. Migration 0121 makes `candidates.user_id` UNIQUE
+* One user, one candidate. Migration 0120 makes `candidates.user_id` UNIQUE
   where it is set, so the rule is the database's and a second linked row is a
   constraint violation rather than a question every reader has to answer.
 * An upload that names an email reuses the CANONICAL record for it

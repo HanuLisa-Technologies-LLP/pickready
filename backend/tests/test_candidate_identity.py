@@ -11,7 +11,7 @@ address read that person's recruiter-sourced record. The rules now:
 * an email match links a record at SIGN-IN, only when Firebase says the
   address is verified, and it links the OLDEST unlinked record;
 * an unverified identity gets its own record and links nothing;
-* one user owns at most one record, by a UNIQUE index (migration 0121).
+* one user owns at most one record, by a UNIQUE index (migration 0120).
 
 Every database assertion reads committed state on a SECOND session after the
 call under test has committed, because a write that answered and then rolled
@@ -285,7 +285,7 @@ async def test_find_canonical_by_email_prefers_the_signed_in_record_then_the_old
 
 
 async def test_one_user_cannot_own_two_records(factory) -> None:
-    """Migration 0121's UNIQUE index, read as the database enforces it."""
+    """Migration 0120's UNIQUE index, read as the database enforces it."""
     email = _address()
     try:
         async with factory() as session:

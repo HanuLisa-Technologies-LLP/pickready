@@ -139,7 +139,7 @@ the capability.
 
 One resolver (`services/candidate_identity`), `candidates.user_id` only at
 request time, email matching only at sign-in and only on a Firebase-verified
-address, one record per user by a unique index (migration 0121), conversion by
+address, one record per user by a unique index (migration 0120), conversion by
 re-pointing one sourced link and never by merging records; phone sign-in
 removed; the idle deadline renewed only by a request carrying
 `X-User-Activity: 1`, which the browser sends within five seconds of a real

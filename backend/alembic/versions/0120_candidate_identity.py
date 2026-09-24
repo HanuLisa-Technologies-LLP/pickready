@@ -1,7 +1,7 @@
 """One user, one candidate: the index the single resolver reads through.
 
-Revision ID: 0121_candidate_identity
-Revises: 0118_skills_contract
+Revision ID: 0120_candidate_identity
+Revises: 0119_job_approval_chain_removed
 
 `services/candidate_identity` is now the only answer to "which candidate record
 is this signed-in person". It resolves a request by `candidates.user_id` and
@@ -36,8 +36,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0121_candidate_identity"
-down_revision = "0118_skills_contract"
+revision = "0120_candidate_identity"
+down_revision = "0119_job_approval_chain_removed"
 branch_labels = None
 depends_on = None
 
