@@ -53,6 +53,7 @@ __all__ = [
     "REPORT_BANNED_PHRASES",
     "TEMPLATE_REMARK_NOTE",
     "NOT_ASSESSED_REMARK",
+    "remark_note",
     "Remark",
     "word_count",
     "invented_terms",
@@ -107,6 +108,16 @@ NOT_ASSESSED_REMARK = (
     "should read the candidate's own answers in the transcript and judge this "
     "skill directly."
 )
+
+
+def remark_note(remark_provenance: str | None) -> str | None:
+    """The words-only marker beside a stored remark (`DimensionOut.remark_note`).
+
+    Only a TEMPLATE says so. A model remark needs no marker, a catalogue
+    sentence says what happened in its own words, and a row written before
+    remark provenance existed (None) is not guessed at.
+    """
+    return TEMPLATE_REMARK_NOTE if remark_provenance == SOURCE_TEMPLATE else None
 
 
 @dataclass(frozen=True)

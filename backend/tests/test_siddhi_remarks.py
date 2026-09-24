@@ -232,3 +232,11 @@ async def test_a_probe_quoting_a_percentage_is_rejected_by_the_delivered_rule(mo
     )
     assert section["groups"][1]["items"][0]["probes"] == [grounded]
     assert len(attempts) == 2
+
+
+def test_only_a_template_remark_carries_the_template_marker() -> None:
+    from app.services.siddhi import remarks
+
+    assert remarks.remark_note(remarks.SOURCE_TEMPLATE) == remarks.TEMPLATE_REMARK_NOTE
+    for source in (remarks.SOURCE_MODEL, remarks.SOURCE_CATALOGUE, None):
+        assert remarks.remark_note(source) is None

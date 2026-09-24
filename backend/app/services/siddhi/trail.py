@@ -55,6 +55,7 @@ __all__ = [
     "read_trail",
     "resolve_evidence",
     "view",
+    "citation_view",
 ]
 
 #: The view's kind for a passage the support check found elsewhere in the
@@ -397,9 +398,34 @@ def view(
             {
                 "section": statement.section,
                 "item": statement.item,
+                "kind": statement.kind,
                 "text": statement.text,
                 "support": statement.support_note,
                 "evidence": [entry for _, entry in evidence],
             }
         )
     return {"trail_available": trail.available, "statements": statements}
+
+
+async def citation_view(
+    session: Any,
+    gap_analysis_json: Mapping[str, Any] | None,
+    *,
+    link_id: uuid.UUID,
+    chunk_source_ids: Iterable[uuid.UUID],
+) -> dict[str, Any]:
+    """THE READ MODEL THE REPORT API SERVES: read, resolve, shape. One call.
+
+    `gap_analysis_json` is the report row's column as stored; `link_id` the
+    report's own application; `chunk_source_ids` the sources a cited passage
+    may come from, which is the application itself (its transcript chunks)
+    and the resume profile it was submitted with. The session is the caller's
+    TENANT session: RLS is the outer boundary and the scoping above the inner
+    one. A report with no trail answers `trail_available: False` and no
+    statements, never an empty list that reads as "nothing was cited".
+    """
+    read = read_trail(gap_analysis_json)
+    resolved = await resolve_evidence(
+        session, read, link_id=link_id, chunk_source_ids=chunk_source_ids
+    )
+    return view(read, resolved)

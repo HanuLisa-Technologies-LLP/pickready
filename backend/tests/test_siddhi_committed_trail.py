@@ -469,3 +469,47 @@ async def test_an_unflagged_report_clears_without_a_disposition_and_a_linkless_o
         )
     with pytest.raises(TypeError):
         delivery.DeliveryClearance(needed_review=False)
+
+
+async def test_the_one_read_call_serves_the_committed_trail_words_only() -> None:
+    """`trail.citation_view` is what the report API serves: read, resolve,
+    shape, through the tenant's session, from the committed row."""
+    from app.core.db import tenant_scope
+
+    engine, factory = await _engine_or_skip()
+    second, second_factory = await _engine_or_skip()
+    fx = _Fx()
+    try:
+        await _seed(factory, fx)
+        await _compose_and_commit(factory, fx)
+        row = await _read_report(second_factory, fx)
+        async with second_factory() as s:
+            async with s.begin():
+                async with tenant_scope(s, fx.tenant_id):
+                    shaped = await trail.citation_view(
+                        s, row.gap_analysis_json, link_id=fx.links["mine"],
+                        chunk_source_ids=(fx.links["mine"],),
+                    )
+                    empty = await trail.citation_view(
+                        s, {"groups": []}, link_id=fx.links["mine"], chunk_source_ids=(),
+                    )
+        assert empty == {"trail_available": False, "statements": []}
+        assert shaped["trail_available"] is True
+        [remark] = [
+            entry for entry in shaped["statements"]
+            if entry["item"] == "Distributed Systems" and entry["kind"] == "finding"
+        ]
+        assert remark["support"] == support.SUPPORT_NOTES[support.REASON_ELSEWHERE]
+        kinds = [entry["kind"] for entry in remark["evidence"]]
+        assert kinds[-1] == trail.EVIDENCE_KIND_WORDS[trail.SUPPORTING_PASSAGE]
+        assert remark["evidence"][-1]["excerpt"] == ELSEWHERE
+        answer = next(e for e in remark["evidence"] if e["kind"] == "The candidate's answer")
+        assert answer["excerpt"].startswith("mine:")
+        blob = json.dumps(shaped)
+        assert SECRET not in blob
+        for identifier in (*fx.messages.values(), *fx.chunks.values(), fx.question_id):
+            assert str(identifier) not in blob
+    finally:
+        await _cleanup(factory, fx)
+        await engine.dispose()
+        await second.dispose()
