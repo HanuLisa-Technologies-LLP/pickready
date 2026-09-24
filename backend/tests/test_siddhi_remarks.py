@@ -222,7 +222,7 @@ async def test_a_probe_quoting_a_percentage_is_rejected_by_the_delivered_rule(mo
         if len(attempts) == 1:
             return json.dumps({"probes": [
                 "You mentioned the dashboard cut incidents by 30%, so walk me through "
-                "exactly how you measured that change and who else confirmed it then."
+                "exactly how you measured that change and who else confirmed it back then."
             ]})
         return json.dumps({"probes": [grounded]})
 
