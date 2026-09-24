@@ -6,7 +6,7 @@ responsibilities, accountabilities, the reporting line, headcount — was blank,
 so the public application page and the org job detail page both rendered "—".
 
 The content here is deterministic and hand-authored per role, then shaded by
-the job's level and the hiring company, so every seeded job reads like a real
+the job's seniority and the hiring company, so every seeded job reads like a real
 posting written for that company. It is intentionally NOT LLM-generated: mock
 data must be reproducible and must not depend on a provider being reachable.
 
@@ -38,11 +38,18 @@ MANAGED_FIELDS = (
     "reportees",
 )
 
-# ── Per-level shading ───────────────────────────────────────────────────────
+# ── Per-seniority shading ───────────────────────────────────────────────────
 # Junior/Mid/Senior change the reporting line, the headcount and the scope
 # sentence appended to the role summary, so three postings for the same title
 # don't read identically.
-LEVEL_PROFILE: dict[str, dict[str, Any]] = {
+#
+# CHANGED (Vivekium release): the seniority is read from the job's EXPERIENCE
+# BAND, never from the free-text `jobs.level`. The band superseded `level` on
+# 2026-07-28 and nothing reads `level` any more (`tests/test_job_level_removed`
+# sweeps for a reader); a job created since then carries no level at all, so
+# shading by it put every such job on the default and read as if it had been
+# decided.
+SENIORITY_PROFILE: dict[str, dict[str, Any]] = {
     "Junior": {
         "reportees": 0,
         "scope": (
@@ -65,20 +72,35 @@ LEVEL_PROFILE: dict[str, dict[str, Any]] = {
         ),
     },
 }
-DEFAULT_LEVEL = "Mid"
+DEFAULT_SENIORITY = "Mid"
+
+#: The band edges, in years. A band that tops out at two years is an
+#: early-career posting; one that starts at six asks for somebody who has led
+#: an area. Anything else, and a job with no band, is the default.
+JUNIOR_MAX_YEARS = 2
+SENIOR_MIN_YEARS = 6
 
 
-def _reporting_to(level: str, discipline: str) -> str:
-    if level == "Senior":
+def seniority_for(min_years: int | None, max_years: int | None) -> str:
+    """Junior, Mid or Senior from the experience band. Inclusive edges."""
+    if max_years is not None and max_years <= JUNIOR_MAX_YEARS:
+        return "Junior"
+    if min_years is not None and min_years >= SENIOR_MIN_YEARS:
+        return "Senior"
+    return DEFAULT_SENIORITY
+
+
+def _reporting_to(seniority: str, discipline: str) -> str:
+    if seniority == "Senior":
         return f"Head of {discipline}"
-    if level == "Junior":
+    if seniority == "Junior":
         return f"Senior {discipline} Engineer"
     return f"{discipline} Engineering Manager"
 
 
 # ── Per-role content ────────────────────────────────────────────────────────
 # discipline      → drives the reporting line
-# summary         → the `role` field (a company/level sentence is appended)
+# summary         → the `role` field (a company/seniority sentence is appended)
 # responsibilities/accountabilities → the two list fields
 ROLE_LIBRARY: dict[str, dict[str, Any]] = {
     "React Frontend Developer": {
@@ -295,13 +317,17 @@ def _role_key(title: str) -> str | None:
     return None
 
 
-def build_jd_fields(title: str, level: str | None, company: str | None) -> dict[str, Any] | None:
+def build_jd_fields(
+    title: str, seniority: str | None, company: str | None
+) -> dict[str, Any] | None:
     """The managed JD fields for one job, or None if the title isn't in the library."""
     key = _role_key(title)
     if key is None:
         return None
     role = ROLE_LIBRARY[key]
-    profile = LEVEL_PROFILE.get(level or DEFAULT_LEVEL, LEVEL_PROFILE[DEFAULT_LEVEL])
+    profile = SENIORITY_PROFILE.get(
+        seniority or DEFAULT_SENIORITY, SENIORITY_PROFILE[DEFAULT_SENIORITY]
+    )
     # "Specter & Co." already ends in a full stop — don't produce "Co..".
     company_name = (company or "").strip()
     at_company = f" at {company_name.rstrip('.')}" if company_name else ""
@@ -316,7 +342,7 @@ def build_jd_fields(title: str, level: str | None, company: str | None) -> dict[
         ),
         "responsibilities": list(role["responsibilities"]),
         "accountabilities": list(role["accountabilities"]),
-        "reporting_to": _reporting_to(level or DEFAULT_LEVEL, role["discipline"]),
+        "reporting_to": _reporting_to(seniority or DEFAULT_SENIORITY, role["discipline"]),
         "reportees": profile["reportees"],
     }
 
@@ -382,7 +408,11 @@ async def run(*, apply: bool, force: bool = False) -> tuple[int, int, list[str]]
                     if not missing:
                         continue
                     scanned += 1
-                    fields = build_jd_fields(job.title, job.level, companies.get(job.tenant_id))
+                    fields = build_jd_fields(
+                        job.title,
+                        seniority_for(job.experience_min_years, job.experience_max_years),
+                        companies.get(job.tenant_id),
+                    )
                     if fields is None:
                         if job.title not in unmatched:
                             unmatched.append(job.title)

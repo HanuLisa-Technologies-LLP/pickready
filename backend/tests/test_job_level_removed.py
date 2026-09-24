@@ -41,8 +41,6 @@ PENDING_BACKEND = {
     APP / "api" / "portal.py": "Phase 6 (the candidate portal job card)",
     APP / "services" / "matching.py": "Phase 2 (`_jd_text`)",
     APP / "services" / "functional_assessment.py": "Phase 7 (`infer_grade`)",
-    APP / "scripts" / "backfill_catalog_jds.py": "WP-E (scripts)",
-    APP / "scripts" / "backfill_job_descriptions.py": "WP-E (scripts)",
 }
 
 _FRONTEND_PATTERN = re.compile(r"\b(?:job|role)\??\.level\b")
