@@ -9,7 +9,7 @@ TWO HALVES, AND THEY ARE DIFFERENT KINDS OF CHECK
 ---------------------------------------------------
 The first half is behavioural: the live refusal points on the Part A path
 refuse, and the refusal carries a sentence a person can act on. Those are
-ordinary assertions. It was written against `services/orchestration` until
+ordinary assertions. It was written against the orchestration package until
 2026-09-24; that package had no production caller and is deleted by the
 Vivekium simplification release, so the half was rewritten onto the code that
 actually runs: the pipeline gates (`hiring.gates`), the provenance ledger and
@@ -304,7 +304,7 @@ FALLBACK_PATTERNS: dict[str, re.Pattern[str]] = {
 
 #: Packages that must contain NONE of the above. The new path, plus the
 #: cross-cutting packages that observe it. No legacy to carry, so no ratchet.
-#: `services/orchestration` left this list on 2026-09-24 because it is deleted:
+#: The orchestration package left this list on 2026-09-24 because it is deleted:
 #: it had no production caller, so a guard over it guarded nothing.
 CLEAN_PACKAGES: tuple[str, ...] = (
     "services/hiring",
@@ -362,7 +362,7 @@ LEGACY_FALLBACK_FILES: frozenset[str] = frozenset(
 #:
 #: `services/interview_telemetry.py` left on 2026-09-24: its four observers
 #: now log `interview_telemetry.emit_failed` and an unreadable latency is
-#: counted in the summary rather than passed over. `scripts/eval_trajectory.py`
+#: counted in the summary rather than passed over. The trajectory eval script
 #: left with its deletion (Phase 7 WP-B5).
 LEGACY_SWALLOWER_FILES: frozenset[str] = frozenset(
     {

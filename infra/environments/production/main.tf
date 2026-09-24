@@ -721,7 +721,8 @@ module "ecs" {
       target_group_arn = module.alb.target_group_arns["frontend"]
       readonly_root    = false # Next.js writes its own cache
       # The frontend holds NO secrets. The Razorpay key id it needs is public
-      # and is fetched at runtime from GET /billing/config, which is why it was
+      # and arrives at runtime on the API's subscribe and purchase responses,
+      # which is why it was
       # never a NEXT_PUBLIC_ build variable.
       secrets = {}
     }

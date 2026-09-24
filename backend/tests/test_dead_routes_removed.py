@@ -152,26 +152,7 @@ EXEMPT = (
 #: Pending hand-offs: files OWNED BY ANOTHER PACKAGE running in parallel that
 #: still name something deleted here. Each entry fails as stale the moment
 #: its hit is gone, and must then be deleted.
-PENDING_HAND_OFFS = (
-    # Phase 1 deletes the job-side approve route and its dispatch; the
-    # `_can_see_pre_ratified` capability reads are an orchestrator hunk.
-    BACKEND / "app" / "api" / "jobs.py",
-    BACKEND / "tests" / "test_dispatch_after_commit_sweep.py",
-    # Phase 6 (WP6-F) deletes the review and templates pages.
-    REPO / "frontend" / "app" / "(org)" / "org" / "review" / "page.tsx",
-    REPO / "frontend" / "app" / "(org)" / "org" / "templates" / "page.tsx",
-    # A stale EXEMPT set naming deleted handlers (orchestrator hunk).
-    BACKEND / "tests" / "test_platform_audit.py",
-    # The clock seam list names the deleted report builders (WP-B5 owns the
-    # file; orchestrator hunk).
-    BACKEND / "harness" / "faults.py",
-    # Comments describing the deleted billing config route (WP-B4 owns the
-    # environment roots; orchestrator hunk).
-    REPO / "infra" / "environments" / "pilot" / "main.tf",
-    REPO / "infra" / "environments" / "pilot" / "variables.tf",
-    REPO / "infra" / "environments" / "staging" / "main.tf",
-    REPO / "infra" / "environments" / "production" / "main.tf",
-)
+PENDING_HAND_OFFS: tuple[()] = ()
 
 
 def _mounted() -> set[tuple[str, str]]:

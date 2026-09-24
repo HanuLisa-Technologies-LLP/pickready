@@ -71,6 +71,9 @@ PATTERN = re.compile(
 EXEMPT = (
     # This file has to name what it forbids.
     BACKEND / "tests" / "test_unreachable_subsystems_removed.py",
+    # The legacy scrap sweep asserts the unmapped `agent_learnings` model and
+    # the retired capability are absent by naming them.
+    BACKEND / "tests" / "test_legacy_scrap_removed.py",
 )
 
 #: PENDING HAND-OFFS, not permanent exemptions. Each file below is owned by a
@@ -78,19 +81,7 @@ EXEMPT = (
 #: The owner (or the orchestrator at merge) removes the reference and deletes
 #: the entry in the same commit; `test_every_pending_hand_off_is_still_pending`
 #: fails the moment an entry outlives the reference it excuses.
-PENDING_HAND_OFFS: dict[str, str] = {
-    "app/models/__init__.py": "WP-B2 deletes the AgentLearning and AgentAction exports",
-    "app/models/agent.py": "WP-B2 deletes AgentLearning; the table stays",
-    "app/models/agent_action.py": "WP-B2 deletes the module; the table stays",
-    "app/services/capabilities.py": "WP-B2 deletes REVOKE_AGENT_LEARNINGS with its migration",
-    "app/models/assessment.py": "a comment naming the deleted degradation layer",
-    "app/services/functional_assessment.py": (
-        "a comment naming the deleted degradation layer (Phase 5 owns the file)"
-    ),
-    "app/models/job_skill_snapshot.py": (
-        "a docstring naming the deleted versioning resolver (Phase 1 owns the file)"
-    ),
-}
+PENDING_HAND_OFFS: dict[str, str] = {}
 
 
 def test_the_deleted_modules_do_not_import() -> None:

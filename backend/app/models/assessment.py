@@ -539,8 +539,8 @@ class FunctionalSkillsReport(Base, UUIDPKMixin, CreatedAtMixin):
     #: over what may be a single ungrounded phrase, so it ships. What makes that
     #: honest rather than misleading is that it ships MARKED, in the row a
     #: recruiter's report is read from -- a log line is invisible to the one
-    #: person who acts on the document. Same posture as
-    #: `reliability/degradation`, where a stub is only acceptable because it is
+    #: person who acts on the document. Same posture as the old three-level
+    #: degradation layer, where a stub was only acceptable because it was
     #: never allowed to read like a result.
     #:
     #: False means NOT FLAGGED, never "verified clean": every report written

@@ -158,7 +158,7 @@ INTERNAL_ONLY: dict[str, frozenset[str]] = {
     }),
     # Delivery, reminder and cost-telemetry constants read by the workers.
     "worker and telemetry constants": frozenset({
-        "DELIVERY_MAX_RETRIES", "TECHNICAL_REVIEW_REMINDER_HOURS",
+        "DELIVERY_MAX_RETRIES",
         "USD_TO_INR_RATE", "ASSESSMENT_COST_ALERT_INR",
     }),
 }

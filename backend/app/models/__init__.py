@@ -45,7 +45,6 @@ from app.models.agent import (
     AgentExecutionTrace,
     AgentToolApprovalRule,
 )
-from app.models.agent_action import AgentAction
 from app.models.context import ContextChunk
 from app.models.evidence import (
     EvidenceClaim,
@@ -224,7 +223,6 @@ __all__ = [
     "ReportSkillEvidence",
     "RolePermission",
     "TAX_DOCUMENT_TYPES",
-    "AgentAction",
     "AgentExecutionTrace",
     "CalibrationRecord",
     "Evaluation",

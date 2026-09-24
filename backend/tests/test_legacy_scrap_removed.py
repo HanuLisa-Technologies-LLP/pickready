@@ -49,6 +49,9 @@ THIS_FILE = pathlib.Path(__file__).resolve()
 #: The sibling removal sweep of the same change asserts its own names are
 #: absent by naming them, the same reason this file is exempt from itself.
 SIBLING = THIS_FILE.parent / "test_multivendor_ai_removed.py"
+#: WP-B5's subsystem sweep forbids the retired capability constant too, so it
+#: names it in its own pattern.
+SUBSYSTEM_SWEEP = THIS_FILE.parent / "test_unreachable_subsystems_removed.py"
 
 GONE = re.compile(
     r"\bTechnicalQuestion\b|\bCandidateTechnicalQuestion\b"
@@ -91,7 +94,7 @@ def _migration(captured: list[str]) -> types.ModuleType:
 
 
 def test_nothing_names_what_was_removed() -> None:
-    hits = sweep(GONE, exempt=(THIS_FILE, SIBLING))
+    hits = sweep(GONE, exempt=(THIS_FILE, SIBLING, SUBSYSTEM_SWEEP))
     spread = sorted(_files(hits) - set(PENDING))
     assert not spread, (
         "A removed legacy name appeared outside the pending list. Remove it "
@@ -100,7 +103,7 @@ def test_nothing_names_what_was_removed() -> None:
 
 
 def test_the_pending_list_only_shrinks() -> None:
-    stale = sorted(set(PENDING) - _files(sweep(GONE, exempt=(THIS_FILE, SIBLING))))
+    stale = sorted(set(PENDING) - _files(sweep(GONE, exempt=(THIS_FILE, SIBLING, SUBSYSTEM_SWEEP))))
     assert not stale, stale
 
 

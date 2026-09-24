@@ -49,7 +49,7 @@ class AgentExecutionTrace(Base, UUIDPKMixin, CreatedAtMixin):
     failure_category: Mapped[str | None] = mapped_column(String(40))
 
 
-# `AgentLearning` (`agent_learnings`) is UNMAPPED since the Vivekium release:
+# The `agent_learnings` table is UNMAPPED since the Vivekium release:
 # the experience memory that was its only writer and reader could not be
 # reached from any route or worker and was deleted. The TABLE is kept as
 # history (S4 posture) and is still reached by raw SQL in the legacy reset

@@ -45,10 +45,10 @@ variable "secret_names" {
     # HELD, AND INJECTED INTO NOTHING (2026-09-24). No service holds a grant
     # on it and no container mounts it: the setting that read it is deleted,
     # and nothing in the application decrypts with it. The CONTAINER stays
-    # because it is the only copy of the key that opens `llm_provider_keys`,
-    # and destroying a secret is the one step here with no undo once the
-    # recovery window passes. It goes when the owner decides that table's
-    # fate, in the same change that drops it. `test_deploy_secret_hygiene.py`
+    # because it is the only copy of the key that opened the retired key
+    # roster (whose empty table migration 0128 drops), and destroying a secret
+    # is the one step here with no undo once the recovery window passes. It
+    # goes when the owner decides (CONTRACT v2). `test_deploy_secret_hygiene.py`
     # pins both halves: present in this list, granted to no service.
     "LLM_KEY_ENCRYPTION_SECRET",
     "FIREBASE_SERVICE_ACCOUNT_JSON",

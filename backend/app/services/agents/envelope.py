@@ -163,8 +163,10 @@ class Envelope:
 
     # ── who authorised this run (RBAC 34) ────────────────────────────────────
     #: The HUMAN the agent is acting for. Optional on the dataclass and NOT
-    #: optional on the live Part A path: `require_principal` raises, and
-    #: `orchestration.enforcement.run_stage` calls it before any handler runs.
+    #: optional on the live Part A path: `require_principal` raises. The
+    #: enforcement door that called it before any handler ran was deleted in
+    #: the Vivekium release with the rest of the unreachable orchestration
+    #: package, so a caller that needs the guarantee calls it itself.
     #:
     #: It is optional here only because the legacy publishers in `ppi` and
     #: `matching` build envelopes today and are being deleted rather than

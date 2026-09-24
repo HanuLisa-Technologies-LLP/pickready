@@ -2193,7 +2193,7 @@ async def synthesis_node(state: AssessmentState) -> dict:
     # would take the product's entire output away over what may be a single
     # ungrounded phrase, and the recruiter would be left with nothing rather
     # than with something imperfect they can judge. It ships marked instead,
-    # which is the same trade `reliability/degradation` makes for a stub.
+    # which is the same trade a recorded degradation makes.
     #
     # There is no retry here on purpose. `agent_loop.run_loop` already bounds
     # regeneration twice over and feeds a rejection back verbatim; a second

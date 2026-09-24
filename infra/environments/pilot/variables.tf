@@ -222,8 +222,8 @@ variable "transcribe_bucket_name" {
 
 variable "razorpay_key_id" {
   description = <<-EOT
-    The Razorpay publishable key id, served to the browser by
-    GET /billing/config. PUBLIC by design and therefore a variable rather than
+    The Razorpay publishable key id, handed to the browser on the subscribe
+    and purchase responses. PUBLIC by design and therefore a variable rather than
     a secret; its partner, RAZORPAY_KEY_SECRET, is server-side only and is
     mounted from Secrets Manager. Empty disables checkout, which the billing
     page reports honestly rather than rendering a button that cannot work.

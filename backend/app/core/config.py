@@ -321,13 +321,14 @@ class Settings(BaseSettings):
     voyage_context_4: str = ""
 
     # `llm_key_encryption_secret` WAS DELETED ON 2026-09-24. Nothing in the tree
-    # read it: the router that decrypted `llm_provider_keys` went with the
-    # multi-vendor roster, and a setting kept "as key material" is a setting
-    # that reads as live. The KEY MATERIAL is not here and never was: it is the
+    # read it: the router that decrypted the multi-vendor key roster went with
+    # that roster, and migration 0128 drops the roster's table (only when it is
+    # empty). A setting kept "as key material" is a setting that reads as live.
+    # The KEY MATERIAL is not here and never was: it is the
     # `LLM_KEY_ENCRYPTION_SECRET` container in Secrets Manager, which
-    # `infra/modules/secrets` still creates and grants to no service, so the
-    # decision about that table and its key stays reversible until the owner
-    # takes it.
+    # `infra/modules/secrets` still creates and grants to no service, because
+    # destroying a secret is irreversible once its recovery window passes and
+    # is the owner's decision (CONTRACT v2), not a side effect of a cleanup.
 
     # Embedding output width. Pinned to 1024 because `profiles.embedding`,
     # `jobs.embedding` and `context_chunks.embedding` are vector(1024) columns

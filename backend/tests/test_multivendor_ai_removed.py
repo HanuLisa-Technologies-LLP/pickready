@@ -16,8 +16,8 @@ retired roster's names out of the tree.
 
 THE PENDING LIST
 ----------------
-The one setting that decrypted those rows, and its `.env.example` entry, live
-in files WP-B3 owns in the same wave, which deletes the setting. The secret
+The one setting that decrypted those rows, and its `.env.example` entry, were
+deleted by WP-B3 in the same wave. The secret
 CONTAINER stays in Terraform, granted to no service (CONTRACT v2), and is not
 named by the patterns below. Same ratchet as `test_login_otp_removed`: a
 mention outside the list fails, and a listed file that no longer mentions the
@@ -39,12 +39,10 @@ GONE = re.compile(
     r"\bLLMProviderKey\b|\bLLMProvider\b|\bLLMRoleHint\b|llm_provider_keys"
 )
 
-#: file -> the package that removes the mention (WP-B3 deletes the setting
-#: whose comment still names the table).
-PENDING: dict[str, str] = {
-    ".env.example": "WP-B3",
-    "backend/app/core/config.py": "WP-B3",
-}
+#: file -> the package that removes the mention. Empty since the stage 3
+#: integration: WP-B3 deleted the setting and its `.env.example` entry, and the
+#: held key's comments name the roster without naming its table.
+PENDING: dict[str, str] = {}
 
 
 def _files(hits: list[str]) -> set[str]:

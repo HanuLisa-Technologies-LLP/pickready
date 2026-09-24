@@ -367,13 +367,14 @@ ALL_ENVIRONMENT_ROOTS = [ROOT / "infra" / "environments" / "pilot" / "main.tf", 
 
 
 def test_a_held_secret_is_granted_to_no_service() -> None:
-    """The encryption key of `llm_provider_keys` is KEPT and reaches nothing.
+    """The retired key roster's encryption key is KEPT and reaches nothing.
 
     Two halves, and each one is the failure the other prevents. Removed from
-    `secret_names`, Terraform destroys the only copy of the key that opens the
-    historical rows, which is irreversible once the recovery window passes and
-    is the owner's decision to take with the table, not a side effect of a
-    cleanup. Granted or mounted, it is a credential in every container for a
+    `secret_names`, Terraform destroys the key, which is irreversible once the
+    recovery window passes and is the owner's decision (CONTRACT v2), not a
+    side effect of a cleanup. Migration 0128 drops the roster's table only
+    when it is empty, so the key opens no row on a migrated database; what it
+    may still open is a backup taken before the roster was retired. Granted or mounted, it is a credential in every container for a
     setting nothing reads (2026-09-24: the setting is deleted), which is reach
     no service's work needs.
     """

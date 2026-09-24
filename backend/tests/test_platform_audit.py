@@ -616,23 +616,17 @@ def test_every_list_endpoint_is_bounded() -> None:
     # Result sets bounded by the domain, not by pagination:
     #   compliance documents  exactly 7 slots, always all 7 (a short list is
     #                         the failure mode that section exists to prevent);
-    #   permissions           the capability matrix, fixed size;
     #   approvals             at most 4 levels;
     #   staff / bd-users      one company's team, and the max-5 rule;
-    #   email-templates       one row per template name.
     EXEMPT = {
         "compliance_document_slots",
         "customer_compliance_documents",
-        "list_permissions",
-        "update_permissions",
         "list_approvals",
         "list_staff",
         "list_bd_users",
-        "list_email_templates",
         # A job is matched on at most MAXIMUM_CATEGORIES categories, refused at
         # the POST route rather than trimmed on read, so this list cannot grow.
         "list_matching_categories",
-        "billing_config",
         # Returns fixed-size "recent" slices (25 ledger rows, 25 payments) as
         # part of one page payload. The FULL statement is GET /billing/ledger,
         # which is paginated and is checked by this test.

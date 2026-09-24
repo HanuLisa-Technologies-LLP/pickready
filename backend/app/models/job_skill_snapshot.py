@@ -13,8 +13,8 @@ sha256 digest over that content. From then on Vaada (the conversation) and Miti
 It replaces two things that were each true in prose only. The scorecard
 binding recorded a version NUMBER and a timestamp while the rows it named went
 on being mutated in place, so "what was this candidate graded against" had no
-answer; and `orchestration/versioning.resolve_for_application` described the
-right property and had no production caller. A snapshot carries the CONTENT,
+answer; and a versioning resolver (deleted in the Vivekium release) described
+the right property and had no production caller. A snapshot carries the CONTENT,
 so the answer no longer depends on rows nobody froze.
 
 IMMUTABILITY IS IN THE DATABASE, NOT IN THIS FILE. Migration 0118 revokes

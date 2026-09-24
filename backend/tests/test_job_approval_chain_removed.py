@@ -16,11 +16,10 @@ Deleted, all of it:
   and `IN_REVIEW`, from `JobLifecycleState` AND from `ck_jobs_lifecycle_state`,
   which now admits exactly the six states the enum declares.
 
-What SURVIVES, deliberately, and is not this file's business: `APPROVE_JOB`,
-`CONFIGURE_APPROVAL_LEVELS`, the multi-level `approval_fsm` functions and the
-company approval-levels route are one unit handed to Phase 7 (their route file
-is Phase 7's); `approval_fsm.apply_direct_publish` and `job_approvals` stay
-because publish writes them.
+The company half of the chain (its two capabilities, the multi-level
+`approval_fsm` functions and the company levels route) went in Phase 7
+(`tests/test_dead_routes_removed.py`); `approval_fsm.apply_direct_publish` and
+`job_approvals` stay because publish writes them.
 
 A deleted feature is deleted everywhere, so this is a whitespace-normalised
 sweep of the live tree (`tests/removal_sweep`), plus the route table, the

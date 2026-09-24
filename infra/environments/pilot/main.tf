@@ -1322,7 +1322,8 @@ module "ecs" {
         REQUIRE_JWT_SECRET              = "1"
         PROCTORING_ANALYSIS_SERVICE_URL = local.analysis_service_url
         # PUBLIC BY DESIGN, and a plain variable rather than a secret for that
-        # reason: the browser reads it from GET /billing/config at runtime.
+        # reason: the browser receives it at runtime on the API's subscribe
+        # and purchase responses.
         # Its partner, RAZORPAY_KEY_SECRET, is server-side only and is mounted
         # from Secrets Manager below. Checkout needs both.
         RAZORPAY_KEY_ID = var.razorpay_key_id
@@ -1508,7 +1509,8 @@ module "ecs" {
       target_group_arn = local.has_public_entry ? module.alb[0].target_group_arns["frontend"] : null
       readonly_root    = false # Next.js writes its own cache
       # The frontend holds NO secrets. The Razorpay key id it needs is public
-      # and is fetched at runtime from GET /billing/config, which is why it was
+      # and arrives at runtime on the API's subscribe and purchase responses,
+      # which is why it was
       # never a NEXT_PUBLIC_ build variable.
       secrets = {}
     }

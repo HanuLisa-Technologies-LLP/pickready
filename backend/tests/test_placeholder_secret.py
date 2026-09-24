@@ -128,9 +128,10 @@ def test_every_secret_this_platform_creates_is_read_by_something() -> None:
 
 
 #: Created, read by nothing, and MOUNTED NOWHERE, on purpose (2026-09-24). The
-#: setting that read it is deleted; the container is the only copy of the key
-#: that opens `llm_provider_keys`, and destroying it is irreversible once the
-#: recovery window passes, so it stays until the owner decides that table.
+#: setting that read it is deleted and 0128 drops the retired key roster's
+#: table; the container is the only copy of the key that opened it, and
+#: destroying it is irreversible once the recovery window passes, so it stays
+#: until the owner decides (CONTRACT v2).
 #: This exemption is earned by the test below and by
 #: `test_deploy_secret_hygiene.test_a_held_secret_is_granted_to_no_service`,
 #: which fails if any service is granted it or any root mounts it.
