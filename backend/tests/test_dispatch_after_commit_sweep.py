@@ -66,8 +66,6 @@ LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("api/jobs.py", "upload_databank_candidates"): (2, "P2"),
     ("api/matching.py", "run_matching"): (1, "P2"),
     ("api/outreach.py", "send_outreach"): (1, "P6"),
-    ("api/pipeline.py", "_queue_transition_email"): (1, "P3"),
-    ("api/pipeline.py", "select_candidates_for_assessment"): (1, "P3"),
     ("api/portal.py", "dispatch_bgv_inquiry"): (1, "P6 proposed"),
     ("api/provider.py", "set_primary_contact"): (1, "P7 proposed"),
     ("api/support.py", "_notify"): (1, "P6"),
