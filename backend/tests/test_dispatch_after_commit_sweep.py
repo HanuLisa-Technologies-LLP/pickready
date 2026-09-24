@@ -42,6 +42,9 @@ SCOPE = (
     APP / "api",
     APP / "services" / "proctoring",
     APP / "services" / "video",
+    # The conversation engine completes an assessment from inside a request
+    # (PLAN-p3 WP3), exactly the shape the rule exists for.
+    APP / "services" / "assessment_conversation",
 )
 
 #: (file relative to app/, enclosing function) -> (allowed bare dispatch
@@ -50,8 +53,10 @@ SCOPE = (
 LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("api/admin.py", "create_tenant"): (1, "P7 proposed"),
     ("api/admin.py", "invite_staff"): (1, "P6 proposed"),
-    ("api/assessment_conversation.py", "_ensure_conversation_ready"): (1, "P3"),
-    ("api/assessment_conversation.py", "respond"): (2, "P3"),
+    # KEPT ONLY for `assessment_recording.start_video_interview`, its last
+    # caller; both go with the video interview mode (PLAN-p3 WP5). The
+    # conversation's own start returns `preparing` and dispatches after commit.
+    ("api/assessment_conversation.py", "_ensure_conversation_ready"): (1, "P3 WP5"),
     ("api/assessment_recording.py", "finalize_video_interview"): (1, "P3"),
     ("api/assessment_recording.py", "retry_video_processing"): (1, "P3"),
     ("api/bgv.py", "_resend_after_correction"): (1, "P6 proposed"),
