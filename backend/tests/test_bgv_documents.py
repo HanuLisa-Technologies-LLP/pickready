@@ -41,10 +41,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.api.deps import CurrentUser, get_candidate_db, get_current_user
+from app.api.deps import CurrentUser, get_candidate_db, get_current_candidate
 from app.core.config import get_settings
 from app.core.db import superadmin_scope
-from app.core.security import AUDIENCE_ORG
+from app.core.security import AUDIENCE_CANDIDATE
 from app.main import app
 from app.models.enums import Role
 from app.services import bgv_documents, bgv_workflow, object_storage
@@ -195,12 +195,14 @@ def world() -> Iterator[World]:
                     )
                     await session.execute(
                         sa.text(
-                            "INSERT INTO candidates (id, full_name, email, "
+                            "INSERT INTO candidates (id, user_id, full_name, email, "
                             " consent_databank, employment_background, created_at) "
-                            "VALUES (:id, 'Meera Iyer', :email, false, 'fresher', "
-                            " now())"
+                            "VALUES (:id, :uid, 'Meera Iyer', :email, false, "
+                            " 'fresher', now())"
                         ),
-                        {"id": str(w.candidate), "email": w.email},
+                        # LINKED by user_id: the only thing a request resolves
+                        # a candidate by (`candidate_identity`).
+                        {"id": str(w.candidate), "uid": str(w.user), "email": w.email},
                     )
 
     async def _teardown() -> None:
@@ -233,12 +235,15 @@ def client(world: World) -> Iterator[TestClient]:
                 async with superadmin_scope(session):
                     yield session
 
-    async def _current_user() -> CurrentUser:
+    # A candidate-audience principal, the only kind a candidate's cookie can
+    # produce. `test_bgv_real_candidate_token.py` makes these calls with a real
+    # session and no overrides.
+    async def _current_candidate() -> CurrentUser:
         return CurrentUser(
             user_id=world.user,
             tenant_id=None,
             role=Role.candidate,
-            audience=AUDIENCE_ORG,
+            audience=AUDIENCE_CANDIDATE,
         )
 
     # THE UPLOAD LIMITER IS REAL AND ITS COUNTER OUTLIVES THE RUN. It is keyed
@@ -251,7 +256,7 @@ def client(world: World) -> Iterator[TestClient]:
 
     previous = dict(app.dependency_overrides)
     app.dependency_overrides[get_candidate_db] = _candidate_db
-    app.dependency_overrides[get_current_user] = _current_user
+    app.dependency_overrides[get_current_candidate] = _current_candidate
     try:
         with TestClient(app) as http:
             yield http

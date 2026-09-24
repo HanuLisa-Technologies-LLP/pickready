@@ -35,13 +35,12 @@ from app.models.candidate import (
     SOURCE_TYPE_SOURCED,
     source_type_label,
 )
-from app.models.enums import LinkSource, PipelineStatus
+from app.models.enums import LinkSource
 from app.models.job import Job
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.candidates import (
     CandidateOut,
-    DecisionIn,
     GrantAccessOut,
     InterviewIn,
     InterviewOut,
@@ -50,8 +49,6 @@ from app.schemas.candidates import (
     LinkOut,
     ProfileOut,
     RankingCommentsOut,
-    StatusIn,
-    StatusOut,
     TeamReviewIn,
     TeamReviewOut,
     TeamReviewRewriteIn,
@@ -59,9 +56,9 @@ from app.schemas.candidates import (
     TeamReviewsOut,
     UploadResumeOut,
     )
+from app.services import candidate_identity
 from app.services import capabilities as caps
 from app.services import email_render
-from app.services import telemetry_events
 from app.services import rbac
 from app.services import team_review
 from app.services.audit import audit
@@ -81,20 +78,6 @@ from app.services.resume_access import issue_resume_token, verify_resume_token
 from app.workers.dispatch import dispatch
 
 router = APIRouter()
-
-#: Statuses that move an application FORWARD. `offer_extended` is the current
-#: name for `offered` (migration 0018 kept both valid), and omitting it meant a
-#: fresh-sourced candidate advanced under the new name was not treated as
-#: progressed at all.
-FORWARD_STATUSES = {
-    PipelineStatus.shortlisted,
-    PipelineStatus.interview_scheduled,
-    PipelineStatus.interview_completed,
-    PipelineStatus.offered,
-    PipelineStatus.offer_extended,
-    PipelineStatus.joined,
-}
-
 
 async def _get_link(
     session: AsyncSession, user: CurrentUser, link_id: uuid.UUID
@@ -146,9 +129,10 @@ async def upload_resume(
         # ASSUMPTION: sourcing starts once the job has reached HR (FR-3.4).
         raise HTTPException(status_code=409, detail="Job is not ratified yet")
 
-    candidate = (
-        await session.execute(select(Candidate).where(Candidate.email == email))
-    ).scalars().first()
+    # The CANONICAL record for this address, case-insensitively, through the
+    # one resolver: an exact, unordered match here attached the same person to
+    # a different record depending on how the recruiter typed the address.
+    candidate = await candidate_identity.find_canonical_by_email(session, email)
     if candidate is None:
         candidate = Candidate(
             tenant_id=user.tenant_id, email=email, full_name=full_name, phone=phone
@@ -580,49 +564,6 @@ async def restore_candidate_application(
     return LinkArchiveOut(link_id=link.id, archived=False)
 
 
-@router.post("/links/{link_id}/decision", response_model=StatusOut)
-async def decide_profile(
-    link_id: uuid.UUID,
-    body: DecisionIn,  # hold without remarks -> 422 (schema validator)
-    user: CurrentUser = Depends(require_capability(caps.DECIDE_PROFILE)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> StatusOut:
-    """Hiring Manager decision: Rejected / Shortlisted / Hold (FR-8.2)."""
-    link = await _get_link(session, user, link_id)
-    if not link.hm_access_granted:
-        raise HTTPException(status_code=403, detail="Profile access not granted (FR-8.1)")
-
-    entry = PipelineStatusEntry(
-        tenant_id=user.tenant_id, job_candidate_link_id=link.id,
-        status=PipelineStatus(body.status), remarks=body.remarks, set_by=user.user_id,
-    )
-    session.add(entry)
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="profile_decision", target_type="job_candidate_link",
-                target_id=link.id, metadata={"status": body.status, "remarks": body.remarks})
-    # Talent Intelligence spec section 5.1: EV_HM_DECISION, an explicit
-    # accept/reject/hold on a presented profile. Feeds PRL and SLA_PR
-    # (services/intelligence_metrics.py). Never allowed to fail the decision.
-    await telemetry_events.emit(
-        session,
-        tenant_id=user.tenant_id,
-        event_code=telemetry_events.EV_HM_DECISION,
-        job_id=link.job_id,
-        candidate_id=link.candidate_id,
-        job_candidate_link_id=link.id,
-        actor_user_id=user.user_id,
-        correlation_id=(
-            await session.execute(
-                select(Job.correlation_id).where(Job.id == link.job_id)
-            )
-        ).scalar_one_or_none(),
-        payload={"decision": body.status},
-    )
-    return StatusOut(link_id=link.id, status=entry.status, remarks=entry.remarks,
-                     at=entry.at or datetime.now(timezone.utc))
-
-
 #: Display and tie-break order only; nothing scores these. Read from the one
 #: place the vocabulary is defined so a fourth verdict cannot be added here and
 #: nowhere else.
@@ -804,44 +745,6 @@ async def rewrite_team_review(
         metadata={"used_ai": used_ai},
     )
     return TeamReviewRewriteOut(rewritten_remarks=rewritten, used_ai=used_ai)
-
-
-@router.post("/links/{link_id}/status", response_model=StatusOut)
-async def update_pipeline_status(
-    link_id: uuid.UUID,
-    body: StatusIn,
-    user: CurrentUser = Depends(require_capability(caps.UPDATE_PIPELINE_STATUS)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> StatusOut:
-    """Mandatory pipeline status update (FR-8.4). Fresh candidates cannot be
-    moved FORWARD until the outreach + all employer verifications are
-    submitted or explicitly overridden (FR-5.5)."""
-    link = await _get_link(session, user, link_id)
-    new_status = PipelineStatus(body.status)
-
-    # PRD v1.0: employer verification is out of scope (§5 non-goal). A candidate
-    # applies openly and completes the 40-aspect questionnaire AT application, so
-    # the only forward-gate is that the questionnaire is complete — the old
-    # The old employer-verification gate is removed so open applicants are not blocked.
-    if new_status in FORWARD_STATUSES and link.source == LinkSource.fresh:
-        profile = await session.get(Profile, link.profile_id) if link.profile_id else None
-        if profile is None or profile.aspects_completed_at is None:
-            raise HTTPException(
-                status_code=409,
-                detail="Candidate has not completed the 40-question application yet",
-            )
-
-    entry = PipelineStatusEntry(
-        tenant_id=user.tenant_id, job_candidate_link_id=link.id,
-        status=new_status, remarks=body.remarks, set_by=user.user_id,
-    )
-    session.add(entry)
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="pipeline_status_updated", target_type="job_candidate_link",
-                target_id=link.id, metadata={"status": body.status})
-    return StatusOut(link_id=link.id, status=entry.status, remarks=entry.remarks,
-                     at=entry.at or datetime.now(timezone.utc))
 
 
 @router.post(

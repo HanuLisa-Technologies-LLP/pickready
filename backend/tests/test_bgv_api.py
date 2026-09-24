@@ -28,6 +28,7 @@ from typing import Iterator
 
 import pytest
 import sqlalchemy as sa
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -35,12 +36,13 @@ from sqlalchemy.pool import NullPool
 from app.api.deps import (
     CurrentUser,
     get_candidate_db,
+    get_current_candidate,
     get_current_user,
     get_tenant_db,
 )
 from app.core.config import get_settings
 from app.core.db import superadmin_scope, tenant_scope
-from app.core.security import AUDIENCE_ORG
+from app.core.security import AUDIENCE_CANDIDATE, AUDIENCE_ORG
 from app.main import app
 from app.models.enums import Role
 from app.services import bgv_workflow, hiring_pipeline
@@ -84,10 +86,10 @@ class World:
         self.job = uuid.uuid4()
         self.candidate = uuid.uuid4()
         self.link = uuid.uuid4()
-        #: The portal account the candidate signs in with. Matched to the
-        #: candidate row BY EMAIL, which is the ordinary state: a candidate
-        #: exists from an employer's first outreach and is linked to a login
-        #: only when they first sign in.
+        #: The portal account the candidate signs in with. LINKED to the
+        #: candidate row by `candidates.user_id`, which is the state
+        #: `candidate_identity.link_on_sign_in` leaves after a verified first
+        #: sign-in and the only thing a request resolves a candidate by.
         self.candidate_user = uuid.uuid4()
         self.email = f"cand-{self.candidate.hex[:10]}@bgvapi.test"
 
@@ -156,11 +158,15 @@ def world() -> Iterator[World]:
                     )
                     await session.execute(
                         sa.text(
-                            "INSERT INTO candidates (id, full_name, email, "
+                            "INSERT INTO candidates (id, user_id, full_name, email, "
                             " consent_databank, created_at) "
-                            "VALUES (:id, 'Karthik Kumar', :email, false, now())"
+                            "VALUES (:id, :uid, 'Karthik Kumar', :email, false, now())"
                         ),
-                        {"id": str(w.candidate), "email": w.email},
+                        {
+                            "id": str(w.candidate),
+                            "uid": str(w.candidate_user),
+                            "email": w.email,
+                        },
                     )
                     await session.execute(
                         sa.text(
@@ -217,15 +223,17 @@ class Caller:
         )
 
     def as_candidate(self, world: World) -> None:
-        # The candidate's own BGV routes read `get_current_user` and run on
-        # `get_candidate_db`. The SESSION is what separates them: it has no
-        # tenant to enforce, and the handler resolves the candidate from this
-        # user rather than from an id the client sent.
+        # The candidate's own BGV routes read `get_current_candidate` and run
+        # on `get_candidate_db`: a CANDIDATE-audience principal, the only kind
+        # a real candidate's cookie can produce. The handler resolves the
+        # candidate from this user rather than from an id the client sent.
+        # `test_bgv_real_candidate_token.py` makes the same calls with a real
+        # session and no overrides; this file keeps the overrides for speed.
         self.principal = CurrentUser(
             user_id=world.candidate_user,
             tenant_id=None,
             role=Role.candidate,
-            audience=AUDIENCE_ORG,
+            audience=AUDIENCE_CANDIDATE,
         )
 
 
@@ -234,8 +242,22 @@ def client(world: World) -> Iterator[Caller]:
     sessions = _sessions()
     caller = Caller()
 
+    # Each override refuses the other audience exactly as the real dependency
+    # does, so a route that asked for the wrong principal fails here too
+    # instead of being handed whatever the test set.
     async def _current_user() -> CurrentUser:
         assert caller.principal is not None
+        if caller.principal.audience == AUDIENCE_CANDIDATE:
+            raise HTTPException(status_code=401, detail="staff session required")
+        return caller.principal
+
+    async def _current_candidate() -> CurrentUser:
+        assert caller.principal is not None
+        if (
+            caller.principal.audience != AUDIENCE_CANDIDATE
+            or caller.principal.role != Role.candidate
+        ):
+            raise HTTPException(status_code=401, detail="candidate session required")
         return caller.principal
 
     async def _tenant_db():
@@ -254,6 +276,7 @@ def client(world: World) -> Iterator[Caller]:
 
     previous = dict(app.dependency_overrides)
     app.dependency_overrides[get_current_user] = _current_user
+    app.dependency_overrides[get_current_candidate] = _current_candidate
     app.dependency_overrides[get_tenant_db] = _tenant_db
     app.dependency_overrides[get_candidate_db] = _candidate_db
     try:
@@ -344,6 +367,9 @@ def test_a_declaration_is_editable_until_it_is_submitted(
     # to be emailed.
     second = _declare(client, [_employer("Beta Labs", "hr@beta-labs.example.com")], finalize=False)
     assert [e["employer_name"] for e in second.json()["employments"]] == ["Beta Labs"]
+    # Nothing has been sent, so nothing can have bounced: the correction
+    # control is offered nowhere.
+    assert [e["correction_needed"] for e in second.json()["employments"]] == [False]
 
 
 def test_a_submitted_declaration_is_refused_by_the_server(

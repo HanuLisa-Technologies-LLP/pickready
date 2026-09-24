@@ -8,6 +8,17 @@ TWO AUDIENCES, ONE ROUTER, AND THE SESSION DEPENDENCY IS THE BOUNDARY
 verification record and a recruiter can never rewrite an employment claim,
 because neither route exists for them.
 
+THE PRINCIPAL AND THE SESSION MUST NAME THE SAME AUDIENCE (2026-09-24)
+------------------------------------------------------------------------
+Until this date every `/bgv/me*` route declared `get_current_user` (staff
+audiences only) beside `get_candidate_db` (candidate audience only). No token
+satisfies both, so every real candidate got a 401 and Employment History was
+unreachable, while every test passed because every test overrode BOTH
+dependencies. The candidate routes now take `get_current_candidate`;
+`tests/test_candidate_audience_consistency.py` refuses the mixed shape on any
+route in the app, and `tests/test_bgv_real_candidate_token.py` calls these
+routes with a real signed-in session and no overrides at all.
+
 WHAT IS DELIBERATELY ABSENT
 -----------------------------
 There is no route that sets a verification status from email text, and no
@@ -41,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import (
     CurrentUser,
     get_candidate_db,
+    get_current_candidate,
     get_current_user,
     get_public_db,
     get_tenant_db,
@@ -73,6 +85,7 @@ from app.schemas.bgv_workflow import (
     EmploymentHistoryOut,
     EmploymentOut,
     HREmailCorrectionIn,
+    OwnEmploymentOut,
     SendIn,
     VerificationOut,
 )
@@ -84,6 +97,7 @@ from app.services import (
     bgv_form,
     bgv_maintenance,
     bgv_workflow,
+    candidate_identity,
     conversations,
 )
 from app.services import capabilities as caps
@@ -108,27 +122,16 @@ SUBMISSION_WARNING = (
 
 
 async def _candidate_id_for(session: AsyncSession, user: CurrentUser) -> uuid.UUID:
-    """Resolve the signed-in candidate. Never trusts an id from the client."""
-    row = (
-        await session.execute(
-            text(
-                "SELECT c.id FROM candidates c "
-                "LEFT JOIN users u ON u.id = :uid "
-                "WHERE c.user_id = :uid OR (u.email IS NOT NULL AND c.email = u.email) "
-                "ORDER BY c.created_at LIMIT 1"
-            ),
-            {"uid": str(user.user_id)},
-        )
-    ).scalar()
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "No candidate record yet, you appear after an employer's first "
-                "outreach"
-            ),
-        )
-    return uuid.UUID(str(row))
+    """The signed-in candidate's record, through the ONE resolver.
+
+    `candidate_identity.require_candidate` matches `candidates.user_id` and
+    nothing else, and 404s with the portal's own sentence when there is no
+    record. The raw SQL this replaced also matched the candidate row by the
+    signed-in user's email, an address Firebase may never have verified, so
+    a password sign-up carrying somebody else's address could read and write
+    THEIR employment history. Never trusts an id from the client.
+    """
+    return (await candidate_identity.require_candidate(session, user.user_id)).id
 
 
 async def _history_out(
@@ -161,18 +164,27 @@ async def _history_out(
         .mappings()
         .all()
     )
+    needs_correction = await bgv_delivery.employments_needing_correction(
+        session, candidate_id
+    )
     return EmploymentHistoryOut(
         background=row["employment_background"] if row else None,
         finalized=bool(row and row["employment_history_finalized_at"]),
         finalized_at=row["employment_history_finalized_at"] if row else None,
-        employments=[EmploymentOut(**dict(item)) for item in rows],
+        employments=[
+            OwnEmploymentOut(
+                **dict(item),
+                correction_needed=uuid.UUID(str(item["id"])) in needs_correction,
+            )
+            for item in rows
+        ],
         submission_warning=SUBMISSION_WARNING,
     )
 
 
 @router.get("/me", response_model=EmploymentHistoryOut)
 async def my_employment_history(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> EmploymentHistoryOut:
     """The candidate's own declaration and its employers."""
@@ -182,7 +194,7 @@ async def my_employment_history(
 @router.put("/me", response_model=EmploymentHistoryOut)
 async def save_employment_history(
     body: EmploymentHistoryIn,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> EmploymentHistoryOut:
     """Save the declaration, and optionally close it forever.
@@ -272,7 +284,7 @@ async def save_employment_history(
 @router.post("/me/employers", response_model=EmploymentHistoryOut)
 async def append_employer_route(
     body: EmploymentIn,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> EmploymentHistoryOut:
     """Add the candidate's NEWEST employer to a finalised history.
@@ -360,7 +372,7 @@ async def append_employer_route(
 async def correct_hr_email(
     employment_id: uuid.UUID,
     body: HREmailCorrectionIn,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> EmploymentHistoryOut:
     """Replace the HR address on an employer whose request could not be delivered.
@@ -426,8 +438,7 @@ async def correct_hr_email(
                     "FROM bgv_verifications v "
                     "LEFT JOIN tenants t ON t.id = v.tenant_id "
                     "WHERE v.candidate_employment_id = :eid "
-                    "  AND v.delivery_status = :bounced "
-                    "  AND v.responded_at IS NULL"
+                    f"  AND {bgv_delivery.AWAITING_CORRECTION_SQL}"
                 ),
                 {"eid": str(employment_id), "bounced": DELIVERY_BOUNCED},
             )
@@ -623,7 +634,7 @@ def _documents_out(documents: list) -> BGVDocumentsOut:
 
 @router.get("/me/documents", response_model=BGVDocumentsOut)
 async def my_bgv_documents(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> BGVDocumentsOut:
     """The candidate's own uploaded certificates and address proof."""
@@ -642,7 +653,7 @@ async def my_bgv_documents(
 async def upload_bgv_document(
     document_type: str = Form(...),
     file: UploadFile = File(...),
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> BGVDocumentsOut:
     """Add one document. Validated, never executed, never parsed.
@@ -667,7 +678,7 @@ async def upload_bgv_document(
 @router.delete("/me/documents/{document_id}", response_model=BGVDocumentsOut)
 async def delete_bgv_document(
     document_id: uuid.UUID,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> BGVDocumentsOut:
     """Remove one of the candidate's own documents, bytes included.
