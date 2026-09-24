@@ -5,9 +5,15 @@
     close_all_open(session, conversation_id, *, at)
     current_pause(session, conversation_id, reason, *, at)
     unclosed_pause(session, conversation_id, reason)
-    pauses_for_turn(session, conversation_id, *, since, until)
+    pauses_for_turn(session, conversation_id, *, since, until=None)
     paused_seconds(intervals, *, start, end)
     count_pauses(session, conversation_id, reason)
+
+This is the ONE pause implementation (PLAN-p3 WP4 owns it; the conversation
+engine, the voice answer route and the voice transcription task import it).
+The three signatures PLAN-p3 3.4 fixes (`open_pause`, `close_pause`,
+`pauses_for_turn`) keep exactly that shape, so every caller written against
+the plan works against this module unchanged.
 
 WHO CALLS WHAT (PLAN-p3 3.4 and 3.7)
 ------------------------------------
@@ -34,6 +40,13 @@ AN EXPIRED ROW IS CLOSED BEFORE THE NEXT ONE OPENS. The partial unique index
 per conversation; `open_pause` stamps an expired row's `ended_at` with its own
 `expires_at` first, which is the instant it stopped counting, never "now".
 
+A CLOSE MAY BE SCHEDULED. `close_pause` with an `at` in the future stamps an
+`ended_at` that has not happened yet: the pause keeps stopping the clock until
+then and ends on its own, with no sweep. A failed transcription uses this to
+hold the clock for a short window while the candidate reads what happened. A
+later `close_pause` at an earlier instant brings a scheduled end FORWARD (the
+candidate acknowledged sooner); it never pushes an end later.
+
 TIMES ARE THE SERVER'S. Every `at` a caller passes is the server's clock at the
 moment it decided; a browser's own timestamp never opens, closes or sizes a
 pause, because a client-supplied duration is a number the client chose (the
@@ -45,7 +58,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,7 +100,14 @@ class Interval:
 
     reason: str
     start: datetime
+    #: The instant it stops counting: the earlier of its close and its cap.
+    #: None while neither exists. An `end` after the moment asked about is a
+    #: pause already scheduled to end, and it is still stopping the clock.
     end: datetime | None
+
+    def open_at(self, moment: datetime) -> bool:
+        """True when this pause is stopping the clock at `moment`."""
+        return self.start <= moment and (self.end is None or self.end > moment)
 
 
 def _require_reason(reason: str) -> None:
@@ -100,13 +120,9 @@ def _effective_end(row: AssessmentPause) -> datetime | None:
     return min(ends) if ends else None
 
 
-def _interval(row: AssessmentPause, *, at: datetime) -> Interval:
-    """The row as the clock sees it at `at`: an end that is still in the
-    future is not an end yet."""
-    end = _effective_end(row)
-    if end is not None and end > at:
-        end = None
-    return Interval(reason=row.reason, start=row.started_at, end=end)
+def _interval(row: AssessmentPause) -> Interval:
+    """The row as the clock sees it: capped, and never later than its close."""
+    return Interval(reason=row.reason, start=row.started_at, end=_effective_end(row))
 
 
 def _counts_at(row: AssessmentPause, at: datetime) -> bool:
@@ -147,13 +163,27 @@ async def current_pause(
 
     A row left open past its `expires_at` is NOT current: it stopped counting
     at `expires_at`, and whoever owns the reason decides what that means (for a
-    device loss, that the session ends).
+    device loss, that the session ends). A row whose close is SCHEDULED after
+    `at` is current: it is still stopping the clock.
     """
     _require_reason(reason)
-    row = await unclosed_pause(session, conversation_id, reason)
-    if row is None or not _counts_at(row, at):
-        return None
-    return row
+    rows = (
+        await session.execute(
+            select(AssessmentPause)
+            .where(
+                AssessmentPause.conversation_id == conversation_id,
+                AssessmentPause.reason == reason,
+                AssessmentPause.started_at <= at,
+                or_(AssessmentPause.ended_at.is_(None), AssessmentPause.ended_at > at),
+            )
+            .order_by(AssessmentPause.started_at.desc(), AssessmentPause.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().all()
+    for row in rows:
+        if _counts_at(row, at):
+            return row
+    return None
 
 
 async def open_pause(
@@ -167,10 +197,17 @@ async def open_pause(
 ) -> AssessmentPause:
     """Open a pause of `reason` at `at`, or return the one already open.
 
-    Idempotent per reason: a second open while the first still counts returns
-    the first unchanged, so a retried request cannot stack two pauses and stop
-    the clock twice for one event. An open row whose cap has passed is closed
-    at its cap first, then a new one opens.
+    Idempotent per reason AND reference: a second open for the same `ref_id`
+    (None included) while the first still counts returns the first unchanged,
+    so a retried request cannot stack two pauses and stop the clock twice for
+    one event. An open row of the same reason that a DIFFERENT reference
+    opened is superseded: it is closed at `at` and a row for the new reference
+    opens, because the thing the candidate is now waiting on is the new one (a
+    later warning, a later spoken answer) and its own cap applies. The clock
+    loses nothing either way: the two rows meet at `at`.
+
+    An open row whose cap has passed is closed at its cap first, then a new
+    one opens.
     """
     _require_reason(reason)
     if max_seconds is not None and max_seconds <= 0:
@@ -178,11 +215,14 @@ async def open_pause(
     existing = await unclosed_pause(session, conversation_id, reason)
     if existing is not None:
         cap = _effective_end(existing)
-        if cap is None or cap > at:
+        if cap is not None and cap <= at:
+            existing.ended_at = cap
+        elif existing.ref_id == ref_id:
             # Still stopping the clock (or opened by another task a moment
             # ahead of this one's clock): the same pause, not a second one.
             return existing
-        existing.ended_at = cap
+        else:
+            existing.ended_at = max(existing.started_at, at)
         await session.flush()
     conversation = await session.get(AssessmentConversation, conversation_id)
     if conversation is None:
@@ -219,18 +259,36 @@ async def close_pause(
     at: datetime,
     ref_id: uuid.UUID | None = None,
 ) -> AssessmentPause | None:
-    """Close the open pause of `reason`, or return None when there is none.
+    """End the pause of `reason` by `at`, or return None when there is none.
 
-    With `ref_id`, only the pause that `ref_id` opened is closed: an
+    Acts on the latest pause of this reason that has not ended by `at`: one
+    still open, or one whose close is scheduled LATER than `at` (which is
+    brought forward). An `at` in the future schedules the close (see the
+    module docstring). A pause that already ended earlier is left alone, and
+    the close is never stamped before the pause's own start or after its cap.
+
+    With `ref_id`, only the pause that `ref_id` opened is touched: an
     acknowledgement of one voice answer's failure must not close a pause a
-    later voice answer opened. The close is stamped at `at`, or at the cap if
-    the cap came first, because the pause stopped counting then.
+    later voice answer opened.
     """
     _require_reason(reason)
-    row = await unclosed_pause(session, conversation_id, reason)
+    conditions = [
+        AssessmentPause.conversation_id == conversation_id,
+        AssessmentPause.reason == reason,
+        or_(AssessmentPause.ended_at.is_(None), AssessmentPause.ended_at > at),
+    ]
+    if ref_id is not None:
+        conditions.append(AssessmentPause.ref_id == ref_id)
+    row = (
+        await session.execute(
+            select(AssessmentPause)
+            .where(*conditions)
+            .order_by(AssessmentPause.started_at.desc(), AssessmentPause.id)
+            .limit(1)
+            .execution_options(populate_existing=True)
+        )
+    ).scalars().first()
     if row is None:
-        return None
-    if ref_id is not None and row.ref_id != ref_id:
         return None
     cap = row.expires_at
     row.ended_at = max(row.started_at, min(at, cap) if cap is not None else at)
@@ -243,29 +301,33 @@ async def pauses_for_turn(
     conversation_id: uuid.UUID,
     *,
     since: datetime,
-    until: datetime,
+    until: datetime | None = None,
 ) -> tuple[Interval, ...]:
-    """Every pause that overlaps `[since, until]`, capped, oldest first.
+    """Every pause that can overlap a turn opened at `since`, capped, oldest
+    first: those still open or scheduled to end, and those that ended after
+    `since`. With `until`, pauses that start after it are left out.
 
     Not clipped to the window and not merged: the turn timer intersects and
     unions them itself (`paused_seconds` below is that arithmetic, for callers
     that only need the total), because a warning pause and a device pause can
-    overlap and the overlap must count once.
+    overlap and the overlap must count once. An `end` later than the moment
+    the caller asks about is a scheduled end, still stopping the clock
+    (`Interval.open_at`).
     """
+    statement = select(AssessmentPause).where(
+        AssessmentPause.conversation_id == conversation_id,
+    )
+    if until is not None:
+        statement = statement.where(AssessmentPause.started_at <= until)
     rows = (
         await session.execute(
-            select(AssessmentPause)
-            .where(
-                AssessmentPause.conversation_id == conversation_id,
-                AssessmentPause.started_at <= until,
-            )
-            .order_by(AssessmentPause.started_at, AssessmentPause.id)
+            statement.order_by(AssessmentPause.started_at, AssessmentPause.id)
         )
     ).scalars().all()
     intervals: list[Interval] = []
     for row in rows:
-        interval = _interval(row, at=until)
-        if interval.end is not None and interval.end < since:
+        interval = _interval(row)
+        if interval.end is not None and interval.end <= since:
             continue
         intervals.append(interval)
     return tuple(intervals)
@@ -318,7 +380,8 @@ async def count_pauses(
 async def close_all_open(
     session: AsyncSession, conversation_id: uuid.UUID, *, at: datetime
 ) -> int:
-    """Close every pause still open on a conversation that has ended.
+    """Close every pause still open, or scheduled to end after `at`, on a
+    conversation that has ended.
 
     Stamped at `at` or at each row's cap, whichever came first. Returns the
     number closed. Called when proctoring ends a session, so an ended
@@ -328,7 +391,7 @@ async def close_all_open(
         await session.execute(
             select(AssessmentPause).where(
                 AssessmentPause.conversation_id == conversation_id,
-                AssessmentPause.ended_at.is_(None),
+                or_(AssessmentPause.ended_at.is_(None), AssessmentPause.ended_at > at),
             )
         )
     ).scalars().all()
