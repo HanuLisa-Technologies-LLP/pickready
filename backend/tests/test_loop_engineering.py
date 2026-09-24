@@ -11,15 +11,13 @@ other test in the suite.
 from __future__ import annotations
 
 import json
-import uuid
-from types import SimpleNamespace
 
 import pytest
 
 from app.services import agent_loop
 from app.services import functional_assessment as fa
 from app.services import gap_analysis
-from app.services import interviewer, ppi
+from app.services import interviewer
 
 
 # ── bounded_remark: the string a client actually reads ───────────────────────
@@ -245,214 +243,13 @@ async def test_a_probe_that_repeats_the_original_question_is_re_asked(
     assert "already asked" in attempts[1][-1]["content"]
 
 
-# ── The PPI matrix: filler a human has to fix by hand ────────────────────────
-# ── The PPI framework: filler a human has to fix by hand ─────────────────────
-
-
-def _job():
-    return SimpleNamespace(
-        id=uuid.uuid4(), tenant_id=uuid.uuid4(), title="Backend Engineer",
-        level=None, jd_json={"skills": ["Python", "PostgreSQL", "Kafka"]},
-        jd_markdown="Own the ingestion platform.",
-        experience_min_years=3, experience_max_years=7,
-        assessment_grade="non_managerial", assessment_status="questions_pending_review",
-        framework_generated_at=None, framework_approved_at=None,
-    )
-
-
-# ── Sutra's naming loop (stages 1 and 2) ─────────────────────────────────────
+# ── Sutra's loops ────────────────────────────────────────────────────────────
 #
-# These four tests used to exercise `ppi.generate_framework`, which is deleted
-# (spec-doc6 D1). The loop it ran inside did not go anywhere: Sutra still asks a
-# model for exactly the two stages that need judgment -- naming a competency
-# from a hiring manager's prose, and writing the observable-evidence statement
-# for it -- inside `agent_loop.run_loop`, with a deterministic evaluator.
-#
-# What CHANGED is the fallback, and it is the whole point of the rewrite. The
-# old loop fell back to a matrix assembled from the JD's own noun phrases, so an
-# outage produced criteria that looked reviewed and were not. This one falls
-# back to NOTHING, and every phrase it could not name comes back as a recorded
-# refusal naming the stage that refused it.
-
-
-def _pending(*phrases: str):
-    from app.services.hiring.scorecard import _Candidate
-
-    return [
-        _Candidate(
-            phrase=phrase,
-            category=ppi.CATEGORY_MUST_HAVE,
-            quadrant="weaknesses",
-            swot_origin=phrase,
-        )
-        for phrase in phrases
-    ]
-
-
-def _generic_model():
-    from app.services.hiring.department_models import department_for
-
-    return department_for("generic")
-
-
-@pytest.mark.asyncio
-async def test_a_rejected_naming_is_fed_back_verbatim_and_re_asked(monkeypatch) -> None:
-    """The reason the loop exists at all.
-
-    "you returned a whole sentence where a competency name goes" is a defect a
-    model fixes when it is told, and the one-shot code this replaced threw the
-    response away.
-    """
-    from app.services.hiring import scorecard
-
-    calls: list[list[dict]] = []
-
-    async def _chat(task_type, messages, **k):
-        calls.append(messages)
-        if len(calls) == 1:
-            return json.dumps(
-                {
-                    "named": [
-                        {
-                            "index": 0,
-                            "competency": (
-                                "the person needs to be able to own production "
-                                "incidents from start to finish without help"
-                            ),
-                            "observable": "Has carried production on-call and led an incident.",
-                        }
-                    ],
-                    "refused": [],
-                }
-            )
-        return json.dumps(
-            {
-                "named": [
-                    {
-                        "index": 0,
-                        "competency": "Production incident ownership",
-                        "observable": "Has carried production on-call and led an incident.",
-                    }
-                ],
-                "refused": [],
-            }
-        )
-
-    monkeypatch.setattr(scorecard.llm_router, "chat_completion", _chat)
-    named, refusals, degraded = await scorecard._name_unanchored(
-        None,
-        _job(),
-        _pending("nobody here has ever been paged for the scheduler"),
-        _generic_model(),
-        "non_managerial",
-    )
-    assert len(calls) == 2
-    correction = calls[1][-1]["content"]
-    assert "competency name" in correction
-    assert named[0][0] == "Production incident ownership"
-    assert refusals == []
-    assert degraded is False
-
-
-@pytest.mark.asyncio
-async def test_an_adjective_observable_is_refused_by_the_same_detector(
-    monkeypatch,
-) -> None:
-    """The model is held to the bar §18.5 rule 4 holds the hiring manager to.
-
-    One detector, `observable.is_observable`, used by the SWOT quality rules
-    and by this evaluator. Two copies would drift, and the drift would be
-    invisible: one surface accepting what another refuses.
-    """
-    from app.services.hiring import scorecard
-
-    calls: list[list[dict]] = []
-
-    async def _chat(task_type, messages, **k):
-        calls.append(messages)
-        return json.dumps(
-            {
-                "named": [
-                    {
-                        "index": 0,
-                        "competency": "Ownership",
-                        "observable": "Has a strong ownership mindset.",
-                    }
-                ],
-                "refused": [],
-            }
-        )
-
-    monkeypatch.setattr(scorecard.llm_router, "chat_completion", _chat)
-    named, refusals, degraded = await scorecard._name_unanchored(
-        None, _job(), _pending("people here do not follow through"),
-        _generic_model(), "non_managerial",
-    )
-    # Rejected every attempt, so nothing was named and the phrase is recorded as
-    # refused rather than admitted with an adjective standing in for evidence.
-    assert named == {}
-    assert len(refusals) == 1
-    assert refusals[0]["stage"] == "competency"
-    assert degraded is True
-    assert "watched happen" in calls[-1][-1]["content"]
-
-
-@pytest.mark.asyncio
-async def test_a_total_outage_invents_no_competency(monkeypatch) -> None:
-    """THE CHANGE THIS PHASE MADE, stated as a test.
-
-    The old loop's fallback was a matrix built from the JD's own noun phrases,
-    which was reviewed, approved and graded against for the life of the job with
-    nothing in the output saying it had degraded. There is no fallback now: an
-    outage costs the naming, and every phrase comes back refused with the reason
-    stated.
-    """
-    from app.services.hiring import scorecard
-
-    async def _boom(*a, **k):
-        raise RuntimeError("every provider down")
-
-    monkeypatch.setattr(scorecard.llm_router, "chat_completion", _boom)
-    named, refusals, degraded = await scorecard._name_unanchored(
-        None, _job(), _pending("alpha phrase", "bravo phrase"),
-        _generic_model(), "non_managerial",
-    )
-    assert named == {}
-    assert [row["phrase"] for row in refusals] == ["alpha phrase", "bravo phrase"]
-    assert degraded is True
-    assert all(row["reason"] for row in refusals)
-
-
-@pytest.mark.asyncio
-async def test_a_phrase_the_model_refuses_carries_the_models_own_reason(
-    monkeypatch,
-) -> None:
-    """Refusing is a correct answer, and the reason belongs to the reviewer.
-
-    A phrase about the market rather than the role names no capability, and
-    inventing one would put a criterion on the scorecard nobody stated. The
-    hiring manager is told which of their sentences produced nothing and why.
-    """
-    from app.services.hiring import scorecard
-
-    async def _chat(task_type, messages, **k):
-        return json.dumps(
-            {
-                "named": [],
-                "refused": [
-                    {"index": 0, "reason": "This is about the market, not the role."}
-                ],
-            }
-        )
-
-    monkeypatch.setattr(scorecard.llm_router, "chat_completion", _chat)
-    named, refusals, degraded = await scorecard._name_unanchored(
-        None, _job(), _pending("salaries here are not competitive"),
-        _generic_model(), "non_managerial",
-    )
-    assert named == {}
-    assert refusals[0]["reason"] == "This is about the market, not the role."
-    assert degraded is False
+# The naming loop that lived here went with the matrix compiler (Vivekium
+# release). Sutra's two remaining loops, the skills draft and the hidden
+# assessment context, are tested in `test_job_skills_draft.py` and
+# `test_job_skills_save.py`, including the two properties these tests pinned:
+# a rejection is fed back verbatim and re-asked, and an outage invents nothing.
 
 
 # ── The interviewer: a rejection that used to be indistinguishable from an outage ──

@@ -90,9 +90,10 @@ STAGE_MODULES: dict[str, StageModule] = {
         "Bodha's Job SWOT document, drafted as dispatched work and owned by the team",
     ),
     provenance.STAGE_MATRIX: StageModule(
-        "app.services.skills",
-        ("draft", "save"),
-        "Sutra's skills draft and the saved skills with their hidden assessment context",
+        "app.services.hiring.scorecard",
+        ("require_frozen_matrix", "load_frozen_matrix"),
+        "the frozen scorecard's read half (gate G1), which the grading phase "
+        "moves onto the saved skills contract",
     ),
     provenance.STAGE_PRESCREEN: StageModule(
         "app.services.hiring.prescreen",

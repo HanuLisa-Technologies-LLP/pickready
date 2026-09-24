@@ -18,7 +18,9 @@ assumption would have passed happily throughout.
 The eight sites this covers, and the section each was checked against:
 
     situations.py:37          §18.4   six situation types' weight consequences
-    swot_quality.py:69        §18.3   the seven high-value probes, §18.5 refusals
+    swot_quality.py:69        §18.3 and §18.5, DELETED in the Vivekium release
+                              with the SWOT intake and the matrix they served;
+                              the Job SWOT is a team-owned document now
     layers.py:47              §3.5    precedence and conflict resolution
     layers.py:177             §11.4   normalisation and clamping
     department_models.py:41   Part VI department models, §11.1 baselines
@@ -38,7 +40,6 @@ from app.services.hiring import (
     layers,
     ontology,
     situations,
-    swot_quality,
 )
 from app.services.miti import triangulation
 
@@ -265,80 +266,11 @@ def test_the_corroboration_floor_is_section_7_4_s_and_not_the_client_s(
 
     # NOTHING IN THE PRODUCT SUPPLIES A LAYER 2 MODIFIER ANY MORE, which is
     # the strongest possible form of "no client answer can lower this floor":
-    # `transformation.derive_threshold` takes the category and nothing else,
-    # and `layers.BOUNDS["evidence_threshold"]` stays asymmetric so a future
-    # supplier could raise the bar and could not halve it.
+    # the matrix transformation that could have is deleted (Vivekium
+    # release), and `layers.BOUNDS["evidence_threshold"]` stays asymmetric so
+    # a future supplier could raise the bar and could not halve it.
     bound = layers.BOUNDS["evidence_threshold"]
     assert (1.0 - bound.low) < (bound.high - 1.0)
-
-
-# ── swot_quality.py, §18.3 and §18.5 ─────────────────────────────────────────
-
-
-def test_the_seven_probes_are_section_18_3_s_seven(runbook: str) -> None:
-    """Five of the seven differed, and three were absent outright.
-
-    The rejection probe is the loss that mattered: it is the session's only
-    instrument for surfacing an UNDECLARED criterion, and an undeclared
-    criterion is precisely what becomes an invisible filter later.
-    """
-    body = section(runbook, "18.3 The seven probes")
-    names = re.findall(r"^\d+\.\s+\*\*(.+?)\*\*", body, re.M)
-    assert len(names) == 7, f"§18.3 should name seven probes, found {names}"
-
-    coded = {p.name.lower().replace("the ", "") for p in swot_quality.HIGH_VALUE_PROBES}
-    expected = {n.lower().replace("the ", "") for n in names}
-    assert coded == expected, f"§18.3 names {sorted(expected)}; code has {sorted(coded)}"
-
-
-def test_every_probe_question_is_the_runbook_s_question(runbook: str) -> None:
-    """The wording, not merely the name. A probe renamed to §18.3's label while
-    asking a different question would pass the test above and change what the
-    session collects."""
-    body = section(runbook, "18.3 The seven probes")
-    for probe in swot_quality.HIGH_VALUE_PROBES:
-        question = probe.question
-        if "{" in question:
-            # The trade-off probe is written "deep X or deep Y" and Appendix B6
-            # asks for it to be repeated until the ranking is stable, so the
-            # code parameterises it. Compare its fixed frame.
-            assert "If you could only have deep" in body
-            continue
-        needle = question.rstrip("?").strip().lower()
-        haystack = body.lower().replace("you'd", "you would").replace(
-            "system/team/budget", "system, team or budget"
-        )
-        assert needle in haystack, f"{probe.key}: {question!r} is not §18.3's wording"
-
-
-def test_section_18_5_has_six_triggers_and_all_six_are_implemented(
-    runbook: str,
-) -> None:
-    """The code had five. The missing one is the best-performer test, which the
-    Runbook singles out: "a devastating and highly effective test -- run it".
-
-    It is the only §18.5 trigger that catches a requirement set which is
-    internally coherent and still wrong. The other five catch a malformed
-    intake.
-    """
-    body = section(runbook, "18.5 SWOT quality control")
-    triggers = [line for line in body.split("\n") if line.strip().startswith("- ")]
-    assert len(triggers) == 6, f"§18.5 should list six triggers, found {triggers}"
-    assert any("best performer" in t.lower() for t in triggers)
-
-    rules = {rule for rule, _description in swot_quality.REJECTION_RULES}
-    assert "excludes_best_performer" in rules
-    report = swot_quality.review(
-        {
-            "strengths": ["They shipped the reporting rewrite and owned it end to end"],
-            "weaknesses": ["The last person could not get product to commit to a scope"],
-            "opportunities": [],
-            "threats": [],
-        },
-        situation_key="turnaround",
-        best_performer_excluded=True,
-    )
-    assert "excludes_best_performer" in {r.rule for r in report.rejections}
 
 
 # ── layers.py, §3.5 and §11.4 ────────────────────────────────────────────────

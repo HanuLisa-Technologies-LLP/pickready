@@ -725,7 +725,6 @@ def test_no_long_running_task_shares_the_delivery_route() -> None:
     from app.workers.registry import Route, resolve
 
     for name in (
-        "pickready.compile_tatva_matrix",
         "pickready.generate_candidate_questions",
         "pickready.run_functional_assessment",
         "pickready.run_matching",

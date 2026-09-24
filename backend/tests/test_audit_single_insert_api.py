@@ -23,8 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import Iterator
 
 import pytest
@@ -39,8 +37,7 @@ from app.core.db import superadmin_scope, tenant_scope
 from app.core.security import AUDIENCE_ORG
 from app.main import app
 from app.models.enums import Role
-from app.services import ppi
-from app.services.hiring import pipeline_halt, scorecard
+from app.services.hiring import pipeline_halt
 
 JD = "## The role\nOwns the payments platform and its two services end to end."
 
@@ -217,52 +214,11 @@ def _audit_row(action: str, job_id: uuid.UUID) -> dict | None:
     )
 
 
-# ── finalize_framework: role_definition_finalized in one INSERT ─────────────
-
-
-def test_finalizing_the_framework_survives_its_own_response(
-    client: TestClient, world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The finalize route's audit row and lifecycle write really commit.
-
-    The scorecard freeze itself is not under test (test_scorecard covers it),
-    so it is stubbed to its contract; what runs for real is the route, the
-    tenant session with the role drop, and the audit INSERT.
-    """
-    _seed_job(world, lifecycle_state="IN_REVIEW", jd_markdown=JD)
-
-    async def _freeze(session, job, *, actor_user_id, correlation_id):
-        return SimpleNamespace(
-            version=3,
-            situation_key="turnaround",
-            approved_at=datetime.now(timezone.utc),
-        )
-
-    async def _load_framework(session, job_id):
-        return []
-
-    monkeypatch.setattr(scorecard, "freeze", _freeze)
-    monkeypatch.setattr(ppi, "load_framework", _load_framework)
-
-    response = client.post(
-        f"/api/v2/assessments/jobs/{world.job}/framework/finalize"
-    )
-    assert response.status_code == 200, response.text
-
-    job_row = _committed(
-        "SELECT lifecycle_state, finalized_by, criteria_version "
-        "FROM jobs WHERE id = :id",
-        {"id": str(world.job)},
-    )
-    assert job_row is not None
-    assert job_row["lifecycle_state"] == "FINALIZED"
-    assert str(job_row["finalized_by"]) == str(world.user)
-    assert job_row["criteria_version"] == 3
-
-    audit_row = _audit_row("role_definition_finalized", world.job)
-    assert audit_row is not None, "the audit row never committed"
-    assert audit_row["actor_role"] == "client"
-    assert audit_row["new_state"] == {"lifecycle_state": "FINALIZED"}
+# ── finalize_framework: DELETED with the matrix editor (Vivekium release) ────
+#
+# The route this section pinned is gone. Its successor, Save Skills, writes
+# `job_skills_saved` and `job_assessment_context_written` each in one INSERT,
+# read back from a second connection in `test_job_skills_save.py`.
 
 
 # ── send-to-hiring-manager: jd_sent_to_hiring_manager in one INSERT ─────────

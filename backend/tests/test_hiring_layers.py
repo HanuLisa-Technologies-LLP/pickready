@@ -1,17 +1,12 @@
-"""The three-layer framework: precedence, bounds, and the weights moving.
+"""The layers engine and the Layer 1 department models Miti still reads.
 
-THE CENTRAL TEST IN THIS FILE is
-`test_a_layer_2_change_moves_a_weight_in_the_output`, which is spec-doc5's
-acceptance criterion executed:
-
-    "Sutra's matrix generation visibly runs the seven-stage transformation
-     pipeline; a change to a Layer 2 or Layer 3 input demonstrably moves a
-     weight in the output -- not just appears in a summary."
-
-Note the "not just appears in a summary". The test asserts the NUMBER moves and
-that the provenance names which layer moved it, because a summary that mentions
-a company preference while every weight stays put is exactly the shape of
-traceability theatre the criterion is written against.
+The seven-stage transformation that used to be the centre of this file, and
+its acceptance criterion ("a Layer 3 input demonstrably moves a weight"), were
+DELETED in the Vivekium release with the Tatva matrix compiler: skills carry a
+bucket, a priority and an evidence line, and no weight is derived on the
+job-setup path any more. What remains here is what the scoring path still
+reads until the grading phase moves it: the precedence and bounds engine
+(`layers`), the department models, the ontology and the situations table.
 """
 from __future__ import annotations
 
@@ -20,23 +15,8 @@ import pytest
 from app.services.hiring import (
     department_models,
     layers,
-    ontology,
     situations,
-    swot_quality,
-    transformation,
 )
-
-DEPT = "engineering"
-SENIORITY = "managerial"
-#: Resolves to the `production_ownership` anchor via its "reliability" alias.
-PHRASE = "reliability of what they ship - they must own it in production"
-
-
-def _item(**kwargs):
-    return transformation.build_item(
-        phrase=PHRASE, category="must_have", department=DEPT, seniority=SENIORITY, **kwargs
-    )
-
 
 #: A magnitude for each §18.4 arrow, SUPPLIED BY THE TEST rather than read from
 #: the product.
@@ -235,178 +215,7 @@ def test_an_alias_resolves_to_its_competency() -> None:
     assert matched.key == "production_ownership"
 
 
-# ── The seven stages ─────────────────────────────────────────────────────────
-
-
-def test_all_seven_stages_are_named() -> None:
-    assert transformation.STAGES == (
-        "competency",
-        "observable_evidence",
-        "evidence_sources",
-        "assessment_method",
-        "weight",
-        "threshold",
-        "disqualifier",
-    )
-
-
-def test_an_item_completes_every_required_stage() -> None:
-    item = _item()
-    assert item.is_complete()
-    assert not item.missing_stages()
-    assert item.anchor_key == "production_ownership"
-    assert item.observable_evidence.strip()
-    assert item.evidence_sources
-    assert item.assessment_method in transformation.METHODS
-    assert item.weight.value > 0
-    assert item.threshold.independence_required >= 1
-
-
-def test_nothing_enters_the_matrix_without_stage_two() -> None:
-    """spec-doc5: "Nothing enters the Tatva matrix without completing all seven
-    stages." An item with no observable evidence is a criterion whose grade
-    rests on an adjective."""
-    with pytest.raises(transformation.TransformationError, match="Stage 2"):
-        transformation.build_item(
-            phrase="must have gravitas",
-            category="must_have",
-            department=DEPT,
-            seniority=SENIORITY,
-        )
-
-
-def test_a_role_specific_phrase_transforms_when_evidence_is_supplied() -> None:
-    """No Layer 1 anchor is an honest provenance, not a failure."""
-    item = transformation.build_item(
-        phrase="must be able to read Japanese technical documentation",
-        category="must_have",
-        department=DEPT,
-        seniority=SENIORITY,
-        observable_evidence=(
-            "Has worked from a Japanese-language specification and can describe "
-            "what it required them to resolve"
-        ),
-    )
-    assert item.is_complete()
-    assert item.anchor_key is None
-    assert item.weight.baseline_source is None
-    assert item.weight.baseline == transformation.NEUTRAL_BASELINE
-
-
-def test_the_method_is_chosen_by_the_evidence_sources() -> None:
-    """Picking a method first and then asking what evidence it produces is how a
-    competency ends up probed by a question that cannot evidence it."""
-    item = _item()
-    assert item.assessment_method == transformation.METHOD_WORKED_EXAMPLE
-
-
-def test_an_out_of_band_source_is_recorded_rather_than_counted_as_met() -> None:
-    """The platform cannot call a reference. Pretending a competency is
-    evidenced because a reference WOULD have evidenced it is the same error as a
-    timestamp standing in for work that happened."""
-    item = transformation.build_item(
-        phrase="developing other people",
-        category="behavioural",
-        department="generic",
-        seniority="managerial",
-    )
-    assert "reference" in item.unreachable_sources
-    assert item.assessment_method != transformation.METHOD_OUT_OF_BAND
-
-
-# ── THE ACCEPTANCE CRITERION ─────────────────────────────────────────────────
-
-
-def test_a_layer_3_change_moves_a_weight_in_the_output() -> None:
-    """RPN-PHIL-001 §18.4, reconciled.
-
-    CORRECTED AGAINST THE RUNBOOK. This test previously asserted that a
-    Greenfield weights Track Record DOWN, which is what the pre-Runbook
-    implementation did and is not what §18.4 says: the Greenfield row is
-    "D5 up-up, D3 up" and does not mention D2 at all. A situation type that
-    silently cut a dimension the Runbook leaves alone is exactly the class of
-    error §18.4 warns about, because the resulting matrix is coherent and
-    therefore undetectable downstream.
-
-    `production_ownership` sits on Track Record (D2). Turnaround leads on D2, so
-    it must lift the weight; Greenfield says nothing about D2, so it must leave
-    it exactly where it was. The Layer 3 term still demonstrably reaches the
-    output, which is the acceptance criterion.
-    """
-    baseline = _item().weight.value
-    turnaround = _item(situation_key="turnaround").weight.value
-    greenfield = _item(situation_key="greenfield").weight.value
-    steady = _item(situation_key="steady_state").weight.value
-
-    assert turnaround > baseline, "a Turnaround must weight Track Record up"
-    assert greenfield == pytest.approx(baseline), (
-        "§18.4's Greenfield row is D5 up-up and D3 up; it says nothing about "
-        "Track Record and must therefore not move it"
-    )
-    assert steady == pytest.approx(baseline), (
-        "§18.4's Steady-state row is D1 up-up and D5 down; it says nothing "
-        "about Track Record"
-    )
-    assert turnaround != greenfield
-
-
-def test_no_situation_moves_a_dimension_its_runbook_row_does_not_name() -> None:
-    """The general form of the defect above, across all six rows and all five
-    dimensions.
-
-    Four of the six situation types carried at least one modifier §18.4 does not
-    state. Each looked like a reasonable reading of the situation on its own;
-    together they re-weighted every matrix in the product away from the
-    document it claims to implement.
-    """
-    for key in situations.SITUATION_TYPES:
-        named = set(situations.SITUATIONS[key].effects)
-        modifiers = situations.dimension_modifiers(key)
-        for dimension, value in modifiers.items():
-            if dimension in named:
-                assert value != 1.0, f"{key}/{dimension} is named by §18.4"
-            else:
-                assert value == 1.0, (
-                    f"{key} moves {dimension}, which its §18.4 row does not name"
-                )
-
-
-def test_the_weight_records_every_term() -> None:
-    """"Why is this weighted 1.62" must be answerable by reading the row, not by
-    rerunning the pipeline."""
-    item = _item(
-        situation_key="turnaround",
-        role_emphasis={"Operating what they built": 1.2},
-    )
-    terms = item.weight.as_dict()["terms"]
-    assert set(terms) == {
-        "baseline_layer1",
-        # RESTORED 2026-09-19 (vivekium C3): Drishti is LAYER_COMPANY's live
-        # supplier, so the company term is stored again, 1.0 when absent.
-        "company_layer2",
-        "situation_layer3",
-        "role_layer3",
-    }
-    product = (
-        terms["baseline_layer1"]
-        * terms["situation_layer3"]
-        * terms["role_layer3"]
-    )
-    assert item.weight.value == pytest.approx(product, rel=1e-6)
-
-
-def test_a_role_emphasis_cannot_exceed_the_bound_every_layer_is_held_to() -> None:
-    item = _item(role_emphasis={"Operating what they built": 50.0})
-    assert item.weight.role == layers.BOUNDS["competency_weight"].high
-
-
-def test_a_must_have_needs_more_evidence_than_a_nice_to_have() -> None:
-    """Asymmetric on purpose: a Must-have graded Not Matching caps the whole
-    report, so the cost of getting one wrong is asymmetric and the bar should
-    be too."""
-    must = transformation.derive_threshold("must_have")
-    nice = transformation.derive_threshold("nice_to_have")
-    assert must.independence_required > nice.independence_required
+# ── Bounds the scoring path still reads ──────────────────────────────────────
 
 
 def test_the_evidence_threshold_bound_stays_asymmetric() -> None:
@@ -429,42 +238,6 @@ def test_the_evidence_threshold_bound_stays_asymmetric() -> None:
     )
 
 
-# ── build(): partial success ─────────────────────────────────────────────────
-
-
-def test_one_bad_phrase_does_not_cost_the_whole_matrix() -> None:
-    """The same partial-success reasoning the databank bulk upload uses: one
-    unreadable PDF may not discard the other twenty-four."""
-    items, rejections = transformation.build(
-        [
-            {"phrase": PHRASE, "category": "must_have"},
-            {"phrase": "must have gravitas", "category": "must_have"},
-            {"phrase": "systems design under real constraints", "category": "must_have"},
-        ],
-        department=DEPT,
-        seniority=SENIORITY,
-    )
-    assert len(items) == 2
-    assert len(rejections) == 1
-    assert "gravitas" in rejections[0]["phrase"]
-
-
-def test_two_phrases_naming_one_competency_take_one_row() -> None:
-    """Grading a candidate twice on one axis double-counts it, and
-    `job_competencies` is UNIQUE on (job, category, name) anyway."""
-    items, rejections = transformation.build(
-        [
-            {"phrase": "reliability in production", "category": "must_have"},
-            {"phrase": "must own their on-call rotation", "category": "must_have"},
-        ],
-        department=DEPT,
-        seniority=SENIORITY,
-    )
-    assert len(items) == 1
-    assert len(rejections) == 1
-    assert "double-count" in rejections[0]["reason"]
-
-
 # ── Weights are internal ─────────────────────────────────────────────────────
 
 
@@ -476,15 +249,3 @@ def test_matching_still_has_no_weights_table() -> None:
     import app.services.matching as matching
 
     assert not hasattr(matching, "WEIGHTS")
-
-
-def test_the_matrix_provenance_is_internal_and_says_so() -> None:
-    items, _ = transformation.build(
-        [{"phrase": PHRASE, "category": "must_have"}],
-        department=DEPT,
-        seniority=SENIORITY,
-    )
-    provenance = transformation.matrix_provenance(items)
-    # It carries numbers, which is exactly why it must never be rendered.
-    assert provenance["items"][0]["weight"]["value"] > 0
-    assert "stages" in provenance
