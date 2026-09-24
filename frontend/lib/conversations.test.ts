@@ -17,7 +17,6 @@ const api = vi.hoisted(() => ({
 vi.mock("./api", () => api);
 
 import {
-  ComposerToken,
   listMessagesBefore,
   listMyMessages,
   mergeMessages,
@@ -41,24 +40,6 @@ function message(id: string, createdAt: string): Message {
     attachments: [],
   };
 }
-
-describe("ComposerToken", () => {
-  it("keeps one token across retries of the same draft", () => {
-    const composer = new ComposerToken();
-    const first = composer.current();
-    expect(composer.current()).toBe(first);
-    expect(composer.current()).toBe(first);
-  });
-
-  it("rotates after a confirmed send or an edit, and never repeats", () => {
-    const composer = new ComposerToken();
-    const first = composer.current();
-    composer.rotate();
-    const second = composer.current();
-    expect(second).not.toBe(first);
-    expect(second.length).toBeLessThanOrEqual(64);
-  });
-});
 
 describe("mergeMessages", () => {
   it("dedupes by id and orders by (created_at, id) the way the server pages", () => {

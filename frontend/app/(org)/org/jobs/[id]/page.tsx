@@ -57,6 +57,7 @@ import { CandidateRankingTable } from "@/components/candidate-ranking-table";
 import { DatabankUpload } from "@/components/databank-upload";
 import { PipelineFunnel } from "@/components/pipeline-status";
 import { PostingWindowBanner } from "@/components/posting-window";
+import { AssessmentRetentionPanel } from "@/components/assessment-retention-panel";
 import { EmailCompositionModal } from "@/components/email-composition-modal";
 import { JobSwotAnalysisPanel } from "@/components/job-swot-analysis";
 import { JobSkillsPanel } from "@/components/job-skills";
@@ -647,16 +648,13 @@ export default function OrgJobDetailPage() {
         />
       ) : null}
 
-      {/* ── MOUNT POINT: AssessmentRetentionPanel (Phase 6) ─────────────────
-          Phase 6 builds components/assessment-retention-panel.tsx (the
-          thirty day retention state and the assessment dispute path for a
-          CLOSED job). It is mounted HERE, under the posting banner, and only
-          for a closed job:
-
-            {job?.closed_at ? <AssessmentRetentionPanel jobId={jobId} /> : null}
-
-          Deliberately not imported by Phase 1: the component does not exist
-          on this branch. */}
+      {/* The thirty day retention state and the assessment dispute path,
+          for a CLOSED job only (Phase 6). */}
+      {job?.closed_at ? (
+        <div className="mb-6">
+          <AssessmentRetentionPanel jobId={jobId} />
+        </div>
+      ) : null}
 
       <Dialog open={closeOpen} onOpenChange={setCloseOpen}>
         <DialogContent>

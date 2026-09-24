@@ -888,27 +888,6 @@ export interface MatchBreakdown {
   scoring_mode?: string;
 }
 
-export interface CandidateLink {
-  link_id: string;
-  candidate: CandidateSummary;
-  source: CandidateSource;
-  tier?: Tier | null;
-  status?: PipelineStatus | null;
-  current_status?: PipelineStatus | null;  // backend LinkOut field name
-  status_remarks?: string | null;
-  hm_access_granted?: boolean;
-  rationale?: string | null;
-  profile_id?: string | null;
-  breakdown?: MatchBreakdown | null;
-  ranking_status?: "not_scored" | "ready";
-  skills_match_comment?: string | null;
-  experience_comment?: string | null;
-  role_alignment_comment?: string | null;
-  education_comment?: string | null;
-  overall_comment?: string | null;
-  archived_at?: string | null;
-}
-
 export interface MatchingResult {
   link_id: string;
   candidate: CandidateSummary;
@@ -918,47 +897,8 @@ export interface MatchingResult {
   breakdown?: MatchBreakdown | null;
 }
 
-export interface AspectResponse {
-  aspect_id: number;
-  question?: string;
-  answer: string | number | boolean | null;
-}
-
-
-export interface CandidateProfile {
-  id?: string;
-  candidate: CandidateSummary;
-  profile_id?: string;
-  resume_fields?: {
-    skills?: string[];
-    experience?: unknown;
-    education?: unknown;
-    employment_history?: unknown;
-    [key: string]: unknown;
-  } | null;
-  personal?: {
-    full_name?: string;
-    residing_city?: string;
-    age?: number;
-    gender?: string;
-  } | null;
-  aspects?: AspectResponse[] | null;
-  resume_url?: string | null;
-  resume_original_filename?: string | null;
-  resume_mime_type?: string | null;
-  parsed_fields_json?: CandidateProfile["resume_fields"];
-  aspects_json?: Record<string, string | number | boolean | null> | null;
-}
-
 // ---- Portal ----
 
-export interface OutreachRequestInfo {
-  candidate_name?: string;
-  job_title?: string;
-  tenant_name?: string;
-  fields_requested?: string[];
-  aspects?: { id: number; question: string }[];
-}
 
 export interface PortalJob {
   id: string;

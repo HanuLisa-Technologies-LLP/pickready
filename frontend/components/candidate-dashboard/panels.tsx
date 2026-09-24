@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { CandidateCasePanel } from "@/components/candidate-case-panel";
 
 import type {
   DashboardRow,
@@ -213,6 +214,19 @@ export function ReadyPickProfilePanel({
               </>
             ) : null}
           </PanelState>
+          {row ? (
+            <section>
+              <h3 className="text-xs font-semibold uppercase tracking-wide">
+                Follow-up
+              </h3>
+              <div className="mt-2">
+                <CandidateCasePanel
+                  candidateId={row.candidate_id}
+                  candidateName={row.full_name}
+                />
+              </div>
+            </section>
+          ) : null}
         </div>
       </SheetContent>
     </Sheet>

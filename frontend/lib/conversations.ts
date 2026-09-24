@@ -18,8 +18,6 @@
 // silent (claude.md, 2026-09-09); a chat that quietly stopped updating would be
 // indistinguishable from a chat nobody had written in.
 
-import * as React from "react";
-
 import { API_BASE, apiGet, apiPost, apiUpload, tryRefresh } from "./api";
 
 export interface Attachment {
@@ -207,41 +205,9 @@ export function newClientToken(): string {
   return `c-${random}`.slice(0, 64);
 }
 
-/**
- * The idempotency token for ONE composed message.
- *
- * WHY IT IS NOT MINTED PER ATTEMPT. The server collapses a repeated token into
- * the message it already stored, which is the whole defence against a retry
- * after a lost response becoming a second message. A fresh token per click
- * defeated it: the retry arrived as a new message with identical words.
- *
- * So the token belongs to the DRAFT. It survives any number of retries of the
- * same words, and it rotates in exactly two cases: the send was confirmed (the
- * next draft is a new message), or the words changed (the server answers 409
- * when one token arrives with different words, because silently returning the
- * earlier message would drop the edit).
- */
-export class ComposerToken {
-  private token: string | null = null;
-
-  /** The token for the draft as it stands; minted on first use. */
-  current(): string {
-    if (this.token === null) this.token = newClientToken();
-    return this.token;
-  }
-
-  /** The draft is a different message now. */
-  rotate(): void {
-    this.token = null;
-  }
-}
-
-/** A `ComposerToken` that lives as long as the component holding it. */
-export function useComposerToken(): ComposerToken {
-  const ref = React.useRef<ComposerToken | null>(null);
-  if (ref.current === null) ref.current = new ComposerToken();
-  return ref.current;
-}
+// The idempotency token for one composed message lives in
+// `lib/composer-token.ts`: one implementation, used by the recruiter's panel
+// and the candidate's Messages page alike.
 
 /** Bytes, spelled for a person. Never a raw byte count on screen. */
 export function readableSize(bytes: number): string {

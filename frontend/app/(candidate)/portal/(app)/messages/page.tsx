@@ -53,10 +53,10 @@ import {
   markMyThreadRead,
   mergeMessages,
   sendMyReply,
-  ComposerToken,
   type CandidateThread,
   type Message,
 } from "@/lib/conversations";
+import { createComposerToken, type ComposerToken } from "@/lib/composer-token";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -97,7 +97,7 @@ function MessagesView() {
   const composerFor = React.useCallback((threadId: string): ComposerToken => {
     let token = composers.current.get(threadId);
     if (!token) {
-      token = new ComposerToken();
+      token = createComposerToken();
       composers.current.set(threadId, token);
     }
     return token;
