@@ -113,6 +113,13 @@ export const CAP = {
   editBehaviouralCompetencies: "edit_behavioural_competencies",
   /** Save Skills: writes the hidden assessment context and makes the job invitable. */
   finalizeRoleDefinition: "finalize_role_definition",
+  /**
+   * The assessment dispute path on a CLOSED job (change request 22, migration
+   * 0112): Client Super Admin only by default. It is an unlock, so the report
+   * and transcript screens answer again for the holder while a dispute is
+   * open; it never extends the thirty day retention window.
+   */
+  retrieveDisputedAssessment: "retrieve_disputed_assessment",
 } as const;
 
 export type CapabilityName = (typeof CAP)[keyof typeof CAP];

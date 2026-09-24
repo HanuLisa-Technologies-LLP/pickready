@@ -266,14 +266,25 @@ export type ApprovalLevelsConfig = Record<
   ApprovalLevelConfigEntry
 >;
 
-export interface EmailTemplate {
-  id?: string;
-  name: string;
-  subject: string;
-  body: string;
-}
-
 // ---- Jobs ----
+
+/**
+ * GET /jobs/{id}/assessment-retention, and the body of both dispute routes.
+ *
+ * Dates only: no candidate detail and no count of assessed people, because
+ * the route exists precisely where assessment facts are withheld. `message`
+ * is the server's own sentence and is rendered verbatim.
+ */
+export interface AssessmentRetention {
+  state: "live" | "pending_deletion" | "purged";
+  closed_at: string | null;
+  purge_due_at: string | null;
+  purged_at: string | null;
+  dispute_open: boolean;
+  days_remaining: number | null;
+  message: string | null;
+  dispute_reason: string | null;
+}
 
 export interface JobJD {
   description: string;
@@ -1427,6 +1438,10 @@ export interface EmailSender {
   /** One plain sentence for the Super Admin. Deliberately carries no AWS
    *  vocabulary: not SES, not an identity, not DKIM. */
   sending_detail: string;
+  /** The tenant's ONE default sender: what every email that does not name a
+   *  sender goes out under, the automatic ones included. Only an active
+   *  sender can hold it, and leaving `active` clears it on the server. */
+  is_default: boolean;
 }
 
 export interface EmailSenderList {
