@@ -673,7 +673,6 @@ class Settings(BaseSettings):
     assessment_duration_minutes_managerial: int = 85
     assessment_duration_minutes_leadership: int = 70
     assessment_duration_minutes_cxo: int = 50
-    #: Suggested time per question, by format, in seconds.
     #: The longest a blocking proctoring warning can stop the candidate's
     #: clock for. The pause opens when the warning is issued and closes on the
     #: candidate's acknowledgement, or here, whichever is first
@@ -683,6 +682,7 @@ class Settings(BaseSettings):
     #: 3). Proctoring reads it to bound how long an unfinished capture can
     #: excuse speech in the audio monitoring.
     assessment_voice_max_seconds: int = 180
+    #: Suggested time per question, by format, in seconds.
     assessment_time_evidence_seconds: int = 240
     assessment_time_short_answer_seconds: int = 180
     assessment_time_mcq_single_seconds: int = 60

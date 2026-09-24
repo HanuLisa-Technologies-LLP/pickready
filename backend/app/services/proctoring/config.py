@@ -108,11 +108,11 @@ CLIENT_FIELDS: tuple[str, ...] = (
     "audio_max_chunk_bytes",
     "heartbeat_interval_seconds",
     "integrity_failure_termination_seconds",
-    # The device pause rules: the browser holds a loss back for the glitch
-    # window before reporting it, and shows the grace and the pause count on
-    # the pause screen. The server applies the same three numbers.
-    "device_max_pauses",
-    "device_grace_seconds",
+    # The browser holds a camera or microphone loss back for the glitch window
+    # before reporting it. The grace and the pause allowance are deliberately
+    # NOT client fields: the browser decides neither, and reads both from the
+    # server's `pause` state on every ingest and heartbeat response
+    # (`schemas.proctoring.PauseOut`), with the grace as a server deadline.
     "device_glitch_seconds",
     "sampling_fps_normal",
     "sampling_fps_confirming",
