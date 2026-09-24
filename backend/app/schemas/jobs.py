@@ -194,6 +194,10 @@ class JobCreateIn(ExperienceBandMixin):
     title: str = Field(min_length=1, max_length=255)
     department: str | None = Field(default=None, max_length=255)
     requirement_period: str | None = Field(default=None, max_length=100)
+    #: Who the role reports to, from the Create Job dropdown. The one JD fact
+    #: the document does not carry as its own section, so it is stored into
+    #: `jd_json.reporting_to` beside the sections derived from the document.
+    reporting_to: str | None = Field(default=None, max_length=255)
     # REQUIRED (Create Job form dropdown). Anything outside the four literals → 422.
     grade: JobGrade
     #: The unified JD document, REQUIRED and never only headings. The

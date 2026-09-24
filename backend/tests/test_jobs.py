@@ -366,6 +366,68 @@ async def test_create_job_saves_a_draft_and_starts_nothing(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_stores_the_reporting_line_beside_the_derived_sections(
+    monkeypatch,
+) -> None:
+    """The document has no reporting section, so parsing it leaves
+    `reporting_to` empty; the Create Job dropdown's value is stored rather than
+    silently dropped, and a blank choice stays None rather than ""."""
+    _stub_create_deps(monkeypatch)
+    session = _FakeSession()
+    body = JobCreateIn.model_validate(
+        {
+            "title": "Backend Engineer",
+            "grade": "non_managerial",
+            "jd_markdown": JD,
+            "reporting_to": "  Engineering Director  ",
+        }
+    )
+    await jobs_api.create_job(body, user=_user(), session=session)
+    job = session.added[0]
+    assert job.jd_json["reporting_to"] == "Engineering Director"
+    assert job.jd_json["skills"] == ["Python"]
+
+    session = _FakeSession()
+    await jobs_api.create_job(_job_create_body(), user=_user(), session=session)
+    assert session.added[0].jd_json["reporting_to"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_document_edit_keeps_the_reporting_line(monkeypatch) -> None:
+    """`PATCH /jobs/{id}/jd` re-derives the sections from the document, which
+    has no reporting section; the stored reporting line is carried across
+    rather than erased by the edit."""
+    from app.schemas.jobs import JDMarkdownIn
+
+    job = _job(jd_json={"reporting_to": "Engineering Director", "skills": []})
+    seen: dict = {}
+
+    async def _visible(session, user, job_id):
+        return job
+
+    async def _audit(session, **kwargs):
+        seen["audit"] = kwargs["action"]
+
+    async def _invalidate(job_id):
+        seen["invalidated"] = job_id
+
+    async def _detail(session, value):
+        return value
+
+    monkeypatch.setattr(jobs_api, "_get_visible_job", _visible)
+    monkeypatch.setattr(jobs_api, "audit", _audit)
+    monkeypatch.setattr(jobs_api, "_invalidate_public_job", _invalidate)
+    monkeypatch.setattr(jobs_api, "_job_detail_out", _detail)
+
+    await jobs_api.save_jd_markdown(
+        job.id, JDMarkdownIn(jd_markdown=JD), user=_user(), session=_FakeSession()
+    )
+    assert job.jd_json["reporting_to"] == "Engineering Director"
+    assert job.jd_json["skills"] == ["Python"]
+    assert seen == {"audit": "job_jd_document_edited", "invalidated": job.id}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("role", [Role.hr_manager, Role.recruiter, Role.hiring_manager])
 async def test_all_three_staff_roles_can_create(monkeypatch, role) -> None:
     # require_capability is the gate (checked elsewhere); the handler itself is

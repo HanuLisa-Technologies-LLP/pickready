@@ -398,6 +398,12 @@ async def create_job(
     # schema has already refused a document that is only headings.
     document = jd_generation.strip_em_dashes(body.jd_markdown.strip())
     jd_sections = jd_generation.parse_jd_markdown(document)
+    # The document has no reporting line of its own, so the parse leaves it
+    # empty; the recruiter's choice from the Create Job form is stored beside
+    # the derived sections rather than dropped.
+    jd_sections["reporting_to"] = (
+        jd_generation.strip_em_dashes((body.reporting_to or "").strip()) or None
+    )
 
     # ── STEM / Non-STEM classification (Master Directive Part 3) ────────────
     # The AI flow passes `jd_draft_id`, and the job inherits the result that
@@ -557,7 +563,11 @@ async def save_jd_markdown(
     previous_length = len((job.jd_markdown or "").strip())
 
     job.jd_markdown = document
-    job.jd_json = jd_generation.parse_jd_markdown(document)
+    sections = jd_generation.parse_jd_markdown(document)
+    # `reporting_to` is not a section of the document, so re-deriving would
+    # erase the value Create Job stored; it is carried across instead.
+    sections["reporting_to"] = (job.jd_json or {}).get("reporting_to")
+    job.jd_json = sections
     await session.flush()
     await audit(
         session,

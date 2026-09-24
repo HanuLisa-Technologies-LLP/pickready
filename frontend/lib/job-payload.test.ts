@@ -48,11 +48,11 @@ describe("buildJobCreatePayload", () => {
   it("carries the whole JD as one markdown document and derives no sections itself", () => {
     const payload = buildJobCreatePayload(completeForm);
     expect(payload.jd_markdown).toContain("## Responsibilities");
-    // The server is the one parser. Only the two values that are NOT in the
-    // document travel under `jd`.
-    expect(Object.keys(payload.jd).sort()).toEqual(["reporting_to", "skills"]);
-    expect(payload.jd.reporting_to).toBe("Engineering Director");
-    expect(payload.jd.skills).toEqual(["Python", "FastAPI", "PostgreSQL"]);
+    // The server is the one parser: no per-section `jd` travels, and the one
+    // value the document does not carry is sent on its own.
+    expect(payload).not.toHaveProperty("jd");
+    expect(payload.reporting_to).toBe("Engineering Director");
+    expect(buildJobCreatePayload({ ...completeForm, reporting_to: "  " }).reporting_to).toBeNull();
   });
 
   it("sends the grade as the API's literal, not a trimmed display label", () => {

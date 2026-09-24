@@ -63,10 +63,12 @@ export const skillsToArray = (value: string): string[] =>
  * WHY THE PER-SECTION `jd` FIELDS ARE GONE
  * ----------------------------------------
  * The markdown document is canonical and the server derives every section
- * from it. Deriving them here as well was a second parser that could
- * disagree with the first. What stays under `jd` are the two values that are
- * NOT in the document: who the role reports to, and the skills the recruiter
- * typed to seed the draft.
+ * from it, skills included. Deriving them here as well was a second parser
+ * that could disagree with the first. The one value that is NOT in the
+ * document, who the role reports to, travels as `reporting_to` and the server
+ * stores it beside the derived sections. The skills the recruiter typed seed
+ * the AI draft (`POST /jobs/generate-jd`) and reach the job only through the
+ * document, so the candidate reads the same list the job is matched on.
  *
  * `level` is not sent and never was from this form; the experience band and
  * the grade replaced it.
@@ -80,9 +82,6 @@ export function buildJobCreatePayload(form: JobFormValues) {
     experience_min_years: optionalNumber(form.experience_min_years),
     experience_max_years: optionalNumber(form.experience_max_years),
     jd_markdown: form.jd_markdown.trim() || null,
-    jd: {
-      reporting_to: form.reporting_to.trim() || null,
-      skills: skillsToArray(form.skills),
-    },
+    reporting_to: form.reporting_to.trim() || null,
   };
 }
