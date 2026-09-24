@@ -108,7 +108,6 @@ CREDENTIAL_NAMES = (
     "RAZORPAY_KEY_SECRET",
     "RAZORPAY_WEBHOOK_SECRET",
     "LLM_KEY_ENCRYPTION_SECRET",
-    "MSG91_API_KEY",
     "TAVILY_API_KEY",
     # The proctoring analysis service's Hugging Face read token. It is a
     # credential like any other and it is swept for the same reason: the image
@@ -326,7 +325,6 @@ def test_the_synchronous_agents_hold_no_delivery_or_payment_credential() -> None
     services = _service_secrets()
     forbidden = {
         "SMTP_PASSWORD",
-        "MSG91_API_KEY",
         "RAZORPAY_KEY_SECRET",
         "RAZORPAY_WEBHOOK_SECRET",
         "FIREBASE_SERVICE_ACCOUNT_JSON",
@@ -343,6 +341,43 @@ def test_the_migration_job_holds_exactly_one_secret() -> None:
     its work does not need."""
     services = _service_secrets()
     assert set(services.get("migrate", [])) == {"DATABASE_URL"}
+
+
+def _secret_names() -> list[str]:
+    """Parse the `secret_names` default list out of the secrets module."""
+    source = _source(SECRETS_VARS)
+    start = source.index('variable "secret_names"')
+    body = source[source.index("default = [", start):]
+    body = body[: body.index("\n  ]")]
+    code = "\n".join(line for line in body.splitlines() if not line.strip().startswith("#"))
+    names = re.findall(r'"(\w+)"', code)
+    assert names, "secret_names parsed empty; the parser no longer matches the module"
+    return names
+
+
+#: Held and injected into nothing. See `test_a_held_secret_is_granted_to_no_service`.
+HELD_UNGRANTED = "LLM_KEY_ENCRYPTION_SECRET"
+ALL_ENVIRONMENT_ROOTS = [ROOT / "infra" / "environments" / "pilot" / "main.tf", STAGING, PRODUCTION]
+
+
+def test_a_held_secret_is_granted_to_no_service() -> None:
+    """The encryption key of `llm_provider_keys` is KEPT and reaches nothing.
+
+    Two halves, and each one is the failure the other prevents. Removed from
+    `secret_names`, Terraform destroys the only copy of the key that opens the
+    historical rows, which is irreversible once the recovery window passes and
+    is the owner's decision to take with the table, not a side effect of a
+    cleanup. Granted or mounted, it is a credential in every container for a
+    setting nothing reads (2026-09-24: the setting is deleted), which is reach
+    no service's work needs.
+    """
+    assert HELD_UNGRANTED in _secret_names()
+    holders = sorted(s for s, names in _service_secrets().items() if HELD_UNGRANTED in names)
+    assert not holders, f"{HELD_UNGRANTED} is granted to {holders}"
+    for root in ALL_ENVIRONMENT_ROOTS:
+        assert HELD_UNGRANTED not in _code(root), (
+            f"{root.relative_to(ROOT)} mounts {HELD_UNGRANTED} into a container"
+        )
 
 
 def test_the_webhook_path_is_the_only_holder_of_the_webhook_secret() -> None:

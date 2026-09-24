@@ -3,9 +3,10 @@
  *
  * The first environment of the Lambda-plus-on-demand-ECS architecture, and the
  * first one this repository has ever actually applied. Staging and production
- * next door describe the Celery topology this replaced; they are kept because
- * they are the record of what was deployed before, and they are NOT the shape
- * to copy. Copy this one.
+ * next door were moved to the same shape in the same change, but neither has
+ * ever been applied and production is DERIVED from staging by
+ * `derive-production.py`, so this is the composition that has met a real
+ * account. Copy this one.
  *
  * WHAT IS DIFFERENT FROM THE ENVIRONMENTS BESIDE IT
  * --------------------------------------------------
@@ -1362,8 +1363,7 @@ module "ecs" {
         # when it was absent, which made credit issuance an unauthenticated
         # POST. The handler now refuses when it is missing, so the absence is
         # loud instead of silent, and this line is what makes it present.
-        RAZORPAY_WEBHOOK_SECRET   = module.secrets.secret_arns["RAZORPAY_WEBHOOK_SECRET"]
-        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        RAZORPAY_WEBHOOK_SECRET = module.secrets.secret_arns["RAZORPAY_WEBHOOK_SECRET"]
         # AI Reach calls Tavily from the request handler, so the API is the
         # process that needs this. See the IAM list in modules/secrets.
         TAVILY_API_KEY = module.secrets.secret_arns["TAVILY_API_KEY"]
@@ -1430,13 +1430,12 @@ module "ecs" {
       # NO FIREBASE KEY. A background task never authenticates a browser
       # session, so it has no business reading the service account.
       secrets = {
-        DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
-        REDIS_URL                 = module.secrets.secret_arns["REDIS_URL"]
-        OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
-        OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
-        VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
-        VOYAGE_RERANK_2_5         = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
-        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        DATABASE_URL      = module.secrets.secret_arns["DATABASE_URL"]
+        REDIS_URL         = module.secrets.secret_arns["REDIS_URL"]
+        OPENAI_GPT_TERRA  = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
+        OPENAI_GPT_LUNA   = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
+        VOYAGE_CONTEXT_4  = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5 = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
       }
     }
 
@@ -1643,15 +1642,13 @@ module "lambda" {
         # invitation email), which are signed material: it needs the real
         # key, and REQUIRE_JWT_SECRET below makes it refuse to boot in
         # production without it rather than sign with an empty string.
-        JWT_SECRET                = module.secrets.secret_arns["JWT_SECRET"]
-        REDIS_URL                 = module.secrets.secret_arns["REDIS_URL"]
-        OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
-        OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
-        VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
-        VOYAGE_RERANK_2_5         = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
-        TAVILY_API_KEY            = module.secrets.secret_arns["TAVILY_API_KEY"]
-        MSG91_API_KEY             = module.secrets.secret_arns["MSG91_API_KEY"]
-        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        JWT_SECRET        = module.secrets.secret_arns["JWT_SECRET"]
+        REDIS_URL         = module.secrets.secret_arns["REDIS_URL"]
+        OPENAI_GPT_TERRA  = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
+        OPENAI_GPT_LUNA   = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
+        VOYAGE_CONTEXT_4  = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5 = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
+        TAVILY_API_KEY    = module.secrets.secret_arns["TAVILY_API_KEY"]
       }
       environment = {
         # Must match the ECS services: agents reach retrieval from here too,
@@ -1711,10 +1708,9 @@ module "lambda" {
       # equivalent, so the function fetches them at cold start with the
       # policy below. Only the ARNs are here.
       secrets = {
-        DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
-        OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
-        OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
-        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        DATABASE_URL     = module.secrets.secret_arns["DATABASE_URL"]
+        OPENAI_GPT_TERRA = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
+        OPENAI_GPT_LUNA  = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
       }
       environment = {
         # AWS_REGION IS NOT SET HERE. It is one of Lambda's RESERVED keys: the
@@ -1742,11 +1738,10 @@ module "lambda" {
       # equivalent, so the function fetches them at cold start with the
       # policy below. Only the ARNs are here.
       secrets = {
-        DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
-        OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
-        OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
-        TAVILY_API_KEY            = module.secrets.secret_arns["TAVILY_API_KEY"]
-        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        DATABASE_URL     = module.secrets.secret_arns["DATABASE_URL"]
+        OPENAI_GPT_TERRA = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
+        OPENAI_GPT_LUNA  = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
+        TAVILY_API_KEY   = module.secrets.secret_arns["TAVILY_API_KEY"]
       }
       environment = {
         # AWS_REGION IS NOT SET HERE. It is one of Lambda's RESERVED keys: the

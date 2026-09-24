@@ -37,7 +37,7 @@ anything.
 |---|---|
 | NAT gateway per AZ | A single NAT is one AZ failure from every task losing egress, which here means losing the model provider, so every assessment degrades at once |
 | RDS Multi-AZ | A failover instead of a restore |
-| Redis replica (and therefore automatic failover) | Redis here is the Celery broker and the working-memory layer, not a cache. Losing it is a queue nobody is draining and a candidate mid-assessment whose next question never arrives |
+| Redis replica (and therefore automatic failover) | Redis carries the proctoring warning counter and the run-status record, not just a cache. The proctoring gate answers 503 rather than silently not warning, so losing Redis is a candidate mid-assessment whose next question never arrives |
 | ALB deletion protection ON | A destroyed load balancer takes the DNS alias target with it, so the outage outlasts the mistake by however long a replacement takes plus however long resolvers cache the old answer |
 | ECS Exec OFF | A shell in a container holding real candidate data is a different thing from one holding seed data, and the difference should be a decision rather than an inheritance |
 | Container Insights ON | "Is the worker saturated" is a production question and needs data behind it |

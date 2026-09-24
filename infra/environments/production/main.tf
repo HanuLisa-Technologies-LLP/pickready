@@ -436,7 +436,7 @@ module "alb" {
     api = {
       port = 8000
       # DEEP, NOT A STATIC 200. `/health` resolves a pooled database session AND
-      # issues a broker round trip, so a task with a wrong DSN or an unreachable
+      # issues a Redis round trip, so a task with a wrong DSN or an unreachable
       # Redis fails this check and the ECS circuit breaker rolls the deploy back.
       # A static 200 would promote that same task.
       health_path             = "/health"
@@ -613,8 +613,7 @@ module "ecs" {
         # when it was absent, which made credit issuance an unauthenticated
         # POST. The handler now refuses when it is missing, so the absence is
         # loud instead of silent, and this line is what makes it present.
-        RAZORPAY_WEBHOOK_SECRET   = module.secrets.secret_arns["RAZORPAY_WEBHOOK_SECRET"]
-        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        RAZORPAY_WEBHOOK_SECRET = module.secrets.secret_arns["RAZORPAY_WEBHOOK_SECRET"]
         # THE INBOUND WEBHOOK'S SHARED SECRET. `POST /verification/inbound-email`
         # is a PUBLIC route that writes into verification requests, BGV threads
         # and conversations, and its only protection was that a caller had to
@@ -634,7 +633,7 @@ module "ecs" {
       }
     }
 
-    # THE ASSESSMENT AGENT, replacing the Celery worker and beat services.
+    # THE ASSESSMENT AGENT: the long half of background work.
     #
     # A task definition and NOTHING ELSE: no service, no desired count, no
     # autoscaling. `readypick-assessment-trigger` calls RunTask against this
@@ -671,13 +670,12 @@ module "ecs" {
       # NO FIREBASE KEY. A background task never authenticates a browser
       # session, so it has no business being able to read the service account.
       secrets = {
-        DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
-        REDIS_URL                 = module.secrets.secret_arns["REDIS_URL"]
-        OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
-        OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
-        VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
-        VOYAGE_RERANK_2_5         = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
-        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        DATABASE_URL      = module.secrets.secret_arns["DATABASE_URL"]
+        REDIS_URL         = module.secrets.secret_arns["REDIS_URL"]
+        OPENAI_GPT_TERRA  = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
+        OPENAI_GPT_LUNA   = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
+        VOYAGE_CONTEXT_4  = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5 = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
       }
     }
 
@@ -771,7 +769,7 @@ module "ecs" {
       # The Hugging Face token, and nothing else. The diarization models are
       # gated: the licence is accepted per account, so the service refuses to
       # load them without a token even though the weights are baked into the
-      # image. It holds no DSN, no broker and no model-provider key, because
+      # image. It holds no DSN, no Redis and no model-provider key, because
       # all it is handed is audio and all it answers is a speaker count.
       secrets = {
         HUGGINGFACE_TOKEN = module.secrets.secret_arns["HUGGINGFACE_TOKEN"]
@@ -784,11 +782,12 @@ module "ecs" {
 
 # ── Background work ──────────────────────────────────────────────────────────
 #
-# The Lambda half of what the Celery worker and beat services used to do. See
-# `infra/environments/pilot/main.tf` for the full argument; the short version is
-# that short work is billed per invocation, long work is one on-demand Fargate
-# task per dispatch, and the schedule is a managed scheduler with no singleton
-# process to lose.
+# The short half of background work: one Lambda runs every task routed to
+# Route.LAMBDA, and the agent task definition above runs every Route.ECS one.
+# See `infra/environments/pilot/main.tf` for the full argument; the short
+# version is that short work is billed per invocation, long work is one
+# on-demand Fargate task per dispatch, and the schedule is a managed
+# scheduler with no singleton process to lose.
 
 module "lambda" {
   source = "../../modules/lambda"
@@ -834,16 +833,14 @@ module "lambda" {
       # equivalent, so the function fetches them at cold start with the
       # policy below. Only the ARNs are here.
       secrets = {
-        DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
-        REDIS_URL                 = module.secrets.secret_arns["REDIS_URL"]
-        OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
-        OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
-        VOYAGE_CONTEXT_4          = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
-        VOYAGE_RERANK_2_5         = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
-        SMTP_PASSWORD             = module.secrets.secret_arns["SMTP_PASSWORD"]
-        TAVILY_API_KEY            = module.secrets.secret_arns["TAVILY_API_KEY"]
-        MSG91_API_KEY             = module.secrets.secret_arns["MSG91_API_KEY"]
-        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        DATABASE_URL      = module.secrets.secret_arns["DATABASE_URL"]
+        REDIS_URL         = module.secrets.secret_arns["REDIS_URL"]
+        OPENAI_GPT_TERRA  = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
+        OPENAI_GPT_LUNA   = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
+        VOYAGE_CONTEXT_4  = module.secrets.secret_arns["VOYAGE_CONTEXT_4"]
+        VOYAGE_RERANK_2_5 = module.secrets.secret_arns["VOYAGE_RERANK_2_5"]
+        SMTP_PASSWORD     = module.secrets.secret_arns["SMTP_PASSWORD"]
+        TAVILY_API_KEY    = module.secrets.secret_arns["TAVILY_API_KEY"]
       }
       environment = {
         # AWS_REGION IS NOT SET HERE. It is one of Lambda's RESERVED keys: the
@@ -874,10 +871,9 @@ module "lambda" {
       # equivalent, so the function fetches them at cold start with the
       # policy below. Only the ARNs are here.
       secrets = {
-        DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
-        OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
-        OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
-        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        DATABASE_URL     = module.secrets.secret_arns["DATABASE_URL"]
+        OPENAI_GPT_TERRA = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
+        OPENAI_GPT_LUNA  = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
       }
       environment = {
         # AWS_REGION IS NOT SET HERE. It is one of Lambda's RESERVED keys: the
@@ -903,11 +899,10 @@ module "lambda" {
       # equivalent, so the function fetches them at cold start with the
       # policy below. Only the ARNs are here.
       secrets = {
-        DATABASE_URL              = module.secrets.secret_arns["DATABASE_URL"]
-        OPENAI_GPT_TERRA          = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
-        OPENAI_GPT_LUNA           = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
-        TAVILY_API_KEY            = module.secrets.secret_arns["TAVILY_API_KEY"]
-        LLM_KEY_ENCRYPTION_SECRET = module.secrets.secret_arns["LLM_KEY_ENCRYPTION_SECRET"]
+        DATABASE_URL     = module.secrets.secret_arns["DATABASE_URL"]
+        OPENAI_GPT_TERRA = module.secrets.secret_arns["OPENAI_GPT_TERRA"]
+        OPENAI_GPT_LUNA  = module.secrets.secret_arns["OPENAI_GPT_LUNA"]
+        TAVILY_API_KEY   = module.secrets.secret_arns["TAVILY_API_KEY"]
       }
       environment = {
         # AWS_REGION IS NOT SET HERE. It is one of Lambda's RESERVED keys: the

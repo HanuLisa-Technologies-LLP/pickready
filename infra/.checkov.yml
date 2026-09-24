@@ -104,8 +104,8 @@ skip-check:
   - CKV_AWS_260
 
   # CKV2_AWS_57 "Secrets Manager secrets should have automatic rotation"
-  # Twelve secrets, and rotation means something different for each. A vendor
-  # API key (Anthropic, Voyage, Tavily, MSG91, Razorpay) cannot be rotated by a
+  # Every secret, and rotation means something different for each. A vendor
+  # API key (OpenAI, Voyage, Tavily, Razorpay) cannot be rotated by a
   # Lambda: the vendor mints it in their own console and no API exists to
   # replace it in place. A Firebase service account is the same. Enabling
   # rotation with a rotation function that cannot actually rotate produces a

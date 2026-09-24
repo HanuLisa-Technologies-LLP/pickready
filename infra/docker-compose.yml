@@ -32,14 +32,12 @@ services:
 
   backend:
     build: ../backend
-    # env_file delivers the ENTIRE ../.env into the container, so all secrets —
-    # FIREBASE_SERVICE_ACCOUNT_JSON, SMTP_HOST / SMTP_PORT / SMTP_USER /
-    # SMTP_PASSWORD / SMTP_FROM_EMAIL / SMTP_FROM_NAME / SMTP_STARTTLS / SMTP_SSL
-    # (Gmail SMTP email), CLOUDINARY_URL,
-    # MSG91_API_KEY / MSG91_SENDER_ID, JWT_*, LLM keys — reach the API. The
-    # `environment` block below only overrides the two hostnames that differ
-    # inside the compose network; do NOT add SMTP_*/secret overrides here — an
-    # explicit key with an empty value would MASK the real one from ../.env.
+    # env_file delivers the ENTIRE ../.env into the container, so all secrets
+    # (FIREBASE_SERVICE_ACCOUNT_JSON, the SMTP_* Gmail settings, JWT_*, the
+    # model and embedding keys) reach the API. The `environment` block below
+    # only overrides the two hostnames that differ inside the compose network;
+    # do NOT add SMTP_*/secret overrides here: an explicit key with an empty
+    # value would MASK the real one from ../.env.
     env_file: ../.env
     environment:
       DATABASE_URL: postgresql+asyncpg://pickready:pickready@postgres:5432/pickready
