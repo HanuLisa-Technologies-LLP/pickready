@@ -26,8 +26,8 @@ class CandidateOut(BaseModel):
 
 
 class ProfileOut(BaseModel):
-    """The Profile (PRD glossary / FR-7.2): resume + 40 aspects + employer
-    verification, as shown on the HR Review Screen."""
+    """The Profile (PRD glossary / FR-7.2): resume + profile form answers +
+    employer verification."""
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID

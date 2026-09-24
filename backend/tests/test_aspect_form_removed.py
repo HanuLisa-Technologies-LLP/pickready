@@ -52,29 +52,13 @@ SINGLE_FILES = ("frontend/proxy.ts",)
 #: Files another work package still has to clean, and who. MUST SHRINK TO
 #: EMPTY. Paths are repository-relative with forward slashes.
 PENDING: dict[str, str] = {
-    "backend/app/api/verification.py": "WP6-C: delete send_outreach and its imports",
-    "backend/app/api/deps.py": (
-        "orchestrator (WP6-A hunk 8): delete make_outreach_token, "
-        "decode_outreach_token and OUTREACH_TOKEN_TTL_DAYS with the last caller"
-    ),
-    "backend/app/services/email_render.py": (
-        "orchestrator: delete the candidate_outreach default in the merge that "
-        "removes verification.send_outreach, its only sender"
-    ),
-    "backend/app/api/candidates.py": "WP6-D: the /status route and its 40-question refusal",
-    "backend/app/schemas/candidates.py": "WP6-D: ProfileOut docstring",
-    "backend/app/api/jobs.py": "Phase 1: databank upload docstring (orchestrator hunk)",
-    "backend/app/services/capabilities.py": "orchestrator hunk: SEND_OUTREACH comment",
-    "backend/app/services/assessment_invite.py": "orchestrator hunk: token comment",
     "backend/app/services/resume_prefill.py": "Phase 3 deletes the module",
-    "backend/app/scripts/validate_stack.py": "orchestrator hunk: comment",
-    "backend/app/scripts/seed_mock_data.py": "orchestrator hunk: comment",
-    "backend/app/scripts/seed_demo_applications.py": "orchestrator hunk: comment",
 }
 
-#: Routes that must not be served. The second waits on WP6-C.
-GONE_ROUTES = ("/api/v1/portal/outreach/{token}",)
-PENDING_ROUTES = {"/api/v1/verification/outreach": "WP6-C: delete send_outreach"}
+#: Routes that must not be served. Both are gone: the portal half went with
+#: WP6-B and the recruiter's half with WP6-C.
+GONE_ROUTES = ("/api/v1/portal/outreach/{token}", "/api/v1/verification/outreach")
+PENDING_ROUTES: dict[str, str] = {}
 
 THIS_FILE = pathlib.Path(__file__).resolve()
 

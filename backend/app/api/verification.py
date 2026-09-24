@@ -12,8 +12,8 @@ otherwise. The surviving system is the candidate-owned one:
 candidate_employments, bgv_verifications and the seven-item checkbox form at
 /bgv/form/{token}.
 
-THE OUTREACH ROUTE IS RETIRED TOO (Phase 6). `POST /verification/outreach`
-mailed a sourced candidate a link to a long questionnaire that no screen
+THE OUTREACH ROUTE IS RETIRED TOO (Phase 6). The recruiter's outreach POST
+on this router mailed a sourced candidate a link to a long questionnaire that no screen
 sent and nothing downstream read; the unified six-field application replaced
 it. The route and its schemas are gone, and the Phase 6 removal sweep keeps
 them gone.

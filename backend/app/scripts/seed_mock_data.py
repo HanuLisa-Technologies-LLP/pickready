@@ -682,7 +682,7 @@ async def fill_staff(session: AsyncSession, dry_run: bool) -> dict[str, int]:
 
 
 # ── Candidate profile form ───────────────────────────────────────────────────
-# NOTE ON THE SPEC: the brief describes a "40-question" form with numbered
+# NOTE ON THE SPEC: the brief describes a numbered questionnaire of
 # aspects 1-40. That was the pre-2026-07-27 model. The form is now a structured
 # set of NAMED fields owned by `services/candidate_profile_form.py`, and the
 # report, matching pipeline and My Profile page all read those names. Populating

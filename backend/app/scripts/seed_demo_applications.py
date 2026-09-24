@@ -134,7 +134,7 @@ SOURCE_TYPES = ("applied", "sourced", "databank")
 #: the Validation section of a report look real in a demonstration.
 #:
 #: These are the CURRENT six fields (services/application_validation). The
-#: 40-aspect profile form they replaced on 2026-07-30 is not collected here and
+#: numbered profile questionnaire they replaced on 2026-07-30 is not collected here and
 #: is not what the report's Validation section reads any more.
 _VALIDATION_SAMPLES: tuple[dict[str, str], ...] = (
     {

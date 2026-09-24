@@ -325,7 +325,7 @@ async def _run_db_checks(report: Report) -> None:
             await _acheck(report, "flat_staff_permission_matrix", flat_permission_matrix)
 
             # 7c) A candidate can be resolved for open application. The PRD v1.0
-            #     open flow is public register → 40-aspect questionnaire → resume
+            #     open flow is public register → profile form → resume
             #     (upload OR reuse) → apply against a published job. That flow needs
             #     BOTH a published job (a target) and at least one candidate row.
             async def candidate_for_open_application():

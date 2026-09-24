@@ -13,17 +13,14 @@
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from typing import AsyncIterator
 
 import jwt as pyjwt
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.core.db import get_session_factory, superadmin_scope, tenant_scope
 from app.core.security import (
-    ALGORITHM,
     AUDIENCE_CANDIDATE,
     AUDIENCE_ORG,
     AUDIENCE_OWNER,
@@ -72,11 +69,6 @@ ACTIVITY_HEADER_VALUE = "1"
 def is_user_activity(request) -> bool:
     """Whether this request says a person just interacted with the page."""
     return request.headers.get(ACTIVITY_HEADER) == ACTIVITY_HEADER_VALUE
-
-
-# Outreach links stay valid this long (candidate must respond within it).
-# ASSUMPTION: 14 days — PRD sets no explicit outreach-link TTL.
-OUTREACH_TOKEN_TTL_DAYS = 14
 
 
 # ── Cookie hardening (single source of truth) ────────────────────────────────
@@ -437,39 +429,3 @@ def require_capability(capability: str):
 
     return dependency
 
-
-# ── Outreach tokens (signed, stateless) ──────────────────────────────────────
-# The candidate outreach link (FR-6.1) is a signed JWT carrying
-# {profile_id, job_id, purpose: "outreach"} under the candidate audience.
-# There is no DB column for an outreach token, so the signature is the
-# integrity guarantee; single-use is enforced at submit time by rejecting a
-# profile whose aspects are already completed (see portal.py).
-
-def make_outreach_token(profile_id: uuid.UUID | str, job_id: uuid.UUID | str) -> str:
-    settings = get_settings()
-    now = datetime.now(timezone.utc)
-    payload = {
-        "profile_id": str(profile_id),
-        "job_id": str(job_id),
-        "purpose": "outreach",
-        "aud": AUDIENCE_CANDIDATE,
-        "iat": now,
-        "exp": now + timedelta(days=OUTREACH_TOKEN_TTL_DAYS),
-        "type": "outreach",
-    }
-    return pyjwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
-
-
-def decode_outreach_token(token: str) -> dict:
-    """Returns {profile_id, job_id} or raises HTTPException(404) — public
-    endpoints must not leak why a token is invalid."""
-    try:
-        payload = pyjwt.decode(
-            token, get_settings().jwt_secret, algorithms=[ALGORITHM],
-            audience=AUDIENCE_CANDIDATE,
-        )
-    except pyjwt.PyJWTError as exc:
-        raise HTTPException(status_code=404, detail="Invalid or expired link") from exc
-    if payload.get("purpose") != "outreach":
-        raise HTTPException(status_code=404, detail="Invalid or expired link")
-    return payload

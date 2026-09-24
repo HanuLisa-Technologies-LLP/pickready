@@ -146,21 +146,6 @@ DEFAULT_TEMPLATES: dict[str, tuple[str, str]] = {
     # email_log row, no audit_log row, and nothing the user could see. The
     # invariant is enforced by tests/test_email_delivery.py, which walks every
     # literal name passed to pickready.send_email in backend/app.
-    #
-    # RETIRING with the questionnaire outreach form (2026-09-24). Its one sender
-    # is `api/verification.send_outreach`, which WP6-C deletes; this entry
-    # goes in the same merge, because `test_email_delivery` requires every
-    # name a sender still dispatches to have a default. The older "outreach"
-    # entry, which nothing ever sent, is already gone.
-    "candidate_outreach": (
-        "Information request regarding the {{job_title}} role at {{company_name}}",
-        "Dear {{candidate_name}},\n\n"
-        "We are considering you for the {{job_title}} role at "
-        "{{company_name}}. Please complete your candidate page (personal "
-        "details, updated resume, and questionnaire) using this link:\n\n"
-        "{{outreach_url}}\n\n"
-        "Regards,\n{{company_name}} People Team",
-    ),
     # The `sender_verification` template was REMOVED with the mailbox OTP on
     # 2026-09-08. It was the only carrier of a six-digit code into a client
     # mailbox, and nothing dispatches it any more. Left in place it would be
