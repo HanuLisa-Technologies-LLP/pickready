@@ -127,9 +127,9 @@ async def _candidate_id_for(session: AsyncSession, user: CurrentUser) -> uuid.UU
     `candidate_identity.require_candidate` matches `candidates.user_id` and
     nothing else, and 404s with the portal's own sentence when there is no
     record. The raw SQL this replaced also matched the candidate row by the
-    signed-in user's email, an address Firebase may never have verified, so a password sign-up carrying
-    somebody else's address could read and write THEIR employment history.
-    Never trusts an id from the client.
+    signed-in user's email, an address Firebase may never have verified, so
+    a password sign-up carrying somebody else's address could read and write
+    THEIR employment history. Never trusts an id from the client.
     """
     return (await candidate_identity.require_candidate(session, user.user_id)).id
 
