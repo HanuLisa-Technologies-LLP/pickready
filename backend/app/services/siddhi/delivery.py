@@ -1,81 +1,87 @@
-"""Delivery: gate G4, then the number ban, then the bytes somebody receives.
+"""Delivery: gate G4, then the number ban, then the PDF somebody downloads.
 
-FOUR EXPORT FORMATS, ONE RULE
--------------------------------
-spec-doc6 D8: the PRISM Report "remains named grades only, zero numbers,
-unchanged. This includes any export, PDF, email body or attachment."
+ONE EXPORT FORMAT, AND THE OTHER THREE WERE DELETED (PLAN-p5 P5-D7)
+---------------------------------------------------------------------
+This module used to offer four exports (`prism_json`, `prism_pdf`,
+`prism_email_body`, `prism_attachment`) and a `deliver` that ran all four behind
+G4. None of them had a production caller: the PDF download route rendered the
+document itself, straight through `report_pdf.render_report_pdf`, so G4 guarded
+nothing a client ever received. The master prompt's instruction was "wire it
+into the PDF and export path, or delete it", and both halves apply:
 
-So there are four ways a report leaves the building and all four go through one
-function each, and every one of those functions calls `numbers.assert_clean`
-before it returns. The alternative -- checking at the generator -- holds only
-for the paths that go through the generator, and the point of the ruling is that
-the dashboard now legitimately holds a 0-100 Vivekium Score, so the report and
-the triage surface read from overlapping state. A rule that lived in one
-function would be a rule about that function.
+  * WIRED: `gate_delivery` then `prism_pdf` is the PDF route's path. The route
+    is the one export a client receives, and it is the one place G4 now gates.
+  * DELETED: `prism_json` (the on-screen report is deliberately NOT gated: it
+    is where the person who must record the G4 decision reads the report, so
+    gating it would make the gate unsatisfiable), `prism_email_body` and
+    `prism_attachment` (no email carries a report, and inventing one to keep
+    a function alive is inventing a caller), and `deliver`.
 
-G4 RUNS FIRST, AND IT ASKS WHETHER A HUMAN DECIDED
-----------------------------------------------------
+A PDF CANNOT BE RENDERED WITHOUT A CLEARANCE
+----------------------------------------------
+`prism_pdf` takes the `DeliveryClearance` as its first argument, and a
+clearance can be minted only by `gate_delivery` (the constructor refuses any
+other caller). So "the PDF path runs G4 first" is a property of the types
+rather than of the order two lines happen to be written in. The number ban runs
+inside the renderer (`report_pdf.render_report_pdf` calls `numbers.assert_clean`
+on its own input), which is the one implementation of it on this path.
+
+G4 ASKS WHETHER A HUMAN DECIDED
+---------------------------------
 Not whether they approved. All four dispositions pass, `rejected` included. A
 gate requiring approval is a gate the pipeline can satisfy by nagging until
 somebody clicks yes; a gate requiring a recorded decision is satisfiable only by
-someone having actually looked, and by nothing the pipeline can do on its own.
-There is no `auto_cleared` disposition, a Postgres CHECK refuses one, and
-`review_dispositions.decided_by` is ON DELETE RESTRICT so a decision can never
-survive the erasure of the person who made it.
+someone having actually looked. There is no `auto_cleared` disposition, a
+Postgres CHECK refuses one, and `review_dispositions.decided_by` is ON DELETE
+RESTRICT so a decision can never survive the erasure of the person who made it.
 
 WHY BLOCKING HERE IS SAFE AND BLOCKING AT G2/G3 IS NOT
 --------------------------------------------------------
-G2 (evidence sufficiency) and G3 (integrity) are non-blocking on purpose: a
-blocking sufficiency gate refuses a report to exactly the candidates who most
-need a person to look at it, and a blocking integrity gate would end a candidacy
-without anybody seeing the finding. G4 blocks in the other direction. It does
-not withhold a decision from a human; it withholds a document from a client
-until a human has made one. Nothing about a candidate is decided by it failing.
+G2 and G3 are non-blocking on purpose: a blocking sufficiency gate refuses a
+report to exactly the candidates who most need a person to look at it, and a
+blocking integrity gate would end a candidacy without anybody seeing the
+finding. G4 blocks in the other direction. It withholds a document from a
+client until a human has made a decision, and decides nothing about the
+candidate.
 """
 from __future__ import annotations
 
 import logging
-import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
-
-from app.services.siddhi import numbers
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "PDF_BLOCKED_REASON",
     "DeliveryBlocked",
     "DeliveryClearance",
     "gate_delivery",
-    "prism_json",
+    "clearance_or_reason",
     "prism_pdf",
-    "prism_email_body",
-    "prism_attachment",
-    "deliver",
 ]
 
+#: The sentence the PDF route answers with while G4 blocks, and the reason the
+#: report payload carries so the screen hides a dead Download button. SERVED BY
+#: THE SERVER, so the refusal and the explanation cannot drift apart.
+PDF_BLOCKED_REASON = (
+    "A person with integrity review authority must record a decision on this "
+    "candidate before the PRISM Report can be downloaded."
+)
 
-def _field(source: Any, name: str) -> Any:
-    """One field, whether the payload is a model or a plain dict.
-
-    A dict is asked BEFORE `getattr`, because a payload arriving as a dict
-    answers `getattr` with a bound method for any key that shadows one and with
-    nothing at all for the rest. `report_pdf._value` had the same hole and the
-    same fix.
-    """
-    if isinstance(source, dict):
-        return source.get(name)
-    return getattr(source, name, None)
+#: The only thing that can mint a clearance. Module private, compared by
+#: identity: a caller elsewhere cannot construct a `DeliveryClearance` without
+#: reaching into this module's internals, which is a diff a reviewer sees.
+_MINT = object()
 
 
 class DeliveryBlocked(RuntimeError):
-    """G4 has not been satisfied, so the report is not delivered.
+    """G4 has not been satisfied, so the PDF is not produced.
 
-    Carries the gate's own reasons verbatim. A refusal a recruiter cannot act on
-    is a refusal they will route around, and the actionable form of this one is
-    always the same shape: somebody has to open the flagged assessment and
-    record what they decided.
+    Carries the gate's own reasons verbatim for the log and the audit; the
+    client is told `PDF_BLOCKED_REASON`, which is the actionable form of every
+    one of them.
     """
 
     def __init__(self, reasons: tuple[str, ...]) -> None:
@@ -89,11 +95,20 @@ class DeliveryBlocked(RuntimeError):
 
 @dataclass(frozen=True)
 class DeliveryClearance:
-    """The recorded fact that G4 passed, and on what basis."""
+    """The recorded fact that G4 passed, and on what basis. Minted by `gate_delivery` only."""
 
     needed_review: bool
     disposition: str | None = None
     decided_by: Any = None
+    _minted: object = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._minted is not _MINT:
+            raise TypeError(
+                "A DeliveryClearance is minted by siddhi.delivery.gate_delivery "
+                "and nothing else; a clearance a caller builds itself would "
+                "satisfy G4 without the gate running."
+            )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -149,28 +164,30 @@ async def gate_delivery(session: Any, report: Any) -> DeliveryClearance:
         )
         raise DeliveryBlocked(tuple(result.reasons))
     return DeliveryClearance(
-        needed_review=needs_review, disposition=disposition, decided_by=decided_by
+        needed_review=needs_review,
+        disposition=disposition,
+        decided_by=decided_by,
+        _minted=_MINT,
     )
 
 
-# ── Export format 1: the JSON response ───────────────────────────────────────
+async def clearance_or_reason(
+    session: Any, report: Any
+) -> tuple[DeliveryClearance | None, str | None]:
+    """G4 in a non-raising form, for a payload that must say whether the PDF is available.
 
-
-def prism_json(report_out: Any) -> dict[str, Any]:
-    """The API response payload, checked field by field before it is returned."""
-    payload = (
-        report_out.model_dump()
-        if hasattr(report_out, "model_dump")
-        else dict(report_out)
-    )
-    numbers.assert_clean(payload, where="prism.json")
-    return payload
-
-
-# ── Export format 2: the PDF ─────────────────────────────────────────────────
+    The SAME gate, not a second reading of it: this calls `gate_delivery` and
+    converts its refusal into `PDF_BLOCKED_REASON`, so the screen can never
+    offer a download the route would then refuse.
+    """
+    try:
+        return await gate_delivery(session, report), None
+    except DeliveryBlocked:
+        return None, PDF_BLOCKED_REASON
 
 
 def prism_pdf(
+    clearance: DeliveryClearance,
     report_out: Any,
     *,
     candidate_name: str,
@@ -178,12 +195,17 @@ def prism_pdf(
     tenant_name: str,
     generated_at: datetime,
 ) -> bytes:
-    """The downloadable document. `report_pdf` runs the ban on its own input.
+    """The downloadable document, for a report G4 has cleared.
 
-    Called through rather than duplicated: the renderer has to run the check
-    itself, because the download route reaches it directly and a check that only
-    ran in this wrapper would be a check the live route skips.
+    `clearance` is REQUIRED and is the first argument: the only way to hold
+    one is to have run `gate_delivery`. The renderer runs the number ban on its
+    own input, so the ban cannot be skipped by calling it from elsewhere.
     """
+    if not isinstance(clearance, DeliveryClearance):
+        raise TypeError(
+            "prism_pdf needs the DeliveryClearance gate_delivery returned; "
+            "a PDF is never rendered before G4 has run"
+        )
     from app.services.report_pdf import render_report_pdf
 
     return render_report_pdf(
@@ -193,111 +215,3 @@ def prism_pdf(
         tenant_name=tenant_name,
         generated_at=generated_at,
     )
-
-
-# ── Export format 3: the email body ──────────────────────────────────────────
-
-#: The email that carries a report says the report exists and says nothing about
-#: what is in it. That is not caution about numbers alone: an email is forwarded
-#: further than any other surface in this product, and a grade quoted in one
-#: outlives every access control on the document it came from.
-_EMAIL_BODY = (
-    "The PRISM Report for {candidate} on {job} is ready.\n"
-    "Evidence-Based Role Intelligence & Suitability Mapping.\n\n"
-    "Open it in Vivekium to read the assessment, the gap analysis and the "
-    "candidate's own application answers.\n\n"
-    "Reference: {reference}\n"
-)
-
-
-def prism_email_body(
-    report_out: Any, *, candidate_name: str, job_title: str
-) -> str:
-    """One notification body, checked as a bare string."""
-    reference = _field(report_out, "reference_code") or "not assigned"
-    body = _EMAIL_BODY.format(
-        candidate=candidate_name, job=job_title, reference=reference
-    )
-    numbers.assert_text_clean(body, where="prism.email_body")
-    return body
-
-
-# ── Export format 4: the attachment ──────────────────────────────────────────
-
-_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
-
-
-
-def prism_attachment(
-    report_out: Any,
-    *,
-    candidate_name: str,
-    job_title: str,
-    tenant_name: str,
-    generated_at: datetime,
-) -> tuple[str, bytes, str]:
-    """(filename, bytes, media type). The filename is a client-visible string.
-
-    So it follows the USER-VISIBLE copy rename and says PRISM, while the module,
-    the route and the stored columns keep saying ppi. A file lands on somebody's
-    desktop; a route is quoted in links already sitting in inboxes.
-    """
-    payload = prism_pdf(
-        report_out,
-        candidate_name=candidate_name,
-        job_title=job_title,
-        tenant_name=tenant_name,
-        generated_at=generated_at,
-    )
-    stem = _SAFE.sub("-", candidate_name).strip("-") or "candidate"
-    return f"PRISM-Report-{stem}.pdf", payload, "application/pdf"
-
-
-# ── The whole delivery, in the order it has to happen ────────────────────────
-
-
-async def deliver(
-    session: Any,
-    report: Any,
-    report_out: Any,
-    *,
-    candidate_name: str,
-    job_title: str,
-    tenant_name: str,
-) -> dict[str, Any]:
-    """G4, then every export format, then the payloads. Raises or returns.
-
-    The order is the whole value. Gating after serialisation would mean the
-    bytes already exist, and bytes that exist get sent; gating first means a
-    report awaiting a human decision is never rendered in any format at all.
-    """
-    clearance = await gate_delivery(session, report)
-    generated_at = _field(report_out, "synthesized_at") or _field(
-        report, "synthesized_at"
-    )
-    if not isinstance(generated_at, datetime):
-        # A report with no synthesis timestamp is a row that was never
-        # finished, and dating the delivered document `now` would put a date on
-        # a client's permanent record that no stage of the pipeline ever wrote.
-        raise DeliveryBlocked(
-            (
-                "This report carries no synthesis timestamp, so there is no "
-                "date to put on the delivered document.",
-            )
-        )
-    filename, pdf, media_type = prism_attachment(
-        report_out,
-        candidate_name=candidate_name,
-        job_title=job_title,
-        tenant_name=tenant_name,
-        generated_at=generated_at,
-    )
-    return {
-        "clearance": clearance.as_dict(),
-        "json": prism_json(report_out),
-        "pdf": pdf,
-        "email_body": prism_email_body(
-            report_out, candidate_name=candidate_name, job_title=job_title
-        ),
-        "attachment": {"filename": filename, "media_type": media_type},
-    }

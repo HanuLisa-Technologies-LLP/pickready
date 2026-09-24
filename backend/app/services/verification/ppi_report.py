@@ -24,7 +24,7 @@ Three properties, and each has cost the product something before:
   report where the arithmetic and the cap disagree is worse than no report.
 
   Remarks are 45-50 words AND specific. The word range is a spec constant
-  imported from `functional_assessment`; the specificity is why the generic
+  imported from `siddhi.remarks`; the specificity is why the generic
   language finding is HIGH severity here and medium elsewhere. A 48-word remark
   built from filler satisfies every mechanical check and tells a hiring manager
   nothing at all, which is the exact failure this whole package exists for.
@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
-from app.services import conversation_guardrails, functional_assessment, ppi, rating
+from app.services import conversation_guardrails, ppi, rating
 from app.services.verification import base, generic_language
 
 def _remark_bounds() -> tuple[int, int]:
@@ -58,8 +58,15 @@ def _remark_bounds() -> tuple[int, int]:
 
     Reading it in a function costs one dict lookup per verification and removes
     the whole class of failure, so the band still has exactly one definition.
+
+    THAT DEFINITION IS `siddhi.remarks.SKILL_REMARK_WORDS` since the Vivekium
+    release, beside the writer held to it: the word contracts moved out of the
+    scoring orchestrator with the remark writer (PLAN-p5 section 3.3). Still
+    read lazily, for the reason above.
     """
-    return functional_assessment.PPI_REMARK_WORDS
+    from app.services.siddhi.remarks import SKILL_REMARK_WORDS
+
+    return SKILL_REMARK_WORDS
 
 
 

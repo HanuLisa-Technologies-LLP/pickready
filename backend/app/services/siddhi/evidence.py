@@ -50,6 +50,23 @@ auditing a grade, and a locator that quoted the sentence it points at would put
 a candidate's own words into every table that stores a citation. The excerpt is
 held in the node, in memory, for the generator to ground a probe on, and is
 never part of the ref.
+
+REFS ARE POSITIONAL; LOCATORS ARE DURABLE (Vivekium release)
+--------------------------------------------------------------
+A ref (`answer:<slug>:<index>`) is stable within ONE report and means nothing
+outside it: it names "the first exchange filed under this item", and a reader
+of the stored trail had no way from it back to the message the candidate
+actually typed. So a node now also carries `locators`, durable addresses of the
+rows it was built from (`assessment_messages:<uuid>`,
+`candidate_questions:<uuid>`, `context_chunks:<uuid>`, `employer:<slug>`,
+`portable:<slug>`), persisted in the trail beside the ref. A locator is an
+address and never text: resolving it to an excerpt happens at READ time,
+behind the capability that guards the transcript
+(`siddhi.trail.resolve_evidence`), so the stored trail stays a record anyone
+can audit without it becoming a copy of the transcript.
+
+`content` is the node's full text, IN MEMORY ONLY, for the support check in
+`siddhi.support`. It is never persisted and never part of `as_dict`.
 """
 from __future__ import annotations
 
@@ -63,12 +80,24 @@ __all__ = [
     "KIND_SEARCHED",
     "KIND_EMPLOYER",
     "KIND_PORTABLE",
+    "KIND_PASSAGE",
+    "LOCATOR_MESSAGE",
+    "LOCATOR_QUESTION",
+    "LOCATOR_CHUNK",
     "EvidenceNode",
     "EvidenceIndex",
     "employer_item",
     "employer_node",
     "portable_node",
+    "passage_node",
 ]
+
+#: Durable address prefixes. `siddhi.trail` resolves the first three at read
+#: time; the employer and portable addresses are their own refs and carry no
+#: text to resolve.
+LOCATOR_MESSAGE = "assessment_messages"
+LOCATOR_QUESTION = "candidate_questions"
+LOCATOR_CHUNK = "context_chunks"
 
 KIND_ANSWER = "answer"
 KIND_QUESTION = "question"
@@ -112,6 +141,17 @@ KIND_EMPLOYER = "employer"
 #: any case. The new job's matrix grades this criterion itself.
 KIND_PORTABLE = "portable"
 
+#: A SIXTH KIND: A TRANSCRIPT OR RESUME PASSAGE A GRADING JUDGEMENT READ.
+#:
+#: Miti's item evaluation may read passages from the candidate's OTHER answers
+#: (or their resume) that bear on a skill, retrieved through the typed tool
+#: layer. A grade that rested partly on one of those has to be able to cite it,
+#: or the remark written from that grade would cite less than it stands on.
+#: The node's locator is the `context_chunks` row, and its content (in memory
+#: only) is what the support check reads. It joins the item's grounding beside
+#: its answers, never instead of them.
+KIND_PASSAGE = "passage"
+
 #: How many characters of an answer the generator may quote back when grounding
 #: a probe. Long enough to be recognisably the candidate's own claim, short
 #: enough that it is a reference rather than a reproduction.
@@ -134,15 +174,33 @@ class EvidenceNode:
     #: INTERNAL. What the node points at, for grounding a probe. Never rendered
     #: and never part of the ref.
     excerpt: str = ""
+    #: Durable addresses of the rows this node was built from. Persisted: an
+    #: address is not text. Empty on a node built from an exchange that carried
+    #: no ids (every report written before the Vivekium release).
+    locators: tuple[str, ...] = ()
+    #: INTERNAL. The node's full text for the support check. Never persisted.
+    content: str = ""
 
     def as_dict(self) -> dict[str, Any]:
-        """The audit shape. Deliberately without the excerpt.
+        """The audit shape. Deliberately without the excerpt or the content.
 
         The trail is persisted with the report and read far more widely than the
         report is; a trail carrying answer text would make every reader of the
-        provenance a reader of the transcript.
+        provenance a reader of the transcript. The locators travel because they
+        are addresses, resolved to text only behind the transcript capability.
         """
-        return {"ref": self.ref, "kind": self.kind, "item": self.item}
+        return {
+            "ref": self.ref,
+            "kind": self.kind,
+            "item": self.item,
+            "locators": list(self.locators),
+        }
+
+    @property
+    def support_text(self) -> str:
+        """The text the support check may read: the full content when held,
+        the excerpt otherwise."""
+        return self.content or self.excerpt
 
 
 def employer_item(employer_name: str) -> str:
@@ -165,7 +223,10 @@ def employer_node(employer_name: str) -> "EvidenceNode":
     rather than encoded in an identifier.
     """
     item = employer_item(employer_name)
-    return EvidenceNode(ref=f"{KIND_EMPLOYER}:{_slug(employer_name)}", kind=KIND_EMPLOYER, item=item)
+    ref = f"{KIND_EMPLOYER}:{_slug(employer_name)}"
+    # The ref IS the durable address here: it names the employer, and the
+    # confirmation it points at is read from `bgv_verifications` by name.
+    return EvidenceNode(ref=ref, kind=KIND_EMPLOYER, item=item, locators=(ref,))
 
 
 def portable_node(item: str) -> "EvidenceNode":
@@ -179,8 +240,32 @@ def portable_node(item: str) -> "EvidenceNode":
     already.
     """
     key = str(item)
+    ref = f"{KIND_PORTABLE}:{_slug(key)}"
+    return EvidenceNode(ref=ref, kind=KIND_PORTABLE, item=key, locators=(ref,))
+
+
+def passage_node(
+    item: str, slug: str, index: int, *, chunk_id: Any, content: str
+) -> "EvidenceNode":
+    """One citable retrieved passage a grading judgement read for `item`.
+
+    The locator is the `context_chunks` row; the content is held in memory for
+    the support check and never persisted. A passage with no chunk id is not
+    citable, because a reader of the trail could never find what it pointed at.
+    """
+    if not chunk_id:
+        raise ValueError(
+            f"a passage for {item!r} carries no chunk id; an unaddressable "
+            f"passage cannot be cited"
+        )
+    text = str(content or "").strip()
     return EvidenceNode(
-        ref=f"{KIND_PORTABLE}:{_slug(key)}", kind=KIND_PORTABLE, item=key
+        ref=f"{KIND_PASSAGE}:{slug}:{index}",
+        kind=KIND_PASSAGE,
+        item=str(item),
+        excerpt=text[:EXCERPT_CHARS],
+        locators=(f"{LOCATOR_CHUNK}:{chunk_id}",),
+        content=text,
     )
 
 
@@ -228,9 +313,21 @@ class EvidenceIndex:
         """
         answers = self.refs_for(item, kind=KIND_ANSWER)
         portable = self.refs_for(item, kind=KIND_PORTABLE)
-        if answers or portable:
-            return answers + portable
+        # A passage a grading judgement read is evidence the grade rests on,
+        # so a claim about the grade cites it beside the answers. It never
+        # stands in for them: an item with passages and no answer still has
+        # real evidence, and the refs say which kind by their prefix.
+        passages = self.refs_for(item, kind=KIND_PASSAGE)
+        if answers or portable or passages:
+            return answers + portable + passages
         return self.refs_for(item, kind=KIND_SEARCHED)
+
+    def node(self, ref: str) -> EvidenceNode | None:
+        """The node a ref names, or None for a ref this index does not hold."""
+        for node in self.nodes:
+            if node.ref == ref:
+                return node
+        return None
 
     def searched(self, item: str) -> tuple[str, ...]:
         return self.refs_for(item, kind=KIND_SEARCHED)
@@ -256,6 +353,7 @@ class EvidenceIndex:
         *,
         items: Sequence[str],
         exchanges: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
+        passages: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
     ) -> "EvidenceIndex":
         """Index every rated item, and every exchange recorded against one.
 
@@ -263,10 +361,17 @@ class EvidenceIndex:
         the exchanges is what guarantees a `searched` node for an item nobody
         answered anything about, which is precisely the item a gap statement
         will be written for.
+
+        An exchange may carry `question_id` and `message_ids` (the
+        `candidate_questions` row and the `assessment_messages` rows its answer
+        was assembled from); when it does, the nodes carry them as durable
+        locators. `passages` maps an item to the retrieved passages a grading
+        judgement read for it, each `{"chunk_id", "content"}`.
         """
         seen: dict[str, str] = {}
         nodes: list[EvidenceNode] = []
         recorded = exchanges or {}
+        retrieved = passages or {}
         for name in items:
             key = str(name)
             if key in seen:
@@ -287,6 +392,10 @@ class EvidenceIndex:
             for index, exchange in enumerate(recorded.get(key, []) or []):
                 question = str(exchange.get("question") or "").strip()
                 answer = str(exchange.get("answer") or "").strip()
+                question_id = exchange.get("question_id")
+                message_ids = [
+                    str(value) for value in (exchange.get("message_ids") or []) if value
+                ]
                 if question:
                     nodes.append(
                         EvidenceNode(
@@ -294,6 +403,12 @@ class EvidenceIndex:
                             kind=KIND_QUESTION,
                             item=key,
                             excerpt=question[:EXCERPT_CHARS],
+                            locators=(
+                                (f"{LOCATOR_QUESTION}:{question_id}",)
+                                if question_id
+                                else ()
+                            ),
+                            content=question,
                         )
                     )
                 if answer:
@@ -303,6 +418,21 @@ class EvidenceIndex:
                             kind=KIND_ANSWER,
                             item=key,
                             excerpt=answer[:EXCERPT_CHARS],
+                            locators=tuple(
+                                f"{LOCATOR_MESSAGE}:{message_id}"
+                                for message_id in message_ids
+                            ),
+                            content=answer,
                         )
                     )
+            for index, passage in enumerate(retrieved.get(key, []) or []):
+                nodes.append(
+                    passage_node(
+                        key,
+                        slug,
+                        index,
+                        chunk_id=passage.get("chunk_id"),
+                        content=str(passage.get("content") or ""),
+                    )
+                )
         return cls(nodes=tuple(nodes))

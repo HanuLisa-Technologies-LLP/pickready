@@ -8,19 +8,34 @@
 
 WHAT "ARCHITECTURALLY PREVENTED" MEANS HERE
 ---------------------------------------------
-There is no path from this module to a delivered report that does not go through
-`Section.render`, and `Section.render` raises `UncitedStatement` on any statement
-whose `evidence_refs` are empty or whose refs are not in the evaluation's known
-evidence set. There is no `force` argument, no `strict=False`, and no
-`allow_uncited` flag. A caller that has a statement it cannot cite has exactly
-two options: cite it, or drop it.
+There is no path from this module to delivered text that renders an uncited
+statement AS CITED. `Statement.problem` is the one rule, and exactly two
+methods read it:
 
-That is a deliberate absence, and it is the same technique used everywhere else
-this codebase enforces something structurally: `ContradictionReport.settle` has
-no `force`, `EvaluatorInput` has no candidate field, and an agent's reach is the
-absence of a tool rather than a refusal inside one. A bypass parameter is a
-bypass that will be used, and the first use will be in a hotfix at the end of a
-release.
+  * `Section.render` / `Report.render` RAISE on the first violation
+    (`UncitedStatement`, or `UnknownEvidence` for a fabricated ref). Tests and
+    the standalone `check` use this mode.
+  * `Report.render_collect` WITHHOLDS every violating statement: it is not
+    rendered at all, and it comes back as a `Withheld` record (section, kind,
+    item, problem code; never the prose). This is the delivered path since the
+    Vivekium release, and the reason is below.
+
+There is no `force`, no `strict=False` and no `allow_uncited` flag on either. A
+caller holding a statement it cannot cite has exactly two outcomes: it is cited,
+or it does not reach a reader.
+
+WHY THE LIVE PATH WITHHOLDS RATHER THAN RAISES (Vivekium release, P5-D8)
+--------------------------------------------------------------------------
+Until this release the only mode was the raising one, and the live path used
+it. So one uncited statement anywhere in a report failed the whole scoring task,
+the task retried twice and then nothing was written: a candidate who had
+finished the assessment got no report at all, and nobody was told why except a
+traceback. That is a silent failure with a loud log line. The rule the raise
+protected is "nothing uncited is ever DELIVERED", and withholding keeps it
+exactly: the statement is absent from the report and from the citation trail,
+the report is written flagged for human review with an `uncited_statement`
+finding, and `siddhi.report` logs `prism.statement_withheld_for_review` at
+ERROR, which a CloudWatch metric filter and alarm watch.
 
 WHY A PROMPT INSTRUCTION IS NOT ENOUGH
 ----------------------------------------
@@ -29,7 +44,7 @@ it will, most of the time. The times it does not are the times the prompt was
 long, the evidence was thin, or the provider was degraded -- which is to say,
 exactly the reports where an uncited claim is most likely to be wrong. An
 instruction produces a report that is usually cited; a structural check produces
-one that is always cited or is not produced.
+one whose delivered statements are always cited.
 
 WHAT IS AND IS NOT A STATEMENT
 --------------------------------
@@ -62,9 +77,12 @@ __all__ = [
     "KIND_VERBATIM",
     "STATEMENT_KINDS",
     "REQUIRES_CITATION",
+    "PROBLEM_NO_CITATION",
+    "PROBLEM_UNKNOWN_EVIDENCE",
     "Statement",
     "Section",
     "Report",
+    "Withheld",
     "check",
 ]
 
@@ -72,8 +90,9 @@ __all__ = [
 class UncitedStatement(ValueError):
     """A statement about the candidate that cites no evidence node.
 
-    Raised at RENDER, not logged at write. A logged violation is a violation
-    that ships.
+    Raised by the RAISING render mode. A logged violation is a violation that
+    ships, which is why the collecting mode does not log and render: it
+    withholds.
     """
 
 
@@ -127,6 +146,12 @@ REQUIRES_CITATION: frozenset[str] = frozenset(
     {KIND_FINDING, KIND_GRADE, KIND_GAP, KIND_PROBE}
 )
 
+#: The two reasons a statement is refused, as stable codes. A finding stores
+#: the code and never the sentence: `review_findings_json` is read from far
+#: more places than the report is.
+PROBLEM_NO_CITATION = "no_citation"
+PROBLEM_UNKNOWN_EVIDENCE = "unknown_evidence"
+
 
 @dataclass(frozen=True)
 class Statement:
@@ -134,14 +159,19 @@ class Statement:
 
     Validated at CONSTRUCTION for its kind and at RENDER for its citations. The
     split matters: an unknown kind is a programming error and should fail where
-    it is written, while a missing citation is a generation outcome and should
-    fail where the report is assembled -- which is the last point at which the
-    whole evidence set is known.
+    it is written, while a missing citation is a generation outcome and is
+    decided where the report is assembled -- which is the last point at which
+    the whole evidence set is known.
     """
 
     kind: str
     text: str
     evidence_refs: tuple[str, ...] = ()
+    #: What the statement is ABOUT: a rated item's name, an aspect key, or ""
+    #: for a statement about the assessment as a whole. A LABEL, never prose:
+    #: it is what a withheld statement is reported under, so a reviewer can
+    #: find the line that was held back without the finding quoting it.
+    item: str = ""
 
     def __post_init__(self) -> None:
         if self.kind not in STATEMENT_KINDS:
@@ -156,17 +186,56 @@ class Statement:
     def needs_citation(self) -> bool:
         return self.kind in REQUIRES_CITATION
 
+    def problem(self, known: Iterable[str]) -> str | None:
+        """Why this statement may not be rendered, or None when it may.
+
+        THE ONE RULE, stated once. The raising mode and the collecting mode
+        both read it, so they cannot disagree about what counts as cited.
+        """
+        if not self.needs_citation:
+            return None
+        if not self.evidence_refs:
+            return PROBLEM_NO_CITATION
+        accepted = known if isinstance(known, (set, frozenset)) else set(known)
+        if any(ref not in accepted for ref in self.evidence_refs):
+            return PROBLEM_UNKNOWN_EVIDENCE
+        return None
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "kind": self.kind,
             "text": self.text,
             "evidence_refs": list(self.evidence_refs),
+            "item": self.item,
+        }
+
+
+@dataclass(frozen=True)
+class Withheld:
+    """A statement `render_collect` refused to render, described WITHOUT its prose.
+
+    Section, kind, item and the problem code. Never the text: the whole point
+    of withholding is that the sentence reaches nobody, and a finding that
+    quoted it would deliver it by another door.
+    """
+
+    section: str
+    kind: str
+    item: str
+    problem: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "section": self.section,
+            "kind": self.kind,
+            "item": self.item,
+            "problem": self.problem,
         }
 
 
 @dataclass
 class Section:
-    """One report section. Renders only if every statement in it is citable."""
+    """One report section. Renders only statements that are citable."""
 
     key: str
     title: str
@@ -177,42 +246,61 @@ class Section:
         return self
 
     def render(self, known_refs: Iterable[str]) -> list[dict[str, Any]]:
-        """THE CHOKEPOINT. There is no other way to get text out of a Section.
+        """THE RAISING CHOKEPOINT. Raises on the first statement that is not citable.
 
         No `force`, no `strict=False`, no `allow_uncited`. A caller holding a
         statement it cannot cite must cite it or drop it.
         """
-        known = set(known_refs)
+        known = frozenset(known_refs)
         rendered: list[dict[str, Any]] = []
         for statement in self.statements:
-            if statement.needs_citation:
-                if not statement.evidence_refs:
-                    raise UncitedStatement(
-                        f"{self.key}: a {statement.kind} statement carries no "
-                        f"evidence citation. Every delivered statement about a "
-                        f"candidate must trace to an evidence node. "
-                        f"Statement: {statement.text[:80]!r}"
-                    )
+            problem = statement.problem(known)
+            if problem == PROBLEM_NO_CITATION:
+                raise UncitedStatement(
+                    f"{self.key}: a {statement.kind} statement carries no "
+                    f"evidence citation. Every delivered statement about a "
+                    f"candidate must trace to an evidence node. "
+                    f"Statement: {statement.text[:80]!r}"
+                )
+            if problem == PROBLEM_UNKNOWN_EVIDENCE:
                 unknown = [ref for ref in statement.evidence_refs if ref not in known]
-                if unknown:
-                    raise UnknownEvidence(
-                        f"{self.key}: a {statement.kind} statement cites "
-                        f"{unknown} which is not in this evaluation's evidence "
-                        f"set. A fabricated citation is worse than none -- it "
-                        f"reads as provenance."
-                    )
+                raise UnknownEvidence(
+                    f"{self.key}: a {statement.kind} statement cites "
+                    f"{unknown} which is not in this evaluation's evidence "
+                    f"set. A fabricated citation is worse than none, because "
+                    f"it reads as provenance."
+                )
             rendered.append(statement.as_dict())
         return rendered
+
+    def _collect(
+        self, known: frozenset[str]
+    ) -> tuple[list[dict[str, Any]], list[Withheld]]:
+        rendered: list[dict[str, Any]] = []
+        withheld: list[Withheld] = []
+        for statement in self.statements:
+            problem = statement.problem(known)
+            if problem is None:
+                rendered.append(statement.as_dict())
+                continue
+            withheld.append(
+                Withheld(
+                    section=self.key,
+                    kind=statement.kind,
+                    item=statement.item,
+                    problem=problem,
+                )
+            )
+        return rendered, withheld
 
 
 @dataclass
 class Report:
     """A whole report, assembled section by section.
 
-    `known_refs` is the evaluation's complete evidence set --
-    `Aggregate.evidence_refs`. It is passed in at CONSTRUCTION rather than at
-    render, so a caller cannot widen the accepted set per section to get one
-    statement through.
+    `known_refs` is the evaluation's complete evidence set. It is passed in at
+    CONSTRUCTION rather than at render, so a caller cannot widen the accepted
+    set per section to get one statement through.
     """
 
     known_refs: frozenset[str]
@@ -226,10 +314,9 @@ class Report:
     def render(self) -> list[dict[str, Any]]:
         """Render every section, or raise on the first violation.
 
-        FAILS FAST rather than collecting violations, because a report that
-        rendered its clean sections and dropped the rest would be a report with
-        holes in it that reads as complete. The whole thing renders or none of
-        it does, and the caller's own degradation path decides what to do.
+        FAILS FAST rather than collecting, for the callers that want the
+        strict answer (the tests, `check`, the worked example). The delivered
+        path uses `render_collect`, which withholds instead.
         """
         return [
             {
@@ -239,6 +326,30 @@ class Report:
             }
             for section in self.sections
         ]
+
+    def render_collect(self) -> tuple[list[dict[str, Any]], list[Withheld]]:
+        """Render every CITED statement and WITHHOLD every other one.
+
+        A withheld statement is not rendered in any form: it is absent from the
+        returned sections and therefore from the citation trail built from
+        them. What comes back instead is a `Withheld` record carrying no prose,
+        and the caller is the one that routes the report to human review. There
+        is no way through this method to render an uncited statement as cited,
+        which is the property the raising mode existed to protect.
+
+        A section whose every statement was withheld still appears, empty, so
+        the section order a renderer walks is unchanged and the absence is
+        visible rather than a missing key.
+        """
+        sections: list[dict[str, Any]] = []
+        withheld: list[Withheld] = []
+        for section in self.sections:
+            rendered, held = section._collect(self.known_refs)
+            sections.append(
+                {"key": section.key, "title": section.title, "statements": rendered}
+            )
+            withheld.extend(held)
+        return sections, withheld
 
     def violations(self) -> list[dict[str, Any]]:
         """Every violation, without raising. For the loop's reflect stage.
@@ -252,28 +363,27 @@ class Report:
         found: list[dict[str, Any]] = []
         for section in self.sections:
             for statement in section.statements:
-                if not statement.needs_citation:
-                    continue
-                if not statement.evidence_refs:
+                problem = statement.problem(self.known_refs)
+                if problem == PROBLEM_NO_CITATION:
                     found.append(
                         {
                             "section": section.key,
                             "kind": statement.kind,
-                            "problem": "no_citation",
+                            "problem": problem,
                             "text": statement.text[:120],
                         }
                     )
-                    continue
-                unknown = [
-                    ref for ref in statement.evidence_refs if ref not in self.known_refs
-                ]
-                if unknown:
+                elif problem == PROBLEM_UNKNOWN_EVIDENCE:
                     found.append(
                         {
                             "section": section.key,
                             "kind": statement.kind,
-                            "problem": "unknown_evidence",
-                            "refs": unknown,
+                            "problem": problem,
+                            "refs": [
+                                ref
+                                for ref in statement.evidence_refs
+                                if ref not in self.known_refs
+                            ],
                             "text": statement.text[:120],
                         }
                     )

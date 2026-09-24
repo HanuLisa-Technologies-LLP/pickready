@@ -611,6 +611,16 @@ class Settings(BaseSettings):
     #: own `GET /languages` by the operator verification task.
     judge0_language_ids: str = "python:71,java:62,cpp:54,javascript:63"
 
+    # ── Siddhi citation support (Vivekium release, WP5-C) ──────────────────
+    #: The cosine similarity, between a report statement and the passage it
+    #: cites, at or above which the SEMANTIC tier of `siddhi.support` calls the
+    #: statement supported. Consulted only when the deterministic anchor finds
+    #: no shared content term, so it rescues a paraphrase and never overrides an
+    #: invented term. ASSUMPTION (owner question O5-4, accepted in CONTRACT v2):
+    #: 0.55 over voyage-4 document vectors; reversible here without a deploy of
+    #: new code.
+    siddhi_support_similarity_min: float = 0.55
+
     # ── Assessment question formats (assessment-spec-doc.md) ────────────────
     #
     # Composition is enforced in code, not suggested in a prompt: evidence

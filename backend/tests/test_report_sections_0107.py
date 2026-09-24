@@ -15,6 +15,7 @@ renders, without the new sections and without raising.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import re
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ from app.schemas.assessments import (
 )
 from app.services import report_pdf
 from app.services.siddhi import citations, claim_evidence, synthesis, validation_points
+from app.services.siddhi import report as siddhi_report
 
 NEW_SECTIONS = (claim_evidence.SECTION_KEY, validation_points.SECTION_KEY)
 
@@ -201,7 +203,12 @@ def test_a_dimension_without_the_new_fields_still_validates():
 # -- The chokepoint still binds ----------------------------------------------
 
 def _composed(**kwargs):
-    return synthesis.compose(
+    return asyncio.run(_compose(**kwargs))
+
+
+async def _compose(**kwargs):
+    return await siddhi_report.compose_prism(
+        embed=None,
         dimensions=[
             {
                 "name": "Distributed Systems",
@@ -236,11 +243,11 @@ def test_the_confidence_word_is_a_cited_statement_like_the_grade():
         assert statement["evidence_refs"]
 
 
-def test_an_uncitable_claim_entry_is_refused_rather_than_rendered():
+def test_an_uncitable_claim_entry_is_withheld_rather_than_rendered():
     """No bypass was added for the new sections. An entry whose refs are empty
-    stops the whole report, loudly, naming the section."""
-    with pytest.raises(citations.UncitedStatement):
-        _composed(
+    is not rendered, is named (section, not prose) as withheld, and sends the
+    report to review. Before the Vivekium release it failed the whole report."""
+    composed = _composed(
             claim_evidence={
                 "note": "",
                 "entries": [
@@ -255,27 +262,44 @@ def test_an_uncitable_claim_entry_is_refused_rather_than_rendered():
                 "no_claims_statement": None,
             }
         )
+    section = next(
+        item for item in composed.sections if item["key"] == claim_evidence.SECTION_KEY
+    )
+    assert not [
+        statement for statement in section["statements"] if statement["kind"] != citations.KIND_HEADING
+    ]
+    assert {held.problem for held in composed.withheld} == {citations.PROBLEM_NO_CITATION}
+    assert {held.section for held in composed.withheld} == {claim_evidence.SECTION_KEY}
+    assert composed.needs_human_review is True
 
 
-def test_a_fabricated_citation_in_a_new_section_is_refused():
-    """A different error class, because it means something worse: an invented
-    ref reads as provenance."""
-    with pytest.raises(citations.UnknownEvidence):
-        _composed(
-            claim_evidence={
-                "note": "",
-                "entries": [
-                    {
-                        "area": "Distributed Systems",
-                        "claim": "Led the migration.",
-                        "evidence": "Identified in Resume.",
-                        "confidence": "Low",
-                        "evidence_refs": ["employer:nobody"],
-                    }
-                ],
-                "no_claims_statement": None,
-            }
-        )
+def test_a_fabricated_citation_in_a_new_section_is_withheld_and_named_apart():
+    """A different problem code and finding, because it means something worse:
+    an invented ref reads as provenance."""
+    composed = _composed(
+        claim_evidence={
+            "note": "",
+            "entries": [
+                {
+                    "area": "Distributed Systems",
+                    "claim": "Led the migration.",
+                    "evidence": "Identified in Resume.",
+                    "confidence": "Low",
+                    "evidence_refs": ["employer:nobody"],
+                }
+            ],
+            "no_claims_statement": None,
+        }
+    )
+    assert {held.problem for held in composed.withheld} == {
+        citations.PROBLEM_UNKNOWN_EVIDENCE
+    }
+    assert "fabricated_citation" in {
+        finding["issue"] for finding in composed.review_findings()
+    }
+    trail = composed.trail()
+    for statement in trail["statements"]:
+        assert "employer:nobody" not in statement["evidence_refs"]
 
 
 def test_an_unevidenced_claim_is_composed_as_a_gap_not_as_a_finding():

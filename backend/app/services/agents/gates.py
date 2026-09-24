@@ -559,12 +559,30 @@ def siddhi_gate(report: Mapping[str, Any]) -> verification.Verdict:
                 )
             )
 
+    # THE TWO MAPPINGS MUST COME FROM TWO PLACES. `grades` is what the
+    # document states, parsed from its rendered statements; `miti_grades` is
+    # what the grading authority decided. Until the Vivekium release the only
+    # caller passed one dict under both names, so this comparison could never
+    # fire (`siddhi.quality_gate` is the caller now). Three shapes of
+    # disagreement, each a separate finding: a different grade, a grade Miti
+    # decided that the document never states, and a stated grade Miti never
+    # decided.
     grades = report.get("grades")
     miti_grades = report.get("miti_grades")
     if isinstance(grades, Mapping) and isinstance(miti_grades, Mapping):
         for name, grade in grades.items():
+            if name not in miti_grades:
+                findings.append(
+                    verification.high(
+                        "grade_without_scoring",
+                        f"report.grades.{name}",
+                        "the report states a grade the scoring agent never recorded",
+                        "State only the grades the scoring agent recorded.",
+                    )
+                )
+                continue
             expected = miti_grades.get(name)
-            if expected is not None and str(expected) != str(grade):
+            if str(expected) != str(grade):
                 findings.append(
                     verification.high(
                         "grade_disagrees_with_scoring",
@@ -574,6 +592,30 @@ def siddhi_gate(report: Mapping[str, Any]) -> verification.Verdict:
                         "not regrade.",
                     )
                 )
+        for name in miti_grades:
+            if name not in grades:
+                findings.append(
+                    verification.high(
+                        "grade_missing_from_report",
+                        f"report.grades.{name}",
+                        "a grade the scoring agent recorded is absent from the report",
+                        "State every graded skill; a missing grade reads as a skill "
+                        "that was never assessed.",
+                    )
+                )
+    if "miti_overall_grade" in report:
+        stated_overall = report.get("overall_grade")
+        expected_overall = report.get("miti_overall_grade")
+        if str(stated_overall) != str(expected_overall):
+            findings.append(
+                verification.high(
+                    "overall_grade_disagrees_with_scoring",
+                    "report.overall_grade",
+                    f"the report states {stated_overall!r} as the overall grade "
+                    f"where scoring recorded {expected_overall!r}",
+                    "State the overall grade the scoring agent recorded.",
+                )
+            )
 
     for probe in _items(report, "gap_analysis"):
         if isinstance(probe, Mapping) and not probe.get("grounded_in_answer"):

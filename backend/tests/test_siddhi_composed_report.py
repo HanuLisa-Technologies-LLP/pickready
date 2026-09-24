@@ -1,6 +1,6 @@
 """What leaves the generator: the audit trail, and the ban at its boundary.
 
-`ComposedReport` is the object that survived the citation chokepoint, and two
+`ComposedPrism` is the object that survived the citation chokepoint, and two
 things about it are contracts rather than conveniences.
 
 THE TRAIL CARRIES SENTENCES AND LOCATORS, NEVER EXCERPTS. It exists so a reader
@@ -20,11 +20,12 @@ from __future__ import annotations
 import pytest
 
 from app.services.siddhi import citations, numbers, synthesis
+from app.services.siddhi import report as siddhi_report
 from app.services.siddhi.evidence import EvidenceIndex
 
 
-def _report_with(sections: list[dict], index: EvidenceIndex) -> synthesis.ComposedReport:
-    return synthesis.ComposedReport(sections=sections, index=index)
+def _report_with(sections: list[dict], index: EvidenceIndex) -> siddhi_report.ComposedPrism:
+    return siddhi_report.ComposedPrism(sections=sections, index=index)
 
 
 # ── The refs the report can cite ─────────────────────────────────────────────
@@ -43,7 +44,7 @@ def test_evidence_refs_are_sorted_and_come_from_the_index() -> None:
 
 
 def test_a_report_with_no_evidence_reports_no_refs() -> None:
-    assert synthesis.ComposedReport().evidence_refs == ()
+    assert siddhi_report.ComposedPrism().evidence_refs == ()
 
 
 # ── The audit trail ──────────────────────────────────────────────────────────
