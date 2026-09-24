@@ -1,8 +1,20 @@
-"""Backfill demo question banks, PPI frameworks and PPI Assessment Reports.
+"""Backfill demo skills saves and synthetic PRISM Reports for the seed corpus.
 
-The command is idempotent. It only auto-finalizes jobs and creates synthetic
-reports for the seeded `@candidates.pickready.test` corpus; real candidates
-always use the approved live conversation and LangGraph pipeline.
+The command is idempotent. It only marks a job's skills saved and creates
+synthetic reports for the seeded `@candidates.pickready.test` corpus; real
+candidates always go through Save Skills and the live assessment.
+
+WHAT "SAVED" MEANS HERE, AND WHAT IT DOES NOT CLAIM
+-----------------------------------------------------
+Saved is what `assessment_contract.skills_saved` asks of the table: the saved
+stamp AND the hidden context. A demo job is saved only when its active skills
+pass the same check a person's Save press goes through
+(`skills.validate_for_save`), and the context written is the HONEST EMPTY one
+migration 0118 stamped on a saved matrix, naming this script as its writer. No
+model runs here, and a role summary claiming one had would be template output
+presented as generation (rule 6). The version this replaced stamped every job
+it touched BEFORE looking for skills, so a demo job with none read as ready
+for candidates.
 """
 from __future__ import annotations
 
@@ -21,7 +33,7 @@ from app.models.assessment import (
 )
 from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
-from app.services import ppi
+from app.services import assessment_contract, ppi, skills
 from app.services.application_validation import VALIDATION_FIELDS
 from app.services.functional_assessment import (
     MATCHING_DIMENSIONS,
@@ -67,17 +79,6 @@ async def backfill(apply: bool) -> dict[str, int]:
             # no such bank any more.
 
             grade = job.assessment_grade or infer_grade_fallback(job)
-            # A demo job is finalised outright: the review gate exists so a
-            # HUMAN approves what real candidates are asked, and there is no
-            # human in a seed run. Real jobs still sit in
-            # `questions_pending_review` until a recruiter approves both halves.
-            if apply:
-                job.assessment_grade = grade
-                job.assessment_status = "ready_for_candidates"
-                job.questions_generated_at = job.questions_generated_at or datetime.now(timezone.utc)
-                job.questions_approved_at = job.questions_approved_at or datetime.now(timezone.utc)
-                job.framework_generated_at = job.framework_generated_at or datetime.now(timezone.utc)
-                job.framework_approved_at = job.framework_approved_at or datetime.now(timezone.utc)
 
             framework = (
                 await session.execute(
@@ -87,24 +88,48 @@ async def backfill(apply: bool) -> dict[str, int]:
                 )
             ).scalars().all()
             if not framework:
-                # CHANGED 2026-08-29. This used to seed a framework from
-                # `ppi._fallback_framework`, which assembled criteria out of the
+                # CHANGED 2026-08-29. This used to seed criteria from
+                # `ppi._fallback_framework`, which assembled them out of the
                 # JD's own noun phrases. That function is deleted (spec-doc6 D1
-                # and §4.1): a matrix nobody derived, approved here by a script
-                # with no human in it, is exactly the shape of criteria that
+                # and 4.1): criteria nobody derived, saved here by a script
+                # with no human in it, are exactly the shape of criteria that
                 # look reviewed and are not.
                 #
-                # The job is SKIPPED and named. A demo job with no matrix needs
-                # Bodha's session and Sutra's seven stages like any other, and
-                # a backfill script is not the place to shortcut them.
+                # The job is SKIPPED and named. A demo job with no skills needs
+                # a saved SWOT and Sutra's draft like any other, and a backfill
+                # script is not the place to shortcut them.
                 print(
-                    f"  skip job {job.id} ({job.title!r}): no Tatva matrix. Run "
-                    f"the SWOT session and let Sutra build one."
+                    f"  skip job {job.id} ({job.title!r}): no skills. Save the "
+                    f"SWOT and let Sutra draft them."
                 )
+                continue
+            problems = skills.validate_for_save(list(framework))
+            if problems:
+                # The same refusal a person's Save press meets, every problem
+                # named. Reports written against an unsaveable set would state
+                # grades against criteria nobody could have saved.
+                print(f"  skip job {job.id} ({job.title!r}): " + " ".join(problems))
                 continue
             framework = sorted(
                 framework, key=lambda row: (ppi.CATEGORIES.index(row.category), row.ordinal)
             )
+            # A demo job's skills are saved outright: Save Skills exists so a
+            # HUMAN confirms what real candidates are assessed against, and
+            # there is no human in a seed run. A locked job is left alone: its
+            # contract is the snapshot a candidate started against.
+            if apply and not await assessment_contract.is_locked(session, job.id):
+                now = datetime.now(timezone.utc)
+                job.assessment_grade = grade
+                job.questions_generated_at = job.questions_generated_at or now
+                job.questions_approved_at = job.questions_approved_at or now
+                job.framework_generated_at = job.framework_generated_at or now
+                job.framework_approved_at = job.framework_approved_at or now
+                if job.assessment_context_json is None:
+                    job.assessment_context_json = {
+                        "role_summary": "",
+                        "generated_by": "backfill_functional_reports",
+                    }
+                await skills.refresh_setup_status(session, job)
 
             for link in links:
                 report = (
