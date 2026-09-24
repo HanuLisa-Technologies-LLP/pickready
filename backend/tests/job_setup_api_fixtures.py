@@ -155,3 +155,41 @@ async def drop(world: fx.World) -> None:
 
 def recorded(name: str) -> list[dispatch.RecordedDispatch]:
     return [entry for entry in dispatch.recorded() if entry.name == name]
+
+
+async def company_profile(world: fx.World, about: str | None) -> None:
+    """The tenant's Company Profile row: what Gate 1 asks at create and at JD
+    generation. `about=None` or blank is a profile that says nothing."""
+    async with fx.sessions()() as session:
+        async with session.begin():
+            async with superadmin_scope(session):
+                await session.execute(
+                    text(
+                        "INSERT INTO companies (id, tenant_id, about_company) "
+                        "VALUES (:i, :t, :a)"
+                    ),
+                    {"i": uuid.uuid4(), "t": world.tenant, "a": about},
+                )
+
+
+async def demo(world: fx.World) -> None:
+    """A demonstration tenant: never refused by the credit gate, so a create
+    test does not have to buy a bundle first. The gate's own refusal is tested
+    on a tenant that is NOT demo."""
+    await sql(world, "UPDATE tenants SET is_demo = true WHERE id = :t", t=world.tenant)
+
+
+async def sql(world: fx.World, statement: str, **params) -> None:
+    """One committed write under the bypass scope, for state a test sets up."""
+    async with fx.sessions()() as session:
+        async with session.begin():
+            async with superadmin_scope(session):
+                await session.execute(text(statement), params)
+
+
+async def read(statement: str, **params) -> list[dict]:
+    """Committed state, read from a SECOND connection."""
+    async with fx.sessions()() as session:
+        async with superadmin_scope(session):
+            rows = (await session.execute(text(statement), params)).mappings().all()
+            return [dict(row) for row in rows]

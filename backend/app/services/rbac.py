@@ -611,11 +611,16 @@ def caps_publish_job() -> str:
 
 
 def _state_gated_capabilities() -> frozenset[str]:
-    """Capabilities whose answer depends on the job's lifecycle state.
+    """Capabilities an UNKNOWN lifecycle state refuses.
 
-    Publication (21) and the Hiring-Manager-controlled criteria (22, 26). The
-    Recruiter's JD edit is gated too, but by its ALLOW_DRAFT_SCOPE cell rather
-    than by its name, so it is handled at the call site.
+    Publication (21) and the Hiring-Manager-controlled criteria (22, 26). Since
+    the Vivekium release only publication reads a KNOWN state: the criteria
+    are refused by the skills lock (a row), not by the lifecycle. A job row
+    with no state at all is still refused both, because it was written by
+    something that skipped the column's default and nothing about it can be
+    trusted to be finished. The Recruiter's JD edit is gated too, but by its
+    ALLOW_DRAFT_SCOPE cell rather than by its name, so it is handled at the
+    call site.
     """
     from app.services import capabilities
 
@@ -721,13 +726,20 @@ async def assign_creator(
     assignment = assignment_role_for(role)
     if assignment is None:
         return False
+    # Every parameter is CAST: each one appears both in the SELECT list, where
+    # Postgres infers `text`, and in the WHERE, where it infers the column's
+    # type, and asyncpg refuses a parameter with two deduced types
+    # (AmbiguousParameterError). Found by the first test to run this
+    # statement over a real database rather than a stub.
     written = await session.execute(
         text(
             "INSERT INTO job_assignments "
             "(tenant_id, job_id, user_id, assignment_role, active) "
-            "SELECT :tid, :jid, :uid, :arole, true "
+            "SELECT CAST(:tid AS uuid), CAST(:jid AS uuid), CAST(:uid AS uuid), "
+            "CAST(:arole AS varchar), true "
             "WHERE NOT EXISTS (SELECT 1 FROM job_assignments "
-            "WHERE job_id = :jid AND assignment_role = :arole AND active)"
+            "WHERE job_id = CAST(:jid AS uuid) "
+            "AND assignment_role = CAST(:arole AS varchar) AND active)"
         ),
         {
             "tid": str(job.tenant_id),
