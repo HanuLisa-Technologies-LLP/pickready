@@ -174,6 +174,8 @@ TaskType = Literal[
     "evidence_tiering",
     "dimension_evaluation",
     "triangulation",
+    # ── Ranking (Vivekium release, Phase 2) ──
+    "yukti_matching",
     # ── Output ──
     "report_synthesis",
     "email_composition",
@@ -236,6 +238,13 @@ MODEL_FOR_TASK: dict[str, str] = {
     "dimension_evaluation": MODEL_TERRA,
     # Miti: contradiction reasoning and benign-explanation generation.
     "triangulation": MODEL_TERRA,
+    # Yukti (Vivekium release, Phase 2): reads a batch of resumes against a
+    # job's saved skills and named needs and returns a verdict and a verbatim
+    # quote per item. That is JUDGING, so it is Terra. It used to ride the
+    # Luna `rerank` hint, whose own entry below says rerank "orders a list it
+    # does not grade"; this call grades the evidence the order is built from,
+    # which is the boundary violation that table exists to prevent.
+    "yukti_matching": MODEL_TERRA,
     # Siddhi: writing quality and evidence-citation enforcement.
     "report_synthesis": MODEL_TERRA,
     # Project Evidence Intelligence: assesses how strongly deterministic
@@ -413,6 +422,12 @@ TASK_TIMEOUTS: dict[str, float] = {
     "evidence_tiering": 45.0,
     "dimension_evaluation": 60.0,
     "triangulation": 60.0,
+    # Background (the matching run on Route.ECS, the per-profile rescore on
+    # Route.LAMBDA). Up to five resumes in and one structured reading each
+    # out, on the reasoning tier: the output is the largest of any judging
+    # task, so the per-attempt cap matches report_synthesis rather than the
+    # single-verdict evaluators.
+    "yukti_matching": 120.0,
     "report_synthesis": 120.0,
     "extraction": 60.0,
     # Background, on Route.LAMBDA at index time. One short paragraph out, one
@@ -474,6 +489,10 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "evidence_tiering": 100.0,
     "dimension_evaluation": 140.0,
     "triangulation": 140.0,
+    # Two attempts at the cap, and no more: the per-profile rescore runs in the
+    # task-worker Lambda (600 seconds), and one reading plus its corrective
+    # retry must fit inside that with the database work around it.
+    "yukti_matching": 240.0,
     "report_synthesis": 280.0,
     "extraction": 140.0,
     "context_prefix": 70.0,
@@ -530,6 +549,11 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "evidence_tiering": 4096,
     "dimension_evaluation": 4096,
     "triangulation": 4096,
+    # Five candidates, each with a verdict and a quote per skill (up to ten),
+    # per named need (up to twelve), plus experience and role fit. The
+    # completion ceiling also carries the reasoning tier's own reasoning
+    # tokens, so it is sized above report_synthesis rather than beside it.
+    "yukti_matching": 12288,
     # Seven report sections in one response -- the largest thing we ask for.
     "report_synthesis": 8192,
     "extraction": 8192,
@@ -586,6 +610,9 @@ TASK_TEMPERATURE: dict[str, float] = {
     "evidence_tiering": 0.0,
     "dimension_evaluation": 0.0,    # THE grade. Never above zero.
     "triangulation": 0.0,
+    # Judges resume evidence. Two runs over the same resumes must not read
+    # them differently, or the order depends on when matching ran.
+    "yukti_matching": 0.0,
     "situation_classification": 0.0,
     # Deterministic, and it is a RE-INDEX argument rather than a grading one:
     # the same chunk of the same document must situate the same way on every
@@ -664,6 +691,8 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "evidence_tiering": 3,
     "dimension_evaluation": 3,
     "triangulation": 3,
+    # Two, for the Lambda budget argued at TASK_TOTAL_BUDGET above.
+    "yukti_matching": 2,
     "report_synthesis": 3,
     "extraction": 3,
     "bgv_reply_extraction": 3,
@@ -1198,6 +1227,10 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     "evidence_tiering": 0.08,
     "dimension_evaluation": 0.25,
     "triangulation": 0.25,
+    # Five resumes in, the largest judging output out: above report_synthesis
+    # because its completion ceiling is, and twice its own worst case as
+    # tests/test_router_recovery.py requires of every row.
+    "yukti_matching": 0.50,
     # Seven report sections in one response, on the reasoning tier.
     "report_synthesis": 0.40,
     "extraction": 0.12,

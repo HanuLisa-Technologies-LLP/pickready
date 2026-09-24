@@ -91,6 +91,15 @@ MATCHING = "matching.run"
 #: write that must observe the first one's result, above all a skills edit
 #: arriving while a candidate's start is locking the contract.
 SKILLS = "job_skills.contract"
+#: One Yukti reading of a LINK at a time. The subject is the
+#: `job_candidate_links.id`. Two writers reach the same link independently: a
+#: job's matching run (`pickready.run_matching`, which holds MATCHING for the
+#: job) and the rescore a finished resume parse dispatches for every link that
+#: profile is on. MATCHING cannot exclude the second, because it is keyed on
+#: the job and the parse knows only the profile. Like SCORING this one is TRY,
+#: never wait: the holder is already reading this resume against this job, and
+#: a second reading would pay for the same model call to write the same row.
+YUKTI_LINK = "yukti.link"
 
 #: Postgres advisory lock keys are signed 64-bit. BLAKE2b rather than Python's
 #: `hash()`, which is salted per process by default: two containers would
