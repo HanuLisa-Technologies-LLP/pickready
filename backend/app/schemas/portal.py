@@ -27,7 +27,8 @@ class MeOut(BaseModel):
 
     id: uuid.UUID
     full_name: str | None
-    # Nullable: a phone-only (Firebase phone provider) account has no email.
+    # Nullable for history only: accounts created by the phone sign-in removed
+    # on 2026-09-24 carry no email. Every new account has one.
     email: str | None
     phone: str | None
     role: str
@@ -80,31 +81,6 @@ class MeUpdateIn(BaseModel):
         return self
 
 
-class AspectOut(BaseModel):
-    id: int
-    prompt: str
-
-
-class OutreachInfoOut(BaseModel):
-    """What the outreach link asks the candidate to provide (FR-5.1/6.1)."""
-    job_title: str | None
-    company_name: str | None
-    already_submitted: bool
-    # Personal fields (FR-5.1 a-d) still missing on the candidate record
-    personal_fields: list[str]
-    # The 40 aspects minus any covered by the personal fields (FR-5.1)
-    aspects: list[AspectOut]
-    resume_required: bool = True
-    max_employer_emails: int = 3
-
-
-class OutreachSubmitOut(BaseModel):
-    profile_id: uuid.UUID
-    aspects_received: int
-    verification_requests_created: int
-    parse_task: str = "queued"
-
-
 class PortalJobOut(BaseModel):
     """A published job as the candidate portal shows it.
 
@@ -117,7 +93,10 @@ class PortalJobOut(BaseModel):
     id: uuid.UUID
     title: str
     department: str | None
-    level: str | None
+    # NO `level`. The free-text level column predates the experience band and
+    # the grade (2026-07-28); a candidate board that printed it beside the
+    # grade showed two answers to one question. The column stays in the
+    # database as history (CONTRACT S4) and nothing on this surface reads it.
     company_name: str | None
     #: Slug of the employer's PUBLIC page (/employers/{slug}), when one is
     #: visible; None when the page is hidden, so the portal never links to a
@@ -138,6 +117,17 @@ class PortalJobOut(BaseModel):
     company_culture: str | None = None
     company_industry: str | None = None
     company_benefits: str | None = None
+
+    # ── This candidate's relationship to the job ─────────────────────────────
+    #: True when the candidate already holds an APPLICATION on this job. A
+    #: recruiter's `sourced` databank entry is not one: it is somebody else's
+    #: act, and reporting it as "applied" would dead-end a candidate who is
+    #: acting on the recruiter's own invitation (Gate 5).
+    already_applied: bool = False
+    #: The application's link id when `already_applied`, so the board can link
+    #: straight to it on Applied Jobs instead of opening an apply form that can
+    #: only answer 409.
+    application_id: uuid.UUID | None = None
 
     # Serialization mirrors, matching JobDetailOut/PublicJobOut: the frontend
     # reads `jd` and `grade`, the canonical columns are `jd_json` and
@@ -161,21 +151,21 @@ class PortalJobsOut(BaseModel):
 
 
 class ApplyOut(BaseModel):
+    """What an application (or a grace-period edit of one) answers.
+
+    Deliberately says nothing about an assessment. Applying is not being
+    assessed: the invitation is a separate, recruiter-initiated act
+    (`assessment_conversations` IS the invitation), so an application answer
+    that talked about "the assessment" pointed the candidate at a page that
+    would refuse them.
+    """
+
     link_id: uuid.UUID
     job_id: uuid.UUID
     profile_id: uuid.UUID
-    # True when the resume was carried over from a previous application
+    # True when the resume was carried over from the candidate's main resume
     # (reuse_previous) rather than freshly uploaded (FR-6.2 / FR-9.2).
     resume_reused: bool = False
-    aspects_received: int = 0
-    parse_task: str = "queued"
-    # ── Six-month retake rule (spec §5.1) ────────────────────────────────────
-    # False when a recent assessment was reused, so the portal can say "nothing
-    # further to do" instead of pointing at an assessment that will not exist.
-    assessment_required: bool = True
-    #: The sentence explaining a reuse or a retake. None on a first assessment,
-    #: which needs no preamble.
-    assessment_notice: str | None = None
 
 
 class StatusEventOut(BaseModel):
@@ -351,6 +341,13 @@ class DeleteMeOut(BaseModel):
     #: the object pass runs in `pickready.cascade_erasure` and is swept until
     #: every file is verifiably gone.
     deletion_state: str
+    #: Whether the Firebase sign-in identity was deleted with the profile. True
+    #: in the ordinary case. False only when the same address is ALSO a staff
+    #: sign-in on this platform, because that identity is not the candidate's
+    #: alone to delete; `sign_in_identity_note` then says so in the server's
+    #: words.
+    sign_in_identity_deleted: bool = False
+    sign_in_identity_note: str | None = None
 
 
 class RenewConsentIn(BaseModel):
@@ -362,6 +359,27 @@ class RenewConsentIn(BaseModel):
     """
 
     token: str = Field(min_length=16, max_length=200)
+
+
+class ConsentRenewalOut(BaseModel):
+    """GET /portal/me/consent/renewal: where the candidate stands on the
+    "keep my profile" cycle (feature 8).
+
+    Every value is DERIVED by `services/consent_lifecycle` from timestamps on
+    the candidate row, exactly as the sweep derives it, so the card and the
+    sweep cannot disagree. `message` is the server's sentence.
+    """
+
+    #: When the current consent period began (registration or last renewal).
+    consented_at: datetime
+    #: When confirmation is next asked for.
+    renewal_due_at: datetime
+    #: `consent_lifecycle` stage: active | reminder_due | final_warning_due |
+    #: deletion_due. A stage, never a count of days.
+    stage: str
+    #: True once `renewal_due_at` has passed, whatever letters have gone out.
+    renewal_needed: bool
+    message: str
 
 
 class ConsentRenewedOut(BaseModel):

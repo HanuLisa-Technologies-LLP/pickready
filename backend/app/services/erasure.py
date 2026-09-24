@@ -520,6 +520,15 @@ async def cascade_erasure(
     # ever stops being true the statement RAISES and the whole transaction
     # rolls back, which is the safe direction: the candidate is told the
     # deletion failed rather than being handed a half-erasure.
+    #
+    # THE FIREBASE IDENTITY IS NOT THIS FUNCTION'S, and that split is
+    # deliberate (2026-09-24). A person who asks to be deleted
+    # (`api/portal.delete_my_profile`) has their sign-in identity deleted too,
+    # inline, before the same transaction commits, so the next sign-in cannot
+    # silently recreate them. The worker sweeps that also call this function
+    # (consent expiry, dormancy) do NOT: workers hold no Firebase key by
+    # design, and a person who never asked to leave keeps the door back. The
+    # "fresh start" sentence above is exactly what such a person gets.
     sign_in_accounts_deleted = 0
     if sign_in_account is not None:
         deleted_users = await session.execute(

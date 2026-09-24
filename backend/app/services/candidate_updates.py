@@ -118,7 +118,12 @@ TEMPLATES: dict[str, UpdateTemplate] = {
             "would like you to complete an assessment. Your answers save as "
             "you go, so you can stop and come back."
         ),
-        link_path="/portal/assessments",
+        # The assessment page for THIS application. There is no
+        # `/portal/assessments` index page; the bare path this used to carry
+        # rendered as a working link and then 404'd.
+        # `tests/test_candidate_update_links.py` resolves every path in this
+        # catalogue against the frontend's route tree so it cannot happen again.
+        link_path="/portal/assessments/{link_id}",
     ),
     ASSESSMENT_STARTED: UpdateTemplate(
         kind=ASSESSMENT_STARTED,
@@ -127,7 +132,7 @@ TEMPLATES: dict[str, UpdateTemplate] = {
             "You have started the assessment for {job} at {company}. Your "
             "answers are saved, so you can finish it whenever suits you."
         ),
-        link_path="/portal/assessments",
+        link_path="/portal/assessments/{link_id}",
     ),
     ASSESSMENT_COMPLETED: UpdateTemplate(
         kind=ASSESSMENT_COMPLETED,

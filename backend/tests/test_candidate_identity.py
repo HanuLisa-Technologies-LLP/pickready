@@ -434,7 +434,6 @@ async def test_a_link_owned_by_a_signed_in_record_is_never_taken(
 #: only SHRINK: a file that gains a hit fails, and so does an entry whose file no
 #: longer needs it (remove the entry in the same change that converts the file).
 LEGACY_RESOLVERS: dict[str, str] = {
-    "app/api/portal.py": "WP6-B: require_candidate everywhere, update_me touches one row",
     "app/api/bgv.py": "WP6-D: _candidate_id_for replaced by require_candidate",
     "app/api/conversations.py": "WP6-C: _candidate_id_for replaced by resolve_candidate_id",
     "app/api/assessment_conversation.py": "Phase 3: one-line swap to resolve_candidate_id",
