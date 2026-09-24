@@ -42,13 +42,20 @@ variable "secret_names" {
     "DATABASE_URL",
     "REDIS_URL",
     "JWT_SECRET",
+    # HELD, AND INJECTED INTO NOTHING (2026-09-24). No service holds a grant
+    # on it and no container mounts it: the setting that read it is deleted,
+    # and nothing in the application decrypts with it. The CONTAINER stays
+    # because it is the only copy of the key that opens `llm_provider_keys`,
+    # and destroying a secret is the one step here with no undo once the
+    # recovery window passes. It goes when the owner decides that table's
+    # fate, in the same change that drops it. `test_deploy_secret_hygiene.py`
+    # pins both halves: present in this list, granted to no service.
     "LLM_KEY_ENCRYPTION_SECRET",
     "FIREBASE_SERVICE_ACCOUNT_JSON",
     "SMTP_PASSWORD",
     "RAZORPAY_KEY_SECRET",
     "RAZORPAY_WEBHOOK_SECRET",
     "TAVILY_API_KEY",
-    "MSG91_API_KEY",
     "HUGGINGFACE_TOKEN",
     # THE ONE SECRET IN THIS LIST NOBODY OUTSIDE THIS PLATFORM ISSUES, and
     # therefore the one whose value IS created here. See
@@ -125,7 +132,6 @@ variable "service_secrets" {
       # refuses outright when it is absent; this grant is what lets it verify
       # instead of refusing forever.
       "RAZORPAY_WEBHOOK_SECRET",
-      "LLM_KEY_ENCRYPTION_SECRET",
       # THE BD PORTAL'S AI REACH RUNS IN THE REQUEST HANDLER, and this key is
       # why it returned nothing on the live site. The search is deliberately
       # NOT dispatched -- it is user-initiated, interactive and bounded by
@@ -159,8 +165,6 @@ variable "service_secrets" {
       "VOYAGE_RERANK_2_5",
       "SMTP_PASSWORD",
       "TAVILY_API_KEY",
-      "MSG91_API_KEY",
-      "LLM_KEY_ENCRYPTION_SECRET",
     ]
     "agent" = [
       "DATABASE_URL",
@@ -169,20 +173,17 @@ variable "service_secrets" {
       "OPENAI_GPT_LUNA",
       "VOYAGE_CONTEXT_4",
       "VOYAGE_RERANK_2_5",
-      "LLM_KEY_ENCRYPTION_SECRET",
     ]
     "jd-gen" = [
       "DATABASE_URL",
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
-      "LLM_KEY_ENCRYPTION_SECRET",
     ]
     "company-profile" = [
       "DATABASE_URL",
       "OPENAI_GPT_TERRA",
       "OPENAI_GPT_LUNA",
       "TAVILY_API_KEY",
-      "LLM_KEY_ENCRYPTION_SECRET",
     ]
     "migrate" = [
       "DATABASE_URL",

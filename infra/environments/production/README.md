@@ -28,7 +28,7 @@ the script.
 The derivation exists so the two roots cannot silently diverge in SHAPE, only in
 the values that are supposed to differ. It fails loudly when a block it edits no
 longer matches, rather than producing a production root quietly missing a change
-staging received — which is the failure that makes a staging test stop predicting
+staging received, which is the failure that makes a staging test stop predicting
 anything.
 
 ## What is different from staging, and why each one
@@ -37,7 +37,7 @@ anything.
 |---|---|
 | NAT gateway per AZ | A single NAT is one AZ failure from every task losing egress, which here means losing the model provider, so every assessment degrades at once |
 | RDS Multi-AZ | A failover instead of a restore |
-| Redis replica (and therefore automatic failover) | Redis here is the Celery broker and the working-memory layer, not a cache. Losing it is a queue nobody is draining and a candidate mid-assessment whose next question never arrives |
+| Redis replica (and therefore automatic failover) | Redis carries the proctoring warning counter and the run-status record, not just a cache. The proctoring gate answers 503 rather than silently not warning, so losing Redis is a candidate mid-assessment whose next question never arrives |
 | ALB deletion protection ON | A destroyed load balancer takes the DNS alias target with it, so the outage outlasts the mistake by however long a replacement takes plus however long resolvers cache the old answer |
 | ECS Exec OFF | A shell in a container holding real candidate data is a different thing from one holding seed data, and the difference should be a decision rather than an inheritance |
 | Container Insights ON | "Is the worker saturated" is a production question and needs data behind it |
@@ -47,8 +47,8 @@ anything.
 
 The WAF is **not** flipped on here, and that is deliberate rather than an
 oversight in the derivation. spec-doc6 §13.2 asks for it built and disabled by
-variable, and enabling it in production first — without a week of count-mode
-metrics from staging — is exactly the move that blocks a real candidate's resume
+variable, and enabling it in production first, without a week of count-mode
+metrics from staging, is exactly the move that blocks a real candidate's resume
 upload. `docs/operations/DEPLOY_AWS.md` §6 carries the ordered procedure.
 
 ## Required variables
@@ -86,6 +86,6 @@ python infra/check-no-wildcard-iam.py
 ```
 
 A green offline plan proves the configuration is internally consistent and that
-the graph resolves. It proves nothing about a real account — not that the account
+the graph resolves. It proves nothing about a real account: not that the account
 can create these resources, not that quotas suffice, not that IAM behaves.
 `docs/operations/DEPLOY_AWS.md` §1 states the boundary exactly.
