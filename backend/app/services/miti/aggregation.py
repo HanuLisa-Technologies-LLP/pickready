@@ -1,7 +1,7 @@
 """Stage 6: AGGREGATION. Deterministic arithmetic, zero model involvement.
 
-    competency -> dimension -> weighted composite -> authenticity multiplier
-               -> confidence -> the product-facing grade band
+    skill grades -> priority-weighted bucket scores -> composite
+               -> authenticity multiplier -> confidence -> caps -> the grade
 
 spec-doc5 §B.3 assigns this component "**No model.** Deterministic code only",
 and gives the reason: Runbook §57.5 requires it be reproducible and testable.
@@ -64,15 +64,9 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from app.services import rating
-from app.services.hiring.department_models import (
-    DIM_AUTHENTICITY,
-    DIM_ROLE_FIT,
-    DIM_TRACK_RECORD,
-    DIM_TRAJECTORY,
-    DIM_VERIFIED_COMPETENCE,
-)
 from app.services.miti import caps
-from app.services.miti.dimensions import DimensionResult, band_for
+from app.services.miti.dimensions import DIM_AUTHENTICITY, DimensionResult, band_for
+from app.services.miti.grades import ANSWER_NOT_ASSESSED, SkillGrade
 
 __all__ = [
     # Re-exported deliberately: `pipeline` reads the authenticity dimension
@@ -83,7 +77,8 @@ __all__ = [
     "CATEGORY_MUST_HAVE",
     "CATEGORY_NICE_TO_HAVE",
     "CATEGORY_BEHAVIOURAL",
-    "DIMENSION_TO_CATEGORY",
+    "OVERALL_GRADED",
+    "OVERALL_NOT_ASSESSED",
     "CONFIDENCE_HIGH",
     "CONFIDENCE_MODERATE",
     "CONFIDENCE_LOW",
@@ -104,38 +99,26 @@ CATEGORY_MUST_HAVE = "must_have"
 CATEGORY_NICE_TO_HAVE = "nice_to_have"
 CATEGORY_BEHAVIOURAL = "behavioural"
 
-#: FALLBACK ONLY. How a dimension maps onto a product category when the
-#: evaluators returned no per-competency bands.
-#:
-#: THE PRIMARY MAPPING IS BY ITEM CATEGORY, NOT BY DIMENSION, and getting that
-#: backwards was a real defect in the first version of this file. Must-have and
-#: Nice-to-have are properties of the ITEM -- the hiring manager declared this
-#: specific criterion essential -- not of the internal dimension the criterion
-#: happens to sit on. A Must-have competency whose dimension is Track Record
-#: must count toward Must-have, and under a dimension-keyed map it counted
-#: toward Nice-to-have instead. The symptom was silent and severe: a job whose
-#: essentials all sat on one dimension produced an EMPTY Must-have grade, and
-#: the Must-have hard cap had nothing to bind against.
-#:
-#: So `aggregate` groups the per-competency bands by the matrix category, and
-#: falls back to this table only when an evaluator returned a dimension band
-#: with no per-competency breakdown -- which is a degraded answer, and the
-#: fallback is correspondingly coarse.
-#:
-#: Authenticity is absent from BOTH mappings. It does not map to a category at
-#: all -- it is a MULTIPLIER on the composite, because "this account does not
-#: hold together" is not a fourth thing a candidate is good or bad at, it is a
-#: reason to trust everything else less. Mapping it to a category would let a
-#: strong Authenticity score compensate for a weak Must-have, which is
-#: backwards: consistency is a precondition for reading the other scores, not a
-#: credit against them.
-DIMENSION_TO_CATEGORY: dict[str, str] = {
-    DIM_VERIFIED_COMPETENCE: CATEGORY_MUST_HAVE,
-    DIM_TRACK_RECORD: CATEGORY_NICE_TO_HAVE,
-    DIM_ROLE_FIT: CATEGORY_BEHAVIOURAL,
-    DIM_TRAJECTORY: CATEGORY_NICE_TO_HAVE,
-    # DIM_AUTHENTICITY is deliberately absent. See above.
-}
+#: The overall's status. `not_assessed` exactly when a Must-have skill could
+#: not be assessed (or no skill at all could): the overall is then not stated,
+#: because an overall grade that silently omitted an essential skill would read
+#: as a judgement of it.
+OVERALL_GRADED = "graded"
+OVERALL_NOT_ASSESSED = "not_assessed"
+
+# THE CATEGORY SCORES COME FROM MITI'S SKILL GRADES, AND FROM NOTHING ELSE
+# (WP5-B, the Vivekium release). Until then this module built them from the
+# five evaluators' `per_competency` bands, with a dimension-to-category table
+# (`DIMENSION_TO_CATEGORY`) as the fallback, while the report's per-skill rows
+# came from a separate rubric scorer. Two judges: a skill's report word and its
+# contribution to the overall were written by different code, and nothing made
+# them agree. The table and the per-competency path are DELETED. The evaluators
+# still run and still decide authenticity, the dimension floors, the hold,
+# confidence and a divergence review signal; they no longer grade a skill.
+#
+# Authenticity still maps to no category: it is a MULTIPLIER on the composite,
+# because "this account does not hold together" is not a fourth thing a
+# candidate is good or bad at, it is a reason to trust everything else less.
 
 #: The Runbook's own four confidence labels (section 10.7), not a fifth
 #: vocabulary. The product previously carried high / medium / low here, which
@@ -572,6 +555,14 @@ class Aggregate:
     #: Dimensions excluded from the composite for want of evidence. Named, so
     #: the report can say what it could not assess rather than implying it did.
     insufficient_dimensions: list[str] = field(default_factory=list)
+    #: Skills Miti could not assess (an outage), EXCLUDED from their category
+    #: rather than scored. Named for the same reason as the dimensions above.
+    insufficient_skills: list[str] = field(default_factory=list)
+    #: `graded` or `not_assessed`. See `OVERALL_NOT_ASSESSED`.
+    overall_status: str = OVERALL_GRADED
+    #: A Must-have skill graded (or left unanswered at) Not Matching. The ONE
+    #: definition of "failed", read by the cap and by the ranking blend.
+    must_have_failed: bool = False
     #: The union of every evidence ref every dimension cited. Siddhi's citation
     #: enforcement checks against this set.
     evidence_refs: list[str] = field(default_factory=list)
@@ -608,6 +599,9 @@ class Aggregate:
             "confidence": self.confidence,
             "confidence_score": round(self.confidence_score, 4),
             "insufficient_dimensions": list(self.insufficient_dimensions),
+            "insufficient_skills": list(self.insufficient_skills),
+            "overall_status": self.overall_status,
+            "must_have_failed": self.must_have_failed,
             "evidence_refs": list(self.evidence_refs),
             "needs_human_review": self.needs_human_review,
             "review_reasons": list(self.review_reasons),
@@ -639,6 +633,7 @@ class Aggregate:
             return {
                 "category_grades": {},
                 "overall_grade": "",
+                "overall_status": self.overall_status,
                 "capped_by_must_have": self.must_have_cap_applied,
                 "unassessed_must_haves": list(self.unassessed_must_haves),
                 "held_for_integrity_review": True,
@@ -647,6 +642,7 @@ class Aggregate:
         return {
             "category_grades": dict(self.category_grades),
             "overall_grade": self.overall_grade,
+            "overall_status": self.overall_status,
             # Deliberately present: a recruiter needs to know the report is
             # capped, and the WORD carries that without the arithmetic.
             "capped_by_must_have": self.must_have_cap_applied,
@@ -659,21 +655,74 @@ class Aggregate:
         }
 
 
-def _weighted(scores: Mapping[str, float], weights: Mapping[str, float]) -> float:
-    """Weighted mean, with a plain mean as the no-weights case.
+def priority_weight(priority: int) -> float:
+    """A skill's weight inside its bucket: `1 / priority`, deterministic.
 
-    Falling back to the plain mean rather than to zero matters: a matrix whose
-    weights failed to derive should produce a slightly less discriminating
-    grade, not a Not Matching for everybody.
+    The priority is Sutra's hidden per-bucket rank (1 = highest), carried on
+    the locked contract, so the top skill counts fully, the second half as
+    much, and so on. A reciprocal rather than a table: it needs no number
+    anybody has to choose per job, it is defined for every bucket size the
+    contract allows, and it can never give a lower-ranked skill more weight
+    than a higher-ranked one. A priority below 1 is a contract defect and
+    raises rather than being clamped into a plausible weight.
     """
-    if not scores:
-        return 0.0
-    total_weight = sum(max(0.0, weights.get(name, 1.0)) for name in scores)
-    if total_weight <= 0:
-        return sum(scores.values()) / len(scores)
+    if int(priority) < 1:
+        raise ValueError(f"a skill priority is 1 or more, got {priority!r}")
+    return 1.0 / float(priority)
+
+
+def _bucket_score(grades: Sequence[SkillGrade]) -> float:
+    """The priority-weighted mean of the ASSESSED skills in one bucket.
+
+    `not_assessed` skills are excluded by the caller, never scored: an outage
+    is not a finding about a candidate, and averaging a missing score as zero
+    would be exactly that.
+    """
+    total = sum(priority_weight(grade.priority) for grade in grades)
     return sum(
-        value * max(0.0, weights.get(name, 1.0)) for name, value in scores.items()
-    ) / total_weight
+        float(grade.score) * priority_weight(grade.priority)  # type: ignore[arg-type]
+        for grade in grades
+    ) / total
+
+
+#: How far apart two words are on the four-grade scale before an evaluator's
+#: reading of a skill counts as DISAGREEING with Miti's grade of it. Two steps
+#: (Highly Matching against Moderately Matching, say) is a real disagreement;
+#: one step is ordinary boundary noise on a four-band scale.
+DIVERGENCE_STEPS = 2
+
+
+def _divergent_skills(
+    results: Sequence[DimensionResult], skill_grades: Sequence[SkillGrade]
+) -> list[str]:
+    """Skills whose evaluator reading is two or more grades from Miti's grade.
+
+    The five evaluators still read every skill's evidence and may return a
+    per-skill band. That band no longer grades anything; it CHECKS the grade,
+    and a large disagreement sends the report to a person rather than being
+    averaged away. Words and names only: the reason carries no number.
+    """
+    order = list(rating.GRADES)
+    graded = {
+        grade.name: grade.grade
+        for grade in skill_grades
+        if grade.grade is not None
+    }
+    divergent: list[str] = []
+    for result in results:
+        if result.insufficient_evidence:
+            continue
+        for name, band in result.per_competency.items():
+            miti_word = graded.get(name)
+            if miti_word is None or name in divergent:
+                continue
+            try:
+                evaluator_word = rating.grade_for_percent(band_for(band)) or rating.GRADE_NOT
+            except ValueError:
+                continue
+            if abs(order.index(evaluator_word) - order.index(miti_word)) >= DIVERGENCE_STEPS:
+                divergent.append(name)
+    return sorted(divergent)
 
 
 def _must_have_terms(
@@ -744,89 +793,52 @@ def _consistency_term(
 def aggregate(
     results: Sequence[DimensionResult],
     *,
-    competency_categories: Mapping[str, str] | None = None,
-    competency_weights: Mapping[str, float] | None = None,
-    must_have_grades: Mapping[str, str] | None = None,
-    must_have_scores: Mapping[str, float] | None = None,
-    must_have_thresholds: Mapping[str, float] | None = None,
+    skill_grades: Sequence[SkillGrade] = (),
     must_have_evidence: Mapping[str, MustHaveEvidence] | None = None,
     unresolved_contradictions: int = 0,
     unresolved_severities: Sequence[str] = (),
     integrity_flags: Sequence[str] = (),
 ) -> Aggregate:
-    """Turn five dimension results into the grade a client reads.
+    """Turn Miti's skill grades, checked by five evaluators, into the overall.
 
-    `competency_categories` is {competency name: must_have | nice_to_have |
-    behavioural} -- the approved matrix. It is what decides which product
-    category a competency's band lands in, because that is a property of the
-    ITEM and not of the dimension it sits on.
+    `skill_grades` is the ONE per-skill judgement (`miti/items.py`). Each
+    bucket's category score is the priority-weighted mean of its ASSESSED
+    skills (`priority_weight`); a `not_assessed` skill is excluded and named in
+    `insufficient_skills`, never scored.
 
-    `must_have_grades` is {Must-have ITEM name: grade}, and it is keyed by name
-    rather than passed as a bare list of grades so that section 12.1's control
-    can say WHICH named competency failed its minimum. It is passed in rather
-    than derived from the dimension results on purpose: the control is about a
-    specific criterion the hiring manager declared essential, not about the
-    Verified Competence dimension in aggregate. A candidate can be strong on
-    Verified Competence overall and still have missed one named Must-have, and
-    it is the missed one that caps.
+    Section 12.1's control reads the same values: a Must-have graded Not
+    Matching, including one the candidate left unanswered, caps the overall at
+    `caps.must_have_ceiling()`. It is keyed by skill NAME so the cap can say
+    WHICH essential skill failed.
+
+    `results` are the five evaluators. They decide the authenticity multiplier,
+    section 12.2's dimension floors, the hold, and a divergence review signal
+    (`_divergent_skills`); they no longer produce a category score.
 
     `must_have_evidence` is {Must-have name: MustHaveEvidence}. A Must-have
     absent from it has no evidence, which is section 14.1's trigger and three
     of section 10.7's four confidence terms.
     """
     out = Aggregate()
-    weights = dict(competency_weights or {})
 
     by_dimension = {r.dimension: r for r in results}
     authenticity = by_dimension.get(DIM_AUTHENTICITY)
 
-    # ── Competency and dimension -> category ───────────────────────────────
-    categories = dict(competency_categories or {})
-    category_inputs: dict[str, dict[str, float]] = {}
+    # ── The evaluators: the citation trail and what could not be judged ─────
     refs: list[str] = []
-    judged = 0
     for result in results:
         refs.extend(result.evidence_refs)
-        if result.dimension == DIM_AUTHENTICITY:
-            # Not a category. It multiplies.
-            if not result.insufficient_evidence:
-                judged += 1
-            else:
-                out.insufficient_dimensions.append(result.dimension)
-            continue
         if result.insufficient_evidence:
             # EXCLUDED, not scored low. The whole fairness distinction.
             out.insufficient_dimensions.append(result.dimension)
-            continue
-        judged += 1
 
-        # PRIMARY PATH: the evaluator gave per-competency bands, so each one
-        # lands in the category the hiring manager put that competency in.
-        placed = False
-        for name, band in result.per_competency.items():
-            category = categories.get(name)
-            if category is None:
-                continue
-            try:
-                score = float(band_for(band))
-            except ValueError:
-                continue
-            category_inputs.setdefault(category, {})[name] = score
-            placed = True
-        if placed:
+    # ── Skills -> category, from Miti's grades alone ────────────────────────
+    by_bucket: dict[str, list[SkillGrade]] = {}
+    for grade in skill_grades:
+        if grade.status == ANSWER_NOT_ASSESSED:
+            out.insufficient_skills.append(grade.name)
             continue
-
-        # FALLBACK: a dimension band with no per-competency breakdown. Coarse,
-        # and it says so -- but a degraded answer must still reach a category,
-        # or a whole dimension's judgment silently disappears.
-        #
-        # If the matrix tells us which categories THIS dimension's competencies
-        # belong to, use that rather than the static table: it is still the
-        # item's own category, just applied at dimension granularity.
-        category = DIMENSION_TO_CATEGORY.get(result.dimension)
-        if category is None:
-            continue
-        category_inputs.setdefault(category, {})[result.dimension] = float(result.score)
+        by_bucket.setdefault(grade.bucket, []).append(grade)
 
     # Preserve ref order while de-duplicating: two dimensions citing the same
     # evidence is normal and must not double-count in the citation set.
@@ -846,13 +858,13 @@ def aggregate(
     out.evidence_refs = deduped
 
     # ── Category scores ─────────────────────────────────────────────────────
-    for category, dimension_scores in category_inputs.items():
-        out.category_scores[category] = _weighted(dimension_scores, weights)
+    for category, grades_in_bucket in by_bucket.items():
+        out.category_scores[category] = _bucket_score(grades_in_bucket)
         out.category_grades[category] = (
             rating.grade_for_percent(out.category_scores[category]) or ""
         )
 
-    # A category with no judged dimension is ABSENT rather than zero. Zero would
+    # A category with no assessed skill is ABSENT rather than zero. Zero would
     # read as "assessed and failed"; absent reads as "we could not assess this",
     # which is what happened.
     for category in (CATEGORY_MUST_HAVE, CATEGORY_NICE_TO_HAVE, CATEGORY_BEHAVIOURAL):
@@ -870,16 +882,19 @@ def aggregate(
     out.adjusted_composite = out.raw_composite * out.authenticity_factor
 
     # ── Confidence: section 10.7's arithmetic, section 6.7's floor OR'd in ──
-    grades = dict(must_have_grades or {})
+    #
+    # Section 12.1's trigger: every ASSESSED Must-have's word. A `not_assessed`
+    # one is absent, so it can neither fail nor pass the control.
+    grades = {
+        grade.name: grade.grade
+        for grade in skill_grades
+        if grade.bucket == CATEGORY_MUST_HAVE and grade.grade is not None
+    }
+    out.must_have_failed = any(word == rating.GRADE_NOT for word in grades.values())
     evidence = dict(must_have_evidence or {})
     must_have_names = sorted(
-        set(grades)
-        | set(evidence)
-        | {
-            name
-            for name, category in categories.items()
-            if category == CATEGORY_MUST_HAVE
-        }
+        set(evidence)
+        | {grade.name for grade in skill_grades if grade.bucket == CATEGORY_MUST_HAVE}
     )
     coverage, depth, independence_term, sufficiency_breached = _must_have_terms(
         must_have_names, evidence
@@ -912,11 +927,7 @@ def aggregate(
         {name: item.tiers for name, item in evidence.items()}, must_have_names
     )
     applied = (
-        caps.competency_threshold_caps(
-            grades=grades,
-            scores=must_have_scores,
-            thresholds=must_have_thresholds,
-        )
+        caps.competency_threshold_caps(grades=grades)
         + caps.dimension_floor_caps(dimension_scores)
         + caps.unassessed_must_have_caps(
             {name: item.tiers for name, item in evidence.items()}, must_have_names
@@ -928,6 +939,17 @@ def aggregate(
     out.overall_grade = (
         rating.grade_for_percent(out.delivered_score) or rating.GRADE_NOT
     )
+    # NOT ASSESSED OVERALL. A Must-have Miti could not assess means the overall
+    # would silently omit an essential skill, and no skill assessed at all
+    # means there is nothing to state. Either way the overall is not stated:
+    # the arithmetic above still ran (it is recorded), but the WORD is withheld.
+    must_have_unassessed = any(
+        grade.bucket == CATEGORY_MUST_HAVE and grade.status == ANSWER_NOT_ASSESSED
+        for grade in skill_grades
+    )
+    if must_have_unassessed or not out.category_scores:
+        out.overall_status = OVERALL_NOT_ASSESSED
+        out.overall_grade = ""
 
     # ── HOLD: section 12.2's D4 floor of 25 ─────────────────────────────────
     #
@@ -965,6 +987,23 @@ def aggregate(
         )
     if out.authenticity_factor < 1.0:
         reasons.append(out.authenticity_reason)
+    if out.insufficient_skills:
+        reasons.append(
+            "not assessed because the evaluation could not run: "
+            + ", ".join(sorted(out.insufficient_skills))
+        )
+    partial = sorted(grade.name for grade in skill_grades if grade.partially_assessed)
+    if partial:
+        reasons.append(
+            "graded on only part of the answers because some evaluations could "
+            "not run: " + ", ".join(partial)
+        )
+    divergent = _divergent_skills(results, skill_grades)
+    if divergent:
+        reasons.append(
+            "the dimension evaluators' reading differs from the graded word by "
+            "two or more grades on: " + ", ".join(divergent)
+        )
     out.review_reasons = reasons
     out.needs_human_review = bool(reasons)
     return out

@@ -44,7 +44,6 @@ from this module.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -61,14 +60,12 @@ from app.models.assessment import (
     AssessmentMessage,
     CandidateQuestion,
     FunctionalSkillsReport,
-    JobCompetency,
     ReportDimension,
 )
 from app.models.candidate import Candidate, JobCandidateLink, Profile
 from app.models.job import Job
 from app.services import (
     agent_loop,
-    answer_quality,
     conversation_guardrails,
     cost_telemetry,
     gap_analysis,
@@ -80,13 +77,12 @@ from app.services import (
 from app.services.assessment_pipeline import evidence as answer_evidence
 from app.services.assessment_pipeline.types import AnswerRecord
 from app.services.assessment_questions import budget as question_budget
-from app.services.assessment_questions import generate as question_generation
 from app.services import evidence_confidence
 from app.services.application_validation import MANDATORY_KEYS, VALIDATION_FIELDS
 from app.services.miti import claims as miti_claims
+from app.services.miti import grades as miti_grades
+from app.services.miti import items as miti_items
 from app.services.siddhi import claim_evidence, validation_points
-from app.services.assessment_formats import evaluation as format_evaluation
-from app.services.assessment_formats import rendering as format_rendering
 from app.services.assessment_formats import types as question_types
 from app.config import llm_providers
 from app.prompts import registry
@@ -192,7 +188,8 @@ PPI_REMARK_WORDS = (45, 50)
 PROBE_REMARK_WORDS = (25, 30)
 
 # Score assigned when a question was never answered -- factual, not punitive.
-UNANSWERED_SCORE = 25
+# Owned by Miti's item stage since WP5-B; re-exported for the report writers.
+UNANSWERED_SCORE = miti_items.UNANSWERED_SCORE
 
 #: Ordered best-to-worst grade labels, for the radar legend and colour ramp.
 RADAR_BANDS: tuple[str, ...] = GRADES
@@ -395,22 +392,31 @@ async def infer_grade(job: Job, session: AsyncSession) -> str:
 
 
 # ── Scoring primitives ──────────────────────────────────────────────────────
+#
+# THE ITEM SCORER THAT LIVED HERE IS GONE (WP5-B, the Vivekium release). Every
+# per-skill grade is written by `services/miti/items.py`, which Miti runs as the
+# first stage after G1; this module only lays the grades out as report rows and
+# writes their remarks. The hash fallback (`_stable_score`) and the rubric
+# scorer that silently returned None on any exception are DELETED: a model
+# failure is now "not assessed", never a score.
 
-#: The one scoring mode that does NOT force human review: a real rubric, scored
-#: by a model, against the candidate's real answers. Named rather than spelled
-#: at each site because `needs_human_review` compares against it, and a typo in
-#: a string literal there would silently stop flagging every fallback report.
-MODE_LLM_RUBRIC = "llm_rubric"
+#: The scoring mode of a report Miti graded. The one mode that does NOT force
+#: human review. Named rather than spelled at each site because
+#: `needs_human_review` compares against it, and a typo in a string literal
+#: there would silently stop flagging a report that should be read.
+MODE_MITI = "miti"
 
 
-def _stable_score(seed: str, low: int = 45, high: int = 94) -> int:
-    """DETERMINISTIC LAST-RESORT ONLY (claude.md rule 9: degrade, never crash).
+class SkillsNotAssessed(RuntimeError):
+    """At least one skill could not be assessed, so no report is written.
 
-    Used when the LLM chain is unavailable. Any report produced this way is
-    marked with scoring_mode='deterministic_fallback'.
+    Raised rather than written, because a report is permanent and a two-minute
+    provider outage must not become a permanent "Not assessed" on a real
+    candidate's record. The scoring task fails, and the hourly
+    `release_held_assessments` sweep re-dispatches the application (it selects
+    completed conversations with no report). The message names the skills'
+    COUNT only: skill names are job content and this travels into task status.
     """
-    number = int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16)
-    return low + number % (high - low + 1)
 
 
 def answers_by_key(transcript: list[dict[str, Any]] | None) -> dict[str, list[str]]:
@@ -425,47 +431,6 @@ def answers_by_key(transcript: list[dict[str, Any]] | None) -> dict[str, list[st
             continue
         grouped.setdefault(str(key), []).append(content)
     return grouped
-
-
-# ── Miti's evidence ledger, at scoring time (spec 13, 47) ────────────────────
-#
-# Every substantive answer Miti grades is filed as one addressable piece of
-# evidence on a claim for the skill it was probing. The WRITER is
-# `assessment_pipeline.evidence.record_answer_evidence`, the only one in the
-# product; the conversation calls it per answer, and this pass calls it again
-# as a BACKFILL for every located answer. The writer is idempotent, so an
-# answer already filed during the conversation is a no-op here.
-
-
-async def _record_answer_evidence(
-    state: "AssessmentState",
-    competency: JobCompetency,
-    question: CandidateQuestion | None,
-    refs: list[AnswerRecord],
-) -> None:
-    """Backfill the ledger for one item's answers through THE writer.
-
-    A LEDGER FAILURE NEVER FAILS SCORING: the writer runs each answer in a
-    savepoint and absorbs a database failure (logged with its traceback), so
-    the report for work a candidate has already done cannot be lost to it.
-    """
-    session = state.get("session")
-    link = state.get("link")
-    job = state.get("job")
-    if session is None or link is None or job is None:
-        return
-    await answer_evidence.backfill_answer_evidence(
-        session,
-        tenant_id=job.tenant_id,
-        job_id=job.id,
-        link_id=link.id,
-        candidate_id=link.candidate_id,
-        skill_id=competency.id,
-        skill_name=competency.name,
-        skill_bucket=competency.category,
-        question_id=question.id if question is not None else None,
-        records=refs,
-    )
 
 
 async def _uncertainty_from_evidence(
@@ -539,25 +504,19 @@ async def _uncertainty_from_evidence(
     ]
 
 
-def _rubric_text(rubric: dict | None) -> str:
-    if not rubric:
-        rubric = ppi_interview.DEFAULT_RUBRIC
-    return "; ".join(f"{band.replace('_', '-')}: {text}" for band, text in rubric.items())
-
-
 async def _structured_answers(
-    session: AsyncSession | None, link: JobCandidateLink | None
+    session: AsyncSession, link: JobCandidateLink
 ) -> dict[str, AssessmentAnswer]:
     """Every `assessment_answers` row on this application, keyed exactly as
     the scorer keys answers: by the question's own id.
 
     This is where an objective format's deterministic score and a subjective
-    format's evaluation record live. Read once per assessment, like the
-    locators, because the answer to "what did this candidate submit for
-    question N" cannot change mid-pass.
+    format's evaluation record live. Read once per assessment, because the
+    answer to "what did this candidate submit for question N" cannot change
+    mid-pass. A failed read RAISES: scoring every structured answer as
+    unanswered because the table could not be read would be a synthetic Not
+    Matching written from an outage.
     """
-    if session is None or link is None:
-        return {}
     rows = (
         await session.execute(
             select(AssessmentAnswer)
@@ -569,66 +528,6 @@ async def _structured_answers(
         )
     ).scalars().all()
     return {str(row.question_id): row for row in rows}
-
-
-async def _evaluate_subjective(
-    state: "AssessmentState",
-    competency: JobCompetency,
-    question: CandidateQuestion,
-    answer: str,
-    record: AssessmentAnswer | None,
-) -> int | None:
-    """The AI evaluation with reasoning for an evidence or coding answer
-    (assessment-spec-doc 6.2), persisted on the answer row.
-
-    Returns the score, or None when the evaluation degraded so the caller
-    can score the answer the way every rubric-scored answer was scored before
-    this format existed. A degraded evaluation is never stored: a record with
-    no reasoning would read as an evaluation that found nothing to say.
-    """
-    question_type = _question_type(question)
-    payload = dict(getattr(question, "payload_json", None) or {})
-    submitted = dict(getattr(record, "answer_json", None) or {})
-    result = await format_evaluation.evaluate(
-        state.get("session"),
-        question_type=question_type,
-        prompt=question.prompt,
-        answer_text=answer,
-        item_name=competency.name,
-        resume_anchor=getattr(question, "resume_anchor", None),
-        question_rubric=question.rubric_json if question_type == question_types.EVIDENCE_BASED else None,
-        payload=payload,
-        language=submitted.get("language"),
-    )
-    if result.degraded or result.value is None:
-        return None
-    if record is not None:
-        record.ai_evaluation_json = result.value
-    return int(result.value["score"])
-
-
-async def _llm_score(session: AsyncSession | None, question: str, rubric: dict | None, answer: str) -> int | None:
-    """Score one answer 0-100 strictly against the supplied rubric bands."""
-    try:
-        raw = await llm_router.chat_completion(
-            "behavioral_assessment",
-            [
-                {
-                    "role": "system",
-                    "content": registry.render(
-                        "assessment_answer_scoring",
-                        rubric_bands=_rubric_text(rubric),
-                    ),
-                },
-                {"role": "user", "content": json.dumps({"question": question, "answer": answer})},
-            ],
-            response_format_json=True,
-            session=None,
-        )
-        score = int(round(float(json.loads(raw)["score"])))
-        return max(0, min(100, score))
-    except Exception:
-        return None
 
 
 # ── Remark generation ───────────────────────────────────────────────────────
@@ -1081,7 +980,9 @@ class AssessmentState(TypedDict, total=False):
     profile: Profile | None
     transcript: list[dict[str, Any]]
     answers: dict[str, list[str]]
-    competencies: list[JobCompetency]
+    #: The conversation being scored. Its bound snapshot IS the contract Miti
+    #: grades against (gate G1).
+    conversation: AssessmentConversation
     candidate_questions: list[CandidateQuestion]
     grade: str
     matching: list[dict[str, Any]]
@@ -1097,11 +998,10 @@ class AssessmentState(TypedDict, total=False):
     #: It flags the report for a person; it never moves a grade.
     evidence_review: bool
     evidence_findings: list[dict[str, Any]]
-    #: G4's inputs. Both absent on a first pass, which is correct: a human
-    #: disposition cannot exist before the flags that need one. A rescore after
-    #: a person has looked carries them, and G4 then passes.
-    review_disposition: str
-    review_decided_by: Any
+    #: Miti's result (`miti.live.MitiResult`): the skill grades, the evaluators,
+    #: the aggregate and every gate. G4's disposition is read by Miti itself
+    #: from `review_dispositions`, so it is no longer a state key nobody sets.
+    miti: Any
     validation: dict[str, Any]
     report_id: str
 
@@ -1147,316 +1047,112 @@ async def _matching_dimensions(state: AssessmentState) -> list[dict[str, Any]]:
     return result
 
 
-#: The judgement standard for a Behavioural item. It is NOT a per-question
-#: rubric and must not be mistaken for one: it describes what a credible
-#: account of a behaviour looks like in general, because there is no single
-#: correct answer to a behavioural question to weigh a specific rubric against
-#: (spec §8). Every Behavioural item in the product is judged against this same
-#: standard, which is what makes two candidates' behavioural grades comparable.
-_BEHAVIOURAL_STANDARD = {
-    "0_39": "No relevant situation described, or the account contradicts the competency.",
-    "40_59": "A thin or generic account with little personal action or outcome.",
-    "60_74": "A credible situation with clear personal action and a stated outcome.",
-    "75_89": "Several strong situations with judgement, trade-offs, and measurable results.",
-    "90_100": "Consistently exceptional accounts showing judgement, impact, and transferable insight.",
-}
-
-
-async def _score_item(
-    state: AssessmentState,
-    competency: JobCompetency,
-    questions: list[CandidateQuestion],
-    answers: dict[str, list[str]],
-    locators: dict[str, list[AnswerRecord]] | None = None,
-    structured: dict[str, AssessmentAnswer] | None = None,
-) -> tuple[int, list[str], bool]:
-    """Score one matrix item. Returns (score, the answers used, degraded).
-
-    THE FORMAT DECIDES WHERE THE SCORE COMES FROM (assessment-spec-doc 6):
-    an objective question's score is its deterministic `auto_score`, written
-    on submission; an evidence or coding question's is the AI evaluation with
-    reasoning, written here; a short-answer question's is the existing rubric
-    path. The item's score is the WEIGHTED mean by each row's stored weight,
-    which is what makes a supporting question carry less of the item than an
-    evidence question does.
-
-    THE DUAL METHOD, AND IT IS THE WHOLE POINT OF THIS FUNCTION
-    -----------------------------------------------------------
-    Must-have and Nice-to-have answers are graded against the rubric written for
-    the specific question that produced them, one question at a time, and the
-    item's score is the mean of those. That is what makes a grade defensible
-    when a client asks why a candidate was rated as they were: the answer is a
-    rubric written for the exact question they were asked.
-
-    Behavioural answers are graded together, once, against
-    `_BEHAVIOURAL_STANDARD`. Splitting them per question would be worse, not
-    better: a competency is demonstrated across a conversation, and three
-    separate judgements of three fragments average out exactly the pattern the
-    aspect exists to see.
-
-    A question with no rubric on a rubric-scored item falls back to the general
-    standard rather than being skipped. That happens when generation degraded
-    and the candidate read the pre-generated question, and dropping the answer
-    would silently narrow the evidence rather than visibly degrade the score.
-    """
-    rubric_scored = ppi_interview.is_rubric_scored(competency.category)
-    degraded = False
-    # WHERE each of those answers lives, so the grade below can be traced back
-    # to it. Empty when the ledger read failed or the caller supplied none, and
-    # the scoring path below reads it for nothing else -- recording evidence is
-    # a side effect of scoring and never an input to it.
-    located = locators or {}
-    recorded = structured or {}
-
-    if rubric_scored:
-        scores: list[tuple[int, float]] = []
-        used: list[str] = []
-        for question in questions:
-            answer = " ".join(answers.get(str(question.id), []))
-            question_type = _question_type(question)
-            weight = _question_weight(question)
-            record = recorded.get(str(question.id))
-            if question_type in question_types.OBJECTIVE_TYPES:
-                # Scored deterministically on submission (spec 6.1). No row,
-                # or a row with no score, is an unanswered question; the
-                # transcript line is kept as the evidence the remark reads.
-                if record is None or record.auto_score is None:
-                    scores.append((UNANSWERED_SCORE, weight))
-                    continue
-                line = answer or format_rendering.transcript_line(
-                    question_type, dict(getattr(question, "payload_json", None) or {}), dict(record.answer_json or {})
-                )
-                used.append(line)
-                scores.append((int(round(float(record.auto_score) * 100)), weight))
-                continue
-            if question_type == question_types.CODING:
-                code = str((record.answer_json or {}).get("code") or "") if record is not None else ""
-                if not code.strip():
-                    scores.append((UNANSWERED_SCORE, weight))
-                    continue
-                used.append(answer or code)
-                await _record_answer_evidence(
-                    state, competency, question, located.get(str(question.id), [])
-                )
-                score = await _evaluate_subjective(state, competency, question, answer or code, record)
-                if score is None:
-                    score = await _llm_score(
-                        state["session"], question.prompt,
-                        question.rubric_json or _BEHAVIOURAL_STANDARD, answer or code,
-                    )
-                if score is None:
-                    degraded = True
-                    score = _stable_score(f"{state['link'].id}:{question.id}:{answer or code}")
-                scores.append((score, weight))
-                continue
-            # An answer with nothing in it to grade is treated exactly as an
-            # unanswered one, and deliberately never reaches `_llm_score`.
-            # Letting it through is what produced a passing grade for
-            # `ewidjverip`: on an LLM failure the caller falls back to
-            # `_stable_score`, which hashes into 45..94.
-            #
-            # THIS COMMENT USED TO SAY THAT RANGE "cannot express Not
-            # Matching", AND THAT IS FALSE on the current four-grade scale.
-            # Measured over 20,000 seeds against `rating.grade_for_percent`
-            # (90 / 75 / 60): Not Matching 30.0%, Moderately Matching 30.4%,
-            # Matching 29.6%, Highly Matching 10.1%. It was true of an earlier
-            # scale and survived the 2026-07-30 consolidation unread.
-            #
-            # The defect it was describing is real and unchanged, and the
-            # measured numbers state it better than the wrong claim did:
-            # 70.0% of hashed inputs grade Moderately Matching or better, so
-            # keyboard mash reaching this path is far more likely to pass than
-            # to fail. What is wrong is not that the hash cannot fail somebody,
-            # it is that a HASH decides. See services/answer_quality.
-            verdict = answer_quality.assess(answer)
-            if not verdict.substantive:
-                if answer:
-                    logger.info(
-                        "functional_assessment.insufficient_answer "
-                        "link_id=%s question_id=%s reason=%s",
-                        state["link"].id, question.id, verdict.reason,
-                    )
-                scores.append((UNANSWERED_SCORE, weight))
-                continue
-            used.append(answer)
-            # Recorded BEFORE the grade is asked for, and deliberately not
-            # conditioned on it. Evidence is what was read; a grade is what was
-            # concluded from it, and writing the trail only for answers that
-            # scored well would produce a ledger that agreed with every grade in
-            # it by construction.
-            await _record_answer_evidence(
-                state, competency, question, located.get(str(question.id), [])
-            )
-            score: int | None = None
-            if question_type == question_types.EVIDENCE_BASED:
-                # The evaluation with reasoning (spec 6.2). None means it
-                # degraded, and the rubric path below is the product's
-                # previous scorer for exactly this answer.
-                score = await _evaluate_subjective(state, competency, question, answer, record)
-            if score is None:
-                score = await _llm_score(
-                    state["session"],
-                    question.prompt,
-                    question.rubric_json or _BEHAVIOURAL_STANDARD,
-                    answer,
-                )
-            if score is None:
-                degraded = True
-                score = _stable_score(f"{state['link'].id}:{question.id}:{answer}")
-            scores.append((score, weight))
-        if not used:
-            return UNANSWERED_SCORE, [], degraded
-        return _weighted_mean(scores), used, degraded
-
-    # Behavioural: one judgement across everything said about the competency.
-    collected: list[str] = []
-    for question in questions:
-        answered = [
-            answer
-            for answer in answers.get(str(question.id), [])
-            if answer_quality.is_substantive(answer)
-        ]
-        if not answered:
-            continue
-        collected.extend(answered)
-        # One judgement is made across every answer about this competency, so
-        # every one of those answers is evidence for the same claim. Filing them
-        # individually rather than as one blob is what lets a recruiter be shown
-        # the specific turn a behavioural grade rests on.
-        await _record_answer_evidence(
-            state, competency, question, located.get(str(question.id), [])
-        )
-    if not collected:
-        return UNANSWERED_SCORE, [], degraded
-    combined = "\n".join(f"- {item}" for item in collected)
-    framing = (
-        f"Behavioural competency '{competency.name}'"
-        f"{': ' + competency.description if competency.description else ''} "
-        f"The candidate answered {len(collected)} question(s) probing it."
-    )
-    score = await _llm_score(state["session"], framing, _BEHAVIOURAL_STANDARD, combined)
-    if score is None:
-        degraded = True
-        score = _stable_score(f"{state['link'].id}:{competency.id}:{combined}")
-    return score, collected, degraded
-
-
 async def ppi_scoring_node(state: AssessmentState) -> dict:
-    """THE PPI Scoring Agent -- one agent, two methods (spec §8).
+    """MITI GRADES; this node lays the grades out and writes their remarks.
 
-    This replaced two nodes that ran side by side, a technical scorer and a PPI
-    scorer. They were two agents because there were two question banks; there is
-    one matrix now, so there is one scorer, and the method varies by ITEM TYPE
-    rather than by agent.
+    Miti is the sole grading authority (WP5-B): `miti_live.evaluate_application`
+    loads the LOCKED contract this candidate's conversation is bound to (gate
+    G1, refusing a digest mismatch), grades every skill in `miti/items.py`, and
+    runs the five evaluators, triangulation, the aggregation and the caps over
+    those grades. Nothing in this module scores anything any more.
 
-    One report row per matrix item, in report order, each with a 45-50 word
-    remark (§9.5). The item's `required_level` travels ONTO the report row so
-    the radar can plot the job's shape even after the job's matrix is later
-    edited -- a written report is a permanent record of the criteria it was
-    written against.
+    One report row per contract skill, in contract order, each with a 45-50
+    word remark (§9.5). A skill Miti could not assess RAISES
+    `SkillsNotAssessed` before a single remark is paid for: no report is written
+    for an application with a hole in it, and the scoring task is retried.
+
+    Its inputs are read here and a failed read RAISES. An unreadable locator or
+    answer table used to be absorbed into "everything unanswered", which is a
+    synthetic Not Matching written from an outage.
     """
-    answers = state.get("answers") or answers_by_key(state.get("transcript"))
-    mode = "no_transcript" if not answers else "llm_rubric"
+    from app.services.miti import live as miti_live
 
-    # Read once per assessment rather than once per item: the alternative is one
-    # query per matrix item on a job with twenty of them, to answer a question
-    # whose answer cannot change mid-pass.
-    #
-    # NEVER FAILS THE PASS. A locator read that raises leaves the map empty, so
-    # the assessment scores exactly as it did before the ledger existed.
+    session, link, job = state["session"], state["link"], state["job"]
+    conversation = state.get("conversation")
+    if conversation is None:
+        raise miti_live.ScorecardUnavailable(
+            f"no assessment conversation exists for link {link.id}, so there is "
+            "no locked contract to grade against"
+        )
+    answers = state.get("answers") or answers_by_key(state.get("transcript"))
     locators = state.get("answer_refs")
     if locators is None:
-        try:
-            session, link = state.get("session"), state.get("link")
-            locators = (
-                await answer_evidence.answer_records(session, link.id)
-                if session is not None and link is not None
-                else {}
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "functional_assessment.locators_unavailable link_id=%s",
-                state["link"].id, exc_info=True,
-            )
-            locators = {}
-
-    # The structured answer rows, read once for the same reason as the
-    # locators. An unreadable table is logged and scores every structured
-    # question as unanswered, which is visible in the report; it never fails
-    # the pass for work a candidate has already done.
+        locators = await answer_evidence.answer_records(session, link.id)
     structured = state.get("structured_answers")
     if structured is None:
-        try:
-            structured = await _structured_answers(state.get("session"), state.get("link"))
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "functional_assessment.structured_answers_unavailable link_id=%s",
-                state["link"].id, exc_info=True,
-            )
-            structured = {}
+        structured = await _structured_answers(session, link)
 
-    questions_by_item: dict[str, list[CandidateQuestion]] = {}
-    for question in state.get("candidate_questions") or []:
-        questions_by_item.setdefault(str(question.competency_id), []).append(question)
+    candidate = await session.get(Candidate, link.candidate_id)
+    evaluation = await miti_live.evaluate_application(
+        session,
+        job=job,
+        link=link,
+        conversation_id=conversation.id,
+        questions=state.get("candidate_questions") or [],
+        answers=answers,
+        locators=locators,
+        structured=structured,
+        # The candidate's own name parts, removed from every evidence excerpt
+        # before an evaluator reads it. The structural guarantee is that
+        # `EvaluatorInput` has no name field; this is the second mechanism.
+        subject_names=str(getattr(candidate, "full_name", "") or "").split(),
+    )
+    if not evaluation.complete:
+        raise SkillsNotAssessed(
+            f"{len(evaluation.not_assessed_skills)} skill(s) on link {link.id} "
+            "could not be assessed; no report is written and the run is retried"
+        )
 
     rows: list[dict[str, Any]] = []
-    ordinal_by_category: dict[str, int] = {}
-    for competency in state.get("competencies") or []:
-        ordinal_by_category[competency.category] = (
-            ordinal_by_category.get(competency.category, 0) + 1
-        )
-        questions = questions_by_item.get(str(competency.id), [])
-        score, used, degraded = await _score_item(
-            state, competency, questions, answers, locators, structured
-        )
-        if degraded:
-            mode = "deterministic_fallback"
+    ordinal_by_bucket: dict[str, int] = {}
+    for grade in evaluation.skills:
+        ordinal_by_bucket[grade.bucket] = ordinal_by_bucket.get(grade.bucket, 0) + 1
         base = {
-            "category": competency.category,
-            "name": competency.name,
-            "description": competency.description,
-            "required_level": competency.required_level,
-            "ordinal": ordinal_by_category[competency.category],
+            "category": grade.bucket,
+            "name": grade.name,
+            # The contract carries no description and no required level: what
+            # a skill MEANS is the hidden evidence line, which never reaches a
+            # report, and the radar draws the job's shape from its default
+            # when no level is copied.
+            "description": None,
+            "required_level": None,
+            "ordinal": ordinal_by_bucket[grade.bucket],
+            "score": grade.score,
         }
-        if not used:
+        if grade.status == miti_grades.ANSWER_UNANSWERED or not grade.used_answers:
             rows.append(
-                {
-                    **base,
-                    "score": UNANSWERED_SCORE,
-                    "remark": _unanswered_remark(competency.name, PPI_REMARK_WORDS[0]),
-                }
+                {**base, "remark": _unanswered_remark(grade.name, PPI_REMARK_WORDS[0])}
             )
             continue
-        combined = "\n".join(f"- {item}" for item in used)
+        combined = "\n".join(f"- {item}" for item in grade.used_answers)
         evidence_prefix = (
-            "the candidate's own answers, each graded against the rubric written "
-            "for the question that produced it: "
-            if ppi_interview.is_rubric_scored(competency.category)
-            else "the candidate's own answers probing this competency: "
+            "the candidate's own answers probing this competency: "
+            if grade.bucket == ppi.CATEGORY_BEHAVIOURAL
+            else "the candidate's own answers, each graded against the rubric "
+            "written for the question that produced it: "
         )
         rows.append(
             {
                 **base,
-                "score": score,
                 "remark": await bounded_remark(
-                    state["session"],
-                    competency.name,
+                    session,
+                    grade.name,
                     f"{evidence_prefix}{combined[:800]}",
                     *PPI_REMARK_WORDS,
-                    rating=grade_for_percent(score),
+                    rating=grade.grade,
                 ),
             }
         )
 
-    # Read AFTER every item is scored, so the pass sees the whole ledger it just
-    # wrote rather than a prefix of it. Nothing in `rows` is touched by the
-    # answer: a contradiction is carried forward as uncertainty, never used to
-    # move a grade, because a grade that quietly changed because two sources
-    # disagreed is the silent averaging spec 14 forbids.
+    # Read AFTER every skill is graded, so the pass sees the whole ledger the
+    # item stage just wrote. Nothing in `rows` is touched by the answer: a
+    # contradiction is carried forward as uncertainty, never used to move a
+    # grade.
     review, findings = await _uncertainty_from_evidence(state)
     return {
         "ppi": rows,
-        "ppi_mode": mode,
+        "ppi_mode": MODE_MITI,
+        "miti": evaluation,
         "evidence_review": review,
         "evidence_findings": findings,
     }
@@ -2025,41 +1721,14 @@ async def synthesis_node(state: AssessmentState) -> dict:
     # deliberately never merged.
     assessed = [row for row in dimensions if row["category"] != CATEGORY_MATCHING]
 
-    # ── MITI, STAGES 2 TO 6, ON THE LIVE PATH ────────────────────────────────
+    # ── MITI'S RESULT, COMPUTED IN THE SCORING NODE ──────────────────────────
     #
-    # This is where the five isolated dimension evaluators, triangulation and
-    # the deterministic aggregator actually run for a real candidate. Until
-    # 2026-08-29 the whole of that stack was reachable only from
-    # `app/scripts/worked_example.py`, so gates G1 to G4 were real checks
-    # guarding nothing.
-    #
-    # IT IS ALLOWED TO RAISE, AND THAT IS GATE G1. `require_frozen_matrix`
-    # refuses a job with no approved, frozen Tatva matrix, and Runbook section
-    # 14.1 states the consequence as "scoring blocked entirely". Catching it
-    # here and scoring against the job's competency rows instead would be a
-    # second implementation of the criteria, chosen at runtime, which is
-    # exactly the dual path the anti-slop rules forbid -- and it would let the
-    # first candidate assessed set the criteria for everyone.
-    #
-    # The composite, the confidence and the three band caps all come from
-    # Miti's aggregate. The per-ITEM grades in the sections above are the
-    # product's own rubric scoring and are unchanged; what changed is that the
-    # OVERALL grade is now the Runbook's composite rather than the plain mean
-    # of the item scores, which is what section 10.1 through 10.8 describe.
-    candidate = await session.get(Candidate, state["link"].candidate_id)
-    evaluation = await miti_live.evaluate_application(
-        session,
-        job=state["job"],
-        link=state["link"],
-        item_scores={row["name"]: row["score"] for row in assessed},
-        # The candidate's own name parts, removed from every evidence excerpt
-        # before an evaluator reads it. The structural guarantee is that
-        # `EvaluatorInput` has no name field; this is the second mechanism, and
-        # it is needed because the excerpts are the candidate's own prose.
-        subject_names=str(getattr(candidate, "full_name", "") or "").split(),
-        review_disposition=state.get("review_disposition"),
-        review_decided_by=state.get("review_decided_by"),
-    )
+    # Miti already ran, in `ppi_scoring_node`: G1 against the locked contract,
+    # the item grades, the five isolated evaluators, triangulation and the
+    # deterministic aggregation of the skill grades. This node reads that ONE
+    # result; it never grades and never runs Miti a second time. The overall,
+    # the confidence and the three band caps all come from its aggregate.
+    evaluation = state["miti"]
     aggregate = evaluation.aggregate
     if aggregate is None:
         # A blocking gate stopped the pipeline before aggregation. `deliverable`
@@ -2174,8 +1843,8 @@ async def synthesis_node(state: AssessmentState) -> dict:
         + portable_evidence_nodes(state),
     )
 
-    scoring_mode = state.get("ppi_mode", MODE_LLM_RUBRIC)
-    if scoring_mode != MODE_LLM_RUBRIC:
+    scoring_mode = state.get("ppi_mode", MODE_MITI)
+    if scoring_mode != MODE_MITI:
         logger.warning(
             "functional_assessment.scoring_mode link_id=%s mode=%s",
             state["link"].id, scoring_mode,
@@ -2263,39 +1932,27 @@ async def synthesis_node(state: AssessmentState) -> dict:
         # the fallback for human review five lines below.
         "model_id": (
             llm_providers.model_for("report_synthesis")
-            if scoring_mode == MODE_LLM_RUBRIC
+            if scoring_mode == MODE_MITI
             else None
         ),
         "prompt_version": (
-            _report_prompt_versions() if scoring_mode == MODE_LLM_RUBRIC else None
+            _report_prompt_versions() if scoring_mode == MODE_MITI else None
         ),
         "needs_human_review": (
             not gate_verdict.passed
             or uncertainty_review
             or aggregate.needs_human_review
             or bool(evaluation.unresolved_evidence)
-            # A HASH-SCORED REPORT IS ALWAYS REVIEWED, and until 2026-09-09 it
-            # was not. `scoring_mode` was computed twenty lines above, logged,
-            # and STORED on the row, and none of that reached this flag.
-            #
-            # `claude.md` has stated the rule since the agent framework landed:
-            # "A stub is always flagged for human review ... what makes that
-            # honest rather than misleading is `needs_human_review`, never a
-            # stub that reads like a result." A deterministic fallback is that
-            # stub. `_stable_score` hashes into 45..94, which cannot express
-            # Not Matching at all, and measured over 20,000 seeds it graded
-            # 69.6% of inputs Moderately Matching or better.
-            #
-            # So the failure mode was a provider outage producing a report that
-            # looked exactly like a scored one, carried a plausible grade, and
-            # went to a client with nothing asking a person to look. The column
-            # recording that it happened was written and read by nobody.
-            #
-            # Compared against the ONE known-good mode rather than against a
-            # list of bad ones: a future third mode is unreviewed by default
-            # under `!= fallback`, and reviewed by default here. Review is the
-            # safe direction.
-            or scoring_mode != MODE_LLM_RUBRIC
+            # ANY MODE BUT MITI'S IS REVIEWED. Compared against the ONE
+            # known-good mode rather than against a list of bad ones: a future
+            # mode is reviewed by default here, which is the safe direction.
+            # The hash fallback this used to catch (`_stable_score`, deleted in
+            # WP5-B) produced a plausible grade from a provider outage; a
+            # skill Miti cannot assess now stops the report instead.
+            or scoring_mode != MODE_MITI
+            # A skill graded on only part of its answers is graded honestly
+            # on what was evaluated, and a person is told.
+            or any(grade.partially_assessed for grade in evaluation.skills)
         ),
         # Issue, location and severity only. A finding's `detail` can quote the
         # report prose, and this column is read from far more places than the
@@ -2379,7 +2036,7 @@ async def _write_evaluation(
 
     session = state["session"]
     aggregate = evaluation.aggregate
-    matrix = evaluation.matrix
+    contract = evaluation.contract
     outcome = evaluation.outcome
 
     payload = aggregate.as_dict()
@@ -2393,25 +2050,38 @@ async def _write_evaluation(
             job_id=state["job"].id,
             link_id=state["link"].id,
             report_id=report.id,
-            scorecard_version=int(getattr(matrix, "version", 1) or 1),
-            situation_type=getattr(matrix, "situation_key", None),
+            # The LOCKED contract's version, copied: an evaluation is a
+            # permanent record of the criteria it was run against. There is no
+            # situation type on a contract (the three-layer weighting is not on
+            # the live path), so none is claimed.
+            scorecard_version=int(contract.version),
+            situation_type=None,
             dimension_scores={
                 result.dimension: result.as_dict() for result in outcome.results
             },
-            # Per COMPETENCY, from the evaluators' own per-item bands, with the
-            # citing dimension's refs. This is what makes citation enforcement
-            # possible after the fact and is why it cannot be retrofitted.
+            # Per SKILL, from MITI'S grades: the one per-skill judgement. Words
+            # and statuses only; the internal score stays on the report row.
             competency_scores={
-                name: {"band": band, "evidence_refs": list(result.evidence_refs)}
-                for result in outcome.results
-                for name, band in result.per_competency.items()
+                grade.name: {
+                    "bucket": grade.bucket,
+                    "status": grade.status,
+                    "grade": grade.grade,
+                    "partially_assessed": grade.partially_assessed,
+                    "methods": sorted({item.method for item in grade.items}),
+                }
+                for grade in evaluation.skills
             },
             aggregate_json=payload,
             triangulation_json=(
                 outcome.triangulation.as_dict() if outcome.triangulation else {}
             ),
             gate_results_json=[gate.as_dict() for gate in outcome.gate_results],
-            scoring_mode=scoring_mode,
+            # `evaluations.scoring_mode` is CHECKed to full | degraded | stub
+            # (migration 0059). The report's mode string ("llm_rubric" before
+            # WP5-B, "miti" now) was written here and could never have passed
+            # that CHECK; pilot held no evaluation rows, so it never ran. A
+            # Miti run that reaches this write graded every skill: "full".
+            scoring_mode="full" if scoring_mode == MODE_MITI else "degraded",
             confidence=aggregate.confidence,
             needs_human_review=report.needs_human_review,
             completed_at=datetime.now(timezone.utc),
@@ -2456,77 +2126,69 @@ async def run_assessment(
     link: JobCandidateLink,
     transcript: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Run both scorers and synthesise the PPI Assessment Report.
+    """Grade one application with Miti and synthesise its PRISM Report.
 
-    A job that somehow reached this point without a technical bank or a PPI
-    framework gets one generated on demand rather than the run failing: the work
-    the candidate has already done must not be discarded over a setup gap.
+    The external call surface is unchanged (the scoring task calls exactly
+    this). What changed under it in WP5-B: Miti grades every skill against the
+    locked contract of THIS conversation, and the two refusals below replace
+    two silent substitutions.
+
+    * **No conversation, no contract, no report.** Gate G1 reads the snapshot
+      the conversation is bound to; without a conversation there is nothing to
+      prove the candidate was assessed against, so `ScorecardUnavailable`.
+    * **No questions is a refusal, never a generation.** This used to generate
+      questions on demand for a link with none, which graded a candidate
+      against questions they were never shown: every item "unanswered", a
+      synthetic Not Matching. A completed conversation always has its
+      questions, so none is a defect to surface.
     """
-    if transcript is None:
-        conversation = (
-            await session.execute(
-                select(AssessmentConversation).where(
-                    AssessmentConversation.job_candidate_link_id == link.id
-                )
+    from app.services.miti import live as miti_live  # noqa: PLC0415
+
+    conversation = (
+        await session.execute(
+            select(AssessmentConversation).where(
+                AssessmentConversation.job_candidate_link_id == link.id
             )
-        ).scalars().first()
-        if conversation is not None:
-            messages = (
-                await session.execute(
-                    select(AssessmentMessage)
-                    .where(AssessmentMessage.conversation_id == conversation.id)
-                    .order_by(AssessmentMessage.ordinal)
-                )
-            ).scalars().all()
-            transcript = [
-                {
-                    "speaker": message.speaker,
-                    "domain": message.domain,
-                    "question_key": message.question_key,
-                    "content": message.content,
-                }
-                for message in messages
-            ]
-        else:
-            transcript = []
-
-    # ── GATE G1 (spec-doc6 §4.3) ────────────────────────────────────────────
-    #
-    # No candidate is evaluated against a job without an approved, frozen
-    # scorecard. `require_frozen_matrix` IS the gate, and it runs BEFORE the
-    # scoring graph rather than after it: a refusal that scored first has
-    # already spent the work it was refusing.
-    #
-    # THIS REPLACED AN ON-DEMAND GENERATION. The two lines here used to call
-    # `ppi.generate_framework` when a job had no matrix, so a job that had never
-    # been through setup silently acquired criteria at the moment somebody was
-    # graded against them -- criteria no Hiring Manager had approved, which is
-    # precisely what the review step is the product's only comparability
-    # guarantee against.
-    from app.services.hiring import scorecard as _scorecard  # noqa: PLC0415
-
-    await _scorecard.require_frozen_matrix(session, job.id)
-    competencies = await ppi.load_framework(session, job.id)
+        )
+    ).scalars().first()
+    if conversation is None:
+        raise miti_live.ScorecardUnavailable(
+            f"no assessment conversation exists for link {link.id}, so there is "
+            "no locked contract to grade against"
+        )
+    if transcript is None:
+        messages = (
+            await session.execute(
+                select(AssessmentMessage)
+                .where(AssessmentMessage.conversation_id == conversation.id)
+                .order_by(AssessmentMessage.ordinal)
+            )
+        ).scalars().all()
+        transcript = [
+            {
+                "speaker": message.speaker,
+                "domain": message.domain,
+                "question_key": message.question_key,
+                "content": message.content,
+            }
+            for message in messages
+        ]
 
     # This candidate's OWN questions, each rubric-scored one carrying the rubric
-    # written with it. Generated on demand only for a link that never opened a
-    # conversation, which the "no transcript" report path deliberately allows;
-    # on every normal run the rows already exist and this is a read.
+    # written with it: the rubric Miti grades against.
     questions = await ppi_interview.load_for_link(session, link.id)
     if not questions:
-        questions = await question_generation.generate_candidate_questions(session, job, link)
+        raise miti_live.ScorecardUnavailable(
+            f"link {link.id} has an assessment conversation and no issued "
+            "questions, so there is nothing the candidate can be graded on"
+        )
 
     grade = job.assessment_grade if job.assessment_grade in GRADE_NAMES else infer_grade_fallback(job)
     profile = await session.get(Profile, link.profile_id) if link.profile_id else None
     # EVERYTHING THE SCORING RUN SPENDS IS BILLED TO THIS APPLICATION.
     #
-    # The graph is where the expensive half of an assessment happens: five
-    # isolated evaluators, the aggregator's inputs, and Siddhi's synthesis,
-    # which is seven report sections in one reasoning-tier response and is
-    # routinely the single largest call in the product. None of it was
-    # attributable to a candidate before: the router counted it per process,
-    # and this runs in a Fargate container that exits.
-    #
+    # The graph is where the expensive half of an assessment happens: Miti's
+    # item evaluations and five isolated evaluators, and Siddhi's synthesis.
     # The scope wraps the WHOLE invoke rather than each node, so a node added
     # to the graph later is accounted for without anybody remembering to say
     # so, and so a run that dies part way through still reports what it had
@@ -2543,10 +2205,10 @@ async def run_assessment(
                 "job": job,
                 "link": link,
                 "profile": profile,
+                "conversation": conversation,
                 "transcript": transcript,
                 "answers": answers_by_key(transcript),
                 "candidate_questions": questions,
-                "competencies": competencies,
                 "grade": grade,
             }
         )

@@ -40,6 +40,7 @@ from app.services.hiring import (
     situations,
     swot_quality,
 )
+from app.services.miti import dimensions as miti_dimensions
 from app.services.miti import triangulation
 
 #: The Runbook moved from the repository root into `docs/product/` on
@@ -651,7 +652,7 @@ def test_rubric_anchors_are_per_dimension_and_not_per_department(
     COMPETENCY SET they are applied to.
     """
     for runbook_id in ("D1", "D2", "D3", "D4", "D5"):
-        bands = department_models.dimension_rubric_anchors(runbook_id)
+        bands = miti_dimensions.dimension_rubric_anchors(runbook_id)
         assert len(bands) == 6, f"{runbook_id} should carry six §9.x bands"
         # The bands tile 0..100 downward without a gap or an overlap.
         assert bands[0].high == 100 and bands[-1].low == 0

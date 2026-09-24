@@ -80,7 +80,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from app.services.hiring.situations import DIMENSION_BY_RUNBOOK_ID
+from app.services.miti.dimensions import DIM_AUTHENTICITY, DIMENSION_BY_RUNBOOK_ID
 
 __all__ = [
     "BAND_CONSIDER_WITH_RESERVATIONS",
@@ -98,6 +98,7 @@ __all__ = [
     "dimension_floor_caps",
     "hold_reason",
     "lowest_ceiling",
+    "must_have_ceiling",
     "unassessed_must_haves",
     "unassessed_must_have_caps",
 ]
@@ -228,52 +229,56 @@ class BandCap:
     ceiling: int
 
 
-def competency_threshold_caps(
-    *,
-    grades: Mapping[str, str],
-    scores: Mapping[str, float] | None = None,
-    thresholds: Mapping[str, float] | None = None,
-) -> list[BandCap]:
+def must_have_ceiling() -> int:
+    """THE one Must-have cap number: the top of "Consider with reservations".
+
+    A failed Must-have caps a candidate at this score, and it grades Moderately
+    Matching on `services/rating`'s four-word scale. Every reader of the rule
+    calls this function (Miti's aggregation here, and the post-assessment
+    ranking blend), because two numbers for one rule is exactly how
+    `services/tiers.py` once carried a second, swapped scale for a whole
+    phase. It is read from `runbook_data/bands.yaml` (section 10.8, via
+    section 12.2's effect text), never typed.
+    """
+    return band_ceiling(BAND_CONSIDER_WITH_RESERVATIONS)
+
+
+def competency_threshold_caps(*, grades: Mapping[str, str]) -> list[BandCap]:
     """Section 12.1: "minimum score on a named competency; failure caps the band".
 
-    ONE RULE, TWO SOURCES FOR THE MINIMUM, and which one applies is decided by
-    the frozen matrix rather than by a branch anybody chose. When the matrix
-    declares a numeric threshold for a competency, that is the minimum and the
-    breach test is `score < threshold`. When it declares none, the minimum is
-    the product's own published floor for a criterion the hiring manager called
-    essential: an item graded Not Matching has failed it. Both are the same
-    sentence from section 12.1, differing only in where the number came from.
+    ONE SOURCE FOR THE MINIMUM, and it is the grade. A Must-have skill counts
+    as FAILED when Miti graded it Not Matching, which includes a Must-have the
+    candidate was asked about and did not answer (owner ruling O5-1: an
+    unanswered Must-have is Not Matching and is failed). A Must-have Miti could
+    NOT assess (a model outage) is not in `grades` at all: it is not failed,
+    because an outage is not a finding about a candidate.
 
-    `grades` is keyed by MUST-HAVE ITEM and never by dimension. That
+    THE NUMERIC THRESHOLD MAP IS GONE (WP5-B). This used to take `scores` and
+    `thresholds` beside `grades`, a second source for the minimum that no live
+    caller ever filled: `miti/live.py` passed an empty map unconditionally,
+    because the frozen matrix carried no 0-to-100 minimum and reading its
+    multiplier as one would have passed every candidate silently. A parameter
+    that is always empty is a second implementation waiting for somebody to
+    fill it with a number nobody approved.
+
+    `grades` is keyed by MUST-HAVE SKILL and never by dimension. That
     distinction was a real defect once: keying the composite on a
     dimension-to-category table produced an EMPTY Must-have grade for a job
     whose essentials all sat on one dimension, and the cap had nothing to bind
-    against. Must-have is a property of the criterion the hiring manager
-    declared essential, not of the internal dimension it happens to sit on.
+    against. Must-have is a property of the skill the hiring team declared
+    essential, not of the internal dimension it happens to sit on.
     """
     from app.services import rating
 
-    scores = dict(scores or {})
-    thresholds = dict(thresholds or {})
-    ceiling = band_ceiling(BAND_CONSIDER_WITH_RESERVATIONS)
+    ceiling = must_have_ceiling()
     caps: list[BandCap] = []
     for name in sorted(grades):
-        threshold = thresholds.get(name)
-        score = scores.get(name)
-        if threshold is not None and score is not None:
-            if float(score) >= float(threshold):
-                continue
-            reason = (
-                f"the Must-have {name!r} did not reach the minimum score the "
-                f"approved scorecard sets for it"
-            )
-        else:
-            if grades[name] != rating.GRADE_NOT:
-                continue
-            reason = (
-                f"the Must-have {name!r} graded {rating.GRADE_NOT}, which is "
-                f"below the minimum for a criterion declared essential"
-            )
+        if grades[name] != rating.GRADE_NOT:
+            continue
+        reason = (
+            f"the Must-have {name!r} graded {rating.GRADE_NOT}, which is "
+            f"below the minimum for a skill declared essential"
+        )
         caps.append(
             BandCap(
                 control=CONTROL_COMPETENCY_THRESHOLD,
@@ -369,7 +374,7 @@ def dimension_floor_caps(
     """Section 12.2's Layer 1 default floors, D1 45, D4 45, D3 40.
 
     `dimension_scores` is keyed by this codebase's dimension names; the floors
-    are keyed by the Runbook's D1 to D5, and `situations.DIMENSION_BY_RUNBOOK_ID`
+    are keyed by the Runbook's D1 to D5, and `dimensions.DIMENSION_BY_RUNBOOK_ID`
     is the one translation between them.
 
     A DIMENSION NOT PRESENT IS NOT A BREACH. A dimension excluded from the
@@ -430,7 +435,6 @@ def hold_reason(dimension_scores: Mapping[str, float]) -> str | None:
     added, the bottom one scores 12, and all four floors in this table can now
     be breached. See RUNBOOK_OPEN_QUESTIONS.md Q24.
     """
-    from app.services.hiring.department_models import DIM_AUTHENTICITY
 
     score = dimension_scores.get(DIM_AUTHENTICITY)
     if score is None:

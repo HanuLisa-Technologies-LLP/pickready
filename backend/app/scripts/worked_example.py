@@ -27,8 +27,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
+from datetime import datetime, timezone
 
-from app.services import rating
+from app.services import assessment_contract, rating
+from app.services.miti.grades import ANSWER_GRADED, SkillGrade
 from app.services.hiring import gates, situations, transformation
 from app.services.hiring.department_models import department_for
 from app.services.miti import aggregation, pipeline
@@ -104,9 +107,8 @@ async def _evaluator(task_type, messages, response_format_json=False):
                 ),
                 "evidence_refs": ["ev-101", "ev-102"],
                 "insufficient_evidence": False,
-                # Per-competency, so the band lands in the category the hiring
-                # manager put this competency in rather than in whichever
-                # category the dimension's fallback table names.
+                # Per-skill, which since WP5-B CHECKS Miti's item grade (a
+                # two-grade disagreement routes to a person) and grades nothing.
                 "per_competency": {"Operating what they built": "solid"},
             }
         )
@@ -187,10 +189,39 @@ def main() -> int:
     # ── Miti ────────────────────────────────────────────────────────────────
     _h("MITI: FIVE ISOLATED EVALUATORS -> DETERMINISTIC AGGREGATION")
 
+    # Miti grades against the LOCKED assessment contract (WP5-B), and its item
+    # stage writes the per-skill grade. Both are stated here as values: the
+    # contract as a locked snapshot would carry them, and the grade as the
+    # item stage would return it for the two cited answers above.
+    behavioural = "Owning an incident end to end"
+    skills = (
+        assessment_contract.ContractSkill(
+            id=uuid.uuid5(uuid.NAMESPACE_URL, item.name), name=item.name,
+            bucket="must_have", priority=1, evidence_line=item.observable_evidence,
+        ),
+        assessment_contract.ContractSkill(
+            id=uuid.uuid5(uuid.NAMESPACE_URL, behavioural), name=behavioural,
+            bucket="behavioural", priority=1, evidence_line="",
+        ),
+    )
+    contract = assessment_contract.AssessmentContract(
+        job_id=uuid.uuid5(uuid.NAMESPACE_URL, JOB_TITLE), version=1, locked=True,
+        skills=skills, role_summary="",
+        digest=assessment_contract.compute_digest(skills, "", SENIORITY),
+        grade=SENIORITY, locked_at=datetime(2026, 8, 28, 9, 0, tzinfo=timezone.utc),
+    )
+    skill_grades = tuple(
+        SkillGrade(
+            skill_id=skill.id, name=skill.name, bucket=skill.bucket,
+            priority=skill.priority, status=ANSWER_GRADED, score=80,
+            grade=rating.grade_for_percent(80),
+        )
+        for skill in skills
+    )
     inputs = pipeline.EvaluationInputs(
-        matrix={item.name: item.category},
-        competency_dimensions={item.name: item.dimension},
-        competency_weights={item.dimension: item.weight.value},
+        contract=contract,
+        skill_buckets={skill.name: skill.bucket for skill in skills},
+        skill_grades=skill_grades,
         evidence=EVIDENCE,
         evidence_competencies={"ev-101": [item.name], "ev-102": [item.name]},
         rubric_anchor=item.rubric_anchor,
@@ -198,9 +229,6 @@ def main() -> int:
             f"{situations.SITUATIONS[situation_key].label}: "
             f"{situations.SITUATIONS[situation_key].description}"
         ),
-        matrix_items=[item.as_dict()],
-        scorecard_approved_at="2026-08-28T09:00:00Z",
-        must_have_grades={item.name: rating.GRADE_MATCHING},
     )
 
     outcome = asyncio.run(pipeline.evaluate(inputs, invoke=_evaluator))

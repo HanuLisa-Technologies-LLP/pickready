@@ -1,6 +1,7 @@
 """Miti's pipeline: stages 2-6 wired together, with G1-G4 in their places.
 
-    G1  scorecard approved                        <- before anything runs
+    G1  assessment contract locked                <- before anything runs
+    1b  ITEM EVALUATION        items.py           the per-skill grades, Miti alone
     2   NORMALISE & EXTRACT    claims.py
     3   EVIDENCE TIERING       tiering.py
     4   DIMENSION EVALUATORS   dimensions.py      five, isolated, in parallel
@@ -55,17 +56,23 @@ import json
 import logging
 from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping
+
 
 from app.services.evidence import contradictions as detector
 from app.services.hiring import gates
 from app.services.miti import aggregation, dimensions, triangulation
 from app.services.miti.dimensions import (
+    CROSS_CUTTING,
     DIMENSIONS,
     DimensionResult,
     EvaluatorInput,
     EvidenceView,
 )
+from app.services.miti.grades import SkillGrade
+
+if TYPE_CHECKING:
+    from app.services.assessment_contract import AssessmentContract
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +80,73 @@ __all__ = [
     "EvaluationInputs",
     "EvaluationOutcome",
     "build_evaluator_inputs",
+    "contract_gate",
     "evaluate",
     "must_have_evidence",
+    "skills_for_dimension",
 ]
+
+
+def contract_gate(contract: "AssessmentContract | None") -> gates.GateResult:
+    """GATE G1, asked of the LOCKED ASSESSMENT CONTRACT. Blocking.
+
+    Replaces the frozen-matrix question (`hiring.scorecard.require_frozen_
+    matrix`), which Miti no longer imports. The contract a candidate was
+    assessed against is the snapshot their conversation is bound to, and it
+    must be:
+
+      * LOCKED: a snapshot row exists. An unlocked contract is the live rows,
+        which may change after the candidate answered; grading against it is
+        grading against criteria nobody froze. When scoring runs a
+        conversation exists by definition, so an unlocked contract here is a
+        defect upstream, and it refuses rather than reading around it;
+      * non-empty, with at least one Must-have and one Behavioural skill, the
+        same floor the Skills step enforces at save.
+
+    Pure: the contract is a frozen value, so the verdict is reproducible from
+    the evaluation record alone.
+    """
+    from app.services.assessment_contract import BUCKET_BEHAVIOURAL, BUCKET_MUST_HAVE
+
+    reasons: list[str] = []
+    if contract is None:
+        reasons.append("No assessment contract was loaded, so nothing can be graded.")
+        return gates.GateResult(gates.G1, False, blocking=True, reasons=tuple(reasons))
+    if not contract.locked or contract.locked_at is None:
+        reasons.append(
+            "The assessment contract is not locked. A candidate is graded only "
+            "against the skills snapshot their assessment started under."
+        )
+    buckets = {skill.bucket for skill in contract.skills}
+    if not contract.skills:
+        reasons.append(
+            "The assessment contract has no skills. A stamp is not evidence that "
+            "work happened; the gate reads the contract."
+        )
+    else:
+        if BUCKET_MUST_HAVE not in buckets:
+            reasons.append("The assessment contract has no Must-have skill.")
+        if BUCKET_BEHAVIOURAL not in buckets:
+            reasons.append("The assessment contract has no Behavioural skill.")
+    return gates.GateResult(gates.G1, not reasons, blocking=True, reasons=tuple(reasons))
+
+
+def skills_for_dimension(dimension: str, skill_buckets: Mapping[str, str]) -> tuple[str, ...]:
+    """The skills one evaluator reads, by the Miti-owned bucket routing.
+
+    A cross-cutting dimension (Track Record, Trajectory, Authenticity) reads
+    every skill; Verified Competence reads the Must-have and Nice-to-have
+    skills; Role and Context Fit reads the Behavioural ones.
+    """
+    if dimension in CROSS_CUTTING:
+        return tuple(sorted(skill_buckets))
+    return tuple(
+        sorted(
+            name
+            for name, bucket in skill_buckets.items()
+            if dimensions.dimension_for_bucket(bucket) == dimension
+        )
+    )
 
 
 @dataclass
@@ -88,39 +159,28 @@ class EvaluationInputs:
     integration test that also needs Postgres.
     """
 
-    #: {competency name: category} -- the approved matrix.
-    matrix: dict[str, str] = field(default_factory=dict)
-    #: {competency name: internal dimension}.
-    competency_dimensions: dict[str, str] = field(default_factory=dict)
-    #: {competency name: derived weight} from Sutra's stage 5.
-    competency_weights: dict[str, float] = field(default_factory=dict)
+    #: G1's input: the LOCKED assessment contract this candidate was assessed
+    #: against (`assessment_contract.load_contract_for_conversation`).
+    contract: AssessmentContract | None = None
+    #: {skill name: bucket}, from the contract. What decides which product
+    #: category a skill lands in, and which evaluator reads it
+    #: (`dimensions.BUCKET_DIMENSION`).
+    skill_buckets: dict[str, str] = field(default_factory=dict)
+    #: Miti's item-stage grades, one per contract skill. THE per-skill
+    #: judgement; the aggregation reads nothing else to score a category.
+    skill_grades: tuple[SkillGrade, ...] = ()
     #: Every piece of evidence, already tiered.
     evidence: list[EvidenceView] = field(default_factory=list)
-    #: {evidence ref: [competency names]}.
+    #: {evidence ref: [skill names]}.
     evidence_competencies: dict[str, list[str]] = field(default_factory=dict)
     rubric_anchor: str = ""
     role_context: str = ""
-    #: G1's inputs.
-    matrix_items: list[dict[str, Any]] = field(default_factory=list)
-    scorecard_approved_at: Any = None
-    #: {Must-have ITEM name: grade}, for section 12.1's competency threshold.
-    #: Keyed by name rather than a bare list of grades so the control can say
-    #: WHICH named competency failed its minimum.
-    must_have_grades: dict[str, str] = field(default_factory=dict)
-    #: {Must-have name: internal score}, and {Must-have name: the minimum the
-    #: approved scorecard sets}. Both optional: where the frozen matrix
-    #: declares no numeric threshold, section 12.1's minimum is the product's
-    #: published floor for an essential criterion and the grade carries it.
-    must_have_scores: dict[str, float] = field(default_factory=dict)
-    must_have_thresholds: dict[str, float] = field(default_factory=dict)
     #: The contradiction report from `evidence/contradictions.detect`.
     contradiction_report: detector.ContradictionReport | None = None
-    #: Model-generated benign explanations, per axis.
-    benign_explanations: dict[str, list[triangulation.BenignExplanation]] = field(
-        default_factory=dict
-    )
-    #: G4's inputs. Both None on a first pass, which is correct: a disposition
-    #: cannot exist before the flags that need one.
+    #: G4's inputs: the latest human disposition recorded on this application.
+    #: Both None on a first pass, which is correct: a disposition cannot exist
+    #: before the flags that need one. A rescore after a person has looked
+    #: carries them, and G4 then passes.
     review_disposition: str | None = None
     review_decided_by: Any = None
 
@@ -189,16 +249,10 @@ def build_evaluator_inputs(inputs: EvaluationInputs) -> list[EvaluatorInput]:
     """
     payloads: list[EvaluatorInput] = []
     for dimension in DIMENSIONS:
-        competencies = tuple(
-            sorted(
-                name
-                for name, dim in inputs.competency_dimensions.items()
-                if dim == dimension
-            )
-        )
+        competencies = skills_for_dimension(dimension, inputs.skill_buckets)
         evidence = dimensions.route_evidence(
             inputs.evidence,
-            inputs.competency_dimensions,
+            {name: dimension for name in competencies},
             inputs.evidence_competencies,
             dimension,
         )
@@ -239,7 +293,7 @@ def must_have_evidence(
     from "never asked about".
     """
     out: dict[str, aggregation.MustHaveEvidence] = {}
-    for name, category in inputs.matrix.items():
+    for name, category in inputs.skill_buckets.items():
         if category != aggregation.CATEGORY_MUST_HAVE:
             continue
         views = [
@@ -357,16 +411,13 @@ async def evaluate(
     """
     outcome = EvaluationOutcome()
 
-    # ── G1: nothing runs against an unapproved scorecard ────────────────────
-    g1 = gates.scorecard_gate(
-        matrix_items=inputs.matrix_items,
-        approved_at=inputs.scorecard_approved_at,
-    )
+    # ── G1: nothing runs against a contract that is not locked ──────────────
+    g1 = contract_gate(inputs.contract)
     outcome.gate_results.append(g1)
     if not g1.passed:
         # BLOCKING, and it returns here rather than continuing. Evaluating
-        # against a draft scorecard would let the first candidate set the
-        # criteria for everyone by being assessed against it.
+        # against live, unlocked skills would let the criteria move under a
+        # candidate who has already answered.
         return outcome
 
     # ── Stage 4: five isolated evaluators, concurrently ─────────────────────
@@ -386,7 +437,6 @@ async def evaluate(
             {"ref": e.ref, "independence_group": e.independence_group}
             for e in inputs.evidence
         ],
-        generated=inputs.benign_explanations,
     )
 
     judged = len([r for r in outcome.results if not r.insufficient_evidence])
@@ -399,7 +449,7 @@ async def evaluate(
             for refs in inputs.evidence_competencies.values()
             if name in refs
         )
-        for name, category in inputs.matrix.items()
+        for name, category in inputs.skill_buckets.items()
         if category == aggregation.CATEGORY_MUST_HAVE
     }
     g2 = gates.evidence_sufficiency_gate(
@@ -436,15 +486,10 @@ async def evaluate(
 
     outcome.aggregate = aggregation.aggregate(
         outcome.results,
-        # The MATRIX decides which product category a competency's band lands
-        # in, because Must-have and Nice-to-have are properties of the item the
-        # hiring manager declared essential -- not of the internal dimension the
-        # criterion happens to sit on.
-        competency_categories=inputs.matrix,
-        competency_weights=inputs.competency_weights,
-        must_have_grades=inputs.must_have_grades,
-        must_have_scores=inputs.must_have_scores,
-        must_have_thresholds=inputs.must_have_thresholds,
+        # MITI'S SKILL GRADES are the category scores. The evaluators' results
+        # travel beside them to decide authenticity, floors, the hold and the
+        # divergence check, and grade nothing themselves.
+        skill_grades=inputs.skill_grades,
         # Section 14.1's trigger and three of section 10.7's four confidence
         # terms, both read off the SAME evidence the evaluators saw. Derived
         # here rather than passed in so that the tiers a cap acts on cannot
