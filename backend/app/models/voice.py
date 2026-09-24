@@ -1,14 +1,13 @@
-"""The assessment turn clock's pauses and the spoken answers (migration 0123).
+"""Spoken assessment answers (migration 0123, `voice_answers`).
 
-Two tables, both per assessment conversation and both tenant-scoped:
+One spoken answer to one prose turn, from capture to transcript, per
+assessment conversation and tenant-scoped. The AUDIO is transient: it is
+deleted, HEAD-confirmed, once it is transcribed. The TRANSCRIPT is final and is
+the answer that is evaluated (Appendix B section 3).
 
-  `assessment_pauses`  every interval the turn clock stops for. The clock is
-                       the SERVER's (Appendix B section 3): a pause is a row
-                       the server wrote, never a number the client reported.
-  `voice_answers`      one spoken answer, from capture to transcript. The
-                       audio is transient and deleted, HEAD-confirmed, once it
-                       is transcribed; the transcript is final and is the
-                       answer that is evaluated.
+The clock is paused while a spoken answer is transcribed. That pause is an
+`assessment_pauses` row (`models/assessment_pause.py`, migration 0125), the
+one record of every reason the turn clock stops.
 """
 import uuid
 from datetime import datetime
@@ -18,15 +17,6 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, CreatedAtMixin, UUIDPKMixin
-
-# ── Pause reasons ─────────────────────────────────────────────────────────────
-#: The camera or the microphone stopped; opened and closed by proctoring.
-PAUSE_DEVICE_LOSS = "device_loss"
-#: A spoken answer is being transcribed, or a failed transcription is on screen.
-PAUSE_TRANSCRIPTION = "transcription"
-#: A blocking proctoring warning is on screen.
-PAUSE_WARNING = "warning"
-PAUSE_REASONS: tuple[str, ...] = (PAUSE_DEVICE_LOSS, PAUSE_TRANSCRIPTION, PAUSE_WARNING)
 
 # ── Voice answer lifecycle ────────────────────────────────────────────────────
 VOICE_RECORDING = "recording"
@@ -50,41 +40,6 @@ VOICE_IN_FLIGHT: tuple[str, ...] = (VOICE_RECORDING, VOICE_UPLOADED, VOICE_TRANS
 
 def _in_list(values: tuple[str, ...]) -> str:
     return ", ".join(f"'{value}'" for value in values)
-
-
-class AssessmentPause(Base, UUIDPKMixin, CreatedAtMixin):
-    """One interval the turn clock does not count.
-
-    An open pause has no `ended_at`. An `ended_at` in the FUTURE is a pause
-    that is already scheduled to end: a failed transcription stays paused for
-    a short window so the candidate can read what happened, and needs no sweep
-    to close it.
-    """
-
-    __tablename__ = "assessment_pauses"
-    __table_args__ = (
-        CheckConstraint(
-            f"reason IN ({_in_list(PAUSE_REASONS)})", name="ck_assessment_pauses_reason"
-        ),
-        CheckConstraint(
-            "ended_at IS NULL OR ended_at >= started_at",
-            name="ck_assessment_pauses_interval",
-        ),
-        Index("ix_assessment_pauses_conversation", "conversation_id", "started_at"),
-    )
-
-    tenant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
-    )
-    conversation_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("assessment_conversations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    reason: Mapped[str] = mapped_column(String(20), nullable=False)
-    ref_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class VoiceAnswer(Base, UUIDPKMixin, CreatedAtMixin):

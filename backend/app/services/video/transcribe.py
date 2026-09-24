@@ -97,13 +97,20 @@ def _working_s3_client() -> Any:
 
 
 def _delete_working_objects(bucket: str, object_keys: tuple[str, ...], job_name: str) -> None:
+    """Delete the cross-region working copies. An AWS refusal is logged, never
+    raised: the working bucket's own expiry is the backstop, and a transcript
+    that succeeded must not be reported as failed over a cleanup step. A
+    programming error propagates."""
+    from botocore.exceptions import BotoCoreError, ClientError  # noqa: PLC0415
+
     client = _working_s3_client()
     for key in object_keys:
         try:
             client.delete_object(Bucket=bucket, Key=key)
-        except Exception:  # noqa: BLE001 -- logged; the bucket's expiry is the backstop
+        except (BotoCoreError, ClientError) as exc:
             logger.warning(
-                "voice_transcribe.working_delete_failed job=%s key=%s", job_name, key
+                "voice_transcribe.working_delete_failed job=%s key=%s error=%s",
+                job_name, key, type(exc).__name__,
             )
 
 

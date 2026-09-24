@@ -472,7 +472,13 @@ class AssessmentConversation(Base, UUIDPKMixin, CreatedAtMixin):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # ── Why this session ended (migration 0116, change request 28B) ──────────
-    # The assessment has stopped early on evidence coverage since 2026-08-23:
+    # SINCE 2026-09-24 EVERY ITEM IS ASKED (Appendix B section 3): the early
+    # close on evidence coverage is gone, and a NEW row is always written with
+    # `prompts_exhausted` (`services/assessment_conversation/turns`). The other
+    # CHECK values stay so a row written before that still reads. What follows
+    # is the history of the column.
+    #
+    # The assessment stopped early on evidence coverage from 2026-08-23:
     # `ppi.conversation_may_close` decides it and the question ceiling is a
     # ceiling rather than a target. What the product could not answer is WHICH
     # of the two endings a given session had, because the decision lived in a

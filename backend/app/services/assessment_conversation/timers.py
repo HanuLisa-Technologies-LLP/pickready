@@ -10,8 +10,9 @@ the time a recruiter read was a number the client chose, and a reload re-stamped
 
 Now the deadline is computed HERE from three things the server wrote itself:
 when the turn opened (`prompt_shown_at`, stamped once), the allocation
-snapshotted at that moment, and the pause rows (`assessment_pauses`). Nothing
-the client says moves it.
+snapshotted at that moment, and the pause rows (`assessment_pauses`, read
+through `pauses.pauses_for_turn`, which applies each row's cap). Nothing the
+client says moves it.
 
 WHAT A PAUSE DOES
 -----------------
@@ -27,13 +28,17 @@ not. Ties go to the candidate, the same direction as every boundary rule in
 this product (claude.md rule 8).
 
 Pure, deterministic, no database and no settings read: the caller passes the
-allocation and the grace, so the whole clock is testable with a table.
+pause intervals, the allocation and the grace, so the whole clock is testable
+with a table. The UNION arithmetic is `pauses.paused_seconds`, the one
+implementation of it; this module only decides what a turn does with it.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Sequence
+
+from app.services.assessment_conversation.pauses import Interval, paused_seconds
 
 # ── Turn kinds ────────────────────────────────────────────────────────────────
 #: A base question from the candidate's plan.
@@ -51,19 +56,6 @@ _REASON_PRIORITY: tuple[str, ...] = ("device_loss", "transcription", "warning")
 
 
 @dataclass(frozen=True)
-class Pause:
-    """One interval the clock does not count. `end` None means still open; an
-    `end` after `now` is a pause already scheduled to end."""
-
-    reason: str
-    start: datetime
-    end: datetime | None = None
-
-    def open_at(self, moment: datetime) -> bool:
-        return self.start <= moment and (self.end is None or self.end > moment)
-
-
-@dataclass(frozen=True)
 class TurnClock:
     """Where one turn's clock stands at `now`. Internal to the server except
     for the fields the countdown needs (`deadline_at`, `paused`)."""
@@ -77,6 +69,10 @@ class TurnClock:
     paused: bool
     pause_reason: str | None
     expired: bool
+
+
+def _stops_clock_at(pause: Interval, moment: datetime) -> bool:
+    return pause.start <= moment and (pause.end is None or pause.end > moment)
 
 
 def allocation_seconds(
@@ -108,51 +104,25 @@ def allocation_seconds(
     return int(prose_seconds)
 
 
-def paused_seconds(pauses: Sequence[Pause], *, since: datetime, until: datetime) -> float:
-    """Seconds of [since, until] covered by at least one pause.
-
-    The union, so two overlapping pauses count once. An open pause runs to
-    `until`; a pause scheduled to end after `until` is clipped to it.
-    """
-    if until <= since:
-        return 0.0
-    clipped: list[tuple[datetime, datetime]] = []
-    for pause in pauses:
-        start = max(pause.start, since)
-        end = until if pause.end is None else min(pause.end, until)
-        if end > start:
-            clipped.append((start, end))
-    clipped.sort()
-    total = 0.0
-    current_start: datetime | None = None
-    current_end: datetime | None = None
-    for start, end in clipped:
-        if current_end is None or start > current_end:
-            if current_end is not None and current_start is not None:
-                total += (current_end - current_start).total_seconds()
-            current_start, current_end = start, end
-        elif end > current_end:
-            current_end = end
-    if current_end is not None and current_start is not None:
-        total += (current_end - current_start).total_seconds()
-    return total
-
-
 def turn_clock(
     *,
     shown_at: datetime,
     allocation_seconds: int,
-    pauses: Sequence[Pause],
+    pauses: Sequence[Interval],
     now: datetime,
     grace_seconds: int,
 ) -> TurnClock:
-    """The clock of the turn opened at `shown_at`, read at `now`."""
+    """The clock of the turn opened at `shown_at`, read at `now`.
+
+    `pauses` are intervals as `pauses.pauses_for_turn(..., until=now)` returns
+    them: an `end` of None is a pause still stopping the clock at `now`.
+    """
     if allocation_seconds <= 0:
         raise ValueError("a turn allocation must be positive")
-    paused_total = paused_seconds(pauses, since=shown_at, until=now)
+    paused_total = paused_seconds(tuple(pauses), start=shown_at, end=now)
     deadline = shown_at + timedelta(seconds=allocation_seconds + paused_total)
     grace_deadline = deadline + timedelta(seconds=max(0, int(grace_seconds)))
-    open_reasons = {pause.reason for pause in pauses if pause.open_at(now)}
+    open_reasons = {pause.reason for pause in pauses if _stops_clock_at(pause, now)}
     reason = next((r for r in _REASON_PRIORITY if r in open_reasons), None)
     if reason is None and open_reasons:
         reason = sorted(open_reasons)[0]

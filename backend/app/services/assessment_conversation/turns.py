@@ -78,9 +78,8 @@ from app.models.assessment import (
 )
 from app.models.candidate import JobCandidateLink, Profile
 from app.models.job import Job
+from app.models.assessment_pause import PAUSE_DEVICE_LOSS, PAUSE_TRANSCRIPTION
 from app.models.voice import (
-    PAUSE_DEVICE_LOSS,
-    PAUSE_TRANSCRIPTION,
     VOICE_CONSUMED,
     VOICE_FAILED,
     VOICE_IN_FLIGHT,
@@ -323,7 +322,9 @@ async def turn_clock(
     ):
         return None
     shown = conversation.prompt_shown_at
-    pause_rows = await pauses.pauses_for_turn(session, conversation.id, since=shown)
+    pause_rows = await pauses.pauses_for_turn(
+        session, conversation.id, since=shown, until=now
+    )
     return timers.turn_clock(
         shown_at=shown,
         allocation_seconds=int(conversation.turn_allocation_seconds),
@@ -341,10 +342,21 @@ def require_turn(conversation: AssessmentConversation, turn_seq: int) -> None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=STALE_TURN_DETAIL)
 
 
-def require_not_device_paused(clock: timers.TurnClock | None) -> None:
-    """A lost camera or microphone pauses the assessment; nothing is answered
-    until it is back (the pause itself is proctoring's)."""
-    if clock is not None and clock.paused and clock.pause_reason == PAUSE_DEVICE_LOSS:
+async def require_not_device_paused(
+    session: AsyncSession, conversation: AssessmentConversation
+) -> None:
+    """A lost camera or microphone pauses the assessment; nothing is answered,
+    drafted or recorded until it is back.
+
+    The pause is proctoring's (`services/proctoring/device_pause`), and so is
+    the decision about one left open past its grace (the session ends). Any
+    UNCLOSED device pause refuses here, including one past its cap: an answer
+    taken in that moment would be an answer given with the camera off. This is
+    the same question `proctoring.gate.require_answerable` asks, and the
+    routes switch to that one call when both work packages are integrated.
+    """
+    open_pause = await pauses.unclosed_pause(session, conversation.id, PAUSE_DEVICE_LOSS)
+    if open_pause is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PAUSED_DETAIL)
 
 
@@ -368,33 +380,74 @@ async def voice_for_turn(
     ).scalars().first()
 
 
+def transcription_budget_seconds() -> int:
+    """How long a spoken answer may take to come back from Transcribe before
+    it is treated as failed: the Transcribe budget plus a margin for the
+    task's own start and the upload's commit. It is also the CAP on the
+    transcription pause (`pauses.open_pause(max_seconds=...)`), so a lost task
+    can never stop a candidate's clock for longer than this, whether or not
+    anybody reads the row again."""
+    return int(get_settings().assessment_voice_transcribe_timeout_seconds) + 60
+
+
+async def open_transcription_pause(
+    session: AsyncSession, row: VoiceAnswer, *, now: datetime
+) -> None:
+    """Stop the clock while `row` is transcribed. Capped, never open-ended."""
+    await pauses.open_pause(
+        session,
+        row.conversation_id,
+        PAUSE_TRANSCRIPTION,
+        at=now,
+        ref_id=row.id,
+        max_seconds=transcription_budget_seconds(),
+    )
+
+
+async def hold_after_failure(
+    session: AsyncSession, row: VoiceAnswer, *, now: datetime
+) -> None:
+    """A transcription FAILED at `now`: keep the clock stopped for a short,
+    capped window so the candidate can read what happened and switch to
+    typing (`assessment_voice_failure_pause_seconds`).
+
+    The transcription pause ends at `now` and a failure pause of the same
+    reason, opened by the same row, runs for the window. Acknowledging closes
+    it sooner (`close_pause` with this row's `ref_id`); nothing needs a sweep
+    to end it, because the cap is on the row.
+    """
+    await pauses.close_pause(
+        session, row.conversation_id, PAUSE_TRANSCRIPTION, at=now, ref_id=row.id
+    )
+    await pauses.open_pause(
+        session,
+        row.conversation_id,
+        PAUSE_TRANSCRIPTION,
+        at=now,
+        ref_id=row.id,
+        max_seconds=get_settings().assessment_voice_failure_pause_seconds,
+    )
+
+
 async def fail_stale_voice(
     session: AsyncSession, row: VoiceAnswer, *, now: datetime
 ) -> bool:
     """A transcription that never reported back becomes a FAILED one.
 
     The task can be lost (an invoke that failed after the commit, a worker
-    killed mid-job), and the candidate's clock is paused on this row. Past the
-    Transcribe budget plus a margin the row is failed here, on read, so the
-    candidate is told to type and the clock resumes after the short failure
-    window. Returns whether the row changed.
+    killed mid-job). Its pause stops counting at its cap whatever happens;
+    this marks the ROW failed on read past the same budget, so the candidate
+    is told to type rather than waiting on a transcript that is not coming.
+    Returns whether the row changed.
     """
-    settings = get_settings()
     if row.status not in VOICE_IN_FLIGHT or row.uploaded_at is None:
         return False
-    budget = settings.assessment_voice_transcribe_timeout_seconds + 60
-    if (now - row.uploaded_at).total_seconds() <= budget:
+    if (now - row.uploaded_at).total_seconds() <= transcription_budget_seconds():
         return False
     row.status = VOICE_FAILED
     row.failure_reason = "The transcription did not report back within its time budget."
     row.failed_at = now
-    await pauses.close_pause(
-        session,
-        row.conversation_id,
-        PAUSE_TRANSCRIPTION,
-        at=now + timedelta(seconds=settings.assessment_voice_failure_pause_seconds),
-        ref_id=row.id,
-    )
+    await hold_after_failure(session, row, now=now)
     logger.warning(
         "assessment_turns.voice_timed_out voice_id=%s conversation_id=%s",
         row.id, row.conversation_id,

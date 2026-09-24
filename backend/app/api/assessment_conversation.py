@@ -47,8 +47,8 @@ from app.models.dual_mode import MODE_CONVERSATIONAL
 from app.models.job import Job
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.models.assessment_pause import PAUSE_TRANSCRIPTION
 from app.models.voice import (
-    PAUSE_TRANSCRIPTION,
     VOICE_CONSUMED,
     VOICE_FAILED,
     VOICE_RECORDING,
@@ -719,7 +719,7 @@ async def respond(
     clock = await turns.turn_clock(session, conversation, now=now)
     if clock is None:
         raise HTTPException(status_code=409, detail=turns.NO_OPEN_TURN_DETAIL)
-    turns.require_not_device_paused(clock)
+    await turns.require_not_device_paused(session, conversation)
     ctx = turns.TurnContext(
         session=session, job=job, link=link, conversation=conversation,
         prompts=prompts, proctoring_session=proctoring_session,
@@ -780,7 +780,7 @@ async def save_draft(
     clock = await turns.turn_clock(session, conversation, now=now)
     if clock is None:
         raise HTTPException(status_code=409, detail=turns.NO_OPEN_TURN_DETAIL)
-    turns.require_not_device_paused(clock)
+    await turns.require_not_device_paused(session, conversation)
     if clock.expired:
         raise HTTPException(status_code=409, detail=turns.TURN_EXPIRED_DETAIL)
     conversation.draft_answer_json = {
@@ -827,7 +827,7 @@ async def _open_voice_turn(
     clock = await turns.turn_clock(session, conversation, now=datetime.now(timezone.utc))
     if clock is None:
         raise HTTPException(status_code=409, detail=turns.NO_OPEN_TURN_DETAIL)
-    turns.require_not_device_paused(clock)
+    await turns.require_not_device_paused(session, conversation)
     ctx = turns.TurnContext(
         session=session, job=job, link=link, conversation=conversation,
         prompts=prompts, proctoring_session=proctoring_session,
@@ -952,13 +952,12 @@ async def upload_voice_audio(
     row.content_type = voice.media_type(file.content_type)
     row.size_bytes = size
     row.uploaded_at = now
-    await pauses.open_pause(
-        session, conversation.id, PAUSE_TRANSCRIPTION, at=now, ref_id=row.id
-    )
+    await turns.open_transcription_pause(session, row, now=now)
     await session.flush()
-    # AFTER THE COMMIT: the task reads this row. A lost invoke is failed on
-    # read past the Transcribe budget (`turns.fail_stale_voice`), which ends
-    # the pause, so a candidate can never be left paused for ever.
+    # AFTER THE COMMIT: the task reads this row. The pause is CAPPED at the
+    # Transcribe budget, so a lost invoke can never leave a candidate paused
+    # for ever, and the row is failed on read past the same budget
+    # (`turns.fail_stale_voice`) so they are told to type.
     dispatch_after_commit(session, "pickready.transcribe_voice_answer", args=[str(row.id)])
     return _voice_out(row)
 

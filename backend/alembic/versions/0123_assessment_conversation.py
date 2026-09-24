@@ -1,4 +1,4 @@
-"""The assessment conversation engine: server turns, drafts, pauses, voice answers.
+"""The assessment conversation engine: server turns, drafts, voice answers.
 
 Revision ID: 0123_assessment_conversation
 Revises: 0121_candidate_comms
@@ -14,7 +14,8 @@ step is additive except one guarded data UPDATE.
    deadline of a question somebody is answering), and the draft
    (`draft_answer_json`, `draft_turn_seq`, `draft_saved_at`) the expiry path
    submits when time runs out. The client's `paused_ms` is gone: every second
-   of pause is a row below, written by the server.
+   of pause is an `assessment_pauses` row the server wrote (that table is the
+   proctoring work package's, migration 0125).
 2. `assessment_conversations` gains what the questions were written AGAINST:
    `questions_contract_digest` and `questions_contract_version`, stamped by the
    generator, compared by the start against the contract it locks (a
@@ -23,24 +24,17 @@ step is additive except one guarded data UPDATE.
    degradation) and `questions_requested_at`, which bounds how often a start
    may re-dispatch generation: generation runs on its own Fargate task, and a
    start polled every few seconds must not start one each time.
-3. `assessment_pauses`: every interval the turn clock stops for, by reason
-   (`device_loss`, `transcription`, `warning`). An open pause has no
-   `ended_at`; an `ended_at` in the future is a pause that is already
-   scheduled to end (a failed transcription stays paused for a short window
-   so the candidate can read what happened). Tenant RLS with the bypass
-   clause: the candidate's session runs in the bypass scope, the recruiter's
-   under their tenant.
-4. `voice_answers`: one spoken answer, from capture to transcript. The AUDIO
+3. `voice_answers`: one spoken answer, from capture to transcript. The AUDIO
    is transient (deleted, HEAD-confirmed, once transcribed); the transcript is
    final and is the answer. `failure_reason` is operator wording and never
    candidate content. One capture in flight per turn, by partial UNIQUE.
-5. DATA: an UNSTARTED video-interview conversation becomes conversational.
+4. DATA: an UNSTARTED video-interview conversation becomes conversational.
    The video interview mode is retired; a session that never began has
    written nothing in that mode, so relabelling it claims nothing false. A
    STARTED one is left exactly as it is (the release gate counts them, and
    pilot had none on 2026-09-24). The count is logged either way.
 
-No capability, so no seeding. The downgrade drops the two tables and the
+No capability, so no seeding. The downgrade drops the table and the
 columns; it does not put a converted row back into the retired mode, because
 nothing records which rows were converted and guessing would relabel a
 session the candidate took conversationally.
@@ -63,7 +57,6 @@ logger = logging.getLogger("alembic.runtime.migration.0123_assessment_conversati
 TENANT = "nullif(current_setting('app.tenant_id', true), '')::uuid"
 BYPASS = "current_setting('app.bypass_rls', true) = 'on'"
 
-PAUSE_REASONS: tuple[str, ...] = ("device_loss", "transcription", "warning")
 VOICE_STATUSES: tuple[str, ...] = (
     "recording",
     "uploaded",
@@ -131,51 +124,7 @@ def upgrade() -> None:
         "turn_allocation_seconds IS NULL OR turn_allocation_seconds > 0",
     )
 
-    # ── 3. Pauses ────────────────────────────────────────────────────────────
-    op.create_table(
-        "assessment_pauses",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
-        sa.Column(
-            "tenant_id",
-            UUID(as_uuid=True),
-            sa.ForeignKey("tenants.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column(
-            "conversation_id",
-            UUID(as_uuid=True),
-            sa.ForeignKey("assessment_conversations.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column("reason", sa.String(20), nullable=False),
-        # What the pause is ABOUT, where there is a row to name: the voice
-        # answer being transcribed, the proctoring event that lost a device.
-        sa.Column("ref_id", UUID(as_uuid=True)),
-        sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("ended_at", sa.DateTime(timezone=True)),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.CheckConstraint(
-            f"reason IN ({_in_list(PAUSE_REASONS)})",
-            name="ck_assessment_pauses_reason",
-        ),
-        sa.CheckConstraint(
-            "ended_at IS NULL OR ended_at >= started_at",
-            name="ck_assessment_pauses_interval",
-        ),
-    )
-    op.create_index(
-        "ix_assessment_pauses_conversation",
-        "assessment_pauses",
-        ["conversation_id", "started_at"],
-    )
-    _tenant_rls("assessment_pauses")
-
-    # ── 4. Voice answers ─────────────────────────────────────────────────────
+    # ── 3. Voice answers ─────────────────────────────────────────────────────
     op.create_table(
         "voice_answers",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),
@@ -256,7 +205,7 @@ def upgrade() -> None:
     )
     _tenant_rls("voice_answers")
 
-    # ── 5. The retired mode, for sessions that never began ──────────────────
+    # ── 4. The retired mode, for sessions that never began ──────────────────
     bind = op.get_bind()
     converted = bind.execute(
         sa.text(
@@ -284,11 +233,6 @@ def downgrade() -> None:
     op.drop_index("ix_voice_answers_conversation", table_name="voice_answers")
     op.execute("DROP POLICY IF EXISTS voice_answers_tenant_isolation ON voice_answers")
     op.drop_table("voice_answers")
-    op.drop_index("ix_assessment_pauses_conversation", table_name="assessment_pauses")
-    op.execute(
-        "DROP POLICY IF EXISTS assessment_pauses_tenant_isolation ON assessment_pauses"
-    )
-    op.drop_table("assessment_pauses")
     op.drop_constraint(
         "ck_assessment_conversations_turn_allocation",
         "assessment_conversations",

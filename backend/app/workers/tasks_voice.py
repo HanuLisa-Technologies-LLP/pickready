@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from app.core.config import get_settings
 from app.workers.registry import Route, task
@@ -50,8 +50,8 @@ def transcribe_voice_answer(voice_id: str):
 
     from botocore.exceptions import BotoCoreError, ClientError
 
+    from app.models.assessment_pause import PAUSE_TRANSCRIPTION
     from app.models.voice import (
-        PAUSE_TRANSCRIPTION,
         VOICE_FAILED,
         VOICE_TRANSCRIBED,
         VOICE_TRANSCRIBING,
@@ -59,7 +59,7 @@ def transcribe_voice_answer(voice_id: str):
         VoiceAnswer,
     )
     from app.services import object_storage
-    from app.services.assessment_conversation import pauses
+    from app.services.assessment_conversation import pauses, turns
     from app.services.video import transcribe, voice
 
     async def _task() -> None:
@@ -115,16 +115,10 @@ def transcribe_voice_answer(voice_id: str):
                 row.status = VOICE_FAILED
                 row.failure_reason = failure
                 row.failed_at = now
-                # The clock stays stopped for a short, SCHEDULED window so the
+                # The clock stays stopped for a short, CAPPED window so the
                 # candidate can read the failure and switch to typing; it ends
                 # on its own and needs no sweep. Acknowledging ends it sooner.
-                await pauses.close_pause(
-                    session,
-                    row.conversation_id,
-                    PAUSE_TRANSCRIPTION,
-                    at=now + timedelta(seconds=settings.assessment_voice_failure_pause_seconds),
-                    ref_id=row.id,
-                )
+                await turns.hold_after_failure(session, row, now=now)
                 logger.warning(
                     "voice_transcribe.failed voice_id=%s conversation_id=%s reason=%s",
                     row.id, row.conversation_id, failure,
