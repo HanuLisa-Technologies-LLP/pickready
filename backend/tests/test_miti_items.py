@@ -492,6 +492,8 @@ async def test_the_scoring_node_lays_out_miti_grades_in_contract_order(monkeypat
     assert all(row["required_level"] is None for row in out["ppi"])
     assert out["ppi_mode"] == fa.MODE_MITI
     assert out["miti"].skills == skills
+    # The report-side helpers read the LOCKED contract's skills, never live rows.
+    assert [skill.name for skill in out["competencies"]] == ["Kafka", "Ownership"]
 
 
 @pytest.mark.asyncio

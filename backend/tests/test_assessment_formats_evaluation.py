@@ -31,7 +31,10 @@ from types import SimpleNamespace
 import pytest
 
 from app.services import agent_loop, llm_router
-from app.services import functional_assessment as fa
+from app.services.assessment_contract import ContractSkill
+from app.services.assessment_pipeline import evidence as answer_evidence
+from app.services.miti import grades as miti_grades
+from app.services.miti import items as miti_items
 from app.services import ppi
 from app.services.assessment_formats import evaluation, types
 
@@ -275,12 +278,16 @@ def test_the_two_rubrics_are_the_ones_the_specification_lists() -> None:
 
 
 # ── Where each format's score comes from (spec 6.3) ─────────────────────────
+#
+# Graded by Miti's item stage since WP5-B (`miti/items.py`), the only code that
+# grades a skill. `_score` below returns (score, used answers, not assessed),
+# the same three facts the retired `functional_assessment._score_item` did.
 
 
-def _competency(category: str = ppi.CATEGORY_MUST_HAVE) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=uuid.uuid4(), category=category, name="Migration ownership",
-        description="What it measures.", required_level=82, ordinal=1,
+def _competency(category: str = ppi.CATEGORY_MUST_HAVE) -> ContractSkill:
+    return ContractSkill(
+        id=uuid.uuid4(), name="Migration ownership", bucket=category,
+        priority=1, evidence_line="",
     )
 
 
@@ -307,8 +314,34 @@ def _record(**fields) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-def _state() -> dict:
-    return {"session": None, "link": SimpleNamespace(id=uuid.uuid4())}
+@pytest.fixture(autouse=True)
+def _no_ledger(monkeypatch):
+    """The ledger writer has its own suite; scoring here files nothing."""
+    async def _record_nothing(session, **kwargs):
+        return None
+
+    monkeypatch.setattr(answer_evidence, "backfill_answer_evidence", _record_nothing)
+
+
+async def _no_model(task, messages, **kwargs):
+    raise AssertionError("this format is not judged by the rubric model")
+
+
+async def _score(skill, questions, answers, records, *, invoke=_no_model):
+    grade = await miti_items.evaluate_skill(
+        None,
+        context=miti_items.ItemContext(
+            tenant_id=uuid.uuid4(), job_id=uuid.uuid4(), link_id=uuid.uuid4(),
+            candidate_id=uuid.uuid4(),
+        ),
+        skill=skill,
+        questions=questions,
+        answers=answers,
+        locators={},
+        structured=records,
+        invoke=invoke,
+    )
+    return grade.score, list(grade.used_answers), grade.status == miti_grades.ANSWER_NOT_ASSESSED
 
 
 @pytest.mark.asyncio
@@ -319,9 +352,9 @@ async def test_an_objective_answer_is_scored_from_its_stored_auto_score() -> Non
     question = _question(types.MCQ_SINGLE, weight=0.4)
     question.competency_id = competency.id
     record = _record(answer_json={"selected_option_id": "a"}, auto_score=1.0)
-    score, used, degraded = await fa._score_item(
-        _state(), competency, [question], {str(question.id): ["Selected: A write-ahead log"]},
-        None, {str(question.id): record},
+    score, used, degraded = await _score(
+        competency, [question], {str(question.id): ["Selected: A write-ahead log"]},
+        {str(question.id): record},
     )
     assert score == 100
     assert not degraded and used
@@ -333,9 +366,9 @@ async def test_a_partially_correct_objective_answer_scores_in_between() -> None:
     question = _question(types.MCQ_MULTI, weight=0.5)
     question.competency_id = competency.id
     record = _record(answer_json={"selected_option_ids": ["a"]}, auto_score=0.5)
-    score, _used, _degraded = await fa._score_item(
-        _state(), competency, [question], {str(question.id): ["Selected: Partition the topic"]},
-        None, {str(question.id): record},
+    score, _used, _degraded = await _score(
+        competency, [question], {str(question.id): ["Selected: Partition the topic"]},
+        {str(question.id): record},
     )
     assert score == 50
 
@@ -345,10 +378,8 @@ async def test_an_objective_question_with_no_submission_is_unanswered() -> None:
     competency = _competency()
     question = _question(types.MCQ_SINGLE, weight=0.4)
     question.competency_id = competency.id
-    score, used, _degraded = await fa._score_item(
-        _state(), competency, [question], {}, None, {}
-    )
-    assert score == fa.UNANSWERED_SCORE
+    score, used, _degraded = await _score(competency, [question], {}, {})
+    assert score == miti_items.UNANSWERED_SCORE
     assert used == []
 
 
@@ -364,9 +395,9 @@ async def test_an_evidence_answer_is_scored_by_the_evaluation_and_stores_it(monk
         assert kwargs["resume_anchor"] == "Led the checkout migration"
         return agent_loop.LoopResult(value={**_valid_evidence_output(), "rubric": {}}, degraded=False)
 
-    monkeypatch.setattr(fa.format_evaluation, "evaluate", _evaluate)
-    score, used, degraded = await fa._score_item(
-        _state(), competency, [question], {str(question.id): [ANSWER]}, None, {str(question.id): record},
+    monkeypatch.setattr(evaluation, "evaluate", _evaluate)
+    score, used, degraded = await _score(
+        competency, [question], {str(question.id): [ANSWER]}, {str(question.id): record},
     )
     assert score == 78
     assert not degraded and used == [ANSWER]
@@ -386,10 +417,8 @@ async def test_a_coding_answer_is_evaluated_from_the_code_it_submitted(monkeypat
         seen.update(kwargs)
         return agent_loop.LoopResult(value={**_valid_coding_output(), "rubric": {}}, degraded=False)
 
-    monkeypatch.setattr(fa.format_evaluation, "evaluate", _evaluate)
-    score, used, _degraded = await fa._score_item(
-        _state(), competency, [question], {}, None, {str(question.id): record},
-    )
+    monkeypatch.setattr(evaluation, "evaluate", _evaluate)
+    score, used, _degraded = await _score(competency, [question], {}, {str(question.id): record})
     assert score == 71
     assert seen["language"] == "python"
     assert CODE in seen["answer_text"]
@@ -402,16 +431,17 @@ async def test_an_empty_coding_submission_is_unanswered() -> None:
     question = _question(types.CODING, weight=0.8)
     question.competency_id = competency.id
     record = _record(answer_json={"language": "python", "code": "   "})
-    score, used, _degraded = await fa._score_item(
-        _state(), competency, [question], {}, None, {str(question.id): record},
-    )
-    assert score == fa.UNANSWERED_SCORE and used == []
+    score, used, _degraded = await _score(competency, [question], {}, {str(question.id): record})
+    assert score == miti_items.UNANSWERED_SCORE and used == []
 
 
 @pytest.mark.asyncio
-async def test_a_degraded_evaluation_falls_back_to_the_rubric_scorer(monkeypatch) -> None:
-    """The product's previous behaviour for exactly this answer, never an
-    invented evaluation."""
+async def test_a_degraded_evaluation_is_not_assessed_and_no_second_scorer_stands_in(
+    monkeypatch,
+) -> None:
+    """REVERSED IN WP5-B. A degraded evaluation used to fall back to the rubric
+    scorer, a second method silently standing in for the first. Now the answer
+    is not assessed, nothing is stored, and no score is invented."""
     competency = _competency()
     question = _question(types.EVIDENCE_BASED, weight=1.0)
     question.competency_id = competency.id
@@ -420,16 +450,12 @@ async def test_a_degraded_evaluation_falls_back_to_the_rubric_scorer(monkeypatch
     async def _degraded(session, **kwargs):
         return agent_loop.LoopResult(value=None, degraded=True)
 
-    async def _chat(role_hint, messages, **kwargs):
-        return '{"score": 64}'
-
-    monkeypatch.setattr(fa.format_evaluation, "evaluate", _degraded)
-    monkeypatch.setattr(fa.llm_router, "chat_completion", _chat)
-    score, _used, degraded = await fa._score_item(
-        _state(), competency, [question], {str(question.id): [ANSWER]}, None, {str(question.id): record},
+    monkeypatch.setattr(evaluation, "evaluate", _degraded)
+    score, _used, not_assessed = await _score(
+        competency, [question], {str(question.id): [ANSWER]}, {str(question.id): record},
     )
-    assert score == 64
-    assert not degraded, "the rubric scorer answered, so the item is not degraded"
+    assert score is None
+    assert not_assessed
     assert record.ai_evaluation_json is None, "a degraded evaluation must store nothing"
 
 
@@ -448,15 +474,15 @@ async def test_the_item_score_is_the_weighted_mean_of_its_questions(monkeypatch)
             value={**_valid_evidence_output(), "score": 80, "rubric": {}}, degraded=False
         )
 
-    monkeypatch.setattr(fa.format_evaluation, "evaluate", _evaluate)
+    monkeypatch.setattr(evaluation, "evaluate", _evaluate)
     records = {
         str(evidence.id): _record(answer_json={"text": ANSWER}),
         str(mcq.id): _record(answer_json={"selected_option_id": "a"}, auto_score=1.0),
     }
-    score, _used, _degraded = await fa._score_item(
-        _state(), competency, [evidence, mcq],
+    score, _used, _degraded = await _score(
+        competency, [evidence, mcq],
         {str(evidence.id): [ANSWER], str(mcq.id): ["Selected: A write-ahead log"]},
-        None, records,
+        records,
     )
     # (80 * 1.0 + 100 * 0.4) / 1.4
     assert score == 86
@@ -465,14 +491,9 @@ async def test_the_item_score_is_the_weighted_mean_of_its_questions(monkeypatch)
     assert score != 90
 
 
-def test_the_weighted_mean_is_the_plain_mean_when_every_weight_is_equal() -> None:
-    assert fa._weighted_mean([(80, 1.0), (100, 1.0)]) == 90
-    assert fa._weighted_mean([]) == fa.UNANSWERED_SCORE
-
-
 def test_a_row_written_before_the_formats_reads_as_a_text_question() -> None:
     """Rows written before migration 0076 have no format column, and
     relabelling them as evidence-based would claim a provenance they lack."""
     legacy = SimpleNamespace(id=uuid.uuid4(), prompt="q", rubric_json=None)
-    assert fa._question_type(legacy) == types.SHORT_ANSWER
-    assert fa._question_weight(legacy) == 1.0
+    assert miti_items._question_type(legacy) == types.SHORT_ANSWER
+    assert miti_items._question_weight(legacy) == 1.0

@@ -8,7 +8,7 @@ product worked and the sentence stayed wrong for as long as anyone cared to
 read it.
 
 The failure it would cause is silent and total. `answers_by_key` groups every
-candidate answer by `question_key`; `_score_item` fetches an item's answers with
+candidate answer by `question_key`; Miti's item stage fetches a skill's answers with
 `answers.get(str(question.id))`. If one side ever moved, every lookup would miss,
 every item would score as unanswered, and every candidate on the job would grade
 Not Matching -- with no error anywhere, because "no answer" is a legitimate state
@@ -18,7 +18,7 @@ import inspect
 import re
 
 from app.api import assessment_conversation as assessments
-from app.services import functional_assessment
+from app.services.miti import items as miti_items
 
 
 def test_the_conversation_stamps_the_questions_own_id():
@@ -30,8 +30,12 @@ def test_the_conversation_stamps_the_questions_own_id():
 
 
 def test_the_scorer_looks_answers_up_by_that_same_id():
-    source = inspect.getsource(functional_assessment._score_item)
-    assert re.search(r"answers\.get\(\s*str\(question\.id\)", source)
+    """Miti's item stage is the scorer since WP5-B; both of its methods key an
+    answer by the QUESTION's own id."""
+    for method in (miti_items._rubric_scored, miti_items._behavioural):
+        source = inspect.getsource(method)
+        assert re.search(r"key = str\(question\.id\)", source), method.__name__
+        assert "answers.get(key" in source, method.__name__
 
 
 def test_dimension_coverage_joins_on_the_same_id():

@@ -83,7 +83,6 @@ from app.services.miti import claims as miti_claims
 from app.services.miti import grades as miti_grades
 from app.services.miti import items as miti_items
 from app.services.siddhi import claim_evidence, validation_points
-from app.services.assessment_formats import types as question_types
 from app.config import llm_providers
 from app.prompts import registry
 from app.services.rating import (
@@ -252,35 +251,6 @@ OVERALL_AXES: tuple[tuple[str, str], ...] = tuple(
 
 def _mean(values: list[int]) -> int:
     return round(sum(values) / len(values)) if values else UNANSWERED_SCORE
-
-
-#: The weight of a question row written before migration 0076, which is the
-#: column's own default: every question on an item counted the same.
-_NEUTRAL_WEIGHT = 1.0
-
-
-def _weighted_mean(pairs: list[tuple[int, float]]) -> int:
-    """The item score from (score, weight) pairs (assessment-spec-doc 4).
-
-    This is what makes evidence dominance STRUCTURAL inside a matrix item: a
-    supporting-format question carries less of the item than an evidence
-    question does, by the weight the composer stored on the row. A weight of
-    zero is refused by the database CHECK, so the denominator is never zero
-    for a non-empty list.
-    """
-    if not pairs:
-        return UNANSWERED_SCORE
-    total = sum(weight for _score, weight in pairs)
-    return round(sum(score * weight for score, weight in pairs) / total)
-
-
-def _question_type(question: Any) -> str:
-    """Rows written before 0076 carry no format column and were text."""
-    return str(getattr(question, "question_type", None) or question_types.SHORT_ANSWER)
-
-
-def _question_weight(question: Any) -> float:
-    return float(getattr(question, "weight", None) or _NEUTRAL_WEIGHT)
 
 
 def _axis(name: str, candidate_score: int, required: int | None) -> dict[str, Any]:
@@ -983,6 +953,11 @@ class AssessmentState(TypedDict, total=False):
     #: The conversation being scored. Its bound snapshot IS the contract Miti
     #: grades against (gate G1).
     conversation: AssessmentConversation
+    #: The LOCKED contract's skills (`ContractSkill`: id, name, bucket), set by
+    #: the scoring node from Miti's result. The report-side helpers read id and
+    #: name from here, so they describe the skills the candidate was graded on
+    #: and never the job's live rows.
+    competencies: Sequence[Any]
     candidate_questions: list[CandidateQuestion]
     grade: str
     matching: list[dict[str, Any]]
@@ -1153,6 +1128,7 @@ async def ppi_scoring_node(state: AssessmentState) -> dict:
         "ppi": rows,
         "ppi_mode": MODE_MITI,
         "miti": evaluation,
+        "competencies": list(evaluation.contract.skills),
         "evidence_review": review,
         "evidence_findings": findings,
     }

@@ -4,13 +4,14 @@ The reported failure: typing `ewidjverip` produced a report claiming the
 candidate was "good at some skills". These tests assert the two halves of why
 that happened and that neither can happen again.
 
-Half one is `_stable_score`'s floor. Its range is 45..94 against cut-points of
-90/75/60, so EVERY value it can return grades Matching or Moderately Matching.
-That is asserted directly below, because it is the reason a content guard has to
-run before scoring rather than after: once an answer reaches the fallback, a
-failing grade is arithmetically unreachable.
+Half one was the hash fallback: on an outage, an answer was graded by a
+digest of its own bytes, and about seven in ten hashed answers passed. It is
+DELETED (WP5-B): a failed evaluation is now "not assessed" with no score at all,
+and `tests/test_hash_fallback_removed.py` keeps it gone.
 
-Half two is that a non-empty non-answer reached that fallback at all.
+Half two is that a non-empty non-answer reached a scorer at all. That guard is
+unchanged and is what this file still pins: a non-answer never reaches a
+scoring prompt, and it grades Not Matching as unanswered.
 """
 from __future__ import annotations
 
@@ -19,7 +20,6 @@ import pytest
 from app.services import answer_quality
 from app.services.functional_assessment import (
     UNANSWERED_SCORE,
-    _stable_score,
     rating_label,
 )
 
@@ -46,7 +46,7 @@ def test_non_answers_are_refused(answer: str) -> None:
     verdict = answer_quality.assess(answer)
     assert not verdict.substantive, (
         f"{answer!r} was accepted as gradeable (reason={verdict.reason}); "
-        "it would reach _llm_score and, on any LLM failure, score 45..94"
+        "it would reach a scoring prompt and be judged as though it answered"
     )
 
 
@@ -82,31 +82,12 @@ def test_real_answers_are_accepted(answer: str) -> None:
 
 # ── Why the guard must run BEFORE scoring, not after ────────────────────────
 
-def test_the_deterministic_fallback_grades_by_hash_not_by_content() -> None:
-    """This is the whole reason a pre-scoring guard is necessary.
+def test_the_hash_fallback_no_longer_exists() -> None:
+    """The fallback that graded an answer by a hash of its bytes is gone
+    (WP5-B). An outage now makes a skill "not assessed", with no score."""
+    from app.services import functional_assessment
 
-    `_stable_score` is the LLM-outage fallback. It hashes the seed into 45..94,
-    so an answer that reaches it is graded by a digest of its own bytes and not
-    by anything it says. Two candidates writing equally worthless answers get
-    different grades, and most of them pass.
-
-    Note what this test does NOT claim. A failing grade is reachable: 45..59
-    grades Not Matching against the 60 cut-point, which is about three seeds in
-    ten. The bug is not that the fallback cannot fail an answer -- it is that
-    whether it fails one is decided by a hash. Roughly seven in ten gibberish
-    answers grade Moderately Matching or better, and one in ten grades Highly
-    Matching, which is where "great projects" came from.
-    """
-    labels = [rating_label(_stable_score(f"seed-{n}")) for n in range(20000)]
-    passing = sum(1 for label in labels if label != "Not Matching") / len(labels)
-    assert 0.6 < passing < 0.8, (
-        f"{passing:.1%} of hashed scores pass; the fallback's range or the "
-        "cut-points have moved and the guard's rationale needs re-checking"
-    )
-    assert "Highly Matching" in labels, (
-        "the fallback can no longer return the top grade for arbitrary text; "
-        "re-examine whether this test still describes the product"
-    )
+    assert not hasattr(functional_assessment, "_stable_score")
 
 
 def test_unanswered_score_is_the_honest_destination() -> None:
