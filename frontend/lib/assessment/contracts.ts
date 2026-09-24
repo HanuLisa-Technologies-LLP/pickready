@@ -2,17 +2,28 @@
  * The shared contracts between the assessment player, the question-format
  * components and the proctoring client.
  *
- * ONE dispatcher, ONE props contract, six implementations (assessment spec 5.1),
- * and ONE bridge through which every answer component reaches proctoring
- * (proctoring spec 4.5). These types are the boundary; the two features are
- * built by different modules against them and neither imports the other's
- * internals.
+ * ONE dispatcher, ONE props contract, one implementation per format
+ * (assessment spec 5.1), and ONE bridge through which every answer component
+ * reaches proctoring (proctoring spec 4.5). These types are the boundary; the
+ * two features are built by different modules against them and neither
+ * imports the other's internals.
  *
- * Every shape here mirrors a pydantic model on the backend:
- *   QuestionOut          schemas/assessments.QuestionOut
+ * Every shape here mirrors a pydantic model on the backend (the single-mode
+ * assessment, 2026-09-24, PLAN-p3 sections 3.4 to 3.6):
+ *   QuestionOut          schemas QuestionOut
  *   AnswerPayload        services/assessment_formats/types.ANSWER_MODELS
- *   AnswerBehaviour      schemas/assessments.AnswerBehaviourIn
- *   ConversationTurn     schemas/assessments.ConversationOut
+ *   AnswerBehaviour      schemas AnswerBehaviourIn
+ *   ConversationTurn     schemas ConversationOut
+ *   RespondBody          schemas ConversationMessageIn (extra="forbid")
+ *   DraftBody            the PUT /conversations/{id}/draft body
+ *   VoiceAnswerOut       the /conversations/{id}/voice/* responses
+ *
+ * THE SERVER OWNS THE CLOCK. A turn arrives with its deadline and the
+ * server's own "now"; the countdown on screen is a rendering of those two
+ * instants and nothing the client measures is ever sent back as time. The
+ * client-reported paused duration this contract used to carry was exactly
+ * that, a number the client chose, and it is gone: the server keeps its own
+ * pause intervals and refuses the old field with a 422.
  */
 
 export type QuestionType =
@@ -99,33 +110,133 @@ export interface AnswerBehaviour {
   scroll_events: number;
 }
 
+/** Why the server is holding the current turn's clock still. */
+export type PauseReason = "device_loss" | "transcription" | "warning";
+
+/**
+ * The current turn's clock, as the server computed it at `server_now`.
+ *
+ * `deadline_at` already includes every pause the server has recorded for this
+ * turn, so `deadline_at - server_now` is the time the candidate has left at
+ * the instant the response was written. While `paused` is true that
+ * difference does not shrink, because the server extends the deadline for as
+ * long as the pause lasts.
+ */
+export interface TurnClock {
+  /** The server's name for the kind of turn. Rendered by nothing and
+   *  branched on by nothing here: the format comes from `question`. */
+  kind: string;
+  allocation_seconds: number;
+  deadline_at: string;
+  server_now: string;
+  paused: boolean;
+  pause_reason: PauseReason | null;
+}
+
+/**
+ * One exchange already answered, read-only (fixed order: past answers are
+ * viewable and never editable). Mirrors `HistoryEntryOut`.
+ *
+ * Both lines are the server's, verbatim: `question` as the candidate read it,
+ * `answer` as the server recorded it (prose as submitted, a spoken answer's
+ * final transcript, a structured answer's rendering, or the server's own
+ * sentence for a turn that ran out of time with nothing given). The client
+ * authors none of it.
+ */
+export interface HistoryEntry {
+  question: string;
+  answer: string;
+}
+
+/**
+ * Where the conversation stands.
+ *
+ * `preparing`: the questions for this candidate are being written; ask again
+ * shortly. `paused`: the proctoring layer paused the session (a camera or
+ * microphone was lost) and no answer is accepted until it resumes.
+ */
+export type ConversationStatus =
+  | "active"
+  | "preparing"
+  | "paused"
+  | "completed"
+  | "terminated";
+
 export interface ConversationTurn {
   conversation_id: string;
-  status: "active" | "completed" | "terminated";
+  status: ConversationStatus;
   prompt: string | null;
   progress_label: string;
   answered_questions: number;
   total_questions: number;
   is_reask: boolean;
+  /** The identity of the turn on screen. Every submission names it, and a
+   *  submission naming a turn that is no longer current is refused with a
+   *  409 and writes nothing, so a retry after a lost response can never be
+   *  filed as the answer to the next question. */
+  turn_seq: number;
+  /** Null when no turn is open (preparing, completed, terminated). */
+  turn: TurnClock | null;
+  /** Whether spoken answers can be taken right now (the server's
+   *  transcription is configured). False means the microphone control is
+   *  not rendered at all, never rendered and refused. */
+  voice_input_available: boolean;
+  /** Every exchange already answered, oldest first. */
+  history: HistoryEntry[];
   answer_message_id?: string | null;
   question?: QuestionOut | null;
   termination_message?: string | null;
-  /** The readable transcript line the server wrote for the answer just
-   *  submitted, when it renders one (a structured answer's chosen option
-   *  text, its filled blanks, its code summary). The player shows its own
-   *  description of the submission optimistically and replaces it with this
-   *  the moment the response arrives, so the bubble a candidate reads after
-   *  the round trip is the line the recruiter's transcript will show. */
-  answer_line?: string | null;
 }
 
-/** The body of POST /conversations/{id}/respond. */
+/** The body of POST /conversations/{id}/respond. The server forbids any
+ *  other key, so a stale client that still sends a time it measured itself
+ *  is refused with a 422 rather than believed. */
 export interface RespondBody {
+  turn_seq: number;
   answer: string;
   answer_payload?: AnswerPayload;
-  paused_ms: number;
+  /** A transcribed spoken answer. When present the server evaluates the
+   *  transcript it holds and ignores `answer`. */
+  voice_answer_id?: string;
+  /** True when the turn's clock submitted the answer rather than the
+   *  candidate. An empty timed-out answer is recorded as an evidence gap. */
+  timed_out?: boolean;
   behaviour?: AnswerBehaviour;
 }
+
+/** The body of PUT /conversations/{id}/draft. What the server submits on
+ *  the candidate's behalf if the turn expires before anything else arrives. */
+export interface DraftBody {
+  turn_seq: number;
+  answer?: string;
+  answer_payload?: AnswerPayload;
+}
+
+export type VoiceAnswerStatus =
+  | "recording"
+  | "uploaded"
+  | "transcribing"
+  | "transcribed"
+  | "failed"
+  | "consumed";
+
+/** The /conversations/{id}/voice/* responses. The transcript appears once
+ *  the status is `transcribed`, and it is final: no route edits it. */
+export interface VoiceAnswerOut {
+  id: string;
+  status: VoiceAnswerStatus;
+  transcript: string | null;
+  /** The server's plain-language account of a failure, when there is one. */
+  message?: string | null;
+  /** The longest capture the server accepts, in seconds. Returned by the
+   *  begin call so the recorder stops where the server's limit is. */
+  max_seconds: number;
+}
+
+/** A blocked clipboard or drag action inside an answer field. The same
+ *  words the lockdown layer reports, so one attempt reads identically in the
+ *  answer's behaviour record and in the session's event log. */
+export type BlockedFieldAction = "copy" | "cut" | "paste" | "drop";
 
 /**
  * The hooks an answer field attaches to proctoring (proctoring spec 4.5).
@@ -141,15 +252,26 @@ export interface ProctoringFieldHooks {
   /** Called on every keydown inside the field with the event's timestamp and
    *  whether it was a deletion (Backspace or Delete). */
   onKeyDown(timeStampMs: number, isDeletion: boolean): void;
-  /** A blocked paste, drop or clipboard read on this field. */
-  onBlockedAction(): void;
+  /**
+   * A blocked copy, cut, paste or drop on this field. The implementation
+   * counts it against this answer AND makes sure the session records one
+   * blocked-action proctoring event carrying `kind`, so every attempt reaches
+   * the proctoring report whichever layer caught it first.
+   *
+   * `kind` is optional only so the legacy CodeMirror editor, which Phase 4
+   * replaces, still compiles until it is deleted; every other caller passes it.
+   */
+  onBlockedAction(kind?: BlockedFieldAction): void;
   /** A click on an MCQ option, for rapid-fire versus considered selection. */
   onOptionClick(timeStampMs: number): void;
   onScroll(): void;
 }
 
-/** Autosave state, rendered by every component the same way. */
-export type AutosaveState = "idle" | "saving" | "saved";
+/** Autosave state, rendered by every component the same way. `retrying`
+ *  means the latest draft has not reached the server yet and another attempt
+ *  is scheduled; it is said rather than hidden, because the server's copy is
+ *  what a turn that runs out of time submits. */
+export type AutosaveState = "idle" | "saving" | "saved" | "retrying";
 
 /**
  * The common props contract (assessment spec 5.1). One component per format
@@ -185,6 +307,18 @@ export interface ProctoringBridge {
   maxWarnings: number;
   /** Plain-language reason, when the session has ended. */
   endedMessage: string | null;
+  /**
+   * True while the proctoring layer holds the assessment still: a blocking
+   * warning on screen, or a camera or microphone loss the server has paused
+   * the session for. The player freezes its countdown and refuses input while
+   * it is true, and re-reads the server's clock the moment it turns false.
+   *
+   * Optional because the clock does not depend on it: the countdown reaching
+   * zero is always checked against the server before anything is submitted,
+   * so a bridge that never reports a pause can make the display less exact,
+   * never make a turn end early.
+   */
+  paused?: boolean;
   /** The hooks for the field answering `questionKey`. Creating them starts a
    *  fresh capture for that key; the previous key's capture is kept until
    *  `collectAnswerBehaviour` reads it. */
@@ -192,9 +326,6 @@ export interface ProctoringBridge {
   /** The recorded timings for the answer being submitted, or null when
    *  nothing was captured. Clears the capture. */
   collectAnswerBehaviour(questionKey: string): AnswerBehaviour | null;
-  /** Milliseconds a blocking warning held the screen since the last call.
-   *  Clears the counter. */
-  consumePausedMs(): number;
   /** The conversation told us it ended (completed or terminated), so
    *  monitoring can stop and media can be released. */
   onConversationEnded(status: "completed" | "terminated"): void;

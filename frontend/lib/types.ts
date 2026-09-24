@@ -659,7 +659,7 @@ export interface RankedCandidate {
   validation_answers: ValidationAnswer[];
   /** How the assessment was conducted: 'conversational' | 'video_interview',
    *  or null before any session opens (2026-09-05 dashboard/video spec 4.1). */
-  assessment_mode?: AssessmentMode | null;
+  assessment_mode?: StoredAssessmentMode | null;
   /** "Video interview" / "Conversational" / "Not started", server-rendered. */
   assessment_mode_label?: string;
   /** PRISM Report availability word: Available / Processing / Not available. */
@@ -1395,9 +1395,17 @@ export interface EmailSenderList {
 
 // EmailSenderVerifyResult went with it: nothing verifies a code any more.
 
-// ── Dual-mode assessment (2026-09-05 spec) ──────────────────────────────────
+// ── The single-mode assessment (2026-09-24, Appendix B section 1) ────────────
+//
+// There is one assessment mode. The dual-mode types that lived here (the mode
+// choice, the per-mode consent state and the video interview's question list)
+// are deleted with the screens that used them. A mode is still STORED on old
+// rows, so the recruiter-side payloads that describe a recording carry it as
+// the server's plain string; nothing on the candidate side reads or sends one.
 
-export type AssessmentMode = "conversational" | "video_interview";
+/** The mode a stored session was taken in: "conversational" for every new
+ *  session, "video_interview" only on rows written before 2026-09-24. */
+export type StoredAssessmentMode = string;
 
 /** One consent item, server-authored (vivekium feature 6). The version is the
  *  wording's, bumped whenever the text changes, and it is stored with the
@@ -1421,9 +1429,10 @@ export interface ConsentItemStatus extends ConsentCatalogueItem {
   wording_current: boolean;
 }
 
-/** One mode's consent terms, exactly as the server will stamp them. */
+/** The assessment's consent terms, exactly as the server will stamp them.
+ *  One text for the one mode; the versions travel with it so the screen shows
+ *  what the server will record. */
 export interface AssessmentConsentTerms {
-  assessment_mode: AssessmentMode;
   text: string;
   consent_version: string;
   privacy_policy_version: string;
@@ -1433,32 +1442,11 @@ export interface AssessmentConsentTerms {
   items?: ConsentCatalogueItem[];
 }
 
-/** Where the session stands in the mode/consent flow. */
-export interface AssessmentModeState {
-  mode: AssessmentMode;
-  mode_frozen: boolean;
+/** GET and POST /assessments/conversations/links/{id}/consent: whether this
+ *  session has been consented to, and the terms that apply to it. */
+export interface AssessmentConsentState {
   consented: boolean;
   consent: AssessmentConsentTerms;
-}
-
-export interface VideoInterviewQuestion {
-  ordinal: number;
-  prompt: string;
-  question: {
-    id: string;
-    question_type: string;
-    payload: Record<string, unknown>;
-    time_allocation_seconds: number;
-  };
-}
-
-export interface VideoInterviewStart {
-  conversation_id: string;
-  recording_id: string;
-  status: string;
-  questions: VideoInterviewQuestion[];
-  max_upload_bytes: number;
-  max_duration_seconds: number;
 }
 
 export interface VideoRecordingStatus {
@@ -1476,7 +1464,7 @@ export interface VideoAccess {
   job_candidate_link_id: string;
   /** Null when no recording exists (every conversational session today). */
   recording_id: string | null;
-  assessment_mode: AssessmentMode | null;
+  assessment_mode: StoredAssessmentMode | null;
   /** "Video interview" / "Conversational" / "Not started". */
   assessment_mode_label: string;
   /** "Ready" / "Processing" / "Failed" / "No recording". */
