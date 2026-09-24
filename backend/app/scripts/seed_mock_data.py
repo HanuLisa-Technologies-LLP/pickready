@@ -49,6 +49,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
+from app.services.skills import MAX_PER_BUCKET
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("seed_mock_data")
@@ -552,12 +553,14 @@ async def fill_jobs(session: AsyncSession, dry_run: bool) -> dict[str, int]:
             stats["jobs_published"] += 1
             logger.info("  ~ publishing job %r", row["title"])
             if not dry_run:
-                # Match what api/jobs.create_job does on the flat model: publish
-                # directly, stamping both the status and the terminal marker.
+                # What `POST /jobs/{id}/publish` writes: the terminal marker,
+                # the status word AND the lifecycle state. A stamp without the
+                # lifecycle is the half-published row migration 0118 had to
+                # remap, and seeding one would recreate it.
                 await session.execute(
                     text(
-                        "UPDATE jobs SET ratified_at = :at, status = 'ratified' "
-                        "WHERE id = :jid"
+                        "UPDATE jobs SET ratified_at = :at, status = 'ratified', "
+                        "lifecycle_state = 'PUBLISHED' WHERE id = :jid"
                     ),
                     {"at": NOW - timedelta(days=14), "jid": row["id"]},
                 )
@@ -1468,12 +1471,12 @@ SEED_REQUIRED_LEVEL: dict[str, int] = {
 
 
 def seed_framework(jd_skills: list[str], title: str) -> list[dict[str, Any]]:
-    """A job's PPI framework, derived deterministically from its own JD.
+    """A job's skills, derived deterministically from its own JD.
 
-    Mirrors the shape `services/ppi.generate_framework` produces: at least five
-    Primary Skills, five Secondary Skills and five Behavioural Competencies. The
-    minimum is a product contract, so the skill pool is cycled rather than
-    allowed to fall short.
+    Every bucket is filled to the Skills step's limit, `skills.MAX_PER_BUCKET`,
+    and never past it: Save Skills refuses a bucket over the limit, so a seeded
+    set one past it would be a set the product itself calls unsaveable. A short
+    JD cycles its own skills rather than leave a bucket short.
     """
     pool = [str(skill) for skill in jd_skills if str(skill).strip()] or [title]
     rows: list[dict[str, Any]] = []
@@ -1490,7 +1493,7 @@ def seed_framework(jd_skills: list[str], title: str) -> list[dict[str, Any]]:
         names: list[str] = []
         index = offset
         attempts = 0
-        while len(names) < 5 and attempts < 200:
+        while len(names) < MAX_PER_BUCKET and attempts < 200:
             attempts += 1
             base = pool[index % len(pool)]
             lap = index // len(pool)
@@ -1503,7 +1506,7 @@ def seed_framework(jd_skills: list[str], title: str) -> list[dict[str, Any]]:
             if name not in names:
                 names.append(name)
             index += 1
-        while len(names) < 5:  # pathological; keeps the contract, never loops
+        while len(names) < MAX_PER_BUCKET:  # pathological; keeps the contract, never loops
             names.append(f"{pool[0]} ({suffix} {len(names) + 1})")
         return names
 
@@ -1512,12 +1515,12 @@ def seed_framework(jd_skills: list[str], title: str) -> list[dict[str, Any]]:
             "category": "must_have", "name": name, "ordinal": ordinal,
             "description": f"Core capability the job description names as required: {name}.",
         })
-    for ordinal, name in enumerate(_take(5, "supporting"), 1):
+    for ordinal, name in enumerate(_take(MAX_PER_BUCKET, "supporting"), 1):
         rows.append({
             "category": "nice_to_have", "name": name, "ordinal": ordinal,
             "description": f"Supporting capability that strengthens delivery of the role: {name}.",
         })
-    for ordinal, (name, description) in enumerate(SEED_BEHAVIOURAL, 1):
+    for ordinal, (name, description) in enumerate(SEED_BEHAVIOURAL[:MAX_PER_BUCKET], 1):
         rows.append({
             "category": "behavioural", "name": name, "ordinal": ordinal,
             "description": description,
@@ -1936,10 +1939,18 @@ async def fill_assessments(session: AsyncSession, dry_run: bool) -> dict[str, in
     if not dry_run:
         await _flush_competencies(session, pending_competencies)
         await _flush_dimensions(session, pending_dimensions)
-        # A seeded job is finalised outright. The review gate exists so a HUMAN
-        # approves what real candidates are asked, and there is no human in a
-        # seed run; real jobs stay in `questions_pending_review` until a
-        # recruiter approves both halves.
+        # A seeded job's skills are saved outright. Save Skills exists so a
+        # HUMAN confirms what every candidate is assessed against, and there is
+        # no human in a seed run; real jobs stay unsaved until somebody saves.
+        #
+        # SAVED MEANS WHAT `assessment_contract.skills_saved` ASKS OF THE TABLE:
+        # the saved stamp AND the hidden context. The context is the HONEST
+        # EMPTY one migration 0118 stamped on a saved matrix, with this script
+        # named as its writer: no model ran, and a role summary claiming one
+        # had would be template output presented as generation (rule 6).
+        # Only a job that HAS active skills is saved; the version this replaced
+        # stamped every job, which made a job with no skills ready for
+        # candidates.
         await session.execute(
             text(
                 """
@@ -1947,21 +1958,37 @@ async def fill_assessments(session: AsyncSession, dry_run: bool) -> dict[str, in
                    SET assessment_status = 'ready_for_candidates',
                        framework_generated_at = COALESCE(framework_generated_at, now()),
                        framework_approved_at = COALESCE(framework_approved_at, now()),
+                       assessment_context_json = COALESCE(
+                           assessment_context_json,
+                           CAST(:context AS jsonb)
+                       ),
                        questions_generated_at = COALESCE(questions_generated_at, now()),
                        questions_approved_at = COALESCE(questions_approved_at, now())
                  WHERE archived_at IS NULL
+                   AND EXISTS (
+                       SELECT 1 FROM job_competencies c
+                        WHERE c.job_id = jobs.id AND c.is_active
+                   )
                 """
-            )
+            ),
+            {"context": json.dumps({"role_summary": "", "generated_by": "seed_mock_data"})},
         )
     return stats
 
 
 async def _flush_competencies(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
-    """Bulk-insert a job's PPI framework.
+    """Bulk-insert a job's skills, in the columns the Skills step reads.
 
     ON CONFLICT DO NOTHING covers (job_id, category, name): every completed link
-    on a job re-derives the same framework, so the second one through is a no-op
+    on a job re-derives the same set, so the second one through is a no-op
     rather than an aborted batch.
+
+    `authored_by` is `human`, said explicitly rather than left to the column
+    default: no model drafted these, and `sutra` would claim a draft that never
+    ran. `force_rank` is the per-bucket priority, which is the ordinal here.
+    `observable_evidence` stays NULL, because only Sutra's context call at Save
+    Skills writes an evidence line and none ran; `assessment_contract` reads a
+    missing line as an empty one, the same as for a migrated matrix.
     """
     if not rows:
         return
@@ -1970,10 +1997,12 @@ async def _flush_competencies(session: AsyncSession, rows: list[dict[str, Any]])
             """
             INSERT INTO job_competencies
                 (id, tenant_id, job_id, category, name, description,
-                 required_level, ordinal, is_active, created_at)
+                 required_level, ordinal, force_rank, authored_by, is_active,
+                 created_at)
             VALUES
                 (gen_random_uuid(), :tenant_id, :job_id, :category, :name,
-                 :description, :required_level, :ordinal, true, now())
+                 :description, :required_level, :ordinal, :ordinal, 'human', true,
+                 now())
             ON CONFLICT ON CONSTRAINT uq_job_competency_name DO NOTHING
             """
         ),
@@ -2306,7 +2335,7 @@ AUDIT_QUERIES: list[tuple[str, str]] = [
      "SELECT count(*) FROM functional_skills_reports r WHERE NOT EXISTS "
      "(SELECT 1 FROM report_dimensions d WHERE d.report_id = r.id "
      "AND d.category = 'behavioural')"),
-    ("jobs with no PPI framework",
+    ("jobs with no skills",
      "SELECT count(*) FROM jobs j WHERE j.archived_at IS NULL AND NOT EXISTS "
      "(SELECT 1 FROM job_competencies c WHERE c.job_id = j.id AND c.is_active)"),
     ("tenants below the target staff shape",
