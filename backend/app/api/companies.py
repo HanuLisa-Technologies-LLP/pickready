@@ -367,8 +367,9 @@ async def _ensure_invite_template(session: AsyncSession, tenant_id: uuid.UUID) -
     # ASSUMPTION: services/email_render.DEFAULT_TEMPLATES has no built-in
     # `staff_invite` entry, so rendering would raise inside the worker and the
     # invite email would never send. PRD §5 forbids *shipping fixed copy*, not
-    # having a starting point — this writes a bare v1 row the tenant can edit
-    # via PUT /companies/me/email-templates, and does nothing if one exists.
+    # having a starting point. This writes a bare v1 row and does nothing if
+    # one exists. (The company template editor that could change it was
+    # deleted in the Vivekium release, PLAN-p7 WP-B6: no screen called it.)
     """
     existing = (
         await session.execute(

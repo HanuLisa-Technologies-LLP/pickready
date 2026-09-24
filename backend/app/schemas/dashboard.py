@@ -52,8 +52,9 @@ class DashboardSummaryOut(BaseModel):
 #     schema package to keep it that way.
 #   * `ReadyPickProfileOut` and the PRISM report schemas are different types
 #     over different tables (C10). The profile panel carries NAMED per-dimension
-#     ratings and no raw D1-D5 number; `CalibrationInternalsOut` is where the
-#     raw numbers live, behind a route only Super Admin and HR Manager reach.
+#     ratings and no raw D1-D5 number. No schema carries the raw numbers any
+#     more: the audited calibration view was deleted in the Vivekium release
+#     (PLAN-p7 WP-B6), because it returned them to a client.
 #
 # Every schema below is words-plus-one-number by construction. Nothing is
 # assembled by filtering a wider dict, because a filter is a list somebody has

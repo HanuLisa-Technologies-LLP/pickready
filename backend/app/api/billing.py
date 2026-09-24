@@ -12,8 +12,8 @@ Route shape:
 
 The browser receives the Razorpay KEY ID on the responses that open Checkout
 (`/subscribe`, `/purchase`) and on `/overview`. There is no separate public
-config route: `GET /billing/config` was DELETED in the Vivekium release
-(PLAN-p7 WP-B6). It had no caller, while comments across the repository
+config route: the one this module used to carry was DELETED in the Vivekium
+release (PLAN-p7 WP-B6). It had no caller, while comments across the repository
 claimed the browser read the key from it, and it was the one unauthenticated
 route and the one tenant-free cache key in this module.
 

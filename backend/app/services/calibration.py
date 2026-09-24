@@ -9,10 +9,10 @@ audit row, and nothing here exists to discourage it.
 WHAT WENT, AND WHY (Vivekium release, PLAN-p7 WP-B6)
 ----------------------------------------------------
 Two read surfaces lived here and both are DELETED with their routes: the
-audited raw-numbers view (`calibration_view`, D8), which returned the raw
-D1-D5 numbers to a client and so broke the no-numbers rule with no exception
-left to cover it, and the Standards Board queue with its override rate
-(`divergences`, `override_rate`), which had no screen. The records are still
+audited raw-numbers view (D8), which returned the raw D1-D5 numbers to a
+client and so broke the no-numbers rule with no exception left to cover it,
+and the Standards Board queue with its override-rate metric, which had no
+screen. The records are still
 written: `calibration_records` is the audit trail of every divergence, read
 by whoever maintains the scorecard, not by a product surface.
 
@@ -148,8 +148,8 @@ async def raise_divergence(
     Returns the calibration record's id, or None when the verdict AGREED and
     there was nothing to record. Agreement is not a calibration event: a table
     that recorded both would make "how many divergences" a question you answer
-    by filtering rather than by counting, and the metric that matters is the
-    rate, which `override_rate` computes from the reviews themselves.
+    by filtering rather than by counting, and an override rate is computed
+    from the reviews themselves rather than from this table.
 
     IDEMPOTENT PER REVIEW. A reviewer may refine their verdict, so the record
     is keyed on `team_review_id` and upserted. Without that, a reviewer who

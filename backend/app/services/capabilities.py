@@ -13,10 +13,13 @@ from app.models.enums import Role
 # corrected role model (Pickready.docx §2) puts the whole staff hierarchy
 # inside the client organization.
 MANAGE_STAFF = "manage_staff"
-CONFIGURE_APPROVAL_LEVELS = "configure_approval_levels"
+# Three capabilities are DELETED (Vivekium release, PLAN-p7 WP-B6) with the
+# routes that were their only readers: the two the multi-level job approval
+# chain read, and the one the company email-template editor read. Migration
+# 0129_route_scrap deletes their `role_permissions` rows, because a
+# capability and its seeding are one change and so is its removal.
 EDIT_JOB_DESCRIPTION = "edit_job_description"          # HR, post-ratification
 CREATE_JOB = "create_job"                              # Hiring Manager JD creation (FR-3.1)
-APPROVE_JOB = "approve_job"                            # at assigned level only
 ADD_COMPENSATION = "add_compensation"
 VIEW_DATABANK = "view_databank"
 UPLOAD_RESUMES = "upload_resumes"
@@ -28,7 +31,6 @@ SCHEDULE_INTERVIEWS = "schedule_interviews"
 UPDATE_PIPELINE_STATUS = "update_pipeline_status"
 VIEW_DASHBOARD = "view_dashboard"
 EDIT_ROLE_PERMISSIONS = "edit_role_permissions"        # Super Admin only
-MANAGE_EMAIL_TEMPLATES = "manage_email_templates"
 # Company Portal -> Profile: the About / Work Life / Benefits sections every
 # new job snapshots (spec §3.2/§7.1).
 EDIT_COMPANY_PROFILE = "edit_company_profile"
@@ -214,12 +216,12 @@ VIEW_BD_CUSTOMERS = "view_bd_customers"    # Customers page + CSV export
 USE_AI_REACH = "use_ai_reach"              # AI Reach search
 
 ALL_CAPABILITIES = [
-    MANAGE_STAFF, CONFIGURE_APPROVAL_LEVELS,
-    EDIT_JOB_DESCRIPTION, CREATE_JOB, APPROVE_JOB, ADD_COMPENSATION,
+    MANAGE_STAFF,
+    EDIT_JOB_DESCRIPTION, CREATE_JOB, ADD_COMPENSATION,
     VIEW_DATABANK, UPLOAD_RESUMES, TRIGGER_MATCHING, SEND_OUTREACH,
     VIEW_REVIEW_SCREEN, DECIDE_PROFILE, SCHEDULE_INTERVIEWS,
     UPDATE_PIPELINE_STATUS, VIEW_DASHBOARD, EDIT_ROLE_PERMISSIONS,
-    MANAGE_EMAIL_TEMPLATES, EDIT_COMPANY_PROFILE, PUBLISH_JOB,
+    EDIT_COMPANY_PROFILE, PUBLISH_JOB,
     MANAGE_COMPLIANCE_DOCUMENTS,
     MANAGE_BD_LEADS, VIEW_BD_CUSTOMERS, USE_AI_REACH,
     VIEW_BGV, MANAGE_BGV, USE_CONVERSATIONS,
@@ -248,9 +250,9 @@ ALL_CAPABILITIES = [
 
 # Flattened staff model (PRD v1.0 §4, FINAL — 2026-07-24). HR Manager,
 # Recruiter, and Hiring Manager are EQUAL: all three create+publish jobs and
-# share one candidate pool. There is no multi-level approval surfaced to them
-# (the approval FSM code remains in place but bypassed — jobs publish directly,
-# see api/jobs.py and approval_fsm.plan_direct_publish). The three roles must
+# share one candidate pool. There is no multi-level approval: jobs publish
+# directly (api/jobs.py and approval_fsm.plan_direct_publish), and the chain
+# itself was deleted in the Vivekium release. The three roles must
 # end up FUNCTIONALLY IDENTICAL, so they get the same operational grant set.
 # This stays data (require_capability), never a role branch (claude.md rule 3).
 _STAFF_OPERATIONAL: dict[str, bool] = {
@@ -268,7 +270,6 @@ _STAFF_OPERATIONAL: dict[str, bool] = {
     SCHEDULE_INTERVIEWS: True,
     UPDATE_PIPELINE_STATUS: True,
     VIEW_DASHBOARD: True,
-    MANAGE_EMAIL_TEMPLATES: True,
     # Read-only. A recruiter whose invitations stop sending must be able to see
     # that the credit pool is in deficit; they still cannot change the plan.
     VIEW_BILLING: True,
@@ -298,8 +299,6 @@ _STAFF_OPERATIONAL: dict[str, bool] = {
 _CUSTOMER_FULL_ACCESS: dict[str, bool] = {
     **_STAFF_OPERATIONAL,
     MANAGE_STAFF: True,
-    CONFIGURE_APPROVAL_LEVELS: True,   # dormant (FSM bypassed) but kept grantable
-    APPROVE_JOB: True,                 # dormant for the same reason
     MANAGE_COMPLIANCE_DOCUMENTS: True,
     MANAGE_BILLING: True,
 }
