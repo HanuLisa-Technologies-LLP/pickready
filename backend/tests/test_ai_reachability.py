@@ -209,6 +209,26 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
         "answer the conversation never filed still reaches Miti's ledger; "
         "without a caller the ledger is written by nothing at scoring time."
     ),
+    # Vivekium release, job setup. Each of these is the only door to a state
+    # the product depends on: without a caller the SWOT stays `generating`,
+    # the skills are never drafted, and a lost draft is never repaired, and
+    # every one of those failures is silent because nothing raises.
+    ("app/services/swot_analysis.py", "request_generation"): (
+        "app/api/assessments.py, POST .../swot-analysis/generate. The only way "
+        "a SWOT generation is asked for and handed off after the commit."
+    ),
+    ("app/services/swot_analysis.py", "run_generation"): (
+        "app/workers/tasks.py, pickready.generate_job_swot. The only writer of "
+        "a generated SWOT draft."
+    ),
+    ("app/services/skills.py", "after_swot_saved"): (
+        "app/api/assessments.py, the SWOT save and restore routes. The first "
+        "human SWOT save is what starts the skills draft."
+    ),
+    ("app/services/skills.py", "request_draft"): (
+        "app/workers/tasks.py, pickready.reconcile_job_setup. The repair path "
+        "for a draft that never landed."
+    ),
     ("app/services/rag/sources.py", "pending"): (
         "app/workers/tasks.py, from pickready.reconcile_context_index. This is "
         "the sweep that asks the TABLE which documents have no chunks. Without "
