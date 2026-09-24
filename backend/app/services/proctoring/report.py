@@ -22,9 +22,21 @@ exit and a focus loss, or a brief and a moderate absence, fold into one
 family so the report never says the same sentence twice.
 
 GAPS ARE STATED. A heartbeat gap, a degraded device, an unavailable analysis
-service: each is a sentence in the findings and sets
-`monitoring_was_incomplete`, because a report that was blind for a while and
-says "no issues" is the false clean report section 9 forbids.
+service, a pause while a camera or microphone was restored: each is a sentence
+in the findings and sets `monitoring_was_incomplete`, because a report that was
+blind for a while and says "no issues" is the false clean report section 9
+forbids.
+
+BLOCKED ACTIONS ARE ITEMISED (master prompt, Phase 3). After the one sentence
+that says what is blocked and how often it was tried, a line per kind: paste,
+copy or cut, drag and drop, and everything else. The activity log carries
+every attempt on its own row. Blocking stops an ordinary candidate, not a
+determined one, and the report never says otherwise.
+
+SPEAKING DURING A QUESTION THAT DOES NOT TAKE A SPOKEN ANSWER is listed under
+Audio Monitoring every time it happened, and from
+`speech_highlight_threshold` occurrences it is also lifted into the summary.
+It never counts toward a warning or an ending, and the sentence says so.
 
 GENERATED ONCE. `generate` returns the existing row if one exists; the report
 is a record of a session that is over and does not change afterwards.
@@ -83,7 +95,15 @@ _FAMILY: dict[str, str] = {
 
 #: Server notes under which a stored event is a REPEAT rather than a new
 #: occurrence. Its duration still counts.
-_REPEAT_NOTES = frozenset({ingestion.NOTE_WITHIN_COOLDOWN, ingestion.NOTE_ALREADY_REPORTED})
+_REPEAT_NOTES = frozenset(
+    {
+        ingestion.NOTE_WITHIN_COOLDOWN,
+        ingestion.NOTE_ALREADY_REPORTED,
+        # A second device loss while the assessment was already paused is the
+        # same interruption, not a new one.
+        ingestion.NOTE_ALREADY_PAUSED,
+    }
+)
 
 _RANK_TERMINATED = 0
 _RANK_WARNED = 1
@@ -125,6 +145,20 @@ class EventView:
         return self.metadata.get(ingestion.NOTE_KEY) in _REPEAT_NOTES
 
     @property
+    def opened_pause(self) -> bool:
+        return (
+            self.path == catalog.PATH_P
+            and self.metadata.get(ingestion.NOTE_KEY) == ingestion.NOTE_PAUSE_OPENED
+        )
+
+    @property
+    def resumed_pause(self) -> bool:
+        return (
+            self.event_type == catalog.DEVICE_RECOVERED
+            and self.metadata.get(ingestion.NOTE_KEY) == ingestion.NOTE_RESUMED
+        )
+
+    @property
     def audio_note(self) -> str | None:
         note = self.metadata.get("note")
         if self.event_type == "SESSION_QUALITY_DEGRADED" and note in (
@@ -155,6 +189,9 @@ def _rank(event: EventView) -> int:
         return _RANK_TERMINATED
     if event.path == catalog.PATH_B:
         return _RANK_WARNED if event.warning_issued else _RANK_UNWARNED
+    if event.path == catalog.PATH_P:
+        # A loss that paused the assessment had a consequence, like a warning.
+        return _RANK_WARNED if event.opened_pause else _RANK_UNWARNED
     return _RANK_NOTE
 
 
@@ -199,9 +236,38 @@ def _ordered(findings: dict[str, _Finding]) -> list[_Finding]:
     return sorted(findings.values(), key=lambda f: (f.rank, f.first_at))
 
 
+def _pause_sentence(events: list[EventView]) -> str | None:
+    """The device pauses, counted from the events that opened and closed them."""
+    opened = sum(1 for e in events if e.opened_pause)
+    resumed = sum(1 for e in events if e.resumed_pause)
+    ended = any(e.event_type in catalog.DEVICE_REASONS for e in events)
+    return phrasing.pause_summary(pauses=opened, resumed=resumed, ended=ended)
+
+
+def _blocked_sentences(events: list[EventView]) -> list[str]:
+    """The blocked-action lines, one per kind that occurred, in a fixed order."""
+    counts: dict[str, int] = {}
+    for event in events:
+        if event.event_type == "BLOCKED_ACTION_ATTEMPTED":
+            kind = phrasing.blocked_kind(event.metadata)
+            counts[kind] = counts.get(kind, 0) + 1
+    return [
+        phrasing.blocked_item_sentence(kind, times=counts[kind])
+        for kind in phrasing.BLOCKED_KINDS
+        if counts.get(kind)
+    ]
+
+
+def _speech_count(events: list[EventView]) -> int:
+    return sum(1 for e in events if e.event_type == "SPEECH_DURING_NON_AUDIO_QUESTION")
+
+
 def _system_sentences(events: list[EventView], ps_quality: str) -> list[str]:
-    """Monitoring gaps and device quality notes, stated plainly."""
+    """Pauses, monitoring gaps and device quality notes, stated plainly."""
     sentences: list[str] = []
+    pause = _pause_sentence(events)
+    if pause is not None:
+        sentences.append(pause)
     gaps = [e for e in events if e.event_type == "MONITORING_INTERRUPTED"]
     for gap in sorted(gaps, key=lambda e: e.occurred_at):
         sentences.append(phrasing.finding_sentence(gap.event_type, times=1, duration_ms=gap.duration_ms))
@@ -281,7 +347,9 @@ def compose(
     if blocked is not None and blocked.occurrences > 0:
         # Section 7.2: the blocked-actions sentence appears ONLY when attempts
         # occurred, and it says what is blocked, not that blocking is total.
+        # Then one line per kind, so a paste is never hidden inside a total.
         groups[catalog.GROUP_SCREEN].append(blocked.sentence)
+        groups[catalog.GROUP_SCREEN].extend(_blocked_sentences(events))
     if audio_note is not None:
         groups[catalog.GROUP_AUDIO].append(audio_note)
     for key, sentences in groups.items():
@@ -296,6 +364,9 @@ def compose(
         summary_parts.append("The most notable thing detected: " + lead[0].lower() + lead[1:])
     else:
         summary_parts.append(phrasing.NO_EVENTS_AT_ALL)
+    spoke = _speech_count(events)
+    if spoke >= get_config().speech_highlight_threshold:
+        summary_parts.append(phrasing.speech_highlight(spoke))
     summary_parts.append(_warned_sentence(ps.outcome, ps.warnings_used, findings))
     summary_parts.extend(gaps[:2])
 
@@ -319,6 +390,8 @@ def compose(
                         and event.warning_issued
                         and event.warning_number == ps.warnings_used
                     ),
+                    paused=event.opened_pause,
+                    resumed=event.resumed_pause,
                 ),
             }
         )

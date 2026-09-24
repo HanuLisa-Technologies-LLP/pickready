@@ -529,6 +529,20 @@ class Settings(BaseSettings):
     proctoring_audio_chunk_seconds: int = 15
     proctoring_audio_max_chunk_bytes: int = 2 * 1024 * 1024
     proctoring_second_voice_consecutive_chunks: int = 2
+    #: A second voice is flagged only when it is STRONG (master prompt, Phase
+    #: 3): the second-loudest speaker the diarizer separates must have spoken
+    #: for at least this many seconds of one chunk. A split of the
+    #: candidate's own voice, a cough or a passing voice in the corridor is
+    #: shorter than this and counts for nothing.
+    proctoring_second_voice_min_seconds: float = 3.0
+    #: Speech in a chunk at or above this many seconds, while no spoken answer
+    #: is being captured, is "speaking during a question that does not take a
+    #: spoken answer". Logged every time, never a warning, never a
+    #: termination.
+    proctoring_speech_min_seconds: float = 2.0
+    #: From this many occurrences the report lifts the speaking finding into
+    #: its summary.
+    proctoring_speech_highlight_threshold: int = 3
     #: The analysis service (speaker diarization, AI-text detection). Empty
     #: means audio analysis is UNAVAILABLE, which the report states plainly;
     #: it is never silently treated as "no second voice".
@@ -538,7 +552,16 @@ class Settings(BaseSettings):
     proctoring_heartbeat_interval_seconds: int = 10
     proctoring_heartbeat_gap_seconds: int = 30
     proctoring_integrity_failure_termination_seconds: int = 60
-    proctoring_camera_recovery_seconds: int = 60
+    # Camera or microphone loss (master prompt, Phase 3). A loss PAUSES the
+    # assessment and gives the candidate this many seconds to restore the
+    # device; at most `device_max_pauses` pauses per session, and the next
+    # loss, or a pause not recovered in time, ends it as a technical failure.
+    # A loss shorter than the glitch window is logged and pauses nothing.
+    # SUPERSEDES `proctoring_camera_recovery_seconds`, which turned an
+    # unrecovered camera into an immediate termination.
+    proctoring_device_max_pauses: int = 2
+    proctoring_device_grace_seconds: int = 120
+    proctoring_device_glitch_seconds: int = 5
     # In-browser inference performance (section 3.6).
     proctoring_sampling_fps_normal: int = 2
     proctoring_sampling_fps_confirming: int = 6
@@ -651,6 +674,15 @@ class Settings(BaseSettings):
     assessment_duration_minutes_leadership: int = 70
     assessment_duration_minutes_cxo: int = 50
     #: Suggested time per question, by format, in seconds.
+    #: The longest a blocking proctoring warning can stop the candidate's
+    #: clock for. The pause opens when the warning is issued and closes on the
+    #: candidate's acknowledgement, or here, whichever is first
+    #: (`services/assessment_conversation/pauses`).
+    assessment_warning_pause_max_seconds: int = 30
+    #: The longest spoken answer a candidate can record (master prompt, Phase
+    #: 3). Proctoring reads it to bound how long an unfinished capture can
+    #: excuse speech in the audio monitoring.
+    assessment_voice_max_seconds: int = 180
     assessment_time_evidence_seconds: int = 240
     assessment_time_short_answer_seconds: int = 180
     assessment_time_mcq_single_seconds: int = 60
@@ -1043,6 +1075,37 @@ class Settings(BaseSettings):
         if value not in {"smtp", "ses"}:
             raise ValueError("EMAIL_TRANSPORT must be smtp or ses")
         object.__setattr__(self, "email_transport", value)
+        return self
+
+    @model_validator(mode="after")
+    def validate_proctoring_pause_rules(self) -> "Settings":
+        """Refuse a device-pause or audio rule that cannot mean anything.
+
+        These numbers are read to a candidate before they start ("you have
+        about two minutes to fix it") and decide whether their assessment
+        ends, so a configuration under which the grace is shorter than the
+        glitch filter, or a pause cap is zero, must fail at boot rather than
+        on a candidate's camera.
+        """
+        if self.proctoring_device_max_pauses < 0:
+            raise ValueError("PROCTORING_DEVICE_MAX_PAUSES must be zero or more")
+        if self.proctoring_device_glitch_seconds < 0:
+            raise ValueError("PROCTORING_DEVICE_GLITCH_SECONDS must be zero or more")
+        if self.proctoring_device_grace_seconds <= self.proctoring_device_glitch_seconds:
+            raise ValueError(
+                "PROCTORING_DEVICE_GRACE_SECONDS must be longer than "
+                "PROCTORING_DEVICE_GLITCH_SECONDS"
+            )
+        if self.proctoring_second_voice_min_seconds <= 0:
+            raise ValueError("PROCTORING_SECOND_VOICE_MIN_SECONDS must be positive")
+        if self.proctoring_speech_min_seconds <= 0:
+            raise ValueError("PROCTORING_SPEECH_MIN_SECONDS must be positive")
+        if self.proctoring_speech_highlight_threshold < 1:
+            raise ValueError("PROCTORING_SPEECH_HIGHLIGHT_THRESHOLD must be at least one")
+        if self.assessment_warning_pause_max_seconds <= 0:
+            raise ValueError("ASSESSMENT_WARNING_PAUSE_MAX_SECONDS must be positive")
+        if self.assessment_voice_max_seconds <= 0:
+            raise ValueError("ASSESSMENT_VOICE_MAX_SECONDS must be positive")
         return self
 
     @model_validator(mode="after")

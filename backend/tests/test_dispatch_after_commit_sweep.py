@@ -71,7 +71,6 @@ LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("api/portal.py", "dispatch_bgv_inquiry"): (1, "P6 proposed"),
     ("api/provider.py", "set_primary_contact"): (1, "P7 proposed"),
     ("api/support.py", "_notify"): (1, "P6"),
-    ("services/proctoring/ingestion.py", "enqueue_assessment"): (1, "P3"),
     ("services/video/processing.py", "complete_assessment"): (1, "P3"),
 }
 

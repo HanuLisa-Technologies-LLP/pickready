@@ -92,12 +92,19 @@ def generate_proctoring_report(link_id: str):
 def reconcile_proctoring_sessions():
     """Hourly: close the sessions nothing else will close, and report them.
 
-    Two states, and only two:
+    Three states, and only three:
 
     1. The conversation completed but the session is still active. The report
        task was enqueued and lost (broker hiccup, worker restart). Re-enqueue
        it; it closes the session itself.
-    2. The conversation never completed and the session has heard nothing for
+    2. A camera or microphone pause ran past its grace and no request came
+       back to settle it: the candidate closed the tab while paused. The
+       session ends exactly as a live request would have ended it
+       (`ingestion.enforce_pause`, `DEVICE_RECOVERY_TIMED_OUT`, a technical
+       failure), and that path orders the PRISM Report after this commit.
+       Checked BEFORE abandonment: the rules the candidate was shown ended it
+       two minutes into the pause, not hours later.
+    3. The conversation never completed and the session has heard nothing for
        `credit_reconciliation.SETTLE_AFTER_HOURS`. The candidate closed the
        tab and did not return. The session is ended as `abandoned` and its
        report is enqueued. The clock is deliberately the credit reconciler's,
@@ -131,6 +138,7 @@ def reconcile_proctoring_sessions():
                 )
             ).scalars().all()
             completed = 0
+            timed_out = 0
             abandoned = 0
             for ps in rows:
                 conversation = await session.get(AssessmentConversation, ps.conversation_id)
@@ -142,6 +150,9 @@ def reconcile_proctoring_sessions():
                         args=[str(ps.job_candidate_link_id)],
                     )
                     completed += 1
+                    continue
+                if await proctoring_ingestion.enforce_pause(session, ps, now=now) is not None:
+                    timed_out += 1
                     continue
                 last_heard = ps.last_heartbeat_at or ps.started_at or ps.consented_at
                 if last_heard >= cutoff:
@@ -155,9 +166,10 @@ def reconcile_proctoring_sessions():
                 )
                 abandoned += 1
             await session.commit()
-            if completed or abandoned:
+            if completed or timed_out or abandoned:
                 logger.info(
-                    "proctoring.reconciled completed_requeued=%d abandoned=%d",
-                    completed, abandoned,
+                    "proctoring.reconciled completed_requeued=%d pause_timed_out=%d "
+                    "abandoned=%d",
+                    completed, timed_out, abandoned,
                 )
     _run(_task())

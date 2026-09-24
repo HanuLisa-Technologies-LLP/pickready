@@ -32,6 +32,7 @@ from app.models.proctoring import (
     POLICY_TERMINATE,
 )
 from app.services.proctoring import catalog
+from app.services.proctoring.config import ProctoringConfig
 
 __all__ = [
     "count_word",
@@ -43,6 +44,13 @@ __all__ = [
     "outcome_sentence",
     "warning_message",
     "termination_message",
+    "pause_message",
+    "pause_summary",
+    "speech_highlight",
+    "candidate_rules",
+    "blocked_kind",
+    "blocked_item_sentence",
+    "BLOCKED_KINDS",
     "NO_ISSUES",
     "NO_EVENTS_AT_ALL",
     "CLOSING",
@@ -218,22 +226,47 @@ _FINDINGS: dict[str, str] = {
         "The camera was covered for about {duration}, and the assessment was "
         "ended."
     ),
+    # The four losses PAUSE the assessment (catalog Path P, 2026-09-24). The
+    # sentence says what stopped and how often; whether each pause was
+    # recovered is the pause sentence's job (`pause_summary`), so a loss is
+    # never described as having ended the assessment when it did not.
     "CAMERA_PERMISSION_LOST": (
-        "Camera access was switched off during the assessment, and the "
-        "assessment was ended."
+        "Camera access was switched off {times} during the assessment."
     ),
     "MIC_PERMISSION_LOST": (
-        "Microphone access was switched off during the assessment, and the "
-        "assessment was ended."
+        "Microphone access was switched off {times} during the assessment."
     ),
     "CAMERA_STREAM_FAILED": (
-        "The camera stopped working and did not recover within the time "
-        "allowed, so the assessment could not continue. This is a technical "
-        "problem, not candidate behaviour."
+        "The camera stopped working {times} during the assessment."
+    ),
+    "MIC_STREAM_FAILED": (
+        "The microphone stopped working {times} during the assessment."
     ),
     "CAMERA_STREAM_INTERRUPTED": (
         "The camera stream was interrupted {times}, for about {duration}, and "
         "recovered."
+    ),
+    "MIC_STREAM_INTERRUPTED": (
+        "The microphone stream was interrupted {times}, for about {duration}, "
+        "and recovered."
+    ),
+    "DEVICE_RECOVERED": (
+        "The camera and microphone were restored {times} after the assessment "
+        "had paused."
+    ),
+    "DEVICE_PAUSE_LIMIT_EXCEEDED": (
+        "The camera or microphone stopped again after every pause allowed had "
+        "been used, so the assessment was ended."
+    ),
+    "DEVICE_RECOVERY_TIMED_OUT": (
+        "The camera or microphone was not restored within the time allowed, so "
+        "the assessment was ended."
+    ),
+    "SPEECH_DURING_NON_AUDIO_QUESTION": (
+        "The candidate spoke {times} while answering questions that do not "
+        "take a spoken answer, for about {duration} in total. Speaking is "
+        "noted and never ends an assessment; it can be the candidate thinking "
+        "aloud or reading a question to themselves."
     ),
     "INTEGRITY_CHECK_FAILED": (
         "The monitoring components stopped responding and did not recover, so "
@@ -322,8 +355,16 @@ _ACTIVITY: dict[str, str] = {
     "CAMERA_OBSTRUCTED": "The camera was covered",
     "CAMERA_PERMISSION_LOST": "Camera access was switched off",
     "MIC_PERMISSION_LOST": "Microphone access was switched off",
-    "CAMERA_STREAM_FAILED": "The camera stopped working and did not recover",
+    "CAMERA_STREAM_FAILED": "The camera stopped working",
+    "MIC_STREAM_FAILED": "The microphone stopped working",
     "CAMERA_STREAM_INTERRUPTED": "The camera stream was interrupted and recovered",
+    "MIC_STREAM_INTERRUPTED": "The microphone stream was interrupted and recovered",
+    "DEVICE_RECOVERED": "The camera and microphone were restored",
+    "DEVICE_PAUSE_LIMIT_EXCEEDED": "A device stopped again after every pause allowed was used",
+    "DEVICE_RECOVERY_TIMED_OUT": "A device was not restored within the time allowed",
+    "SPEECH_DURING_NON_AUDIO_QUESTION": (
+        "Spoke during a question that does not take a spoken answer"
+    ),
     "INTEGRITY_CHECK_FAILED": "Monitoring stopped responding and did not recover",
     "INTEGRITY_CHECK_WARNING": "Monitoring stopped responding and recovered",
     "MONITORING_INTERRUPTED": "Monitoring was interrupted",
@@ -350,20 +391,122 @@ def activity_description(event_type: str, metadata: dict | None = None) -> str:
     note = (metadata or {}).get("note")
     if event_type == "SESSION_QUALITY_DEGRADED" and note in (AUDIO_UNAVAILABLE_NOTE, AUDIO_FAILED_NOTE):
         return AUDIO_ACTIVITY
+    if event_type == "BLOCKED_ACTION_ATTEMPTED":
+        return _BLOCKED_ACTIVITY[blocked_kind(metadata)]
     return _ACTIVITY[event_type]
 
 
+# ── Blocked actions, itemised (master prompt, Phase 3: every paste attempt is
+# blocked, logged as a proctoring event, and shown in the report) ─────────────
+#
+# The browser names the action it refused (`frontend/lib/proctoring/lockdown`
+# `BlockedAction`). The report counts the actions the specification names on
+# their own lines and folds every other refusal into one, so a recruiter reads
+# "tried to paste three times" rather than a total that hides it. An action the
+# browser did not name, or named with a word this table does not know, is
+# counted under "another blocked action": still counted, never dropped.
+
+BLOCKED_PASTE = "paste"
+BLOCKED_COPY = "copy_or_cut"
+BLOCKED_DROP = "drop"
+BLOCKED_OTHER = "other"
+#: The order the itemised sentences appear in the report.
+BLOCKED_KINDS: tuple[str, ...] = (BLOCKED_PASTE, BLOCKED_COPY, BLOCKED_DROP, BLOCKED_OTHER)
+
+_BLOCKED_KIND_FOR_ACTION: dict[str, str] = {
+    "paste": BLOCKED_PASTE,
+    "copy": BLOCKED_COPY,
+    "cut": BLOCKED_COPY,
+    "drop": BLOCKED_DROP,
+}
+
+_BLOCKED_ITEMS: dict[str, str] = {
+    BLOCKED_PASTE: "Tried to paste into an answer {times}.",
+    BLOCKED_COPY: "Tried to copy or cut text {times}.",
+    BLOCKED_DROP: "Tried to drag and drop text or a file into the page {times}.",
+    BLOCKED_OTHER: (
+        "Tried another blocked action, such as right-click, printing or "
+        "developer tools, {times}."
+    ),
+}
+
+_BLOCKED_ACTIVITY: dict[str, str] = {
+    BLOCKED_PASTE: "Tried to paste into an answer",
+    BLOCKED_COPY: "Tried to copy or cut text",
+    BLOCKED_DROP: "Tried to drag and drop into the page",
+    BLOCKED_OTHER: "A blocked action was attempted",
+}
+
+
+def blocked_kind(metadata: dict | None) -> str:
+    """Which itemised line a blocked-action event is counted on."""
+    action = (metadata or {}).get("action")
+    if not isinstance(action, str):
+        return BLOCKED_OTHER
+    return _BLOCKED_KIND_FOR_ACTION.get(action.strip().lower(), BLOCKED_OTHER)
+
+
+def blocked_item_sentence(kind: str, *, times: int) -> str:
+    if kind not in _BLOCKED_ITEMS:
+        raise KeyError(f"{kind!r} is not a blocked-action kind")
+    return _BLOCKED_ITEMS[kind].format(times=count_word(times))
+
+
 def system_action(
-    *, path: str, warning_issued: bool, warning_number: int | None, terminated: bool
+    *,
+    path: str,
+    warning_issued: bool,
+    warning_number: int | None,
+    terminated: bool,
+    paused: bool = False,
+    resumed: bool = False,
 ) -> str:
     """The "What the system did" cell."""
     if terminated:
         return "Ended the assessment"
     if warning_issued and warning_number is not None:
         return f"Issued the {ordinal_word(warning_number)} warning"
+    if paused:
+        return "Paused the assessment"
+    if resumed:
+        return "Resumed the assessment"
     if path == catalog.PATH_B:
         return "Noted it, no further warning"
     return "Noted it"
+
+
+# ── The device pause, for the recruiter ──────────────────────────────────────
+
+
+def pause_summary(*, pauses: int, resumed: int, ended: bool) -> str | None:
+    """One sentence about the pauses a session had, or None when it had none.
+
+    Monitoring is incomplete while an assessment is paused, so this sentence is
+    stated rather than left to be inferred from the device findings.
+    """
+    if pauses <= 0:
+        return None
+    base = (
+        f"The assessment was paused {count_word(pauses)} while the camera or "
+        "microphone was restored"
+    )
+    if ended:
+        return base + ", and it did not continue after the last pause."
+    if resumed >= pauses:
+        if pauses == 1:
+            return base + ", and it resumed."
+        return base + ", and it resumed each time."
+    return base + "."
+
+
+def speech_highlight(times: int) -> str:
+    """The summary line for speaking during questions that do not take a
+    spoken answer, once it has happened often enough to be highlighted."""
+    return (
+        f"The candidate spoke {count_word(times)} during questions that do not "
+        "take a spoken answer, which is highlighted because it happened "
+        "repeatedly. It did not affect whether the assessment continued."
+    )
 
 
 # ── Outcome (section 7.3) ────────────────────────────────────────────────────
@@ -402,6 +545,16 @@ def outcome_sentence(outcome: str, *, warnings: int, termination_reason: str | N
             "assessment was stopped."
         )
     if outcome == OUTCOME_TECHNICAL_FAILURE:
+        if termination_reason in catalog.DEVICE_REASONS:
+            # Not "a technical problem, not candidate behaviour": a camera
+            # that died and a camera switched off end the same way, and this
+            # sentence must not vouch for which it was. The findings name the
+            # device and what happened to it.
+            return (
+                "Assessment ended early because the camera or microphone "
+                "stopped and was not restored within the rules the candidate "
+                "was shown before starting."
+            )
         return (
             "Assessment could not be completed due to a technical problem, not "
             "candidate behaviour."
@@ -515,6 +668,14 @@ _TERMINATIONS: dict[str, str] = {
         "Your assessment has ended because monitoring stopped working and could "
         "not be restored."
     ),
+    "DEVICE_PAUSE_LIMIT_EXCEEDED": (
+        "Your assessment has ended because your camera or microphone stopped "
+        "again after every pause allowed had been used."
+    ),
+    "DEVICE_RECOVERY_TIMED_OUT": (
+        "Your assessment has ended because your camera or microphone was not "
+        "working again within the time allowed."
+    ),
 }
 _TERMINATION_WARNINGS = (
     "Your assessment has ended because the warning limit for this role was "
@@ -532,3 +693,130 @@ def termination_message(reason_code: str, *, outcome: str) -> str:
     if reason_code not in _TERMINATIONS:
         raise KeyError(f"{reason_code!r} is not a termination reason")
     return _TERMINATIONS[reason_code] + _TERMINATION_TAIL
+
+
+# ── Candidate-facing: the device pause (master prompt, Phase 3) ──────────────
+
+_DEVICE_NAME: dict[str, str] = {
+    "CAMERA_PERMISSION_LOST": "camera",
+    "CAMERA_STREAM_FAILED": "camera",
+    "MIC_PERMISSION_LOST": "microphone",
+    "MIC_STREAM_FAILED": "microphone",
+}
+_DEVICE_FIX: dict[str, str] = {
+    "CAMERA_PERMISSION_LOST": "allow camera access for this page again in your browser",
+    "CAMERA_STREAM_FAILED": (
+        "check that your camera is connected and that no other application is using it"
+    ),
+    "MIC_PERMISSION_LOST": "allow microphone access for this page again in your browser",
+    "MIC_STREAM_FAILED": (
+        "check that your microphone is connected and that no other application is using it"
+    ),
+}
+_ANY_DEVICE_FIX = (
+    "check that your camera and microphone are connected and allowed for this "
+    "page in your browser"
+)
+
+
+def pause_message(
+    opened_by: str | None, *, pauses_used: int, max_pauses: int, grace_seconds: int
+) -> str:
+    """What the candidate reads while the assessment is paused.
+
+    Names the device and what to do, gives the time allowed in words (the
+    screen shows the countdown beside it), and says plainly what the next stop
+    will mean, because the candidate was told the rule before starting and
+    must not learn it for the first time at the moment it ends their session.
+    """
+    device = _DEVICE_NAME.get(opened_by or "", "camera or microphone")
+    fix = _DEVICE_FIX.get(opened_by or "", _ANY_DEVICE_FIX)
+    window = duration_phrase(grace_seconds * _MS_PER_SECOND)
+    remaining = max_pauses - pauses_used
+    if remaining <= 0:
+        tail = (
+            "This is the last pause allowed: if your camera or microphone stops "
+            "again, the assessment will end."
+        )
+    elif remaining == 1:
+        tail = (
+            "One more pause is allowed after this one. After that, the "
+            "assessment will end if your camera or microphone stops again."
+        )
+    else:
+        tail = (
+            f"{number_word(remaining).capitalize()} more pauses are allowed after "
+            "this one."
+        )
+    return (
+        f"Your {device} has stopped, so the assessment is paused and its clock "
+        f"has stopped. You have {window} to fix it: {fix}. {tail} Your answers "
+        "so far are saved."
+    )
+
+
+def candidate_rules(config: ProctoringConfig) -> list[str]:
+    """The monitoring rules, read to the candidate before they start.
+
+    Composed from the SAME configuration the server enforces, so the screen
+    can never describe a rule the pipeline is not applying: change the grace
+    or the pause count and this text changes with it. Served by
+    `GET /proctoring/config`; the consent screen renders it and words nothing
+    itself.
+    """
+    grace = duration_phrase(config.device_grace_seconds * _MS_PER_SECOND)
+    warnings = number_word(config.max_warnings)
+    if config.device_max_pauses > 0:
+        pause_rule = (
+            "If your camera or microphone stops, the assessment pauses, its "
+            f"clock stops, and you have {grace} to fix it. This can happen at "
+            f"most {count_word(config.device_max_pauses)}. A further stop, or "
+            f"not fixing it within {grace}, ends the assessment."
+        )
+    else:
+        pause_rule = (
+            "If your camera or microphone stops, the assessment ends, so check "
+            "both before you start."
+        )
+    sources = "Leaving the window, and a phone or another person on camera,"
+    if config.audio_analysis_available:
+        sources = (
+            "Leaving the window, a phone or another person on camera, and "
+            "another voice nearby"
+        )
+    rules = [
+        "Your camera and microphone must stay on for the whole assessment.",
+        (
+            "Stay in fullscreen and keep this window in front until you finish. "
+            f"{sources} each earn a warning. You have {warnings} warnings, and "
+            "the hiring team has decided what happens at the last one."
+        ),
+        pause_rule,
+    ]
+    if config.audio_analysis_available:
+        rules.append(
+            "Make sure nobody else is speaking near you. Another voice heard "
+            "clearly earns a warning; your own voice never does."
+        )
+        rules.append(
+            "Speak only when a question asks for a spoken answer. Speaking at "
+            "other times is noted in the report, but it never ends your "
+            "assessment."
+        )
+    rules.extend(
+        [
+            (
+                "Copying, cutting, pasting and dragging text are blocked, and "
+                "every attempt is noted in the report."
+            ),
+            (
+                "Questions come one at a time in a fixed order. You cannot skip a "
+                "question or change an answer once you submit it."
+            ),
+            (
+                "Each question has its own time limit, measured by our server. "
+                "When the time runs out, whatever you have written is submitted."
+            ),
+        ]
+    )
+    return rules

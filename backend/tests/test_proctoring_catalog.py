@@ -1,9 +1,10 @@
-"""Path A / B / C classification for every catalog entry (spec section 4).
+"""Path A / B / C / P classification for every catalog entry (spec section 4).
 
 The consequence path is the most important single fact about an event, and
-the specification writes it down in three tables. This file restates those
-tables INDEPENDENTLY of `catalog.py` so a change to one has to be made in
-both, and checks the schema refuses an identifier the browser may not emit.
+the specification writes it down in three tables; the master prompt's Phase 3
+adds the fourth, the device pause. This file restates those tables
+INDEPENDENTLY of `catalog.py` so a change to one has to be made in both, and
+checks the schema refuses an identifier the browser may not emit.
 """
 from __future__ import annotations
 
@@ -15,16 +16,24 @@ from pydantic import ValidationError
 from app.schemas.proctoring import EventBatchIn, EventIn
 from app.services.proctoring import catalog
 
-#: Section 4.1, verbatim, plus the two Path A additions section 9 states in
-#: prose (an unrecovered stream failure and a failed integrity check).
+#: Section 4.1, plus the Path A addition section 9 states in prose (a failed
+#: integrity check), MINUS the three device losses the master prompt moved to
+#: the pause path, PLUS the two server-derived ways that path ends a session.
 SPEC_PATH_A = {
     "IDENTITY_MISMATCH",
     "CAMERA_OBSTRUCTED",
     "FACE_ABSENT_EXTENDED",
+    "INTEGRITY_CHECK_FAILED",
+    "DEVICE_PAUSE_LIMIT_EXCEEDED",
+    "DEVICE_RECOVERY_TIMED_OUT",
+}
+#: Master prompt, Phase 3: "Camera or microphone loss triggers a pause, an
+#: explicit warning and a 2-minute grace."
+SPEC_PATH_P = {
     "CAMERA_PERMISSION_LOST",
     "MIC_PERMISSION_LOST",
     "CAMERA_STREAM_FAILED",
-    "INTEGRITY_CHECK_FAILED",
+    "MIC_STREAM_FAILED",
 }
 #: Section 4.2.
 SPEC_PATH_B = {
@@ -53,6 +62,9 @@ SPEC_PATH_C = {
     "MONITORING_INTERRUPTED",
     "INTEGRITY_CHECK_WARNING",
     "CAMERA_STREAM_INTERRUPTED",
+    "MIC_STREAM_INTERRUPTED",
+    "DEVICE_RECOVERED",
+    "SPEECH_DURING_NON_AUDIO_QUESTION",
 }
 
 #: Derived by the SERVER (section 9: "The client requests a warning; the
@@ -67,14 +79,18 @@ SERVER_ONLY = {
     "MOUSE_BEHAVIOR_DEVIATION",
     "AI_TEXT_SIGNAL",
     "MONITORING_INTERRUPTED",
+    "DEVICE_PAUSE_LIMIT_EXCEEDED",
+    "DEVICE_RECOVERY_TIMED_OUT",
+    "SPEECH_DURING_NON_AUDIO_QUESTION",
 }
 
 
-def test_the_catalog_is_exactly_the_three_tables() -> None:
-    assert set(catalog.CATALOG) == SPEC_PATH_A | SPEC_PATH_B | SPEC_PATH_C
-    assert not (SPEC_PATH_A & SPEC_PATH_B), "an event has two paths"
-    assert not (SPEC_PATH_B & SPEC_PATH_C), "an event has two paths"
-    assert not (SPEC_PATH_A & SPEC_PATH_C), "an event has two paths"
+def test_the_catalog_is_exactly_the_four_tables() -> None:
+    tables = (SPEC_PATH_A, SPEC_PATH_B, SPEC_PATH_C, SPEC_PATH_P)
+    assert set(catalog.CATALOG) == set().union(*tables)
+    for index, first in enumerate(tables):
+        for second in tables[index + 1:]:
+            assert not (first & second), f"an event has two paths: {first & second}"
 
 
 @pytest.mark.parametrize("event_type", sorted(SPEC_PATH_A))
@@ -97,8 +113,36 @@ def test_path_b_warns(event_type: str) -> None:
 def test_path_c_is_logged_only(event_type: str) -> None:
     spec = catalog.spec_for(event_type)
     assert spec.path == catalog.PATH_C
-    assert not spec.warns and not spec.terminates
+    assert not spec.warns and not spec.terminates and not spec.pauses
     assert event_type in catalog.LOGGED_ONLY
+
+
+@pytest.mark.parametrize("event_type", sorted(SPEC_PATH_P))
+def test_path_p_pauses_and_never_terminates_or_warns(event_type: str) -> None:
+    spec = catalog.spec_for(event_type)
+    assert spec.path == catalog.PATH_P
+    assert spec.pauses and not spec.warns and not spec.terminates
+    assert event_type in catalog.PAUSING
+    assert event_type not in catalog.TERMINATING
+    assert spec.client_emittable, "only the browser can see its own devices stop"
+
+
+def test_every_pausing_loss_has_a_logged_interruption_of_the_same_device() -> None:
+    """A flicker under the glitch window is recorded against the device that
+    flickered, never against the other one."""
+    assert set(catalog.INTERRUPTED_FORM) == SPEC_PATH_P
+    for loss, interruption in catalog.INTERRUPTED_FORM.items():
+        assert interruption in SPEC_PATH_C
+        assert ("MIC" in loss) == ("MIC" in interruption), (loss, interruption)
+
+
+def test_the_speech_rule_can_never_warn_or_end_an_assessment() -> None:
+    """Master prompt: speaking during a non-audio question "never counts
+    toward termination". Pinned on the catalog entry, because the path is the
+    whole of what an event can do."""
+    spec = catalog.spec_for("SPEECH_DURING_NON_AUDIO_QUESTION")
+    assert spec.path == catalog.PATH_C
+    assert not spec.client_emittable
 
 
 def test_every_entry_belongs_to_exactly_one_findings_group() -> None:
