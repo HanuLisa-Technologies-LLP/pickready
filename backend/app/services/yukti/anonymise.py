@@ -1,8 +1,10 @@
 """The name-blind first pass over a resume, before any model reads it.
 
-MOVED from `services/hiring/prescreen.py` (Vivekium release, Phase 2), with ONE
-deliberate change to the name scrub, argued in `anonymise`'s docstring: a name
-is now removed on word boundaries, as an employer already was. The pre-screen
+MOVED from `services/hiring/prescreen.py` (Vivekium release, Phase 2), with TWO
+deliberate changes, argued in `anonymise`: a name is now removed on word
+boundaries, as an employer already was, and the identity shapes (email, phone,
+profile link) are removed BEFORE the names rather than after, because a name
+scrubbed out of "priya@example.com" first left the domain behind. The pre-screen
 grade this served is retired; the
 guarantee it carried is not, and before this move Yukti's own prompt received
 the RAW resume excerpt while only the deterministic pre-screen was name-blind
@@ -176,6 +178,13 @@ def anonymise(
     earned evidence (`tests/test_yukti_anonymise.py` asserts it directly).
     """
     out = str(text or "")
+    # The identity SHAPES go first. Run after the name scrub, an address such
+    # as "priya@example.com" has already lost "priya" on a word boundary, and
+    # what is left ("@example.com") no longer matches the address pattern, so
+    # the domain reaches the model. A personal domain is an identity.
+    out = _EMAIL.sub(" ", out)
+    out = _URL_HOST.sub(" ", out)
+    out = _PHONE.sub(" ", out)
     protected = frozenset(
         term
         for raw in protected_terms
@@ -206,9 +215,6 @@ def anonymise(
             out,
             flags=re.IGNORECASE,
         )
-    out = _EMAIL.sub(" ", out)
-    out = _URL_HOST.sub(" ", out)
-    out = _PHONE.sub(" ", out)
     return out
 
 
