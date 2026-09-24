@@ -13,7 +13,7 @@ the public `/apply/{job}` page alike.
 
 HOW THIS SWEEP WORKS
 --------------------
-The `test_company_dna_removed.py` pattern: the source is swept with whitespace
+The pattern of the earlier instrument removal sweep: the source is swept with whitespace
 normalised, so a name wrapped across a line still matches, and a hit still
 names its line. The scope is the live tree: `backend/app`, `backend/scripts`,
 `frontend/app`, `frontend/components`, `frontend/lib` and `frontend/proxy.ts`.
@@ -162,7 +162,7 @@ def test_no_live_source_names_the_retired_questionnaire() -> None:
 
 
 def test_the_sweep_matches_across_a_line_break() -> None:
-    """The blind spot `test_company_dna_removed` once had, one line wide."""
+    """The blind spot the earlier instrument removal sweep once had, one line wide."""
     sample = "a = 1\n# the 40\n    aspects were\nb = make_outreach_token\n"
     assert hits_in(sample) == [(2, "40 aspects"), (4, "make_outreach_token")]
 
