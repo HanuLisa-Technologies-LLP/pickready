@@ -232,7 +232,13 @@ def _service_secrets() -> dict[str, list[str]]:
     """
     source = _source(SECRETS_VARS)
     start = source.index("variable \"service_secrets\"")
-    block = source[start:]
+    # BOUNDED AT THE NEXT VARIABLE (2026-09-24). This read to the end of the
+    # file, so `service_secret_writers`, declared later with the same
+    # `"migrate" = [...]` shape, silently REPLACED the migrate entry: every
+    # assertion about what the migration job may READ was asserting what it
+    # may WRITE. A grant added to the read map's migrate entry passed.
+    end = source.find("\nvariable \"", start + 1)
+    block = source[start:] if end == -1 else source[start:end]
     parsed: dict[str, list[str]] = {}
     # The keys are QUOTED, because HCL parses a bare `task-worker` as
     # subtraction. Matching both spellings would let a future unquoted key that
