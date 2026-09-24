@@ -19,6 +19,7 @@ design tooling reads them from the project root).
 | Know who may do what | [spec/RBAC_SPECIFICATION.md](spec/RBAC_SPECIFICATION.md) |
 | Know how candidates are evaluated | [product/Readypick Hiring Philosophy.md](product/Readypick%20Hiring%20Philosophy.md) |
 | Follow a candidate or a job end to end | [spec/HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) |
+| Set up a job: JD, SWOT, Skills, publish, the lock | [spec/JOB_SETUP_FLOW.md](spec/JOB_SETUP_FLOW.md) |
 | Add, route or debug a background task | [spec/BACKGROUND_WORK.md](spec/BACKGROUND_WORK.md) |
 | Prove a change works end to end, or reproduce a failure | [spec/HARNESS.md](spec/HARNESS.md) |
 | Change code without breaking a rule | [../claude.md](../claude.md) |
@@ -74,6 +75,7 @@ document.
 |---|---|
 | [RBAC_SPECIFICATION.md](spec/RBAC_SPECIFICATION.md) | Precedence rank 1. Roles, capabilities, isolation, lifecycle |
 | [HIRING_WORKFLOW.md](spec/HIRING_WORKFLOW.md) | The end-to-end candidate and client journeys, and the eight gates that hold them together |
+| [JOB_SETUP_FLOW.md](spec/JOB_SETUP_FLOW.md) | Job setup since the Vivekium release: the draft-only create, the dispatched SWOT, the Skills step and Save Skills, the three-step publish gate, the contract lock, the sweeps and the scenarios that pin each rule. Supersedes HIRING_WORKFLOW's Gates 3 and 4 |
 | [AI_RUNTIME_UPGRADE.md](spec/AI_RUNTIME_UPGRADE.md) | RPN-AI-UP-001, precedence rank 3a. The AI runtime, retrieval, evaluation and AI security. **Read it beside [verification/AI_UPGRADE_BASELINE.md](verification/AI_UPGRADE_BASELINE.md)**, which records where its own section 2 audit turned out to be wrong |
 | [CANDIDATE_DASHBOARD_SPECIFICATION.md](spec/CANDIDATE_DASHBOARD_SPECIFICATION.md) | The candidate list surface |
 | [PROJECT_EVIDENCE_INTELLIGENCE.md](spec/PROJECT_EVIDENCE_INTELLIGENCE.md) | Project evidence: pipeline, security, retention |
