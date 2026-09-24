@@ -96,6 +96,20 @@ describe("behaviour capture", () => {
     expect(JSON.stringify(behaviour)).not.toContain("140");
   });
 
+  it("counts a refusal the document caught against the answer on screen", () => {
+    // The lockdown stops copy, cut, paste and drop at the document, so the
+    // field's own hook never runs; the session routes the attempt here.
+    const capture1 = build();
+    capture1.hooksFor("q1");
+    capture1.hooksFor("q2");
+    capture1.recordBlocked();
+    capture1.recordBlocked();
+    expect(capture1.collect("q2")?.blocked_action_count).toBe(2);
+    expect(capture1.collect("q1")?.blocked_action_count).toBe(0);
+    // No answer on screen: nothing to count against, and nothing thrown.
+    expect(() => capture1.recordBlocked()).not.toThrow();
+  });
+
   it("counts a blocked action, an option click and a scroll on the answer they were aimed at", () => {
     const hooks = build().hooksFor("q1");
     hooks.onBlockedAction();
