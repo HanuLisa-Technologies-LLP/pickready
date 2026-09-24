@@ -265,6 +265,35 @@ grade.status`, `required_level` NULL. `evaluations.scoring_mode` is CHECKed to
 `full | degraded | stub`: a complete Miti run is `full`; a final-attempt
 incomplete run is `degraded`.
 
+### THREE MORE SILENT SUBSTITUTIONS, CLOSED IN THE COMPLETION PASS
+
+- **The contradiction read-back RAISES.** `_uncertainty_from_evidence`
+  swallowed ANY exception and answered "no contradiction", a silent PASS on
+  the one signal that routes a disagreeing record to a person, and it caught
+  a `TypeError` as readily as an outage. Miti reads the same ledger twice in
+  the same transaction before it runs, so a failure there is a defect; a
+  failed SQL statement has already aborted the transaction the report would
+  be written in anyway. `test_miti_evidence_wiring` pins the reversal.
+- **An unscored AI Score parameter is OMITTED, never read as five.**
+  `_matching_dimensions` defaulted a missing `match_breakdown_json` score to
+  5 of 10, a Not Matching row written from nothing. `_matching_score` returns
+  None for absent, boolean, non-numeric and non-finite values; the row is
+  dropped and `functional_assessment.ai_score_parameter_unscored` is logged.
+- **The report writes `stated_score`, and refuses a withheld overall BEFORE
+  the AI Score section or any remark is paid for.** `synthesis_node` used
+  `delivered_score`, which is the working and exists even when the overall is
+  "not assessed". The refusal is `SkillsNotAssessed`, the same exception the
+  scoring node raises, so WP5-D replaces both with its final-attempt path.
+- `infer_grade` (an LLM grade inference with no caller and a bare
+  `except Exception` fallback) is DELETED. `infer_grade_fallback` survives for
+  pre-0014 rows only.
+
+`tests/test_miti_report_rows.py` runs `run_assessment` itself on committed
+rows and reads back from a second connection: every PPI report row carries
+Miti's skill score, the overall is `stated_score`, the evaluation row passes
+the `scoring_mode` CHECK with G1 to G4 in order; a judging outage commits no
+report, no report dimension and no evaluation.
+
 ### STILL OPEN, FOR WP5-D, AND WHY IT MATTERS
 
 - **Do not deploy WP5-B without WP5-D.** Until the attempts counter exists,
@@ -278,3 +307,9 @@ incomplete run is `degraded`.
   not executed). PLAN-p5's 70 / 30 hidden-tests and quality split needs Phase
   4's `code_execution.evidence_for_answer`, which is not on this base; coding
   ships disabled (CONTRACT v2 P4), so no coding question is served until it is.
+- **The Overall radar chart averages report rows UNWEIGHTED**
+  (`functional_assessment.build_radar_charts._mean`), while Miti's category
+  grade is the `1 / priority` weighted mean. On a bucket whose skills differ
+  in priority the chart's band can disagree with the category word beside it.
+  WP5-D should persist `aggregate.category_grades` on the report and WP5-F's
+  read model should draw the Overall chart from them, never recompute.
