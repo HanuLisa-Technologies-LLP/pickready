@@ -320,15 +320,12 @@ async def test_the_erasure_takes_the_sign_in_account_and_leaves_staff_alone(
     engine, factory = await _factory_or_skip()
     fx = _Fixture()
 
-    # The confirmation letter is dispatched, not sent. Recorded rather than
-    # executed so this test does not depend on a mail provider, and asserted
-    # because an erasure that silently stopped telling the person would be
-    # invisible.
-    dispatched: list[tuple] = []
-    monkeypatch.setattr(
-        portal_mod, "dispatch",
-        lambda name, args=None, **kw: dispatched.append((name, args)),
-    )
+    # The confirmation letter is dispatched, not sent, and only AFTER the
+    # commit. The suite's `record` backend remembers what reached the
+    # dispatcher, so reading it after the transaction closes asserts both that
+    # the letter was queued and that it was queued by the commit, never before.
+    from app.workers import dispatch as dispatch_mod
+
     cleared: dict[str, bool] = {}
     monkeypatch.setattr(
         portal_mod, "clear_auth_cookies",
@@ -381,6 +378,7 @@ async def test_the_erasure_takes_the_sign_in_account_and_leaves_staff_alone(
         # touched at all.
         #
         # The second tells the person, at the address read before the row went.
+        dispatched = [(item.name, list(item.args)) for item in dispatch_mod.recorded()]
         assert [name for name, _ in dispatched] == [
             "pickready.cascade_erasure",
             "pickready.send_email",

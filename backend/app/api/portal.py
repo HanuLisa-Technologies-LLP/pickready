@@ -570,6 +570,17 @@ class ProfileFormIn(BaseModel):
     consent_keys: list[str] = []
 
 
+def _declaration_accepted(answers: dict) -> bool:
+    """Whether the profile form's declaration checkbox is ticked.
+
+    A checkbox arrives as a boolean from the screen and as a string from older
+    clients, so "false", "no" and "0" read as unticked rather than as a
+    non-empty string that happens to be truthy.
+    """
+    value = answers.get("declaration_accepted")
+    return bool(value) and str(value).strip().lower() not in ("false", "no", "0")
+
+
 async def _profile_form_out(
     session: AsyncSession, candidate: Candidate, main: Profile | None
 ) -> ProfileFormOut:
@@ -682,6 +693,13 @@ async def save_profile_form(
         )
     candidate.profile_form_json = answers
     candidate.profile_form_updated_at = datetime.now(timezone.utc)
+    # THE DATABANK CONSENT IS WRITTEN HERE AND NOWHERE ELSE. The declaration's
+    # own wording ("I consent to my profile being shared with prospective
+    # employers for job matching") is on this form, so this is where ticking or
+    # unticking it means something. The apply route used to re-derive the flag
+    # from whatever the apply form carried, on every application, which could
+    # silently revoke a consent the candidate had given here.
+    candidate.consent_databank = _declaration_accepted(answers)
     # Keep the denormalised candidate columns in step so the HR Review Screen
     # shows a city rather than a blank, exactly as the outreach flow did.
     if city := answers.get("current_city"):
@@ -696,7 +714,11 @@ async def save_profile_form(
         action="candidate_profile_form_saved",
         target_type="candidate",
         target_id=candidate.id,
-        metadata={"answered": len(answers), "complete": profile_form.is_complete(answers)},
+        metadata={
+            "answered": len(answers),
+            "complete": profile_form.is_complete(answers),
+            "databank_consent": candidate.consent_databank,
+        },
     )
     return await _profile_form_out(
         session, candidate, await _main_resume_profile(session, candidate)
