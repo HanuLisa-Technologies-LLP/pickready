@@ -180,11 +180,14 @@ def _link_findings(
     carry and that it must be the one from context rather than one the model
     invented. Asking it here means the critic cannot disagree with the repair
     path that runs immediately after.
+
+    NOT WRAPPED. It was, in `except Exception: return []`, on the theory that
+    an unknown email type raises there. It does not: `link_defects` answers an
+    unknown type with no defects, by table lookup. So the handler could only
+    ever catch a programming error, and it turned that into "the links are
+    fine", which is the one answer a link critic must never give by accident.
     """
-    try:
-        defects = lifecycle_email.link_defects(email_type, context, str(body or ""))
-    except Exception:  # noqa: BLE001 -- an unknown email type is checked elsewhere
-        return []
+    defects = lifecycle_email.link_defects(email_type, context, str(body or ""))
     return [
         base.high(
             "link_defect",

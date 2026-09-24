@@ -57,11 +57,23 @@ that needs the text to answer it.
 
 IT MUST NEVER RAISE
 -------------------
-Every public function swallows its own failures. Telemetry that can break the
+Every public function contains its own failures. Telemetry that can break the
 request it observes is strictly worse than no telemetry, and the request being
 observed here is a candidate part-way through an assessment they cannot easily
 restart. A bad field, a None where a dataclass was expected, a logging handler
-that itself throws: all of it degrades to a silent no-op.
+that itself throws: all of it degrades to a no-op on the request.
+
+NOT A SILENT ONE. Until 2026-09-24 each of those handlers was `except
+Exception: pass`, so a telemetry line that stopped being written (a renamed
+field, a broken formatter) looked exactly like a conversation that had no
+turns, and the one question this module exists to answer went unanswered with
+nothing saying why. Each handler now writes `interview_telemetry.emit_failed`
+at WARNING naming WHICH emitter failed and the exception CLASS. The class and
+never the message or a traceback, because the message of an exception raised
+while formatting a field can quote that field, and the fields are exactly what
+the rule above keeps out of the log. `logging` contains a failing handler
+itself (`Handler.handleError`), so the warning cannot raise into the request
+either.
 """
 from __future__ import annotations
 
@@ -146,6 +158,30 @@ class EndEvent:
     floor: int
 
 
+def _emit_failed(emitter: str, exc: BaseException) -> None:
+    """The one record of a telemetry emitter that could not emit.
+
+    The exception CLASS only: see the module docstring for why the message is
+    never logged here.
+    """
+    logger.warning(
+        "interview_telemetry.emit_failed emitter=%s err=%s",
+        emitter,
+        type(exc).__name__,
+    )
+
+
+def _readable_latency(value: Any) -> int | None:
+    """A turn's duration as an int, or None when it cannot be read as one.
+
+    OverflowError is an infinite float; ValueError is a NaN or a word.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _scrub(value: Any) -> str:
     """One log-safe token: no whitespace, bounded length, never None.
 
@@ -183,10 +219,11 @@ def record_turn(event: TurnEvent) -> None:
             _scrub(getattr(event, "degraded", None)),
             _scrub(getattr(event, "latency_ms", None)),
         )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # A candidate is mid-assessment on a live request. Losing one telemetry
-        # line is free; raising out of an observer is not.
-        pass
+        # line is cheap; raising out of an observer is not, and losing it
+        # WITHOUT a trace is how a dashboard goes quiet for a week.
+        _emit_failed("turn", exc)
 
 
 def record_end(event: EndEvent) -> None:
@@ -211,8 +248,8 @@ def record_end(event: EndEvent) -> None:
             _scrub(getattr(event, "questions_written", None)),
             _scrub(getattr(event, "floor", None)),
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _emit_failed("end", exc)
 
 
 def _empty_summary() -> dict[str, Any]:
@@ -232,6 +269,7 @@ def _empty_summary() -> dict[str, Any]:
         "degradation_rate": None,
         "latency_p50_ms": None,
         "latency_p95_ms": None,
+        "unreadable_latencies": 0,
     }
 
 
@@ -264,10 +302,13 @@ def conversation_summary(events: list[TurnEvent]) -> dict:
     """
     try:
         return _summarise(events)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # Never raise: a caller reaching for a summary is by definition already
         # in the reporting path, not the product path, and a broken summary must
-        # not become a broken request.
+        # not become a broken request. The empty shape is answered with a
+        # WARNING beside it, so "no turns" and "could not count" stay
+        # distinguishable in the log.
+        _emit_failed("summary", exc)
         return _empty_summary()
 
 
@@ -279,6 +320,7 @@ def _summarise(events: Iterable[Any]) -> dict[str, Any]:
     generated = 0
     degraded = 0
     latencies: list[int] = []
+    unreadable_latencies = 0
 
     for event in events or []:
         label = getattr(event, "answer_label", None)
@@ -301,14 +343,15 @@ def _summarise(events: Iterable[Any]) -> dict[str, Any]:
         if bool(getattr(event, "degraded", False)):
             degraded += 1
 
-        latency = getattr(event, "latency_ms", None)
-        try:
-            latencies.append(int(latency))
-        except (TypeError, ValueError):
-            # A turn with an unreadable duration still counts as a turn. It just
-            # contributes nothing to the percentiles, which is better than
-            # dropping the turn from every other counter to save one field.
-            pass
+        # A turn with an unreadable duration still counts as a turn. It just
+        # contributes nothing to the percentiles, which is better than dropping
+        # the turn from every other counter to save one field, and it is
+        # COUNTED, so a p95 computed over half the turns says so.
+        latency = _readable_latency(getattr(event, "latency_ms", None))
+        if latency is None:
+            unreadable_latencies += 1
+        else:
+            latencies.append(latency)
 
     if not total:
         return _empty_summary()
@@ -323,6 +366,7 @@ def _summarise(events: Iterable[Any]) -> dict[str, Any]:
         "degradation_rate": round(degraded / total, 3),
         "latency_p50_ms": _percentile(latencies, 0.50),
         "latency_p95_ms": _percentile(latencies, 0.95),
+        "unreadable_latencies": unreadable_latencies,
     }
 
 
@@ -350,7 +394,8 @@ def emit_summary(conversation_id: str, events: list[TurnEvent]) -> None:
         logger.info(
             "interview_telemetry.conversation conversation_id=%s total_turns=%s "
             "answer_labels=%s actions=%s adaptivity_rate=%s generation_rate=%s "
-            "degradation_rate=%s latency_p50_ms=%s latency_p95_ms=%s",
+            "degradation_rate=%s latency_p50_ms=%s latency_p95_ms=%s "
+            "unreadable_latencies=%s",
             _scrub(conversation_id),
             summary["total_turns"],
             _render_counts(summary["answer_labels"]),
@@ -360,8 +405,9 @@ def emit_summary(conversation_id: str, events: list[TurnEvent]) -> None:
             summary["degradation_rate"],
             summary["latency_p50_ms"],
             summary["latency_p95_ms"],
+            summary["unreadable_latencies"],
         )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # Emitted at the END of a conversation, which is also where completion
         # and billing are settled. Nothing here may interrupt that.
-        pass
+        _emit_failed("conversation", exc)

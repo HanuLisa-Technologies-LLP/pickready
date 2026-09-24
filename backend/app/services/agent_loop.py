@@ -240,7 +240,11 @@ def _estimated_tokens(value: Any) -> int:
     """
     try:
         serialized = json.dumps(value, ensure_ascii=False, default=str)
-    except Exception:  # noqa: BLE001
+    except (TypeError, ValueError):
+        # With `default=str` the only values `json.dumps` still refuses are a
+        # circular structure (ValueError) and a dict keyed by something that
+        # is not a JSON key (TypeError). `str` sizes either one just as
+        # conservatively. Anything else is a bug in this module and propagates.
         serialized = str(value)
     return max(1, math.ceil(len(serialized) / 4))
 
