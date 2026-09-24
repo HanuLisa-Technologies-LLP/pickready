@@ -266,13 +266,6 @@ export type ApprovalLevelsConfig = Record<
   ApprovalLevelConfigEntry
 >;
 
-export interface EmailTemplate {
-  id?: string;
-  name: string;
-  subject: string;
-  body: string;
-}
-
 // ---- Jobs ----
 
 export interface JobJD {
