@@ -3253,4 +3253,4 @@ async def _support_staff_recipients(session, rbac, User, capability) -> list[str
 # Importing them here is what registers them: `registry.resolve` imports this
 # module and nothing else, so a task module not imported here would be a task
 # no dispatch could reach.
-from app.workers import tasks_media, tasks_proctoring, tasks_questions  # noqa: E402,F401
+from app.workers import tasks_media, tasks_proctoring, tasks_questions, tasks_voice  # noqa: E402,F401

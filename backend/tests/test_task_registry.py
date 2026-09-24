@@ -66,6 +66,8 @@ def test_every_task_name_is_namespaced() -> None:
         "app.workers.tasks_media",
         "app.workers.tasks_proctoring",
         "app.workers.tasks_questions",
+        # PLAN-p3 WP3: the spoken-answer transcription task.
+        "app.workers.tasks_voice",
         "app.workers.dispatch",
         "app.workers.runtime",
         "app.workers.entrypoints.lambda_worker",
