@@ -18,7 +18,7 @@ intelligence does with less evidence is the wider intelligence's decision
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,8 +47,19 @@ async def ready_projects(
     return list(rows)
 
 
-def _project_block(project: CandidateProject) -> str:
-    record = project.evidence_json or {}
+#: A function applied to each stored JSON document before a block is built from
+#: it. The tool layer passes its compensation stripper here so the guarantee is
+#: applied to the DATA the block is read from rather than to the prose it
+#: becomes (`tools.implementations._extract_project_evidence`).
+Redactor = Callable[[Any], Any]
+
+
+def _identity(value: Any) -> Any:
+    return value
+
+
+def _project_block(project: CandidateProject, redact: Redactor = _identity) -> str:
+    record = redact(project.evidence_json or {})
     stack = record.get("technology_stack") or {}
     lines = [f"Project: {project.name}"]
     technologies = list(stack.get("technologies") or [])
@@ -56,7 +67,7 @@ def _project_block(project: CandidateProject) -> str:
     observed = sorted(set(languages) | set(technologies))
     if observed:
         lines.append("Observed stack: " + ", ".join(observed[:12]))
-    interpretation = project.ai_interpretation_json or {}
+    interpretation = redact(project.ai_interpretation_json or {})
     if interpretation.get("synthesis"):
         lines.append("Assessment: " + str(interpretation["synthesis"]))
     for area in (interpretation.get("validation_areas") or [])[:3]:
@@ -67,13 +78,21 @@ def _project_block(project: CandidateProject) -> str:
 
 
 async def candidate_project_context(
-    session: AsyncSession, candidate_id: uuid.UUID
+    session: AsyncSession,
+    candidate_id: uuid.UUID,
+    *,
+    redact: Redactor = _identity,
 ) -> str:
-    """The AI-context block, empty string when there is nothing ready."""
+    """The AI-context block, empty string when there is nothing ready.
+
+    `redact` is applied to each stored JSON document before a block is built,
+    so a caller with a stricter boundary (the tool layer's compensation strip)
+    narrows what is READ rather than scrubbing what was written.
+    """
     projects = await ready_projects(session, candidate_id)
     if not projects:
         return ""
-    blocks = [_project_block(project) for project in projects]
+    blocks = [_project_block(project, redact) for project in projects]
     text = (
         "Project evidence (derived from the candidate's submitted projects; "
         "claims and observations are labelled):\n\n" + "\n\n".join(blocks)

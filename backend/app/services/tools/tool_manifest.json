@@ -381,6 +381,51 @@
       "risk": "read"
     },
     {
+      "digest": "f2060c9632fa275e44422fcf7e2ce45d26c1a993fb3f4bf882687b62ee7ef86f",
+      "granted_to": [
+        "interviewer"
+      ],
+      "input_schema": {
+        "additionalProperties": false,
+        "description": "Whose project evidence. A candidate, because projects are candidate-owned\nand tenant-free; the APPLICATION the call is for travels in the policy\ncontext, which is where the tenant boundary is checked.",
+        "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id"
+        ],
+        "title": "ProjectEvidenceRequest",
+        "type": "object"
+      },
+      "name": "extract_project_evidence",
+      "output_schema": {
+        "additionalProperties": false,
+        "description": "The DERIVED project evidence block, as question writing reads it.\n\nText rather than structure because its one consumer puts it in a prompt,\nand the block is already the reduced, labelled form\n(`projects.context.candidate_project_context`). Empty when the candidate\nhas no project whose evidence is ready, which is a normal state and never\na penalty: absence is not quality either way.",
+        "properties": {
+          "candidate_id": {
+            "format": "uuid",
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id"
+        ],
+        "title": "ProjectEvidence",
+        "type": "object"
+      },
+      "risk": "read"
+    },
+    {
       "digest": "08dd82bfdf1adac335895a55063fdea1936bc38b426c97c73383d536861e19d0",
       "granted_to": [
         "interviewer",
@@ -482,7 +527,7 @@
       "risk": "read"
     },
     {
-      "digest": "529f761dc6c5bee4ef5af39bb0fda5076b1d4143ca0ba2ea342cd1b65e41b843",
+      "digest": "8ae5bb807014dec0995c1f93cb5fd4b20a4724ab4bf3aea5da4dd08e4094abb1",
       "granted_to": [
         "interviewer",
         "job_setup",
@@ -495,6 +540,16 @@
         "additionalProperties": false,
         "description": "Ask the context engine for the pieces of a document bearing on a query.\n\n`source_ids` is required rather than optional, and that is the important\nfield. An unscoped semantic search over the chunk table would happily return\nanother candidate's resume paragraph: RLS keeps it inside the tenant, and\nnothing but this scoping keeps it to the person being assessed.",
         "properties": {
+          "exclude_answer_message_ids": {
+            "default": [],
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Exclude Answer Message Ids",
+            "type": "array"
+          },
           "max_tokens": {
             "default": 2000,
             "maximum": 8000,
@@ -707,5 +762,5 @@
       "risk": "read"
     }
   ],
-  "tools_digest": "ac6af8f29d74d85339f33ad369ff40611c528483796c96f48e5a27fd52bdcd56"
+  "tools_digest": "48f0bcddc4c8d45ad3ed59a05f5e61f6c224494a5cc7026821183805132bd13a"
 }

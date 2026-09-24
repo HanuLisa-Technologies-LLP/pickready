@@ -27,7 +27,7 @@ from __future__ import annotations
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.services import rating
 
@@ -205,6 +205,23 @@ class RetrievalRequest(_Strict):
     section_types: tuple[str, ...] = ()
     top_k: int = Field(default=5, ge=1, le=20)
     max_tokens: int = Field(default=2000, ge=100, le=8000)
+    #: ANSWER message ids whose exchanges must not come back. Miti judging a
+    #: skill reads passages from the candidate's OTHER answers: the skill's own
+    #: answers are already the thing being graded, and retrieving them again
+    #: would count one answer as its own corroboration. Transcript retrieval
+    #: only, refused for any other source type, because a resume or a JD has no
+    #: answer to exclude and a caller naming one has confused two retrievals.
+    exclude_answer_message_ids: tuple[uuid.UUID, ...] = Field(
+        default=(), max_length=200
+    )
+
+    @model_validator(mode="after")
+    def _exclusions_are_transcript_only(self) -> "RetrievalRequest":
+        if self.exclude_answer_message_ids and self.source_type != "assessment":
+            raise ValueError(
+                "exclude_answer_message_ids applies to assessment transcripts only"
+            )
+        return self
 
 
 class RetrievedPiece(_Strict):
@@ -227,3 +244,28 @@ class RetrievedContext(_Strict):
     tokens: int = 0
     dropped: int = 0
     compressed: bool = False
+
+
+# ── extract_project_evidence ─────────────────────────────────────────────────
+
+
+class ProjectEvidenceRequest(_Strict):
+    """Whose project evidence. A candidate, because projects are candidate-owned
+    and tenant-free; the APPLICATION the call is for travels in the policy
+    context, which is where the tenant boundary is checked."""
+
+    candidate_id: uuid.UUID
+
+
+class ProjectEvidence(_Strict):
+    """The DERIVED project evidence block, as question writing reads it.
+
+    Text rather than structure because its one consumer puts it in a prompt,
+    and the block is already the reduced, labelled form
+    (`projects.context.candidate_project_context`). Empty when the candidate
+    has no project whose evidence is ready, which is a normal state and never
+    a penalty: absence is not quality either way.
+    """
+
+    candidate_id: uuid.UUID
+    text: str = ""

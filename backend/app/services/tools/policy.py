@@ -167,6 +167,10 @@ TOOL_STAGES: dict[str, frozenset[str]] = {
     ),
     # Self-validation is part of every generative task, in every stage.
     "validate_output": _ALL_STAGES,
+    # Question writing only. Project evidence informs what Vaada ASKS; it is
+    # never read while grading or reporting, because a scorer that could read
+    # it would grade the candidate's projects rather than their answers.
+    "extract_project_evidence": frozenset({STAGE_ASSESSMENT}),
 }
 
 
