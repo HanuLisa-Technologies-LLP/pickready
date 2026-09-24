@@ -125,6 +125,47 @@ describe("sending", () => {
   });
 });
 
+describe("switching threads", () => {
+  it("keeps each thread's draft to itself, and its token with it", async () => {
+    routeGets({
+      "/conversations/me/c1/messages": [message("m1", 1)],
+      "/conversations/me/c2/messages": [{ ...message("m2", 2), conversation_id: "c2" }],
+    });
+    const sends = () =>
+      http.apiPost.mock.calls.filter(([path]) => String(path).endsWith("/messages"));
+    http.apiPost.mockImplementation((path: string) =>
+      path.endsWith("/messages") && sends().length === 1
+        ? Promise.reject(new Error("The network dropped"))
+        : Promise.resolve(
+            path.endsWith("/messages")
+              ? { ...message("sent", 30), author_party: "candidate" }
+              : { ok: true },
+          ),
+    );
+    render(<CandidateMessagesPage />);
+    const box = (await screen.findByLabelText("Reply")) as HTMLTextAreaElement;
+
+    fireEvent.change(box, { target: { value: "For Acme only" } });
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => expect(toast).toHaveBeenCalled());
+
+    // Globex's box is empty: Acme's words did not follow the selection.
+    fireEvent.click(screen.getByRole("button", { name: /globex/i }));
+    await waitFor(() => expect(box.value).toBe(""));
+
+    // Back to Acme: the unsent draft is there, and a retry reuses its token.
+    fireEvent.click(screen.getByRole("button", { name: /acme/i }));
+    await waitFor(() => expect(box.value).toBe("For Acme only"));
+    fireEvent.click(screen.getByRole("button", { name: /send/i }));
+    await waitFor(() => expect(sends().length).toBe(2));
+    const [first, second] = sends();
+    expect(String(second[0])).toBe("/conversations/me/c1/messages");
+    expect((second[1] as { client_token: string }).client_token).toBe(
+      (first[1] as { client_token: string }).client_token,
+    );
+  });
+});
+
 describe("load earlier", () => {
   it("pages on the oldest message's timestamp AND id, and prepends", async () => {
     const newest = Array.from({ length: 50 }, (_, i) => message(`n${i}`, i + 5));

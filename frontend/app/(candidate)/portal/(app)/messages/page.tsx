@@ -29,8 +29,9 @@
 // * Opening a thread marks it read, and says so to the navigation badge.
 // * `?conversation=<id>` (the Updates entry for a new message) opens that
 //   thread rather than whichever came first.
-// * A retry of an unsent reply reuses the reply's token (`ComposerToken`), so
-//   a send whose response was lost cannot become a second message.
+// * A retry of an unsent reply reuses that thread's reply token
+//   (`ComposerToken`), so a send whose response was lost cannot become a
+//   second message. Drafts and tokens are kept per thread.
 
 import * as React from "react";
 import { useSearchParams } from "next/navigation";
@@ -52,7 +53,7 @@ import {
   markMyThreadRead,
   mergeMessages,
   sendMyReply,
-  useComposerToken,
+  ComposerToken,
   type CandidateThread,
   type Message,
 } from "@/lib/conversations";
@@ -89,13 +90,35 @@ export default function CandidateMessagesPage() {
 function MessagesView() {
   const requested = useSearchParams().get("conversation");
   const { toast } = useToast();
-  const composer = useComposerToken();
+  // One reply token PER THREAD, like the drafts below: switching threads and
+  // back to an unsent reply must retry it under the same token, and a token
+  // minted for one thread must never travel with words sent to another.
+  const composers = React.useRef(new Map<string, ComposerToken>());
+  const composerFor = React.useCallback((threadId: string): ComposerToken => {
+    let token = composers.current.get(threadId);
+    if (!token) {
+      token = new ComposerToken();
+      composers.current.set(threadId, token);
+    }
+    return token;
+  }, []);
   const [threads, setThreads] = React.useState<CandidateThread[] | null>(null);
   const [selected, setSelected] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [hasEarlier, setHasEarlier] = React.useState(false);
   const [loadingEarlier, setLoadingEarlier] = React.useState(false);
-  const [draft, setDraft] = React.useState("");
+  // One draft PER THREAD. A single shared box carried words written to one
+  // company into the next thread selected, one Enter away from replying to
+  // the wrong employer about a notice period.
+  const [drafts, setDrafts] = React.useState<Record<string, string>>({});
+  const draft = selected ? drafts[selected] ?? "" : "";
+  const setDraft = React.useCallback(
+    (value: string) => {
+      if (!selected) return;
+      setDrafts((current) => ({ ...current, [selected]: value }));
+    },
+    [selected],
+  );
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const scrollerRef = React.useRef<HTMLDivElement | null>(null);
@@ -225,19 +248,19 @@ function MessagesView() {
 
   async function send() {
     const body = draft.trim();
-    if (!body || !selected) return;
+    const thread = selected;
+    if (!body || !thread) return;
     setBusy(true);
     try {
       // The SAME token for every attempt at these words: see ComposerToken.
-      const sent = await sendMyReply(selected, body, composer.current());
-      composer.rotate();
+      const token = composerFor(thread);
+      const sent = await sendMyReply(thread, body, token.current());
+      token.rotate();
       setMessages((current) => mergeMessages(current, [sent]));
-      setDraft("");
+      setDrafts((current) => ({ ...current, [thread]: "" }));
       setThreads((current) =>
-        current?.map((thread) =>
-          thread.id === selected
-            ? { ...thread, last_message_at: sent.created_at }
-            : thread,
+        current?.map((row) =>
+          row.id === thread ? { ...row, last_message_at: sent.created_at } : row,
         ) ?? current,
       );
     } catch (failure) {
@@ -384,7 +407,7 @@ function MessagesView() {
                   // Different words are a different message, so they get a
                   // different token. The server refuses one token carrying
                   // two texts rather than quietly keeping the first.
-                  composer.rotate();
+                  if (selected) composerFor(selected).rotate();
                   setDraft(event.target.value);
                 }}
                 onKeyDown={(event) => {
