@@ -6,7 +6,7 @@ nothing else. The one public route is the consent renewal link, gated by its
 own single-use token.
 
 There is ONE way to apply: `POST /portal/jobs/{id}/apply`, used by the portal
-board and by the public `/apply/{job}` page alike. The retired 40-aspect
+board and by the public `/apply/{job}` page alike. The retired questionnaire
 outreach form and its signed-token routes are gone (2026-09-24), and
 `tests/test_aspect_form_removed.py` keeps them gone.
 """
@@ -1726,7 +1726,7 @@ async def apply_to_job(
       `consent_databank` from whatever the apply form carried, so applying
       could silently REVOKE a consent given elsewhere. Consent is stamped
       where its wording is shown, on My Profile.
-    * It takes no age, gender, name, city or 40-aspect answers. Age and gender
+    * It takes no age, gender, name, city or questionnaire answers. Age and gender
       were written and read by nothing; the name and city belong to the
       profile form, which this snapshots.
 
