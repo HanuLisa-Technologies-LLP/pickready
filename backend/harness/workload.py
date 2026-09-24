@@ -306,10 +306,7 @@ def _apply_to_job(app_client: Application, ctx: ScenarioContext) -> None:
         data={
             "reuse_previous": "true",
             "validation": VALIDATION_PAYLOAD,
-            "aspects": json.dumps({"declaration_accepted": True}),
             "application_source": "direct",
-            "full_name": "Rohit Nair",
-            "residing_city": "Bengaluru",
         },
     )
     ctx.stage("application_attempted")
@@ -332,7 +329,6 @@ def _apply_to_job_again(app_client: Application, ctx: ScenarioContext) -> None:
         data={
             "reuse_previous": "true",
             "validation": VALIDATION_PAYLOAD,
-            "aspects": json.dumps({"declaration_accepted": True}),
             "application_source": "direct",
         },
     )
