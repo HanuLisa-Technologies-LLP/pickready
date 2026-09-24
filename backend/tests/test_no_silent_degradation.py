@@ -512,7 +512,7 @@ _LOG_METHODS = frozenset(
 
 #: Every file with a silent broad handler today, measured on 2026-09-24 after
 #: the Phase 7 WP-B7 fixes and re-measured at the stage 3 integration (the
-#: unreachable subsystems, the MSG91 sender and `validate_ppi.py` are deleted
+#: unreachable subsystems, the SMS sender and `validate_ppi.py` are deleted
 #: and WP-B6 narrowed the Razorpay webhook to its unique violation). Same ratchet rule as above: it may shrink, it may
 #: not grow. Each entry names its owner.
 #:

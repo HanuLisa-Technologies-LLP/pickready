@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
 
     get_session_factory()
     # Delivery-credential preflight: log a loud WARNING (not a hard crash, dev
-    # without keys must still boot) if the Gmail SMTP or MSG91 config is
+    # without keys must still boot) if the Gmail SMTP config is
     # missing. Gmail SMTP is the only outbound mail path (claude.md rule 5);
     # legacy email-provider integrations have been removed from the codebase.
     from app.core.config import preflight_delivery_config

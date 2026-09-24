@@ -1,7 +1,6 @@
 """Every background task the product has, and where each one runs.
 
   pickready.send_email(tenant_id, to, template_name, context, attachments=None)
-  pickready.send_sms(phone, message)
   pickready.run_matching(job_id)
   pickready.parse_resume(profile_id)
   pickready.refresh_dashboard_views()
@@ -39,15 +38,13 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.config import get_settings, preflight_delivery_config
-from app.services.smtp_service import send_email_async as smtp_send
-from app.services.sms_service import (
-    RETRY_BACKOFF_MAX_SECONDS,
+from app.services.delivery_errors import (
     DeliveryError,
     PermanentDeliveryError,
     TransientDeliveryError,
     log_delivery_error,
-    send_sms_async,
 )
+from app.services.smtp_service import send_email_async as smtp_send
 from app.models import (
     Candidate,
     Profile,
@@ -69,7 +66,7 @@ logger = logging.getLogger(__name__)
 # is no long-lived worker process any more, so it runs at MODULE IMPORT, which
 # in a Lambda execution environment is once per cold start and in a Fargate
 # task is once per run. Same guarantee it always gave: a loud WARNING when an
-# SMTP or MSG91 credential is missing, never a hard crash.
+# SMTP credential is missing, never a hard crash.
 preflight_delivery_config()
 
 
@@ -826,35 +823,6 @@ def reconcile_queued_emails():
         return result
 
     return _run(_task())
-
-
-# ── SMS ──────────────────────────────────────────────────────────────────────
-
-@task(
-    name="pickready.send_sms",
-    route=Route.LAMBDA,
-    max_attempts_setting="delivery_max_retries",
-    backoff_seconds=2.0,
-    backoff_max_seconds=RETRY_BACKOFF_MAX_SECONDS,
-    retry_on=(TransientDeliveryError,),
-    bind=True,
-)
-def send_sms(_ctx: TaskContext, phone: str, message: str):
-    """Send an SMS via the MSG91 REST API. `phone` and `message` content (which
-    may be an OTP) are never logged  -  only status + the provider error body on
-    failure. Permanent failures (bad sender id / recipient / missing key) are
-    not retried; transient ones use exponential backoff."""
-    try:
-        _run(send_sms_async(phone, message))
-    except PermanentDeliveryError as err:
-        log_delivery_error("sms", err)
-        logger.error(
-            "sms.permanent_failure_final  -  not retrying. ACTION: %s", err.hint
-        )
-        return
-    except TransientDeliveryError as err:
-        log_delivery_error("sms", err)
-        raise
 
 
 # ── Matching / parsing pipelines ────────────────────────────────────────────

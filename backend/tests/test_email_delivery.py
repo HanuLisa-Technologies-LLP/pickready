@@ -1,23 +1,21 @@
-"""Outbound email/SMS delivery hardening tests (no network).
+"""Outbound email delivery hardening tests (no network).
 
 Covers:
   * sender-path selection: tenant verified vs unverified vs tenant_id=None,
     and the development-environment override;
-  * permanent-vs-transient classification of provider/MSG91 responses;
   * the SMTP send path: success returns a message id, an auth failure is
     permanent (not retried), a connection/timeout failure is transient
     (retried), and missing SMTP creds fail fast as permanent;
   * that a permanent failure is NOT retried while a transient one IS;
   * the missing-key startup preflight (SMTP_HOST/USER/PASSWORD).
 
-The network layer (aiosmtplib / httpx) is mocked throughout — these tests must
+The network layer (aiosmtplib) is mocked throughout: these tests must
 never hit the network.
 """
 import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -27,144 +25,10 @@ async def _noop_session():
     """Stand-in for tasks._worker_session — no DB, no engine."""
     yield SimpleNamespace()
 
-from app.services import sms_service
 from app.services.delivery_errors import (
     PermanentDeliveryError,
     TransientDeliveryError,
 )
-# The MSG91 response classifiers leave with the SMS module in Phase 7 Wave B;
-# until then they are still live code and still tested here.
-from app.services.sms_service import (
-    classify_exception,
-    classify_response,
-    parse_error_body,
-)
-
-
-# ── helpers ──────────────────────────────────────────────────────────────────
-
-def _resp(status: int, json_body=None, text: str = "") -> httpx.Response:
-    req = httpx.Request("POST", "https://example.test/send")
-    if json_body is not None:
-        return httpx.Response(status, json=json_body, request=req)
-    return httpx.Response(status, text=text, request=req)
-
-
-# The exact 403 body the live Resend account returns for a non-owner recipient.
-RESEND_403 = {
-    "name": "validation_error",
-    "message": (
-        "You can only send testing emails to your own email address "
-        "(manjuchro@gmail.com). To send emails to other recipients, please "
-        "verify a domain at resend.com/domains ..."
-    ),
-}
-RESEND_422 = {"name": "validation_error", "message": "Invalid `to` field."}
-RESEND_401 = {"name": "restricted_api_key", "message": "This API key is restricted."}
-
-
-# ── error-body surfacing (the highest-value fix) ─────────────────────────────
-
-def test_parse_error_body_extracts_name_and_message():
-    name, message, raw = parse_error_body(_resp(403, RESEND_403))
-    assert name == "validation_error"
-    assert "verify a domain" in message
-    assert raw["name"] == "validation_error"
-
-
-def test_parse_error_body_falls_back_to_text_when_not_json():
-    name, message, raw = parse_error_body(_resp(502, text="upstream boom"))
-    assert name == ""
-    assert "upstream boom" in message
-    assert raw == {}
-
-
-# ── classification: permanent vs transient ───────────────────────────────────
-
-def test_403_unverified_domain_is_permanent_with_hint():
-    err = classify_response("resend", _resp(403, RESEND_403))
-    assert isinstance(err, PermanentDeliveryError)
-    assert err.permanent is True
-    assert err.status == 403
-    assert "resend.com/domains" in err.hint
-    # audit metadata is secret-free and carries the taxonomy
-    meta = err.as_audit_metadata()
-    assert meta["permanent"] is True
-    assert meta["status"] == 403
-
-
-def test_422_invalid_recipient_is_permanent():
-    err = classify_response("resend", _resp(422, RESEND_422))
-    assert isinstance(err, PermanentDeliveryError)
-    assert "recipient" in err.hint.lower()
-
-
-def test_401_restricted_key_is_permanent_credentials():
-    err = classify_response("resend", _resp(401, RESEND_401))
-    assert isinstance(err, PermanentDeliveryError)
-    assert "api-keys" in err.hint or "key" in err.hint.lower()
-
-
-@pytest.mark.parametrize("status", [429, 500, 502, 503])
-def test_429_and_5xx_are_transient(status):
-    err = classify_response("resend", _resp(status, {"message": "later"}))
-    assert isinstance(err, TransientDeliveryError)
-    assert err.permanent is False
-
-
-def test_network_error_is_transient():
-    exc = httpx.ConnectError("dns fail")
-    err = classify_exception("resend", exc)
-    assert isinstance(err, TransientDeliveryError)
-
-
-# ── SMS: MSG91 send + 200-with-error-body handling ───────────────────────────
-
-@pytest.mark.asyncio
-async def test_sms_success(monkeypatch):
-    monkeypatch.setattr(
-        sms_service, "get_settings",
-        lambda: SimpleNamespace(msg91_api_key="k", msg91_sender_id="PCKRDY"),
-    )
-
-    class _Client:
-        def __init__(self, *a, **k): ...
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, *a, **k):
-            return _resp(200, {"type": "success", "message": "ok"})
-
-    monkeypatch.setattr(sms_service.httpx, "AsyncClient", _Client)
-    await sms_service.send_sms_async("+919999999999", "code 123456")  # no raise
-
-
-@pytest.mark.asyncio
-async def test_sms_200_with_error_body_is_permanent(monkeypatch):
-    monkeypatch.setattr(
-        sms_service, "get_settings",
-        lambda: SimpleNamespace(msg91_api_key="k", msg91_sender_id="PCKRDY"),
-    )
-
-    class _Client:
-        def __init__(self, *a, **k): ...
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def post(self, *a, **k):
-            return _resp(200, {"type": "error", "message": "bad sender id"})
-
-    monkeypatch.setattr(sms_service.httpx, "AsyncClient", _Client)
-    with pytest.raises(PermanentDeliveryError):
-        await sms_service.send_sms_async("+919999999999", "x")
-
-
-@pytest.mark.asyncio
-async def test_sms_missing_key_is_permanent(monkeypatch):
-    monkeypatch.setattr(
-        sms_service, "get_settings",
-        lambda: SimpleNamespace(msg91_api_key="", msg91_sender_id="PCKRDY"),
-    )
-    with pytest.raises(PermanentDeliveryError):
-        await sms_service.send_sms_async("+919999999999", "x")
 
 
 # ── sender-path selection ────────────────────────────────────────────────────
