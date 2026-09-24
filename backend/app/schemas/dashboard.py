@@ -185,8 +185,6 @@ class DashboardControlsOut(BaseModel):
     team_review_disabled_reason: str | None = None
     #: HR Manager by right, Super Admin by audited override (spec-doc6 C7).
     can_disposition_integrity: bool
-    #: The audited raw-numbers view (D8).
-    can_view_calibration: bool
     #: True when this caller sees only the jobs they are assigned to.
     scoped_to_assignments: bool
 

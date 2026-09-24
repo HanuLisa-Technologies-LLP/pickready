@@ -532,7 +532,7 @@ def test_the_interview_manager_view_is_read_plus_team_review(
     assert controls["can_move_stage"] is False
     assert controls["stage_disabled_reason"]
     assert controls["can_disposition_integrity"] is False
-    assert controls["can_view_calibration"] is False
+    assert "can_view_calibration" not in controls
 
 
 def test_a_disabled_stage_control_explains_itself(

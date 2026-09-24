@@ -84,7 +84,6 @@ export interface DashboardControls {
   can_team_review: boolean;
   team_review_disabled_reason: string | null;
   can_disposition_integrity: boolean;
-  can_view_calibration: boolean;
   scoped_to_assignments: boolean;
 }
 

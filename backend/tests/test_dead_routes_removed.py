@@ -10,8 +10,12 @@ Vivekium release, PLAN-p7 WP-B6. Deleted, all of it:
   duplicated by `/provider/*`, and three of them were Provider WRITES over a
   customer's own data;
 * the dashboard's raw D1-D5 calibration view, which returned numbers to a
-  client, and its divergence queue, which had no screen (divergences are
-  still RECORDED, as `calibration_records` audit data);
+  client, its divergence queue, which had no screen (divergences are still
+  RECORDED, as `calibration_records` audit data), and the controls flag that
+  offered the view;
+* `GET /dashboard/metrics/overview`, which had no screen and duplicated the
+  intelligence dashboards (one implementation per concept); the metric
+  functions it bundled stay, read by the intelligence dashboards;
 * the per-link rating-comment view counter; the duplicate `/outreach/send-email`
   decorator; the BD portal's manual web-search breaker reset;
 * the company approval-levels route with the multi-level approval planner and
@@ -56,6 +60,7 @@ DELETED_ROUTES: tuple[tuple[str, str], ...] = (
     ("put", "/admin/permissions"),
     ("get", "/dashboard/jobs/{job_id}/candidates/{link_id}/calibration"),
     ("get", "/dashboard/calibration/divergences"),
+    ("get", "/dashboard/metrics/overview"),
     ("post", "/telemetry/rating-comments-view/{link_id}"),
     ("post", "/outreach/send-email"),
     ("post", "/bd/ai-reach/web-search/reset"),
@@ -97,6 +102,9 @@ PATTERN = re.compile(
             r"\boverride_rate\b",
             r"\bCALIBRATION_INTERNALS_VIEWED\b",
             r"calibration/divergences",
+            r"\bcan_view_calibration\b",
+            r"metrics/overview",
+            r"\bmetrics_overview\b",
             # Telemetry, outreach alias, BD reset.
             r"rating[-_]comments[-_]view",
             r"outreach/send-email",
@@ -147,6 +155,8 @@ EXEMPT = (
     # absence has to spell the absence.
     BACKEND / "tests" / "test_dashboard_numbers.py",
     BACKEND / "tests" / "test_dashboard_workflows.py",
+    # Asserts the controls payload no longer offers the calibration view.
+    BACKEND / "tests" / "test_dashboard_rbac_matrix.py",
 )
 
 #: Pending hand-offs: files OWNED BY ANOTHER PACKAGE running in parallel that

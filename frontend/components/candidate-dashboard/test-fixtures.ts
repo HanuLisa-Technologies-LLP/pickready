@@ -72,7 +72,6 @@ export function controls(
     can_team_review: true,
     team_review_disabled_reason: null,
     can_disposition_integrity: false,
-    can_view_calibration: false,
     scoped_to_assignments: false,
     ...overrides,
   };

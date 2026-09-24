@@ -152,9 +152,9 @@ export function ReadyPickProfilePanel({
                   <h3 className="text-xs font-semibold uppercase tracking-wide">
                     Dimension ratings
                   </h3>
-                  {/* NAMED ratings, never raw numbers (spec-doc6 D8 / C2). The
-                      raw figures live in the calibration view, which two roles
-                      reach and every read of which is logged. */}
+                  {/* NAMED ratings, never raw numbers (spec-doc6 D8 / C2). No
+                      screen shows the raw figures: the calibration view that
+                      did was deleted in the Vivekium release. */}
                   <dl className="mt-2 divide-y rounded-xl border">
                     {profile.dimensions.map((dimension) => (
                       <div key={dimension.dimension} className="p-3">

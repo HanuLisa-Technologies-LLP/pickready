@@ -34,7 +34,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.config import get_settings, preflight_delivery_config
@@ -47,7 +47,6 @@ from app.services.delivery_errors import (
 from app.services.smtp_service import send_email_async as smtp_send
 from app.models import (
     Candidate,
-    Profile,
     Tenant,
 )
 from app.workers.dispatch import dispatch

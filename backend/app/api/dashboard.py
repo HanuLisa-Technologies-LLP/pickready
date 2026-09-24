@@ -21,7 +21,6 @@ from app.models.enums import LinkSource, PipelineStatus
 from app.models.job import Job
 from app.schemas.dashboard import DashboardSummaryOut, JobMetricsOut
 from app.services import audit, capabilities as caps
-from app.services import metrics as metrics_service
 from app.services import telemetry_events
 
 router = APIRouter()
@@ -158,7 +157,6 @@ async def dashboard_summary(
 # CAPABILITY and silent about the SCOPE, and the scope rule comes from the
 # rows that do speak to it.
 
-import datetime as dt
 
 from fastapi import Body, HTTPException, Query
 from sqlalchemy import text as sql_text
@@ -246,7 +244,6 @@ async def _controls(session: AsyncSession, user: CurrentUser) -> DashboardContro
         can_team_review=can_review,
         team_review_disabled_reason=None if can_review else TEAM_REVIEW_DISABLED_REASON,
         can_disposition_integrity=can_disposition,
-        can_view_calibration=can_disposition,
         scoped_to_assignments=_is_scoped(user, caps.VIEW_CANDIDATE_RATINGS),
     )
 
@@ -921,45 +918,3 @@ async def integrity_disposition(
             hiring_pipeline.normalize(link["status"]), can_move=True, reason=None
         ).model_dump(),
     }
-
-
-# ── Metric engine overview (Master Directive Part 2 section 3) ───────────────
-
-
-@router.get("/metrics/overview")
-async def metrics_overview(
-    since: dt.date | None = Query(default=None),
-    until: dt.date | None = Query(default=None),
-    user: CurrentUser = Depends(require_capability(caps.VIEW_DASHBOARD)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> dict:
-    """Every computable Part 2 section 3 metric for the caller's tenant.
-
-    Same authorization as /summary (VIEW_DASHBOARD); tenant comes from the
-    session, never from the request. The optional date range bounds the
-    event-window metrics (PRL, SLA, AISP, TTF); stagnation is always a "now"
-    reading. `until` is inclusive of its whole day.
-
-    The response also names the section 3 metrics that CANNOT be computed
-    yet and why (no offer/onboarding/calibration/scorecard surfaces), so the
-    UI renders a documented gap rather than a hole. Plain dict rather than a
-    response_model: the metric shapes live in services/metrics.py and this
-    route adds nothing to them.
-    """
-    since_at = (
-        None
-        if since is None
-        else dt.datetime.combine(since, dt.time.min, tzinfo=dt.timezone.utc)
-    )
-    until_at = (
-        None
-        if until is None
-        else dt.datetime.combine(
-            until + dt.timedelta(days=1), dt.time.min, tzinfo=dt.timezone.utc
-        )
-    )
-    if since_at is not None and until_at is not None and until_at <= since_at:
-        raise HTTPException(status_code=422, detail="until precedes since")
-    return await metrics_service.overview(
-        session, user.tenant_id, since=since_at, until=until_at
-    )
