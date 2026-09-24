@@ -24,6 +24,7 @@ import Link from "next/link";
 import { Briefcase, CheckCircle2, MapPin, Search, Upload, X } from "lucide-react";
 
 import { apiGet } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/validation-errors";
 import type { PortalJob } from "@/lib/types";
 import { PageHeader } from "@/components/app-shell";
 import { ApplyForm, applicationHref } from "@/components/apply-form";
@@ -36,7 +37,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { EmptyState, LoadingCards } from "@/components/page-primitives";
+import {
+  EmptyState,
+  ErrorState,
+  InlineError,
+  LoadingCards,
+} from "@/components/page-primitives";
 import { Card, CardContent } from "@/components/ui/card";
 import { Stagger, StaggerItem } from "@/components/motion";
 import {
@@ -51,6 +57,10 @@ const SEARCH_DEBOUNCE_MS = 300;
 export default function PortalJobsPage() {
   const [jobs, setJobs] = React.useState<PortalJob[]>([]);
   const [loading, setLoading] = React.useState(true);
+  // A failed read is its own state. Rendering it as an empty board told a
+  // candidate there were no roles for them when the request had simply failed.
+  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [attempt, setAttempt] = React.useState(0);
   const [search, setSearch] = React.useState("");
   const [activeSearch, setActiveSearch] = React.useState("");
 
@@ -59,6 +69,10 @@ export default function PortalJobsPage() {
   // open: a candidate must see what they are applying to before uploading.
   const [applyJobFull, setApplyJobFull] = React.useState<PortalJob | null>(null);
   const [jdLoading, setJdLoading] = React.useState(false);
+  const [jdError, setJdError] = React.useState<string | null>(null);
+  // The job the dialog is open for, so a slow JD read for a dialog already
+  // closed (or reopened on another role) cannot land in the wrong one.
+  const openJobId = React.useRef<string | null>(null);
 
   // Debounced so typing doesn't fire a request per keystroke.
   React.useEffect(() => {
@@ -69,6 +83,7 @@ export default function PortalJobsPage() {
   React.useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setLoadError(null);
     const query = activeSearch
       ? `?search=${encodeURIComponent(activeSearch)}`
       : "";
@@ -77,8 +92,10 @@ export default function PortalJobsPage() {
         if (cancelled) return;
         setJobs(Array.isArray(res) ? res : res.jobs ?? []);
       })
-      .catch(() => {
-        if (!cancelled) setJobs([]);
+      .catch((failure) => {
+        if (cancelled) return;
+        setJobs([]);
+        setLoadError(apiErrorMessage(failure));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -86,24 +103,36 @@ export default function PortalJobsPage() {
     return () => {
       cancelled = true;
     };
-  }, [activeSearch]);
+  }, [activeSearch, attempt]);
 
   const closeDialog = () => {
+    openJobId.current = null;
     setApplyJob(null);
     setApplyJobFull(null);
+    setJdError(null);
   };
 
   const openApply = (job: PortalJob) => {
+    openJobId.current = job.id;
     setApplyJob(job);
     setApplyJobFull(job);
     setJdLoading(true);
+    setJdError(null);
     apiGet<PortalJob>(`/portal/jobs/${job.id}`)
-      .then((full) => setApplyJobFull({ ...job, ...full }))
-      .catch(() => {
-        // The list row is kept and the form below loads on its own, so a
-        // trimmed JD never blocks applying.
+      .then((full) => {
+        if (openJobId.current === job.id) setApplyJobFull({ ...job, ...full });
       })
-      .finally(() => setJdLoading(false));
+      .catch((failure) => {
+        if (openJobId.current !== job.id) return;
+        // The list row is kept and the form below loads on its own, so a
+        // trimmed JD never blocks applying; the candidate is told the full
+        // description did not arrive rather than shown the summary as if it
+        // were all there is.
+        setJdError(apiErrorMessage(failure));
+      })
+      .finally(() => {
+        if (openJobId.current === job.id) setJdLoading(false);
+      });
   };
 
   // The card flips to "applied" the moment the server confirms, so the board
@@ -161,6 +190,16 @@ export default function PortalJobsPage() {
 
       {loading ? (
         <LoadingCards count={6} label="Loading jobs" />
+      ) : loadError ? (
+        <ErrorState
+          title="We could not load the jobs board"
+          description={loadError}
+          action={
+            <Button variant="outline" onClick={() => setAttempt((n) => n + 1)}>
+              Try again
+            </Button>
+          }
+        />
       ) : jobs.length === 0 ? (
         <EmptyState
           icon={Briefcase}
@@ -270,6 +309,11 @@ export default function PortalJobsPage() {
           {/* The role AND the employer are stated in full before anything is
               asked of the candidate. */}
           <JobDescriptionSummary jd={pickJd(dialogJob)} loading={jdLoading} />
+          {jdError ? (
+            <InlineError>
+              The full job description could not be loaded. {jdError}
+            </InlineError>
+          ) : null}
           {hasCompanyContent(dialogJob) ? (
             <>
               <Separator />

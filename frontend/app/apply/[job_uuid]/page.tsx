@@ -29,7 +29,8 @@ import * as React from "react";
 import { useParams } from "next/navigation";
 import { AlertCircle, Clock, Loader2 } from "lucide-react";
 
-import { apiGet } from "@/lib/api";
+import { ApiError, apiGet } from "@/lib/api";
+import { apiErrorMessage } from "@/lib/validation-errors";
 import { useAuth } from "@/lib/auth-context";
 import { ApplyAuth } from "@/components/apply-auth";
 import { ApplyForm } from "@/components/apply-form";
@@ -191,6 +192,10 @@ export default function PublicApplyPage() {
   const [job, setJob] = React.useState<PublicJob | null>(null);
   const [loadingJob, setLoadingJob] = React.useState(true);
   const [notFound, setNotFound] = React.useState(false);
+  // A read that FAILED (a 5xx, the network) is not a read that found nothing.
+  // Reporting it as "This job is not available" told applicants a live role
+  // had closed whenever the API had a bad minute.
+  const [loadFailure, setLoadFailure] = React.useState<string | null>(null);
   const [tab, setTab] = React.useState<"jd" | "apply">("jd");
   const [candidateSessionVerified, setCandidateSessionVerified] =
     React.useState(false);
@@ -205,7 +210,9 @@ export default function PublicApplyPage() {
   const loadJob = React.useCallback(async () => {
     setLoadingJob(true);
     setNotFound(false);
+    setLoadFailure(null);
     const paths = [`/jobs/public/${jobUuid}`, `/portal/jobs/${jobUuid}`];
+    let failure: unknown = null;
     for (const path of paths) {
       try {
         const res = await apiGet<unknown>(path);
@@ -215,13 +222,21 @@ export default function PublicApplyPage() {
           setLoadingJob(false);
           return;
         }
-      } catch {
-        // A 404 on the public read and a 401 on the candidate route while
-        // signed out are both expected here; the next path is tried and a
-        // role no path serves ends in the not-available state below.
+      } catch (error) {
+        // A 404 on the public read, and a 401, 403 or 404 on the candidate
+        // route (signed out, a staff session, a role outside its window), are
+        // the expected answers of a role this visitor cannot read: the next
+        // path is tried. Anything else is a failure and is kept to be said.
+        const expected =
+          error instanceof ApiError && [401, 403, 404].includes(error.status);
+        if (!expected && failure === null) failure = error;
       }
     }
     setLoadingJob(false);
+    if (failure !== null) {
+      setLoadFailure(apiErrorMessage(failure));
+      return;
+    }
     setNotFound(true);
   }, [jobUuid]);
 
@@ -273,6 +288,22 @@ export default function PublicApplyPage() {
     );
   }
 
+  if (loadFailure && !job) {
+    return (
+      <PublicNotice
+        tone="error"
+        icon={<AlertCircle className="h-7 w-7" aria-hidden="true" />}
+        title="We could not load this role"
+        description={loadFailure}
+        action={
+          <Button type="button" onClick={() => void loadJob()}>
+            Try again
+          </Button>
+        }
+      />
+    );
+  }
+
   if (notFound || !job) {
     return (
       <PublicNotice
@@ -305,7 +336,7 @@ export default function PublicApplyPage() {
               className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-brand-600 text-base font-bold text-white shadow-brand"
               aria-hidden="true"
             >
-              {(companyName ?? "PR")
+              {(companyName ?? "Vivekium")
                 .split(/\s+/)
                 .slice(0, 2)
                 .map((part) => part[0])
