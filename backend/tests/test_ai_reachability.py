@@ -123,6 +123,21 @@ LIVE: dict[str, str] = {
 NOT_LIVE: dict[str, str] = {
     "app.services.reasoning": "RPN-AI-UP-001 W5; reached only from eval scripts",
     "app.services.orchestration": "RPN-AI-UP-001 W10.1; reached only from eval scripts",
+    # AWAITING CALLERS, on purpose. PLAN-p5 WP5-E built the one Evidence RAG
+    # entry point ahead of the agents that read it; nothing on the live path
+    # imports it yet. When this fails, the wiring phase moves it to LIVE, and
+    # `app.services.tools` leaves IMPORTED_BUT_NOT_EXERCISED in the same
+    # change, because these calls are the first live `tools.execute` callers.
+    "app.services.evidence_retrieval": (
+        "PLAN-p5 WP5-E, awaiting callers. Phase 3 (Vaada, the dispatched "
+        "question generation in assessment_questions/generate.py) calls "
+        "resume_passages_for_skill per contract skill and "
+        "project_evidence_for_candidate once, replacing its direct "
+        "projects.context read; Phase 5 WP5-B/C (Miti items.evaluate_skill, "
+        "before the model call) calls transcript_passages_for_skill with the "
+        "skill's own answer ids excluded, and Siddhi's support check calls "
+        "support_passages_for_statement"
+    ),
     "app.evaluation": (
         "W7.4 requires this in the other direction too: nothing under "
         "app/services may import app/evaluation, and no route or worker may "
@@ -207,6 +222,12 @@ REQUIRED_CALLERS: dict[tuple[str, str], str] = {
         "app/services/functional_assessment.py, the scoring pass. It is how an "
         "answer the conversation never filed still reaches Miti's ledger; "
         "without a caller the ledger is written by nothing at scoring time."
+    ),
+    ("app/services/rag/repair.py", "repair"): (
+        "app/workers/tasks_retrieval.py, from pickready.repair_semantic_index. "
+        "Without it a chunk written with a NULL vector during an embedding "
+        "outage, or embedded by a retired model, stays keyword-only for ever: "
+        "the reconcile sweep sees a document that HAS chunks and moves on."
     ),
     ("app/services/rag/sources.py", "pending"): (
         "app/workers/tasks.py, from pickready.reconcile_context_index. This is "
