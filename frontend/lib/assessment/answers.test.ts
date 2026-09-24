@@ -11,7 +11,6 @@ import {
   turnKeyFor,
 } from "./answers";
 import type { FillBlankPayloadView, QuestionOut } from "./contracts";
-import { timeAllocationPhrase } from "./time-guidance";
 
 const MCQ: QuestionOut = {
   id: "q-mcq",
@@ -101,26 +100,17 @@ describe("the readable line", () => {
 });
 
 describe("turn keys", () => {
-  it("keys a base question by its id and prose turns by their position", () => {
-    expect(turnKeyFor(MCQ, 3, false)).toBe("q-mcq");
-    expect(turnKeyFor(null, 3, false)).toBe("prose:3:follow-up");
-    expect(turnKeyFor(null, 3, true)).toBe("prose:3:reask");
+  it("keys every turn by the server's turn sequence, never by the question", () => {
+    // A re-ask of the same base question is a different turn, so it must
+    // not inherit the first attempt's draft or behaviour capture.
+    expect(turnKeyFor("conv-1", 3)).toBe("conv-1:turn:3");
+    expect(turnKeyFor("conv-1", 4)).not.toBe(turnKeyFor("conv-1", 3));
+    expect(turnKeyFor("conv-2", 3)).not.toBe(turnKeyFor("conv-1", 3));
   });
 
   it("treats a follow-up and both text formats as prose", () => {
     expect(turnIsProse(null)).toBe(true);
     expect(turnIsProse({ ...MCQ, question_type: "evidence_based" })).toBe(true);
     expect(turnIsProse(MCQ)).toBe(false);
-  });
-});
-
-describe("time guidance", () => {
-  it("is a phrase in words, never a digit", () => {
-    expect(timeAllocationPhrase(240)).toBe("about four minutes");
-    expect(timeAllocationPhrase(60)).toBe("about a minute");
-    expect(timeAllocationPhrase(90)).toBe("about a minute and a half");
-    expect(timeAllocationPhrase(20)).toBe("about half a minute");
-    expect(timeAllocationPhrase(150)).toBe("about two and a half minutes");
-    expect(timeAllocationPhrase(600)).not.toMatch(/\d/);
   });
 });

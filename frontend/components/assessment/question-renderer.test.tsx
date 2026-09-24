@@ -127,10 +127,45 @@ describe("text fields", () => {
     const paste = fireEvent.paste(box);
     expect(paste).toBe(false);
     expect(fieldHooks.onBlockedAction).toHaveBeenCalledTimes(1);
+    expect(fieldHooks.onBlockedAction).toHaveBeenLastCalledWith("paste");
 
     fireEvent.change(box, { target: { value: "I led the migration" } });
     expect(onChange).toHaveBeenCalledWith({ text: "I led the migration" });
   });
+
+  // Appendix B section 3: copy and paste are disabled EVERYWHERE, and every
+  // attempt is reported with its kind so the proctoring report can name a
+  // paste as a paste. Asserted per format, because a format that forgot the
+  // spread would be the one hole.
+  const TEXT_BOXES: Array<[string, QuestionOut, string]> = [
+    ["short answer", question("short_answer"), "Your answer"],
+    ["evidence-based", question("evidence_based"), "Your answer"],
+    [
+      "fill in the blank",
+      question("fill_blank", {
+        template: "Postgres reclaims dead tuples with ___.",
+        blanks: [{ index: 0, case_sensitive: false, expected_length: 6 }],
+      }),
+      "Blank one",
+    ],
+  ];
+
+  for (const [name, format, label] of TEXT_BOXES) {
+    it(`refuses copy, cut, paste and drop in the ${name} box and names each`, () => {
+      const { fieldHooks: hooks } = renderQuestion(format);
+      const box = screen.getByLabelText(label);
+      expect(fireEvent.copy(box)).toBe(false);
+      expect(fireEvent.cut(box)).toBe(false);
+      expect(fireEvent.paste(box)).toBe(false);
+      expect(fireEvent.drop(box)).toBe(false);
+      expect(vi.mocked(hooks.onBlockedAction).mock.calls.map(([kind]) => kind)).toEqual([
+        "copy",
+        "cut",
+        "paste",
+        "drop",
+      ]);
+    });
+  }
 
   it("sends on Ctrl+Enter from the text field", () => {
     const onSubmitShortcut = vi.fn();
