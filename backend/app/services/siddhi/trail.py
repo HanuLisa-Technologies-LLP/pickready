@@ -47,6 +47,7 @@ from app.services.siddhi.evidence import (
 
 __all__ = [
     "EVIDENCE_KIND_WORDS",
+    "SUPPORTING_PASSAGE",
     "TrailNode",
     "TrailStatement",
     "CitationTrail",
@@ -56,6 +57,12 @@ __all__ = [
     "view",
 ]
 
+#: The view's kind for a passage the support check found elsewhere in the
+#: candidate's answers (`support.REASON_ELSEWHERE`). Not a node kind: the
+#: statement does not cite it, and the view says so rather than listing it
+#: among the citations.
+SUPPORTING_PASSAGE = "supporting_passage"
+
 #: How a reader is told what KIND of evidence a statement rests on. Words.
 EVIDENCE_KIND_WORDS: Mapping[str, str] = {
     KIND_ANSWER: "The candidate's answer",
@@ -64,6 +71,7 @@ EVIDENCE_KIND_WORDS: Mapping[str, str] = {
     KIND_SEARCHED: "The record that this area was assessed",
     KIND_EMPLOYER: "A previous employer's confirmation",
     KIND_PORTABLE: "The candidate's standing record",
+    SUPPORTING_PASSAGE: "Another of the candidate's answers, which supports this statement",
 }
 
 
@@ -84,13 +92,20 @@ class TrailStatement:
     refs: tuple[str, ...]
     support_level: str | None = None
     support_reason: str | None = None
+    #: Locators of passages elsewhere in the transcript that support the
+    #: statement when its own citation does not (`support.REASON_ELSEWHERE`).
+    support_passages: tuple[str, ...] = ()
+    #: What the support check's passage lookup did, when one was relevant.
+    passage_check: str | None = None
 
     @property
     def support_note(self) -> str | None:
-        """The words-only marker beside this statement, or None."""
-        if self.support_level is None:
-            return None
-        return support.SUPPORT_NOTES.get(self.support_level)
+        """The words-only marker beside this statement, or None.
+
+        The ONE rule, `support.note_for`, so the stored verdict and the words
+        a reader sees cannot disagree.
+        """
+        return support.note_for(self.support_level, self.support_reason)
 
 
 @dataclass(frozen=True)
@@ -155,6 +170,10 @@ def read_trail(gap_analysis_json: Mapping[str, Any] | None) -> CitationTrail:
                 refs=tuple(str(ref) for ref in statement.get("evidence_refs") or ()),
                 support_level=verdict.get("level"),
                 support_reason=verdict.get("reason"),
+                support_passages=tuple(
+                    str(value) for value in verdict.get("passages") or ()
+                ),
+                passage_check=verdict.get("passage_check"),
             )
         )
     return CitationTrail(
@@ -178,19 +197,28 @@ class ResolvedEvidence:
     turn: int | None = None
 
 
+def _locators(trail: CitationTrail) -> list[str]:
+    """Every durable locator the trail holds: the nodes', then the passages
+    the support check found for a statement its citation did not support."""
+    found = [locator for node in (trail.nodes or {}).values() for locator in node.locators]
+    found.extend(
+        locator for statement in trail.statements for locator in statement.support_passages
+    )
+    return found
+
+
 def _ids(trail: CitationTrail, prefix: str) -> set[uuid.UUID]:
     found: set[uuid.UUID] = set()
-    for node in (trail.nodes or {}).values():
-        for locator in node.locators:
-            head, _, tail = locator.partition(":")
-            if head != prefix or not tail:
-                continue
-            try:
-                found.add(uuid.UUID(tail))
-            except ValueError as exc:
-                raise ValueError(
-                    f"a stored locator under {prefix!r} is not a uuid"
-                ) from exc
+    for locator in _locators(trail):
+        head, _, tail = locator.partition(":")
+        if head != prefix or not tail:
+            continue
+        try:
+            found.add(uuid.UUID(tail))
+        except ValueError as exc:
+            raise ValueError(
+                f"a stored locator under {prefix!r} is not a uuid"
+            ) from exc
     return found
 
 
@@ -209,6 +237,12 @@ async def resolve_evidence(
     chunk_source_ids: Iterable[uuid.UUID] = (),
 ) -> dict[str, ResolvedEvidence]:
     """{ref: its text}, read now, scoped to THIS application.
+
+    Keys are the trail's refs, plus the LOCATOR of every passage the support
+    check found elsewhere for a statement (`TrailStatement.support_passages`),
+    which has no ref because the statement does not cite it. The two key
+    spaces cannot collide: a ref starts with a node kind, a locator with a
+    table name.
 
     Messages are read only through a conversation belonging to `link_id`,
     questions only when they were issued on `link_id`, and passages only from
@@ -299,6 +333,16 @@ async def resolve_evidence(
                 excerpt=_cap(" ".join(texts)) if texts else None,
                 turn=turn,
             )
+    for statement in trail.statements:
+        for locator in statement.support_passages:
+            head, _, tail = locator.partition(":")
+            if head != LOCATOR_CHUNK:
+                continue
+            row = chunks.get(tail)
+            resolved[locator] = ResolvedEvidence(
+                kind=SUPPORTING_PASSAGE,
+                excerpt=_cap(row.content) if row is not None else None,
+            )
     return resolved
 
 
@@ -334,6 +378,21 @@ def view(
                 )
             )
         evidence.sort(key=lambda pair: pair[0])
+        # A passage that supports the statement although it is not cited: after
+        # the citations, and named for what it is, so a reader never mistakes
+        # it for what the statement cites.
+        for locator in statement.support_passages:
+            found = resolved.get(locator)
+            evidence.append(
+                (
+                    0,
+                    {
+                        "kind": EVIDENCE_KIND_WORDS[SUPPORTING_PASSAGE],
+                        "question": None,
+                        "excerpt": found.excerpt if found is not None else None,
+                    },
+                )
+            )
         statements.append(
             {
                 "section": statement.section,

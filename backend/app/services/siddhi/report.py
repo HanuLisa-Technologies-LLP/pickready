@@ -290,12 +290,20 @@ async def compose_prism(
     passages: Mapping[str, Iterable[Mapping[str, Any]]] | None = None,
     embed: support.Embedder | None,
     threshold: float | None = None,
+    passage_source: support.PassageSource | None = None,
 ) -> ComposedPrism:
     """Compose the PRISM Report. Never raises over a statement it cannot cite.
 
     `embed` is REQUIRED (keyword, may be None): the caller states whether a
     semantic tier exists, normally `support.semantic_embedder()`. None is a
     real state and is recorded on every statement it leaves undecided.
+
+    `passage_source` is the support check's third look (`siddhi.support`): a
+    statement its own citation does not support is looked up in the
+    candidate's other answers. The orchestrator wires it with
+    `support.statement_passage_source(evidence_retrieval.support_passages_for_statement,
+    session, tenant_id=..., link_id=...)`; None makes no lookup and records
+    none.
 
     Raises only for a programming error (an unknown statement kind, a malformed
     passage): those are defects in the code, not outcomes of a run.
@@ -337,7 +345,9 @@ async def compose_prism(
                     ),
                 )
             )
-    verdicts = await support.assess_many(requests, embed=embed, threshold=threshold)
+    verdicts = await support.assess_many(
+        requests, embed=embed, threshold=threshold, passage_source=passage_source
+    )
     for (section_index, statement_index), verdict in verdicts.items():
         sections[section_index]["statements"][statement_index]["support"] = (
             verdict.as_dict()

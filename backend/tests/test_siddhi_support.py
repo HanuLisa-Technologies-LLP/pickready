@@ -200,8 +200,24 @@ def test_the_verdict_carries_no_number_and_its_notes_are_words() -> None:
     verdict = support.SupportVerdict(support.LEVEL_UNSUPPORTED, support.REASON_SEMANTIC_BELOW)
     assert verdict.as_dict() == {"level": "unsupported", "reason": "semantic_below_threshold"}
     for note in support.SUPPORT_NOTES.values():
-        if note is None:
-            continue
+        assert note
         assert not re.search(r"\d", note)
         assert chr(8212) not in note
-    assert support.SUPPORT_NOTES[support.LEVEL_SUPPORTED] is None
+
+
+def test_only_an_unsupported_or_misattributed_statement_carries_a_marker() -> None:
+    """A marker on every sound sentence, or on every sentence an outage left
+    unchecked, is noise that teaches a reader to skip the one that matters."""
+    assert support.note_for(support.LEVEL_SUPPORTED, support.REASON_ANCHORED) is None
+    for reason in (
+        support.REASON_SEMANTIC_UNAVAILABLE,
+        support.REASON_SEARCHED_ONLY,
+    ):
+        assert support.note_for(support.LEVEL_WEAK, reason) is None
+    assert support.note_for(support.LEVEL_UNSUPPORTED, support.REASON_INVENTED) == (
+        support.SUPPORT_NOTES[support.LEVEL_UNSUPPORTED]
+    )
+    assert support.note_for(support.LEVEL_WEAK, support.REASON_ELSEWHERE) == (
+        support.SUPPORT_NOTES[support.REASON_ELSEWHERE]
+    )
+    assert support.note_for(None, None) is None
