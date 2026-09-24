@@ -374,19 +374,21 @@ def test_a_bounced_inquiry_alerts_the_candidate_with_a_masked_address(
     candidate is written to, and the address travels masked.
     `tests/test_bgv_bounce_and_correction.py` covers the two-verifications case
     the old correlation could not survive.
+
+    AMENDED Phase 6: the alert is dispatched AFTER the webhook's commit
+    (`dispatch_after_commit`), so the helper runs inside a transaction here
+    and the recorded dispatch is read once it commits. Patching `dispatch`
+    would intercept nothing any more, which is why this test stopped doing so.
     """
     from types import SimpleNamespace
 
     from app.api import email_senders as es_api
     from app.core.db import superadmin_scope
+    from app.workers import dispatch as dispatch_mod
 
     _skip_without_database()
     w = _World()
-    sent: list[tuple] = []
-    monkeypatch.setattr(
-        "app.workers.dispatch.dispatch",
-        lambda name, args=None, **kw: sent.append((name, args)),
-    )
+    dispatch_mod.clear_recorded()
 
     async def _flow(factory):
         async with factory() as session:
@@ -398,10 +400,16 @@ def test_a_bounced_inquiry_alerts_the_candidate_with_a_masked_address(
                 tenant_id=w.tenant, recipient_email="hr@prior.example"
             )
             async with factory() as session:
-                async with superadmin_scope(session):
-                    await es_api._alert_candidate_of_bgv_bounce(
-                        session, log_row, w.verification
-                    )
+                async with session.begin():
+                    async with superadmin_scope(session):
+                        await es_api._alert_candidate_of_bgv_bounce(
+                            session, log_row, w.verification
+                        )
+            sent = [
+                (item.name, item.args)
+                for item in dispatch_mod.recorded()
+                if item.name == "pickready.send_email"
+            ]
             assert sent, "no alert was dispatched for a bounced BGV inquiry"
             name, args = sent[-1]
             assert args[1] == f"{w.candidate}@bgvform.test"

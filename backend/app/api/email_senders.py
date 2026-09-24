@@ -14,6 +14,16 @@ they are different questions: the COMPANY authorizes the address (the Super
 Admin's decision, recorded here) and AWS carries mail from it
 (`email_senders.eligibility`, which asks and never asserts).
 
+THE DEFAULT SENDER (Phase 6). Automatic emails (an application
+confirmation, an assessment reminder) have no request to name a sender in, so
+before the default existed a corporate sender could never be used for them.
+`POST /{id}/default` makes one ACTIVE sender the tenant's default (at most one,
+a partial unique index); `DELETE /{id}/default` clears it; and every
+transition AWAY from active clears it in the same UPDATE, so the next email
+falls back to the platform mailbox instead of failing at send time. Both are
+`authorize_email_senders` acts, because choosing the address every automatic
+email speaks from is the same decision as authorizing it.
+
 Two capabilities split the flow exactly where spec section 10 does:
 `manage_email_senders` covers registration (client Super Admin + Recruitment
 Manager), `authorize_email_senders` covers approve, reject, disable, enable
@@ -64,6 +74,7 @@ from app.models.email_sender import (
 )
 from app.models.tenant import Tenant
 from app.schemas.email_senders import (
+    ActiveSenderOut,
     SenderCreateIn,
     SenderListOut,
     SenderOut,
@@ -83,7 +94,7 @@ from app.services.email_senders import (
 )
 from app.services.email_senders.eligibility import check_sender_eligibility
 from app.services.rate_limit import rate_limit
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -114,6 +125,11 @@ def _transition_or_409(sender: ClientEmailSender, target: str) -> None:
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
     sender.status = target
+    if target != SENDER_ACTIVE:
+        # Only an active sender may be the default. Cleared on the SAME row in
+        # the same flush, so there is no instant at which a revoked or
+        # disabled address is what automatic emails would go out under.
+        sender.is_default = False
 
 
 async def _sender_out(sender: ClientEmailSender) -> SenderOut:
@@ -133,6 +149,7 @@ async def _sender_out(sender: ClientEmailSender) -> SenderOut:
         email_verified=sender.email_verified,
         authorized_at=sender.authorized_at,
         created_at=sender.created_at,
+        is_default=sender.is_default,
         # NO AWS VOCABULARY CROSSES THIS BOUNDARY. The Super Admin is told
         # whether the address can send and, if not, what happens next -- never
         # SES, an identity, a domain-verification status or a DKIM record.
@@ -357,6 +374,125 @@ async def revoke_sender(
     )
 
 
+# ── The default sender (Phase 6) ─────────────────────────────────────────────
+
+
+@router.get("/active", response_model=list[ActiveSenderOut])
+async def list_active_senders(
+    user: CurrentUser = Depends(require_capability(caps.SEND_OUTREACH)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> list[ActiveSenderOut]:
+    """The senders an email can be sent under right now, default first.
+
+    For the email composer, whose user sends email and may hold nothing that
+    manages senders: registering or authorizing an address is a different
+    act from choosing which authorized address a message goes out under.
+    Name and address only; no eligibility lookup, no lifecycle detail.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(ClientEmailSender)
+                .where(
+                    ClientEmailSender.tenant_id == user.tenant_id,
+                    ClientEmailSender.status == SENDER_ACTIVE,
+                )
+                .order_by(
+                    ClientEmailSender.is_default.desc(),
+                    ClientEmailSender.created_at,
+                    ClientEmailSender.id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        ActiveSenderOut(
+            id=row.id, name=row.name, email=row.email, is_default=row.is_default
+        )
+        for row in rows
+    ]
+
+
+@router.post("/{sender_id}/default", response_model=SenderOut)
+async def set_default_sender(
+    sender_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.AUTHORIZE_EMAIL_SENDERS)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> SenderOut:
+    """Make this ACTIVE sender the one automatic emails go out under.
+
+    The tenant's sender rows are locked first, so two people choosing
+    different defaults at the same moment are serialised rather than one of
+    them meeting the unique index as a 500. The previous default is cleared
+    BEFORE the new one is set: a unique index is checked row by row, so the
+    other order would collide with itself.
+    """
+    sender = await _load_sender(session, user, sender_id)
+    if sender.status != SENDER_ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only an active, authorized sender can be the default.",
+        )
+    await session.execute(
+        select(ClientEmailSender.id)
+        .where(ClientEmailSender.tenant_id == user.tenant_id)
+        .with_for_update()
+    )
+    previous = (
+        await session.execute(
+            select(ClientEmailSender).where(
+                ClientEmailSender.tenant_id == user.tenant_id,
+                ClientEmailSender.is_default.is_(True),
+                ClientEmailSender.id != sender.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if previous is not None:
+        previous.is_default = False
+        await session.flush()
+    sender.is_default = True
+    await audit(
+        session,
+        tenant_id=user.tenant_id,
+        actor_user_id=user.user_id,
+        action="email_sender_default_set",
+        target_type="client_email_sender",
+        target_id=sender.id,
+        metadata={
+            "email": sender.email,
+            "previous_default": str(previous.id) if previous is not None else None,
+        },
+    )
+    await session.flush()
+    return await _sender_out(sender)
+
+
+@router.delete("/{sender_id}/default", response_model=SenderOut)
+async def clear_default_sender(
+    sender_id: uuid.UUID,
+    user: CurrentUser = Depends(require_capability(caps.AUTHORIZE_EMAIL_SENDERS)),
+    session: AsyncSession = Depends(get_tenant_db),
+) -> SenderOut:
+    """Stop using this sender for automatic emails; they go out from the
+    platform mailbox until another default is chosen. Idempotent."""
+    sender = await _load_sender(session, user, sender_id)
+    if sender.is_default:
+        sender.is_default = False
+        await audit(
+            session,
+            tenant_id=user.tenant_id,
+            actor_user_id=user.user_id,
+            action="email_sender_default_cleared",
+            target_type="client_email_sender",
+            target_id=sender.id,
+            metadata={"email": sender.email},
+        )
+        await session.flush()
+    return await _sender_out(sender)
+
+
 # ── templates (spec section 7) ───────────────────────────────────────────────
 
 @router.get("/templates", response_model=list[TemplateOut])
@@ -577,11 +713,6 @@ async def _alert_candidate_of_bgv_bounce(
     already replied from another.
     """
     from app.services import bgv_form
-    # LATE, and it stays late. `tests/test_bgv_form.py` patches
-    # `app.workers.dispatch.dispatch`, which a module-level binding would
-    # already have resolved past: removing this line as a duplicate import
-    # makes that test silently stop intercepting the send.
-    from app.workers.dispatch import dispatch as dispatch_email
 
     match = (
         (
@@ -612,7 +743,12 @@ async def _alert_candidate_of_bgv_bounce(
     failed_address = await bgv_delivery.effective_hr_email(
         session, uuid.UUID(str(match["employment_id"]))
     )
-    dispatch_email(
+    # AFTER the commit that records the bounce: the email tells the candidate
+    # the delivery failed, and a rolled-back webhook must not say so. A lost
+    # invoke costs this email only; the candidate portal's employment card
+    # reads the bounce from the table (`bgv_delivery`), not from the email.
+    dispatch_after_commit(
+        session,
         "pickready.send_email",
         args=[
             str(row.tenant_id),

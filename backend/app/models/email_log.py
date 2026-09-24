@@ -235,3 +235,10 @@ class EmailLog(Base, UUIDPKMixin, CreatedAtMixin):
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL")
     )
+    #: When a send worker CLAIMED this row, moving it from `queued` to
+    #: `processing` in one conditional UPDATE (migration 0122). Two
+    #: invocations for one row cannot both claim it, so a redelivered or
+    #: re-dispatched send never mails a candidate twice. A row still
+    #: `processing` long after its claim may or may not have been sent, and it
+    #: is reported, never resent.
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

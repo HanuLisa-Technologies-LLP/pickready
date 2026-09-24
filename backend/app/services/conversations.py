@@ -48,6 +48,7 @@ from app.models.conversation import (
     KIND_CANDIDATE,
     MAX_BODY_CHARS,
     PARTIES,
+    PARTY_CANDIDATE,
     PARTY_EMPLOYER_HR,
     PARTY_RECRUITER,
 )
@@ -57,6 +58,16 @@ logger = logging.getLogger(__name__)
 
 class ConversationRefused(RuntimeError):
     """The request cannot be served, with a sentence saying why."""
+
+
+class ClientTokenReused(ConversationRefused):
+    """A client token already names a DIFFERENT message in this thread.
+
+    A retry must carry the same token AND the same message, because that is
+    what makes it a retry. The same token with other words is a client bug
+    (a composer that kept its token across an edit), and answering with the
+    message that exists would silently drop what the person just wrote.
+    """
 
 
 class ConversationNotFound(LookupError):
@@ -357,6 +368,7 @@ async def post_message(
     inbound_message_id: str | None = None,
     delivery_status: str = DELIVERY_DELIVERED,
     email_message_id: str | None = None,
+    email_log_id: uuid.UUID | None = None,
     now: datetime | None = None,
 ) -> dict:
     """Persist one message. Idempotent, and the ONLY way a message is written.
@@ -364,6 +376,11 @@ async def post_message(
     Returns the stored row, whether this call created it or a duplicate lost
     the race: a retried send must answer with the message that exists rather
     than an error the client cannot act on.
+
+    A REUSED CLIENT TOKEN IS A RETRY ONLY WHEN IT CARRIES THE SAME MESSAGE.
+    The same author and the same words return the stored row; anything else
+    raises `ClientTokenReused`, because a composer that kept one token across
+    an edit would otherwise lose the edited text without a word.
     """
     if author_party not in PARTIES:
         raise ConversationRefused(f"{author_party!r} is not a conversation party")
@@ -389,6 +406,7 @@ async def post_message(
         "client_token": client_token,
         "inbound_id": inbound_message_id,
         "email_msg_id": email_message_id,
+        "email_log_id": str(email_log_id) if email_log_id else None,
         "at": now,
     }
     try:
@@ -398,10 +416,11 @@ async def post_message(
                     "INSERT INTO conversation_messages (id, conversation_id, "
                     " tenant_id, author_party, author_user_id, author_email, "
                     " author_name, body, channel, delivery_status, client_token, "
-                    " inbound_message_id, email_message_id, created_at) "
+                    " inbound_message_id, email_message_id, email_log_id, "
+                    " created_at) "
                     "VALUES (:id, :cid, :tid, :party, :uid, :email, :name, :body, "
                     " :channel, :delivery, :client_token, :inbound_id, "
-                    " :email_msg_id, :at)"
+                    " :email_msg_id, :email_log_id, :at)"
                 ),
                 params,
             )
@@ -417,9 +436,18 @@ async def post_message(
             client_token=client_token,
             inbound_message_id=inbound_message_id,
         )
-        if existing is not None:
-            return existing
-        raise
+        if existing is None:
+            raise
+        if client_token and existing.get("client_token") == client_token:
+            same_author = existing["author_party"] == author_party and str(
+                existing.get("author_user_id") or ""
+            ) == str(author_user_id or "")
+            if not same_author or existing["body"] != cleaned:
+                raise ClientTokenReused(
+                    "This message was already sent with different text. "
+                    "Refresh the conversation and send it again."
+                ) from None
+        return existing
 
     await session.execute(
         text(
@@ -562,16 +590,27 @@ async def list_messages(
     tenant_id: uuid.UUID,
     limit: int = 50,
     before: datetime | None = None,
+    before_id: uuid.UUID | None = None,
 ) -> list[dict]:
     """One page of history, oldest first within the page.
 
-    Paged on `created_at` rather than an offset: an offset shifts when a
-    message arrives mid-scroll, which duplicates or drops a row, and this is a
-    surface where new rows arrive constantly by design.
+    Paged on a KEYSET rather than an offset: an offset shifts when a message
+    arrives mid-scroll, which duplicates or drops a row, and this is a surface
+    where new rows arrive constantly by design.
+
+    The key is (`created_at`, `id`), the order the page is read in, when the
+    caller passes the oldest message's id as well as its time. `created_at`
+    alone is a partial order: two messages written in the same microsecond
+    would both sit on the boundary and "load earlier" would skip one of them
+    for ever. `before` alone is still accepted and keeps its old meaning.
     """
     params: dict = {"cid": str(conversation_id), "tid": str(tenant_id), "limit": limit}
     clause = ""
-    if before is not None:
+    if before is not None and before_id is not None:
+        clause = "AND (m.created_at, m.id) < (:before, CAST(:before_id AS uuid)) "
+        params["before"] = before
+        params["before_id"] = str(before_id)
+    elif before is not None:
         clause = "AND m.created_at < :before "
         params["before"] = before
     rows = (
@@ -592,3 +631,126 @@ async def list_messages(
         .all()
     )
     return [dict(row) for row in reversed(rows)]
+
+
+# ── The candidate's side of a thread ─────────────────────────────────────────
+#
+# A candidate is never a `conversation_participants` row: they have no tenant,
+# and the participant table is the tenant's directory of who is in a thread.
+# A candidate thread has exactly ONE candidate, so their watermark lives on the
+# thread row (`candidate_last_read_at`, migration 0122). Every function here is
+# called with a candidate id the ROUTE resolved from the session, and filters
+# by it; none of them trusts a conversation id on its own.
+
+
+async def mark_candidate_read(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    candidate_id: uuid.UUID,
+    now: datetime | None = None,
+) -> None:
+    """Move the candidate's watermark forward. NEVER backward, for the reason
+    `mark_read` gives: a stale tab catching up must not re-mark messages
+    unread."""
+    now = now or datetime.now(timezone.utc)
+    await session.execute(
+        text(
+            "UPDATE conversations SET candidate_last_read_at = :at "
+            "WHERE id = :cid AND candidate_id = :cand AND kind = :kind "
+            "AND (candidate_last_read_at IS NULL OR candidate_last_read_at < :at)"
+        ),
+        {
+            "cid": str(conversation_id),
+            "cand": str(candidate_id),
+            "kind": KIND_CANDIDATE,
+            "at": now,
+        },
+    )
+
+
+async def candidate_unread_counts(
+    session: AsyncSession, *, candidate_id: uuid.UUID
+) -> dict[str, int]:
+    """Unread per candidate thread: messages from anybody but the candidate,
+    written after the candidate last read the thread. A thread with nothing
+    unread is absent from the answer."""
+    rows = (
+        (
+            await session.execute(
+                text(
+                    "SELECT c.id AS conversation_id, count(m.id) AS unread "
+                    "FROM conversations c "
+                    "JOIN conversation_messages m ON m.conversation_id = c.id "
+                    " AND m.author_party <> :self "
+                    " AND m.created_at > COALESCE(c.candidate_last_read_at, "
+                    "     CAST('-infinity' AS timestamptz)) "
+                    "WHERE c.candidate_id = :cand AND c.kind = :kind "
+                    "GROUP BY c.id"
+                ),
+                {
+                    "cand": str(candidate_id),
+                    "kind": KIND_CANDIDATE,
+                    "self": PARTY_CANDIDATE,
+                },
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return {str(row["conversation_id"]): int(row["unread"]) for row in rows}
+
+
+# ── Quoted history in an emailed reply ───────────────────────────────────────
+
+#: Where a mail client starts quoting the message being answered. Each is a
+#: whole LINE, never a substring: "wrote:" in the middle of a sentence is the
+#: candidate's own words.
+_QUOTE_HEADERS = (
+    # Gmail, Apple Mail and most others: "On Tue, 22 Sep 2026 at 10:00, Priya
+    # <priya@corp.example> wrote:", sometimes wrapped over two lines, which the
+    # joined check below handles.
+    re.compile(r"^\s*On\b.{0,400}\bwrote:\s*$", re.IGNORECASE),
+    # Outlook.
+    re.compile(r"^\s*-{2,}\s*Original Message\s*-{2,}\s*$", re.IGNORECASE),
+)
+
+
+def strip_quoted_reply(body: str) -> str:
+    """The new text of an emailed reply, without the history it quotes.
+
+    Cut at the first quote header, or before a trailing block of `>` lines.
+    When the cut would leave nothing (a reply that is ONLY a quote, or a
+    client that writes its answer below the quote), the ORIGINAL text is
+    returned: a message that loses its words is worse than one that repeats
+    some of the history.
+    """
+    original = (body or "").strip()
+    lines = original.splitlines()
+    cut = len(lines)
+    for index, line in enumerate(lines):
+        if any(p.match(line) for p in _QUOTE_HEADERS):
+            cut = index
+            break
+        # The wrapped form: "On <date>, <name> <" then "<address>> wrote:".
+        # Joined ONLY when the next line is the tail of a header rather than a
+        # header of its own, so "On second thought, yes." above a real header
+        # is kept as the candidate's words.
+        following = lines[index + 1] if index + 1 < len(lines) else ""
+        if (
+            following.rstrip().endswith("wrote:")
+            and not any(p.match(following) for p in _QUOTE_HEADERS)
+            and _QUOTE_HEADERS[0].match(f"{line} {following}")
+        ):
+            cut = index
+            break
+    # A trailing run of quoted lines, blank lines between them included.
+    tail = cut
+    while tail > 0 and (
+        lines[tail - 1].lstrip().startswith(">") or not lines[tail - 1].strip()
+    ):
+        tail -= 1
+    if tail < cut and any(line.lstrip().startswith(">") for line in lines[tail:cut]):
+        cut = tail
+    stripped = "\n".join(lines[:cut]).strip()
+    return stripped or original

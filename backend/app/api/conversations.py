@@ -47,7 +47,6 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-import jwt as pyjwt
 from fastapi import (
     APIRouter,
     Depends,
@@ -68,6 +67,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.api.deps import (
     ACCESS_COOKIE,
     CurrentUser,
+    authenticate_socket_token,
     get_candidate_db,
     get_current_candidate,
     get_current_user,
@@ -75,7 +75,7 @@ from app.api.deps import (
     require_capability,
 )
 from app.core.db import get_session_factory, tenant_scope
-from app.core.security import AUDIENCE_ORG, decode_token
+from app.core.security import AUDIENCE_ORG
 from app.models.conversation import (
     CHANNEL_CHAT,
     KIND_BGV,
@@ -84,9 +84,9 @@ from app.models.conversation import (
     PARTY_CANDIDATE,
     PARTY_RECRUITER,
 )
-from app.models.enums import Role
 from app.services import capabilities as caps
-from app.services import conversations, object_storage, rbac, realtime
+from app.services import candidate_identity, conversations, object_storage, rbac, realtime
+from app.workers.dispatch import dispatch_after_commit
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +263,39 @@ def _to_message_out(
     )
 
 
+def _refused(exc: conversations.ConversationRefused) -> HTTPException:
+    """422 for a message that cannot be stored; 409 for a client token that
+    already names a different message, which the client resolves by
+    refreshing rather than by editing what it sent."""
+    code = 409 if isinstance(exc, conversations.ClientTokenReused) else 422
+    return HTTPException(status_code=code, detail=str(exc))
+
+
+#: The task that tells a candidate a recruiter wrote to them.
+NOTIFY_TASK = "pickready.notify_candidate_of_message"
+
+
+def _notify_candidate_after_commit(
+    session: AsyncSession, *, conversation: dict, message: dict
+) -> None:
+    """Queue the candidate's email and Updates entry for this message.
+
+    AFTER THE COMMIT, like the realtime publish and for the same reason: the
+    task reads the message, and a task about a row that rolled back would
+    tell a candidate about a message that does not exist. Only a CANDIDATE
+    thread notifies anybody; a BGV thread's reader is the recruiter. A lost
+    invoke costs one notification and nothing else: the message is stored,
+    and the Messages badge counts it from the table on the next page load.
+    """
+    if conversation["kind"] != KIND_CANDIDATE:
+        return
+    dispatch_after_commit(
+        session,
+        NOTIFY_TASK,
+        args=[str(conversation["id"]), str(message["id"])],
+    )
+
+
 async def _load_conversation(
     session: AsyncSession, *, conversation_id: uuid.UUID, tenant_id: uuid.UUID
 ) -> dict:
@@ -289,7 +322,13 @@ async def list_conversations(
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> list[ConversationOut]:
-    """This tenant's conversations, most recently active first."""
+    """This tenant's conversations, most recently active first.
+
+    A candidate thread nobody has written in is NOT listed. Opening a thread is
+    a side effect of clicking "Message" on a candidate, and a list of threads
+    that say nothing is a list of clicks rather than conversations. It is still
+    returned by the open route, so the composer works as before.
+    """
     params: dict = {"tid": str(user.tenant_id)}
     clause = ""
     if candidate_id is not None:
@@ -303,10 +342,11 @@ async def list_conversations(
                     " c.bgv_verification_id, c.last_message_at "
                     "FROM conversations c "
                     f"WHERE c.tenant_id = :tid {clause}"
+                    "AND (c.kind <> :candidate_kind OR c.last_message_at IS NOT NULL) "
                     "ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC "
                     "LIMIT 200"
                 ),
-                params,
+                {**params, "candidate_kind": KIND_CANDIDATE},
             )
         )
         .mappings()
@@ -401,15 +441,18 @@ async def open_candidate_conversation(
 async def messages(
     conversation_id: uuid.UUID,
     before: datetime | None = None,
+    before_id: uuid.UUID | None = None,
     limit: int = Query(default=DEFAULT_PAGE, ge=1, le=200),
     user: CurrentUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> list[MessageOut]:
     """One page of history, oldest first within the page.
 
-    Keyset paging on `created_at`, never an offset: new rows arrive here
-    constantly by design, and an offset shifts under the reader, which
-    duplicates or drops a message mid-scroll.
+    Keyset paging, never an offset: new rows arrive here constantly by design,
+    and an offset shifts under the reader, which duplicates or drops a message
+    mid-scroll. "Load earlier" passes the oldest message it holds as `before`
+    (its `created_at`) and `before_id` (its id); a page shorter than `limit`
+    is the start of the thread.
     """
     await _load_conversation(
         session, conversation_id=conversation_id, tenant_id=user.tenant_id
@@ -420,6 +463,7 @@ async def messages(
         tenant_id=user.tenant_id,
         limit=limit,
         before=before,
+        before_id=before_id,
     )
     names = await _author_names(session, rows)
     files = await _attachments_for(session, [row["id"] for row in rows])
@@ -466,7 +510,7 @@ async def send_message(
             client_token=body.client_token,
         )
     except conversations.ConversationRefused as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _refused(exc) from exc
 
     names = await _author_names(session, [message])
     _publish_after_commit(
@@ -476,6 +520,7 @@ async def send_message(
         message=message,
         names=names,
     )
+    _notify_candidate_after_commit(session, conversation=conversation, message=message)
     return _to_message_out(message, names=names)
 
 
@@ -554,7 +599,7 @@ async def upload_attachment(
     RAISES. A message row with no file behind it renders an attachment that
     cannot be opened, which is worse than a refused upload.
     """
-    await _load_conversation(
+    conversation = await _load_conversation(
         session, conversation_id=conversation_id, tenant_id=user.tenant_id
     )
 
@@ -598,18 +643,25 @@ async def upload_attachment(
         ) from exc
 
     attachment_id = uuid.uuid4()
-    message = await conversations.post_message(
-        session,
-        conversation_id=conversation_id,
-        tenant_id=user.tenant_id,
-        author_party=PARTY_RECRUITER,
-        author_user_id=user.user_id,
-        body=(caption or "").strip() or f"Sent a file: {filename}",
-        channel=CHANNEL_CHAT,
-        # Derived from the CONTENT, so a retried upload of the same file by the
-        # same person into the same thread is one message, not two.
-        client_token=f"att-{digest[:48]}",
-    )
+    message_body = (caption or "").strip() or f"Sent a file: {filename}"
+    try:
+        message = await conversations.post_message(
+            session,
+            conversation_id=conversation_id,
+            tenant_id=user.tenant_id,
+            author_party=PARTY_RECRUITER,
+            author_user_id=user.user_id,
+            body=message_body,
+            channel=CHANNEL_CHAT,
+            # Derived from the CONTENT and the words sent with it, so a
+            # retried upload is one message, and the same file sent again
+            # with a different caption is a second message rather than a
+            # reused token.
+            client_token="att-"
+            + hashlib.sha256(f"{digest}\n{message_body}".encode()).hexdigest()[:48],
+        )
+    except conversations.ConversationRefused as exc:
+        raise _refused(exc) from exc
     await session.execute(
         text(
             "INSERT INTO conversation_attachments (id, message_id, tenant_id, "
@@ -635,6 +687,7 @@ async def upload_attachment(
         message=message,
         names=names,
     )
+    _notify_candidate_after_commit(session, conversation=conversation, message=message)
     # Re-read rather than trusting the insert: a retry that collapsed onto an
     # existing message must answer with the attachment that is actually there.
     files = await _attachments_for(session, [message["id"]])
@@ -690,45 +743,27 @@ async def attachment_url(
 # ── The socket ───────────────────────────────────────────────────────────────
 
 
-def _identity_from_socket(websocket: WebSocket) -> CurrentUser | None:
-    """(user, tenant) from the same cookie the REST routes read.
-
-    A query-string token is accepted as a fallback because some proxies drop
-    cookies from an upgrade request. It is validated IDENTICALLY, against the
-    same org audience, so it grants nothing the cookie would not -- it is the
-    same token by a different door, never a second, weaker credential.
-    """
-    token = websocket.cookies.get(ACCESS_COOKIE) or websocket.query_params.get("token")
-    if not token:
-        return None
-    try:
-        payload = decode_token(token, audience=AUDIENCE_ORG)
-    except pyjwt.PyJWTError:
-        return None
-    if payload.get("type") != "access" or not payload.get("tenant_id"):
-        return None
-    try:
-        return CurrentUser(
-            user_id=uuid.UUID(payload["sub"]),
-            tenant_id=uuid.UUID(payload["tenant_id"]),
-            role=Role(payload["role"]),
-            audience=payload.get("aud"),
-        )
-    except (KeyError, ValueError):
-        return None
-
-
 @router.websocket("/{conversation_id}/stream")
 async def stream(websocket: WebSocket, conversation_id: uuid.UUID) -> None:
     """Live updates for one conversation. READ ONLY, by construction.
 
     The three checks the REST routes make are all made here, in the same order:
-    the token is a valid org access token, the caller holds USE_CONVERSATIONS,
-    and the conversation belongs to their tenant. A socket is not a back door
-    around a capability, so the capability is resolved live rather than trusted
-    from the token, exactly as `require_capability` does.
+    the token is a valid org access token for a LIVE session, the caller holds
+    USE_CONVERSATIONS, and the conversation belongs to their tenant. A socket
+    is not a back door around a capability, so the capability is resolved live
+    rather than trusted from the token, exactly as `require_capability` does.
+
+    The token comes from the same cookie the REST routes read. A query-string
+    token is accepted because some proxies drop cookies from an upgrade
+    request; it is the same token by a different door, validated identically
+    by `deps.authenticate_socket_token`, including the session check that a
+    signed-out or revoked session fails. That check never renews the idle
+    deadline: an open socket is not activity.
     """
-    user = _identity_from_socket(websocket)
+    user = await authenticate_socket_token(
+        websocket.cookies.get(ACCESS_COOKIE) or websocket.query_params.get("token"),
+        AUDIENCE_ORG,
+    )
     if user is None or user.tenant_id is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
@@ -813,33 +848,17 @@ candidate_router = APIRouter()
 
 
 async def _candidate_id_for(session: AsyncSession, user: CurrentUser) -> uuid.UUID:
-    """Resolve the signed-in candidate. Never trusts an id from the client.
+    """The signed-in candidate's record, through the ONE resolver.
 
-    The same lookup `api/bgv.py` makes, written the same way: a candidate row is
-    matched by its linked user OR by the address the account signed in with,
-    because a candidate exists from an employer's first outreach and is linked
-    to a portal login only afterwards.
+    `candidate_identity.require_candidate` resolves by the linked user id and
+    nothing else; the email fallback this used to run matched an address the
+    person may never have verified. Engagement is not stamped here: reading a
+    message list is not the activity that clock measures.
     """
-    row = (
-        await session.execute(
-            text(
-                "SELECT c.id FROM candidates c "
-                "LEFT JOIN users u ON u.id = :uid "
-                "WHERE c.user_id = :uid OR (u.email IS NOT NULL AND c.email = u.email) "
-                "ORDER BY c.created_at LIMIT 1"
-            ),
-            {"uid": str(user.user_id)},
-        )
-    ).scalar()
-    if row is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "No candidate record yet, you appear after an employer's first "
-                "outreach"
-            ),
-        )
-    return uuid.UUID(str(row))
+    candidate = await candidate_identity.require_candidate(
+        session, user.user_id, record_engagement=False
+    )
+    return candidate.id
 
 
 async def _candidate_thread(
@@ -882,7 +901,17 @@ class CandidateConversationOut(BaseModel):
     #: employers, so a list without this is a list of indistinguishable rows.
     company_name: str | None = None
     last_message_at: datetime | None = None
-    inbound: int = 0
+    #: Messages from the company the candidate has not read yet. REPLACES the
+    #: old `inbound` count, which counted every message the company had ever
+    #: sent and so could never go down.
+    unread: int = 0
+
+
+class CandidateUnreadOut(BaseModel):
+    """The Messages badge. An operational count about the candidate's own
+    inbox, never a measurement of the candidate."""
+
+    unread_count: int
 
 
 @candidate_router.get("/me", response_model=list[CandidateConversationOut])
@@ -890,32 +919,35 @@ async def my_conversations(
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
 ) -> list[CandidateConversationOut]:
-    """Every employer talking to this candidate, most recent first."""
+    """Every employer talking to this candidate, most recent first.
+
+    Only threads with at least one message. A thread is opened when a
+    recruiter clicks "Message", before a word is written, and a candidate
+    shown an empty conversation with a company reads it as a message that
+    failed to load.
+    """
     candidate_id = await _candidate_id_for(session, user)
     rows = (
         (
             await session.execute(
                 text(
                     "SELECT c.id, c.subject, c.status, c.last_message_at, "
-                    " t.name AS company_name, "
-                    " (SELECT count(*) FROM conversation_messages m "
-                    "   WHERE m.conversation_id = c.id "
-                    "     AND m.author_party <> :self) AS inbound "
+                    " t.name AS company_name "
                     "FROM conversations c "
                     "JOIN tenants t ON t.id = c.tenant_id "
                     "WHERE c.candidate_id = :cand AND c.kind = :kind "
-                    "ORDER BY c.last_message_at DESC NULLS LAST, c.created_at DESC "
+                    "AND c.last_message_at IS NOT NULL "
+                    "ORDER BY c.last_message_at DESC, c.created_at DESC "
                     "LIMIT 200"
                 ),
-                {
-                    "cand": str(candidate_id),
-                    "kind": KIND_CANDIDATE,
-                    "self": PARTY_CANDIDATE,
-                },
+                {"cand": str(candidate_id), "kind": KIND_CANDIDATE},
             )
         )
         .mappings()
         .all()
+    )
+    unread = await conversations.candidate_unread_counts(
+        session, candidate_id=candidate_id
     )
     return [
         CandidateConversationOut(
@@ -924,21 +956,50 @@ async def my_conversations(
             status=row["status"],
             company_name=row["company_name"],
             last_message_at=row["last_message_at"],
-            # COUNTED, not read from a watermark. `conversation_participants`
-            # carries `last_read_at` per USER, and a candidate is not a member
-            # of the employer's tenant, so there is no row to hold theirs. What
-            # this answers is "how many of these are from them", which is what
-            # the portal renders beside a company's name.
-            inbound=int(row["inbound"] or 0),
+            # From the candidate's own watermark on the thread
+            # (`candidate_last_read_at`), because a candidate is never a
+            # participant row in the employer's tenant.
+            unread=unread.get(str(row["id"]), 0),
         )
         for row in rows
     ]
+
+
+@candidate_router.get("/me/unread", response_model=CandidateUnreadOut)
+async def my_unread(
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> CandidateUnreadOut:
+    """The total behind the Messages badge in the candidate's navigation."""
+    candidate_id = await _candidate_id_for(session, user)
+    counts = await conversations.candidate_unread_counts(
+        session, candidate_id=candidate_id
+    )
+    return CandidateUnreadOut(unread_count=sum(counts.values()))
+
+
+@candidate_router.post("/me/{conversation_id}/read")
+async def my_mark_read(
+    conversation_id: uuid.UUID,
+    user: CurrentUser = Depends(get_current_candidate),
+    session: AsyncSession = Depends(get_candidate_db),
+) -> dict:
+    """The candidate has seen this thread up to now. Forward only."""
+    candidate_id = await _candidate_id_for(session, user)
+    await _candidate_thread(
+        session, conversation_id=conversation_id, candidate_id=candidate_id
+    )
+    await conversations.mark_candidate_read(
+        session, conversation_id=conversation_id, candidate_id=candidate_id
+    )
+    return {"ok": True}
 
 
 @candidate_router.get("/me/{conversation_id}/messages", response_model=list[MessageOut])
 async def my_messages(
     conversation_id: uuid.UUID,
     before: datetime | None = None,
+    before_id: uuid.UUID | None = None,
     limit: int = Query(default=DEFAULT_PAGE, ge=1, le=200),
     user: CurrentUser = Depends(get_current_candidate),
     session: AsyncSession = Depends(get_candidate_db),
@@ -953,6 +1014,7 @@ async def my_messages(
         tenant_id=uuid.UUID(str(conversation["tenant_id"])),
         limit=limit,
         before=before,
+        before_id=before_id,
     )
     names = await _author_names(session, rows)
     files = await _attachments_for(session, [row["id"] for row in rows])
@@ -992,7 +1054,13 @@ async def my_reply(
             client_token=body.client_token,
         )
     except conversations.ConversationRefused as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _refused(exc) from exc
+    # Writing in a thread is reading it: the candidate has seen everything up
+    # to their own reply, and a badge counting messages they just answered
+    # would be wrong the moment they sent.
+    await conversations.mark_candidate_read(
+        session, conversation_id=conversation_id, candidate_id=candidate_id
+    )
 
     realtime.publish_after_commit(
         session,

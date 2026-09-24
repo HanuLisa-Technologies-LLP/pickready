@@ -388,6 +388,14 @@ class Settings(BaseSettings):
     # genuine reply, and the operator can see which of the two they are in.
     inbound_webhook_secret: str = ""
 
+    # HOW OFTEN A CANDIDATE IS TOLD ABOUT NEW MESSAGES (Phase 6 WP6-C).
+    #
+    # A recruiter writing to a candidate produces one email and one Updates
+    # entry. Five messages in a burst produce ONE: the next notification waits
+    # until this many minutes have passed since the last, and reading the
+    # thread re-arms it immediately. Zero notifies on every message.
+    candidate_message_notify_debounce_minutes: int = 10
+
     # ── Outbound email transport (Corporate Email System spec section 6) ────
     #
     # ONE transport per deployment, selected by DATA, never a fallback chain

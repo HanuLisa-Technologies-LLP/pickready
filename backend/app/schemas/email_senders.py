@@ -34,6 +34,19 @@ class SenderOut(BaseModel):
     #: SES, not an identity, not DKIM, not a verification status. The client is
     #: told whether the address can send and who completes the setup if not.
     sending_detail: str
+    #: The sender automatic emails go out under (migration 0122). At most one
+    #: per tenant, and only ever an active one.
+    is_default: bool = False
+
+
+class ActiveSenderOut(BaseModel):
+    """One sender the email composer may choose, for a user who sends email
+    and manages no senders. Name and address only."""
+
+    id: uuid.UUID
+    name: str
+    email: str
+    is_default: bool
 
 
 class SenderListOut(BaseModel):

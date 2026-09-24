@@ -28,8 +28,12 @@ and the last is guarded.
 5. `ck_jcl_application_source` admits `external_link`: an applicant who came
    in through a shared job link is an APPLICANT, and the old two-value CHECK
    forced the page to call them `sourced`.
-6. `ix_email_log_pending`, the partial index the fifteen minute
-   `reconcile_queued_emails` sweep reads through.
+6. `email_log.claimed_at`, stamped by the send worker's atomic claim
+   (`queued` to `processing`), and `ix_email_log_pending`, the partial index
+   the fifteen minute `reconcile_queued_emails` sweep reads through. A row
+   stuck in `processing` is measured from its CLAIM, never from when it was
+   queued: a row re-dispatched an hour after it was written is not stuck the
+   instant it is claimed.
 7. `verification_requests` IS DROPPED, and only when it is EMPTY. The
    tenant-owned employer-verification system was retired on 2026-09-18 (C8)
    and nothing reads or writes the table. CONTRACT v3 counted zero rows in
@@ -197,6 +201,9 @@ def upgrade() -> None:
     )
 
     # ── 6. What the reconcile sweep reads ────────────────────────────────────
+    op.add_column(
+        "email_log", sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=True)
+    )
     op.execute(
         "CREATE INDEX ix_email_log_pending ON email_log (status, created_at) "
         "WHERE status IN ('queued', 'processing')"
@@ -261,6 +268,7 @@ def downgrade() -> None:
 
     # ── 6 ────────────────────────────────────────────────────────────────────
     op.execute("DROP INDEX IF EXISTS ix_email_log_pending")
+    op.drop_column("email_log", "claimed_at")
 
     # ── 5 ────────────────────────────────────────────────────────────────────
     _refuse_if_any(

@@ -1077,6 +1077,14 @@ module "scheduler" {
       task            = "pickready.sweep_subscription_usage_alerts"
       rate_expression = "rate(1440 minutes)"
     }
+    # Phase 6 WP6-C. The Terraform half of the entry in
+    # app/workers/schedule.py; tests/test_schedule_parity.py fails on drift.
+    # Re-dispatches candidate emails whose after-commit send was lost; never
+    # resends a row a worker has already claimed.
+    "readypick-reconcile-queued-emails" = {
+      task            = "pickready.reconcile_queued_emails"
+      rate_expression = "rate(15 minutes)"
+    }
   }
 
   tags = local.tags

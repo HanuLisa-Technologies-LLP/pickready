@@ -185,8 +185,9 @@ async def reconcile(
 ) -> ReconciliationResult:
     """Charge every settled abandoned assessment and queue any due reminders.
 
-    `queue_reminder` is injected so this function stays testable without a
-    dispatcher; the task passes the real one.
+    `queue_reminder(link_id, hours_elapsed, stage_hours)` is injected so this
+    function stays testable without a dispatcher; the task passes the real one.
+    `stage_hours` is the `REMINDER_SCHEDULE_HOURS` entry that fell due.
     """
     now = now or datetime.now(timezone.utc)
     result = ReconciliationResult()
@@ -209,7 +210,11 @@ async def reconcile(
         for row in due:
             if queue_reminder is not None:
                 elapsed = int((now - row["invitation_sent_at"]).total_seconds() // 3600)
-                queue_reminder(str(row["job_candidate_link_id"]), elapsed)
+                # THE STAGE travels with the reminder, because it is what the
+                # send is idempotent on. Derived from elapsed time alone, a
+                # conversation found late at 80 hours would label its FIRST
+                # reminder 72 and the second would then be deduplicated away.
+                queue_reminder(str(row["job_candidate_link_id"]), elapsed, hours)
             await session.execute(
                 text(
                     "UPDATE assessment_conversations "

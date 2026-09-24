@@ -4,16 +4,27 @@ Owner-ruled 2026-09-18: the brief describes the candidate-owned system
 (candidate_employments, bgv_verifications, the seven-item checkbox form),
 so the older tenant-owned one goes the way the 2026-09-09 and
 2026-09-10 removals went,
-with a sweep rather than a memory. The TABLE stays: rows already written
-are history, and dropping them would delete the answer to "what did this
-employer actually say" for verifications that really ran.
+with a sweep rather than a memory.
+
+AMENDED Phase 6 (CONTRACT v3): the TABLE is dropped too, by migration 0122,
+and only when it is EMPTY. The upgrade RAISES naming the count when a row
+exists, because deleting what an employer actually said about a verification
+that really ran is an owner decision, never a migration's. Pilot counted zero
+rows on 2026-09-24. The 40-aspect outreach route that shared this router,
+`POST /verification/outreach`, is retired in the same phase.
 
 The sweep covers live source only. Migrations, docs and history keep the
 name, because they record what was true when they were written.
 """
 from __future__ import annotations
 
+import asyncio
 import pathlib
+
+import pytest
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 BACKEND = pathlib.Path(__file__).resolve().parents[1]
 APP = BACKEND / "app"
@@ -78,10 +89,10 @@ def test_the_retired_routes_are_not_registered() -> None:
         "/api/v1/verification/form/{token}",
         "/api/v1/verification/profile/{profile_id}",
         "/api/v1/verification/requests/{request_id}/override",
+        "/api/v1/verification/outreach",
     ):
         assert gone not in paths, f"{gone} is still registered"
     # The survivors, so this test cannot pass by the router being empty.
-    assert "/api/v1/verification/outreach" in paths
     assert "/api/v1/verification/inbound-email" in paths
     assert "/api/v1/bgv/form/{token}" in paths
 
@@ -95,3 +106,35 @@ def test_the_retired_frontend_intake_is_gone() -> None:
         if "employer_emails" in text or "VerificationFormInfo" in text:
             offenders.append(str(path.relative_to(FRONTEND)))
     assert not offenders, f"retired intake still in the frontend: {offenders}"
+
+
+def test_the_retired_table_is_dropped_from_the_migrated_schema() -> None:
+    """Migration 0122 dropped it, read from the database rather than from the
+    migration file: a guard that raised, or a drop that was skipped, would
+    leave the file saying one thing and the schema another."""
+    from app.core.config import get_settings
+
+    async def _exists() -> bool | None:
+        engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
+        try:
+            async with engine.connect() as conn:
+                return bool(
+                    (
+                        await conn.execute(
+                            sa.text("SELECT to_regclass('public.verification_requests')")
+                        )
+                    ).scalar()
+                )
+        except (OSError, sa.exc.DBAPIError):
+            return None
+        finally:
+            await engine.dispose()
+
+    loop = asyncio.new_event_loop()
+    try:
+        exists = loop.run_until_complete(_exists())
+    finally:
+        loop.close()
+    if exists is None:
+        pytest.skip("no database reachable -- the schema cannot be read")
+    assert exists is False, "verification_requests still exists after migration 0122"
