@@ -368,12 +368,37 @@ def test_the_listing_shows_only_this_tenants_conversations(
 ) -> None:
     client.as_recruiter(world, world.tenant_a)
     mine = _open_thread(client, world.candidate_a).json()["id"]
+    client.http.post(
+        f"{CONV}/{mine}/messages",
+        json={"body": "Hello from A.", "client_token": "tok-list-a"},
+    )
 
     client.as_recruiter(world, world.tenant_b)
     theirs = _open_thread(client, world.candidate_b).json()["id"]
+    client.http.post(
+        f"{CONV}/{theirs}/messages",
+        json={"body": "Hello from B.", "client_token": "tok-list-b"},
+    )
     visible = {row["id"] for row in client.http.get(CONV).json()}
     assert theirs in visible
     assert mine not in visible
+
+
+def test_a_candidate_thread_nobody_wrote_in_is_not_listed(
+    client: Caller, world: World
+) -> None:
+    """Opening a thread is a side effect of clicking "Message". A list of
+    threads that say nothing is a list of clicks, so an empty CANDIDATE thread
+    is not listed until somebody writes in it."""
+    client.as_recruiter(world, world.tenant_a)
+    opened = _open_thread(client, world.candidate_a).json()["id"]
+    assert opened not in {row["id"] for row in client.http.get(CONV).json()}
+
+    client.http.post(
+        f"{CONV}/{opened}/messages",
+        json={"body": "Now it has a message.", "client_token": "tok-first-word"},
+    )
+    assert opened in {row["id"] for row in client.http.get(CONV).json()}
 
 
 # ── The BGV refusal ──────────────────────────────────────────────────────────
@@ -629,11 +654,13 @@ def candidate_client(world: World) -> Iterator[Caller]:
 
 
 def _sign_in_as_candidate(caller: Caller, world: World, candidate: uuid.UUID) -> None:
-    """Give the candidate a portal user whose email matches their record.
+    """Give the candidate a portal user LINKED to their record.
 
-    Matched BY EMAIL rather than by a linked user id on purpose: that is the
-    ordinary state, because a candidate exists from an employer's first outreach
-    and is linked to a portal login only when they first sign in.
+    AMENDED Phase 6: the candidate routes resolve through
+    `candidate_identity.require_candidate`, which reads `candidates.user_id`
+    and nothing else. The email fallback this used to rely on matched an
+    address nobody had verified; linking now happens at sign-in, and only for
+    a Firebase-verified address (`candidate_identity.link_on_sign_in`).
     """
     user_id = uuid.uuid4()
     sessions = _sessions()
@@ -656,6 +683,10 @@ def _sign_in_as_candidate(caller: Caller, world: World, candidate: uuid.UUID) ->
                             " 'candidate', 'active')"
                         ),
                         {"id": str(user_id), "email": email},
+                    )
+                    await session.execute(
+                        sa.text("UPDATE candidates SET user_id = :uid WHERE id = :cid"),
+                        {"uid": str(user_id), "cid": str(candidate)},
                     )
 
     _run(_make_user())
