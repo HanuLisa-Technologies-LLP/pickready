@@ -38,23 +38,15 @@ _DECLARES = APP / "models" / "job.py"
 
 #: Readers other packages own, each deleted by its owner. Not permanent.
 PENDING_BACKEND = {
-    APP / "api" / "portal.py": "Phase 6 (the candidate portal job card)",
     APP / "services" / "matching.py": "Phase 2 (`_jd_text`)",
     APP / "services" / "functional_assessment.py": "Phase 7 (`infer_grade`)",
 }
 
 _FRONTEND_PATTERN = re.compile(r"\b(?:job|role)\??\.level\b")
-PENDING_FRONTEND = (
-    # PLAN-p1 WP-D: the job list, the job page, the apply page, the employer
-    # page and the orphaned jobs list.
-    REPO / "frontend" / "app" / "(org)" / "org" / "jobs" / "page.tsx",
-    REPO / "frontend" / "app" / "(org)" / "org" / "jobs" / "[id]" / "page.tsx",
-    REPO / "frontend" / "app" / "apply" / "[job_uuid]" / "page.tsx",
-    REPO / "frontend" / "app" / "(public)" / "employers" / "[slug]" / "employer-profile.tsx",
-    REPO / "frontend" / "components" / "jobs-list.tsx",
-    # Phase 6: the candidate portal's New Jobs card.
-    REPO / "frontend" / "app" / "(candidate)" / "portal" / "(app)" / "page.tsx",
-)
+#: Every frontend reader has landed (PLAN-p1 WP-D and Phase 6 WP6-E): the job
+#: list, the job page, the apply page, the employer page, the orphaned jobs
+#: list and the candidate portal's New Jobs card no longer read the field.
+PENDING_FRONTEND: tuple = ()
 
 
 def _level_reads(path) -> list[int]:

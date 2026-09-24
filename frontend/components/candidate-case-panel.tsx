@@ -4,9 +4,9 @@
 // verification and project evidence, side by side as tabs.
 //
 // WHY THIS EXISTS (vivekium release, Phase 6 WP6-F)
-// These three panels were mounted in exactly one place, `profile-review.tsx`,
-// which was mounted in exactly one place, the `/org/review` page, which no
-// navigation entry linked to. Deleting that orphaned page without giving the
+// These three panels were mounted in exactly one place, the retired review
+// screen's profile component, which was mounted in exactly one place, the HR
+// review page, which no navigation entry linked to. Deleting that orphaned page without giving the
 // panels another home would have taken away the only screen on which a person
 // can mark a previous employer verified, and the offer gate in
 // `hiring_pipeline.apply_transition` refuses an offer until a person has. So

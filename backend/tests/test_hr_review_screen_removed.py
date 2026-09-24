@@ -54,8 +54,10 @@ BACKEND_GONE = re.compile(
     r"|candidates/links/\$\{[^}]+\}/(?:decision|status)\b"
 )
 
-#: The frontend half: the unlinked review and templates pages and the four
-#: components that served nothing else.
+#: The frontend half: the unlinked review and templates pages, the four
+#: components that served nothing else, and the three only the review page
+#: used (its profile component, the second bulk-email modal and that modal's
+#: payload builder), all deleted by WP6-F.
 FRONTEND_GONE = re.compile(
     r"org/review\b"
     r"|org/templates\b"
@@ -63,7 +65,11 @@ FRONTEND_GONE = re.compile(
     r"|hm-decision-actions"
     r"|candidate-selection\b"
     r"|components/jobs-list\b"
-    r"|\b(?:CandidateDecisionActions|HmDecisionActions|CandidateSelection|JobsList)\b"
+    r"|profile-review\b"
+    r"|send-outreach-modal"
+    r"|outreach-payload"
+    r"|\b(?:CandidateDecisionActions|HmDecisionActions|CandidateSelection|JobsList"
+    r"|ProfileReview|SendOutreachModal)\b"
 )
 
 THIS_FILE = pathlib.Path(__file__)
@@ -92,15 +98,6 @@ def test_no_backend_source_still_carries_them() -> None:
     assert not hits, "the decision/status routes are back:\n" + "\n".join(hits)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "WP6-F deletes these frontend files in the same release. Until that "
-        "merges this fails as expected; once it merges it passes, strict xfail "
-        "turns that into a failure, and the marker must be removed in that "
-        "merge so the absence is enforced from then on."
-    ),
-)
 def test_no_frontend_source_still_carries_them() -> None:
     # A route directory is named by its PATH, which a content sweep never
     # reads, so the two pages are asserted absent on disk as well.
@@ -149,5 +146,9 @@ def test_the_sweep_sees_the_patterns_it_forbids() -> None:
         'href="/org/review"': True,
         'href="/org/reviews-archive"': False,
         "export function JobsList() {}": True,
+        'import { ProfileReview } from "@/components/profile-review";': True,
+        'import { SendOutreachModal } from "@/components/send-outreach-modal";': True,
+        'import { buildPayload } from "@/lib/outreach-payload";': True,
+        "export function ProfileReviewer() {}": False,
     }.items():
         assert bool(FRONTEND_GONE.search(sample)) is expected, sample

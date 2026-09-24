@@ -29,11 +29,6 @@ EXEMPT = (
     # rewriting a candidate's skills list to satisfy a sweep would be editing
     # evidence.
     REPO / "scripts" / "demo-resumes",
-    # PENDING HAND-OFF, not a permanent exemption: one comment names LangSmith
-    # in `api/assessments.py`, a file this package may not edit during the
-    # parallel stage. The orchestrator applies the one-line comment fix at
-    # merge and deletes this entry in the same commit.
-    BACKEND / "app" / "api" / "assessments.py",
 )
 
 

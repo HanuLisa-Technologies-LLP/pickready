@@ -2,7 +2,7 @@
 //
 // The candidate case panel is the new and only mount of the recruiter's
 // messages, background verification and project evidence panels, after the
-// orphaned `/org/review` page and `profile-review.tsx` were deleted (vivekium
+// orphaned HR review page and its profile component were deleted (vivekium
 // release, Phase 6). What is worth pinning is exactly what the panel owns:
 // that each tab hands the SAME candidate id to the panel behind it, and that
 // switching candidates cannot leave the previous person's tab open.

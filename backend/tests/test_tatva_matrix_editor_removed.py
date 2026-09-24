@@ -65,20 +65,12 @@ EXEMPT = (
     # absence has to spell the absence.
     BACKEND / "tests" / "test_ppi.py",
     BACKEND / "tests" / "test_drishti.py",
-    #
-    # PENDING HAND-OFFS, not permanent exemptions. Each is owned by a package
-    # running beside this one, which deletes or rewrites it; the entry is then
-    # stale and `test_every_pending_hand_off_still_has_something_to_hand_off`
-    # fails until it is removed, so an exemption cannot outlive its reason.
-    #
-    # The frontend package (PLAN-p1 WP-D) deletes the matrix editor and the
-    # categories card, and replaces the job page's setup section.
-    REPO / "frontend" / "components" / "job-setup-review.tsx",
-    REPO / "frontend" / "components" / "job-setup-review.test.tsx",
-    REPO / "frontend" / "components" / "matching-categories.tsx",
-    REPO / "frontend" / "app" / "(org)" / "org" / "jobs" / "[id]" / "page.tsx",
 )
 
+#: Every hand-off has landed: the frontend package (PLAN-p1 WP-D) deleted the
+#: matrix editor and the categories card and replaced the job page's setup
+#: section, and WP-E moved the harness onto the Skills step. The check below
+#: stays so a future hand-off entry cannot outlive its reason.
 PENDING_HAND_OFFS = EXEMPT[3:]
 
 
