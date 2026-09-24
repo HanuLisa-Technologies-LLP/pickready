@@ -88,7 +88,7 @@ from app.schemas.support import (
 )
 from app.services import support as support_fsm
 from app.services.capabilities import OPEN_SUPPORT_THREADS
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch_after_commit
 
 router = APIRouter()
 provider_router = APIRouter()
@@ -145,14 +145,27 @@ async def _append_message(
     return message
 
 
-def _notify(thread: SupportThread, message: SupportMessage) -> None:
-    """Hand the notification to a background task, never send it here.
+def _notify(
+    session: AsyncSession, thread: SupportThread, message: SupportMessage
+) -> None:
+    """Hand the notification to a background task once the message COMMITS.
 
     Dispatched because a request handler must not wait on SMTP or SES (rule 4),
-    and `dispatch` RAISES on failure rather than degrading, so a queue that did
-    not accept the work cannot be reported as a notification that was sent.
+    and dispatched AFTER THE COMMIT (`dispatch_after_commit`, CONTRACT v5)
+    because the task reads the thread and the message by id: dispatched before
+    the commit it could start before either row was visible, and a request
+    that rolled back after the dispatch would mail a notification about a
+    message that was never stored. A rolled-back request now notifies nobody.
+
+    A lost invoke is logged at ERROR by the commit hook and leaves the message
+    durable and in the queue: the thread's DERIVED status already says who owes
+    the next move, so the staff list and the customer's list show it without
+    the email. No sweep re-sends a notification, deliberately: the task has no
+    idempotency key, so a repair pass could not tell a lost invoke from a
+    delivered one and would mail twice about one message.
     """
-    dispatch(
+    dispatch_after_commit(
+        session,
         "pickready.notify_support_message",
         args=[str(thread.id), str(message.id)],
     )
@@ -233,7 +246,7 @@ async def open_thread(
     message = await _append_message(
         session, thread, author=user, body=body.body, author_side=SIDE_CUSTOMER
     )
-    _notify(thread, message)
+    _notify(session, thread, message)
 
     return ThreadDetailOut(
         id=thread.id,
@@ -341,7 +354,7 @@ async def reply_as_customer(
     message = await _append_message(
         session, thread, author=user, body=body.body, author_side=SIDE_CUSTOMER
     )
-    _notify(thread, message)
+    _notify(session, thread, message)
     return SupportMessageOut(
         id=message.id,
         author_side=message.author_side,
@@ -522,7 +535,7 @@ async def provider_reply(
     message = await _append_message(
         session, thread, author=user, body=body.body, author_side=SIDE_STAFF
     )
-    _notify(thread, message)
+    _notify(session, thread, message)
     return SupportMessageOut(
         id=message.id,
         author_side=message.author_side,
