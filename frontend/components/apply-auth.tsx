@@ -18,6 +18,7 @@ import {
   type FirebaseExchangeResult,
 } from "@/lib/firebase-session";
 import { useAuth } from "@/lib/auth-context";
+import { ForgotPassword } from "@/components/forgot-password";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -238,6 +239,9 @@ export function ApplyAuth({ onAuthed }: { onAuthed: () => void }) {
               : "Sign in and continue"}
         </Button>
       </form>
+      {mode === "signin" ? (
+        <ForgotPassword initialEmail={email} idPrefix="apply" />
+      ) : null}
       {error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}
