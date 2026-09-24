@@ -48,8 +48,6 @@ SCOPE = (
 #: calls, proposed owner phase). Owners marked "proposed" were not assigned by
 #: a phase plan and are the orchestrator's to confirm.
 LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
-    ("api/admin.py", "create_tenant"): (1, "P7 proposed"),
-    ("api/admin.py", "invite_staff"): (1, "P6 proposed"),
     ("api/assessment_conversation.py", "_ensure_conversation_ready"): (1, "P3"),
     ("api/assessment_conversation.py", "respond"): (2, "P3"),
     ("api/assessment_recording.py", "finalize_video_interview"): (1, "P3"),
