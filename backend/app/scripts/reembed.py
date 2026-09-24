@@ -79,6 +79,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config.llm_providers import (
     BACKOFF_MAX_SECONDS,
+    EMBEDDING_CONTRACT_VERSION,
     EMBEDDING_MODEL,
     backoff_seconds,
     classify_status,
@@ -90,12 +91,12 @@ from app.services.embeddings import EMBEDDING_DIM, MAX_BATCH, EmbeddingError, em
 
 logger = logging.getLogger("pickready.reembed")
 
-#: OUR version of how the embedded text is built: the width, the input type and
-#: the template. The vendor does not version a model id, so without this a
-#: change to WHAT is embedded would be invisible while the model string stayed
-#: identical. Bump it whenever a text builder below changes, and every row
-#: built by the previous builder becomes stale by query rather than by memory.
-CONTRACT_VERSION = "v1-1024-doc"
+#: The embedding contract version, imported rather than restated. It lives in
+#: `config/llm_providers` beside `EMBEDDING_MODEL` since 2026-09-24, because the
+#: indexer (`rag/index`) and the repair sweep (`rag/repair`) stamp and compare
+#: the same value, and two copies of one version string drift silently. The
+#: local name is kept so every reader below is unchanged.
+CONTRACT_VERSION = EMBEDDING_CONTRACT_VERSION
 
 #: How many rows are read, embedded and shadow-written per round. Bounded by the
 #: vendor's own per-request ceiling, which `embeddings.embed` already splits on;

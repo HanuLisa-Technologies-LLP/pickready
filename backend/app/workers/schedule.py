@@ -144,6 +144,20 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
         ),
     ),
     ScheduledTask(
+        rule="readypick-repair-semantic-index",
+        task="pickready.repair_semantic_index",
+        interval_minutes=60,
+        why=(
+            "Re-embeds chunks that EXIST and are not searchable by meaning: a "
+            "NULL vector written during an embedding outage, a vector from a "
+            "retired model or text builder, or one of the wrong width. The "
+            "reconcile sweep above cannot see any of them, because the "
+            "document has chunks. Asks the provenance columns, never a "
+            "timestamp; capped by retrieval_repair_sweep_batch, and 0 pauses "
+            "it."
+        ),
+    ),
+    ScheduledTask(
         rule="readypick-release-held-assessments",
         task="pickready.release_held_assessments",
         interval_minutes=60,

@@ -854,6 +854,14 @@ class Settings(BaseSettings):
     #: dispatches one indexing task per document, so this bounds the fan-out of
     #: a single hourly run rather than the work itself.
     retrieval_index_sweep_batch: int = 200
+    #: How many chunks one `repair_semantic_index` pass re-embeds (PLAN-p5
+    #: WP5-E): chunks with a NULL vector, a retired model or contract stamp, or
+    #: the wrong width. The pass runs hourly, so this is the hourly cap on
+    #: re-embedding cost. 0 PAUSES the sweep: every chunk written before
+    #: 2026-09-24 carries no model stamp and is re-embedded by the first
+    #: passes, and an owner watching a vendor bill needs a setting, not a
+    #: deploy, to stop that.
+    retrieval_repair_sweep_batch: int = 200
 
     # ── Retrieval intelligence (RPN-AI-UP-001 W6) ───────────────────────────
     #

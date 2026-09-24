@@ -65,6 +65,11 @@ variable "agent_log_group_name" {
   type        = string
 }
 
+variable "task_worker_log_group_name" {
+  description = "The task worker Lambda's log group. A metric filter over `rag.repair.degraded` is the only report of a semantic index repair sweep that cannot embed, because retrieval keeps answering on the keyword half."
+  type        = string
+}
+
 variable "kms_key_arn" {
   type    = string
   default = null
