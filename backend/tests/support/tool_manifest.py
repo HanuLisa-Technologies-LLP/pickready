@@ -28,6 +28,14 @@ The per-tool digest names WHICH tool changed, which is the first thing a
 reviewer needs. The `tools_digest` over the sorted per-tool digests catches the
 case a per-tool comparison cannot: a tool REMOVED, or one added, in a diff that
 touches nothing else.
+
+WHY IT LIVES UNDER `tests/`
+---------------------------
+It was `app/services/tools/manifest.py`, with the JSON beside it, until the
+Vivekium release. Its only reader was `tests/test_tool_schema_pinning.py`, so it
+was test code shipped in the production image and reachable by nothing there.
+Moved, not rewritten: the digests and the file format are unchanged, so the
+pinned JSON moved byte for byte to `tests/fixtures/tool_manifest.json`.
 """
 from __future__ import annotations
 
@@ -38,10 +46,13 @@ from typing import Any
 
 from app.services.tools import permissions, registry
 
-#: Checked in beside this module. `tests/test_tool_schema_pinning.py` compares
-#: it against the live registry and fails on any difference, so regenerating it
-#: is a deliberate commit rather than a side effect of running the suite.
-MANIFEST_PATH = pathlib.Path(__file__).with_name("tool_manifest.json")
+#: Checked in under `tests/fixtures`. `tests/test_tool_schema_pinning.py`
+#: compares it against the live registry and fails on any difference, so
+#: regenerating it is a deliberate commit rather than a side effect of running
+#: the suite.
+MANIFEST_PATH = (
+    pathlib.Path(__file__).resolve().parents[1] / "fixtures" / "tool_manifest.json"
+)
 
 #: Bumped when the SHAPE of this manifest changes, so an old file is refused as
 #: incomparable rather than silently mismatching on every tool at once.

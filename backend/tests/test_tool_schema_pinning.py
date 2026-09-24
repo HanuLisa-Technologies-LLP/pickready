@@ -13,7 +13,10 @@ Not "something is broken". It means a tool's reach changed, and the fix is to
 look at the change, decide it is intended, and regenerate the manifest in the
 same commit:
 
-    python -c "from app.services.tools import manifest; manifest.write()"
+    python -c "from tests.support import tool_manifest; tool_manifest.write()"
+
+(run from `backend/`). The manifest module and its JSON live under `tests/`
+since the Vivekium release: nothing in production ever read them.
 
 A test that regenerated the file itself would pass forever while pinning
 nothing, which is the failure mode of every checked-in snapshot that has an
@@ -24,7 +27,8 @@ from __future__ import annotations
 import json
 
 from app.services import tools
-from app.services.tools import manifest, permissions, policy
+from app.services.tools import permissions, policy
+from tests.support import tool_manifest as manifest
 
 
 def test_the_checked_in_manifest_matches_the_live_registry() -> None:
@@ -32,8 +36,8 @@ def test_the_checked_in_manifest_matches_the_live_registry() -> None:
     assert not differences, (
         "A tool definition changed. Read the change, and if it is intended "
         "regenerate the manifest in the same commit with "
-        "`python -c \"from app.services.tools import manifest; "
-        "manifest.write()\"`:\n  " + "\n  ".join(differences)
+        "`python -c \"from tests.support import tool_manifest; "
+        "tool_manifest.write()\"` from backend/:\n  " + "\n  ".join(differences)
     )
 
 

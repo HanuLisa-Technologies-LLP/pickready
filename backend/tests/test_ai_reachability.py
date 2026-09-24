@@ -90,12 +90,6 @@ LIVE: dict[str, str] = {
     "app.services.proctoring": "api/proctoring.py and the assessment gate",
     "app.services.assessment_formats": "the six question formats on the live turn",
     "app.services.projects": "Project Evidence Intelligence, api and worker",
-    "app.services.memory": (
-        "RPN-AI-UP-001 W3.5 and W3.6, wired 2026-09-09. workers/tasks.py "
-        "registers pickready.revoke_learnings_from_source, which calls "
-        "memory.experience. Before that the five memory layers were reached "
-        "only from reasoning/, which is itself unreachable."
-    ),
     "app.services.observability": (
         "RPN-AI-UP-001 W4.6, wired 2026-09-09. llm_router.invoke_llm opens a "
         "GenAI span at the one model-call chokepoint, and "
@@ -121,9 +115,13 @@ LIVE: dict[str, str] = {
 #: current tree and names the workstream expected to change it. When one
 #: becomes reachable this test fails, and the fix is to MOVE the entry, which
 #: is what keeps `claude.md` and this file from disagreeing.
+#:
+#: The reasoning planner and runner, the orchestration coordinator, router,
+#: enforcement and versioning, the experience memory and the agent action
+#: ledger used to sit here and in LIVE. They were deleted in the Vivekium
+#: release, and `test_unreachable_subsystems_removed.py` keeps them gone: a
+#: package that does not exist needs a removal sweep, not a reachability claim.
 NOT_LIVE: dict[str, str] = {
-    "app.services.reasoning": "RPN-AI-UP-001 W5; reached only from eval scripts",
-    "app.services.orchestration": "RPN-AI-UP-001 W10.1; reached only from eval scripts",
     "app.evaluation": (
         "W7.4 requires this in the other direction too: nothing under "
         "app/services may import app/evaluation, and no route or worker may "
@@ -187,6 +185,20 @@ ENTRY_POINTS_WITHOUT_CALLERS: dict[tuple[str, str], str] = {
         "Vaada (conversation start) and Miti (grading) both read the contract "
         "bound to the conversation and log its digest; both are wired by the "
         "assessment and grading phases."
+    ),
+    # ORPHANED BY A DELETION, AND RECORDED RATHER THAN LEFT TO BE FOUND. The
+    # reasoning runner was the only thing that built a `RequestTrace`, charged
+    # it and persisted it into `agent_execution_traces`. It was unreachable and
+    # was deleted in the Vivekium release, so these two lost their only caller
+    # in the same change. They are kept because the tool layer the grading
+    # phase wires may record through them; if it does not, the module goes.
+    ("app/services/observability/trace.py", "persist"): (
+        "the only writer of agent_execution_traces; its one caller was the "
+        "deleted reasoning runner. Wire it from the tool layer or delete it."
+    ),
+    ("app/services/observability/trace.py", "add_cost"): (
+        "prices a trace from cost_telemetry's per-call usage; its one caller "
+        "was the deleted reasoning runner."
     ),
 }
 

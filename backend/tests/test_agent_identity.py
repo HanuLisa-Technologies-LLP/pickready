@@ -14,7 +14,6 @@ import pytest
 from app.services import agent_loop
 from app.services.agents import envelope as env
 from app.services.agents import identity
-from app.services.orchestration import router
 from app.services.reliability import budget as budgeting
 from app.services.tools import permissions
 
@@ -33,7 +32,7 @@ def test_every_named_agent_executes_as_a_known_runtime_agent() -> None:
     tool call rather than at the front door."""
     for agent_id, agent in identity.AGENTS.items():
         assert agent.runtime_id in permissions.AGENTS, agent_id
-        assert agent.runtime_id in router.ROUTES.values(), agent_id
+        assert permissions.granted_tools(agent.runtime_id), agent_id
 
 
 def test_miti_holds_no_extract_jd_tool() -> None:
@@ -104,7 +103,7 @@ def _envelope() -> env.Envelope:
     return env.Envelope.for_run(
         tenant_id="tenant-1",
         agent_id=identity.SUTRA,
-        task_type=router.TASK_JOB_SETUP,
+        task_type="job_setup",
         interactive=False,
         job_id="job-1",
         context_version="ctx-9",
@@ -212,7 +211,7 @@ def test_an_expired_deadline_is_visible_without_a_clock_argument_being_wrong() -
 # out would answer what pytest's import order happens to have loaded, which is
 # the same ordering luck that hid the import-cycle defect for weeks.
 
-from app.orchestration_checks import (  # noqa: E402
+from app.import_graph import (  # noqa: E402
     reachable_modules,
     unreachable_agent_modules,
 )

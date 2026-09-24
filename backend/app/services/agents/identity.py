@@ -83,8 +83,8 @@ class Agent:
     meaning: str
     #: The role, in the product's own words.
     role: str
-    #: The runtime id in `tools.permissions.AGENT_TOOLS` and
-    #: `orchestration.router.ROUTES`. NOT renamed to the Sanskrit name: a beat
+    #: The runtime id in `tools.permissions.AGENT_TOOLS`. NOT renamed to the
+    #: Sanskrit name: a beat
     #: entry, a queued message and a worker registration cannot all be changed
     #: atomically during a rolling deploy, and this id appears in persisted
     #: traces that must stay readable.
@@ -326,7 +326,7 @@ def activation_status(reachable: frozenset[str]) -> dict[str, dict[str, object]]
     `reachable` is supplied by the caller rather than computed here on purpose.
     Working it out means walking the import graph of the whole `app` package,
     which is an AST pass this module has no business owning and which would make
-    a naming table depend on a static analyser. `orchestration_checks` owns it,
+    a naming table depend on a static analyser. `app/import_graph.py` owns it,
     and both the test and `eval_agents.py` read the same answer.
     """
     report: dict[str, dict[str, object]] = {}

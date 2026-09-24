@@ -26,6 +26,11 @@ one. Both halves are pinned below, and the second is pinned in the mutation
 direction as well: the test asserts that the provider name prices to nothing,
 because that is the bug and an assertion that only checks the happy path would
 not have caught it.
+
+The caller the 2026-09-22 fix gave it was the reasoning runner, which nothing
+on the live path reached; it was deleted in the Vivekium release, so `add_cost`
+and `persist` are recorded as uncalled in `test_ai_reachability.py` rather than
+claimed as wired here.
 """
 from __future__ import annotations
 
@@ -37,7 +42,6 @@ import pytest
 from app.config import llm_providers
 from app.services import cost_telemetry, llm_router, prompt_cache
 from app.services.observability import trace as tracing
-from app.services.reasoning import planner, runner
 
 
 # ── 28A: reading the vendor's cache report ───────────────────────────────────
@@ -359,50 +363,6 @@ def test_a_trace_keeps_the_estimate_and_the_measurement_apart() -> None:
     assert body["measured_cached_prompt_tokens"] == 800
     assert "heuristic" in body["generated_tokens_basis"]
     assert "not an invoice" in body["cost_basis"]
-
-
-def test_the_runner_actually_charges_the_trace_it_writes() -> None:
-    """`add_cost` HAS a caller now, and this is what proves it.
-
-    A repo-wide search for the method used to return only its definition, so
-    every `agent_execution_traces.cost_usd` in production was 0.0. This drives
-    `run_task` with an `execute` that reports usage exactly the way
-    `llm_router` does, and reads the cost back off the finished trace.
-    """
-    plan = planner.plan("report_synthesis", "siddhi")
-
-    async def execute(_instruction: str) -> str:
-        cost_telemetry.note_usage(
-            task_type="report_synthesis",
-            model=llm_providers.MODEL_TERRA,
-            provider=llm_providers.PROVIDER,
-            prompt_tokens=200_000,
-            completion_tokens=20_000,
-            cached_prompt_tokens=50_000,
-            had_usage=True,
-        )
-        return "a report"
-
-    result = asyncio.run(run_and_capture(plan, execute))
-    assert result["cost_usd"] == pytest.approx(0.60 + 0.30)
-    assert result["measured_prompt_tokens"] == 200_000
-    assert result["measured_cached_prompt_tokens"] == 50_000
-
-
-async def run_and_capture(plan, execute) -> dict:
-    captured: dict = {}
-    original = tracing.RequestTrace.log
-
-    def _log(self) -> None:
-        captured.update(self.as_dict())
-        original(self)
-
-    tracing.RequestTrace.log = _log  # type: ignore[method-assign]
-    try:
-        await runner.run_task(plan=plan, execute=execute, fallback="")
-    finally:
-        tracing.RequestTrace.log = original  # type: ignore[method-assign]
-    return captured
 
 
 # ── The tally ────────────────────────────────────────────────────────────────

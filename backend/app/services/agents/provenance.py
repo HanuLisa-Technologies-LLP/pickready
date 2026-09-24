@@ -324,7 +324,7 @@ class Ledger:
         """Everything wrong with this flow's provenance. Empty is healthy.
 
         A list rather than an exception because a reader wants all of it at
-        once, the same posture `orchestration_checks.structural_invariants`
+        once, the same posture `import_graph.structural_invariants`
         takes.
         """
         out: list[str] = []

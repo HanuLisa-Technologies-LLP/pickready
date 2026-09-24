@@ -24,7 +24,7 @@ WHY REACHABILITY AND NOT A DIRECT-IMPORT CHECK
 A direct-import check answers the wrong question, and this codebase has the
 scar: for a whole phase every Part A agent name pointed at code no route
 imported, every module was green in isolation, and the framework ran nowhere.
-`orchestration_checks.reachable_modules` walks the TRANSITIVE import graph from
+`import_graph.reachable_modules` walks the TRANSITIVE import graph from
 `app/api/**`, `app/workers/**` and `app/main.py` with `ast`, which is the check
 that would have caught it. Reused here rather than reimplemented: two answers to
 "what can a route reach" would eventually disagree, and the disagreement would
@@ -40,7 +40,7 @@ import pathlib
 
 import pytest
 
-from app.orchestration_checks import reachable_modules
+from app.import_graph import reachable_modules
 
 APP_ROOT = pathlib.Path(__file__).resolve().parents[1] / "app"
 SERVICES_ROOT = APP_ROOT / "services"
