@@ -628,6 +628,29 @@ class Settings(BaseSettings):
     #: own `GET /languages` by the operator verification task.
     judge0_language_ids: str = "python:71,java:62,cpp:54,javascript:63"
 
+    # ── Coding question generation (Phase 4, `assessment_formats/coding_generation`)
+    #
+    # A coding question is accepted only after its model-written reference
+    # solution has passed every one of its own tests IN THE SANDBOX. These are
+    # the bounds of what the model is asked for and of the validation.
+    #: Sample tests the candidate sees and may Run against.
+    coding_visible_tests_min: int = 2
+    coding_visible_tests_max: int = 3
+    #: Tests the final submission is graded against. Never shown to anybody.
+    #: The database refuses more than 30 per question.
+    coding_hidden_tests_min: int = 5
+    coding_hidden_tests_max: int = 10
+    #: The generation loop's wall clock, across every attempt. Larger than the
+    #: generic background loop's, because one attempt is a long JSON document
+    #: from the model PLUS sandbox runs of the reference and every starter.
+    coding_generation_deadline_seconds: float = 420.0
+    #: One sandbox validation run (submit, poll, collect) may take this long.
+    coding_validation_deadline_seconds: float = 60.0
+    #: The reference solution may use at most this fraction of a test's CPU
+    #: limit. A reference that nearly times out makes a correct candidate's
+    #: solution fail on a slower moment of the same host.
+    coding_reference_cpu_headroom: float = 0.5
+
     # ── Assessment question formats (assessment-spec-doc.md) ────────────────
     #
     # Composition is enforced in code, not suggested in a prompt: evidence
@@ -1099,6 +1122,27 @@ class Settings(BaseSettings):
             raise ValueError("CODE_EXECUTION_CPU_EXTRA_SECONDS must not be negative")
         if self.code_execution_wall_seconds < self.code_execution_cpu_seconds:
             raise ValueError("CODE_EXECUTION_WALL_SECONDS must be at least CODE_EXECUTION_CPU_SECONDS")
+
+        # Coding question generation. 30 is `models.coding.HIDDEN_TESTS_MAX`,
+        # the database CHECK; a range the table refuses would fail every
+        # question at INSERT, after the model and the sandbox had been paid.
+        if not 1 <= self.coding_visible_tests_min <= self.coding_visible_tests_max <= 5:
+            raise ValueError(
+                "CODING_VISIBLE_TESTS_MIN and _MAX must satisfy 1 <= min <= max <= 5"
+            )
+        if not 1 <= self.coding_hidden_tests_min <= self.coding_hidden_tests_max <= 30:
+            raise ValueError(
+                "CODING_HIDDEN_TESTS_MIN and _MAX must satisfy 1 <= min <= max <= 30"
+            )
+        if self.coding_generation_deadline_seconds <= self.coding_validation_deadline_seconds:
+            raise ValueError(
+                "CODING_GENERATION_DEADLINE_SECONDS must exceed "
+                "CODING_VALIDATION_DEADLINE_SECONDS"
+            )
+        if self.coding_validation_deadline_seconds <= 0:
+            raise ValueError("CODING_VALIDATION_DEADLINE_SECONDS must be greater than zero")
+        if not 0 < self.coding_reference_cpu_headroom <= 1:
+            raise ValueError("CODING_REFERENCE_CPU_HEADROOM must be in (0, 1]")
         return self
 
     @property
