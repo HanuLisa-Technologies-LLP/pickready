@@ -1,6 +1,6 @@
 """The inbound-email webhook's schemas (API_CONTRACT.md `/verification`).
 
-The outreach request and response went with the retired 40-aspect outreach
+The outreach request and response went with the retired outreach route
 (Phase 6); only the inbound relay's payload and answer remain.
 """
 from pydantic import BaseModel, ConfigDict, Field
