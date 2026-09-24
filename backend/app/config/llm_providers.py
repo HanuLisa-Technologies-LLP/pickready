@@ -1225,9 +1225,11 @@ TASK_COST_CEILING_USD: dict[str, float] = {
     "project_evidence": 0.25,
     "format_composition": 0.25,
     "answer_evaluation": 0.25,
-    # 8192 output tokens on the reasoning tier is about 0.12 USD at list
-    # price, plus a prompt that carries the previous attempt on a retry.
-    "coding_question_generation": 0.25,
+    # A fully budgeted call (the whole context plus 8192 output tokens on the
+    # reasoning tier) is about 0.17 USD, and every ceiling here sits at twice
+    # its task's worst case (`test_router_recovery`). The same row as the
+    # other 8192-token background writers.
+    "coding_question_generation": 0.40,
 }
 
 #: An unlisted task gets this rather than a raise, and that is the opposite of
