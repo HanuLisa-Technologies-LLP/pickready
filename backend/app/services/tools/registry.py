@@ -49,9 +49,11 @@ class ToolSpec:
     #: to declare one is never treated as more powerful than a bounded read.
     #: The dangerous direction is the opposite one: a tool that really does
     #: send an email inheriting this default and running automatically. What
-    #: catches that is `tool_manifest.json` -- the risk class is part of every
-    #: tool's pinned definition, so adding one shows up as a manifest diff in
-    #: CI rather than as a silent widening of reach.
+    #: catches that is `tests/fixtures/tool_manifest.json` -- the risk class is
+    #: part of every tool's pinned definition, so adding one shows up as a
+    #: manifest diff in CI rather than as a silent widening of reach -- and
+    #: `app/import_graph.tool_layer_problems`, which fails any tool that is not
+    #: a read, because the side-effect ledger such a tool needs was deleted.
     risk: RiskClass = RiskClass.READ
     #: Same inputs -> same outputs. Required before anything is cached.
     idempotent: bool = False

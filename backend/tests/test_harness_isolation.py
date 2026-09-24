@@ -17,7 +17,7 @@ dispatching looks exactly like a dispatch that worked.
 
 WHY A DIRECT AST SWEEP AND NOT `reachable_modules`
 ----------------------------------------------------
-`test_judge_isolation.py` uses `orchestration_checks.reachable_modules` because
+`test_judge_isolation.py` uses `import_graph.reachable_modules` because
 the thing it protects lives INSIDE `app/`, so a direct-import check would miss a
 route reaching the jury through a third module. That argument does not transfer
 here, and using the same tool would be cargo cult rather than reuse: `harness`

@@ -2055,40 +2055,6 @@ def reconcile_candidate_erasures():
 
 
 @task(
-    name="pickready.revoke_learnings_from_source",
-    route=Route.LAMBDA,
-)
-def revoke_learnings_from_source(
-    tenant_id: str, source: str, source_version: str | None = None
-):
-    """Withdraw every learning traceable to one source (W3.6).
-
-    Deactivates, never deletes: the question a reviewer asks afterwards is what
-    the system had believed and when it stopped, and a deleted row cannot
-    answer it. Scoped to ONE tenant, which is only expressible because W3.5
-    made `agent_learnings.tenant_id` NOT NULL -- before that there was no way
-    to revoke a compromised source without revoking everybody's.
-    """
-    from app.services.memory import experience
-
-    async def _task():
-        async with _worker_session() as session:
-            revoked = await experience.revoke_learnings_from_source(
-                session,
-                tenant_id=tenant_id,
-                source=source,
-                source_version=source_version,
-            )
-            await session.commit()
-            logger.info(
-                "memory.learnings_revoked tenant_id=%s source=%s revoked=%d",
-                tenant_id, source, revoked,
-            )
-            return {"revoked": revoked}
-    return _run(_task())
-
-
-@task(
     name="pickready.reconcile_context_index",
     route=Route.LAMBDA,
 )

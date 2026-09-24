@@ -1,13 +1,23 @@
-"""Cross-package invariants nobody owns individually, checked in one place.
+"""The static import graph of `app`, and the cross-package invariants it answers.
+
+WHAT THIS FILE WAS
+------------------
+It was the orchestration checks module, which also checked the orchestration
+router against the permission matrix, the reasoning planner's subtasks against
+the routed agent's tools, and the enforcement layer's halt table against the
+kill switch. All three of those subjects were deleted in the Vivekium release
+(no route and no worker could reach any of them), so the checks about them went
+with them. What survives is what live code still needs: the reachability walk
+the isolation tests are built on, the agent-identity activation check, and the
+tool-layer invariants Phase 5 wires the tools under.
 
 WHY HERE AND NOT IN EACH PACKAGE
 ---------------------------------
 Every problem this file finds is a DISAGREEMENT between two packages that are
-each individually correct. The routing table is fine; the permission matrix is
-fine; a task routed to an agent holding none of the tools its plan calls for is
-neither package's bug and is exactly the kind of gap that ships. Putting the
-check inside either one would mean importing the other, which is how a cycle
-starts.
+each individually correct. The identity table is fine and the import graph is
+fine; an agent name pointing at a module nothing reaches is neither package's
+bug and is exactly the kind of gap that ships. Putting the check inside either
+one would mean importing the other, which is how a cycle starts.
 
 It is called by `app/scripts/eval_agents.py` and by the test suite, and it
 returns a list of readable strings rather than raising: an operator wants all
@@ -20,9 +30,8 @@ import functools
 import pathlib
 
 from app.services.agents import identity
-from app.services.orchestration import router
-from app.services.reasoning import planner
 from app.services.tools import permissions, registry
+from app.services.tools.policy import RiskClass
 
 # ── Reachability: what a route or a worker can actually get to ───────────────
 #
@@ -36,8 +45,8 @@ from app.services.tools import permissions, registry
 # caller was `miti/pipeline.py`, which no route and no worker imports.
 #
 # The check that would have caught it is not a unit test of any module. It is
-# this: does a request handler or a background task have any import path to the code
-# a name claims. So the graph is computed statically, from `app/api/**`,
+# this: does a request handler or a background task have any import path to the
+# code a name claims. So the graph is computed statically, from `app/api/**`,
 # `app/workers/**` and `app/main.py`, and the answer is DATA that both the test
 # and `eval_agents.py` read.
 #
@@ -60,16 +69,18 @@ def _module_name(path: pathlib.Path) -> str:
 
 @functools.lru_cache(maxsize=1)
 def _import_edges() -> dict[str, frozenset[str]]:
-    """module -> the app modules it imports, read from the source with `ast`."""
+    """module -> the app modules it imports, read from the source with `ast`.
+
+    A file that does not parse RAISES. It used to be read as importing nothing,
+    which made a syntax error look like an unreachable module rather than a
+    broken one, and a reachability answer built on a file nobody could read is
+    not an answer.
+    """
     edges: dict[str, frozenset[str]] = {}
     for path in sorted(_APP.rglob("*.py")):
         if "__pycache__" in path.parts:
             continue
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:  # a file that cannot parse cannot import anything
-            edges[_module_name(path)] = frozenset()
-            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         targets: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("app"):
@@ -126,44 +137,13 @@ def reachable_modules() -> frozenset[str]:
     )
 
 
-def halt_coverage() -> list[str]:
-    """Every stage the enforcement layer can halt must be a stage the kill
-    switch knows about. Empty is healthy.
-
-    The two modules name their stages differently on purpose -- `pipeline_halt`
-    names them after the AGENT (`sutra_matrix`), `provenance` names them after
-    what HAPPENED (`tatva_matrix`) -- so the mapping between them is a table.
-    A table that silently stopped matching would leave a stage UNHALTABLE while
-    the code still read as though it were governed, which is the worst possible
-    state for a kill switch: present, referenced, and inert.
-
-    Resolved late, like everything else that touches `hiring`, and reported as
-    a problem rather than raised when the halt module is absent.
-    """
-    from app.services.orchestration import activation, enforcement
-
-    try:
-        halt = activation.load("pipeline_halt")
-    except activation.StageModuleMissing as exc:
-        return [str(exc)]
-
-    declared = set(halt.declared_stages())
-    problems = [
-        f"enforcement maps {stage!r} to halt stage {halt_stage!r}, which "
-        f"RPN_PIPELINE_HALT does not declare; that stage cannot be halted"
-        for stage, halt_stage in enforcement.HALT_STAGE_FOR.items()
-        if halt_stage not in declared
-    ]
-    return problems
-
-
 def unreachable_agent_modules() -> list[str]:
     """Agent identities whose live module nothing can reach. Empty is healthy.
 
-    This is the invariant that was violated for the whole of the previous
-    phase. It is here rather than in the identity table because the answer needs
-    the whole import graph, and a naming table that depended on a static
-    analyser would be a naming table nobody could read.
+    This is the invariant that was violated for the whole of spec-doc5. It is
+    here rather than in the identity table because the answer needs the whole
+    import graph, and a naming table that depended on a static analyser would be
+    a naming table nobody could read.
     """
     problems: list[str] = []
     reachable = reachable_modules()
@@ -185,15 +165,18 @@ def unreachable_agent_modules() -> list[str]:
     return problems
 
 
-def structural_invariants() -> list[str]:
-    """Everything that must agree across the agent framework. Empty is healthy."""
+def tool_layer_problems() -> list[str]:
+    """What must hold between the tool registry and the permission matrix.
+
+    THE READ-ONLY INVARIANT IS WHY THE ACTION LEDGER COULD BE DELETED. The
+    `agent_actions` package was a side-effect ledger (idempotency keys, an
+    UNKNOWN outcome resolved by reading back) for tools that change something.
+    Every registered tool is `RiskClass.READ`, so nothing in the tool layer has
+    a side effect to ledger, and the package was deleted in the Vivekium
+    release. The first tool that writes must bring a ledger with it; this check
+    is what makes that a failing build rather than a discovery.
+    """
     problems: list[str] = []
-
-    problems.extend(router.validate_routes())
-    problems.extend(identity.validate_identities())
-    problems.extend(unreachable_agent_modules())
-    problems.extend(halt_coverage())
-
     registered = registry.names()
     for agent, granted in permissions.AGENT_TOOLS.items():
         unknown = granted - registered
@@ -211,17 +194,21 @@ def structural_invariants() -> list[str]:
             )
         if spec.cache_ttl_seconds and not spec.idempotent:
             problems.append(f"tool {spec.name!r} caches without declaring idempotence")
+        if spec.risk is not RiskClass.READ:
+            problems.append(
+                f"tool {spec.name!r} declares risk {spec.risk.value!r}. Every tool "
+                "has been a bounded read since the action ledger was deleted; a "
+                "tool with a side effect needs an idempotency key from stable "
+                "logical inputs and an UNKNOWN outcome resolved by reading back, "
+                "and there is no ledger to provide either."
+            )
+    return problems
 
-    # Every planned subtask that names a tool must be a tool the routed agent
-    # actually holds. This is the check that catches a plan quietly calling
-    # something it cannot call, which surfaces otherwise as a permission error
-    # deep inside a generative step.
-    for task_type, agent in router.ROUTES.items():
-        granted = permissions.granted_tools(agent)
-        for subtask in planner.plan(task_type, agent).order:
-            if subtask in registered and subtask not in granted:
-                problems.append(
-                    f"{task_type} plans {subtask!r} but {agent!r} does not hold it"
-                )
 
+def structural_invariants() -> list[str]:
+    """Everything that must agree across the agent framework. Empty is healthy."""
+    problems: list[str] = []
+    problems.extend(identity.validate_identities())
+    problems.extend(unreachable_agent_modules())
+    problems.extend(tool_layer_problems())
     return problems

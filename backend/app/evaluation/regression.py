@@ -99,12 +99,6 @@ def _live_transcripts_are_never_cached() -> bool:
     return spec is not None and not spec.idempotent and spec.cache_ttl_seconds == 0
 
 
-def _routes_agree_with_the_permission_matrix() -> bool:
-    from app.services.orchestration import router
-
-    return not router.validate_routes()
-
-
 def _keyword_retrieval_does_not_require_every_query_term() -> bool:
     from app.services.rag import retrieval
 
@@ -166,12 +160,6 @@ CASES: tuple[RegressionCase, ...] = (
         "a live transcript cached is the wrong assessment scored",
         _live_transcripts_are_never_cached,
         "2026-08-18, tool engine cache policy",
-    ),
-    RegressionCase(
-        "routes-match-permissions",
-        "a task routed to an agent that holds no tools fails deep in a call",
-        _routes_agree_with_the_permission_matrix,
-        "2026-08-18, orchestration router",
     ),
     RegressionCase(
         "keyword-retrieval-or-semantics",

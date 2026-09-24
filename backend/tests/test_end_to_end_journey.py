@@ -12,10 +12,25 @@ them, including Scale-up and Succession, which raised
 WHAT THIS TEST ASSERTS, AND WHAT IT DELIBERATELY DOES NOT CLAIM
 -----------------------------------------------------------------
 It drives the CROSS-CUTTING path: the correlation id, the human principal, the
-A2A contract on every hand-off, the four gates, the versioned evaluation
-context, and the durable rows an operator queries afterwards. Every one of those
-is enforced by `services/orchestration` and `services/agents`, which is the code
-this file is the test for.
+A2A contract on every hand-off, the gates, the assessment contract a candidate
+is locked to, and the durable rows an operator queries afterwards. Those live in
+`services/agents` (provenance and the A2A contract), `services/hiring/gates`
+(the gate arithmetic) and `services/assessment_contract` (the skills snapshot),
+which is the code this file is the test for.
+
+WHAT CHANGED IN THE VIVEKIUM RELEASE
+------------------------------------
+This file used to drive an orchestration package: an enforcement door every
+stage went through, a versioning lookup answering "what was this candidate
+assessed against", and an activation table. No route and no worker reached any
+of the three, so the journey was proving a path production never took, and the
+package was deleted. The stages now record against the provenance ledger
+directly, the gates are the `hiring.gates` functions the live scorer calls, and
+"what was this candidate assessed against" is answered by the skills snapshot
+`assessment_contract.lock_contract` writes when the conversation starts. The
+full golden journey (HTTP, a real assessment, Miti, Siddhi, Yukti) is rebuilt by
+the release's golden-journey work; this file keeps the cross-cutting half
+honest until then.
 
 It does NOT drive the HTTP API. The routes for job setup, scoring and report
 delivery are being built alongside this, and a test that reached into them would
@@ -40,6 +55,7 @@ exercised for real.
 """
 from __future__ import annotations
 
+import importlib.util
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -48,20 +64,54 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
-from app.orchestration_checks import reachable_modules
+from app.import_graph import reachable_modules
+from app.services import assessment_contract
 from app.services import audit as audit_mod
+from app.services import hiring_pipeline
 from app.services.agents import artifacts as a2a
 from app.services.agents import envelope as run_envelope
 from app.services.agents import identity, provenance
 from app.services.hiring import gates as pipeline_gates
 from app.services.hiring import situations
-from app.services.orchestration import activation, enforcement, versioning
 
 FROZEN_AT = datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc)
 APPLIED_AT = FROZEN_AT + timedelta(days=3)
 
+#: The saved skills, one per bucket, the same three the matrix artifact names.
+SKILLS: tuple[tuple[str, str], ...] = (
+    (assessment_contract.BUCKET_MUST_HAVE, "reliability ownership"),
+    (assessment_contract.BUCKET_NICE_TO_HAVE, "multi-region"),
+    (assessment_contract.BUCKET_BEHAVIOURAL, "decides under ambiguity"),
+)
+
 
 # ── Is every stage actually there? ───────────────────────────────────────────
+
+#: Stage -> (the module that implements it, the work that supplies it). The
+#: table the deleted activation module held, kept here because this file is now
+#: its only reader.
+STAGE_MODULES: dict[str, tuple[str, str]] = {
+    provenance.STAGE_SWOT: (
+        "app.services.hiring.swot_quality",
+        "Bodha's SWOT session and its 18.5 quality-control rejection rules",
+    ),
+    provenance.STAGE_MATRIX: (
+        "app.services.hiring.scorecard",
+        "Sutra's seven-stage transformation and the frozen scorecard (gate G1)",
+    ),
+    provenance.STAGE_PRESCREEN: (
+        "app.services.hiring.prescreen",
+        "Yukti's resume-stage pre-screen grade",
+    ),
+    provenance.STAGE_SCORING: (
+        "app.services.miti.pipeline",
+        "Miti's five isolated dimension evaluators and the deterministic aggregator",
+    ),
+    provenance.STAGE_REPORT: (
+        "app.services.siddhi.synthesis",
+        "Siddhi's PRISM synthesis with architectural citation enforcement",
+    ),
+}
 
 
 def _missing_stage() -> str | None:
@@ -72,15 +122,15 @@ def _missing_stage() -> str | None:
     route or worker imports has been written and not wired, which is the exact
     state the whole of Part A was in for a phase while every unit test passed.
     """
-    for stage, row in activation.status().items():
-        if not row["present"]:
-            return f"{stage} (module {row['module']} not present; {row['supplied_by']})"
+    for stage, (dotted, supplied_by) in STAGE_MODULES.items():
+        if importlib.util.find_spec(dotted) is None:
+            return f"{stage} (module {dotted} not present; {supplied_by})"
     reachable = reachable_modules()
-    for stage, spec in activation.STAGE_MODULES.items():
-        if spec.dotted not in reachable:
+    for stage, (dotted, supplied_by) in STAGE_MODULES.items():
+        if dotted not in reachable:
             return (
-                f"{stage} (module {spec.dotted} exists but no route or worker "
-                f"imports it, so {spec.supplied_by} runs nowhere)"
+                f"{stage} (module {dotted} exists but no route or worker "
+                f"imports it, so {supplied_by} runs nowhere)"
             )
     return None
 
@@ -129,6 +179,7 @@ class _Journey:
         self.candidate_id = uuid.uuid4()
         self.link_id = uuid.uuid4()
         self.evaluation_id = uuid.uuid4()
+        self.conversation_id = uuid.uuid4()
         self.correlation_id = provenance.correlation_for_job(self.job_id)
         self.ledger = provenance.Ledger(self.correlation_id)
         self.principal = provenance.Principal(
@@ -177,12 +228,62 @@ class _Journey:
     async def stage(
         self, stage: str, agent_id: str, artifact_type: str, payload: dict, refs
     ) -> a2a.Artifact:
+        """Publish one stage's artifact and record it against the flow.
+
+        The order is the one the deleted enforcement door used: a human
+        principal and a correlation id first, then the complete A2A contract,
+        then the ledger record, which carries identifiers only. A refusal at any
+        step happens before the record, so a refused stage leaves no row
+        claiming it ran.
+        """
         envelope = self.envelope(agent_id)
+        principal = envelope.require_principal()
+        correlation_id = envelope.require_correlation_id()
         artifact = self.publish(
             agent_id, artifact_type, payload, envelope, source_refs=tuple(refs)
         )
-        await enforcement.run_stage(stage, envelope, self.ledger, artifact=artifact)
+        a2a.require_contract_complete(artifact)
+        assert artifact.correlation_id == correlation_id, "one flow, one id"
+        self.ledger.record(
+            provenance.StageRecord(
+                correlation_id=correlation_id,
+                stage=stage,
+                agent_id=envelope.agent_id,
+                tenant_id=envelope.tenant_id,
+                principal_user_id=principal.user_id,
+                principal_role=principal.role,
+                job_id=envelope.job_id,
+                candidate_id=envelope.candidate_id,
+                artifact_id=artifact.artifact_id,
+                artifact_type=artifact.artifact_type,
+                artifact_version=artifact.version,
+            )
+        )
         return artifact
+
+    def record_gate(self, stage: str, agent_id: str, result) -> None:
+        """A gate's verdict, recorded against the flow whether it passed or not.
+
+        A gate whose result went nowhere is indistinguishable from a gate that
+        never ran, so G2 and G3, which never block, are recorded exactly like G4.
+        """
+        envelope = self.envelope(agent_id)
+        principal = envelope.require_principal()
+        self.ledger.record(
+            provenance.StageRecord(
+                correlation_id=envelope.require_correlation_id(),
+                stage=stage,
+                agent_id=envelope.agent_id,
+                tenant_id=envelope.tenant_id,
+                principal_user_id=principal.user_id,
+                principal_role=principal.role,
+                job_id=envelope.job_id,
+                candidate_id=envelope.candidate_id,
+                gate=result.gate,
+                gate_passed=result.passed,
+                status="ok" if result.passed else "flagged",
+            )
+        )
 
     # -- the rows -----------------------------------------------------------
 
@@ -242,10 +343,87 @@ class _Journey:
             },
         )
 
-    async def publish_job(self, session) -> None:
+    async def save_skills(self, session) -> None:
+        """The Skills step, saved: the rows, the stamp and the hidden context.
+
+        `framework_approved_at` means "skills saved" since CONTRACT v2, and the
+        role summary lives in `assessment_context_json`. Both are what
+        `assessment_contract.skills_saved` reads, so a lock cannot happen
+        without them.
+        """
         await session.execute(
-            text("UPDATE jobs SET status = 'published' WHERE id = :j"),
-            {"j": self.job_id},
+            text(
+                "UPDATE jobs SET framework_approved_at = :at, "
+                "assessment_context_json = CAST(:ctx AS jsonb) WHERE id = :j"
+            ),
+            {
+                "j": self.job_id,
+                "at": FROZEN_AT,
+                "ctx": _json(
+                    {
+                        "role_summary": "Owns reliability for a payments platform.",
+                        "generated_by": "sutra",
+                    }
+                ),
+            },
+        )
+        for ordinal, (bucket, name) in enumerate(SKILLS):
+            await session.execute(
+                text(
+                    "INSERT INTO job_competencies (id, tenant_id, job_id, category, "
+                    "name, required_level, ordinal, is_active, observable_evidence) "
+                    "VALUES (:i, :t, :j, :c, :n, 82, :o, true, :e)"
+                ),
+                {
+                    "i": uuid.uuid4(),
+                    "t": self.tenant_id,
+                    "j": self.job_id,
+                    "c": bucket,
+                    "n": name,
+                    "o": ordinal,
+                    "e": f"Describes a time they showed {name}.",
+                },
+            )
+
+    async def open_conversation(self, session) -> None:
+        """The invitation: an assessment conversation, not yet started."""
+        await session.execute(
+            text(
+                "INSERT INTO assessment_conversations "
+                "(id, tenant_id, job_id, job_candidate_link_id, grade, status, "
+                " next_question_index, reminders_sent, follow_ups_used, "
+                " reasks_used, mode) "
+                "VALUES (:i, :t, :j, :l, 'managerial', 'active', 0, 0, 0, 0, "
+                "        'conversational')"
+            ),
+            {
+                "i": self.conversation_id,
+                "t": self.tenant_id,
+                "j": self.job_id,
+                "l": self.link_id,
+            },
+        )
+
+    async def publish_job(self, session) -> None:
+        """What `POST /jobs/{id}/publish` writes on a direct publish.
+
+        The approval FSM's terminal `ratified` with its stamp, the posting
+        window's start, and the RBAC 17 lifecycle state. This used to write
+        `status = 'published'`, which is not a `JobStatus` value at all: it was
+        harmless only while nothing read the job back through the model, and
+        the skills contract does.
+        """
+        await session.execute(
+            text(
+                "UPDATE jobs SET status = 'ratified', ratified_at = :at, "
+                "posting_start_date = :at, lifecycle_state = :state "
+                "WHERE id = :j"
+            ),
+            {
+                "j": self.job_id,
+                "at": FROZEN_AT,
+                "state": hiring_pipeline.JobLifecycleState.PUBLISHED.value,
+            },
         )
 
     async def apply(self, session) -> None:
@@ -468,24 +646,61 @@ async def test_one_full_journey_per_situation_type(situation_key: str) -> None:
                     "SELECT count(*) FROM job_scorecard_bindings WHERE job_id = :v",
                     journey.job_id,
                 ) == 1
+                await journey.save_skills(session)
+                await session.flush()
+                assert await assessment_contract.skills_saved(session, journey.job_id)
 
                 # 6. PUBLISH
                 await journey.publish_job(session)
                 await session.flush()
                 assert await _scalar(
-                    session, "SELECT status FROM jobs WHERE id = :v", journey.job_id
-                ) == "published"
+                    session,
+                    "SELECT lifecycle_state FROM jobs WHERE id = :v",
+                    journey.job_id,
+                ) == hiring_pipeline.JobLifecycleState.PUBLISHED.value
 
-                # 7. APPLY, and the evaluation context resolves as of THIS
-                #    instant rather than as of scoring time.
+                # 7. APPLY, then the INVITATION and the START. The start locks
+                #    the skills into an immutable snapshot and binds this
+                #    conversation to it, so what this candidate is assessed
+                #    against is a ROW fixed at the start, and no later edit can
+                #    move it. This replaces the retired versioning lookup, which
+                #    nothing on the live path ever called.
                 await journey.apply(session)
+                await journey.open_conversation(session)
                 await session.flush()
-                context = await versioning.resolve_for_application(
-                    session, journey.link_id
+                live = await assessment_contract.load_contract(session, journey.job_id)
+                assert live.locked is False and live.version == 0
+                locked = await assessment_contract.lock_contract(
+                    session, journey.job_id, journey.conversation_id
                 )
-                assert context.scorecard_version == 1
-                assert context.applied_at == APPLIED_AT
-                assert context.correlation_id == journey.correlation_id
+                assert locked.locked and locked.version == 1
+                assert locked.digest == live.digest
+                assert {s.name for s in locked.skills} == {name for _, name in SKILLS}
+                bound = (
+                    await session.execute(
+                        text(
+                            "SELECT skill_snapshot_id, contract_digest "
+                            "FROM assessment_conversations WHERE id = :v"
+                        ),
+                        {"v": journey.conversation_id},
+                    )
+                ).one()
+                assert bound.skill_snapshot_id is not None
+                assert bound.contract_digest == locked.digest
+                # A later edit to the live rows does not move this candidate.
+                await session.execute(
+                    text(
+                        "UPDATE job_competencies SET name = 'renamed after the "
+                        "start' WHERE job_id = :v AND category = :c"
+                    ),
+                    {"v": journey.job_id, "c": assessment_contract.BUCKET_MUST_HAVE},
+                )
+                await session.flush()
+                mine = await assessment_contract.load_contract_for_conversation(
+                    session, journey.conversation_id
+                )
+                assert mine.digest == locked.digest
+                assert "renamed after the start" not in {s.name for s in mine.skills}
 
                 # 8. PRE-SCREEN (Yukti) and 9. CONVERSATION (Vaada)
                 await journey.stage(
@@ -506,20 +721,17 @@ async def test_one_full_journey_per_situation_type(situation_key: str) -> None:
                 # 10. SCORING (Miti), with G2 and G3 fired and RECORDED. A
                 #     gate whose verdict went nowhere is indistinguishable
                 #     from a gate that never ran.
-                scoring_envelope = journey.envelope(identity.MITI)
-                g2 = enforcement.record_evidence_sufficiency(
-                    journey.ledger,
-                    scoring_envelope,
+                g2 = pipeline_gates.evidence_sufficiency_gate(
                     independent_sources=1,
                     judged_dimensions=2,
                     must_have_coverage={"reliability ownership": 1},
                 )
-                g3 = enforcement.record_integrity(
-                    journey.ledger,
-                    scoring_envelope,
+                journey.record_gate(provenance.STAGE_SCORING, identity.MITI, g2)
+                g3 = pipeline_gates.integrity_gate(
                     unresolved_contradictions=1,
                     contradiction_severity="material",
                 )
+                journey.record_gate(provenance.STAGE_SCORING, identity.MITI, g3)
                 # 11. INTEGRITY FLAG. It fired, and it blocked nothing: a
                 #     blocking integrity gate IS an auto-rejection.
                 assert not g3.passed
@@ -556,13 +768,10 @@ async def test_one_full_journey_per_situation_type(situation_key: str) -> None:
                 # 12. HUMAN DISPOSITION. G4 blocks until a person has decided,
                 #     and it asks whether they DECIDED, not whether they
                 #     approved.
-                with pytest.raises(enforcement.GateBlocked):
-                    enforcement.require_human_disposition(
-                        journey.ledger,
-                        journey.envelope(identity.SIDDHI),
-                        needs_review=True,
-                        disposition=None,
-                    )
+                undecided = pipeline_gates.human_review_gate(
+                    needs_review=True, disposition=None, decided_by=None
+                )
+                assert not undecided.passed and undecided.blocking
                 disposition_id = await journey.record_disposition(
                     session, pipeline_gates.DISPOSITION_CLEARED
                 )
@@ -573,14 +782,13 @@ async def test_one_full_journey_per_situation_type(situation_key: str) -> None:
                     disposition_id,
                 )
                 assert decided_by == journey.hr_manager_id
-                g4 = enforcement.require_human_disposition(
-                    journey.ledger,
-                    journey.envelope(identity.SIDDHI),
+                g4 = pipeline_gates.human_review_gate(
                     needs_review=True,
                     disposition=pipeline_gates.DISPOSITION_CLEARED,
                     decided_by=decided_by,
                 )
                 assert g4.passed
+                journey.record_gate(provenance.STAGE_DISPOSITION, identity.SIDDHI, g4)
 
                 # 13. REPORT DELIVERY (Siddhi)
                 report = await journey.stage(
@@ -605,7 +813,12 @@ async def test_one_full_journey_per_situation_type(situation_key: str) -> None:
                 await journey.audit_every_stage(session)
                 await session.flush()
                 activity = await audit_mod.activity(
-                    session, tenant_id=journey.tenant_id, limit=100
+                    session,
+                    tenant_id=journey.tenant_id,
+                    limit=100,
+                    actions=tuple(
+                        sorted({f"agent_{r.stage}" for r in journey.ledger.records})
+                    ),
                 )
                 assert activity, "the dashboard has no activity to render"
                 assert all(row["agent_name"] for row in activity)
@@ -616,12 +829,26 @@ async def test_one_full_journey_per_situation_type(situation_key: str) -> None:
                 # THE WHOLE FLOW, UNDER ONE ID. This is the join spec-doc6 4.1
                 # asks for, and the reason a per-agent workflow id is not a
                 # weaker version of it but a different thing.
+                # The skills lock is one more row under the same id: the start
+                # is part of the flow, written by the candidate's start with
+                # no human principal and no agent.
                 joined = await _scalar(
                     session,
                     "SELECT count(*) FROM audit_log WHERE correlation_id = :v",
                     journey.correlation_id,
                 )
-                assert joined == len(journey.ledger.records)
+                assert joined == len(journey.ledger.records) + 1
+                locks = await session.execute(
+                    text(
+                        "SELECT count(*) FROM audit_log "
+                        "WHERE correlation_id = :v AND action = :a"
+                    ),
+                    {
+                        "v": journey.correlation_id,
+                        "a": assessment_contract.AUDIT_SKILLS_LOCKED,
+                    },
+                )
+                assert locks.scalar() == 1
 
                 # And the ledger itself is complete for every agent stage,
                 # with an artifact behind each one.
@@ -635,7 +862,13 @@ async def test_one_full_journey_per_situation_type(situation_key: str) -> None:
                         provenance.STAGE_REPORT,
                     )
                 ) == []
-            finally:
+            except BaseException:
+                # Nothing is committed before this point, so a rollback IS the
+                # teardown. Running the DELETEs inside an aborted transaction
+                # raised their own error over the real one and hid it.
+                await session.rollback()
+                raise
+            else:
                 await journey.teardown(session)
                 await session.commit()
     finally:
@@ -655,9 +888,8 @@ def test_the_journey_names_the_missing_stage_rather_than_skipping_silently() -> 
     missing = _missing_stage()
     if missing is None:
         # Every stage is live, so the journey above ran for real.
-        assert activation.missing_stages() == ()
+        reachable = reachable_modules()
+        assert all(dotted in reachable for dotted, _ in STAGE_MODULES.values())
     else:
         assert "(" in missing and ")" in missing, missing
-        assert any(
-            missing.startswith(stage) for stage in activation.STAGE_MODULES
-        ), missing
+        assert any(missing.startswith(stage) for stage in STAGE_MODULES), missing

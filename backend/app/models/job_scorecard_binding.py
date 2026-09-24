@@ -19,27 +19,26 @@ is why the version lives here rather than being counted from row-creation
 batches, because compilation reuses rows and a human edit preserves row
 identity, so counting rows is not counting versions.
 
-TWO READERS ARE WRITTEN, TESTED AND CALLED BY NOTHING, and saying so here is
-the point of this paragraph.
+A READER IS WRITTEN, TESTED AND CALLED BY NOTHING, and saying so here is the
+point of this paragraph.
 
 `ppi.published_matrix` would build the A2A matrix artifact from the live rows
 at this binding's version. `publish_tatva_matrix`, the pure half it delegates
 to, IS called from both compilation and the freeze; the async wrapper that
 reads this table has no caller in `app/` or `tests/`.
 
-`services/orchestration/versioning.resolve_for_application` would answer "what
-was this job built on when I applied" by taking the binding with the greatest
-`frozen_at` that is not after the application's `created_at`, copying the
-answer onto the evaluation rather than joining for it. Nothing on the live
-scoring path invokes it, so the property it describes is NOT in force: every
-downstream consumer reads the current `job_competencies` rows.
+A versioning resolver used to sit beside it, answering "what was this job
+built on when I applied" from this table. Nothing on the live scoring path ever
+invoked it, and it was deleted in the Vivekium release. "What was this
+candidate assessed against" is answered by `job_skill_snapshots` now: the
+first candidate start locks the skills into an immutable snapshot and binds
+the conversation to it (`services/assessment_contract.lock_contract`), so the
+answer is a ROW with its content and digest rather than a version number over
+rows that went on being mutated.
 
-WHAT HOLDS THE LINE INSTEAD is `POST /jobs/{id}/framework/reopen`, which
-refuses once any candidate on the job has been invited to an assessment or has
-had questions written against the matrix. That is a blanket prohibition
-standing in for a resolver. A reader who believes the resolver is load bearing
-will relax that guard and silently move a candidate's contract, which is the
-whole reason this is written down rather than left to be discovered.
+WHAT STILL HOLDS THE LINE for this table is `POST /jobs/{id}/framework/reopen`,
+which refuses once any candidate on the job has been invited to an assessment
+or has had questions written against the matrix.
 """
 from __future__ import annotations
 

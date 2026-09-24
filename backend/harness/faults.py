@@ -756,7 +756,6 @@ class _ClockSeam:
 #: injects a timeout.
 CLOCK_SEAMS: tuple[_ClockSeam, ...] = (
     _ClockSeam("app.api.proctoring", "_now", False),
-    _ClockSeam("app.services.agent_actions.ledger", "_now", False),
     _ClockSeam("app.services.approval_fsm", "_now", False),
     _ClockSeam("app.services.bd_leads", "_now", True),
     _ClockSeam("app.services.consent_lifecycle", "utcnow", False),

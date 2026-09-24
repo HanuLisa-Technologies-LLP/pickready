@@ -155,8 +155,8 @@ class Evaluation(Base, UUIDPKMixin, CreatedAtMixin):
     gate_results_json: Mapped[list] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
     )
-    #: full | degraded | stub, mirroring `reliability.degradation`. A stub is
-    #: always flagged for human review; what makes that honest rather than
+    #: full | degraded | stub, the three levels a scoring run can reach. A stub
+    #: is always flagged for human review; what makes that honest rather than
     #: misleading is that it says so here.
     scoring_mode: Mapped[str] = mapped_column(
         String(20), nullable=False, default="full", server_default="full"

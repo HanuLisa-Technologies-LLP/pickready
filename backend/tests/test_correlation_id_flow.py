@@ -23,15 +23,20 @@ others is not traceable:
   2. the ARTIFACT each agent publishes,
   3. the LEDGER record each stage leaves, which carries the artifact id and so
      is evidence of work rather than of time,
-  4. the AUDIT ROW and the LOG LINE, which are the two durable surfaces an
-     operator actually queries months later.
+  4. the AUDIT ROW, the durable surface an operator actually queries months
+     later.
+
+The per-stage LOG LINE used to be a fifth surface. It was written by an
+orchestration enforcement door that nothing on the live path called, deleted in
+the Vivekium release, so the tests that defended that line went with it. What
+survives is `provenance.log_fields`, the one allowlist any stage log line is
+built from, and its test is below.
 
 A TIMESTAMP IS NOT EVIDENCE THAT WORK HAPPENED. Every assertion below is
 against a row, an artifact id or a recorded string. None is against an `at`.
 """
 from __future__ import annotations
 
-import logging
 import uuid
 
 import pytest
@@ -44,7 +49,6 @@ from app.services import audit as audit_mod
 from app.services.agents import artifacts as a2a
 from app.services.agents import envelope as run_envelope
 from app.services.agents import identity, provenance
-from app.services.orchestration import enforcement
 
 TENANT = uuid.uuid4()
 JOB = uuid.uuid4()
@@ -142,16 +146,47 @@ def _publish(
     )
 
 
+def _record_stage(
+    ledger: provenance.Ledger,
+    stage: str,
+    envelope: run_envelope.Envelope,
+    artifact: a2a.Artifact,
+) -> provenance.StageRecord:
+    """One stage, recorded the way the flow's provenance requires.
+
+    A human principal and a correlation id first, then the complete A2A
+    contract, then the ledger record, which carries identifiers only. The
+    ledger itself refuses a record from another flow.
+    """
+    principal = envelope.require_principal()
+    a2a.require_contract_complete(artifact)
+    return ledger.record(
+        provenance.StageRecord(
+            correlation_id=envelope.require_correlation_id(),
+            stage=stage,
+            agent_id=envelope.agent_id,
+            tenant_id=envelope.tenant_id,
+            principal_user_id=principal.user_id,
+            principal_role=principal.role,
+            job_id=envelope.job_id,
+            candidate_id=envelope.candidate_id,
+            artifact_id=artifact.artifact_id,
+            artifact_type=artifact.artifact_type,
+            artifact_version=artifact.version,
+        )
+    )
+
+
 async def _run_whole_flow(
     ledger: provenance.Ledger,
 ) -> tuple[list[run_envelope.Envelope], list[a2a.Artifact]]:
-    """Bodha through Siddhi, every stage through the one enforcement door."""
+    """Bodha through Siddhi, every stage recorded against one ledger."""
     envelopes: list[run_envelope.Envelope] = []
     published: list[a2a.Artifact] = []
     for stage, agent_id, artifact_type, payload in FLOW:
         envelope = _envelope(agent_id, ledger.correlation_id)
         artifact = _publish(agent_id, artifact_type, payload, envelope)
-        await enforcement.run_stage(stage, envelope, ledger, artifact=artifact)
+        _record_stage(ledger, stage, envelope, artifact)
         envelopes.append(envelope)
         published.append(artifact)
     return envelopes, published
@@ -241,80 +276,11 @@ async def test_a_stage_carrying_another_flows_id_is_refused() -> None:
     )
 
     with pytest.raises(ValueError):
-        await enforcement.run_stage(
-            provenance.STAGE_MATRIX, envelope, ledger, artifact=artifact
-        )
+        _record_stage(ledger, provenance.STAGE_MATRIX, envelope, artifact)
     assert len(ledger) == 0
 
 
-@pytest.mark.asyncio
-async def test_an_artifact_published_under_a_different_flow_is_refused() -> None:
-    """The envelope and the artifact must agree. One flow, one id."""
-    correlation_id = provenance.correlation_for_job(JOB)
-    ledger = provenance.Ledger(correlation_id)
-    envelope = _envelope(identity.SUTRA, correlation_id)
-    stray = _publish(
-        identity.SUTRA,
-        "tatva_matrix",
-        {"must_have": [], "nice_to_have": [], "behavioural": []},
-        _envelope(identity.SUTRA, provenance.correlation_for_job(uuid.uuid4())),
-    )
-
-    with pytest.raises(enforcement.StageRefused):
-        await enforcement.run_stage(
-            provenance.STAGE_MATRIX, envelope, ledger, artifact=stray
-        )
-    assert len(ledger) == 0
-
-
-# ── 3. The log line, which is one of the two durable surfaces ────────────────
-
-
-@pytest.mark.asyncio
-async def test_every_stage_writes_the_correlation_id_into_its_log_line(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    correlation_id = provenance.correlation_for_job(JOB)
-    ledger = provenance.Ledger(correlation_id)
-
-    with caplog.at_level(logging.INFO, logger="pickready.orchestration"):
-        await _run_whole_flow(ledger)
-
-    lines = [r.getMessage() for r in caplog.records]
-    assert len(lines) == len(FLOW)
-    assert all(f"correlation_id={correlation_id}" in line for line in lines)
-    for stage, _, _, _ in FLOW:
-        assert any(f"stage={stage}" in line for line in lines)
-
-
-@pytest.mark.asyncio
-async def test_the_log_line_carries_identifiers_and_never_content(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A trace carries identifiers, counts and timings, and NEVER content. The
-    answer text below is a real payload field, and it must not reach the log."""
-    correlation_id = provenance.correlation_for_job(JOB)
-    ledger = provenance.Ledger(correlation_id)
-    envelope = _envelope(identity.VAADA, correlation_id)
-    artifact = _publish(
-        identity.VAADA,
-        "answer_event",
-        {
-            "question_key": "data_quality_ownership",
-            "answer": "I rebuilt the ingestion pipeline over eleven weeks",
-        },
-        envelope,
-    )
-
-    with caplog.at_level(logging.INFO, logger="pickready.orchestration"):
-        await enforcement.run_stage(
-            provenance.STAGE_CONVERSATION, envelope, ledger, artifact=artifact
-        )
-
-    joined = " ".join(r.getMessage() for r in caplog.records)
-    assert "ingestion pipeline" not in joined
-    assert "eleven weeks" not in joined
-    assert correlation_id in joined
+# ── 3. The log-line allowlist every stage line is built from ─────────────────
 
 
 def test_log_fields_drops_a_key_that_is_not_on_the_allowlist() -> None:

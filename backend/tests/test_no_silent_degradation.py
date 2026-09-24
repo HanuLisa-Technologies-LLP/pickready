@@ -7,14 +7,15 @@
 
 TWO HALVES, AND THEY ARE DIFFERENT KINDS OF CHECK
 ---------------------------------------------------
-The first half is behavioural: the enforcement layer refuses, and the refusal
-carries a sentence a person can act on. Those are ordinary assertions.
+The first half is behavioural: a flow with no human principal or no
+correlation id is refused, and an artifact missing its contract fields is
+refused naming every gap. Those are ordinary assertions.
 
 The second half is a SWEEP over the source tree, and it is deliberately shaped
 as two different rules rather than one.
 
   * On the Part A packages and the cross-cutting packages -- `hiring/`, `miti/`,
-    `siddhi/`, `agents/`, `orchestration/`, `observability/` -- the rule is
+    `siddhi/`, `agents/`, `observability/` -- the rule is
     ABSOLUTE. Zero template outputs, zero generic remarks, zero substituted
     default scores, zero `except: pass`. This is the new path and it has no
     legacy to carry.
@@ -44,7 +45,6 @@ import pytest
 from app.services.agents import artifacts as a2a
 from app.services.agents import envelope as run_envelope
 from app.services.agents import identity, provenance
-from app.services.orchestration import activation, enforcement
 
 APP = pathlib.Path(__file__).resolve().parents[1] / "app"
 
@@ -88,102 +88,35 @@ def _matrix_artifact(envelope: run_envelope.Envelope, **overrides) -> a2a.Artifa
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 1. THE ENFORCEMENT LAYER REFUSES, AND SAYS WHAT TO DO
+# 1. A FLOW WITHOUT A HUMAN OR AN ID IS REFUSED, AND SAYS WHAT IS MISSING
 # ══════════════════════════════════════════════════════════════════════════
+#
+# This section used to drive an orchestration enforcement door (an empty
+# retrieval refusal, a missing-artifact refusal, a stage-module table and a
+# `run_stage` that refused a stage with nothing published). No route and no
+# worker ever called that door, and it was deleted in the Vivekium release with
+# the tests that only defended it. The refusals below are the ones live code
+# runs: the envelope's principal and correlation checks and the A2A contract.
 
 
-def test_empty_retrieval_raises_rather_than_returning_nothing() -> None:
-    """A stage handed nothing and carrying on builds its output from the
-    model's own priors, which reads exactly like output built from evidence."""
-    with pytest.raises(enforcement.EmptyRetrieval) as exc:
-        enforcement.refuse_on_empty(
-            [],
-            what="rubric anchor retrieval for the Track Record dimension",
-            action="Re-index the department model, then re-run the evaluation.",
-        )
-    assert "Re-index the department model" in str(exc.value)
-
-
-def test_a_populated_retrieval_passes_straight_through() -> None:
-    """The guard must not be a tax on the healthy path."""
-    rows = [{"id": "chunk-1"}]
-    assert enforcement.refuse_on_empty(rows, what="retrieval", action="x") is rows
-
-
-def test_a_missing_upstream_artifact_names_its_producer() -> None:
-    with pytest.raises(enforcement.RequiredArtifactMissing) as exc:
-        enforcement.require_artifact(
-            None,
-            artifact_type="tatva_matrix",
-            produced_by="Sutra",
-            action="Finalise the job's criteria before scoring anyone against them.",
-        )
-    assert "Sutra" in str(exc.value)
-    assert "Finalise the job's criteria" in str(exc.value)
-
-
-def test_a_missing_stage_module_names_the_module_and_the_work() -> None:
-    """The alternative -- `try: import ... except ImportError: <old module>` --
-    would let a stage run on the thing it was meant to replace while every log
-    line said otherwise."""
-    with pytest.raises(activation.StageModuleMissing) as exc:
-        activation.load("no_such_stage")
-    assert "no_such_stage" in str(exc.value)
-
-
-def test_every_declared_stage_module_names_the_work_that_supplies_it() -> None:
-    for stage, spec in activation.STAGE_MODULES.items():
-        assert spec.supplied_by, f"{stage} names no supplying work"
-        assert spec.dotted.startswith("app.services."), stage
-
-
-@pytest.mark.asyncio
-async def test_a_stage_that_published_nothing_is_refused() -> None:
-    """The `framework_generated_at` failure, as a rule. Nineteen of thirty-five
-    live jobs carried a generation stamp and zero competency rows, and every
-    health check asked the stamp."""
-    ledger = provenance.Ledger(CORRELATION)
-    with pytest.raises(enforcement.DegradationRefused) as exc:
-        await enforcement.run_stage(provenance.STAGE_MATRIX, _envelope(), ledger)
-    assert "timestamp is not" in str(exc.value)
-    assert len(ledger) == 0
-
-
-@pytest.mark.asyncio
-async def test_a_stage_with_no_human_principal_is_refused() -> None:
+def test_an_envelope_with_no_human_principal_is_refused() -> None:
     """RBAC 34. A row that lost the human reads exactly like a human action."""
-    ledger = provenance.Ledger(CORRELATION)
-    envelope = _envelope(principal=None)
     with pytest.raises(provenance.MissingPrincipal):
-        await enforcement.run_stage(
-            provenance.STAGE_MATRIX,
-            envelope,
-            ledger,
-            artifact=_matrix_artifact(envelope),
-        )
-    assert len(ledger) == 0
+        _envelope(principal=None).require_principal()
 
 
-@pytest.mark.asyncio
-async def test_a_principal_from_another_tenant_is_refused() -> None:
+def test_a_principal_from_another_tenant_is_refused() -> None:
     """A cross-tenant action with a plausible-looking audit row attached."""
-    ledger = provenance.Ledger(CORRELATION)
     stranger = provenance.Principal(
         user_id=str(uuid.uuid4()), role="recruiter", tenant_id=str(uuid.uuid4())
     )
-    envelope = _envelope(principal=stranger)
     with pytest.raises(provenance.MissingPrincipal):
-        await enforcement.run_stage(provenance.STAGE_MATRIX, envelope, ledger)
-    assert len(ledger) == 0
+        _envelope(principal=stranger).require_principal()
 
 
-@pytest.mark.asyncio
-async def test_a_stage_with_no_correlation_id_is_refused() -> None:
-    ledger = provenance.Ledger(CORRELATION)
-    envelope = _envelope(correlation_id=None)
+def test_an_envelope_with_no_correlation_id_is_refused() -> None:
     with pytest.raises(run_envelope.MissingCorrelationId):
-        await enforcement.run_stage(provenance.STAGE_MATRIX, envelope, ledger)
-    assert len(ledger) == 0
+        _envelope(correlation_id=None).require_correlation_id()
 
 
 def test_a_principal_cannot_be_constructed_blank() -> None:
@@ -259,7 +192,6 @@ CLEAN_PACKAGES: tuple[str, ...] = (
     "services/miti",
     "services/siddhi",
     "services/agents",
-    "services/orchestration",
     "services/observability",
 )
 
@@ -311,7 +243,6 @@ LEGACY_FALLBACK_FILES: frozenset[str] = frozenset(
 LEGACY_SWALLOWER_FILES: frozenset[str] = frozenset(
     {
         "api/candidates.py",
-        "scripts/eval_trajectory.py",
         "services/document_storage.py",
         "services/interview_telemetry.py",
         "services/jd_generation.py",
