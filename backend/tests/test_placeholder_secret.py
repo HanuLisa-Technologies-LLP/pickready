@@ -120,10 +120,31 @@ def test_every_secret_this_platform_creates_is_read_by_something() -> None:
         for name in _secret_names()
         if name.lower() not in Settings.model_fields
         and name not in READ_BY_THE_ANALYSIS_SERVICE
+        and name not in HELD_WITHOUT_A_READER
     ]
     assert not orphans, (
         f"{orphans} are created and mounted but nothing reads them"
     )
+
+
+#: Created, read by nothing, and MOUNTED NOWHERE, on purpose (2026-09-24). The
+#: setting that read it is deleted; the container is the only copy of the key
+#: that opens `llm_provider_keys`, and destroying it is irreversible once the
+#: recovery window passes, so it stays until the owner decides that table.
+#: This exemption is earned by the test below and by
+#: `test_deploy_secret_hygiene.test_a_held_secret_is_granted_to_no_service`,
+#: which fails if any service is granted it or any root mounts it.
+HELD_WITHOUT_A_READER = {"LLM_KEY_ENCRYPTION_SECRET"}
+
+
+def test_a_held_secret_really_has_no_reader() -> None:
+    """The exemption above is for a secret NOTHING reads. Once a setting reads
+    it again it is an ordinary secret and must leave this list."""
+    for name in HELD_WITHOUT_A_READER:
+        assert name.lower() not in Settings.model_fields, (
+            f"{name} is exempted as unread, and Settings reads it"
+        )
+        assert name in _secret_names(), f"{name} is exempted and no longer created"
 
 
 def test_the_analysis_services_secret_really_is_read_over_there() -> None:
