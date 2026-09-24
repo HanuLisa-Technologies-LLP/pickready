@@ -52,8 +52,6 @@ LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("api/admin.py", "invite_staff"): (1, "P6 proposed"),
     ("api/assessment_conversation.py", "_ensure_conversation_ready"): (1, "P3"),
     ("api/assessment_conversation.py", "respond"): (2, "P3"),
-    ("api/assessment_recording.py", "finalize_video_interview"): (1, "P3"),
-    ("api/assessment_recording.py", "retry_video_processing"): (1, "P3"),
     ("api/bgv.py", "_resend_after_correction"): (1, "P6 proposed"),
     ("api/bgv.py", "append_employer_route"): (1, "P6 proposed"),
     ("api/bgv.py", "send"): (1, "P6 proposed"),
@@ -72,7 +70,6 @@ LEGACY_CALL_SITES: dict[tuple[str, str], tuple[int, str]] = {
     ("api/provider.py", "set_primary_contact"): (1, "P7 proposed"),
     ("api/support.py", "_notify"): (1, "P6"),
     ("services/proctoring/ingestion.py", "enqueue_assessment"): (1, "P3"),
-    ("services/video/processing.py", "complete_assessment"): (1, "P3"),
 }
 
 #: (file relative to app/, the alias) -> proposed owner phase. The same

@@ -124,11 +124,24 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
         task="pickready.purge_assessment_media",
         interval_minutes=60,
         why=(
-            "Deletes nothing while `assessment_media_retention_days` is zero, "
-            "which is the platform's current posture. The owner ruling of "
-            "2026-09-22 requires stored assessment media to have a retention "
-            "and deletion lifecycle, and a retention window with no sweep "
-            "behind it is a paragraph rather than a policy."
+            "Owner decision D4: a session recording is purged at the earlier "
+            "of its stored purge date (session end plus 90 days) and its "
+            "job's closure purge. The S3 lifecycle rule is only the backstop; "
+            "this is the HEAD-confirmed deletion that stamps the row, and a "
+            "retention promise with no sweep behind it is a paragraph rather "
+            "than a policy."
+        ),
+    ),
+    ScheduledTask(
+        rule="readypick-reconcile-assessment-recordings",
+        task="pickready.reconcile_assessment_recordings",
+        interval_minutes=60,
+        why=(
+            "Retries raw segment deletions that did not confirm, finalizes a "
+            "recording whose tab closed before it could, and re-hands a "
+            "finalized recording no processing run picked up. Before it, a "
+            "failed raw deletion was counted on the row and never looked at "
+            "again."
         ),
     ),
     ScheduledTask(

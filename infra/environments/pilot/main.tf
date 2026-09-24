@@ -1884,13 +1884,20 @@ module "scheduler" {
       task            = "pickready.purge_proctoring_events"
       rate_expression = "rate(60 minutes)"
     }
-    # Stored assessment media has a retention and deletion lifecycle by owner
-    # ruling (2026-09-22). Deletes nothing while
-    # `assessment_media_retention_days` is zero, which is the current posture;
-    # the rule exists so enabling the window is a setting change rather than a
-    # deploy, and so the sweep cannot be the half that was forgotten.
+    # Owner decision D4: a session recording is purged at the earlier of its
+    # stored purge date (session end plus 90 days) and its job's closure
+    # purge. The S3 lifecycle rule in modules/s3 is only the backstop; this is
+    # the HEAD-confirmed deletion that stamps the row.
     "readypick-purge-assessment-media" = {
       task            = "pickready.purge_assessment_media"
+      rate_expression = "rate(60 minutes)"
+    }
+    # The recording pipeline's repair: raw segment deletions that did not
+    # confirm, recordings whose tab closed before finalize, and finalized
+    # recordings no processing run picked up. The Terraform half of the entry
+    # in app/workers/schedule.py; tests/test_schedule_parity.py fails on drift.
+    "readypick-reconcile-assessment-recordings" = {
+      task            = "pickready.reconcile_assessment_recordings"
       rate_expression = "rate(60 minutes)"
     }
     # Change request 22, owner ruling 2026-09-22: closing a job WITHHOLDS its

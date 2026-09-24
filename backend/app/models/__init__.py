@@ -69,7 +69,7 @@ from app.models.conversation import (
     ConversationParticipant,
 )
 from app.models.employment import CandidateEmployment
-from app.models.dual_mode import AssessmentConsent, VideoRecording
+from app.models.dual_mode import AssessmentConsent, VideoRecording, VideoRecordingSegment
 from app.models.project import CandidateProject
 from app.models.drishti import DrishtiProfile
 from app.models.candidate import (
@@ -161,6 +161,7 @@ __all__ = [
     "AssessmentConversation",
     "AssessmentMessage",
     "VideoRecording",
+    "VideoRecordingSegment",
     "AuditLog",
     "BillingTransaction",
     "Candidate",

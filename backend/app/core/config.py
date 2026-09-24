@@ -75,6 +75,14 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+
+#: S3's floor for every part of a multipart upload except the last, a fact of
+#: the S3 API rather than a tunable (AWS, "Amazon S3 multipart upload limits":
+#: part size 5 MiB to 5 GiB, the last part may be smaller). One definition,
+#: read by the settings validator and by `services/video/storage`.
+S3_MIN_PART_BYTES = 5 * 1024 * 1024
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -474,6 +482,15 @@ class Settings(BaseSettings):
     #: Localstack / MinIO only. None in every real environment, where boto3
     #: resolves the real regional endpoint.
     s3_endpoint_url: str = ""
+    #: The KMS key assessment media is encrypted under (Terraform output
+    #: `aws_kms_key.this.arn`, exported as S3_KMS_KEY_ID). The bucket policy in
+    #: `infra/modules/s3` DENIES any PutObject whose
+    #: `x-amz-server-side-encryption` header is not `aws:kms`, and a request
+    #: that names `aws:kms` without a key id is encrypted under the AWS-managed
+    #: `aws/s3` key rather than this environment's key. So `video/storage`
+    #: sends both, and REFUSES to write media while this is empty rather than
+    #: writing it under the wrong key or being denied one part at a time.
+    s3_kms_key_id: str = ""
     resume_signed_url_ttl_seconds: int = 300
 
     # ── Proctoring (proctoring-spec-doc.md) ─────────────────────────────────
@@ -713,12 +730,44 @@ class Settings(BaseSettings):
         "the report the hiring team receives about your candidacy. If you do "
         "not agree, you will not be able to take the assessment."
     )
-    # ── Video interview ceilings and processing knobs ───────────────────────
+    # ── The session recording: ceilings and processing knobs ────────────────
     # Every ceiling is a setting, never a literal in the pipeline (same rule
-    # as proctoring and projects). Sized for an hour-long interview recorded
-    # by MediaRecorder at browser defaults.
+    # as proctoring and projects).
+    #: The TOTAL bytes one recording may hold across all of its segments. No
+    #: longer an in-memory size: the bytes arrive one part at a time (see
+    #: `video_part_max_bytes`). At the capped bitrate below a gigabyte is
+    #: about five hours, twice the longest session the question budget allows.
     video_max_upload_bytes: int = 1024 * 1024 * 1024
-    video_max_duration_seconds: int = 2 * 3600
+    #: Sized for the worst-case assessment (about 113 minutes at 15 skills,
+    #: PLAN-p3 3.0) with room to spare.
+    video_max_duration_seconds: int = 3 * 3600
+    #: The largest single part the API accepts and forwards to S3. This is
+    #: the whole of what one request holds in memory, which is the point: the
+    #: old single upload read up to `video_max_upload_bytes` into the shared
+    #: API task. S3's own floor for every part but the last is 5 MiB
+    #: (`S3_MIN_PART_BYTES`, module level), so the validator below
+    #: refuses a value under it.
+    video_part_max_bytes: int = 16 * 1024 * 1024
+    #: How many segments one recording may be split into. A segment starts at
+    #: the session's start, after each device recovery (at most
+    #: `proctoring_device_max_pauses`) and after a page reload, so a real
+    #: session uses a handful; the ceiling bounds what a looping client can
+    #: make the store hold open.
+    video_max_segments: int = 32
+    #: The recorder ceilings, SERVED to the browser by the session-media start
+    #: so the client and the server never disagree about a number. About
+    #: 200 MiB an hour, which is what keeps a two-hour session's parts small
+    #: and its processing inside one Fargate task.
+    video_recording_video_bps: int = 400_000
+    video_recording_audio_bps: int = 48_000
+    video_recording_max_width: int = 640
+    video_recording_max_height: int = 360
+    #: How long a recording may sit with no new part after its session ended
+    #: (or after it outlived `video_max_duration_seconds`) before the hourly
+    #: sweep completes its uploaded segments and processes it without the
+    #: browser. Long enough for a slow final flush; short enough that a closed
+    #: tab never strands a recording.
+    video_orphan_grace_minutes: int = 30
     #: Amazon Transcribe. DISABLED by default because it needs an AWS account
     #: with the service enabled in the deployment region; when disabled a
     #: recording lands in `transcription_failed` with a message saying speech
@@ -761,18 +810,15 @@ class Settings(BaseSettings):
     #: cover the click and a slow connection's head start.
     video_preview_url_ttl_seconds: int = 3 * 3600
     video_download_url_ttl_seconds: int = 900
-    #: How long a stored assessment recording is kept after the compressed
-    #: object was verified present (`video_recordings.stored_at`). ZERO means
-    #: the platform's existing candidate-data policy, which is deletion by
-    #: cascade with the candidate or the application plus the erasure and
-    #: job-closure paths; the platform has no time-based purge and this
-    #: setting does not invent one. A positive value enables the hourly
-    #: `pickready.purge_assessment_media`, which HEAD-confirms every deletion.
-    #: Deliberately the same shape and the same default as
-    #: `proctoring_event_retention_days`: choosing a number is an owner
-    #: decision about a customer's data, not something this code decides on
-    #: their behalf.
-    assessment_media_retention_days: int = 0
+    #: Owner decision D4, the session half: a recording is purged this many
+    #: days after its session ended, or at the job-closure purge, whichever
+    #: comes first. The value is STAMPED onto each recording as
+    #: `media_purge_due_at` when it is finalized, so changing it here moves
+    #: no deadline a candidate was already given. Must be positive: zero used
+    #: to mean "no time-based purge", and D4 replaced that policy.
+    #: `infra/modules/s3` carries the same number as the backstop lifecycle
+    #: rule, and `tests/test_media_retention_d4.py` compares the two.
+    assessment_media_retention_days: int = 90
 
     # ── Project Evidence Intelligence limits ────────────────────────────────
     #
@@ -1032,6 +1078,28 @@ class Settings(BaseSettings):
                 "TRANSCRIBE_REGION differs from AWS_REGION, so TRANSCRIBE_BUCKET "
                 "must name a bucket in TRANSCRIBE_REGION: an Amazon Transcribe "
                 "job cannot read or write a bucket in another region."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_recording_retention(self) -> "Settings":
+        """Refuse a recording configuration the product cannot honour.
+
+        A non-positive retention would stamp a purge date in the past (or
+        at the session's end) onto every recording, so the hourly sweep would
+        delete each one the moment it was stored. A part ceiling under S3's
+        5 MiB floor would make every multipart upload fail at completion,
+        one candidate at a time, instead of at boot.
+        """
+        if self.assessment_media_retention_days <= 0:
+            raise ValueError(
+                "ASSESSMENT_MEDIA_RETENTION_DAYS must be positive (owner "
+                "decision D4 keeps a session recording for 90 days)."
+            )
+        if self.video_part_max_bytes < S3_MIN_PART_BYTES:
+            raise ValueError(
+                "VIDEO_PART_MAX_BYTES must be at least 5 MiB, the smallest "
+                "part S3 accepts in a multipart upload."
             )
         return self
 
