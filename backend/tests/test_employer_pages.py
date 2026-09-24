@@ -139,7 +139,7 @@ def test_response_schemas_are_closed_allowlists() -> None:
         "employers", "total", "page", "page_size",
     }
     assert set(EmployerOpenRoleOut.model_fields) == {
-        "id", "title", "department", "level",
+        "id", "title", "department",
         "experience_min_years", "experience_max_years",
         "apply_path", "apply_url",
     }

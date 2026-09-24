@@ -29,6 +29,9 @@ TASK_EMAIL = "email"
 TASK_PROBE = "probe"
 TASK_INTERVIEWER = "interviewer"
 TASK_JOB_SETUP = "job_setup"
+#: The Job SWOT (Bodha). Split from `job_setup` in the Vivekium release, when
+#: Bodha and Sutra stopped sharing one runtime surface.
+TASK_SWOT = "swot"
 TASK_SCORING = "scoring"
 
 #: task type -> the agent that handles it.
@@ -39,6 +42,7 @@ ROUTES: dict[str, str] = {
     TASK_PROBE: permissions.AGENT_PROBE,
     TASK_INTERVIEWER: permissions.AGENT_INTERVIEWER,
     TASK_JOB_SETUP: permissions.AGENT_SKILLS,
+    TASK_SWOT: permissions.AGENT_SWOT,
     TASK_SCORING: permissions.AGENT_SCORING,
 }
 

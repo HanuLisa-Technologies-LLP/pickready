@@ -172,7 +172,6 @@ async def get_employer_page(
             id=job.id,
             title=job.title,
             department=job.department,
-            level=job.level,
             experience_min_years=job.experience_min_years,
             experience_max_years=job.experience_max_years,
             apply_path=f"/apply/{job.id}",

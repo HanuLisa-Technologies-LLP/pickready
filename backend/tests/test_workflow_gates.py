@@ -39,7 +39,7 @@ def _create_body(low, high) -> dict:
     return {
         "title": "Backend Engineer",
         "grade": "non_managerial",
-        "jd": {},
+        "jd_markdown": "## Role\n\nOwns the payments platform.\n",
         "experience_min_years": low,
         "experience_max_years": high,
     }

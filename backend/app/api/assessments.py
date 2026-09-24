@@ -1,4 +1,4 @@
-"""The Job SWOT routes, the PPI Assessment Report and the transcript view."""
+"""The PPI Assessment Report and the recruiter's transcript view."""
 import logging
 import re
 import uuid
@@ -28,34 +28,20 @@ from app.models.assessment import (
 )
 from app.models.candidate import Candidate, JobCandidateLink
 from app.models.job import Job
-from app.models.job_setup import (
-    SWOT_ANALYSIS_SECTIONS,
-    JobSwotAnalysis,
-)
 from app.models.tenant import Tenant
-from app.models.user import User
 from app.schemas.assessments import (
     ClaimEvidenceOut,
     DimensionOut,
     FunctionalReportOut,
     GapAnalysisOut,
     RadarChartOut,
-    SwotAnalysisGenerateIn,
-    SwotAnalysisOut,
-    SwotAnalysisSectionsIn,
     TranscriptAnswerDetailOut,
     TranscriptExchangeOut,
     TranscriptOut,
     ValidationPointsOut,
 )
-# The proctored session's recording start. It lives beside the client-portal
-# video schemas rather than with the assessment ones because it is the
-# candidate-side half of the SAME artifact those schemas deliver, and both
-# halves are bound by the same rule: no bucket name and no object key.
 from app.services import capabilities as caps
-from app.services import rbac
 from app.services import (
-    assessment_contract,
     evidence_confidence,
     job_assessment_retention,
     ppi,
@@ -63,7 +49,6 @@ from app.services import (
     reference_code,
     retention_consent,
     skills,
-    swot_analysis,
 )
 # DUAL-MODE ASSESSMENT (2026-09-05 spec). The video package is reached ONLY by
 # these routes and the processing task, never by a scorer; the models carry the
@@ -71,7 +56,6 @@ from app.services import (
 from app.services.assessment_formats import rendering as format_rendering
 from app.services.assessment_formats import scoring as format_scoring
 from app.services.assessment_formats import types as question_types
-from app.services.audit import record_action
 # PROCTORING IS MANDATORY (proctoring-spec-doc.md, principle P4). The gate is
 # this module's only import-time dependency on the proctoring package; the
 # behaviour recorder and the report loader are reached inside the handlers
@@ -95,250 +79,13 @@ READY_FOR_CANDIDATES = skills.READY_FOR_CANDIDATES
 PENDING_REVIEW = skills.PENDING_REVIEW
 
 
-async def _staff_job(session: AsyncSession, user: CurrentUser, job_id: uuid.UUID) -> Job:
-    job = await session.get(Job, job_id)
-    if job is None or job.tenant_id != user.tenant_id:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return job
-
-
-# ── Job setup: the Tatva matrix editor is DELETED (Vivekium release) ────────
+# ── Job setup lives in `api/job_setup.py` (Vivekium release) ────────────────
 #
-# `GET /jobs/{id}/setup`, the `/framework` routes (add, bulk, edit, delete,
-# finalize, reopen, reorder) and the helpers behind them lived here. The matrix
-# editor is gone (owner decision D1): the Skills step replaces it, its service
-# is `services/skills`, Sutra is `services/hiring/sutra`, and what a candidate
-# is assessed against is `services/assessment_contract`. The job-setup routes
-# are rebuilt on those services by the routes package; nothing here reaches
-# the retired compiler, the freeze or the matching categories any more.
-
-
-# ── The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ──
-#
-# FOUR ROUTES, ONE AUTHORIZATION MODEL, NO NEW PERMISSION SYSTEM (section 27)
-# ---------------------------------------------------------------------------
-# Reading takes `view_company_jobs`, which is what every other read of a job
-# already takes. Writing takes `edit_swot`, which RBAC 24 already defines as a
-# Hiring-Manager-controlled field and which the intake routes above already
-# use. Both go through `rbac.require_authorized`, so the whole RBAC 3 chain
-# runs on every one of them: tenant, then the 24 ceiling, then the grant, then
-# assignment scope, then lifecycle state. There is deliberately no SWOT-only
-# authorization anywhere in this block.
-#
-# THE GET IS SEPARATELY AUTHORIZED FROM THE WRITES, AND THAT IS THE FEATURE
-# --------------------------------------------------------------------------
-# Section 27 asks for a real VIEW / EDIT split: a user with view access sees
-# the SWOT and no edit controls, and a user with edit access sees the controls
-# and no read-only notice. Two different capabilities on two different routes
-# is what makes that split true at the API rather than only in the interface.
-#
-# WHY THE READ USES `require_capability` AND THE WRITES USE `require_authorized`
-# ------------------------------------------------------------------------------
-# `require_authorized` adds resource SCOPE to the capability question, and for
-# three of the five client roles RBAC 24 marks `view_company_jobs` SCOPED,
-# meaning "the jobs you are assigned to". This product does not yet write
-# `job_assignments` rows from any workflow, so a scope check on the READ would
-# refuse a Recruiter the SWOT of a job whose JD they are looking at on the same
-# page, which is a stricter answer than the job itself gives and a worse one
-# than no answer.
-#
-# So the read asks the flat question every sibling read in this router asks
-# ("may this person work on jobs at all"), with the tenant boundary enforced by
-# RLS and by `_staff_job`. The WRITES keep the full chain, because a wrong
-# answer there is a wrong answer in the direction that matters: it changes the
-# document. The day assignments are written, the read can tighten to the same
-# gate with no other change; the writes will already be correct.
-
-
-async def _swot_analysis_out(
-    session: AsyncSession,
-    user: CurrentUser,
-    job: Job,
-    row: JobSwotAnalysis,
-) -> SwotAnalysisOut:
-    """Serialize one analysis, resolving `can_edit` on this job for this user.
-
-    The answer is computed with the SAME call the write routes enforce with
-    (`rbac.authorize` over `edit_swot` and this job's resource facts), which is
-    what stops the interface and the API disagreeing: there is one rule, asked
-    twice, not two rules that happen to match today.
-    """
-    editor_name = None
-    if row.last_modified_by is not None:
-        editor = await session.get(User, row.last_modified_by)
-        editor_name = editor.full_name if editor is not None else None
-
-    resource = await rbac.load_job_resource(session, job.id)
-    decision = await rbac.authorize(
-        session,
-        rbac.Principal(
-            user_id=user.user_id, tenant_id=user.tenant_id, role=user.role
-        ),
-        caps.EDIT_SWOT,
-        resource,
-    )
-
-    previous = dict(row.previous_json or {})
-    # A generation that outlived its window READS as failed, derived and never
-    # written, so the tab can never spin for ever on a lost dispatch.
-    status, generation_error = swot_analysis.effective_status(row)
-    return SwotAnalysisOut(
-        job_id=job.id,
-        status=status,
-        strengths=row.strengths,
-        weaknesses=row.weaknesses,
-        opportunities=row.opportunities,
-        threats=row.threats,
-        generated_by=row.generated_by,
-        last_generated_at=row.last_generated_at,
-        generation_error=generation_error,
-        human_edited=row.human_edited,
-        last_modified_at=row.last_modified_at,
-        last_modified_by_name=editor_name,
-        version=row.version,
-        can_restore_previous=any(
-            str(previous.get(name) or "").strip()
-            for name in SWOT_ANALYSIS_SECTIONS
-        ),
-        can_edit=decision.allowed,
-        skills_redraft_available=skills.redraft_available(
-            job,
-            row,
-            locked=await assessment_contract.is_locked(session, job.id),
-            any_row=await skills.has_any_row(session, job.id),
-        ),
-    )
-
-
-@router.get("/jobs/{job_id}/swot-analysis", response_model=SwotAnalysisOut)
-async def get_swot_analysis(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.VIEW_COMPANY_JOBS)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> SwotAnalysisOut:
-    """The SWOT document, in whatever state it is in.
-
-    An empty document is the `not_generated` STATE and not a 404: the tab
-    exists for every job, and a reader who may see the job must see the empty
-    state rather than an error that reads as "this job is broken".
-    """
-    job = await _staff_job(session, user, job_id)
-    row = await swot_analysis.get_or_create(session, job)
-    return await _swot_analysis_out(session, user, job, row)
-
-
-@router.post(
-    "/jobs/{job_id}/swot-analysis/generate",
-    response_model=SwotAnalysisOut,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-async def generate_swot_analysis(
-    job_id: uuid.UUID,
-    body: SwotAnalysisGenerateIn,
-    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> SwotAnalysisOut:
-    """ASK for a SWOT draft. The model runs in `pickready.generate_job_swot`.
-
-    Section 28: generation is the same authority as editing, because both
-    decide what the document says. Answers 202 with the document in the
-    `generating` state; the client re-reads it until the worker has written
-    `generated` or `failed`. Refusals happen BEFORE anything is written: 409
-    over the team's edits without confirmation (the client resolves it by
-    confirming), and 409 with fixed copy when the JD is too thin to draft from.
-    The audit row is written by the worker in one insert, naming Bodha and the
-    person who asked (RBAC 34).
-    """
-    job = await _staff_job(session, user, job_id)
-    try:
-        row, _handle = await swot_analysis.request_generation(
-            session,
-            job,
-            confirm_overwrite=body.confirm_overwrite,
-            requested_by=user.user_id,
-        )
-    except swot_analysis.HumanEditsWouldBeLost as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except swot_analysis.SwotInputInsufficient as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return await _swot_analysis_out(session, user, job, row)
-
-
-@router.put("/jobs/{job_id}/swot-analysis", response_model=SwotAnalysisOut)
-async def save_swot_analysis(
-    job_id: uuid.UUID,
-    body: SwotAnalysisSectionsIn,
-    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> SwotAnalysisOut:
-    """Persist the team's edits. This is the write the whole feature exists for."""
-    job = await _staff_job(session, user, job_id)
-    try:
-        row = await swot_analysis.save(
-            session,
-            job,
-            {
-                "strengths": body.strengths,
-                "weaknesses": body.weaknesses,
-                "opportunities": body.opportunities,
-                "threats": body.threats,
-            },
-            editor_id=user.user_id,
-            expected_version=body.expected_version,
-        )
-    except swot_analysis.VersionConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    # One INSERT carrying every audit column: see the generate route for why a
-    # post-flush mutation of the audit row is an UPDATE the app role cannot run.
-    await record_action(
-        session,
-        action="job_swot_analysis_edited",
-        actor_user_id=user.user_id,
-        actor_role=user.role.value,
-        tenant_id=user.tenant_id,
-        resource_type="job",
-        resource_id=job.id,
-        job_id=job.id,
-        correlation_id=job.correlation_id,
-        metadata={"version": row.version},
-    )
-    # The FIRST save on a job with no skill rows asks Sutra for a draft, after
-    # the commit. Every later save only OFFERS a re-draft
-    # (`skills_redraft_available`); the skills never change silently.
-    await skills.after_swot_saved(session, job, actor_user_id=user.user_id)
-    return await _swot_analysis_out(session, user, job, row)
-
-
-@router.post("/jobs/{job_id}/swot-analysis/restore", response_model=SwotAnalysisOut)
-async def restore_swot_analysis(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(rbac.require_authorized(caps.EDIT_SWOT)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> SwotAnalysisOut:
-    """Undo the one destructive action in this feature (section 32)."""
-    job = await _staff_job(session, user, job_id)
-    try:
-        row = await swot_analysis.restore_previous(session, job)
-    except swot_analysis.SwotAnalysisError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    # One INSERT carrying every audit column: see the generate route for why a
-    # post-flush mutation of the audit row is an UPDATE the app role cannot run.
-    await record_action(
-        session,
-        action="job_swot_analysis_restored",
-        actor_user_id=user.user_id,
-        actor_role=user.role.value,
-        tenant_id=user.tenant_id,
-        resource_type="job",
-        resource_id=job.id,
-        job_id=job.id,
-        correlation_id=job.correlation_id,
-        metadata={"version": row.version},
-    )
-    await skills.after_swot_saved(session, job, actor_user_id=user.user_id)
-    return await _swot_analysis_out(session, user, job, row)
-
+# The setup checklist, the Skills step and the four Job SWOT routes moved to
+# `api/job_setup.py` under the same prefix, so every URL is unchanged. The
+# Tatva matrix editor (`/framework` and its siblings) that lived here is
+# DELETED; `READY_FOR_CANDIDATES` above stays re-exported for the assessment
+# conversation until the assessment phase imports it from `services/skills`.
 
 
 # ── The PPI Assessment Report (spec §9) ──────────────────────────────────────

@@ -12,7 +12,8 @@ response has left. That second shape caused the SWOT false-409 fixed on
 2026-09-20 (`test_swot_analysis_api.py` is the model for these tests).
 
 Three more sites carried the same pattern and were converted on the same day:
-the framework finalize route, the send-to-hiring-manager route, and the
+the framework finalize route, the send-to-hiring-manager route (both DELETED
+in the Vivekium release; publish and create now carry the pin), and the
 pipeline-halt audit record (whose own try/except turned the failure into a
 log line, so no halt was ever actually recorded). Each test here runs the
 real code over a real session with the real role drop, then reads the table
@@ -221,29 +222,62 @@ def _audit_row(action: str, job_id: uuid.UUID) -> dict | None:
 # read back from a second connection in `test_job_skills_save.py`.
 
 
-# ── send-to-hiring-manager: jd_sent_to_hiring_manager in one INSERT ─────────
+# ── publish: job_published in one INSERT, and it survives the commit ───────
 
 
-def test_sending_to_the_hiring_manager_survives_its_own_response(
-    client: TestClient, world: World
-) -> None:
-    _seed_job(world, lifecycle_state="DRAFT", jd_markdown=JD)
+def _save_setup(world: World) -> None:
+    """The SWOT saved and the skills saved, as Save Skills leaves them, so the
+    publish gate has nothing to refuse."""
 
-    response = client.post(f"/api/v1/jobs/{world.job}/send-to-hiring-manager")
+    async def _insert() -> None:
+        sessions = _sessions()
+        async with sessions() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await session.execute(
+                        sa.text(
+                            "UPDATE jobs SET framework_approved_at = now(), "
+                            "assessment_context_json = CAST(:ctx AS jsonb) WHERE id = :id"
+                        ),
+                        {
+                            "id": str(world.job),
+                            "ctx": '{"role_summary": "", "generated_by": "sutra"}',
+                        },
+                    )
+                    await session.execute(
+                        sa.text(
+                            "INSERT INTO job_swot_analyses (id, tenant_id, job_id, status, "
+                            "strengths, weaknesses, opportunities, threats, human_edited, "
+                            "version, last_modified_at) VALUES (:i, :t, :j, 'edited', "
+                            "'Strong warehouse.', 'No streaming.', 'Growth.', 'Hiring race.', "
+                            "true, 2, now())"
+                        ),
+                        {"i": str(uuid.uuid4()), "t": str(world.tenant), "j": str(world.job)},
+                    )
+
+    _run(_insert())
+
+
+def test_publishing_survives_its_own_response(client: TestClient, world: World) -> None:
+    _seed_job(world, lifecycle_state="FINALIZED", jd_markdown=JD)
+    _save_setup(world)
+
+    response = client.post(f"/api/v1/jobs/{world.job}/publish")
     assert response.status_code == 200, response.text
 
     job_row = _committed(
-        "SELECT lifecycle_state FROM jobs WHERE id = :id",
+        "SELECT lifecycle_state, ratified_at FROM jobs WHERE id = :id",
         {"id": str(world.job)},
     )
     assert job_row is not None
-    assert job_row["lifecycle_state"] == "SENT_TO_HIRING_MANAGER"
+    assert job_row["lifecycle_state"] == "PUBLISHED"
+    assert job_row["ratified_at"] is not None
 
-    audit_row = _audit_row("jd_sent_to_hiring_manager", world.job)
+    audit_row = _audit_row("job_published", world.job)
     assert audit_row is not None, "the audit row never committed"
     assert audit_row["actor_role"] == "client"
-    assert audit_row["previous_state"] == {"lifecycle_state": "DRAFT"}
-    assert audit_row["new_state"] == {"lifecycle_state": "SENT_TO_HIRING_MANAGER"}
+    assert audit_row["previous_state"] == {"lifecycle_state": "FINALIZED"}
+    assert audit_row["new_state"] == {"lifecycle_state": "PUBLISHED"}
 
 
 # ── pipeline_halt: the halt record actually exists afterwards ───────────────

@@ -7,11 +7,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.assessments import router
+from app.api.job_setup import router as job_setup_router
 
 
 def test_retired_intake_routes_return_404_while_document_route_remains() -> None:
     app = FastAPI()
     app.include_router(router, prefix="/api/v2/assessments")
+    # The document routes moved to `api/job_setup` under the same prefix.
+    app.include_router(job_setup_router, prefix="/api/v2/assessments")
     job_id = uuid.uuid4()
     base = f"/api/v2/assessments/jobs/{job_id}"
     with TestClient(app) as client:

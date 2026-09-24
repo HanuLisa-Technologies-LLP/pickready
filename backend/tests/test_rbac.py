@@ -88,7 +88,6 @@ def test_the_flat_model_diverges_only_where_24_says_so() -> None:
         HIRING_MANAGER_CONTROLLED,
         INTEGRITY_DISPOSITION,
         REJECT_JD,
-        SEND_JD_TO_HIRING_MANAGER,
         VIEW_COMPANY_JOBS,
     )
 
@@ -123,8 +122,10 @@ def test_the_flat_model_diverges_only_where_24_says_so() -> None:
         "the Recruiter and HR Manager grants diverge somewhere RBAC 24 does "
         f"not sanction: {sorted(differing ^ expected)}"
     )
-    # The Recruiter keeps the one hand-off 9.3 gives them.
-    assert rec[SEND_JD_TO_HIRING_MANAGER] is True
+    # 9.3's hand-off to the Hiring Manager is DELETED with the approval chain
+    # (Vivekium release), so no grant of it may linger in the matrix.
+    assert "send_jd_to_hiring_manager" not in rec
+    assert "send_jd_to_hiring_manager" not in hr
     # Job visibility does NOT diverge at the grant layer, and that is the
     # design: both hold it, and the SCOPED cell in RBAC_INVARIANTS is what
     # narrows the Recruiter to their assigned jobs (9.2, 23). Expressing the

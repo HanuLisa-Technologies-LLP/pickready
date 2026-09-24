@@ -51,11 +51,11 @@ def test_the_two_enums_are_different_types() -> None:
 def test_the_job_lifecycle_is_rbac_17_exactly() -> None:
     """RBAC 17 permits different internal names but requires the semantic
     states be preserved. The document's own names are used verbatim so a
-    reader holding the specification can grep for them."""
+    reader holding the specification can grep for them. Six, not eight: the
+    two approval-chain states went with the chain (Vivekium release), and
+    migration 0119's CHECK names exactly these."""
     assert [state.value for state in hp.JOB_LIFECYCLE_ORDER] == [
         "DRAFT",
-        "SENT_TO_HIRING_MANAGER",
-        "IN_REVIEW",
         "FINALIZED",
         "PUBLISHED",
         "CANDIDATE_APPLICATIONS",
@@ -258,16 +258,15 @@ def test_an_unknown_status_reads_as_applied_rather_than_raising() -> None:
 # ── 4. The lifecycle FSM ─────────────────────────────────────────────────────
 
 def test_the_lifecycle_walks_forward_one_step_at_a_time() -> None:
-    """RBAC 17 draws a single chain. A job cannot skip the Hiring Manager."""
+    """RBAC 17 draws a single chain. A job cannot skip Save Skills: DRAFT goes
+    to FINALIZED (which only `skills.save` writes) and never straight to
+    PUBLISHED."""
     assert hp.JobLifecycleState.PUBLISHED not in hp.lifecycle_allowed_transitions(
         hp.JobLifecycleState.DRAFT
     )
-    assert hp.JobLifecycleState.FINALIZED not in hp.lifecycle_allowed_transitions(
-        hp.JobLifecycleState.SENT_TO_HIRING_MANAGER
-    )
     assert hp.lifecycle_allowed_transitions(hp.JobLifecycleState.DRAFT) == frozenset(
         {
-            hp.JobLifecycleState.SENT_TO_HIRING_MANAGER,
+            hp.JobLifecycleState.FINALIZED,
             hp.JobLifecycleState.CLOSED_ARCHIVED,
         }
     )

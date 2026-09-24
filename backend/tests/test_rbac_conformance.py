@@ -101,13 +101,17 @@ class JobRow:
     tenant_id: uuid.UUID
     lifecycle_state: str
     assignments: frozenset[tuple[str, str]]
+    #: A `job_skill_snapshots` row exists: a candidate has started (D5).
+    skills_locked: bool = False
 
 
-def _jobs(state: str = JobLifecycleState.IN_REVIEW.value) -> dict[str, JobRow]:
+def _jobs(
+    state: str = JobLifecycleState.DRAFT.value, *, locked: bool = False
+) -> dict[str, JobRow]:
     return {
-        str(JOB_ASSIGNED): JobRow(TENANT_A, state, ASSIGNMENTS_ON_ASSIGNED_JOB),
-        str(JOB_UNASSIGNED): JobRow(TENANT_A, state, frozenset()),
-        str(JOB_OTHER_TENANT): JobRow(TENANT_B, state, frozenset()),
+        str(JOB_ASSIGNED): JobRow(TENANT_A, state, ASSIGNMENTS_ON_ASSIGNED_JOB, locked),
+        str(JOB_UNASSIGNED): JobRow(TENANT_A, state, frozenset(), locked),
+        str(JOB_OTHER_TENANT): JobRow(TENANT_B, state, frozenset(), locked),
     }
 
 
@@ -147,7 +151,9 @@ class _FakeSession:
     async def execute(self, statement, params=None):  # noqa: ANN001
         sql = " ".join(str(statement).split())
         params = params or {}
-        if sql.startswith("SELECT id, tenant_id, lifecycle_state FROM jobs"):
+        if sql.startswith("SELECT j.id, j.tenant_id, j.lifecycle_state"):
+            # The lock is read from the snapshot TABLE in the same statement.
+            assert "job_skill_snapshots" in sql, sql
             row = self.jobs.get(str(params.get("jid")))
             if row is None:
                 return _Result([])
@@ -157,6 +163,7 @@ class _FakeSession:
                         "id": uuid.UUID(str(params["jid"])),
                         "tenant_id": row.tenant_id,
                         "lifecycle_state": row.lifecycle_state,
+                        "skills_locked": row.skills_locked,
                     }
                 ]
             )
@@ -202,7 +209,6 @@ def _no_permission_cache(monkeypatch):
 #: Every row of the 24 matrix that names a resource appears here.
 PROTECTED_ROUTES: tuple[tuple[str, str, str], ...] = (
     ("PATCH", "/jobs/{job_id}", caps.EDIT_JOB_DESCRIPTION),
-    ("POST", "/jobs/{job_id}/send-to-hiring-manager", caps.SEND_JD_TO_HIRING_MANAGER),
     ("POST", "/jobs/{job_id}/finalize", caps.FINALIZE_ROLE_DEFINITION),
     ("POST", "/jobs/{job_id}/publish", caps.PUBLISH_JOB),
     ("POST", "/jobs/{job_id}/reject", caps.REJECT_JD),
@@ -316,14 +322,13 @@ def test_permission_matrix_cell(
     """RBAC 24 x 23 x 33, one cell per case, asserted on a real response."""
     method, path = ROUTE_FOR_CAPABILITY[capability]
     # The lifecycle state is chosen so the cell under test is not masked by a
-    # state rule: FINALIZED is required for publish (21) and refuses the
-    # criteria edits (22, 26), so each is tested in the state where its own
-    # matrix cell is the thing deciding. The state rules get their own cases
-    # further down.
+    # state rule: FINALIZED is required for publish (21), and a DRAFT keeps
+    # the Recruiter's draft-scoped JD edit open. The state rules get their own
+    # cases further down.
     state = (
         JobLifecycleState.FINALIZED.value
         if capability == caps.PUBLISH_JOB
-        else JobLifecycleState.IN_REVIEW.value
+        else JobLifecycleState.DRAFT.value
     )
     client = _client(_jobs(state))
 
@@ -565,22 +570,60 @@ def test_publishing_an_unfinalized_job_is_refused(state: str) -> None:
     assert status == (200 if state in FINALIZED_OR_LATER else 403), state
 
 
-def test_hiring_manager_cannot_silently_edit_criteria_after_finalization() -> None:
-    """RBAC 22 and 12: a post-finalization change needs an explicit revision
-    workflow, not a silent mutation. No such workflow exists yet, so it is
-    refused rather than allowed-and-logged."""
-    client = _client(_jobs(JobLifecycleState.FINALIZED.value))
+@pytest.mark.parametrize(
+    "state",
+    [JobLifecycleState.FINALIZED.value, JobLifecycleState.PUBLISHED.value],
+)
+def test_hiring_manager_edits_criteria_until_the_lock_not_until_finalization(
+    state: str,
+) -> None:
+    """RBAC 22 and 26 as the Vivekium release reads them (D5): the skills are
+    the contract, and they lock at the FIRST CANDIDATE START. Finalization and
+    publication alone freeze nothing, so an unlocked job's criteria stay the
+    Hiring Manager's to correct. The rule this replaces refused them from
+    FINALIZED on, which also refused every SWOT edit once skills were saved."""
+    client = _client(_jobs(state))
     for capability in sorted(caps.HIRING_MANAGER_CONTROLLED - {caps.FINALIZE_ROLE_DEFINITION}):
         method, path = ROUTE_FOR_CAPABILITY[capability]
-        assert _call(client, method, path, Role.hiring_manager, JOB_ASSIGNED) == 403, capability
+        assert _call(client, method, path, Role.hiring_manager, JOB_ASSIGNED) == 200, capability
 
 
-def test_recruiter_cannot_edit_criteria_after_finalization_either() -> None:
-    """RBAC 26, the row this whole layer exists for. Refused before
-    finalization by the NEVER cell and after it by the state rule, so there is
-    no window in which it is possible."""
-    for state in (JobLifecycleState.IN_REVIEW.value, JobLifecycleState.FINALIZED.value):
-        client = _client(_jobs(state))
+def test_the_lock_refuses_the_contract_capabilities_and_nothing_else() -> None:
+    """A started assessment locks exactly what writes the contract. The SWOT
+    and the job philosophy stay editable: the contract is the immutable
+    snapshot, whatever happens to the documents it was drafted from."""
+    client = _client(_jobs(JobLifecycleState.PUBLISHED.value, locked=True))
+    for capability in sorted(caps.HIRING_MANAGER_CONTROLLED - {caps.FINALIZE_ROLE_DEFINITION}):
+        method, path = ROUTE_FOR_CAPABILITY[capability]
+        expected = 403 if capability in caps.SKILL_CAPABILITIES else 200
+        assert _call(client, method, path, Role.hiring_manager, JOB_ASSIGNED) == expected, (
+            capability
+        )
+    principal = rbac.Principal(
+        user_id=USERS[Role.hiring_manager], tenant_id=TENANT_A, role=Role.hiring_manager
+    )
+    locked = rbac.Resource(
+        kind="job",
+        tenant_id=TENANT_A,
+        job_id=JOB_ASSIGNED,
+        lifecycle_state=JobLifecycleState.PUBLISHED.value,
+        assignments=ASSIGNMENTS_ON_ASSIGNED_JOB,
+        skills_locked=True,
+    )
+    refused = rbac.decide(principal, caps.FINALIZE_ROLE_DEFINITION, locked, granted=True)
+    assert (refused.decision, refused.reason) == (rbac.Decision.DENY, "skills_locked")
+
+
+def test_recruiter_cannot_edit_criteria_in_any_state() -> None:
+    """RBAC 26, the row this whole layer exists for. The Recruiter's NEVER
+    cell refuses the criteria in every state, locked or not, so there is no
+    window in which it is possible."""
+    for state, locked in (
+        (JobLifecycleState.DRAFT.value, False),
+        (JobLifecycleState.FINALIZED.value, False),
+        (JobLifecycleState.PUBLISHED.value, True),
+    ):
+        client = _client(_jobs(state, locked=locked))
         for capability in sorted(caps.HIRING_MANAGER_CONTROLLED):
             method, path = ROUTE_FOR_CAPABILITY[capability]
             assert _call(client, method, path, Role.recruiter, JOB_ASSIGNED) == 403, (

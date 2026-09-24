@@ -1,7 +1,7 @@
 """Matching pipeline schemas (API_CONTRACT.md `/matching`)."""
 import uuid
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.models.enums import LinkSource, Tier
 from app.schemas.candidates import CandidateOut
@@ -134,38 +134,5 @@ class MatchResultsOut(BaseModel):
     has_previous: bool = False
 
 
-# ── The job's Matching category list (spec §3.2) ─────────────────────────────
-
-
-class MatchingCategoryIn(BaseModel):
-    """What the recruiter's add/edit control sends.
-
-    No `key`. The key is derived from the name server-side and never moves once
-    written: it is what a score is filed under, so letting a client set it would
-    let a rename orphan every score already stored against the category.
-    """
-
-    name: str = Field(min_length=1, max_length=255)
-    description: str | None = Field(default=None, max_length=1000)
-
-
-class MatchingCategoryOut(BaseModel):
-    id: uuid.UUID
-    key: str
-    name: str
-    description: str | None = None
-    ordinal: int
-
-
-class MatchingCategoriesOut(BaseModel):
-    job_id: uuid.UUID
-    #: True once the recruiter has saved the list. From that point the list is
-    #: frozen: candidates have been ranked against it.
-    finalized: bool = False
-    categories: list[MatchingCategoryOut] = []
-    #: Enforced at save, not merely rendered (spec §3.2).
-    minimum: int = 5
-    maximum: int = 8
-    #: Populated when the list cannot yet be saved, so the UI can say why rather
-    #: than only disabling the Save control.
-    blocking_reason: str | None = None
+# The Matching category list schemas are DELETED with the editor and its
+# routes (Vivekium release). What matching reads is Phase 2's concern.

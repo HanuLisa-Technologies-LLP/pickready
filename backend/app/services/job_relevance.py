@@ -16,7 +16,7 @@ Signals, in order of preference:
   1. Cosine similarity between `jobs.embedding` and the candidate's main
      `profiles.embedding` (pgvector, both written by the matching pipeline).
   2. Keyword overlap between the candidate's text (resume text + parsed skills +
-     profile-form answers) and the job's title / level / declared skills.
+     profile-form answers) and the job's title / grade / declared skills.
 
 Degradation is the point: no embedding, no resume, or an empty profile all fall
 back to the next signal, and a candidate with NO profile signal at all sees the
@@ -37,6 +37,10 @@ from app.models.candidate import Profile
 from app.models.job import Job
 from app.services.candidate_profile_form import searchable_text
 from app.services.hiring import ontology
+# The GRADE, never `jobs.level`: that free-text field went out of the Create
+# Job form on 2026-07-28 and out of every reader in the Vivekium release, so
+# a job created since reads as nothing there.
+from app.services.job_candidates import grade_label
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +136,7 @@ def _job_terms(job: Job) -> set[str]:
         " ".join(
             [
                 job.title or "",
-                job.level or "",
+                grade_label(job.assessment_grade),
                 job.department or "",
                 _flatten(jd.get("skills")),
                 _flatten(jd.get("role")),
@@ -216,7 +220,7 @@ def matches_search(job: Job, query: str) -> bool:
         [
             job.title or "",
             job.department or "",
-            job.level or "",
+            grade_label(job.assessment_grade),
             _flatten((job.jd_json or {}).get("skills")),
             _flatten((job.jd_json or {}).get("role")),
         ]
