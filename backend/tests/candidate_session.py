@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from fastapi import Response
 from sqlalchemy import delete, select
@@ -126,6 +127,11 @@ async def create_candidate_session(
                     status=UserStatus.active,
                     firebase_uid=identity.uid,
                     auth_providers=[identity.provider],
+                    # What `auth._finalize_single` stamps for a verified
+                    # identity; the apply path's rehome reads it.
+                    email_verified_at=(
+                        datetime.now(timezone.utc) if email_verified else None
+                    ),
                 )
                 session.add(user)
                 await session.flush()
