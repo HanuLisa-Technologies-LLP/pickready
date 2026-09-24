@@ -284,3 +284,53 @@ def test_module_has_no_em_dash():
 
     source = inspect.getsource(it)
     assert chr(8212) not in source
+
+
+# ── A contained failure is not a silent one (2026-09-24) ─────────────────────
+
+
+def test_a_failed_emit_is_logged_by_class_and_never_by_message(monkeypatch, caplog):
+    """Each observer used to end in `except Exception: pass`, so a telemetry
+    line that stopped being written looked like a conversation with no turns.
+    The failure is now a WARNING naming the emitter and the exception CLASS.
+    The message is never logged: an exception raised while formatting a field
+    can quote that field, and the fields are what this module keeps out."""
+    def explode(*args, **kwargs):
+        raise RuntimeError("SMUGGLED candidate answer text")
+
+    monkeypatch.setattr(it.logger, "info", explode)
+    caplog.set_level(logging.WARNING, logger=it.logger.name)
+    record_turn(_event())
+    emit_summary("conv-1", [_event()])
+
+    lines = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert lines == [
+        "interview_telemetry.emit_failed emitter=turn err=RuntimeError",
+        "interview_telemetry.emit_failed emitter=conversation err=RuntimeError",
+    ]
+    assert all(r.exc_info is None for r in caplog.records)
+    assert not any("SMUGGLED" in line for line in lines)
+
+
+def test_a_summary_that_could_not_be_computed_says_so(caplog):
+    """The empty shape and "could not count" must stay distinguishable."""
+    caplog.set_level(logging.WARNING, logger=it.logger.name)
+    summary = conversation_summary(7)
+    assert summary["total_turns"] == 0
+    assert [r.getMessage() for r in caplog.records] == [
+        "interview_telemetry.emit_failed emitter=summary err=TypeError"
+    ]
+
+
+def test_unreadable_latencies_are_counted_not_passed_over():
+    """A p95 computed over half the turns says so."""
+    events = [
+        _event(latency_ms="soon"),
+        _event(latency_ms=float("inf")),
+        _event(latency_ms=200),
+    ]
+    summary = conversation_summary(events)
+    assert summary["total_turns"] == 3
+    assert summary["unreadable_latencies"] == 2
+    assert summary["latency_p50_ms"] == 200
+    assert conversation_summary([])["unreadable_latencies"] == 0

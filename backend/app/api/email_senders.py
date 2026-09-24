@@ -584,18 +584,34 @@ def _cert_url_is_trusted(cert_url: str) -> bool:
 
 async def _verify_sns_signature(payload: dict) -> bool:
     """Fetch the signing certificate (bounded) and verify the RSA signature.
-    SignatureVersion 1 is SHA1withRSA, 2 is SHA256withRSA."""
+    SignatureVersion 1 is SHA1withRSA, 2 is SHA256withRSA.
+
+    EVERY REFUSAL IS LOGGED WITH ITS REASON, and only the failures a hostile or
+    broken message can cause are caught. The caller answers 403 with nothing
+    revealed, which is right for the sender and useless to an operator: this
+    handler used to catch EVERYTHING around the signature check and log
+    nothing, so a real SES topic whose events all stopped verifying (a rotated
+    certificate, a canonical string built from the wrong field list) looked
+    exactly like a quiet mailbox. A programming error is not a bad signature
+    and is left to propagate, so it surfaces as a 500 SNS retries rather than
+    as a refusal nobody can see.
+    """
     import httpx
+    from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import padding
     from cryptography.x509 import load_pem_x509_certificate
 
     cert_url = str(payload.get("SigningCertURL", ""))
     if not _cert_url_is_trusted(cert_url):
+        logger.warning("email_senders.sns_signature_invalid reason=untrusted_cert_url")
         return False
     try:
         signature = base64.b64decode(str(payload.get("Signature", "")))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
+        logger.warning(
+            "email_senders.sns_signature_invalid reason=%s", type(exc).__name__
+        )
         return False
 
     try:
@@ -603,8 +619,13 @@ async def _verify_sns_signature(payload: dict) -> bool:
             response = await client.get(cert_url)
             response.raise_for_status()
             cert = load_pem_x509_certificate(response.content)
-    except Exception:
-        logger.warning("ses_events.cert_fetch_failed")
+    except (httpx.HTTPError, ValueError) as exc:
+        # HTTPError covers the transport, the timeout and a non-2xx answer;
+        # ValueError is what the loader raises for bytes that are not a PEM
+        # certificate.
+        logger.warning(
+            "email_senders.sns_cert_fetch_failed reason=%s", type(exc).__name__
+        )
         return False
 
     algorithm = (
@@ -616,7 +637,13 @@ async def _verify_sns_signature(payload: dict) -> bool:
         cert.public_key().verify(
             signature, _sns_canonical_string(payload), padding.PKCS1v15(), algorithm
         )
-    except Exception:
+    except (InvalidSignature, ValueError, TypeError) as exc:
+        # InvalidSignature is the forged or altered message. TypeError is a
+        # certificate whose key is not RSA, whose `verify` takes different
+        # arguments; ValueError is a malformed signature length.
+        logger.warning(
+            "email_senders.sns_signature_invalid reason=%s", type(exc).__name__
+        )
         return False
     return True
 

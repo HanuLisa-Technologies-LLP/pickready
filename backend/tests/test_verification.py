@@ -567,3 +567,33 @@ def test_no_critic_calls_a_model(module) -> None:
         source = handle.read()
     assert "invoke_llm" not in source
     assert "llm_router" not in source
+
+
+def test_an_email_type_with_no_link_contract_has_no_link_findings() -> None:
+    """The link critic was once wrapped in a catch-all on the belief that an
+    unknown type raises. It does not: it is answered by table lookup with no
+    defects."""
+    verdict = email.verify_draft(
+        email_type="email_no_such_type",
+        subject="Next step",
+        body=_body(),
+        context=_email_context(),
+    )
+    assert not any(f.issue == "link_defect" for f in verdict.findings)
+
+
+def test_a_bug_in_the_link_contract_is_not_read_as_links_are_fine(monkeypatch) -> None:
+    """`except Exception: return []` turned any error in the link check into
+    "no link defects", the one answer a link critic must never give by
+    accident. The error now propagates."""
+    def broken(*args, **kwargs):
+        raise RuntimeError("link contract is broken")
+
+    monkeypatch.setattr(email.lifecycle_email, "link_defects", broken)
+    with pytest.raises(RuntimeError, match="link contract is broken"):
+        email.verify_draft(
+            email_type="email_shortlist",
+            subject="Next step",
+            body=_body(),
+            context=_email_context(),
+        )
