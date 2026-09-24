@@ -73,8 +73,13 @@ async def test_a_digest_mismatch_is_refused_before_any_model_call_or_ledger_writ
     engine, factory = await _factory()
     w = await _seed(factory)
     try:
+        # REAL questions and answers, so a refusal that came AFTER the item
+        # stage would have both called the judge and filed ledger rows. With
+        # nothing to grade, "no call and no row" would hold vacuously.
+        from tests.test_miti_live_rows import _issue
+
         conversation = w.conversations[0]
-        await _lock(factory, w, conversation)
+        await _issue(factory, w)
         async with factory() as session:
             async with superadmin_scope(session):
                 await session.execute(
@@ -89,24 +94,38 @@ async def test_a_digest_mismatch_is_refused_before_any_model_call_or_ledger_writ
             calls.append(task)
             return '{"score": 90}'
 
+        from app.services import ppi_interview
+        from app.services.assessment_pipeline import evidence as answer_evidence
+
         async with factory() as session:
             async with superadmin_scope(session):
+                questions = await ppi_interview.load_for_link(session, w.links[0])
+                locators = await answer_evidence.answer_records(session, w.links[0])
+                assert questions and locators, "the refusal must have work it could have done"
                 with pytest.raises(live.ScorecardUnavailable):
                     await live.evaluate_application(
                         session,
                         job=SimpleNamespace(id=w.job, tenant_id=w.tenant, title="Data Engineer"),
                         link=SimpleNamespace(id=w.links[0], candidate_id=w.candidates[0]),
                         conversation_id=conversation,
-                        questions=[],
-                        answers={},
-                        locators={},
+                        questions=questions,
+                        answers={
+                            key: [record.text for record in records]
+                            for key, records in locators.items()
+                        },
+                        locators=locators,
                         structured={},
                         invoke=_judge,
                         item_invoke=_judge,
                     )
-                await session.rollback()
+                # Commit whatever the refused run left in the session: if the
+                # refusal had come after a ledger write, the write would now be
+                # durable and the second connection below would see it.
+                await session.commit()
+        async with factory() as reader:
+            async with superadmin_scope(reader):
                 written = (
-                    await session.execute(
+                    await reader.execute(
                         text("SELECT count(*) FROM evidence_items WHERE link_id = :l"),
                         {"l": w.links[0]},
                     )
