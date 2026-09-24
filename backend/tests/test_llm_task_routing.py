@@ -115,8 +115,15 @@ SPEC_B3_ASSIGNMENT = {
     "assessment_context": llm_providers.MODEL_TERRA,
     # Bodha -- the Job SWOT document -> the reasoning tier (writing)
     "swot_analysis": llm_providers.MODEL_TERRA,
-    # Yukti -- AI Score / category matching -> the extraction tier (must be fast)
+    # Yukti -- the legacy AI Score hint -> the extraction tier. Its last live
+    # caller (`matching._score_batch`) goes with the legacy matcher in Phase 2.
     "rerank": llm_providers.MODEL_LUNA,
+    # Yukti (Vivekium release) -- reads resumes against the saved skills and
+    # the named SWOT needs and returns a verdict and a quote per item. That is
+    # JUDGING, so the reasoning tier: stated here a second time, independently
+    # of the table, because moving off `rerank` is exactly the change during
+    # which a task could land on the wrong tier unnoticed.
+    "yukti_matching": llm_providers.MODEL_TERRA,
     # Vaada -- conversation / question generation -> the reasoning tier
     "conversation_turn": llm_providers.MODEL_TERRA,
     # Miti -- claim extraction -> the extraction tier (narrow, mechanical,
@@ -446,6 +453,7 @@ def test_every_judging_task_is_deterministic() -> None:
         "dimension_evaluation",
         "triangulation",
         "situation_classification",
+        "yukti_matching",
     ):
         assert llm_providers.temperature_for(task) == 0.0, task
 
