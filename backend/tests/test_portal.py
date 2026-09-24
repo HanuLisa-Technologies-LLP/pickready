@@ -357,12 +357,13 @@ async def test_apply_context_reports_stored_resume_and_duplicate(monkeypatch) ->
                         fx.jobs[0], user=user, session=s
                     )
         assert before.already_applied is False
+        assert before.application_id is None
         assert before.resume.has_resume is False
 
         async with factory() as s:
             async with s.begin():
                 async with superadmin_scope(s):
-                    await portal_mod.apply_to_job(
+                    applied = await portal_mod.apply_to_job(
                         fx.jobs[0], resume=_upload(), reuse_previous=False,
                         application_source="direct",
                         user=user, session=s, validation=_VALIDATION,
@@ -381,7 +382,10 @@ async def test_apply_context_reports_stored_resume_and_duplicate(monkeypatch) ->
                     stored = await portal_mod.my_stored_resume(user=user, session=s)
         assert same.already_applied is True
         assert same.applied_at is not None
+        # The public page's "View your application" link opens this card.
+        assert same.application_id == applied.link_id
         assert other.already_applied is False
+        assert other.application_id is None
         assert other.resume.has_resume is True
         assert other.resume.filename == "cv.pdf"
         assert stored.has_resume is True

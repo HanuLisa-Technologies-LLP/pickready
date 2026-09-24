@@ -111,6 +111,9 @@ class ApplyContextOut(BaseModel):
     job_id: uuid.UUID
     already_applied: bool = False
     applied_at: datetime | None = None
+    #: The application's id when `already_applied`, so "View your application"
+    #: opens Applied Jobs on that card. A sourced databank entry is not one.
+    application_id: uuid.UUID | None = None
     resume: StoredResumeOut = StoredResumeOut()
     #: Whether the candidate's My Profile advanced form is filled in. The apply
     #: dialog uses this to send them to their profile first rather than letting
@@ -1650,6 +1653,7 @@ async def apply_context(
         job_id=job.id,
         already_applied=existing is not None,
         applied_at=existing.created_at if existing is not None else None,
+        application_id=existing.id if existing is not None else None,
         resume=_resume_summary(await _main_resume_profile(session, candidate)),
         profile_complete=profile_form.is_complete(answers),
         profile_missing=profile_form.missing_required(answers),
