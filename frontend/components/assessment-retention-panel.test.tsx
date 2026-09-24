@@ -141,6 +141,15 @@ describe("AssessmentRetentionPanel", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
+  it("never offers the open form to somebody without the capability", async () => {
+    api.apiGet.mockResolvedValue(retention({}));
+    render(<AssessmentRetentionPanel jobId="job-1" />);
+
+    expect(await screen.findByTestId("read-only-notice")).toBeTruthy();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open a dispute" })).toBeNull();
+  });
+
   it("offers nothing once the records are gone", async () => {
     permissions.granted = new Set(["retrieve_disputed_assessment"]);
     api.apiGet.mockResolvedValue(
