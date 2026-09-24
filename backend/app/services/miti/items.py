@@ -41,10 +41,10 @@ unanswered Must-have is a FAILED Must-have (owner ruling O5-1).
 
 THE MODEL IS INJECTED
 ---------------------
-`evaluate_skills` takes `invoke`, defaulting to `llm_router.invoke_llm`
-imported inside the function, so a test drives the scorer offline and reads
-the exact messages it was sent (which is how the stored-rubric guarantee is
-proven rather than asserted).
+`evaluate_skills` REQUIRES `invoke`. `miti/live.py` is the one module in the
+package allowed to name the router, and it supplies the real call; a test
+supplies a scripted one and reads the exact messages it was sent, which is how
+the stored-rubric guarantee is proven rather than asserted.
 """
 from __future__ import annotations
 
@@ -551,7 +551,7 @@ async def evaluate_skill(
     answers: Mapping[str, Sequence[str]],
     locators: Mapping[str, Sequence[Any]],
     structured: Mapping[str, Any],
-    invoke: Invoke | None = None,
+    invoke: Invoke,
 ) -> SkillGrade:
     """Grade ONE contract skill from the questions the candidate was asked on it.
 
@@ -561,10 +561,6 @@ async def evaluate_skill(
     never asked, so nothing about them has been learned, and grading it Not
     Matching would fail an essential skill over a platform defect.
     """
-    if invoke is None:
-        from app.services import llm_router
-
-        invoke = llm_router.invoke_llm
     if not questions:
         _log_not_assessed(context, skill, None, FAILURE_NO_QUESTION)
         return _grade_skill(
@@ -605,7 +601,7 @@ async def evaluate_skills(
     answers: Mapping[str, Sequence[str]],
     locators: Mapping[str, Sequence[Any]],
     structured: Mapping[str, Any],
-    invoke: Invoke | None = None,
+    invoke: Invoke,
 ) -> tuple[SkillGrade, ...]:
     """Every skill in the contract, in contract order. Sequential on purpose.
 

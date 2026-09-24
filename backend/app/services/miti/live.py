@@ -368,7 +368,7 @@ async def evaluate_application(
         answers=answers,
         locators=locators,
         structured=structured,
-        invoke=item_invoke,
+        invoke=item_invoke or _item_invoke,
     )
     result = MitiResult(contract=contract, skills=skill_grades)
     if not result.complete and not allow_incomplete:
@@ -406,6 +406,25 @@ async def evaluate_application(
     result.evidence_count = len(views)
     result.competency_sources = _sources_by_competency(views, mapping)
     return result
+
+
+async def _item_invoke(
+    task: str,
+    messages: list[dict[str, str]],
+    *,
+    response_format_json: bool = False,
+    session: Any = None,
+) -> str:
+    """The real model call for the item stage, injected into `items`.
+
+    `items.EVALUATION_TASK` routes it (Terra, temperature 0.0). The session is
+    passed so the router attributes the cost to this scoring run.
+    """
+    from app.services import llm_router
+
+    return await llm_router.invoke_llm(
+        task, messages, response_format_json=response_format_json, session=session
+    )
 
 
 async def _invoke(task: str, messages: list[dict[str, str]], **kwargs: Any) -> str:

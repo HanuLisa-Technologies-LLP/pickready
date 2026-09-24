@@ -1,19 +1,15 @@
 """Stage 5 over a whole report, which is where the outage floor is decided.
 
 `test_miti_pipeline` exercises `escalate` on one contradiction at a time. This
-file runs `triangulate` over a REPORT, because three of its properties only
-appear when the model's explanations and the deterministic stock list meet:
+file runs `triangulate` over a REPORT:
 
-  THE STOCK LIST IS MERGED, NEVER REPLACED. If a provider outage left the
-  generated explanations empty and the stock list were only a fallback, the
-  two-explanation floor would quietly stop holding -- and an outage that
-  silently disabled integrity escalation is the worst failure this stage has,
-  because it reads as a clean run.
-
-  A DUPLICATE IS NOT A SECOND EXPLANATION. The model returning the stock
-  sentence back must not satisfy the floor twice over; two explanations means
-  two, and counting one twice is the manufactured-corroboration error moved one
-  layer up.
+  THE STOCK LIST IS THE WHOLE INPUT (WP5-B). `triangulate` used to take model
+  generated explanations and merge them in front of the stock list; nothing on
+  the live path ever supplied any, so the input was DELETED rather than wired.
+  The deterministic stock list is what keeps the two-explanation floor holding
+  during a provider outage, and an outage that silently disabled integrity
+  escalation is the worst failure this stage has, because it reads as a clean
+  run.
 
   NOTHING HERE CAN END A CANDIDACY. `TriangulationResult` has no reject field,
   no status and no decision, and the enforcement is that absence. G3 fails
@@ -97,7 +93,7 @@ def test_the_stock_list_holds_the_floor_when_nothing_was_generated() -> None:
     two-explanation rule protects against a REASONING failure, and the stock
     list is what stops an OUTAGE from being mistaken for one.
     """
-    result = triangulation.triangulate(_report(detector.CRITICAL), generated=None)
+    result = triangulation.triangulate(_report(detector.CRITICAL))
     held = result.contradictions[0]
     assert len(held.explanations) >= triangulation.REQUIRES_BENIGN_EXPLANATIONS
     assert held.proposed_severity == detector.CRITICAL
@@ -114,7 +110,6 @@ def test_with_no_explanations_at_all_the_two_explanation_rule_binds(
     result = triangulation.triangulate(
         _report(detector.CRITICAL),
         sources=_sources("candidate", "employer"),
-        generated=None,
     )
     held = result.contradictions[0]
     assert held.explanations == ()
@@ -123,51 +118,32 @@ def test_with_no_explanations_at_all_the_two_explanation_rule_binds(
     assert "benign explanation" in held.withheld_reason
 
 
-def test_a_generated_explanation_is_merged_with_the_stock_ones() -> None:
-    """Merged, not replaced. A model that returned one explanation must not
-    lower the floor to one."""
-    mine = triangulation.BenignExplanation(
-        text="The two systems record the end date differently."
-    )
-    result = triangulation.triangulate(
-        _report(detector.CRITICAL), generated={AXIS: [mine]}
-    )
+def test_triangulate_takes_no_model_generated_explanations() -> None:
+    """The deleted input stays deleted: an input nothing fills is a second path
+    nobody exercises (WP5-B)."""
+    import inspect
+
+    assert "generated" not in inspect.signature(triangulation.triangulate).parameters
+
+
+def test_the_stock_explanations_are_distinct_sentences() -> None:
+    """Counting one explanation twice would satisfy the two-explanation floor
+    with one, which is the manufactured-corroboration error moved a layer up."""
+    result = triangulation.triangulate(_report(detector.CRITICAL))
     texts = [e.text for e in result.contradictions[0].explanations]
-    assert mine.text in texts
+    assert len(set(texts)) == len(texts)
     assert len(texts) >= triangulation.REQUIRES_BENIGN_EXPLANATIONS
 
 
-def test_the_same_sentence_returned_twice_is_not_two_explanations() -> None:
-    """The dedup arm. Counting one explanation twice would satisfy the
-    two-explanation floor with one, which is the manufactured-corroboration
-    error moved a layer up."""
-    stock = triangulation.standard_explanations(AXIS)[0]
-    echoed = triangulation.BenignExplanation(text=stock.text)
-    result = triangulation.triangulate(
-        _report(detector.CRITICAL), generated={AXIS: [echoed]}
-    )
-    texts = [e.text for e in result.contradictions[0].explanations]
-    assert texts.count(stock.text) == 1
-    assert len(set(texts)) >= triangulation.REQUIRES_BENIGN_EXPLANATIONS
-
-
-def test_explanations_are_generated_for_an_axis_the_model_said_nothing_about() -> None:
-    """A model answering about one axis must not leave another axis with no
-    floor at all."""
+def test_every_axis_gets_its_own_floor() -> None:
+    """One axis carrying explanations must not leave another with none."""
     report = detector.ContradictionReport(
         contradictions=(
             _contradiction(detector.CRITICAL, detector.AXIS_RESUME_VS_ANSWERS),
             _contradiction(detector.CRITICAL, detector.AXIS_ANSWERS_ACROSS_TURNS),
         )
     )
-    result = triangulation.triangulate(
-        report,
-        generated={
-            detector.AXIS_RESUME_VS_ANSWERS: [
-                triangulation.BenignExplanation(text="Only this axis was answered.")
-            ]
-        },
-    )
+    result = triangulation.triangulate(report)
     for triangulated in result.contradictions:
         assert (
             len(triangulated.explanations)
@@ -188,17 +164,16 @@ def test_a_minor_contradiction_is_recorded_and_is_not_unresolved() -> None:
     assert result.integrity_flags == []
 
 
-def test_a_supported_explanation_settles_it_rather_than_flagging_it() -> None:
+def test_a_supported_explanation_settles_it_rather_than_flagging_it(monkeypatch) -> None:
     """Escalating anyway would be ignoring the answer we went looking for."""
-    supported = [
+    supported = (
         triangulation.BenignExplanation(
             text="The company renamed itself in the period.", supported=True
         ),
         triangulation.BenignExplanation(text="The phrasing differs, the substance does not."),
-    ]
-    result = triangulation.triangulate(
-        _report(detector.CRITICAL), generated={AXIS: supported}
     )
+    monkeypatch.setattr(triangulation, "standard_explanations", lambda axis: supported)
+    result = triangulation.triangulate(_report(detector.CRITICAL))
     settled = result.contradictions[0]
     assert settled.settled_benignly is True
     assert settled.severity == detector.MINOR
@@ -238,12 +213,6 @@ def test_one_source_group_holds_a_critical_at_material() -> None:
     result = triangulation.triangulate(
         _report(detector.CRITICAL),
         sources=_sources("candidate", "candidate"),
-        generated={
-            AXIS: [
-                triangulation.BenignExplanation(text="One."),
-                triangulation.BenignExplanation(text="Two."),
-            ]
-        },
     )
     held = result.contradictions[0]
     assert result.independence == 1
@@ -284,12 +253,6 @@ def test_a_severe_contradiction_asks_for_a_human_rather_than_a_decision() -> Non
     result = triangulation.triangulate(
         _report(detector.CRITICAL),
         sources=_sources("candidate", "employer"),
-        generated={
-            AXIS: [
-                triangulation.BenignExplanation(text="One reading."),
-                triangulation.BenignExplanation(text="Another reading."),
-            ]
-        },
     )
     assert result.contradictions[0].severity == detector.CRITICAL
     assert result.severity == detector.CRITICAL
@@ -331,7 +294,7 @@ def test_a_held_contradiction_carries_the_actions_of_the_severity_applied() -> N
     """Rebuilt at the applied severity so its ACTIONS match. A MINOR carrying
     CRITICAL's actions would send a human-review obligation the severity does
     not justify."""
-    result = triangulation.triangulate(_report(detector.CRITICAL), generated=None)
+    result = triangulation.triangulate(_report(detector.CRITICAL))
     held = result.contradictions[0]
     assert held.severity == detector.MATERIAL
     assert held.base.actions == detector.actions_for(

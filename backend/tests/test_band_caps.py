@@ -35,15 +35,34 @@ from hypothesis import strategies as st
 
 from app.services import rating
 from app.services.evidence import tiers as evidence_tiers
-from app.services.hiring.department_models import (
+from app.services.miti import aggregation, caps
+from app.services.miti.dimensions import (
+    BANDS,
     DIM_AUTHENTICITY,
     DIM_ROLE_FIT,
     DIM_TRACK_RECORD,
     DIM_TRAJECTORY,
     DIM_VERIFIED_COMPETENCE,
+    DimensionResult,
 )
-from app.services.miti import aggregation, caps
-from app.services.miti.dimensions import BANDS, DimensionResult
+from tests import miti_fixtures as mf
+
+#: A representative internal score for each word, for building skill grades.
+_SCORE_FOR_GRADE = {
+    rating.GRADE_HIGHLY: 95,
+    rating.GRADE_MATCHING: 80,
+    rating.GRADE_MODERATELY: 65,
+    rating.GRADE_NOT: 40,
+}
+
+
+def _must_haves(grades: dict[str, str]) -> tuple:
+    """Must-have skill grades for {name: word}, plus one behavioural skill so
+    the contract shape is the real one."""
+    return tuple(
+        mf.skill(name, "must_have", _SCORE_FOR_GRADE[word], priority=index + 1)
+        for index, (name, word) in enumerate(grades.items())
+    ) + (mf.skill("Behavioural anchor", "behavioural", 80),)
 
 _BAND_NAMES = tuple(name for name, _ in BANDS)
 
@@ -114,7 +133,13 @@ def test_a_fabricated_must_have_on_one_e0_bullet_grades_matching_uncapped() -> N
     grades = {"Distributed systems ownership": rating.GRADE_MATCHING}
     assert caps.competency_threshold_caps(grades=grades) == []
 
-    uncapped = aggregation.aggregate(_results("solid"))
+    uncapped = aggregation.aggregate(
+        _results("solid"),
+        skill_grades=(
+            mf.skill("Distributed systems ownership", "nice_to_have", 80),
+            mf.skill("Behavioural anchor", "behavioural", 80),
+        ),
+    )
     assert uncapped.overall_grade == rating.GRADE_MATCHING
     assert uncapped.applied_caps == []
 
@@ -130,8 +155,7 @@ def test_a_fabricated_must_have_on_one_e0_bullet_is_capped_by_section_14_1() -> 
     name = "Distributed systems ownership"
     capped = aggregation.aggregate(
         _results("solid"),
-        competency_categories={name: aggregation.CATEGORY_MUST_HAVE},
-        must_have_grades={name: rating.GRADE_MATCHING},
+        skill_grades=_must_haves({name: rating.GRADE_MATCHING}),
         must_have_evidence={name: _evidence(evidence_tiers.E0, groups=1)},
     )
 
@@ -275,48 +299,54 @@ def test_all_three_controls_can_fire_at_once_and_are_all_recorded() -> None:
             _result(DIM_AUTHENTICITY, "strong"),
             _result(DIM_TRAJECTORY, "strong"),
         ],
-        competency_categories={name: aggregation.CATEGORY_MUST_HAVE},
-        must_have_grades={name: rating.GRADE_NOT},
+        skill_grades=_must_haves({name: rating.GRADE_NOT}),
         must_have_evidence={name: _evidence(evidence_tiers.E0)},
     )
     assert {cap.control for cap in out.applied_caps} == set(caps.CONTROLS)
 
 
-def test_a_declared_threshold_beats_the_grade_as_the_minimum() -> None:
-    """Section 12.1 says "minimum score on a named competency". Where the
-    frozen matrix declares that number, it is the number; where it does not,
-    the product's published floor for an essential criterion is."""
+def test_the_numeric_threshold_map_is_gone() -> None:
+    """WP5-B: section 12.1's minimum has ONE source, the grade. The numeric map
+    beside it was always empty on the live path, so it was a second
+    implementation waiting for a number nobody approved."""
+    import inspect
+
+    params = inspect.signature(caps.competency_threshold_caps).parameters
+    assert list(params) == ["grades"]
+    assert params["grades"].kind is inspect.Parameter.KEYWORD_ONLY
+    aggregate_params = inspect.signature(aggregation.aggregate).parameters
+    for gone in ("must_have_scores", "must_have_thresholds", "must_have_grades",
+                 "competency_categories", "competency_weights"):
+        assert gone not in aggregate_params, gone
+
+
+def test_must_have_ceiling_is_the_one_cap_number() -> None:
+    """One number for one rule: the Yukti blend imports this, never a copy."""
+    assert caps.must_have_ceiling() == caps.band_ceiling(
+        caps.BAND_CONSIDER_WITH_RESERVATIONS
+    ) == 71
     name = "Load path reasoning"
-    breached = caps.competency_threshold_caps(
-        grades={name: rating.GRADE_MATCHING},
-        scores={name: 80.0},
-        thresholds={name: 85.0},
-    )
-    assert [cap.subject for cap in breached] == [name]
-    met = caps.competency_threshold_caps(
-        grades={name: rating.GRADE_MATCHING},
-        scores={name: 86.0},
-        thresholds={name: 85.0},
-    )
-    assert met == []
+    breached = caps.competency_threshold_caps(grades={name: rating.GRADE_NOT})
+    assert [(cap.subject, cap.ceiling) for cap in breached] == [
+        (name, caps.must_have_ceiling())
+    ]
+    assert caps.competency_threshold_caps(grades={name: rating.GRADE_MODERATELY}) == []
 
 
 # -- THE REGRESSION THAT WAS FOUND ONCE ------------------------------------
 
 
-def test_the_category_comes_from_the_item_and_never_from_the_dimension() -> None:
+def test_the_category_comes_from_the_skill_and_never_from_the_dimension() -> None:
     """THE PREVIOUSLY-FOUND DEFECT, as an explicit regression case.
 
     Keying the composite on a dimension-to-category table produced an EMPTY
     Must-have grade for a job whose essentials all sat on one dimension, and
-    the cap had nothing to bind against. Here the Must-have sits on Track
-    Record, which the fallback table maps to Nice-to-have. The item's own
-    category must win, and the cap must still fire.
+    the cap had nothing to bind against. The table is DELETED (WP5-B): the
+    category is the skill's own bucket, and an evaluator band on any dimension
+    grades nothing.
     """
     name = "Delivered a migration end to end"
-    assert aggregation.DIMENSION_TO_CATEGORY[DIM_TRACK_RECORD] == (
-        aggregation.CATEGORY_NICE_TO_HAVE
-    )
+    assert not hasattr(aggregation, "DIMENSION_TO_CATEGORY")
     out = aggregation.aggregate(
         [
             DimensionResult(
@@ -326,13 +356,12 @@ def test_the_category_comes_from_the_item_and_never_from_the_dimension() -> None
                 per_competency={name: "strong"},
             )
         ],
-        competency_categories={name: aggregation.CATEGORY_MUST_HAVE},
-        must_have_grades={name: rating.GRADE_NOT},
+        skill_grades=_must_haves({name: rating.GRADE_NOT}),
         must_have_evidence={name: _evidence(evidence_tiers.E3)},
     )
     assert out.category_grades[aggregation.CATEGORY_MUST_HAVE] != ""
     assert out.category_scores[aggregation.CATEGORY_MUST_HAVE] > 0
-    assert out.must_have_cap_applied
+    assert caps.CONTROL_COMPETENCY_THRESHOLD in {cap.control for cap in out.applied_caps}
     assert out.overall_grade == rating.GRADE_MODERATELY
 
 
@@ -399,10 +428,7 @@ def test_a_failing_must_have_can_never_exceed_the_cap(grades, band) -> None:
     """
     out = aggregation.aggregate(
         _results(band),
-        competency_categories={
-            name: aggregation.CATEGORY_MUST_HAVE for name in grades
-        },
-        must_have_grades=grades,
+        skill_grades=_must_haves(grades),
         must_have_evidence={name: _evidence(evidence_tiers.E3) for name in grades},
     )
     if any(grade == rating.GRADE_NOT for grade in grades.values()):
@@ -438,10 +464,7 @@ def test_an_unassessed_must_have_can_never_be_delivered_as_ready_to_pick(
     """Section 14.1's invariant, over generated evidence sets."""
     out = aggregation.aggregate(
         _results("strong"),
-        competency_categories={
-            name: aggregation.CATEGORY_MUST_HAVE for name in tiers
-        },
-        must_have_grades={name: rating.GRADE_HIGHLY for name in tiers},
+        skill_grades=_must_haves({name: rating.GRADE_HIGHLY for name in tiers}),
         must_have_evidence={
             name: _evidence(*found) for name, found in tiers.items()
         },
@@ -483,8 +506,7 @@ def test_the_capped_aggregate_is_byte_identical_across_a_hundred_runs() -> None:
     from noise."""
     name = "Kafka partition rebalancing"
     kwargs = dict(
-        competency_categories={name: aggregation.CATEGORY_MUST_HAVE},
-        must_have_grades={name: rating.GRADE_NOT},
+        skill_grades=_must_haves({name: rating.GRADE_NOT}),
         must_have_evidence={name: _evidence(evidence_tiers.E0, evidence_tiers.E3)},
         unresolved_contradictions=1,
     )
