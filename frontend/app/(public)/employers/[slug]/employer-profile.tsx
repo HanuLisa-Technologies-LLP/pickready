@@ -33,7 +33,6 @@ interface OpenRole {
   id: string;
   title: string;
   department?: string | null;
-  level?: string | null;
   experience_min_years?: number | null;
   experience_max_years?: number | null;
   apply_path: string;
@@ -299,11 +298,11 @@ export function EmployerProfile({ slug }: { slug: string }) {
                           <Badge variant="outline">{role.department}</Badge>
                         ) : null}
                       </div>
-                      {band || role.level ? (
-                        <p className="text-sm">
-                          {[role.level, band].filter(Boolean).join(" · ")}
-                        </p>
-                      ) : null}
+                      {/* The experience band only. The free-text level it
+                          used to lead with was replaced by the grade and the
+                          band, and the grade sizes the assessment rather than
+                          describing the role to a candidate. */}
+                      {band ? <p className="text-sm">{band}</p> : null}
                       <div className="mt-auto pt-2">
                         <Button asChild className="w-full">
                           <Link href={role.apply_path}>Apply</Link>

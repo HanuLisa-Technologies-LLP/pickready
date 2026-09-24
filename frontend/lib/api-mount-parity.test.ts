@@ -127,4 +127,45 @@ describe("API mount parity", () => {
     expect(pattern().test(`<Link href="/assessments/invite/abc" />`)).toBe(false);
     expect(pattern().test(`const PUBLIC = ["/assessments/invite"];`)).toBe(false);
   });
+
+  it("every job skills and job setup path carries the /api/v2/assessments mount", () => {
+    // The Skills step and the setup checklist (Vivekium release, Phase 1) live
+    // on the assessments router, their paths start with the job id, and the
+    // Skills panel composes them through a helper rather than inside the
+    // api*() call, so neither grep above can see them. Any template literal
+    // that puts `/skills` or `/setup` straight after an interpolated job id is
+    // one of these paths, and it must be composed from the full mount.
+    const path = /`([^`]*\$\{[^}]+\}\/(?:skills|setup)\b[^`]*)`/g;
+    const FULL = "/api/v2/assessments";
+    const VIA_BASE = `const BASE = "${FULL}/jobs"`;
+
+    // Guard on the guard: the pattern must see both spellings the panels use,
+    // and must NOT see the v1 jobs router's own setup route.
+    expect(
+      [..."`${BASE}/${jobId}/skills${suffix}`".matchAll(path)][0]?.[1]
+    ).toBe("${BASE}/${jobId}/skills${suffix}");
+    expect(
+      [..."`${BASE}/${jobId}/setup`".matchAll(path)][0]?.[1]
+    ).toBe("${BASE}/${jobId}/setup");
+    expect([...`apiGet("/jobs/setup/status-hygiene")`.matchAll(path)]).toEqual([]);
+
+    const offenders: string[] = [];
+    let seen = 0;
+    for (const file of SEARCH_DIRS.flatMap((dir) => sourceFiles(join(ROOT, dir)))) {
+      if (/\.test\.tsx?$/.test(file)) continue;
+      const source = readFileSync(file, "utf8");
+      for (const match of source.matchAll(path)) {
+        seen += 1;
+        const literal = match[1];
+        const composed = literal.startsWith("${BASE}") && source.includes(VIA_BASE);
+        if (!literal.startsWith(FULL) && !composed) {
+          offenders.push(`${file.slice(ROOT.length)} -> ${literal}`);
+        }
+      }
+    }
+    // The skills panel and the publish card both exist; a sweep that found
+    // neither would pass for ever while checking nothing.
+    expect(seen).toBeGreaterThanOrEqual(2);
+    expect(offenders).toEqual([]);
+  }, 15_000);
 });

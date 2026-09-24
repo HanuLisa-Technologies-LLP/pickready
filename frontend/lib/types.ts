@@ -316,12 +316,9 @@ export interface Job {
   id: string;
   title: string;
   department: string;
-  /**
-   * Legacy free-text seniority. Superseded 2026-07-28 by the experience band
-   * below and no longer collected on the Create Job form, but still returned
-   * for jobs created before that change.
-   */
-  level: string;
+  // `level` is gone (Vivekium release, Phase 1): nothing writes or reads the
+  // free-text seniority any more. The grade and the experience band replaced
+  // it; the column survives in the database as history only.
   /** The experience band this role expects, in years. */
   experience_min_years?: number | null;
   experience_max_years?: number | null;
@@ -836,17 +833,6 @@ export const jobCompensation = (
   job: Job | null | undefined
 ): Record<string, unknown> =>
   (job?.compensation ?? job?.compensation_json ?? {}) as Record<string, unknown>;
-
-export interface ApprovalTransition {
-  id?: string;
-  level: string;
-  decision?: "approved" | "rejected" | "skipped" | string;
-  actor?: string | null;
-  actor_name?: string | null;
-  remarks?: string | null;
-  created_at?: string;
-  skipped?: boolean;
-}
 
 // ---- Candidates & matching ----
 
@@ -1635,9 +1621,17 @@ export interface ProviderSupportThreadPage {
 
 // ---- The AI-assisted Job SWOT Analysis (2026-09-13 spec, sections 23 to 33) ----
 
-/** not_generated | generated | failed | edited. */
+/**
+ * not_generated | generating | generated | failed | edited.
+ *
+ * `generating` (Vivekium release, Phase 1): generation is DISPATCHED work now,
+ * so the document says it is being drafted and the panel polls. A draft that
+ * outlives the server's stale window is served as `failed`, never as
+ * generating for ever.
+ */
 export type SwotAnalysisStatus =
   | "not_generated"
+  | "generating"
   | "generated"
   | "failed"
   | "edited";
@@ -1659,6 +1653,13 @@ export interface SwotAnalysis {
   last_modified_by_name: string | null;
   version: number;
   can_restore_previous: boolean;
+  /**
+   * True when the saved SWOT is newer than the version the skills were drafted
+   * from and the skills are not locked. The panel offers "Re-draft skills from
+   * the updated SWOT"; nothing is re-drafted without that click. Absent on a
+   * backend that predates the Skills step.
+   */
+  skills_redraft_available?: boolean;
   /**
    * The effective answer for this user on THIS job: the capability AND the
    * assignment scope AND the lifecycle state, resolved server-side by the same

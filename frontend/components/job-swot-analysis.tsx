@@ -26,6 +26,25 @@
  * regeneration over edited content asks before it replaces anything, and can
  * be undone after it does.
  *
+ * GENERATION IS DISPATCHED WORK (Vivekium release, Phase 1)
+ * ---------------------------------------------------------
+ * The model call used to run inside the request, which rule 4 forbids. Now
+ * Generate answers at once with the document in a `generating` state, and the
+ * panel re-reads it until the worker has written `generated` or `failed`. The
+ * server serves a draft that outlived its window as `failed`, so the poll ends
+ * on its own; the limit here is only a backstop. A 409 is the human-edit
+ * confirmation ONLY when the document carries human edits and the overwrite
+ * was not yet confirmed; any other 409 (a JD too thin to draft from) is a
+ * refusal, shown in the server's words.
+ *
+ * THE SKILLS FOLLOW THE SWOT, AND NEVER SILENTLY
+ * ----------------------------------------------
+ * The first human save of a SWOT on a job with no skills starts Sutra's skills
+ * draft on the server. A later save only makes a re-draft AVAILABLE: the
+ * response says so (`skills_redraft_available`) and this panel offers
+ * "Re-draft skills from the updated SWOT", which opens the Skills panel's own
+ * confirmation. Nothing is re-drafted without that second click.
+ *
  * PERMISSION-AWARE, FROM THE SERVER'S ANSWER
  * -------------------------------------------
  * `analysis.can_edit` is resolved server-side by the same authorization call
@@ -116,6 +135,10 @@ const GENERATING_PLACEHOLDER =
 const STAGE_ONE_HINT =
   "Write your own assessment, or use Generate with AI to draft this section.";
 
+/** How often a generating SWOT is re-read, and the backstop on how long. */
+const GENERATION_POLL_MS = 3000;
+const GENERATION_POLL_LIMIT = 120;
+
 /** The assessments router is mounted at /api/v2 ONLY (backend main.py), so
  *  the prefix is written in full: a path relative to API_BASE resolves to
  *  /api/v1/jobs/... and 404s. `api-mount-parity.test.ts` pins this. */
@@ -180,9 +203,20 @@ function sectionStatus(
 export function JobSwotAnalysisPanel({
   jobId,
   className,
+  onSaved,
+  canRedraftSkills = false,
+  onRequestSkillsRedraft,
 }: {
   jobId: string;
   className?: string;
+  /** Told after a save or a restore lands, so the skills and the publish
+   *  checklist re-read: the first save starts the skills draft. */
+  onSaved?: (analysis: SwotAnalysis) => void;
+  /** The capability half of "may this person re-draft the skills". The
+   *  Skills panel re-checks with the server's per-job answer. */
+  canRedraftSkills?: boolean;
+  /** Opens the Skills panel's re-draft confirmation. Never drafts by itself. */
+  onRequestSkillsRedraft?: () => void;
 }) {
   const { toast } = useToast();
   const { can } = usePermissions();
@@ -190,7 +224,15 @@ export function JobSwotAnalysisPanel({
   const [analysis, setAnalysis] = React.useState<SwotAnalysis | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
-  const [generating, setGenerating] = React.useState(false);
+  // The Generate request itself is in flight. What is being drafted after it
+  // answers is the DOCUMENT's state, read from `analysis.status` below.
+  const [requesting, setRequesting] = React.useState(false);
+  const [refusal, setRefusal] = React.useState<string | null>(null);
+  const [pollExhausted, setPollExhausted] = React.useState(false);
+  const polls = React.useRef(0);
+  // Set once this tab asked for the draft, so its arrival is announced here
+  // and not on somebody else's generation this tab merely observed.
+  const awaitingDraft = React.useRef(false);
   const [saving, setSaving] = React.useState(false);
   // State disables the button after render; this ref closes the same-tick
   // window in which a double click can otherwise submit the same version.
@@ -229,17 +271,9 @@ export function JobSwotAnalysisPanel({
     void load();
   }, [load]);
 
-  const runGeneration = async (overwrite: boolean) => {
-    setGenerating(true);
-    setConfirmOverwrite(false);
-    setEditingSection(null);
-    try {
-      const res = await apiPost<SwotAnalysis>(
-        `${BASE}/${jobId}/swot-analysis/generate`,
-        { confirm_overwrite: overwrite }
-      );
-      setAnalysis(res);
-      setDraft(draftFrom(res));
+  /** Tell the person who asked how their draft ended. */
+  const announce = React.useCallback(
+    (res: SwotAnalysis) => {
       if (res.status === "failed") {
         // A failed generation is a STATE, not an exception: the panel keeps
         // whatever was already there and says why the new draft did not
@@ -253,22 +287,81 @@ export function JobSwotAnalysisPanel({
       }
       toast({
         title: "SWOT drafted",
-        description: "Read it through and edit anything that is wrong.",
+        description: "Read it through, edit anything that is wrong, and save it.",
       });
+    },
+    [toast]
+  );
+
+  // Re-read a generating document until the worker has finished with it.
+  const documentGenerating = analysis?.status === "generating";
+  React.useEffect(() => {
+    if (!documentGenerating) return;
+    if (polls.current >= GENERATION_POLL_LIMIT) {
+      setPollExhausted(true);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      polls.current += 1;
+      try {
+        const res = await apiGet<SwotAnalysis>(`${BASE}/${jobId}/swot-analysis`);
+        setAnalysis(res);
+        if (res.status !== "generating") {
+          setDraft(draftFrom(res));
+          if (awaitingDraft.current) {
+            awaitingDraft.current = false;
+            announce(res);
+          }
+        }
+      } catch (error) {
+        // One unreadable poll ends the wait with the reason on screen rather
+        // than spinning on a document this tab can no longer read.
+        setLoadError(
+          error instanceof Error ? error.message : "The SWOT could not be loaded."
+        );
+      }
+    }, GENERATION_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [documentGenerating, analysis, jobId, announce]);
+
+  const runGeneration = async (overwrite: boolean) => {
+    setRequesting(true);
+    setConfirmOverwrite(false);
+    setEditingSection(null);
+    setRefusal(null);
+    polls.current = 0;
+    setPollExhausted(false);
+    try {
+      const res = await apiPost<SwotAnalysis>(
+        `${BASE}/${jobId}/swot-analysis/generate`,
+        { confirm_overwrite: overwrite }
+      );
+      setAnalysis(res);
+      setDraft(draftFrom(res));
+      if (res.status === "generating") {
+        // Accepted and dispatched: the poll above takes it from here.
+        awaitingDraft.current = true;
+        return;
+      }
+      announce(res);
     } catch (error) {
-      // 409 is the confirmation gate, not a failure: the document carries
-      // human edits and the server is asking before replacing them.
-      if (error instanceof ApiError && error.status === 409) {
+      // 409 is the confirmation gate ONLY when there are human edits to lose
+      // and the overwrite was not yet confirmed. Any other 409 is a refusal
+      // the server words, such as a JD too thin to draft from.
+      if (
+        error instanceof ApiError &&
+        error.status === 409 &&
+        !overwrite &&
+        analysis?.human_edited
+      ) {
         setConfirmOverwrite(true);
         return;
       }
-      toast({
-        title: "The SWOT could not be generated",
-        description: error instanceof Error ? error.message : undefined,
-        variant: "destructive",
-      });
+      setRefusal(
+        error instanceof Error ? error.message : "The SWOT could not be generated."
+      );
     } finally {
-      setGenerating(false);
+      setRequesting(false);
     }
   };
 
@@ -283,6 +376,7 @@ export function JobSwotAnalysisPanel({
       });
       setAnalysis(res);
       setDraft(draftFrom(res));
+      onSaved?.(res);
       toast({ title: "SWOT saved", description: "Your edits are the version in force." });
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
@@ -313,6 +407,7 @@ export function JobSwotAnalysisPanel({
       );
       setAnalysis(res);
       setDraft(draftFrom(res));
+      onSaved?.(res);
       toast({ title: "Earlier version restored" });
     } catch (error) {
       toast({
@@ -325,8 +420,14 @@ export function JobSwotAnalysisPanel({
     }
   };
 
+  const generating = requesting || documentGenerating;
   const populated = hasContent(analysis);
   const busy = generating || saving || restoring;
+  const offerSkillsRedraft =
+    !generating &&
+    Boolean(analysis?.skills_redraft_available) &&
+    canRedraftSkills &&
+    Boolean(onRequestSkillsRedraft);
   const draftHasContent = SECTIONS.some((s) => draft[s.key].trim().length > 0);
   const editingLabel =
     SECTIONS.find((s) => s.key === editingSection)?.label ?? "";
@@ -399,6 +500,19 @@ export function JobSwotAnalysisPanel({
                   <p className="mt-1">{analysis.generation_error}</p>
                 </div>
               </div>
+            ) : null}
+
+            {refusal ? (
+              <p role="alert" className="border border-destructive/40 p-4">
+                {refusal}
+              </p>
+            ) : null}
+
+            {generating && pollExhausted ? (
+              <p role="status">
+                The draft is taking longer than expected. Refresh the page to
+                check on it.
+              </p>
             ) : null}
 
             {generating ? (
@@ -492,6 +606,30 @@ export function JobSwotAnalysisPanel({
 
             {/* Nothing at all for a user who may edit. */}
             <ReadOnlyNotice canEdit={canEdit} resource="this SWOT analysis" />
+
+            {/* The saved SWOT moved on from the one the skills were drafted
+                from. Offered, never done: the click opens the Skills panel's
+                confirmation, which names anything the team wrote itself. */}
+            {offerSkillsRedraft ? (
+              <div
+                role="status"
+                className="flex flex-wrap items-center justify-between gap-3 border p-4"
+              >
+                <p>
+                  The SWOT changed after the skills were drafted. Sutra can
+                  re-draft them from this version; nothing changes until you
+                  confirm.
+                </p>
+                <Button
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={() => onRequestSkillsRedraft?.()}
+                >
+                  <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                  Re-draft skills from the updated SWOT
+                </Button>
+              </div>
+            ) : null}
 
             {canEdit && !generating ? (
               <div className="flex flex-wrap gap-2 pt-1">

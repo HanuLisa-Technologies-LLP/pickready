@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  buildJobCreatePayload,
-  sectionsFromMarkdown,
-  type JobFormValues,
-} from "./job-payload";
+import { buildJobCreatePayload, type JobFormValues } from "./job-payload";
 
 const JD = `## Description
 Build reliable recruitment platform services.
@@ -16,17 +12,8 @@ Own backend systems
 - Build reliable APIs
 - Keep the pipeline green
 
-## Accountabilities
-- Availability and delivery
-
-## Education
-B.Tech
-
 ## Skills
 Python, FastAPI, PostgreSQL
-
-## Experience
-5 to 9 years
 `;
 
 const completeForm: JobFormValues = {
@@ -41,60 +28,46 @@ const completeForm: JobFormValues = {
   jd_markdown: JD,
 };
 
-describe("sectionsFromMarkdown", () => {
-  it("splits the one JD document into its headed sections", () => {
-    const s = sectionsFromMarkdown(JD);
-    expect(s["description"]).toBe("Build reliable recruitment platform services.");
-    expect(s["role"]).toBe("Own backend systems");
-    expect(s["education"]).toBe("B.Tech");
-  });
-
-  it("returns an empty map for a document with no headings", () => {
-    expect(sectionsFromMarkdown("just some prose")).toEqual({});
-  });
-});
-
 describe("buildJobCreatePayload", () => {
-  it("sends the experience band the client asked for instead of a free-text level", () => {
+  it("creates a draft and carries no way to publish from the create call", () => {
+    // Publishing is its own gated step (PUBLISH_JOB plus saved JD, SWOT and
+    // skills). A create body that could still ask for it is how a job went
+    // live with no skills and no index.
+    const payload = buildJobCreatePayload(completeForm);
+    expect(payload).not.toHaveProperty("publish");
+  });
+
+  it("sends the experience band and grade, never a free-text level", () => {
     const payload = buildJobCreatePayload(completeForm);
     expect(payload.experience_min_years).toBe(5);
     expect(payload.experience_max_years).toBe(9);
+    expect(payload.grade).toBe("managerial");
     expect(payload).not.toHaveProperty("level");
   });
 
-  it("carries the whole JD as one markdown document", () => {
-    expect(buildJobCreatePayload(completeForm).jd_markdown).toContain("## Responsibilities");
-  });
-
-  it("derives the structured sections from that document so nothing downstream breaks", () => {
+  it("carries the whole JD as one markdown document and derives no sections itself", () => {
     const payload = buildJobCreatePayload(completeForm);
-    expect(payload.jd.role).toBe("Own backend systems");
-    // Bullet markers are stripped, one item per line.
-    expect(payload.jd.responsibilities).toBe("Build reliable APIs\nKeep the pipeline green");
+    expect(payload.jd_markdown).toContain("## Responsibilities");
+    // The server is the one parser. Only the two values that are NOT in the
+    // document travel under `jd`.
+    expect(Object.keys(payload.jd).sort()).toEqual(["reporting_to", "skills"]);
+    expect(payload.jd.reporting_to).toBe("Engineering Director");
     expect(payload.jd.skills).toEqual(["Python", "FastAPI", "PostgreSQL"]);
   });
 
-  it("no longer sends a reportee count, the field was removed from the product", () => {
-    expect(buildJobCreatePayload(completeForm).jd).not.toHaveProperty("reportees");
-  });
-
-  it("creates as a draft by default and publishes only when asked", () => {
-    expect(buildJobCreatePayload(completeForm).publish).toBe(false);
-    expect(buildJobCreatePayload(completeForm, true).publish).toBe(true);
-  });
-
   it("sends the grade as the API's literal, not a trimmed display label", () => {
-    expect(buildJobCreatePayload(completeForm).grade).toBe("managerial");
     expect(buildJobCreatePayload({ ...completeForm, grade: "cxo" }).grade).toBe("cxo");
   });
 
-  it("blank experience serializes to null rather than an invalid number", () => {
+  it("blank experience and a blank document serialize to null", () => {
     const payload = buildJobCreatePayload({
       ...completeForm,
       experience_min_years: "",
       experience_max_years: "",
+      jd_markdown: "   ",
     });
     expect(payload.experience_min_years).toBeNull();
     expect(payload.experience_max_years).toBeNull();
+    expect(payload.jd_markdown).toBeNull();
   });
 });
