@@ -3,11 +3,14 @@
     layers               the precedence model: tune within bounds, never suspend
     department_models    LAYER 1, the platform's own competency baselines
     situations           the six role situation types and their weight effects
-    swot_quality         LAYER 3's quality control: the probes and the refusals
-    transformation       Sutra's seven stages, SWOT phrase -> matrix item
+    sutra                the Skills draft and the hidden assessment context
     ontology             vocabulary equivalence, so a synonym is not a gap
     evidence_graph       what evidences what, per department
     gates                G1-G4
+
+The SWOT probes module and Sutra's seven-stage transformation were DELETED in the Vivekium release with the Tatva matrix they served.
+`layers`, `department_models` and `situations` remain because Miti still reads
+them; nothing on the job-setup path does.
 
 DELIBERATELY IMPORT-LIGHT. Nothing here imports `app.models`, a session, or the
 router, so the whole framework can be reasoned about and tested without standing

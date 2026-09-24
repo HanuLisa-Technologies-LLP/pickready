@@ -785,141 +785,152 @@ def run_matching(ctx: TaskContext, job_id: str):
 
 
 @task(
-    name="pickready.compile_tatva_matrix",
-    route=Route.ECS,
-    max_attempts=2,
-    backoff_seconds=5.0,
+    name="pickready.generate_job_swot",
+    route=Route.LAMBDA,
 )
-def compile_tatva_matrix(job_id: str, replace: bool = False, correlation_id: str = ""):
-    """Sutra: this job's Tatva matrix, through all seven stages.
+def generate_job_swot(
+    job_id: str,
+    confirm_overwrite: bool = False,
+    requested_by: str = "",
+    requested_version: int = 0,
+):
+    """Bodha: draft one job's SWOT document, dispatched after the request commits.
 
-    RENAMED FROM `pickready.generate_ppi_framework` 2026-08-29, and the rename
-    is not cosmetic. The old task ran `ppi.generate_framework`, which asked one
-    model for a whole matrix in one pass and assembled one out of the JD's own
-    noun phrases when the model was unavailable. This one runs
-    `hiring.scorecard.compile_matrix`: Layer 1's department model and Layer 3's
-    validated SWOT, through the seven stages, with every weight's terms stored
-    on the row it produced.
+    The request (`swot_analysis.request_generation`) has already refused over
+    the team's edits and over a JD too thin to draft from, and left the row
+    `generating`. This body calls the model with no lock held, then writes only
+    if the row is still the one that was asked about: a human save meanwhile
+    wins, and the generation stands down at INFO.
 
-    IT CAN REFUSE, AND THE REFUSAL IS THE POINT. A job whose Hiring Manager has
-    not finished the SWOT session gets a `ScorecardInputMissing` naming what is
-    outstanding. That is NOT retried: no amount of waiting finishes somebody
-    else's session, and five backoff attempts against a missing input is five
-    log lines that look like a bug in this task. The setup screen is what surfaces the block to the person who can
-    clear it.
+    ONE attempt. A failed generation is a STATE the team retries from the tab;
+    retrying here would spend a second model call on a row the failure already
+    moved to `failed`. The failure is committed, then re-raised, so the
+    function's error metric moves. A lost invoke needs no sweep: a
+    `generating` row past `swot_generation_stale_minutes` reads as failed.
 
-    It approves nothing. The matrix stays a draft until the Hiring Manager
-    finalises it (`hiring.scorecard.freeze`).
-
-    Idempotent by default: a job that already has active items keeps them, so a
-    redelivery cannot discard a matrix a human has already edited.
+    RLS: the worker session bypasses RLS like every task today; this one reads
+    and writes one tenant's job and SWOT row, and is a candidate for the tenant
+    worker session when Phase 7 lands it.
     """
     from app.models.job import Job
-    from app.services.hiring import pipeline_halt, scorecard
+    from app.services import swot_analysis
+    from app.services.audit import record_agent_action
 
     async def _task():
         async with _worker_session() as session:
             job = await session.get(Job, uuid.UUID(str(job_id)))
             if job is None:
-                raise ValueError(f"Job {job_id} not found")
+                logger.info("job_setup.swot_job_gone job_id=%s", job_id)
+                return
             try:
-                result = await scorecard.compile_matrix(
+                row = await swot_analysis.run_generation(
                     session,
                     job,
-                    actor_user_id=job.created_by,
-                    correlation_id=correlation_id or job.correlation_id,
-                    replace=bool(replace),
+                    confirm_overwrite=bool(confirm_overwrite),
+                    requested_version=int(requested_version),
                 )
-            except scorecard.ScorecardInputMissing as missing:
-                # Recorded at INFO, not ERROR, and not retried. This is the
-                # pipeline correctly refusing to build a scorecard it has no
-                # inputs for, and an operator paging on it would learn to
-                # ignore the alert.
-                logger.info(
-                    "job_setup.matrix_blocked job_id=%s layer=%s detail=%s",
-                    job_id, missing.layer, missing.detail,
+            except swot_analysis.SwotAnalysisError:
+                await session.commit()
+                raise
+            if row is None:
+                await session.commit()
+                return
+            if requested_by:
+                from app.models.user import User
+
+                principal = await session.get(User, uuid.UUID(str(requested_by)))
+                # RBAC 34: an AI-initiated mutation names BOTH the human who
+                # asked for it and the agent that did it, in ONE insert.
+                await record_agent_action(
+                    session,
+                    action="job_swot_analysis_generated",
+                    agent_name="bodha",
+                    principal_user_id=uuid.UUID(str(requested_by)),
+                    principal_role=(
+                        None if principal is None
+                        else getattr(principal.role, "value", principal.role)
+                    ),
+                    tenant_id=job.tenant_id,
+                    resource_type="job",
+                    resource_id=job.id,
+                    job_id=job.id,
+                    correlation_id=job.correlation_id,
+                    metadata={
+                        "version": row.version,
+                        "replaced_human_edits": bool(confirm_overwrite and row.human_edited),
+                    },
                 )
-                return
-            except pipeline_halt.PipelineHalted:
-                # Already logged and audited by `pipeline_halt.enforce`. Not
-                # retried: a halt is an operator decision, and retrying it would
-                # turn one refusal into six.
-                return
             await session.commit()
-            logger.info(
-                "job_setup.matrix_compiled job_id=%s grade=%s items=%d rejected=%d "
-                "situation=%s",
-                job_id,
-                job.assessment_grade,
-                len(result.items),
-                len(result.rejections),
-                result.situation_key,
-            )
+            logger.info("job_setup.swot_generated job_id=%s version=%d", job_id, row.version)
     _run(_task())
 
 
 @task(
-    name="pickready.generate_matching_categories",
-    route=Route.ECS,
+    name="pickready.draft_job_skills",
+    route=Route.LAMBDA,
     max_attempts=2,
     backoff_seconds=5.0,
 )
-def generate_matching_categories(job_id: str, replace: bool = False):
-    """Job setup: the job's own Matching category list (spec §3.2).
+def draft_job_skills(
+    job_id: str,
+    requested_swot_version: int | None = None,
+    mode: str = "initial",
+    confirm_overwrite: bool = False,
+    requested_by: str | None = None,
+):
+    """Sutra: draft a job's skills from its JD and its saved SWOT.
 
-    Runs in PARALLEL with `compile_tatva_matrix` rather than inside it. The
-    two halves of job setup are independent inputs finalised in one session, and
-    a task that generated both would take the gating half down with any failure
-    in the other -- which is precisely how nineteen live jobs ended up carrying
-    a generation timestamp and no rows.
+    Dispatched after the commit by `skills.request_draft`: the first human SWOT
+    save on a job with no skill rows of any kind, an explicit re-draft the team
+    confirmed, or `pickready.reconcile_job_setup` repairing a lost one.
 
-    It approves nothing. The list is what the recruiter reviews and saves, and
-    only that save stamps `matching_categories_finalized_at`.
+    ONE model call, no lock held across it, then the writes under the skills
+    lock after re-checking everything the call may have raced (a candidate
+    start, a newer request, the team's own edits). A FIRST draft on a job that
+    already has rows is a no-op, which is what makes a redelivered message
+    harmless. A failure is the `failed` state with zero rows: there is no
+    template draft. Two attempts cover a database blip between the model call
+    and the commit; a second attempt after a recorded failure stands down,
+    because the state is no longer `drafting`.
+
+    RLS: bypass, like every task today; it reads and writes one tenant's job,
+    SWOT and skills.
     """
     from app.models.job import Job
-    from app.services.matching_categories import generate_categories
+    from app.services import skills
+    from app.services.hiring import pipeline_halt, sutra
 
     async def _task():
         async with _worker_session() as session:
             job = await session.get(Job, uuid.UUID(str(job_id)))
             if job is None:
-                raise ValueError(f"Job {job_id} not found")
-            rows = await generate_categories(session, job, replace=bool(replace))
+                logger.info("job_setup.skills_job_gone job_id=%s", job_id)
+                return
+            try:
+                outcome = await skills.draft(
+                    session,
+                    job,
+                    mode=mode,
+                    requested_swot_version=requested_swot_version,
+                    confirm_overwrite=bool(confirm_overwrite),
+                    requested_by=uuid.UUID(str(requested_by)) if requested_by else None,
+                )
+            except sutra.SutraUnavailable:
+                await session.commit()
+                raise
+            except pipeline_halt.PipelineHalted:
+                # Already logged and audited by `pipeline_halt.enforce`. Not
+                # retried and not a failure of the draft: an operator stopped
+                # the stage. The job stays `drafting` and the sweep offers it
+                # again once the halt is cleared.
+                await session.rollback()
+                return
             await session.commit()
             logger.info(
-                "job_setup.matching_categories_generated job_id=%s count=%d",
-                job_id, len(rows),
+                "job_setup.skills_draft job_id=%s outcome=%s skills=%d",
+                job_id, outcome.outcome, outcome.skills,
             )
     _run(_task())
-
-
-#: TWO retired names, both still registered. A beat entry, a queued message and
-#: a worker registration cannot all be changed atomically during a rolling
-#: deploy, so a task already sitting on the broker under an old name must still
-#: find a handler when it is delivered. Both DELEGATE; neither carries logic of
-#: its own, so there is one implementation and two ways in.
-@task(
-    name="pickready.generate_ppi_framework",
-    route=Route.ECS,
-)
-def generate_ppi_framework(job_id: str, replace: bool = False):
-    """DEPRECATED alias for `pickready.compile_tatva_matrix` (2026-08-29)."""
-    logger.info("job_setup.legacy_task_name name=generate_ppi_framework job_id=%s", job_id)
-    compile_tatva_matrix(job_id, replace=replace)
-
-
-@task(
-    name="pickready.generate_technical_questions",
-    route=Route.ECS,
-)
-def generate_technical_questions(job_id: str):
-    """DEPRECATED alias for `pickready.compile_tatva_matrix` (2026-08-06).
-
-    Nothing enqueues this any more. It exists so an in-flight message from a
-    pre-2026-08-06 deploy is handled rather than dead-lettered.
-    """
-    logger.info("job_setup.legacy_task_name name=generate_technical_questions job_id=%s", job_id)
-    compile_tatva_matrix(job_id)
 
 
 @task(
@@ -927,57 +938,49 @@ def generate_technical_questions(job_id: str):
     route=Route.LAMBDA,
 )
 def reconcile_job_setup():
-    """Find every job whose matrix never landed, and try again.
+    """Find every job whose skills draft never landed, and ask again.
 
-    THE RULE THIS ENFORCES: a timestamp is not evidence that work happened.
+    THE RULE THIS ENFORCES: a timestamp is not evidence that work happened, and
+    neither is the ABSENCE of rows, because deletion here is soft.
 
-    `framework_generated_at` was stamped on 19 jobs that had no competency rows
-    at all. Nothing noticed, because every health check in the product asked the
-    stamp rather than the table -- including the reminder task, which filters on
-    `framework_generated_at IS NOT NULL` and so specifically EXCLUDED the jobs
-    whose generation had failed. The one safeguard on the manual step was blind
-    to the failure that most needed it.
+    It selects a job only when its SWOT is SAVED and either
 
-    This asks the TABLE. It runs on the beat schedule, is idempotent, and is
-    bounded per run so a tenant with a thousand jobs cannot occupy a worker
-    indefinitely -- the next tick picks up where this one stopped.
+      * no draft was ever asked for (`skills_draft_status = 'not_started'`) and
+        it has ZERO `job_competencies` rows of ANY kind, active or not; or
+      * a draft was asked for and never reported back (`drafting`, requested
+        longer ago than `skills.DRAFT_STALE_AFTER`).
 
-    WHAT IT NO LONGER DOES (2026-08-29): repair every job it finds. Sutra
-    refuses to compile without a saved Job SWOT Analysis, and most jobs with
-    no matrix now have no matrix for exactly that reason. (Until 2026-09-23
-    this sentence named a second precondition, the compiled company instrument
-    withdrawn on 2026-09-09. It had not been one since that day. The line
-    outlived the removal sweep because the sweep read one line at a time and
-    the name here happened to wrap across two.) A sweep that logged a warning
-    per job per tick would turn a normal waiting state into recurring noise,
-    and noise is how the nineteen-job failure stayed invisible in the first
-    place. So a blocked job is counted and reported once per tick in
-    aggregate, and only a job whose inputs are ready is retried.
+    A JOB WHOSE ROWS ARE ALL SOFT-DELETED IS NEVER SELECTED. The previous
+    version asked for jobs with no ACTIVE row, so a hiring manager who removed
+    every generated item had Sutra put them back fifteen minutes later (audit
+    #8). A set a person emptied is a decision, not a missing draft.
 
-    Deliberately NOT scoped to a tenant. The defect was never tenant-specific;
-    it only looked that way because the three demo tenants were seeded by a
-    script that wrote competencies directly.
+    Every dispatch goes through `skills.request_draft`, the same entry point a
+    human save takes, after this sweep's own commit. Bounded per tick; the next
+    tick picks up where this one stopped. Deliberately NOT scoped to a tenant:
+    the failure this repairs was never tenant-specific.
+
+    RLS: bypass, because it iterates every tenant.
     """
     from app.models.assessment import JobCompetency
-    from app.models.job import Job
+    from app.models.job import SKILLS_DRAFT_DRAFTING, SKILLS_DRAFT_NOT_STARTED, Job
     from app.models.job_setup import JobSwotAnalysis
-    from app.services.hiring import pipeline_halt, scorecard
+    from app.services import skills, swot_analysis
 
-    #: Bounded per tick. Each job is at most one model call, so 25 is a few
-    #: minutes of worker time at worst.
+    #: Bounded per tick. Each selected job costs one dispatch here and at most
+    #: one model call in its own invocation.
     BATCH = 25
 
     async def _task():
         async with _worker_session() as session:
-            # Jobs with no ACTIVE competency row. `is_active` matters: a matrix
-            # whose rows were all soft-deleted is as unusable as one that was
-            # never built, and the recruiter sees the same empty screen in both
-            # cases.
-            has_framework = (
-                select(JobCompetency.job_id)
+            any_row = (
+                select(JobCompetency.id).where(JobCompetency.job_id == Job.id).exists()
+            )
+            has_swot = (
+                select(JobSwotAnalysis.id)
                 .where(
-                    JobCompetency.job_id == Job.id,
-                    JobCompetency.is_active.is_(True),
+                    JobSwotAnalysis.job_id == Job.id,
+                    JobSwotAnalysis.human_edited.is_(True),
                 )
                 .exists()
             )
@@ -986,57 +989,56 @@ def reconcile_job_setup():
                     select(Job)
                     .where(
                         Job.archived_at.is_(None),
-                        select(JobSwotAnalysis.job_id)
-                        .where(
-                            JobSwotAnalysis.job_id == Job.id,
-                            (JobSwotAnalysis.strengths.is_not(None)
-                             | JobSwotAnalysis.weaknesses.is_not(None)
-                             | JobSwotAnalysis.opportunities.is_not(None)
-                             | JobSwotAnalysis.threats.is_not(None)),
-                        ).exists(),
-                        ~has_framework,
+                        has_swot,
+                        (
+                            (Job.skills_draft_status == SKILLS_DRAFT_NOT_STARTED) & ~any_row
+                        )
+                        | (
+                            (Job.skills_draft_status == SKILLS_DRAFT_DRAFTING)
+                            & (
+                                Job.skills_draft_requested_at.is_(None)
+                                | (
+                                    Job.skills_draft_requested_at
+                                    < skills.stale_drafting_cutoff()
+                                )
+                            )
+                        ),
                     )
                     .order_by(Job.created_at)
                     .limit(BATCH)
                 )
             ).scalars().all()
             if not jobs:
-                logger.debug("job_setup.reconcile_noop, every job has a matrix")
+                logger.debug("job_setup.reconcile_noop")
                 return
-            repaired = 0
-            blocked: dict[str, int] = {}
+            queued = 0
+            skipped: dict[str, int] = {}
             for job in jobs:
+                # The SQL above asks for a human-edited row; `is_saved` is the
+                # one definition of a SAVED SWOT, and it is asked here rather
+                # than restated in SQL.
+                if not swot_analysis.is_saved(await swot_analysis.get(session, job)):
+                    skipped["swot_not_saved"] = skipped.get("swot_not_saved", 0) + 1
+                    continue
                 try:
-                    result = await scorecard.compile_matrix(
-                        session,
-                        job,
-                        actor_user_id=job.created_by,
-                        correlation_id=job.correlation_id,
+                    handle = await skills.request_draft(
+                        session, job, requested_by=None, confirm_overwrite=False
                     )
-                except scorecard.ScorecardInputMissing as missing:
-                    blocked[missing.layer] = blocked.get(missing.layer, 0) + 1
+                except (skills.SkillsLocked, skills.SkillsError) as refusal:
+                    # A lost draft this sweep may not repeat (the skills are
+                    # locked now, or a re-draft would replace the team's own
+                    # skills without their confirmation) is FINISHED as failed,
+                    # so it reads as "draft again" and stops being selected.
+                    reason = type(refusal).__name__
+                    skipped[reason] = skipped.get(reason, 0) + 1
+                    await skills.abandon_lost_draft(session, job)
                     continue
-                except pipeline_halt.PipelineHalted:
-                    # Already audited. Stop the sweep: the operator halted this
-                    # stage, and grinding through 24 more jobs to write 24 more
-                    # audit rows is not what they asked for.
-                    logger.info("job_setup.reconcile_halted after=%d", repaired)
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    # One job's failure must not abandon the other 24. Logged at
-                    # warning because a repair that cannot repair is something
-                    # an operator should see.
-                    logger.warning(
-                        "job_setup.reconcile_failed job_id=%s tenant_id=%s error=%s",
-                        job.id, job.tenant_id, type(exc).__name__,
-                    )
-                    continue
-                if result.items:
-                    repaired += 1
+                if handle is not None:
+                    queued += 1
             await session.commit()
             logger.info(
-                "job_setup.reconciled examined=%d repaired=%d blocked=%s",
-                len(jobs), repaired, blocked or "{}",
+                "job_setup.reconciled examined=%d queued=%d skipped=%s",
+                len(jobs), queued, skipped or "{}",
             )
     _run(_task())
 
@@ -1362,92 +1364,111 @@ def release_held_assessments(tenant_id: str | None = None):
 
 
 @task(
-    name="pickready.remind_unapproved_technical_questions",
+    name="pickready.remind_unsaved_skills",
     route=Route.LAMBDA,
 )
-def remind_unapproved_technical_questions():
-    """The operational safeguard on the pipeline's one manual step (spec §5).
+def remind_unsaved_skills():
+    """One reminder per job whose drafted skills nobody has saved.
 
-    A job whose setup sits unapproved past the configured threshold (24-48h)
-    mails everyone who could approve it. Without this the manual step becomes a
-    SILENT bottleneck: applications keep arriving, no candidate can be invited,
-    and nothing anywhere says why.
+    REPLACES the technical-questions reminder, which kept a name describing
+    a bank deleted on 2026-08-06, chased a matrix nobody reads any more, mailed
+    people by ROLE rather than by what they may do, and linked to a setup page
+    that does not exist.
 
-    WHAT IT CHASES CHANGED ON 2026-08-04, THOUGH THE NAME DID NOT.
-    The technical bank's approval step was removed, so `questions_pending_review`
-    now has exactly one cause: an unapproved PPI FRAMEWORK. The threshold is
-    therefore measured against `framework_generated_at` alone. It used to take
-    the earlier of the two generation stamps, which after the change would chase
-    a job whose framework had only just been generated because its technical
-    questions happened to be older -- a reminder for a review nobody is late on,
-    and `question_reminder_sent_at` makes it one per job, so that wasted the
-    single reminder the job ever gets.
+    Selects jobs that are not archived, whose Sutra draft landed
+    (`skills_draft_status = 'drafted'`) more than
+    `settings.skills_setup_reminder_hours` ago, whose skills are not saved
+    (`framework_approved_at IS NULL`, reused as "skills saved at"), and that
+    were never reminded (`question_reminder_sent_at`, persisted name reused).
+    Until the skills are saved the job can take applications and invite
+    nobody, and nothing else on the screen says why.
 
-    The task name is deliberately left alone: a beat entry and a worker
-    registration must agree across a rolling deploy, and renaming both
-    atomically is not something a rollout can guarantee.
+    RECIPIENTS BY CAPABILITY, never by role name: every active user of the
+    tenant for whom `rbac.authorize(FINALIZE_ROLE_DEFINITION)` on THIS job
+    answers allowed, which honours the per-user overlay, the invariant ceiling
+    and the Hiring Manager's assignment scope. Somebody whose access was pinned
+    off stops being mailed without anybody editing this task.
 
-    `question_reminder_sent_at` makes it one reminder per job, not an hourly
-    nag -- the beat schedule runs this every hour so a job is reminded near its
-    own threshold rather than whenever a daily sweep happens to land.
+    RLS: bypass, because it iterates every tenant.
     """
     from datetime import timedelta
 
-    from app.models.enums import Role, UserStatus
-    from app.models.job import Job
+    from app.models.enums import UserStatus
+    from app.models.job import SKILLS_DRAFT_DRAFTED, Job
     from app.models.user import User
+    from app.services import capabilities, rbac
 
     async def _task():
         threshold = datetime.now(timezone.utc) - timedelta(
-            hours=get_settings().technical_review_reminder_hours
+            hours=get_settings().skills_setup_reminder_hours
         )
         async with _worker_session() as session:
             jobs = (
                 await session.execute(
                     select(Job).where(
-                        Job.assessment_status == "questions_pending_review",
-                        # The FRAMEWORK stamp alone. It is the only half that
-                        # still gates the job, so it is the only one whose age
-                        # says whether a review is actually overdue.
-                        Job.framework_generated_at.isnot(None),
-                        Job.framework_generated_at <= threshold,
-                        Job.question_reminder_sent_at.is_(None),
                         Job.archived_at.is_(None),
+                        Job.skills_draft_status == SKILLS_DRAFT_DRAFTED,
+                        Job.framework_approved_at.is_(None),
+                        Job.skills_drafted_at.isnot(None),
+                        Job.skills_drafted_at <= threshold,
+                        Job.question_reminder_sent_at.is_(None),
                     )
                 )
             ).scalars().all()
             if not jobs:
-                logger.debug("job_setup.reminder_noop, no jobs pending review")
+                logger.debug("job_setup.skills_reminder_noop")
                 return
+            reminded = 0
             for job in jobs:
-                recipients = (
+                resource = await rbac.load_job_resource(session, job.id)
+                users = (
                     await session.execute(
-                        select(User).where(
+                        select(User)
+                        .where(
                             User.tenant_id == job.tenant_id,
-                            User.role.in_((Role.client, Role.hr_manager, Role.recruiter)),
                             User.status != UserStatus.disabled,
                             User.email.is_not(None),
                         )
+                        .order_by(User.created_at)
                     )
                 ).scalars().all()
-                for recipient in recipients:
+                recipients: list[str] = []
+                for user in users:
+                    decision = await rbac.authorize(
+                        session,
+                        rbac.Principal(
+                            user_id=user.id, tenant_id=user.tenant_id, role=user.role
+                        ),
+                        capabilities.FINALIZE_ROLE_DEFINITION,
+                        resource,
+                    )
+                    if decision.allowed and user.email:
+                        recipients.append(user.email)
+                link = f"{get_settings().frontend_url}/org/jobs/{job.id}"
+                for email in recipients:
                     await _send_email_async(
                         session,
                         str(job.tenant_id),
-                        recipient.email,
+                        email,
                         "outreach_direct",
                         {
-                            "subject": f"Assessment setup needs review, {job.title}",
+                            "subject": f"Skills waiting to be saved, {job.title}",
                             "body": (
-                                f"The assessment setup for {job.title} is still awaiting review. "
-                                "No candidate can be invited until the technical questions "
-                                "and the PPI framework are both finalised. "
-                                f"Open {get_settings().frontend_url}/org/jobs/{job.id}/setup to review and approve them."
+                                f"The skills for {job.title} were drafted and have "
+                                "not been saved. No candidate can be invited to the "
+                                "assessment until they are. Review them, change "
+                                f"anything that is wrong, and save them: {link}"
                             ),
                         },
                     )
                 job.question_reminder_sent_at = datetime.now(timezone.utc)
+                reminded += 1
+                logger.info(
+                    "job_setup.skills_reminder job_id=%s recipients=%d",
+                    job.id, len(recipients),
+                )
             await session.commit()
+            logger.info("job_setup.skills_reminders_sent jobs=%d", reminded)
     _run(_task())
 
 

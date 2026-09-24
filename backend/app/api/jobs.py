@@ -1,4 +1,12 @@
-"""Job creation + multi-level approval FSM endpoints (FR-3.x, FR-4.1)."""
+"""Job endpoints: create a draft, edit its JD, publish, and the posting lifecycle.
+
+THE FLOW (Vivekium release): Create Job saves a DRAFT, always. The JD has one
+edit path (`PATCH /jobs/{id}/jd`). The job goes live only through
+`POST /jobs/{id}/publish`, which needs a JD, a saved SWOT and saved skills.
+The multi-level approval chain (the hand-off to the Hiring Manager, submit,
+approve and the approvals list) and the second JD writer (`PUT /jobs/{id}/jd`)
+are DELETED: none had a caller, and one left the canonical document stale.
+"""
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -32,13 +40,11 @@ from app.models.billing import (
     OldProfileReview,
 )
 from app.models.company import Company
-from app.models.enums import ApprovalDecision, JobStatus, LinkSource
-from app.models.job import REPORTING_TO_OPTIONS, Job, JobApproval
+from app.models.enums import JobStatus, LinkSource
+from app.models.job import REPORTING_TO_OPTIONS, Job
 from app.models.proctoring import DEFAULT_WARNING_POLICY
 from app.models.tenant import Tenant
 from app.schemas.jobs import (
-    ApprovalOut,
-    ApproveIn,
     AssessmentDisputeIn,
     AssessmentRetentionOut,
     CompensationIn,
@@ -50,7 +56,6 @@ from app.schemas.jobs import (
     JDGenerateIn,
     JDGenerateOut,
     JDMarkdownIn,
-    JDUpdateIn,
     JobCloseIn,
     JobCreateIn,
     JobDetailOut,
@@ -62,24 +67,28 @@ from app.schemas.jobs import (
     RankedCandidatesOut,
     ReportingToOptionsOut,
     ReviewProfileOut,
+    jd_body_is_empty,
 )
 from app.schemas.matching import RunMatchingOut
 from uuid import uuid4 as _uuid4
 
 from app.services import approval_fsm as fsm
+from app.services import assessment_contract
 from app.services import capabilities as caps
 from app.services import credits
 from app.services import job_assessment_retention
 from app.services import job_candidates
 from app.services import job_posting
+from app.services import locks
 from app.services import candidate_updates
 from app.services import hiring_pipeline
 from app.services import rbac
 from app.services import status_hygiene
+from app.services import swot_analysis
 from app.services import telemetry_events
 from app.services.audit import audit, record_action
 from app.workers import agent_client
-from app.workers.dispatch import dispatch
+from app.workers.dispatch import dispatch, dispatch_after_commit
 
 logger = logging.getLogger(__name__)
 
@@ -175,25 +184,17 @@ def jd_markdown_for(job: Job) -> str:
     ).strip()
 
 
-def _has_publishable_jd(job: Job) -> bool:
+def has_publishable_jd(job: Job) -> bool:
     """Is there any real job description to publish?
 
-    ASSUMPTION (2026-07-28, claude.md §8): the client's rule is "no publishing
-    an empty JD". Read literally as "jd_markdown must be non-empty" it would
-    also refuse every job created through the still-supported per-section
-    contract, which writes `jd_json` and no document. So the gate is on the
-    RESOLVED document: an explicit `jd_markdown`, or one renderable from
-    `jd_json`. A job with neither has nothing to show a candidate and is
-    refused, which is the case the client actually cares about.
+    The RESOLVED document: an explicit `jd_markdown`, or, for a job written
+    before the document existed (migration 0022), one renderable from its
+    `jd_json` sections. Headings alone are not a job description, by the one
+    test create and publish share (`schemas.jobs.jd_body_is_empty`).
     """
     stored = (job.jd_markdown or "").strip()
     if stored:
-        # Headings alone are not a job description. Strip them and see whether
-        # anything was actually said underneath.
-        body = "\n".join(
-            line for line in stored.splitlines() if not line.lstrip().startswith("#")
-        )
-        return bool(body.strip())
+        return not jd_body_is_empty(stored)
 
     # No document yet: fall back to the per-section contract. Checked SECTION BY
     # SECTION rather than by rendering, because the rendering supplies its own
@@ -218,13 +219,6 @@ def _with_public_url(job: Job) -> JobOut:
     out.jd_markdown = jd_markdown_for(job) or None
     _attach_public_url(out, job)
     return _apply_posting_window(out, job)
-
-
-async def _approval_config(session: AsyncSession, tenant_id: uuid.UUID) -> dict | None:
-    company = (
-        await session.execute(select(Company).where(Company.tenant_id == tenant_id))
-    ).scalars().first()
-    return company.approval_levels_config if company else None
 
 
 # ── Company-narrative JD sections (spec §3.1/§3.2) ───────────────────────────
@@ -323,54 +317,65 @@ async def _get_visible_job(
     return job
 
 
+#: The credit gate's refusal (spec §11). Shared by create and JD generation.
+CREDITS_EXHAUSTED_DETAIL = (
+    "Your credit pool is exhausted, so new jobs cannot be created. "
+    "Purchase a credit bundle to continue creating jobs and "
+    "assessing candidates."
+)
+
+
+async def _require_create_gates(session: AsyncSession, tenant_id: uuid.UUID) -> None:
+    """The two gates on starting a new job, in order, before any work.
+
+    The credit gate (spec §11) is checked at the MOMENT of creation and nowhere
+    else: a job created while the pool had credit stays created if the pool
+    later empties. Loud and immediate, with the way out named: spec §11 is
+    explicit that there is no silent failure and no degraded mode here.
+
+    Gate 1 (workflow §18): the Company Profile must say something. It is what
+    every job on the tenant is derived from and what this job's narrative
+    sections are seeded from. Asked of the TABLE, and only at creation: a job
+    created before the client wrote their profile stays created.
+    """
+    if not await credits.has_positive_balance(session, tenant_id):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=CREDITS_EXHAUSTED_DETAIL,
+        )
+    from app.services.hiring import company_requirements  # noqa: PLC0415
+
+    blocked = await company_requirements.creation_blocked(session, tenant_id)
+    if blocked:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=blocked)
+
+
 @router.post("", response_model=JobOut, status_code=status.HTTP_201_CREATED)
 async def create_job(
     body: JobCreateIn,
     user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> JobOut:
-    """Create a job.
+    """Create a job as a DRAFT. Publishing is `POST /jobs/{id}/publish`.
 
-    Flat staff model (PRD v1.0 §4): any of the 3 staff roles (or the Company
-    Admin) holding CREATE_JOB may create one, and the approval chain is
-    bypassed entirely.
+    ALWAYS A DRAFT (Vivekium release). `publish` used to default to True and
+    went live under CREATE_JOB alone, skipping the publish gate, the JD index
+    and the lifecycle: every live job on pilot reached PUBLISHED that way with
+    no skills anyone had saved. A body still sending `publish: true` is a 422
+    naming the new flow (`schemas.jobs.JobCreateIn`), loud during the rolling
+    deploy rather than a silently mislabelled draft.
 
-    TWO FLOWS, ONE HANDLER (2026-07-28). `publish` defaults to True, which is
-    the established behaviour: the job goes live immediately and the public
-    application link comes back with it. The new Create Job screen sends
-    `publish: false` instead, because the client's flow is AI draft, then
-    recruiter edit, THEN publish. That draft is finished with
-    PATCH /jobs/{id}/jd and made live with POST /jobs/{id}/publish.
+    THE CREATOR IS ASSIGNED. A Recruiter or Hiring Manager who creates a job
+    becomes its assigned Recruiter or Hiring Manager (`rbac.assign_creator`),
+    because every SCOPED cell of RBAC 24 reads `job_assignments` and nothing
+    else writes it: without this, the person who created a job could not
+    publish it or edit its skills.
+
+    Nothing is dispatched here. The skills draft starts when the team first
+    saves the Job SWOT (`skills.after_swot_saved`), the event that produces
+    its input, and matching starts at publication.
     """
-    # ── The credit gate on job creation (spec §11) ──────────────────────────
-    # Checked at the MOMENT of creation and nowhere else. A job created while
-    # the pool had credit stays created if the pool later empties; what is
-    # blocked is starting something new with nothing to pay for it.
-    #
-    # Loud and immediate, with the way out named in the message. Spec §11 is
-    # explicit that there is no silent failure and no degraded mode here: a
-    # recruiter who cannot create a job must be told why and what to do, not
-    # handed a draft that quietly never becomes anything.
-    if not await credits.has_positive_balance(session, user.tenant_id):
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=(
-                "Your credit pool is exhausted, so new jobs cannot be created. "
-                "Purchase a credit bundle to continue creating jobs and "
-                "assessing candidates."
-            ),
-        )
-
-    # ── Gate 1: the Company Profile must say something (workflow §18) ──────
-    # The company-level statement every job on this tenant is derived from,
-    # and the one this job's own narrative sections are seeded from below.
-    # Asked of the TABLE, and only at the moment of creation: a job created
-    # before the client wrote their profile stays created.
-    from app.services.hiring import company_requirements  # noqa: PLC0415
-
-    blocked = await company_requirements.creation_blocked(session, user.tenant_id)
-    if blocked:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=blocked)
+    await _require_create_gates(session, user.tenant_id)
 
     # Snapshot the company's narrative sections onto the job (spec §3.2). An
     # explicit value in the create body wins; otherwise the company profile
@@ -387,21 +392,11 @@ async def create_job(
     }
     from app.services import jd_generation
 
-    jd_sections = body.jd.model_dump(mode="json")
-    document = (body.jd_markdown or "").strip()
-    if document:
-        # The document is canonical: re-derive the sections from it so
-        # `jd_json.skills` can never contradict what the candidate reads.
-        document = jd_generation.strip_em_dashes(document)
-        jd_sections = jd_generation.parse_jd_markdown(document)
-    else:
-        # Per-section create (the pre-2026-07-28 contract, still supported):
-        # render the document from the sections so the job still has one.
-        document = jd_generation.render_jd_markdown(
-            jd_sections,
-            min_years=body.experience_min_years,
-            max_years=body.experience_max_years,
-        )
+    # The document is canonical: the sections are derived from it so
+    # `jd_json.skills` can never contradict what the candidate reads. The
+    # schema has already refused a document that is only headings.
+    document = jd_generation.strip_em_dashes(body.jd_markdown.strip())
+    jd_sections = jd_generation.parse_jd_markdown(document)
 
     # ── STEM / Non-STEM classification (Master Directive Part 3) ────────────
     # The AI flow passes `jd_draft_id`, and the job inherits the result that
@@ -435,7 +430,6 @@ async def create_job(
         tenant_id=user.tenant_id,
         title=body.title,
         department=body.department,
-        level=body.level,
         requirement_period=body.requirement_period,
         jd_json=jd_sections,
         jd_markdown=document,
@@ -453,8 +447,8 @@ async def create_job(
         work_life=seeded["work_life"],
         benefits=seeded["benefits"],
         # `grade` is a required Create Job field; assessment_grade is its
-        # canonical store. Questions generate + finalize asynchronously — there
-        # is no manual approval gate (user decision, 2026-07-25).
+        # canonical store. It locks with the skills at the first candidate
+        # start (D5), see `patch_job`.
         assessment_grade=body.grade,
         assessment_status="questions_pending_review",
         # The recruiter's third-warning choice (proctoring spec 6). Omitted
@@ -491,46 +485,22 @@ async def create_job(
         },
     )
 
-    if body.publish:
-        # Direct publish: draft → ratified in one step (no submit/approve chain).
-        await fsm.apply_direct_publish(session, job)
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="job_created", target_type="job", target_id=job.id,
-                metadata={"title": body.title, "published": body.publish,
-                          "grade": body.grade,
-                          "public_url": public_job_url(job.id) if body.publish else None})
-    if body.publish:
-        # Databank matching runs the moment a job is published (FR-4.2), async.
-        dispatch("pickready.run_matching", args=[str(job.id)])
-    # The PPI framework is generated from the JD as soon as the JD exists; it
-    # does not wait for publish, so an unpublished draft is never the thing
-    # holding up the assessment.
-    #
-    # This enqueue is now BACKED UP by `pickready.reconcile_job_setup` on the
-    # beat schedule. It used to be the only attempt the job ever got, and when
-    # it failed -- a broker hiccup, an exhausted retry budget, an exception in
-    # the technical-bank half that used to share this task -- the job was
-    # silently unusable forever. Nineteen live jobs were in exactly that state.
-    # NOT ENQUEUED HERE ANY MORE (2026-08-29). Sutra compiles the Tatva matrix
-    # from the Job SWOT Analysis document; at job creation that does not exist,
-    # so a task fired here would refuse on every job the moment it ran. The
-    # compile is enqueued when the SWOT document lands
-    # (`api/assessments._enqueue_matrix_from_swot`, on generate, save and
-    # restore), which is the event that actually produces its input, and
-    # `pickready.reconcile_job_setup` sweeps for a job whose SWOT exists and
-    # whose matrix never landed.
-    # The two halves of job setup are generated IN PARALLEL (spec §10): the PPI
-    # matrix from the JD and the SWOT document, the Matching category list from
-    # the JD. Two tasks rather than one, and that split is not stylistic. A
-    # single task that generated both would take the gating half down with any
-    # failure in the other, which is the exact coupling that left nineteen live
-    # jobs with a stamped timestamp and no framework.
-    dispatch("pickready.generate_matching_categories", args=[str(job.id)])
-    # Load the GENERATED posting-window columns before serialising. The mapper
-    # asks for them via RETURNING (models/job.eager_defaults), but a direct
-    # publish re-stamps `posting_start_date` after the INSERT, which expires
-    # both derived columns again; reading them from the serialiser would then
-    # trigger a lazy load in the wrong greenlet and 500 the whole request.
+    await rbac.assign_creator(session, job, user.user_id, user.role)
+    await record_action(
+        session,
+        action="job_created",
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
+        new_state={"lifecycle_state": job.lifecycle_state},
+        metadata={"title": body.title, "grade": body.grade},
+    )
+    # Load the GENERATED posting-window columns before serialising, so the
+    # serialiser never triggers a lazy load in the wrong greenlet.
     await session.refresh(job)
     return _with_public_url(job)
 
@@ -563,9 +533,12 @@ async def save_jd_markdown(
     user: CurrentUser = Depends(require_capability(caps.EDIT_JOB_DESCRIPTION)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> JobDetailOut:
-    """Save an edit of the unified JD document.
+    """Save an edit of the unified JD document. The ONE JD edit path.
 
-    Available at ANY time, before or after publish. The client asked for an
+    `PATCH /jobs/{id}` no longer takes the JD and `PUT /jobs/{id}/jd` is
+    deleted (Vivekium release): three writers of one text is the shape rule 5
+    forbids, and the PUT left the document stale. Available at ANY time,
+    before or after publish. The client asked for an
     explicit, always-visible Edit button: an AI draft has to be editable
     before it goes live, and a live posting with a typo should be fixable
     without unpublishing the role. The edit is audited every time, so the
@@ -605,54 +578,67 @@ async def save_jd_markdown(
 @router.post("/{job_id}/publish", response_model=PublishJobOut)
 async def publish_job(
     job_id: uuid.UUID,
-    user: CurrentUser = Depends(rbac.require_authorized(caps.PUBLISH_JOB)),
+    user: CurrentUser = Depends(require_capability(caps.PUBLISH_JOB)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> PublishJobOut:
     """Publish a drafted job and hand back its public application link.
 
-    This is the separate, explicit step the client asked for: draft, edit, then
-    publish. Two things it refuses:
+    The ONLY way a job goes live (Vivekium release). Refused, each with a 409
+    naming the fix: an archived job, a job already live (re-stamping
+    `posting_start_date` would quietly restart the fixed 30-day window), and a
+    job missing any setup step: the JD, the saved SWOT, the saved skills
+    (`_publication_blocked` names every missing one, in order).
 
-      * an EMPTY job description. Publishing a role with nothing to read wastes
-        every candidate who clicks the link, so it is a 409 naming the fix.
-      * publishing twice. Already-live is a 409 rather than a silent re-stamp,
-        because re-stamping `posting_start_date` would quietly restart the
-        fixed 30-day window and extend a posting nobody agreed to extend.
+    Matching and the JD index are dispatched AFTER the commit, so a publish
+    that rolls back starts nothing.
+
+    AUTHORIZATION IS RBAC 3's WHOLE CHAIN, run here rather than as a route
+    dependency for one reason: the lifecycle refusal. A job whose skills were
+    never saved is still DRAFT, and `publish_requires_finalized` answered it
+    with a bare "Not permitted", which sends a recruiter to ask somebody else
+    what is wrong. Tenant, ceiling, grant and assignment scope still refuse
+    first and exactly as before; only a caller who passes all of them and is
+    stopped by the STATE is told which setup steps are missing.
 
     The response carries `public_application_url`, the absolute link the copy
     popup shows for pasting into LinkedIn, Naukri or an email.
     """
-    job = await _get_visible_job(session, user, job_id)
+    resource = await rbac.load_job_resource(session, job_id)
+    if resource is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    decision = await rbac.authorize(
+        session,
+        rbac.Principal(user_id=user.user_id, tenant_id=user.tenant_id, role=user.role),
+        caps.PUBLISH_JOB,
+        resource,
+    )
+    job = None
+    if decision.reason == "publish_requires_finalized":
+        job = await _get_visible_job(session, user, job_id)
+        if job.ratified_at is None and job.archived_at is None:
+            blocked = await _publication_blocked(session, job)
+            if blocked:
+                raise HTTPException(status_code=409, detail=blocked)
+    rbac.raise_for(decision, caps.PUBLISH_JOB)
+    job = job or await _get_visible_job(session, user, job_id)
     if job.archived_at is not None:
         raise HTTPException(
             status_code=409, detail="Restore this job before publishing it."
         )
     if job.ratified_at is not None:
         raise HTTPException(status_code=409, detail="This job is already published.")
-    if not _has_publishable_jd(job):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Write the job description before publishing. "
-                "Generate a draft or type one, save it, then publish."
-            ),
-        )
-    # ── RBAC 21: publication is blocked while any Hiring-Manager-controlled
-    #    component is incomplete ───────────────────────────────────────────
+    # ── RBAC 21: publication waits for every setup step, asked of the TABLES.
     #
-    # TWO CHECKS, AND BOTH ARE LOAD-BEARING. `rbac.require_authorized` above has
-    # already refused any state earlier than FINALIZED, which is the STRUCTURAL
-    # half: FINALIZED is reachable only through the Hiring Manager's explicit
-    # finalisation, so the state is the record that the components are complete.
-    #
-    # This second check asks the TABLE. The lesson is on record and was
-    # expensive: 19 live jobs carried `framework_generated_at` and had zero
-    # competency rows, and every health check in the product asked the stamp
-    # rather than the table. A lifecycle_state is a stamp like any other.
-    _blocked = await _publication_blocked(session, job)
-    if _blocked:
-        raise HTTPException(status_code=409, detail=_blocked)
+    # TWO CHECKS, AND BOTH ARE LOAD-BEARING. The authorization above has
+    # already refused any state earlier than FINALIZED, which only Save Skills
+    # writes. This second check asks the rows themselves, because a lifecycle
+    # state is a stamp like any other and a timestamp is not evidence that
+    # work happened (rule 8).
+    blocked = await _publication_blocked(session, job)
+    if blocked:
+        raise HTTPException(status_code=409, detail=blocked)
 
+    previous_state = job.lifecycle_state
     await fsm.apply_direct_publish(session, job)
     # RBAC 17: FINALIZED -> PUBLISHED. Written here rather than inferred from
     # `ratified_at`, because 21 requires publication to RECORD the publishing
@@ -664,13 +650,19 @@ async def publish_job(
     # window columns in the database. Same refresh as `renew_job` below.
     await session.refresh(job)
     await _invalidate_public_job(job.id)
-    await audit(
+    # Every column in ONE insert (the 2026-09-20 audit_log rule).
+    await record_action(
         session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
         action="job_published",
-        target_type="job",
-        target_id=job.id,
+        actor_user_id=user.user_id,
+        actor_role=user.role.value,
+        tenant_id=user.tenant_id,
+        resource_type="job",
+        resource_id=job.id,
+        job_id=job.id,
+        correlation_id=job.correlation_id,
+        previous_state={"lifecycle_state": previous_state},
+        new_state={"lifecycle_state": job.lifecycle_state},
         metadata={
             "title": job.title,
             "public_url": public_job_url(job.id),
@@ -680,13 +672,14 @@ async def publish_job(
             "job_identifier": str(job.id),
         },
     )
-    dispatch("pickready.run_matching", args=[str(job.id)])
+    # Both AFTER the commit: a publish that rolls back must start nothing.
+    dispatch_after_commit(session, "pickready.run_matching", args=[str(job.id)])
     # The JD is public and final at this point, so it becomes retrievable
     # (RPN-AI-UP-001 W2.1). At publish rather than at draft save: a draft is
     # edited repeatedly, and indexing every intermediate state would re-embed a
     # document nobody can apply to yet. `index_document` is incremental by
     # content hash, so a later edit re-embeds only the paragraphs that moved.
-    dispatch("pickready.index_document", args=["jd", str(job.id)])
+    dispatch_after_commit(session, "pickready.index_document", args=["jd", str(job.id)])
 
     out = PublishJobOut.model_validate(job)
     out.jd_markdown = jd_markdown_for(job) or None
@@ -698,95 +691,48 @@ async def publish_job(
     return out
 
 
+#: The setup steps publication waits for, in the order the job page walks
+#: them. Each is the sentence the checklist and the 409 both render.
+PUBLISH_STEP_JD = "write and save the job description"
+PUBLISH_STEP_SWOT = "save the SWOT analysis"
+PUBLISH_STEP_SKILLS = "save the skills"
+
+
+async def publication_missing_steps(session: AsyncSession, job: Job) -> list[str]:
+    """Every setup step still missing before `job` may be published, in order.
+
+    Asked of the TABLES, never of the lifecycle: the JD from the document
+    itself, the SWOT from its own row (`swot_analysis.is_saved`: a human saved
+    or restored it; a model draft nobody read is not the team's analysis), and
+    the skills from the saved stamp AND the hidden context
+    (`assessment_contract.skills_saved`), so "publishable" and "lockable" can
+    never disagree.
+    """
+    missing: list[str] = []
+    if not has_publishable_jd(job):
+        missing.append(PUBLISH_STEP_JD)
+    if not swot_analysis.is_saved(await swot_analysis.get(session, job)):
+        missing.append(PUBLISH_STEP_SWOT)
+    if not await assessment_contract.skills_saved(session, job.id):
+        missing.append(PUBLISH_STEP_SKILLS)
+    return missing
+
+
 async def _publication_blocked(session: AsyncSession, job: Job) -> str | None:
-    """RBAC 21's precondition, asked of the TABLE. None when nothing blocks.
+    """RBAC 21's precondition as ONE sentence naming EVERY missing step.
 
-    21 lists what must be finalised before a job may be published: the final JD,
-    Must-Have skills, Nice-to-Have skills, behavioural competencies, the job-role
-    philosophy, the SWOT analysis and the evaluation rubrics. In this product
-    those are three things a reader can check: the SWOT session closed, the
-    Tatva matrix exists with all three aspects, and the Hiring Manager froze it.
-
-    The message NAMES the outstanding step, because "publication blocked" sends
-    a recruiter to ask someone else what is wrong.
+    None when nothing blocks. Naming all of them rather than the first is the
+    2026-09-23 lesson: telling somebody about the first of three means three
+    round trips.
     """
-    from app.services.hiring import scorecard  # noqa: PLC0415
-
-    matrix = await scorecard.load_frozen_matrix(session, job.id)
-    if matrix is None:
-        return (
-            "The evaluation criteria for this role have not been finalised by "
-            "the Hiring Manager. They are what every candidate on this job is "
-            "graded against, so publication waits for them."
-        )
-    return None
-
-
-@router.post("/{job_id}/send-to-hiring-manager", response_model=JobOut)
-async def send_jd_to_hiring_manager(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(
-        rbac.require_authorized(caps.SEND_JD_TO_HIRING_MANAGER)
-    ),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> JobOut:
-    """RBAC 9.3: the Recruiter hands the draft JD to the assigned Hiring Manager.
-
-    DRAFT -> SENT_TO_HIRING_MANAGER, which is the second state of 17's lifecycle
-    and the one that was previously unreachable: migration 0061 added the column
-    and backfilled it, and nothing in the product could advance it, so every job
-    sat in DRAFT forever and 21's publish precondition could never be satisfied
-    honestly.
-
-    A JD with nothing in it is refused. Sending an empty draft to a Hiring
-    Manager wastes the one review the workflow has, and 18 says in as many words
-    that "the job MUST NOT be published as an unfinished draft".
-    """
-    job = await _get_visible_job(session, user, job_id)
-    if not _has_publishable_jd(job):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Write the job description before sending it to the Hiring "
-                "Manager. Generate a draft or type one, save it, then send."
-            ),
-        )
-    current = job.lifecycle_state or hiring_pipeline.JobLifecycleState.DRAFT.value
-    target = hiring_pipeline.JobLifecycleState.SENT_TO_HIRING_MANAGER
-    if target not in hiring_pipeline.lifecycle_allowed_transitions(current):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"This job is already past the draft stage ({current}), so it "
-                f"cannot be sent to the Hiring Manager again. A change after "
-                f"finalisation goes through the revision workflow."
-            ),
-        )
-    previous = job.lifecycle_state
-    job.lifecycle_state = target.value
-    await session.flush()
-    # Every column in the one INSERT: the application role has no UPDATE grant
-    # on audit_log, so a post-flush attribute write aborts the transaction at
-    # commit, after the response has already left (the SWOT false-409 bug).
-    await record_action(
-        session,
-        action="jd_sent_to_hiring_manager",
-        actor_user_id=user.user_id,
-        actor_role=user.role.value,
-        tenant_id=user.tenant_id,
-        resource_type="job",
-        resource_id=job.id,
-        job_id=job.id,
-        correlation_id=job.correlation_id,
-        previous_state={"lifecycle_state": previous},
-        new_state={"lifecycle_state": job.lifecycle_state},
-        metadata={"title": job.title},
-    )
-    logger.info(
-        "jobs.sent_to_hiring_manager job_id=%s by=%s correlation_id=%s",
-        job.id, user.user_id, job.correlation_id,
-    )
-    return _with_public_url(job)
+    missing = await publication_missing_steps(session, job)
+    if not missing:
+        return None
+    if len(missing) == 1:
+        steps = missing[0]
+    else:
+        steps = ", ".join(missing[:-1]) + " and " + missing[-1]
+    return f"Before this job can be published, {steps}."
 
 
 @router.post("/{job_id}/renew", response_model=PublishJobOut)
@@ -1291,6 +1237,13 @@ async def get_job(
     return await _job_detail_out(session, job)
 
 
+#: The refusal a grade change gets once a candidate has started (D5).
+GRADE_LOCKED_DETAIL = (
+    "The grade is locked because a candidate has started the assessment. It "
+    "decides the question budget every candidate on this job receives."
+)
+
+
 @router.patch("/{job_id}", response_model=JobDetailOut)
 async def patch_job(
     job_id: uuid.UUID,
@@ -1298,64 +1251,42 @@ async def patch_job(
     user: CurrentUser = Depends(require_capability(caps.EDIT_JOB_DESCRIPTION)),
     session: AsyncSession = Depends(get_tenant_db),
 ) -> JobDetailOut:
-    """In-place partial edit of the JD from the job page (spec §3.1).
+    """Partial edit of a job's METADATA from the job page (spec §3.1).
 
     True PATCH semantics: a field the caller did not send is untouched. For the
-    three narrative sections that distinction carries meaning — sending
+    three narrative sections that distinction carries meaning: sending
     `about_company: null` CLEARS the per-job override so the job falls back to
     the company profile, which is different from not mentioning the field.
     `model_fields_set` is what separates them.
 
-    Unlike the older PUT /jobs/{id}/jd, this does NOT require the job to be
-    ratified: on the flat staff model a job is published the moment it is
-    created, so a pre-ratification gate would only ever reject edits to jobs
-    that no longer exist in that state.
+    The JD itself is NOT edited here: `PATCH /jobs/{id}/jd` is its one path.
+
+    THE GRADE LOCKS WITH THE SKILLS (D5). It decides the question budget
+    every candidate on the job receives, so once a candidate has started the
+    assessment a change is a 409, asked of the snapshot TABLE. A value equal
+    to the current grade is not a change and is not refused.
     """
     job = await _get_visible_job(session, user, job_id)
     sent = body.model_fields_set
+
+    if "grade" in sent and body.grade is not None and body.grade != job.assessment_grade:
+        # The skills lock a candidate's start takes too, so a grade change and
+        # a first start can never interleave: either the snapshot carries the
+        # new grade, or the change is refused.
+        await locks.advisory_xact_lock(session, locks.SKILLS, job.id)
+        if await assessment_contract.is_locked(session, job.id):
+            raise HTTPException(status_code=409, detail=GRADE_LOCKED_DETAIL)
 
     if "title" in sent and body.title is not None:
         job.title = body.title
     if "department" in sent:
         job.department = body.department
-    if "level" in sent:
-        job.level = body.level
     if "requirement_period" in sent:
         job.requirement_period = body.requirement_period
     for field in ("experience_min_years", "experience_max_years"):
         if field in sent:
             setattr(job, field, getattr(body, field))
-    if "jd_markdown" in sent and body.jd_markdown is not None:
-        # The document wins over any `jd` sent alongside it: it is canonical,
-        # and re-deriving keeps the two from contradicting each other.
-        from app.services import jd_generation
-
-        job.jd_markdown = jd_generation.strip_em_dashes(body.jd_markdown.strip())
-        job.jd_json = jd_generation.parse_jd_markdown(job.jd_markdown)
-    elif "jd" in sent and body.jd is not None:
-        # Re-render the document from the edited sections. Writing only
-        # `jd_json` left `jd_markdown` stale, and `jd_markdown_for` prefers the
-        # STORED document over a re-render — so an edit made on the job detail
-        # page (which sends `jd`, not `jd_markdown`) updated the recruiter's
-        # view and never reached the candidate-facing JD at /apply/{job_id}.
-        # The document is canonical; it must move whenever the sections do.
-        from app.services import jd_generation
-
-        job.jd_json = body.jd.model_dump(mode="json")
-        job.jd_markdown = jd_generation.strip_em_dashes(
-            jd_generation.render_jd_markdown(
-                job.jd_json,
-                min_years=job.experience_min_years,
-                max_years=job.experience_max_years,
-            )
-        )
     if "grade" in sent and body.grade is not None:
-        # ASSUMPTION (mirrors PUT /jd): changing the grade changes how many
-        # questions a FUTURE candidate is asked, but does NOT regenerate an
-        # already-built technical bank — every candidate on a job must answer
-        # the identical technical set (spec §5), and regenerating mid-flight
-        # would break that comparison. It does not touch the PPI framework
-        # either: the framework is derived from the JD, not from the grade.
         job.assessment_grade = body.grade
     for key in _JD_SECTIONS:
         if key in sent:
@@ -1538,94 +1469,6 @@ async def run_job_matching(
     return await _run_matching(job_id=job_id, user=user, session=session)
 
 
-@router.post("/{job_id}/submit", response_model=JobOut)
-async def submit_job(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(require_capability(caps.CREATE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> JobOut:
-    """DEPRECATED (PRD v1.0 §4): the approval chain is bypassed — jobs publish
-    directly on create (see create_job). This endpoint is retained for the
-    dormant multi-level FSM and returns gracefully; on the normal flat path a
-    job is already `ratified`, so a submit attempt returns 409 (never 500).
-
-    draft -> first active approval level; leading inactive levels are logged as
-    explicitly skipped."""
-    job = await _get_visible_job(session, user, job_id)
-    if job.status != JobStatus.draft:
-        raise HTTPException(status_code=409, detail="Job has already been submitted")
-
-    config = await _approval_config(session, user.tenant_id)
-    try:
-        result = await fsm.apply_submit(session, job, config)
-    except fsm.ApprovalConfigError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="Approval levels are not configured for this company (FR-2.3)",
-        ) from exc
-
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="job_submitted", target_type="job", target_id=job.id,
-                metadata={"new_status": result.new_status.value})
-    if result.ratified:
-        dispatch("pickready.run_matching", args=[str(job.id)])  # FR-4.2
-    return JobOut.model_validate(job)
-
-
-@router.post("/{job_id}/approve", response_model=JobOut)
-async def approve_job(
-    job_id: uuid.UUID,
-    body: ApproveIn,
-    user: CurrentUser = Depends(require_capability(caps.APPROVE_JOB)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> JobOut:
-    """Approve/reject at the job's current level. The FSM re-validates that
-    the actor is the assigned approver of exactly this level."""
-    job = await _get_visible_job(session, user, job_id)
-    config = await _approval_config(session, user.tenant_id)
-    try:
-        result = await fsm.apply_transition(
-            session, job, config,
-            acting_user_id=user.user_id,
-            decision=ApprovalDecision(body.decision),
-            remarks=body.remarks,
-        )
-    except fsm.NotAssignedApprover as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except fsm.PriorLevelPending as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except (fsm.AlreadyTerminal, fsm.NotSubmitted) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except fsm.ApprovalConfigError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="job_approval_decision", target_type="job", target_id=job.id,
-                metadata={"decision": body.decision, "new_status": result.new_status.value,
-                          "remarks": body.remarks})
-    if result.ratified:
-        # The moment a job reaches HR, Databank matching runs (FR-4.2) —
-        # asynchronously, never inline.
-        dispatch("pickready.run_matching", args=[str(job.id)])
-    return JobOut.model_validate(job)
-
-
-@router.get("/{job_id}/approvals", response_model=list[ApprovalOut])
-async def list_approvals(
-    job_id: uuid.UUID,
-    user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> list[ApprovalOut]:
-    job = await _get_visible_job(session, user, job_id)
-    rows = (
-        await session.execute(
-            select(JobApproval).where(JobApproval.job_id == job.id)
-            .order_by(JobApproval.decided_at, JobApproval.id)
-        )
-    ).scalars().all()
-    return [ApprovalOut.model_validate(r) for r in rows]
-
-
 @router.put("/{job_id}/compensation", response_model=JobDetailOut)
 async def set_compensation(
     job_id: uuid.UUID,
@@ -1641,40 +1484,6 @@ async def set_compensation(
     await session.flush()
     await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
                 action="job_compensation_set", target_type="job", target_id=job.id)
-    return await _job_detail_out(session, job)
-
-
-@router.put("/{job_id}/jd", response_model=JobDetailOut)
-async def edit_jd(
-    job_id: uuid.UUID,
-    body: JDUpdateIn,
-    user: CurrentUser = Depends(require_capability(caps.EDIT_JOB_DESCRIPTION)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> JobDetailOut:
-    """HR JD-ambiguity fixes, post-ratification only (FR-4.1)."""
-    job = await _get_visible_job(session, user, job_id)
-    if job.ratified_at is None:
-        raise HTTPException(status_code=409, detail="HR edits the JD only after ratification (FR-4.1)")
-    job.jd_json = body.jd.model_dump(mode="json")
-    if body.title is not None:
-        job.title = body.title
-    if body.department is not None:
-        job.department = body.department
-    if body.level is not None:
-        job.level = body.level
-    if body.grade is not None:
-        # ASSUMPTION: changing the grade changes how many questions a FUTURE
-        # candidate is asked, but does NOT regenerate an already-generated
-        # technical bank — every candidate on a job must answer the identical
-        # technical set (spec §5), and regenerating mid-flight would break that
-        # comparison. The PPI framework is derived from the JD, not the grade,
-        # so it is unaffected.
-        job.assessment_grade = body.grade
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="job_jd_edited", target_type="job", target_id=job.id,
-                metadata={"grade": job.assessment_grade})
-    await _invalidate_public_job(job.id)
     return await _job_detail_out(session, job)
 
 
@@ -1700,7 +1509,13 @@ async def generate_jd(
     not reaching the generator at all, which is answered 503, because an empty
     draft returned for an unreachable agent would present "we could not ask"
     as "this is what it wrote".
+
+    THE CREATE GATES RUN FIRST (Vivekium release). The credit gate and Gate 1
+    (the Company Profile) used to run only at `POST /jobs`, AFTER the model had
+    already been paid to write a draft the recruiter could then never save.
+    Both are asked here BEFORE the writer is reached, with the same sentences.
     """
+    await _require_create_gates(session, user.tenant_id)
     brief = {
         "title": body.title,
         # The renamed "Skills" box, with the deprecated key_requirements folded

@@ -1,0 +1,65 @@
+id: regression.an_emptied_skill_set_is_not_redrafted
+version: 1
+tier: regression
+description: >
+  A team that removes every skill it typed is told the blocker it can clear,
+  and Sutra is NOT asked to draft over the decision, by the read path or by the
+  repair sweep. Two defects wore this shape. On 2026-09-21 the matrix read
+  asked for ACTIVE rows only, so a set a human emptied and one the generator
+  never wrote both answered zero rows, and the read re-enqueued the compiler.
+  Audit number 8 was the same question asked by the sweep: it selected jobs
+  with no active row, so the items the team had just removed came back fifteen
+  minutes later. One row of ANY kind is proof a person decided, and the draft
+  state is the second half of the question: this world never asked for a
+  draft, which is exactly the state the old sweep would have filled.
+tags: [skills, soft-delete, sweep, repair, audit-8, "2026-09-21"]
+
+given:
+  world: job_with_team_written_skills
+
+workload:
+  - empty_the_skills
+  - read_skills
+  - read_job_setup
+  - run_the_setup_sweep
+
+expect:
+  state:
+    - job_competencies.active_count == 0
+    - job_competencies.total_count == 8
+    # The sweep did not even ASK: a request moves the state to drafting
+    # before it dispatches, so an unchanged state is the stronger half.
+    - jobs.skills_draft_status == not_started
+  dispatched:
+    # THE HALF THAT MATTERS MOST. The damage was never the wrong sentence, it
+    # was a draft written over a set a person had just emptied on purpose. An
+    # exact zero, because "at least once" is the property a dispatcher gives
+    # for free. The sweep runs under this world's tenant scope, so no other
+    # job on the shared database can contribute a dispatch here.
+    pickready.draft_job_skills: 0
+  output:
+    - statuses.empty_the_skills == [200, 200, 200, 200, 200, 200, 200, 200]
+    - status.read_skills == 200
+    - status.read_job_setup == 200
+    - facts.skills_item_count == 0
+    - facts.skills_draft_status == not_started
+    - facts.setup_skills_draft_status == not_started
+    # The team is told the blocker they can actually clear, so the sentence has
+    # to be present as well as right. An empty `blocking_reason` here would
+    # mean the screen offered a Save control over a set that cannot be saved.
+    - facts.skills_blocking_reason contains Must-have
+    - facts.skills_blocking_reason contains Behavioural
+    - facts.sweep_drafted_this_job == false
+  trajectory:
+    - skills_emptied
+    - skills_read
+    - job_setup_read
+    - setup_sweep_ran
+  prohibited:
+    - a_number_reached_a_client
+    - an_em_dash_reached_a_client
+  evaluators:
+    - functional_correctness
+    - state_correctness
+    - safety_and_policy
+    - no_numbers_to_client

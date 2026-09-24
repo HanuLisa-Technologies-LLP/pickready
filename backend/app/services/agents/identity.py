@@ -135,7 +135,9 @@ AGENTS: dict[str, Agent] = {
         name="Bodha",
         meaning="Understanding / insight",
         role="Hiring Manager Job SWOT Agent",
-        runtime_id=permissions.AGENT_JOB_SETUP,
+        # Its OWN runtime surface: it shared `job_setup` with Sutra, whose
+        # union reach let the SWOT writer hold the skills capabilities.
+        runtime_id=permissions.AGENT_SWOT,
         trigger="Immediately after the recruiter saves the finalised job description.",
         portal=PORTAL_CUSTOMER,
         skills=("collect_swot", "summarize_role_context", "validate_swot_completeness"),
@@ -145,40 +147,31 @@ AGENTS: dict[str, Agent] = {
         # caller went, which is exactly what the reachability test caught: an
         # identity map that names unreachable code claims an agent is running
         # something nothing can invoke.
-        implemented_by=(
-            "app.services.swot_analysis",
-            "app.services.hiring.swot_quality",
-            "app.services.hiring.situations",
-        ),
-        activates_to=(
-            "app.services.hiring.swot_quality",
-            "app.services.hiring.situations",
-        ),
+        implemented_by=("app.services.swot_analysis",),
+        activates_to=("app.services.swot_analysis",),
         produces=("swot_evidence",),
         consumes=("job_description",),
     ),
     SUTRA: Agent(
         name="Sutra",
         meaning="Thread / framework",
-        role="Tatva Matrix Agent",
-        runtime_id=permissions.AGENT_JOB_SETUP,
+        role="Skills Agent",
+        runtime_id=permissions.AGENT_SKILLS,
         trigger=(
             "After Bodha completes the SWOT intake. Runs in parallel with Yukti."
         ),
         portal=PORTAL_CUSTOMER,
-        skills=("build_tatva_matrix", "validate_matrix_coverage", "publish_locked_matrix"),
+        # Vivekium release: Sutra drafts the three skill buckets and, at Save
+        # Skills, writes the hidden assessment context. The seven-stage
+        # transformation and the matrix compiler it ran are deleted.
+        skills=("draft_skills", "build_assessment_context"),
         implemented_by=(
-            "app.services.ppi",
-            "app.services.hiring.scorecard",
-            "app.services.hiring.transformation",
-            "app.services.hiring.layers",
-            "app.services.hiring.department_models",
+            "app.services.hiring.sutra",
+            "app.services.skills",
         ),
         activates_to=(
-            "app.services.hiring.transformation",
-            "app.services.hiring.layers",
-            "app.services.hiring.department_models",
-            "app.services.hiring.scorecard",
+            "app.services.hiring.sutra",
+            "app.services.skills",
         ),
         produces=("tatva_matrix",),
         consumes=("job_description", "swot_evidence"),

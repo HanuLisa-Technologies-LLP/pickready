@@ -16,13 +16,13 @@ inserts across a scenario directory.
 WHY THE SEEDS ARE RAW SQL AND NOT THE ORM
 -------------------------------------------
 Every insert below runs under `superadmin_scope`, in explicit SQL, naming its
-columns. That is the shape `tests/test_framework_add_after_delete.py` and
+columns. That is the shape `tests/skills_fixtures.py` and
 `tests/test_audit_single_insert_api.py` already use, and it is deliberate: the
 ORM would apply defaults, validators and event hooks that the PRODUCT applies
 on the write path, and a world that got its rows through the same machinery
 being tested cannot establish a state the product would refuse to create. A
-scenario that wants a job whose framework was stamped with zero rows behind it
-(the 2026-08-06 finding) needs exactly that.
+scenario that wants a job whose skills the team emptied, while the draft state
+still says no draft was ever asked for (audit number 8), needs exactly that.
 
 THE SCHEMA PREFLIGHT, AND WHY A MISSING RELATION IS `unavailable`
 -------------------------------------------------------------------
@@ -47,6 +47,7 @@ Provenance: docs/spec/HARNESS.md sections 2 and 3.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -58,11 +59,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.core.db import superadmin_scope
-from app.services.hiring.department_models import (
-    DIM_ROLE_FIT,
-    DIM_TRACK_RECORD,
-    DIM_VERIFIED_COMPETENCE,
-)
+from app.services.ppi import DEFAULT_REQUIRED_LEVEL
 
 __all__ = [
     "SchemaMissing",
@@ -324,18 +321,72 @@ async def _seed_job(
     return job
 
 
-#: Which of the five evaluation dimensions each aspect's items are derived
-#: onto. Imported from the department model rather than typed, so a renamed
-#: dimension breaks the world loudly instead of leaving it seeding a string
-#: `scorecard.freeze` will later refuse for a reason nobody can see.
-_DIMENSION_FOR_CATEGORY: dict[str, str] = {
-    "must_have": DIM_VERIFIED_COMPETENCE,
-    "nice_to_have": DIM_TRACK_RECORD,
-    "behavioural": DIM_ROLE_FIT,
+#: The saved SWOT a skills world stands on, one short sentence per section.
+#: SAVED because the Skills step reads nothing else: Sutra drafts from the
+#: saved SWOT, the draft sweep selects only jobs whose SWOT is saved, and the
+#: publish gate asks for it. A world with skills and no saved SWOT would be a
+#: state the product never produces, and the sweep scenario would pass for the
+#: wrong reason (the sweep skips an unsaved SWOT before it ever reads a row).
+_SWOT_SECTIONS: dict[str, str] = {
+    "strengths": "The team ships the settlement platform every week and owns its on-call.",
+    "weaknesses": "Nobody on the team has run a PostgreSQL major version upgrade.",
+    "opportunities": "Two banks are asking for same-day settlement reporting.",
+    "threats": "A regulator audit of how incidents were handled is due next quarter.",
+}
+
+#: The SWOT sentence each seeded skill was drafted from, when it was drafted
+#: from one. VERBATIM from `_SWOT_SECTIONS`, because Sutra keeps a quote only
+#: when it is a verbatim substring of the saved SWOT (`sutra._verbatim`); a
+#: world carrying a quote the SWOT does not contain would be a citation the
+#: product could never have written.
+_SWOT_ORIGIN: dict[str, str] = {
+    "PostgreSQL": _SWOT_SECTIONS["weaknesses"],
+    "Incident response": _SWOT_SECTIONS["threats"],
 }
 
 
-async def _seed_competencies(
+async def _seed_saved_swot(
+    session: AsyncSession,
+    world: World,
+    *,
+    tenant: uuid.UUID,
+    job: uuid.UUID,
+    author: uuid.UUID,
+) -> None:
+    """A Job SWOT Analysis the team SAVED (`swot_analysis.is_saved` is True).
+
+    `edited` with `human_edited` set, which is the plain saved case, at version
+    one. The draft stamp on the job's skills names the same version, so a
+    world never reads as "the SWOT moved on since the skills were drafted" and
+    the redraft offer stays off unless a scenario moves it.
+    """
+    row = uuid.uuid4()
+    await session.execute(
+        sa.text(
+            "INSERT INTO job_swot_analyses (id, tenant_id, job_id, status, "
+            " strengths, weaknesses, opportunities, threats, generated_by, "
+            " last_generated_at, human_edited, last_modified_by, "
+            " last_modified_at, version) "
+            "VALUES (:id, :tid, :job, 'edited', :s, :w, :o, :t, 'ai', :gen, "
+            " TRUE, :by, :at, 1)"
+        ),
+        {
+            "id": str(row),
+            "tid": str(tenant),
+            "job": str(job),
+            "s": _SWOT_SECTIONS["strengths"],
+            "w": _SWOT_SECTIONS["weaknesses"],
+            "o": _SWOT_SECTIONS["opportunities"],
+            "t": _SWOT_SECTIONS["threats"],
+            "gen": ANCHOR - timedelta(hours=8),
+            "by": str(author),
+            "at": ANCHOR - timedelta(hours=7),
+        },
+    )
+    world.ids["swot"] = row
+
+
+async def _seed_skills(
     session: AsyncSession,
     world: World,
     *,
@@ -343,45 +394,74 @@ async def _seed_competencies(
     tenant: uuid.UUID,
     job: uuid.UUID,
     names: Sequence[str],
-    category: str = "must_have",
+    bucket: str,
+    authored_by: str,
+    saved: bool,
 ) -> None:
+    """One bucket of a job's skills, exactly as the Skills step writes them.
+
+    THE COLUMNS ARE THE ONES THE PRODUCT WRITES NOW, and no others. A skill is
+    a name in a bucket with an author and an ordinal; Sutra's draft adds its
+    provenance and, where it had one, the SWOT sentence it came from. The
+    seven-stage columns the retired Tatva compiler filled (`dimension`,
+    `weight`, `threshold_json`, `evidence_sources`, `assessment_method`) are
+    deliberately NOT seeded: nothing on the Skills path writes them, so a
+    world that did would be standing on a state no job created today can
+    reach.
+
+    `saved` adds what Save Skills writes: the evidence line (mirrored into
+    `description`, the 2026-09-21 rule) and the per-bucket priority in
+    `force_rank`. An unsaved draft carries neither, because Sutra's draft
+    writes no evidence line; the context call at Save is what does.
+    """
     ids: list[uuid.UUID] = []
     for ordinal, name in enumerate(names, start=1):
         row = uuid.uuid4()
+        drafted = authored_by == "sutra"
+        origin = _SWOT_ORIGIN.get(name) if drafted else None
+        evidence = (
+            f"Has shipped production work that depended on {name} and explained "
+            "the decisions made along the way."
+            if saved
+            else None
+        )
         await session.execute(
             sa.text(
                 "INSERT INTO job_competencies (id, tenant_id, job_id, category, "
-                " name, required_level, ordinal, is_active, observable_evidence, "
-                " dimension, evidence_sources, assessment_method, weight, "
-                " threshold_json, provenance_json) "
-                "VALUES (:id, :tid, :job, :cat, :name, 82, :ord, TRUE, :eve, "
-                " :dim, CAST(:sources AS jsonb), 'structured_probe', :weight, "
-                " CAST(:threshold AS jsonb), CAST(:provenance AS jsonb))"
+                " name, description, required_level, ordinal, is_active, "
+                " authored_by, swot_origin, observable_evidence, force_rank, "
+                " provenance_json) "
+                "VALUES (:id, :tid, :job, :cat, :name, :eve, :level, :ord, TRUE, "
+                " :author, :origin, :eve, :rank, CAST(:provenance AS jsonb))"
             ),
             {
                 "id": str(row),
                 "tid": str(tenant),
                 "job": str(job),
-                "cat": category,
+                "cat": bucket,
                 "name": name,
+                "eve": evidence,
+                # The ORM default, written out because this insert is raw SQL:
+                # `required_level` has no server default and the Skills step
+                # never sets one explicitly.
+                "level": DEFAULT_REQUIRED_LEVEL,
                 "ord": ordinal,
-                "eve": f"Has shipped work resting on {name} and can walk through it.",
-                # THE SEVEN STAGES, SEEDED, because `scorecard.freeze` refuses
-                # any item whose `weight` is NULL or whose `dimension` is
-                # empty: nothing enters the matrix without completing all of
-                # them, and a partially transformed item is one whose grade
-                # rests on a stage nobody ran. A world that seeded a name and a
-                # level alone produced a job that could never be finalised, so
-                # every finalisation scenario would have been measuring the
-                # seed rather than the route.
-                "dim": _DIMENSION_FOR_CATEGORY[category],
-                "sources": '["resume", "assessment_conversation"]',
-                "weight": round(1.0 / max(len(names), 1), 6),
-                "threshold": '{"evidence_threshold": 2}',
+                "author": authored_by,
+                "origin": origin,
+                "rank": ordinal if saved else None,
+                # What `skills.draft` records on a row it wrote, less the
+                # model id and prompt version: no model ran for a world, and
+                # naming one would claim a call that never happened.
                 "provenance": (
-                    '{"terms": {"baseline_layer1": 1.0, "situation_layer3": 1.0,'
-                    ' "role_layer3": 1.0}, "raw_value": 1.0,'
-                    ' "situation_key": "gap_fill"}'
+                    json.dumps(
+                        {
+                            "generated_by": "sutra",
+                            "source": "swot" if origin else "jd",
+                            "swot_version": 1,
+                        }
+                    )
+                    if drafted
+                    else None
                 ),
             },
         )
@@ -610,53 +690,179 @@ async def _published_job(
     )
 
 
-async def _job_with_generated_matrix(
-    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+#: The default skills, per bucket. Every bucket is seeded because Save Skills
+#: refuses a set with no Must-have or no Behavioural skill
+#: (`skills.validate_for_save`), and a world seeding one bucket alone would
+#: make every save scenario answer 422 about a question it was not asking.
+#: Four, two and two sit inside the five-per-bucket limit with room to paste.
+_DEFAULT_SKILLS: dict[str, tuple[str, ...]] = {
+    "must_have": ("Python", "PostgreSQL", "Distributed systems", "Incident response"),
+    "nice_to_have": ("Terraform", "Kafka"),
+    "behavioural": ("Ownership under ambiguity", "Written communication"),
+}
+
+
+async def _seed_skill_set(
+    session: AsyncSession,
+    world: World,
+    overrides: Mapping[str, Any],
+    *,
+    authored_by: str,
+    saved: bool,
 ) -> None:
-    await _published_job(session, world, overrides)
-    # ALL THREE ASPECTS, because every one of them is graded, remarked and
-    # charted on every PRISM report and `scorecard.freeze` refuses a matrix
-    # with an empty one. A world seeding Must-have alone made every finalize
-    # scenario answer 422 about Nice-to-have, which is a true refusal about a
-    # question the scenario was not asking.
-    aspects = {
-        "must_have": _override(
-            overrides,
-            "matrix.names",
-            ["Python", "PostgreSQL", "Distributed systems", "Incident response"],
-        ),
-        "nice_to_have": _override(
-            overrides, "matrix.nice_to_have_names", ["Terraform", "Kafka"]
-        ),
-        "behavioural": _override(
-            overrides,
-            "matrix.behavioural_names",
-            ["Ownership under ambiguity", "Written communication"],
-        ),
-    }
+    """Every bucket of the world's job, keyed `<bucket>_skills` and `skills`.
+
+    `skills` is EVERY row, because the step that empties the set has to empty
+    all of it: the defect it pins lives in the state where not one active row
+    is left in any bucket, and leaving one bucket behind would not reach it.
+    """
     combined: list[uuid.UUID] = []
-    for category, names in aspects.items():
-        await _seed_competencies(
+    for bucket, default in _DEFAULT_SKILLS.items():
+        names = _override(overrides, f"skills.{bucket}", list(default))
+        await _seed_skills(
             session,
             world,
-            key=f"{category}_competencies",
+            key=f"{bucket}_skills",
             tenant=world.id("tenant"),
             job=world.id("job"),
             names=[str(name) for name in names],
-            category=category,
+            bucket=bucket,
+            authored_by=authored_by,
+            saved=saved,
         )
-        combined.extend(world.id(f"{category}_competencies"))
-    # `competencies` is EVERY item, because the step that empties the matrix
-    # has to empty all of it: `_framework_repair_pending` asks `load_framework`,
-    # which spans the three aspects, so leaving one aspect behind would not
-    # reach the state the 2026-09-21 defect lives in.
-    world.ids["competencies"] = combined
+        combined.extend(world.id(f"{bucket}_skills"))
+    world.ids["skills"] = combined
+
+
+async def _set_draft_state(
+    session: AsyncSession, job: uuid.UUID, *, status: str
+) -> None:
+    """The job's skills draft state, as `skills.draft` leaves it.
+
+    `drafted` carries the drafted stamp and the SWOT version it was drafted
+    from; `not_started` carries neither, which is what a job whose skills the
+    team typed before any draft was asked for looks like.
+    """
+    drafted = status == "drafted"
+    await session.execute(
+        sa.text(
+            "UPDATE jobs SET skills_draft_status = :status, "
+            " skills_drafted_at = :at, skills_drafted_swot_version = :version "
+            "WHERE id = :id"
+        ),
+        {
+            "status": status,
+            "at": ANCHOR - timedelta(hours=6) if drafted else None,
+            "version": 1 if drafted else None,
+            "id": str(job),
+        },
+    )
+
+
+async def _unpublished_job_with_saved_swot(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    """A funded customer's job in DRAFT, with the SWOT the team saved.
+
+    NOT published, because under the three-step publish gate a job cannot go
+    live before its skills are saved, and the skills worlds built on this are
+    the state before that save.
+    """
+    await _funded_tenant(session, world, overrides)
+    await _seed_job(
+        session,
+        world,
+        key="job",
+        tenant=world.id("tenant"),
+        created_by=world.id("staff"),
+        published=False,
+        lifecycle_state=str(_override(overrides, "job.lifecycle_state", "DRAFT")),
+        assessment_status=str(
+            _override(overrides, "job.assessment_status", "questions_pending_review")
+        ),
+    )
+    await _seed_saved_swot(
+        session,
+        world,
+        tenant=world.id("tenant"),
+        job=world.id("job"),
+        author=world.id("staff"),
+    )
+
+
+async def _job_with_drafted_skills(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    """Sutra drafted the skills from the saved SWOT; nobody has saved them.
+
+    The state every Skills-step scenario starts from: rows authored by Sutra,
+    two of them carrying the SWOT sentence they came from, the draft stamped
+    `drafted` against SWOT version one, no evidence lines and no saved stamp.
+    """
+    await _unpublished_job_with_saved_swot(session, world, overrides)
+    await _seed_skill_set(session, world, overrides, authored_by="sutra", saved=False)
+    await _set_draft_state(session, world.id("job"), status="drafted")
+
+
+async def _job_with_team_written_skills(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    """The team typed its own skills before any draft was asked for.
+
+    Reachable, and the precise state audit number 8 lives in: skills added by
+    hand, then the SWOT saved (`skills.after_swot_saved` finds rows and asks
+    for no draft), so the draft state is still `not_started` while rows exist.
+    Once the team removes every one of them, the only thing that tells "the
+    team emptied this" from "a draft never landed" is that soft-deleted rows
+    are still in the table. The old sweep asked for ACTIVE rows and could not
+    tell them apart.
+    """
+    await _unpublished_job_with_saved_swot(session, world, overrides)
+    await _seed_skill_set(session, world, overrides, authored_by="human", saved=False)
+    await _set_draft_state(session, world.id("job"), status="not_started")
+
+
+async def _job_with_saved_skills(
+    session: AsyncSession, world: World, overrides: Mapping[str, Any]
+) -> None:
+    """A published job whose skills were drafted, reviewed and SAVED.
+
+    The ground the applicant, invitation and assessment worlds stand on. Saved
+    means what `assessment_contract.skills_saved` asks of the table: the saved
+    stamp AND the hidden context. The context names this world as its writer
+    and carries an empty role summary, the honest shape migration 0118 wrote
+    for a saved matrix: no model ran for a world, and a summary claiming one
+    had would be template output presented as generation.
+    """
+    await _published_job(session, world, overrides)
+    await _seed_saved_swot(
+        session,
+        world,
+        tenant=world.id("tenant"),
+        job=world.id("job"),
+        author=world.id("staff"),
+    )
+    await _seed_skill_set(session, world, overrides, authored_by="sutra", saved=True)
+    await _set_draft_state(session, world.id("job"), status="drafted")
+    await session.execute(
+        sa.text(
+            "UPDATE jobs SET framework_approved_at = :at, finalized_at = :at, "
+            " finalized_by = :by, "
+            " assessment_context_json = CAST(:context AS jsonb) WHERE id = :id"
+        ),
+        {
+            "at": ANCHOR - timedelta(hours=4),
+            "by": str(world.id("staff")),
+            "context": json.dumps({"role_summary": "", "generated_by": "harness_world"}),
+            "id": str(world.id("job")),
+        },
+    )
 
 
 async def _job_with_applicant(
     session: AsyncSession, world: World, overrides: Mapping[str, Any]
 ) -> None:
-    await _job_with_generated_matrix(session, world, overrides)
+    await _job_with_saved_skills(session, world, overrides)
     candidate, _user, profile = await _seed_candidate(
         session,
         world,
@@ -704,7 +910,7 @@ async def _job_with_unapplied_candidate(
     scenario asserting over a row the harness wrote rather than one the product
     did.
     """
-    await _job_with_generated_matrix(session, world, overrides)
+    await _job_with_saved_skills(session, world, overrides)
     await _seed_candidate(
         session,
         world,
@@ -784,7 +990,7 @@ async def _assessment_in_progress(
     candidate takes; stubbing the gate would make the scenario pass on a route
     nobody can reach.
     """
-    await _job_with_generated_matrix(session, world, overrides)
+    await _job_with_saved_skills(session, world, overrides)
     candidate, _user, profile = await _seed_candidate(session, world, key="candidate")
     link = await _seed_link(
         session,
@@ -809,7 +1015,7 @@ async def _assessment_in_progress(
         tenant=world.id("tenant"),
         job=world.id("job"),
         link=link,
-        competencies=world.id("must_have_competencies"),
+        competencies=world.id("must_have_skills"),
         count=count,
     )
     conversation = await _seed_conversation(
@@ -884,7 +1090,7 @@ async def _ranked_pool(
     session: AsyncSession, world: World, overrides: Mapping[str, Any]
 ) -> None:
     """One job with many applicants, for the ordering and latency scenarios."""
-    await _job_with_generated_matrix(session, world, overrides)
+    await _job_with_saved_skills(session, world, overrides)
     size = int(_override(overrides, "pool.size", 40))
     if size < 1:
         raise WorldError(
@@ -930,7 +1136,11 @@ _CORE = (
     "role_permissions",
 )
 _JOB = _CORE + ("jobs", "job_competencies")
-_APPLIED = _JOB + ("candidates", "profiles", "job_candidate_links")
+#: The Skills step reads the saved SWOT (drafting, the sweep, the publish gate)
+#: and asks the snapshot table whether the skills are locked on every read and
+#: every write, so a skills world declares both.
+_SKILLS = _JOB + ("job_swot_analyses", "job_skill_snapshots")
+_APPLIED = _SKILLS + ("candidates", "profiles", "job_candidate_links")
 
 #: Walked by any workload that reaches the credit gate or charges a credit.
 #: Declared on the world rather than on the scenario: `scenario.py` is parse
@@ -954,13 +1164,28 @@ _BUILDERS: dict[str, Builder] = {
         "published_job",
         _JOB,
         _published_job,
-        "a funded customer with one published job, no matrix rows",
+        "a funded customer with one published job and no skills rows",
     ),
-    "job_with_generated_matrix": Builder(
-        "job_with_generated_matrix",
-        _JOB,
-        _job_with_generated_matrix,
-        "a published job whose Tatva matrix carries four Must-have items",
+    "job_with_drafted_skills": Builder(
+        "job_with_drafted_skills",
+        _SKILLS + ("audit_log",),
+        _job_with_drafted_skills,
+        "a draft job with a saved SWOT and the skills Sutra drafted from it, "
+        "not yet saved: four Must-have, two Nice-to-have, two Behavioural",
+    ),
+    "job_with_team_written_skills": Builder(
+        "job_with_team_written_skills",
+        _SKILLS,
+        _job_with_team_written_skills,
+        "a draft job with a saved SWOT and skills the team typed before any "
+        "draft was asked for, so the draft state is still not started",
+    ),
+    "job_with_saved_skills": Builder(
+        "job_with_saved_skills",
+        _SKILLS,
+        _job_with_saved_skills,
+        "a published job whose drafted skills were reviewed and saved, ready "
+        "for candidates",
     ),
     "job_with_applicant": Builder(
         "job_with_applicant",

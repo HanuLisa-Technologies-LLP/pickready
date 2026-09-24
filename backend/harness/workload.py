@@ -53,7 +53,6 @@ from app.api.deps import (
 )
 from app.core.db import superadmin_scope, tenant_scope
 from app.core.security import AUDIENCE_CANDIDATE, AUDIENCE_OWNER, AUDIENCE_ORG
-from app.api.assessments import FRAMEWORK_PREPARING
 from app.main import app
 from app.models.enums import Role
 from app.services import application_validation
@@ -279,14 +278,15 @@ def _create_job(app_client: Application, ctx: ScenarioContext) -> None:
         json={
             "title": "Staff Platform Engineer",
             "grade": "non_managerial",
-            "jd": {"skills": ["Python", "PostgreSQL"]},
+            # The JD DOCUMENT is the one input; the per-section `jd` went with
+            # the Vivekium release and `publish` is a separate route behind
+            # the three-step gate, so neither is sent.
             "jd_markdown": (
                 "## The role\nOwns the settlement platform end to end.\n\n"
                 "## Skills\nPython, PostgreSQL, distributed systems."
             ),
             "experience_min_years": 4,
             "experience_max_years": 8,
-            "publish": False,
         },
     )
     ctx.stage("job_create_attempted")
@@ -416,82 +416,246 @@ def _read_another_tenants_job(app_client: Application, ctx: ScenarioContext) -> 
     ctx.stage("cross_tenant_read_attempted")
 
 
-def _read_framework(app_client: Application, ctx: ScenarioContext) -> None:
-    app_client.as_staff()
-    job = ctx.world.id("job")
-    observed = app_client.request(
-        ctx, "read_framework", "GET", f"{V2}/assessments/jobs/{job}/framework"
+# ── The Skills step (Vivekium release, PLAN-p1) ─────────────────────────────
+#
+# The Tatva matrix editor and its `/framework` routes are DELETED; these steps
+# drive their successor, `api/job_setup`, over the same URLs a reviewer's
+# browser calls. Every write answers the whole Skills view (`SkillsOut`), so a
+# refusal and a success are read the same way.
+
+
+def _skills_path(ctx: ScenarioContext, suffix: str = "") -> str:
+    return f"{V2}/assessments/jobs/{ctx.world.id('job')}/skills{suffix}"
+
+
+def _skills_facts(ctx: ScenarioContext, body: Any) -> None:
+    """The facts every Skills read records, from the server's own view.
+
+    `blocking_reason` is kept as the SENTENCE, beside a count of what is on
+    screen, so a scenario can assert the 2026-09-21 defect directly: a set a
+    human emptied must be reported with the blocker they can clear, never as
+    one that is still being prepared.
+    """
+    if not isinstance(body, Mapping):
+        return
+    buckets = body.get("buckets") or {}
+    ctx.facts["skills_draft_status"] = body.get("draft_status")
+    ctx.facts["skills_blocking_reason"] = body.get("blocking_reason") or ""
+    ctx.facts["skills_saved"] = body.get("saved")
+    ctx.facts["skills_item_count"] = sum(
+        len(entries or []) for entries in buckets.values()
     )
-    ctx.stage("framework_read")
-    if isinstance(observed.body, Mapping):
-        # `blocking_reason` is the ONE field that carries the sentence a
-        # reviewer reads, and `_framework_out` puts `FRAMEWORK_PREPARING` there
-        # when it believes the generator never landed. Kept as its own fact,
-        # beside a boolean saying whether it IS that sentence, so a scenario can
-        # assert the 2026-09-21 defect directly: a matrix a human emptied must
-        # not be reported as one that was never written.
-        reason = observed.body.get("blocking_reason")
-        ctx.facts["framework_blocking_reason"] = reason or ""
-        ctx.facts["framework_says_still_preparing"] = reason == FRAMEWORK_PREPARING
-        ctx.facts["framework_item_count"] = len(observed.body.get("competencies") or [])
 
 
-def _empty_the_matrix(app_client: Application, ctx: ScenarioContext) -> None:
-    """Remove every generated item, exactly as a reviewer clearing the form does."""
+def _read_skills(app_client: Application, ctx: ScenarioContext) -> None:
     app_client.as_staff()
-    job = ctx.world.id("job")
-    for competency in ctx.world.id("competencies"):
-        app_client.request(
-            ctx,
-            "empty_the_matrix",
-            "DELETE",
-            f"{V2}/assessments/jobs/{job}/framework/{competency}",
+    observed = app_client.request(ctx, "read_skills", "GET", _skills_path(ctx))
+    ctx.stage("skills_read")
+    _skills_facts(ctx, observed.body)
+
+
+def _read_job_setup(app_client: Application, ctx: ScenarioContext) -> None:
+    """The setup checklist. A READ, and the retired one was not: the old setup
+    GET dispatched a matrix compile from a read, before the commit."""
+    app_client.as_staff()
+    observed = app_client.request(
+        ctx,
+        "read_job_setup",
+        "GET",
+        f"{V2}/assessments/jobs/{ctx.world.id('job')}/setup",
+    )
+    ctx.stage("job_setup_read")
+    if isinstance(observed.body, Mapping):
+        ctx.facts["setup_skills_draft_status"] = observed.body.get("skills_draft_status")
+        ctx.facts["setup_skills_saved"] = observed.body.get("skills_saved")
+        ctx.facts["setup_publish_blocked_reason"] = (
+            observed.body.get("publish_blocked_reason") or ""
         )
-    ctx.stage("matrix_emptied")
+
+
+def _empty_the_skills(app_client: Application, ctx: ScenarioContext) -> None:
+    """Remove every skill in every bucket, exactly as a reviewer clearing the
+    step does, one remove at a time."""
+    app_client.as_staff()
+    for skill in ctx.world.id("skills"):
+        app_client.request(
+            ctx, "empty_the_skills", "DELETE", _skills_path(ctx, f"/{skill}")
+        )
+    ctx.stage("skills_emptied")
+
+
+def _run_the_setup_sweep(app_client: Application, ctx: ScenarioContext) -> None:
+    """Run the REAL `pickready.reconcile_job_setup` body over this world's tenant.
+
+    The sweep is the damage path of audit number 8: the retired version asked
+    for jobs with no ACTIVE row, so a set the team emptied was drafted again
+    fifteen minutes later, over their decision. Its query, its call into
+    `skills.request_draft` and its after-commit dispatch all run unchanged.
+
+    ONE SEAM IS NARROWED, AND IT IS THE DATABASE SCOPE, NOT THE QUERY. The
+    product runs the sweep with RLS bypassed because it iterates every tenant;
+    here the worker session is the world's TENANT session instead, through the
+    same `tenant_scope` every HTTP step's session uses. RLS then limits what
+    the unchanged query can see to this world. The alternative is a sweep over
+    a SHARED database that would mark every other suite's jobs as drafting and
+    dispatch drafts for them, which is the damage `world.teardown` refuses to
+    do by never truncating. The worker session is restored on the way out.
+
+    The result is recorded as facts about THIS job alone, from the recorder,
+    because `dispatch.recorded()` is process wide.
+    """
+    from contextlib import asynccontextmanager  # noqa: PLC0415
+
+    from app.workers import dispatch, tasks  # noqa: PLC0415
+
+    tenant = ctx.world.id("tenant")
+    sessions = session_factory()
+
+    @asynccontextmanager
+    async def _tenant_worker_session() -> Any:
+        async with sessions() as session:
+            async with tenant_scope(session, tenant):
+                yield session
+
+    before = len(dispatch.recorded())
+    real = tasks._worker_session  # noqa: SLF001
+    tasks._worker_session = _tenant_worker_session  # noqa: SLF001
+    try:
+        tasks.reconcile_job_setup()
+    finally:
+        tasks._worker_session = real  # noqa: SLF001
+    job = str(ctx.world.id("job"))
+    drafts = [
+        item
+        for item in dispatch.recorded()[before:]
+        if item.name == "pickready.draft_job_skills" and item.args and item.args[0] == job
+    ]
+    ctx.facts["sweep_drafted_this_job"] = bool(drafts)
+    ctx.stage("setup_sweep_ran")
 
 
 def _paste_the_same_names_back(app_client: Application, ctx: ScenarioContext) -> None:
-    """The pilot sequence of 2026-09-20: clear the six, paste your own list.
+    """The pilot sequence of 2026-09-20: clear the set, paste your own list.
 
     The pasted list deliberately REPEATS two of the removed names. A paste that
     carried only new names would insert cleanly and would never have found the
     defect: the unique key is on (job_id, category, name) with no predicate, so
-    the soft-deleted row still held the slot invisibly.
+    the soft-deleted row still holds the slot invisibly. Five names, because
+    that is exactly the per-bucket limit: the paste is all or nothing against
+    it, and a list that fits on the nose also proves the limit is not off by
+    one.
     """
     app_client.as_staff()
-    job = ctx.world.id("job")
     app_client.request(
         ctx,
         "paste_the_same_names_back",
         "POST",
-        f"{V2}/assessments/jobs/{job}/framework/bulk",
+        _skills_path(ctx, "/bulk"),
         json={
-            "category": "must_have",
-            "required_level": "matching",
+            "bucket": "must_have",
             "names": ["Python", "PostgreSQL", "DSA", "Agentic AI", "LLMs"],
         },
     )
     ctx.stage("names_pasted_back")
 
 
-def _finalize_framework(app_client: Application, ctx: ScenarioContext) -> None:
-    """The one human act the pipeline turns on, and it writes an audit row.
+def _context_answer(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    """What Sutra's context writer is to have answered, for exactly the skills
+    the router's request carries.
 
-    This is the route converted on 2026-09-20 away from `entry = audit(...)`
-    followed by a field assignment. The assignment emitted `UPDATE audit_log`,
-    which the application role has had REVOKED since migration 0001, and the
-    doomed update either 500'd in the handler or rolled the whole transaction
-    back AFTER a 200 had been sent.
+    Built FROM the request, never from the world, so the answer names what the
+    product actually sent: every skill with its bucket and name verbatim (the
+    writer may never rename one), an evidence line an observer could watch
+    happen, priorities one to n per bucket, and a role summary with no number
+    in it. Anything else is not the call this was written for, and says so.
+    """
+    from harness.doubles.vendor import VendorFixtureError  # noqa: PLC0415
+
+    messages = payload.get("messages") or []
+    try:
+        request = json.loads(messages[1]["content"])
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        raise VendorFixtureError(
+            "the scripted context writer was asked something other than the "
+            "assessment context call: no JSON user message"
+        ) from exc
+    skills = request.get("skills") if isinstance(request, Mapping) else None
+    if not isinstance(skills, list) or not skills:
+        raise VendorFixtureError(
+            "the scripted context writer was asked something other than the "
+            "assessment context call: the request names no skills"
+        )
+    priorities: dict[str, int] = {}
+    written = []
+    for entry in skills:
+        bucket, name = str(entry["bucket"]), str(entry["name"])
+        priorities[bucket] = priorities.get(bucket, 0) + 1
+        written.append(
+            {
+                "bucket": bucket,
+                "name": name,
+                "evidence_line": (
+                    f"Has shipped production work that depended on {name} and "
+                    "explained the decisions made along the way."
+                ),
+                "priority": priorities[bucket],
+            }
+        )
+    return {
+        "role_summary": (
+            "Owns the payments platform and its services end to end, from "
+            "design review to the on-call rota."
+        ),
+        "skills": written,
+        "refused": [],
+    }
+
+
+def _save_the_skills(app_client: Application, ctx: ScenarioContext) -> None:
+    """Save Skills, with the context writer ANSWERING.
+
+    The one human act the assessment turns on, and it writes two audit rows,
+    each in ONE insert (the 2026-09-20 rule its predecessor, the matrix
+    finalize, was converted to). The writer's answer is served at the vendor
+    seam from the authored success envelope (`faults.model_answers`), so the
+    real router, the real contract check and the real `sutra` validator all
+    run; the step records how many calls it answered, so a scenario can pin
+    that the save made exactly one.
+    """
+    from harness import faults  # noqa: PLC0415
+
+    app_client.as_staff()
+    served: list[str] = []
+    with faults.model_answers(_context_answer, served=served):
+        observed = app_client.request(
+            ctx, "save_the_skills", "POST", _skills_path(ctx, "/save")
+        )
+    ctx.facts["context_calls_answered"] = len(served)
+    ctx.stage("skills_save_attempted")
+    _skills_facts(ctx, observed.body)
+
+
+def _attempt_to_save_the_skills(app_client: Application, ctx: ScenarioContext) -> None:
+    """Save Skills with nothing answering on the harness's behalf.
+
+    Whatever the scenario's faults serve is what the writer meets. A 503 is
+    the product SAYING it could not save, and it is recorded as a degradation
+    with the server's own sentence, because a fault the run admits nothing
+    about is silent survival (HARNESS.md section 4).
     """
     app_client.as_staff()
-    job = ctx.world.id("job")
-    app_client.request(
-        ctx,
-        "finalize_framework",
-        "POST",
-        f"{V2}/assessments/jobs/{job}/framework/finalize",
+    observed = app_client.request(
+        ctx, "attempt_to_save_the_skills", "POST", _skills_path(ctx, "/save")
     )
-    ctx.stage("framework_finalize_attempted")
+    ctx.stage("skills_save_attempted")
+    if observed.status == 503:
+        detail = observed.body.get("detail") if isinstance(observed.body, Mapping) else None
+        ctx.degraded(
+            "skills_context_unavailable",
+            signal="HTTP 503 from the Save Skills route",
+            detail=str(detail or ""),
+        )
+        ctx.stage("skills_save_refused_for_an_outage")
 
 
 def _attempt_to_edit_a_report(app_client: Application, ctx: ScenarioContext) -> None:
@@ -819,7 +983,7 @@ def _answer_the_last_question_again(
 def _rename_onto_a_removed_name(
     app_client: Application, ctx: ScenarioContext
 ) -> None:
-    """Rename a surviving item onto a name that is only SOFT deleted.
+    """Rename a surviving skill onto a name that is only SOFT deleted.
 
     The occupant is invisible to the reviewer, so from their seat this is a
     free name. Under `uq_job_competency_name`, which has no predicate, it is
@@ -827,34 +991,25 @@ def _rename_onto_a_removed_name(
     the 500 an unguarded UPDATE would produce.
     """
     app_client.as_staff()
-    job = ctx.world.id("job")
-    competencies = ctx.world.id("must_have_competencies")
+    skills = ctx.world.id("must_have_skills")
     app_client.request(
         ctx,
         "rename_onto_a_removed_name",
-        "PUT",
-        f"{V2}/assessments/jobs/{job}/framework/{competencies[-1]}",
-        json={
-            "category": "must_have",
-            "name": "Python",
-            "required_level": "matching",
-        },
+        "PATCH",
+        _skills_path(ctx, f"/{skills[-1]}"),
+        json={"name": "Python"},
     )
     ctx.stage("rename_onto_occupied_name_attempted")
 
 
-def _remove_one_competency(app_client: Application, ctx: ScenarioContext) -> None:
-    """Remove exactly one item, leaving the rest, so a rename has an occupant."""
+def _remove_one_skill(app_client: Application, ctx: ScenarioContext) -> None:
+    """Remove exactly one skill, leaving the rest, so a rename has an occupant."""
     app_client.as_staff()
-    job = ctx.world.id("job")
-    first = ctx.world.id("must_have_competencies")[0]
+    first = ctx.world.id("must_have_skills")[0]
     app_client.request(
-        ctx,
-        "remove_one_competency",
-        "DELETE",
-        f"{V2}/assessments/jobs/{job}/framework/{first}",
+        ctx, "remove_one_skill", "DELETE", _skills_path(ctx, f"/{first}")
     )
-    ctx.stage("one_competency_removed")
+    ctx.stage("one_skill_removed")
 
 
 def _scan_a_hostile_resume(app_client: Application, ctx: ScenarioContext) -> None:
@@ -959,16 +1114,19 @@ _STEPS: dict[str, Callable[[Application, ScenarioContext], None]] = {
     "skip_the_pipeline": _skip_the_pipeline,
     "read_candidate_table": _read_candidate_table,
     "read_another_tenants_job": _read_another_tenants_job,
-    "read_framework": _read_framework,
-    "empty_the_matrix": _empty_the_matrix,
-    "remove_one_competency": _remove_one_competency,
+    "read_skills": _read_skills,
+    "read_job_setup": _read_job_setup,
+    "empty_the_skills": _empty_the_skills,
+    "run_the_setup_sweep": _run_the_setup_sweep,
+    "remove_one_skill": _remove_one_skill,
     "rename_onto_a_removed_name": _rename_onto_a_removed_name,
     "paste_the_same_names_back": _paste_the_same_names_back,
+    "save_the_skills": _save_the_skills,
+    "attempt_to_save_the_skills": _attempt_to_save_the_skills,
     "answer_every_question": _answer_every_question,
     "answer_the_last_question_again": _answer_the_last_question_again,
     "scan_a_hostile_resume": _scan_a_hostile_resume,
     "weigh_a_denial_as_evidence": _weigh_a_denial_as_evidence,
-    "finalize_framework": _finalize_framework,
     "attempt_to_edit_a_report": _attempt_to_edit_a_report,
     "delete_a_tenant_without_confirming": _delete_a_tenant_without_confirming,
     "run_known_defect_registry": _run_known_defect_registry,

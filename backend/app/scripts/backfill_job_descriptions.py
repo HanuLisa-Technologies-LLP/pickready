@@ -42,7 +42,6 @@ async def run(*, apply: bool) -> tuple[int, int]:
                                 else ""
                             ),
                             "department": job.department,
-                            "level": job.level,
                         }
                     )
                     description = str(generated.get("description") or "").strip()

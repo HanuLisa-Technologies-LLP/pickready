@@ -262,43 +262,118 @@ def test_a_save_then_a_save_with_the_refreshed_version_succeeds(
     assert _committed_row(world)["version"] == second.json()["version"]
 
 
+#: A JD long enough for `generation_sufficiency.swot_input_state`.
+JD_DOCUMENT = (
+    "## Description\n"
+    + " ".join(
+        "The platform team runs the ingestion services that feed every finance "
+        "report, and this engineer owns their reliability end to end."
+        .split()
+        * 6
+    )
+)
+
+
+def _give_the_job_a_jd(world: World) -> None:
+    async def _write() -> None:
+        async with _sessions()() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await session.execute(
+                        sa.text("UPDATE jobs SET jd_markdown = :jd WHERE id = :id"),
+                        {"jd": JD_DOCUMENT, "id": str(world.job)},
+                    )
+
+    _run(_write())
+
+
 def test_a_generation_survives_its_own_response(
     client: TestClient, world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The production mechanism, pinned.
+    """The production mechanism, pinned, on the DISPATCHED flow.
 
-    The generate route answered 200 carrying `version` N+1, then its commit
-    failed on the post-flush audit UPDATE and rolled the whole write back.
-    The client edited a draft the database never kept, and the FIRST save
-    answered 409. So: generate, then prove from a second connection that the
-    committed row carries the version the response promised.
+    The generate route used to call the model in the request, answer 200 with
+    `version` N+1, and then fail its commit on a post-flush audit UPDATE, so the
+    client edited a draft the database never kept. Now the route answers 202
+    with the document `generating` and hands the work off after its commit; the
+    worker writes the draft and its audit row in one INSERT. Both halves are
+    read back from a SECOND connection, and the save the user then makes
+    against the worker's version works first time.
     """
+    from app.workers import dispatch
+    from app.workers.tasks import generate_job_swot
+
+    _give_the_job_a_jd(world)
 
     async def _draft(session, job):
         return dict(DRAFT)
 
     monkeypatch.setattr(swot_analysis, "draft", _draft)
 
-    generated = client.post(
+    requested = client.post(
         f"{BASE}/{world.job}/swot-analysis/generate",
         json={"confirm_overwrite": False},
     )
-    assert generated.status_code == 200, generated.text
-    assert generated.json()["status"] == "generated"
-    promised_version = generated.json()["version"]
+    assert requested.status_code == 202, requested.text
+    assert requested.json()["status"] == "generating"
+    assert _committed_row(world)["status"] == "generating"
+    sent = [d for d in dispatch.recorded() if d.name == "pickready.generate_job_swot"]
+    assert len(sent) == 1, "the generation is dispatched once, after the commit"
+
+    generate_job_swot(*sent[0].args, **sent[0].kwargs)
 
     committed = _committed_row(world)
     assert committed is not None
-    assert committed["version"] == promised_version
     assert committed["status"] == "generated"
     assert committed["strengths"] == DRAFT["strengths"]
 
-    # And the save the user makes against that response works first time.
+    async def _audit():
+        async with _sessions()() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    return (
+                        await session.execute(
+                            sa.text(
+                                "SELECT agent_name, actor_user_id FROM audit_log "
+                                "WHERE action = 'job_swot_analysis_generated' "
+                                "AND job_id = :jid"
+                            ),
+                            {"jid": str(world.job)},
+                        )
+                    ).mappings().all()
+
+    rows = _run(_audit())
+    assert len(rows) == 1, "the worker's audit row committed, once"
+    assert rows[0]["agent_name"] == "bodha"
+    assert str(rows[0]["actor_user_id"]) == str(world.user)
+
+    got = client.get(f"{BASE}/{world.job}/swot-analysis")
+    assert got.json()["version"] == committed["version"]
     saved = client.put(
         f"{BASE}/{world.job}/swot-analysis",
-        json={**DRAFT, "expected_version": promised_version},
+        json={**DRAFT, "expected_version": committed["version"]},
     )
     assert saved.status_code == 200, saved.text
+
+
+def test_generation_is_refused_before_anything_when_the_jd_is_too_thin(
+    client: TestClient, world: World
+) -> None:
+    """The sufficiency gate: fixed copy, row unchanged, nothing dispatched."""
+    from app.services import generation_sufficiency
+    from app.workers import dispatch
+
+    refused = client.post(
+        f"{BASE}/{world.job}/swot-analysis/generate",
+        json={"confirm_overwrite": False},
+    )
+    assert refused.status_code == 409, refused.text
+    assert refused.json()["detail"] == generation_sufficiency.EMPTY_STATE_COPY[
+        "swot.jd_too_thin"
+    ]
+    assert not [d for d in dispatch.recorded() if d.name == "pickready.generate_job_swot"]
+    committed = _committed_row(world)
+    assert committed is None or committed["status"] == "not_generated"
 
 
 def test_a_genuinely_stale_version_is_still_refused_with_the_server_sentence(

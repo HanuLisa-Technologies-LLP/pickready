@@ -107,8 +107,10 @@ HANDLE_SUPPORT_THREADS = "handle_support_threads"
 #: VIEW_COMPANY_JOBS held by a Recruiter would read as a lie.
 VIEW_COMPANY_JOBS = "view_company_jobs"
 
-#: 9.3 / 39: the Recruiter hands the draft to the assigned Hiring Manager.
-SEND_JD_TO_HIRING_MANAGER = "send_jd_to_hiring_manager"
+# RBAC 9.3's "send the JD to the Hiring Manager" capability is DELETED
+# (Vivekium release) with the approval-chain route that was its only reader.
+# Migration 0119 deletes its `role_permissions` rows: a capability and its
+# seeding are one change, and so is its removal.
 
 # The six Hiring-Manager-controlled fields (10.4).
 EDIT_MUST_HAVE_SKILLS = "edit_must_have_skills"
@@ -159,6 +161,35 @@ HIRING_MANAGER_CONTROLLED: frozenset[str] = frozenset(
         EDIT_BEHAVIOURAL_COMPETENCIES,
         EDIT_JOB_PHILOSOPHY,
         EDIT_SWOT,
+        EDIT_EVALUATION_RUBRICS,
+        FINALIZE_ROLE_DEFINITION,
+    }
+)
+
+#: The Skills step, bucket by bucket (Vivekium release). Each bucket of a
+#: job's skills is written under its OWN capability, so a tenant that lets a
+#: Hiring Manager own the Must-have list and not the Behavioural one is
+#: expressible as data. Keyed by the stored `job_competencies.category`
+#: values; `tests/test_job_skills_api.py` asserts the keys are exactly
+#: `assessment_contract.BUCKETS`, so a fourth bucket cannot arrive without a
+#: capability.
+SKILL_BUCKET_CAPABILITY: dict[str, str] = {
+    "must_have": EDIT_MUST_HAVE_SKILLS,
+    "nice_to_have": EDIT_NICE_TO_HAVE_SKILLS,
+    "behavioural": EDIT_BEHAVIOURAL_COMPETENCIES,
+}
+
+#: What the skills LOCK refuses (D5): the three bucket capabilities, the
+#: rubric capability and Save Skills itself. Once a candidate has started the
+#: assessment these are the contract every candidate on the job is assessed
+#: against. The SWOT and the job philosophy are deliberately NOT here: editing
+#: them after the lock changes no contract, because the contract is the
+#: immutable snapshot, not the documents it was drafted from.
+SKILL_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        EDIT_MUST_HAVE_SKILLS,
+        EDIT_NICE_TO_HAVE_SKILLS,
+        EDIT_BEHAVIOURAL_COMPETENCIES,
         EDIT_EVALUATION_RUBRICS,
         FINALIZE_ROLE_DEFINITION,
     }
@@ -227,7 +258,7 @@ ALL_CAPABILITIES = [
     # RBAC_SPECIFICATION.md 24, appended 2026-08-29. Appended rather than
     # interleaved because resolve_capability_set returns capabilities in THIS
     # order and an existing response's field order should not shuffle.
-    VIEW_COMPANY_JOBS, SEND_JD_TO_HIRING_MANAGER,
+    VIEW_COMPANY_JOBS,
     EDIT_MUST_HAVE_SKILLS, EDIT_NICE_TO_HAVE_SKILLS,
     EDIT_BEHAVIOURAL_COMPETENCIES, EDIT_JOB_PHILOSOPHY, EDIT_SWOT,
     EDIT_EVALUATION_RUBRICS, FINALIZE_ROLE_DEFINITION, REJECT_JD,
@@ -483,11 +514,6 @@ RBAC_INVARIANTS: dict[str, dict[Role, Invariant]] = {
         Role.client: _A, Role.hr_manager: _A, Role.recruiter: _AD,
         Role.hiring_manager: _S, Role.interview_manager: _D,
     },
-    # | Send JD to Hiring Manager | YES | YES | YES | NO | NO |
-    SEND_JD_TO_HIRING_MANAGER: {
-        Role.client: _A, Role.hr_manager: _A, Role.recruiter: _S,
-        Role.hiring_manager: _D, Role.interview_manager: _D,
-    },
     # The six Hiring-Manager-controlled criteria rows, all identical in 24:
     # | ... | YES | YES | NO | YES | NO |
     # NEVER for the Recruiter, not DENY: 26 is a list of things the Recruiter
@@ -645,7 +671,6 @@ _INTERVIEW_MANAGER_ACCESS: dict[str, bool] = {
 # agreement rather than trusting this comment.
 _SPEC_GRANTS_ORG_WIDE: dict[str, bool] = {
     VIEW_COMPANY_JOBS: True,
-    SEND_JD_TO_HIRING_MANAGER: True,
     EDIT_MUST_HAVE_SKILLS: True,
     EDIT_NICE_TO_HAVE_SKILLS: True,
     EDIT_BEHAVIOURAL_COMPETENCIES: True,
@@ -666,7 +691,6 @@ _SPEC_GRANTS_RECRUITER: dict[str, bool] = {
     # what narrows it to assigned jobs, and denying the grant outright
     # would leave a Recruiter unable to see the job they own.
     VIEW_COMPANY_JOBS: True,
-    SEND_JD_TO_HIRING_MANAGER: True,
     EDIT_MUST_HAVE_SKILLS: False,
     EDIT_NICE_TO_HAVE_SKILLS: False,
     EDIT_BEHAVIOURAL_COMPETENCIES: False,
@@ -684,7 +708,6 @@ _SPEC_GRANTS_RECRUITER: dict[str, bool] = {
 
 _SPEC_GRANTS_HIRING_MANAGER: dict[str, bool] = {
     VIEW_COMPANY_JOBS: True,
-    SEND_JD_TO_HIRING_MANAGER: False,
     EDIT_MUST_HAVE_SKILLS: True,
     EDIT_NICE_TO_HAVE_SKILLS: True,
     EDIT_BEHAVIOURAL_COMPETENCIES: True,
@@ -702,7 +725,6 @@ _SPEC_GRANTS_HIRING_MANAGER: dict[str, bool] = {
 
 _SPEC_GRANTS_INTERVIEW_MANAGER: dict[str, bool] = {
     VIEW_COMPANY_JOBS: True,
-    SEND_JD_TO_HIRING_MANAGER: False,
     EDIT_MUST_HAVE_SKILLS: False,
     EDIT_NICE_TO_HAVE_SKILLS: False,
     EDIT_BEHAVIOURAL_COMPETENCIES: False,

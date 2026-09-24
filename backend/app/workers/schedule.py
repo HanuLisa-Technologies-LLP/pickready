@@ -57,14 +57,15 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
         why="The dashboard reads materialised views (ESD section 14).",
     ),
     ScheduledTask(
-        rule="readypick-remind-unapproved-framework",
-        task="pickready.remind_unapproved_technical_questions",
+        rule="readypick-remind-unsaved-skills",
+        task="pickready.remind_unsaved_skills",
         interval_minutes=60,
         why=(
-            "A job whose Tatva matrix nobody approved keeps taking applications "
-            "and can invite nobody, and nothing on the screen says why. The task "
-            "keeps its old name because renaming a task and its schedule "
-            "atomically is not something a rolling deploy can guarantee."
+            "A job whose drafted skills nobody saved keeps taking applications "
+            "and can invite nobody, and nothing on the screen says why. Hourly "
+            "so a job is reminded near its own threshold; once per job. "
+            "Replaces readypick-remind-unapproved-framework (Vivekium release), "
+            "renamed with its task in the same deploy window."
         ),
     ),
     ScheduledTask(
@@ -72,11 +73,11 @@ SCHEDULE: tuple[ScheduledTask, ...] = (
         task="pickready.reconcile_job_setup",
         interval_minutes=15,
         why=(
-            "Repairs jobs whose matrix generation stamped a timestamp and wrote "
-            "no rows. Measured live at 19 of 35 jobs across three tenants. "
-            "Every fifteen minutes rather than hourly because a broken job "
-            "blocks its whole candidate pipeline, and the sweep is a cheap "
-            "EXISTS scan that does nothing when there is nothing to fix."
+            "Repairs a skills draft that never landed: a saved SWOT with no "
+            "skill row of any kind and no draft asked for, or a draft that "
+            "never reported back. Never selects a job whose skills a person "
+            "emptied. Every fifteen minutes because a job without skills "
+            "cannot invite anybody, and the sweep is a cheap EXISTS scan."
         ),
     ),
     ScheduledTask(

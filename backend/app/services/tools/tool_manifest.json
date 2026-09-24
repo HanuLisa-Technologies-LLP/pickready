@@ -245,14 +245,15 @@
       "risk": "read"
     },
     {
-      "digest": "76a44a8c267ddd9faaf2057721e4bbce619f019bf7d8bcae6c01c44ea9227504",
+      "digest": "928b5ae01943e8108e99c1ce7dcdc11329b78b958d4050f1b7fbf422ded9224d",
       "granted_to": [
         "email",
         "interviewer",
-        "job_setup",
         "ppi_report",
         "probe",
-        "ranking"
+        "ranking",
+        "skills",
+        "swot"
       ],
       "input_schema": {
         "additionalProperties": false,
@@ -482,10 +483,9 @@
       "risk": "read"
     },
     {
-      "digest": "529f761dc6c5bee4ef5af39bb0fda5076b1d4143ca0ba2ea342cd1b65e41b843",
+      "digest": "07f34e467698b25f8896fea38011a10e789007b158c3306ed227c63ed2e39e9a",
       "granted_to": [
         "interviewer",
-        "job_setup",
         "ppi_report",
         "probe",
         "ranking",
@@ -637,15 +637,16 @@
       "risk": "read"
     },
     {
-      "digest": "d38d046a82b6bce4cda7b9398ad8c1a488115bf06f35c1e853df37b6031f7c09",
+      "digest": "883a220907acbd9e0ad050366b4133cdd1d589183eb87b0bd1d14dc7efb67f12",
       "granted_to": [
         "email",
         "interviewer",
-        "job_setup",
         "ppi_report",
         "probe",
         "ranking",
-        "scoring"
+        "scoring",
+        "skills",
+        "swot"
       ],
       "input_schema": {
         "additionalProperties": false,
@@ -707,5 +708,5 @@
       "risk": "read"
     }
   ],
-  "tools_digest": "ac6af8f29d74d85339f33ad369ff40611c528483796c96f48e5a27fd52bdcd56"
+  "tools_digest": "a1d52080da8387d64444e8f5e3ef7024db6626766f547dff9150a214b25f385e"
 }

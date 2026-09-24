@@ -24,174 +24,121 @@ from app.services.ppi import CATEGORIES
 # reads as still supported.
 
 
-# ── The job's PPI matrix (spec §5.2, §5.3) ───────────────────────────────────
+# ── Job setup: the Skills step and the setup checklist (Vivekium release) ──
+#
+# The Tatva matrix editor's shapes (`CompetencyIn`, `BulkCompetencyIn`,
+# `CompetencyOut`, `CompetencyMoveIn`, `MatrixReorderIn`, `FrameworkOut` and the
+# old `JobSetupOut`) are DELETED with the routes that spoke them. What replaced
+# them carries NAMES AND STATES ONLY: no grade word per skill, no priority, no
+# evidence line, no number. Those are the hidden half of the assessment
+# contract (`services/assessment_contract`) and never cross this boundary.
 
 
-class CompetencyIn(BaseModel):
-    """What the Hiring Manager's Edit control sends.
+class SkillOut(BaseModel):
+    """One skill as the recruitment team reads it."""
 
-    `required_level` is a WORD, one of the four grades. There is no numeric
-    input anywhere on this form: the client never types a score and never sees
-    one.
-    """
-
-    category: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
-    name: str = Field(min_length=1, max_length=255)
-    description: str | None = Field(default=None, max_length=1000)
-    required_level: str
-
-
-class BulkCompetencyIn(BaseModel):
-    """Paste-friendly creation of up to 100 skills/competencies."""
-
-    category: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
-    names: list[str] = Field(min_length=1, max_length=100)
-    required_level: str
-
-
-class CompetencyOut(BaseModel):
     id: uuid.UUID
-    category: str
     name: str
-    description: str | None
-    required_level: str
-    ordinal: int
-    # ── Sutra's seven stages, projected for the review screen ────────────────
-    #
-    # spec-doc6 4.3: "Traceability is a product requirement, not a log line ...
-    # The Hiring Manager's review screen shows this in plain language before
-    # finalisation."
-    #
-    # NO NUMBER CROSSES THIS BOUNDARY. `weight`, `threshold` and the four
-    # multiplier terms stay on the row; what a reviewer reads is `provenance`,
-    # a list of sentences. A weight rendered as "1.4850" would be a number a
-    # hiring manager could not usefully argue with.
-    #
-    # `force_rank` WAS SERIALISED HERE UNTIL 2026-09-23, on the argument that
-    # §20.3's force-ranking is an ORDER rather than a score, the status the
-    # radar chart's band index has always had. The argument is sound and it
-    # still lost to one measurement: `grep -rn force_rank frontend/` returns
-    # NOTHING. No screen has ever drawn it.
-    #
-    # That is what separates it from the band index, which earns its exemption
-    # by being a coordinate a radar cannot be drawn without. This was an
-    # integer crossing the boundary for no reader, so it bought none of the
-    # traceability it was added for while costing the rule that keeps every
-    # other number inside -- a rule `test_platform_audit.py` pins at exactly
-    # one field, `match_percent`.
-    #
-    # THE HARNESS FOUND IT AND WAS BRIEFLY WEAKENED TO ACCOMMODATE IT. The
-    # `no_numbers_to_client` probe reads a real `framework/finalize` body and
-    # flagged `competencies[N].force_rank` as a score-shaped key; the first
-    # repair allowlisted the name. Widening a detector so an unused field can
-    # keep crossing is the green-while-broken shape this repository already
-    # has a rule about, so the field went instead and the allowlist went with
-    # it.
-    #
-    # It had been invisible because finalize used to REFUSE a matrix carrying
-    # human-added criteria, so no scenario ever got a populated body back to
-    # inspect. Repairing that path is what let the older defect be seen.
-    #
-    # The COLUMN is untouched and still ranks internally; `ordinal` carries
-    # display order to the review screen.
-
-    #: Stage 2: what we would SEE if a candidate had this.
-    observable_evidence: str | None = None
-    #: Stage 4, as a word.
-    assessment_method: str | None = None
-    #: Stage 7, when one applies.
-    disqualifier: str | None = None
-    #: The hiring manager's own sentence, quoted, when a Layer 3 input produced
-    #: this criterion.
-    swot_origin: str | None = None
-    #: Where the weight came from, in sentences. `hiring.scorecard.plain_provenance`.
-    provenance: list[str] = []
+    #: `swot` | `jd` | `company` | `team`. `team` means the hiring team wrote it.
+    source: str
+    #: The SWOT sentence this skill answers, VERBATIM, or None. Cleared by a
+    #: rename, because a quotation carried onto a different skill is a
+    #: fabricated citation (2026-09-23).
+    from_swot: str | None = None
 
 
-class CompetencyMoveIn(BaseModel):
-    """One aspect's order after a drag-and-drop move (spec 5.3).
-
-    The client sends the WHOLE ordered list for each aspect it changed, not a
-    (from, to) pair. A pair has to be replayed against whatever the server
-    currently holds, and two hiring managers dragging at once would interleave
-    into an order neither of them saw; a full list is idempotent and always
-    describes a state someone actually looked at.
-    """
-
-    category: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
-    #: Competency ids, in the order they should appear in this aspect.
-    competency_ids: list[uuid.UUID] = Field(max_length=200)
+class SkillBucketsOut(BaseModel):
+    must_have: list[SkillOut] = []
+    nice_to_have: list[SkillOut] = []
+    behavioural: list[SkillOut] = []
 
 
-class MatrixReorderIn(BaseModel):
-    #: One entry per aspect whose order or membership changed. An aspect that is
-    #: absent is left exactly as it is.
-    groups: list[CompetencyMoveIn] = Field(min_length=1, max_length=3)
+class SkillBucketPermissionsOut(BaseModel):
+    """Per-bucket edit answers for THIS person on THIS job, resolved by the
+    same `rbac.authorize` calls the write routes enforce with."""
+
+    must_have: bool = False
+    nice_to_have: bool = False
+    behavioural: bool = False
 
 
-class FrameworkOut(BaseModel):
+class SkillsOut(BaseModel):
+    """The Skills step (PLAN-p1 section 3.12)."""
+
     job_id: uuid.UUID
-    status: str
-    approved: bool
-    #: Ordered must_have, nice_to_have, behavioural -- report order.
-    competencies: list[CompetencyOut]
-    #: The most items this matrix may hold. Every item is probed at least once,
-    #: so the grade's question ceiling is the matrix's ceiling (spec 5.4).
-    maximum_items: int = 0
-    #: How many questions this job's candidates will be asked, resolved from the
-    #: grade's range and the matrix size. Shown so the Hiring Manager can see
-    #: what adding an item actually costs the candidate.
-    question_target: int = 0
-    #: The RANGE the assessment may run to, as [minimum, maximum]. Sutra fixes
-    #: it per job; Vaada decides where inside it a given conversation ends, from
-    #: that candidate's own answer depth. Shown as a range rather than a single
-    #: number because that is what actually happens now, and a UI promising an
-    #: exact count would be wrong for every candidate who answered thoroughly.
-    question_range: list[int] = []
-    #: There is NO minimum item count in Draft v4: the agent recommends what the
-    #: job needs. Reported as one per aspect purely because each aspect is
-    #: graded and charted on every report, so none of the three may be empty.
-    minimum_per_category: int
-    #: Populated when the matrix cannot yet be saved, so the UI can say why
-    #: rather than only disabling the Save control.
+    #: not_started | drafting | drafted | failed. A lost draft reads failed.
+    draft_status: str
+    #: The server's own sentence for a failed draft, rendered verbatim.
+    draft_error: str | None = None
+    saved: bool
+    locked: bool
+    #: The most a bucket may hold. A limit the reviewer is told, not a score.
+    max_per_bucket: int
+    #: The saved SWOT is newer than the one the skills were drafted from. An
+    #: OFFER only: nothing is re-drafted without a person asking.
+    redraft_available: bool = False
+    #: Active skills the team wrote, named so a redraft confirmation can say
+    #: exactly what it would replace.
+    human_authored_names: list[str] = []
+    #: Why these skills cannot be saved as they stand, every problem named.
     blocking_reason: str | None = None
+    buckets: SkillBucketsOut
+    can_edit: SkillBucketPermissionsOut
+    can_save: bool = False
 
 
-# ── The Reporting Authority SWOT intake (spec 5.1) ───────────────────────
+class SkillAddIn(BaseModel):
+    bucket: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
+    name: str = Field(min_length=1, max_length=255)
+
+
+class SkillBulkAddIn(BaseModel):
+    """"Paste a list". All or nothing against the per-bucket limit."""
+
+    bucket: str = Field(pattern="^(" + "|".join(CATEGORIES) + ")$")
+    names: list[str] = Field(min_length=1, max_length=50)
+
+
+class SkillPatchIn(BaseModel):
+    """Rename, move, or both. A rename is applied before a move."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    bucket: str | None = Field(default=None, pattern="^(" + "|".join(CATEGORIES) + ")$")
+
+
+class SkillsDraftIn(BaseModel):
+    #: Required to replace skills the team wrote themselves. Without it a
+    #: redraft over them is a 409 naming them.
+    confirm_overwrite: bool = False
 
 
 class JobSetupOut(BaseModel):
-    """The one manual step in the pipeline (spec §10), as one payload.
+    """The job-setup checklist (PLAN-p1 section 3.12). States only.
 
-    Draft v4 made that step TWO halves finalised in ONE session: the PPI matrix
-    and the job's Matching category list. A job reaches "Ready for Candidates"
-    when both are stamped, and everything after that -- the candidate
-    conversation, scoring, report synthesis -- runs with no further human
-    involvement.
-
-    `questions_approved` is retained and always reports the matrix's own approval
-    state. It is not a third gate: it is here so a client build that still reads
-    the field cannot conclude a ready job is unready and hide the invite control.
-    It is deprecated and should be dropped once no client reads it.
+    Every flag is DERIVED from the tables on read: `swot_saved` from the SWOT
+    row's own status, `skills_saved` from the saved stamp AND the hidden
+    context, `skills_locked` from the existence of a snapshot row. A timestamp
+    is not evidence that work happened (rule 8).
     """
 
     job_id: uuid.UUID
-    status: str
-    grade: str | None
-    #: DEPRECATED, mirrors `framework_approved`. See the class docstring.
-    questions_approved: bool
-    framework_approved: bool
-    #: The second half of the setup session (spec §3.2).
-    matching_categories_finalized: bool = False
-    swot_analysis_ready: bool = False
+    jd_ready: bool
+    #: The SWOT document's state as a reader sees it (a lost generation reads
+    #: `failed`).
+    swot_status: str
+    swot_saved: bool
+    skills_draft_status: str
+    skills_saved: bool
+    skills_locked: bool
+    #: The grade is locked with the skills (D5).
+    grade_locked: bool
+    published: bool
     ready_for_candidates: bool
-    generated_at: datetime | None = None
-    approved_at: datetime | None = None
-    #: True when this job has no usable framework and one has been enqueued.
-    #: Populated so the setup screen can say "we are preparing this" instead of
-    #: rendering an empty list that looks like a finished, empty framework --
-    #: which is exactly what 19 of 35 live jobs were showing.
-    framework_pending: bool = False
+    #: The server's own sentence naming every step still missing before
+    #: publication, or None when nothing blocks it.
+    publish_blocked_reason: str | None = None
 
 
 # ── The PPI Assessment Report (spec §10) ─────────────────────────────────────
@@ -797,7 +744,8 @@ class SwotAnalysisOut(BaseModel):
     """
 
     job_id: uuid.UUID
-    #: not_generated | generated | failed | edited
+    #: not_generated | generating | generated | failed | edited. A generation
+    #: past its stale window is served as `failed` (derived, never written).
     status: str
     strengths: str | None = None
     weaknesses: str | None = None
@@ -817,3 +765,8 @@ class SwotAnalysisOut(BaseModel):
     can_restore_previous: bool = False
     #: The effective answer for THIS user on THIS job.
     can_edit: bool = False
+    #: The saved SWOT is newer than the one the skills were drafted from and
+    #: the skills are not locked, so the team may be OFFERED "Re-draft skills
+    #: from the updated SWOT". An offer only: nothing is re-drafted without the
+    #: team asking (`services/skills.redraft_available`).
+    skills_redraft_available: bool = False

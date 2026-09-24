@@ -580,7 +580,7 @@ async def timeline(session: AsyncSession, link_id: uuid.UUID) -> list[dict[str, 
 # This module already had a validated ten-value pipeline, and it is the one
 # production rows sit in. So there are three vocabularies:
 #
-#   1. RBAC 17's JOB lifecycle          8 states, on `jobs`
+#   1. RBAC 17's JOB lifecycle          6 states, on `jobs`
 #   2. The Dashboard's CANDIDATE stages 6 coarse stages, presentation only
 #   3. This module's PIPELINE_ORDER    10 stages + `offered`, on
 #                                       `job_candidate_links.status` and
@@ -609,11 +609,16 @@ class JobLifecycleState(str, Enum):
     draws as one terminal box. This product already archives a job with
     `jobs.archived_at` and closes one by the end of its 30-day posting window,
     so the two are recorded there and this is the single terminal state.
+
+    SIX STATES, NOT EIGHT (Vivekium release). The two approval-chain states
+    between DRAFT and FINALIZED are DELETED with the routes that wrote them:
+    one of them had a single writer nobody called, the other had none at all.
+    DRAFT goes to FINALIZED through Save Skills (`services/skills.save`), which
+    is the record that the Hiring-Manager-controlled components exist.
+    Migration 0119 tightens `ck_jobs_lifecycle_state` to exactly these values.
     """
 
     DRAFT = "DRAFT"
-    SENT_TO_HIRING_MANAGER = "SENT_TO_HIRING_MANAGER"
-    IN_REVIEW = "IN_REVIEW"
     FINALIZED = "FINALIZED"
     PUBLISHED = "PUBLISHED"
     CANDIDATE_APPLICATIONS = "CANDIDATE_APPLICATIONS"
@@ -624,8 +629,6 @@ class JobLifecycleState(str, Enum):
 #: 17's order, which is also the legal forward path.
 JOB_LIFECYCLE_ORDER: tuple[JobLifecycleState, ...] = (
     JobLifecycleState.DRAFT,
-    JobLifecycleState.SENT_TO_HIRING_MANAGER,
-    JobLifecycleState.IN_REVIEW,
     JobLifecycleState.FINALIZED,
     JobLifecycleState.PUBLISHED,
     JobLifecycleState.CANDIDATE_APPLICATIONS,
@@ -635,14 +638,9 @@ JOB_LIFECYCLE_ORDER: tuple[JobLifecycleState, ...] = (
 
 #: States in which the role definition is still being drafted. RBAC 24***
 #: limits the Recruiter's JD editing to exactly these, and 19 describes the
-#: Hiring Manager working inside them.
-DRAFTING_STATES: frozenset[str] = frozenset(
-    {
-        JobLifecycleState.DRAFT.value,
-        JobLifecycleState.SENT_TO_HIRING_MANAGER.value,
-        JobLifecycleState.IN_REVIEW.value,
-    }
-)
+#: Hiring Manager working inside them. One state since the approval chain
+#: went (Vivekium release); kept a SET so every reader stays unchanged.
+DRAFTING_STATES: frozenset[str] = frozenset({JobLifecycleState.DRAFT.value})
 
 #: FINALIZED and everything after it. 21 makes this the precondition for
 #: publication and 22 makes it the point after which criteria stop being
@@ -661,9 +659,7 @@ FINALIZED_OR_LATER: frozenset[str] = frozenset(
 #: candidate pipeline does: a job is archived, which is CLOSED_ARCHIVED, and
 #: that is reachable from anywhere.
 _LIFECYCLE_FORWARD: dict[JobLifecycleState, frozenset[JobLifecycleState]] = {
-    JobLifecycleState.DRAFT: frozenset({JobLifecycleState.SENT_TO_HIRING_MANAGER}),
-    JobLifecycleState.SENT_TO_HIRING_MANAGER: frozenset({JobLifecycleState.IN_REVIEW}),
-    JobLifecycleState.IN_REVIEW: frozenset({JobLifecycleState.FINALIZED}),
+    JobLifecycleState.DRAFT: frozenset({JobLifecycleState.FINALIZED}),
     JobLifecycleState.FINALIZED: frozenset({JobLifecycleState.PUBLISHED}),
     JobLifecycleState.PUBLISHED: frozenset({JobLifecycleState.CANDIDATE_APPLICATIONS}),
     JobLifecycleState.CANDIDATE_APPLICATIONS: frozenset(

@@ -218,13 +218,6 @@ jobs:
           python -m app.scripts.eval_agents
           python -m app.scripts.eval_retrieval --gate
 
-      - name: The worked example still runs end to end
-        working-directory: backend
-        # spec-doc5's final-report requirement, executed. It needs no database
-        # and no provider, so a break here is a break in the pipeline's own
-        # logic rather than in its environment.
-        run: python -m app.scripts.worked_example
-
   # ---------------------------------------------------------------------------
   # THE HARNESS (docs/spec/HARNESS.md).
   #

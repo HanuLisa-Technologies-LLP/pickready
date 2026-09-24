@@ -56,6 +56,9 @@ on a public page, neutral and precise in an internal report.
 | services/jd_generation        | jd_document.txt                 | jd_generation             | public           | `jd_document_states` |
 | services/jd_generation        | jd_generation_system.txt        | jd_generation             | public           | `jd_json_states` |
 | services/gap_analysis         | report_gap_probes.txt           | report_synthesis          | internal         | `gap_probe_state` |
+| services/hiring/sutra         | sutra_skills_draft.txt          | skills_drafting           | internal         | `swot_analysis.is_saved` (a saved SWOT) |
+| services/hiring/sutra         | sutra_assessment_context.txt    | assessment_context        | internal, hidden | `skills.validate_for_save` |
+| services/swot_analysis        | swot_analysis_system.txt        | swot_analysis             | internal         | `swot_input_state` |
 | services/outreach_content     | outreach_email_system.txt       | email_composition         | candidate-facing | `outreach_state` |
 | services/outreach_content     | email_generation.txt            | email_composition         | candidate-facing | `outreach_state` |
 | services/lifecycle_email      | email_application_confirmation  | email_composition         | candidate-facing | `lifecycle_email_state` |
@@ -109,6 +112,8 @@ __all__ = [
     "EXAMPLES_HEADING",
     "GATED_PROMPTS",
     "strip_bad_examples",
+    "SWOT_MIN_JD_WORDS",
+    "swot_input_state",
     "GENERIC_STRENGTHS_PLACEHOLDER",
     "META_COMMENTARY_PHRASES",
     "META_COMMENTARY_WORDS",
@@ -143,6 +148,11 @@ GATED_PROMPTS: tuple[str, ...] = (
     "jd_generation_system",
     "report_gap_probes",
     "outreach_email_system",
+    # Sutra (Vivekium release): the Skills draft and the hidden assessment
+    # context. Internal surfaces, and exactly where a model with thin input
+    # would otherwise narrate its own uncertainty into what Vaada reads.
+    "sutra_skills_draft",
+    "sutra_assessment_context",
     "email_generation",
 ) + tuple(sorted(EMAIL_TYPE_PROMPTS.values()))
 
@@ -268,6 +278,11 @@ EMPTY_STATE_COPY: dict[str, str] = {
     "job_description.skills.no_brief_detail": "To be confirmed by the hiring team.",
     "job_description.experience.no_brief_detail": (
         "To be confirmed by the hiring team."
+    ),
+    # job SWOT, internal: refused before the model is called
+    "swot.jd_too_thin": (
+        "Write the job description first. The SWOT is drafted from it, so it "
+        "needs a title and a few paragraphs describing the role."
     ),
     # gap analysis, internal
     "gap_analysis.probes.no_recorded_answer": (
@@ -801,6 +816,39 @@ def gap_probe_state(evidence: Sequence[Mapping[str, str]]) -> Sufficiency:
         "gap_analysis.probes.no_recorded_answer",
         f"answers_recorded=0 of {len(evidence)} exchanges",
     )
+
+
+# ── The Job SWOT (internal) ───────────────────────────────────────────────────
+
+#: The JD body a SWOT can be drafted from, in words, after the markdown
+#: headings are removed. A JD that is a title and seven empty headings gives the
+#: model nothing to analyse, and the SWOT it writes from nothing is exactly the
+#: invented company fact the SWOT prompt forbids. Sixty words is a short
+#: paragraph: low enough that no real JD is refused, high enough that a
+#: skeleton is.
+SWOT_MIN_JD_WORDS = 60
+
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s.*$", re.MULTILINE)
+
+
+def swot_input_state(title: str | None, jd_markdown: str | None) -> Sufficiency:
+    """Whether a Job SWOT may be drafted from this job's title and JD document.
+
+    Decided BEFORE the dispatch, so a refused request spends no model call and
+    leaves the SWOT row exactly as it was. Counts words in the body with every
+    markdown heading line removed: the seven fixed section headings are
+    structure, not description.
+    """
+    if not _has_text(title):
+        return _no("swot.jd_too_thin", "the job has no title")
+    body = _HEADING_RE.sub(" ", str(jd_markdown or ""))
+    words = len(re.findall(r"[A-Za-z0-9][A-Za-z0-9'+#./-]*", body))
+    if words < SWOT_MIN_JD_WORDS:
+        return _no(
+            "swot.jd_too_thin",
+            f"jd_body_words={words} below {SWOT_MIN_JD_WORDS}",
+        )
+    return _ok()
 
 
 # ── Outreach and lifecycle email (candidate-facing) ──────────────────────────

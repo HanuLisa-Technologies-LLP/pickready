@@ -20,8 +20,8 @@ WHAT DELIBERATELY SURVIVED
 ----------------------------
 `services/hiring/observable` holds the observable-evidence detector and the
 protected-attribute detector, which were defined inside the instrument and are
-not Company DNA concepts: `swot_quality` and `scorecard` both hold their own
-inputs to them. `job_scorecard_bindings` survived under a new name with its
+not Company DNA concepts: the SWOT and Sutra's evidence lines are held to
+them. `job_scorecard_bindings` survived under a new name with its
 rows intact, because it answers "what was this job built on when I applied"
 for every candidate already assessed.
 """

@@ -12,7 +12,8 @@ response has left. That second shape caused the SWOT false-409 fixed on
 2026-09-20 (`test_swot_analysis_api.py` is the model for these tests).
 
 Three more sites carried the same pattern and were converted on the same day:
-the framework finalize route, the send-to-hiring-manager route, and the
+the framework finalize route, the Hiring Manager hand-off route (both DELETED
+in the Vivekium release; publish and create now carry the pin), and the
 pipeline-halt audit record (whose own try/except turned the failure into a
 log line, so no halt was ever actually recorded). Each test here runs the
 real code over a real session with the real role drop, then reads the table
@@ -23,8 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
-from types import SimpleNamespace
 from typing import Iterator
 
 import pytest
@@ -39,8 +38,7 @@ from app.core.db import superadmin_scope, tenant_scope
 from app.core.security import AUDIENCE_ORG
 from app.main import app
 from app.models.enums import Role
-from app.services import ppi
-from app.services.hiring import pipeline_halt, scorecard
+from app.services.hiring import pipeline_halt
 
 JD = "## The role\nOwns the payments platform and its two services end to end."
 
@@ -217,77 +215,69 @@ def _audit_row(action: str, job_id: uuid.UUID) -> dict | None:
     )
 
 
-# ── finalize_framework: role_definition_finalized in one INSERT ─────────────
+# ── finalize_framework: DELETED with the matrix editor (Vivekium release) ────
+#
+# The route this section pinned is gone. Its successor, Save Skills, writes
+# `job_skills_saved` and `job_assessment_context_written` each in one INSERT,
+# read back from a second connection in `test_job_skills_save.py`.
 
 
-def test_finalizing_the_framework_survives_its_own_response(
-    client: TestClient, world: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The finalize route's audit row and lifecycle write really commit.
+# ── publish: job_published in one INSERT, and it survives the commit ───────
 
-    The scorecard freeze itself is not under test (test_scorecard covers it),
-    so it is stubbed to its contract; what runs for real is the route, the
-    tenant session with the role drop, and the audit INSERT.
-    """
-    _seed_job(world, lifecycle_state="IN_REVIEW", jd_markdown=JD)
 
-    async def _freeze(session, job, *, actor_user_id, correlation_id):
-        return SimpleNamespace(
-            version=3,
-            situation_key="turnaround",
-            approved_at=datetime.now(timezone.utc),
-        )
+def _save_setup(world: World) -> None:
+    """The SWOT saved and the skills saved, as Save Skills leaves them, so the
+    publish gate has nothing to refuse."""
 
-    async def _load_framework(session, job_id):
-        return []
+    async def _insert() -> None:
+        sessions = _sessions()
+        async with sessions() as session:
+            async with session.begin():
+                async with superadmin_scope(session):
+                    await session.execute(
+                        sa.text(
+                            "UPDATE jobs SET framework_approved_at = now(), "
+                            "assessment_context_json = CAST(:ctx AS jsonb) WHERE id = :id"
+                        ),
+                        {
+                            "id": str(world.job),
+                            "ctx": '{"role_summary": "", "generated_by": "sutra"}',
+                        },
+                    )
+                    await session.execute(
+                        sa.text(
+                            "INSERT INTO job_swot_analyses (id, tenant_id, job_id, status, "
+                            "strengths, weaknesses, opportunities, threats, human_edited, "
+                            "version, last_modified_at) VALUES (:i, :t, :j, 'edited', "
+                            "'Strong warehouse.', 'No streaming.', 'Growth.', 'Hiring race.', "
+                            "true, 2, now())"
+                        ),
+                        {"i": str(uuid.uuid4()), "t": str(world.tenant), "j": str(world.job)},
+                    )
 
-    monkeypatch.setattr(scorecard, "freeze", _freeze)
-    monkeypatch.setattr(ppi, "load_framework", _load_framework)
+    _run(_insert())
 
-    response = client.post(
-        f"/api/v2/assessments/jobs/{world.job}/framework/finalize"
-    )
+
+def test_publishing_survives_its_own_response(client: TestClient, world: World) -> None:
+    _seed_job(world, lifecycle_state="FINALIZED", jd_markdown=JD)
+    _save_setup(world)
+
+    response = client.post(f"/api/v1/jobs/{world.job}/publish")
     assert response.status_code == 200, response.text
 
     job_row = _committed(
-        "SELECT lifecycle_state, finalized_by, criteria_version "
-        "FROM jobs WHERE id = :id",
+        "SELECT lifecycle_state, ratified_at FROM jobs WHERE id = :id",
         {"id": str(world.job)},
     )
     assert job_row is not None
-    assert job_row["lifecycle_state"] == "FINALIZED"
-    assert str(job_row["finalized_by"]) == str(world.user)
-    assert job_row["criteria_version"] == 3
+    assert job_row["lifecycle_state"] == "PUBLISHED"
+    assert job_row["ratified_at"] is not None
 
-    audit_row = _audit_row("role_definition_finalized", world.job)
+    audit_row = _audit_row("job_published", world.job)
     assert audit_row is not None, "the audit row never committed"
     assert audit_row["actor_role"] == "client"
-    assert audit_row["new_state"] == {"lifecycle_state": "FINALIZED"}
-
-
-# ── send-to-hiring-manager: jd_sent_to_hiring_manager in one INSERT ─────────
-
-
-def test_sending_to_the_hiring_manager_survives_its_own_response(
-    client: TestClient, world: World
-) -> None:
-    _seed_job(world, lifecycle_state="DRAFT", jd_markdown=JD)
-
-    response = client.post(f"/api/v1/jobs/{world.job}/send-to-hiring-manager")
-    assert response.status_code == 200, response.text
-
-    job_row = _committed(
-        "SELECT lifecycle_state FROM jobs WHERE id = :id",
-        {"id": str(world.job)},
-    )
-    assert job_row is not None
-    assert job_row["lifecycle_state"] == "SENT_TO_HIRING_MANAGER"
-
-    audit_row = _audit_row("jd_sent_to_hiring_manager", world.job)
-    assert audit_row is not None, "the audit row never committed"
-    assert audit_row["actor_role"] == "client"
-    assert audit_row["previous_state"] == {"lifecycle_state": "DRAFT"}
-    assert audit_row["new_state"] == {"lifecycle_state": "SENT_TO_HIRING_MANAGER"}
+    assert audit_row["previous_state"] == {"lifecycle_state": "FINALIZED"}
+    assert audit_row["new_state"] == {"lifecycle_state": "PUBLISHED"}
 
 
 # ── pipeline_halt: the halt record actually exists afterwards ───────────────

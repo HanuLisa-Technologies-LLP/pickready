@@ -29,6 +29,11 @@ mutation of the authored success body:
              the retry is cut too. Until 2026-09-24 it ACCEPTED the cut text,
              which is the finding this fault was built to expose.
 
+A third derivation serves a SUCCESS rather than a fault: `openai_answering`
+replaces only the content, for a workload step whose subject needs a model to
+answer (Save Skills cannot save without the context writer). It is never a
+registered fault kind; see its docstring and `faults.model_answers`.
+
 Deriving rather than authoring keeps one source of truth for the envelope. If
 the success fixture changes shape, these two change with it instead of becoming
 a second, stale statement of what OpenAI sends.
@@ -261,6 +266,57 @@ def openai_responder(kind: str) -> Callable[[httpx.Request], httpx.Response]:
 OPENAI_FAULT_KINDS: frozenset[str] = frozenset(
     set(OPENAI_ERROR_FIXTURES) | {"timeout", "malformed", "partial"}
 )
+
+
+def _request_payload(request: httpx.Request) -> dict[str, Any]:
+    try:
+        payload = json.loads(request.content.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise VendorFixtureError(
+            f"the request to {request.url} carried no JSON body to answer"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise VendorFixtureError(f"the request to {request.url} is not a JSON object")
+    return payload
+
+
+def openai_answering(
+    answer_for: Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    *,
+    served: list[str] | None = None,
+) -> Callable[[httpx.Request], httpx.Response]:
+    """A handler serving a JSON-mode SUCCESS whose content `answer_for` wrote.
+
+    A THIRD derivation of the authored success body, beside `malformed` and
+    `partial`, and the same kind of thing: the envelope, the status, the
+    headers and the usage block are the authored fixture's, and ONE field is
+    replaced, `choices[0].message.content`. So the response still passes the
+    real `raise_for_status`, the real JSON parse and the real
+    `vendor_contract.check_openai_response`, and what the product reads is the
+    content a scenario needs rather than a shape the harness invented.
+
+    `answer_for` receives the request payload the ROUTER built and returns the
+    object the model is to have written. It is where a scenario's knowledge of
+    one task's output lives, which is why it is a parameter rather than a
+    table here: this module serves vendor contracts and knows no product task.
+    It raises `VendorFixtureError` for a request it was not written for, so a
+    call the scenario did not expect fails loudly instead of receiving an
+    answer meant for something else. `served` collects each answered model id,
+    so the step can say how many calls it answered.
+    """
+
+    def answered(request: httpx.Request) -> httpx.Response:
+        payload = _request_payload(request)
+        fixture = openai_success_for(request)
+        body = copy.deepcopy(dict(fixture.body))
+        body["choices"][0]["message"]["content"] = json.dumps(
+            dict(answer_for(payload)), ensure_ascii=False
+        )
+        if served is not None:
+            served.append(str(payload.get("model", "")))
+        return fixture.with_body(body).response(request)
+
+    return answered
 
 
 # -- Voyage ------------------------------------------------------------------

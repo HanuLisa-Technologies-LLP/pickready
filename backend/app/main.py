@@ -30,6 +30,7 @@ from app.api import (
     emails,
     employer_pages,
     intelligence,
+    job_setup,
     jobs,
     matching,
     outreach,
@@ -286,6 +287,10 @@ app.include_router(
 # Mounted at one path only, new in this release with no v1/v2 split to honour.
 app.include_router(videos.router, prefix=f"{API_PREFIX}/videos", tags=["videos"])
 app.include_router(assessments.router, prefix="/api/v2/assessments", tags=["assessments-v2"])
+# Job setup (Vivekium release): the setup checklist, the Skills step and the
+# Job SWOT routes, moved out of `assessments` under the same prefix so every
+# URL is unchanged.
+app.include_router(job_setup.router, prefix="/api/v2/assessments", tags=["assessments-v2"])
 # The candidate side and the recording routes were carved out of the same
 # module on 2026-09-24 (PLAN-p3 WP0). Same prefix and tag, included in the
 # order the routes used to be declared, so every URL is unchanged.

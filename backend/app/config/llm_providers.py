@@ -164,6 +164,8 @@ TaskType = Literal[
     "jd_generation",
     "technical_questions",
     "swot_analysis",
+    "skills_drafting",
+    "assessment_context",
     "situation_classification",
     "competency_transformation",
     # ── Scoring ──
@@ -221,6 +223,11 @@ MODEL_FOR_TASK: dict[str, str] = {
     "technical_questions": MODEL_TERRA,
     # The recruitment-facing SWOT document: writing, and evidence-bounded.
     "swot_analysis": MODEL_TERRA,
+    # Sutra (Vivekium release). The skills draft JUDGES what a role needs from
+    # its JD and SWOT, and the hidden assessment context WRITES the evidence
+    # line every candidate is assessed against. Both sides of the Terra half.
+    "skills_drafting": MODEL_TERRA,
+    "assessment_context": MODEL_TERRA,
     # Sutra: competency naming, observable-evidence authoring, weight
     # derivation. Judgment-heavy.
     "competency_transformation": MODEL_TERRA,
@@ -387,10 +394,17 @@ TASK_TIMEOUTS: dict[str, float] = {
     #    down. `tests/test_platform_audit.py` encodes both tiers so the
     #    exception is a reviewed rule rather than a drifted number.
     "jd_generation": 25.0,
-    # The second and last member of this tier. Its output is a four-section
-    # document a recruiter waits on, exactly like Generate JD, and it is
-    # smaller, so it sits under the same cap rather than beside it.
-    "swot_analysis": 25.0,
+    # The second and last member of this tier since the Vivekium release:
+    # Save Skills waits on the hidden assessment context, which must land in
+    # the same transaction as the human's save (skills.save). A short JSON
+    # document, so it sits under the same cap as Generate JD.
+    "assessment_context": 25.0,
+    # BACKGROUND since the Vivekium release. The SWOT used to be generated in
+    # the request, which rule 4 forbids; it is dispatched now
+    # (pickready.generate_job_swot) and nobody is blocked on it.
+    "swot_analysis": 60.0,
+    # Background: the skills draft runs in pickready.draft_job_skills.
+    "skills_drafting": 60.0,
     # Background.
     "technical_questions": 90.0,
     "competency_transformation": 90.0,
@@ -450,7 +464,9 @@ TASK_TOTAL_BUDGET: dict[str, float] = {
     "rerank": 30.0,
     # The generative-interactive exception. See TASK_TIMEOUTS above.
     "jd_generation": 50.0,
-    "swot_analysis": 50.0,
+    "assessment_context": 50.0,
+    "swot_analysis": 120.0,
+    "skills_drafting": 120.0,
     "technical_questions": 200.0,
     "competency_transformation": 200.0,
     "behavioral_assessment": 140.0,
@@ -499,6 +515,10 @@ TASK_MAX_TOKENS: dict[str, int] = {
     "conversation_turn": 2048,
     "jd_generation": 4096,
     "swot_analysis": 1536,
+    # Fifteen short names with their source and a quotation.
+    "skills_drafting": 3072,
+    # A role summary and up to fifteen one-sentence evidence lines.
+    "assessment_context": 2048,
     "email_composition": 1024,
     "situation_classification": 512,
     "rerank": 2048,
@@ -588,6 +608,12 @@ TASK_TEMPERATURE: dict[str, float] = {
     "format_composition": 0.4,
     "jd_generation": 0.5,
     "swot_analysis": 0.5,
+    # Proposes a list a person edits. Low: the same JD and SWOT should not
+    # produce a different list on every press.
+    "skills_drafting": 0.3,
+    # The evidence line is what a candidate is assessed against. Near
+    # deterministic, and the observable-evidence gate enforces the substance.
+    "assessment_context": 0.2,
     "email_composition": 0.5,
     # Writes three sections of prose from retrieved content. Low rather than
     # zero: every sentence must stay anchored to what was retrieved, and the
@@ -626,6 +652,9 @@ TASK_RETRY_BUDGET: dict[str, int] = {
     "situation_classification": 2,
     "jd_generation": 3,
     "swot_analysis": 3,
+    "skills_drafting": 3,
+    # Interactive: a person pressed Save and is waiting.
+    "assessment_context": 2,
     "email_composition": 3,
     "rerank": 3,
     "technical_questions": 3,

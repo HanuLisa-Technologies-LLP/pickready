@@ -132,24 +132,29 @@ does.
 
 ### Gate 3 — the Hiring Manager's SWOT before publication
 
-Already built. `api/jobs._publication_blocked` refuses publication while
-`swot_completed_at` is null or the Tatva matrix is not frozen, and it asks the
-table rather than a stamp.
-
-The Job SWOT and JD feed Sutra's initial Tatva proposal. The authorized Hiring
-Manager may then add, edit, rename, reorder, reclassify, or remove criteria.
-Those decisions remain authoritative when the system derives internal evidence,
-assessment, weight, and threshold metadata. Save Matrix validates and freezes
-the reviewed criteria as a version; a candidate's assessment uses that exact
-frozen contract. A later revision must preserve the contract already used by
-earlier assessments. Company Profile supplies company-level context through
-the job's snapshotted narrative. The retired Company DNA feature has no gate or
-input in this path.
+**SUPERSEDED by the Vivekium release (PLAN-p1): read
+[JOB_SETUP_FLOW.md](JOB_SETUP_FLOW.md).** The Tatva matrix, its freeze and the
+`swot_completed_at` stamp no longer gate anything. `api/jobs._publication_blocked`
+now asks three questions of the tables and names every missing step in one
+sentence: a publishable JD, a SWOT the team SAVED (`swot_analysis.is_saved`),
+and saved skills (`assessment_contract.skills_saved`: the saved stamp AND the
+hidden context). Sutra drafts the skills from the JD and the saved SWOT; the
+team adds, renames, moves and removes them, at most five per bucket; Save
+Skills writes the hidden context in one Sutra call before any row changes.
+The contract a candidate is assessed against is the immutable snapshot taken
+at their start, and a later revision cannot rewrite it. Company Profile still
+supplies company-level context through the job's snapshotted narrative, and
+the retired Company DNA feature has no gate or input in this path.
 
 ### Gate 4 — the recruiter posts, and only with everything in place
 
-Already built, as RBAC 17's lifecycle: `DRAFT -> SENT_TO_HIRING_MANAGER ->
-IN_REVIEW -> FINALIZED -> PUBLISHED`. Publication additionally requires Gate 3.
+**SUPERSEDED by the Vivekium release (PLAN-p1, migration
+`0119_job_approval_chain_removed`).** The hand-off to the Hiring Manager and
+the review state are deleted, code and database together. The lifecycle is
+`DRAFT -> FINALIZED (Save Skills) -> PUBLISHED -> CANDIDATE_APPLICATIONS ->
+HIRING_PROCESS -> CLOSED_ARCHIVED`, and `POST /jobs/{id}/publish` is the only
+way live, behind Gate 3's three steps. Create Job always saves a DRAFT. See
+[JOB_SETUP_FLOW.md](JOB_SETUP_FLOW.md).
 
 ### Gate 5 — a databank candidate must onboard before counting as an applicant
 

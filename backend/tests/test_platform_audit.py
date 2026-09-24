@@ -542,7 +542,12 @@ IMMEDIATE_INTERACTIVE_TASKS = (
 #: already accepts for report_synthesis, one tier down. It is a NAMED, BOUNDED
 #: list rather than a raised global cap, so a future task cannot join it by
 #: accident.
-GENERATIVE_INTERACTIVE_TASKS = ("jd_generation", "swot_analysis")
+#:
+#: VIVEKIUM RELEASE: `swot_analysis` LEFT this tier (the SWOT is dispatched work
+#: now, `pickready.generate_job_swot`) and `assessment_context` took its place:
+#: Save Skills waits on the hidden context because it must land in the same
+#: transaction as the human's save. Still two members, still capped.
+GENERATIVE_INTERACTIVE_TASKS = ("jd_generation", "assessment_context")
 
 GENERATIVE_INTERACTIVE_ATTEMPT_CAP = 30.0
 GENERATIVE_INTERACTIVE_BUDGET_CAP = 60.0

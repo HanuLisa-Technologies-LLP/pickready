@@ -61,6 +61,36 @@ def _load_migration():
 
 migration = _load_migration()
 
+#: 0119 tightened `ck_jobs_lifecycle_state` to six states. This file seeds the
+#: two RETIRED approval states on purpose, because 0118's remap exists to move
+#: them, so the seeded-world test admits them for its own duration only.
+NEXT_MIGRATION_PATH = MIGRATION_PATH.with_name("0119_job_approval_chain_removed.py")
+
+
+def _load_next_migration():
+    spec = importlib.util.spec_from_file_location("migration_0119", NEXT_MIGRATION_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+next_migration = _load_next_migration()
+
+
+async def _set_lifecycle_check(engine, states: tuple[str, ...]) -> None:
+    quoted = ", ".join(f"'{state}'" for state in states)
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("ALTER TABLE jobs DROP CONSTRAINT ck_jobs_lifecycle_state")
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE jobs ADD CONSTRAINT ck_jobs_lifecycle_state CHECK "
+                f"(lifecycle_state IS NULL OR lifecycle_state IN ({quoted}))"
+            )
+        )
+
 NOW = datetime.now(timezone.utc)
 
 
@@ -343,7 +373,17 @@ async def _read(factory, sql: str, **params) -> list[dict]:
 async def test_the_migration_converts_every_matrix_in_place() -> None:
     engine = create_async_engine(get_settings().database_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    w = await _seed(factory)
+    # The database is at head, where 0119 refuses the retired states this
+    # world seeds. Admit them (0119's own downgrade CHECK) until the world is
+    # dropped; restoring the six-state CHECK afterwards also VALIDATES every
+    # remaining row, so a remap that left a retired state behind fails here.
+    await _set_lifecycle_check(engine, next_migration._PREVIOUS_STATES)
+    try:
+        w = await _seed(factory)
+    except BaseException:
+        await _set_lifecycle_check(engine, next_migration.LIFECYCLE_STATES)
+        await engine.dispose()
+        raise
     try:
         before = {
             r["id"]: r
@@ -525,8 +565,11 @@ async def test_the_migration_converts_every_matrix_in_place() -> None:
             )
         ) == 1
     finally:
-        await _drop(factory, w)
-        await engine.dispose()
+        try:
+            await _drop(factory, w)
+        finally:
+            await _set_lifecycle_check(engine, next_migration.LIFECYCLE_STATES)
+            await engine.dispose()
 
 
 async def _migrate_again(engine, w: _World) -> dict:

@@ -85,14 +85,15 @@ class StageModule:
 #: facts rather than agent implementations, and have no module to resolve.
 STAGE_MODULES: dict[str, StageModule] = {
     provenance.STAGE_SWOT: StageModule(
-        "app.services.hiring.swot_quality",
-        ("__name__",),
-        "Bodha's SWOT session and its 18.5 quality-control rejection rules",
+        "app.services.swot_analysis",
+        ("request_generation", "run_generation", "is_saved"),
+        "Bodha's Job SWOT document, drafted as dispatched work and owned by the team",
     ),
     provenance.STAGE_MATRIX: StageModule(
         "app.services.hiring.scorecard",
-        ("require_frozen_matrix", "load_frozen_matrix", "freeze"),
-        "Sutra's seven-stage transformation and the frozen scorecard (gate G1)",
+        ("require_frozen_matrix", "load_frozen_matrix"),
+        "the frozen scorecard's read half (gate G1), which the grading phase "
+        "moves onto the saved skills contract",
     ),
     provenance.STAGE_PRESCREEN: StageModule(
         "app.services.hiring.prescreen",

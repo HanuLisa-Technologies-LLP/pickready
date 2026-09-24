@@ -2,9 +2,9 @@
 
 WHY THIS FILE EXISTS AT ALL
 -----------------------------
-`services/hiring/observable.py` is the ONE detector two live callers share:
-`swot_quality` holds a hiring manager's SWOT requirement to it, and `scorecard`
-holds the model that names a competency to the same bar. A shared detector with
+`services/hiring/observable.py` is the ONE detector its live callers share:
+Sutra holds the model that writes a skill's evidence line to it, and Drishti
+holds a functional head's profile to the same bar. A shared detector with
 no test of its own is a rule that quietly loosens the next time somebody adds a
 word to a list, and both callers would keep passing their own tests while
 grading against a bar that had moved.

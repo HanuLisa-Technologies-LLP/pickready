@@ -52,6 +52,7 @@ from app.api import (
     companies,
     dashboard,
     emails,
+    job_setup,
     jobs,
     matching,
     outreach,
@@ -77,6 +78,9 @@ ROUTERS = {
     "companies": companies,
     "dashboard": dashboard,
     "emails": emails,
+    # The setup checklist, the Skills step and the SWOT routes (Vivekium
+    # release), moved out of `assessments` and swept here for the same reason.
+    "job_setup": job_setup,
     "jobs": jobs,
     "matching": matching,
     "outreach": outreach,

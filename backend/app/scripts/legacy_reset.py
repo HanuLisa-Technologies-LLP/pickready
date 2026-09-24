@@ -336,10 +336,22 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         "scorecard approval stamps are cleared so that gate G1 can block "
         "evaluation until the job is re-defined, which is the enforcement D2 "
         "says to reuse rather than duplicate. Whether G1 is reachable from a "
-        "live path is checked before the purge runs, not assumed.",
+        "live path is checked before the purge runs, not assumed. The Skills "
+        "step's own state goes with the rows it describes: the hidden context "
+        "(without it the skills do not read as saved) and the draft state, "
+        "back to `not_started`, which is what lets "
+        "`pickready.reconcile_job_setup` draft the job again from its saved "
+        "SWOT. `matching_categories_finalized_at` is read by nothing since the "
+        "Vivekium release and is cleared as history.",
         resets=(
             ("framework_generated_at", "NULL"),
             ("framework_approved_at", "NULL"),
+            ("assessment_context_json", "NULL"),
+            ("skills_draft_status", "'not_started'"),
+            ("skills_draft_error", "NULL"),
+            ("skills_draft_requested_at", "NULL"),
+            ("skills_drafted_at", "NULL"),
+            ("skills_drafted_swot_version", "NULL"),
             ("matching_categories_finalized_at", "NULL"),
             ("question_reminder_sent_at", "NULL"),
             ("questions_generated_at", "NULL"),
@@ -433,9 +445,25 @@ CLASSIFICATION: tuple[TableRule, ...] = (
         PURGE,
         "The frozen binding of a job to the scorecard version its evaluations "
         "were run under. The scorecard it names is being archived, so the "
-        "binding would assert a freeze over a matrix that no longer exists. It "
-        "is re-created when the job's new scorecard is locked.",
+        "binding would assert a freeze over a matrix that no longer exists. "
+        "Nothing re-creates one since the Vivekium release: the saved skills "
+        "and the contract snapshot replaced the freeze.",
         order=43,
+        named_by_d2=False,
+    ),
+    TableRule(
+        "job_skill_snapshots",
+        PRESERVE,
+        "The assessment contract a candidate started against: the skills, "
+        "their evidence lines, the role summary and the grade, frozen at the "
+        "first start (migration 0118). IMMUTABLE BY TRIGGER: an UPDATE always "
+        "raises and a DELETE raises unless a tenant or job cascade drives it, "
+        "so the purge could not remove one even if it tried, and it must not "
+        "want to: it is the only record of what those candidates were "
+        "assessed against. The consequence is deliberate and counted by the "
+        "survey (`locked_contracts`): a locked job's skill rows are purged but "
+        "its contract stays locked, so its skills cannot be re-defined and "
+        "new criteria mean a new job.",
         named_by_d2=False,
     ),
     TableRule(
@@ -1087,6 +1115,17 @@ _EDGE_CASE_QUERIES: tuple[tuple[str, str, str, bool, str], ...] = (
          WHERE j.framework_generated_at IS NOT NULL
            AND NOT EXISTS (SELECT 1 FROM job_competencies c WHERE c.job_id = j.id)
         """,
+    ),
+    (
+        "locked_contracts",
+        "Jobs whose assessment contract is locked",
+        "A candidate started against these, so a contract snapshot exists and "
+        "is immutable by trigger. The purge removes their skill rows and cannot "
+        "remove the snapshot, so the job stays locked with no editable skills: "
+        "it cannot be re-defined, and assessing against new criteria means a "
+        "new job.",
+        True,
+        "SELECT COUNT(DISTINCT job_id) FROM job_skill_snapshots",
     ),
     (
         "active_conversations",

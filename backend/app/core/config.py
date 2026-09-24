@@ -137,7 +137,16 @@ class Settings(BaseSettings):
     # background run-status record. It is no longer a message broker: there is
     # no queue in it, and nothing consumes from it.
     redis_url: str = "redis://localhost:6379/0"
-    technical_review_reminder_hours: int = 48
+    #: Hours a job may sit with a Sutra skills draft nobody has saved before
+    #: the people who can save it are reminded, once
+    #: (`pickready.remind_unsaved_skills`). Renamed in the Vivekium release:
+    #: the old name described the technical question bank deleted on
+    #: 2026-08-06.
+    skills_setup_reminder_hours: int = 48
+    #: Minutes a Job SWOT generation may stay `generating` before a reader
+    #: treats it as failed. Derived at read time, never written: a worker that
+    #: never reported back must not leave a spinner on the SWOT tab for ever.
+    swot_generation_stale_minutes: int = 5
 
     # -- Consent renewal and the inactivity rule (feature 8) ------------------
     #

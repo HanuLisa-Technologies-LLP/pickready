@@ -20,20 +20,22 @@ from app.services.functional_assessment import word_count
         [],
     ],
 )
-def test_a_seeded_framework_always_meets_the_minimum(skills):
-    """Five per category is a product contract. A short JD must cycle its own
-    skills rather than emit a short framework, and must never loop forever
-    doing it."""
+def test_a_seeded_skill_set_fills_every_bucket_to_the_limit_and_never_past_it(skills):
+    """`skills.MAX_PER_BUCKET` is the Skills step's limit, and Save Skills
+    refuses a bucket over it, so a seeded bucket one past it would be a set the
+    product calls unsaveable. A short JD must cycle its own skills rather than
+    leave a bucket short, and must never loop forever doing it."""
     import app.scripts.seed_mock_data as m
+    from app.services.skills import MAX_PER_BUCKET
 
     framework = m.seed_framework(skills, "Backend Engineer")
     counts = Counter(row["category"] for row in framework)
-    assert counts["must_have"] == 5
-    assert counts["nice_to_have"] == 5
-    assert counts["behavioural"] == 5
+    assert counts["must_have"] == MAX_PER_BUCKET
+    assert counts["nice_to_have"] == MAX_PER_BUCKET
+    assert counts["behavioural"] == MAX_PER_BUCKET
     for category in ("must_have", "nice_to_have"):
         names = [row["name"] for row in framework if row["category"] == category]
-        assert len(set(names)) == 5, names
+        assert len(set(names)) == MAX_PER_BUCKET, names
 
 
 def test_seeded_report_rows_match_the_report_contract():

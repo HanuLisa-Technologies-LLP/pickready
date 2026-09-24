@@ -1,6 +1,7 @@
 """Jobs endpoint tests for the flat staff model (PRD v1.0 §4).
 
-Covers the direct-publish create flow, the public application-link builder,
+Covers the draft-only create flow (Vivekium release: create never publishes),
+the public application-link builder,
 the public (unauthenticated) published-job read, and the AI JD-generation
 endpoint (including its defensive 503 when the service isn't wired up). The DB
 and Celery boundaries are stubbed — these tests never touch Postgres or a
@@ -21,8 +22,6 @@ from app.models.enums import JobStatus, Role
 from app.models.job import Job
 from app.schemas.jobs import (
     JDGenerateIn,
-    JDIn,
-    JDUpdateIn,
     JobCreateIn,
     JobDetailOut,
     JobOut,
@@ -191,20 +190,23 @@ def test_with_public_url_only_when_published(monkeypatch) -> None:
 # ── create → published directly ──────────────────────────────────────────────
 
 def _stub_create_deps(monkeypatch) -> dict:
-    calls: dict = {}
+    calls: dict = {"dispatched": []}
 
-    async def _fake_audit(session, **kwargs):
+    async def _fake_record(session, **kwargs):
         calls["audit"] = kwargs
 
-    async def _fake_publish(session, job):
-        job.status = JobStatus.ratified
-        job.ratified_at = datetime.now(timezone.utc)
+    async def _fake_assign(session, job, user_id, role):
+        calls["assigned"] = (job.id, user_id, role)
+        return True
 
-    monkeypatch.setattr(jobs_api, "audit", _fake_audit)
-    monkeypatch.setattr(jobs_api.fsm, "apply_direct_publish", _fake_publish)
+    monkeypatch.setattr(jobs_api, "record_action", _fake_record)
+    monkeypatch.setattr(jobs_api.rbac, "assign_creator", _fake_assign)
+    # Create dispatches NOTHING any more; any attempt is recorded and asserted.
     monkeypatch.setattr(
-        jobs_api, "dispatch",
-        lambda *a, **k: calls.setdefault("matching", (a, k)),
+        jobs_api, "dispatch", lambda *a, **k: calls["dispatched"].append(a)
+    )
+    monkeypatch.setattr(
+        jobs_api, "dispatch_after_commit", lambda *a, **k: calls["dispatched"].append(a)
     )
     monkeypatch.setattr(
         jobs_api, "get_settings",
@@ -225,94 +227,78 @@ def _stub_create_deps(monkeypatch) -> dict:
     return calls
 
 
-def _satisfy_publication_gate(monkeypatch, job: Job) -> None:
-    """Make `_publication_blocked` return None, the honest way.
-
-    RBAC 21 refuses to publish a job whose Hiring-Manager-controlled
-    components are incomplete, and that gate asks the TABLE rather than a
-    stamp. A test of "publish returns the public link" has to satisfy the
-    precondition rather than route around it, or it silently becomes a test
-    that publishing works with no evaluation criteria, which is exactly what
-    the gate exists to prevent.
-
-    Stubbed rather than seeded because these are unit tests over a fake
-    session; `test_job_setup_live.py` exercises the real matrix end to end.
-    """
-    async def _ready(session, current_job):
-        return None
-
-    monkeypatch.setattr(jobs_api, "_publication_blocked", _ready)
+JD = "## Role\n\nOwn APIs.\n\n## Skills\n\n- Python\n"
 
 
 def _job_create_body() -> JobCreateIn:
-    return JobCreateIn(
-        title="Backend Engineer", grade="non_managerial",
-        jd=JDIn(role="Own APIs", skills=["Python"]),
-    )
+    return JobCreateIn(title="Backend Engineer", grade="non_managerial", jd_markdown=JD)
 
 
-def test_blank_optional_jd_numbers_are_not_422_errors() -> None:
-    body = JobCreateIn.model_validate(
-        {
-            "title": "Backend Engineer",
-            "grade": "managerial",
-            "jd": {"reportees": "", "experience_years": ""},
-        }
-    )
-    # `reportees` was removed on 2026-07-28. A stale client still sending it is
-    # IGNORED, not rejected, so a half-deployed frontend cannot 422 a job.
-    assert not hasattr(body.jd, "reportees")
-    assert body.jd.experience_years is None
+# ── the create body: a document, never sections, never `level` ───────────────
+
+def test_create_takes_the_document_and_neither_sections_nor_level() -> None:
+    fields = set(JobCreateIn.model_fields)
+    assert "jd_markdown" in fields
+    assert "jd" not in fields, "the per-section JD input is deleted"
+    assert "level" not in fields, "the free-text level is read by nothing"
+
+
+def test_create_refuses_a_document_that_is_only_headings() -> None:
+    with pytest.raises(ValidationError) as caught:
+        JobCreateIn.model_validate(
+            {"title": "X", "grade": "cxo", "jd_markdown": "## Role\n\n## Skills\n"}
+        )
+    assert "Write the job description" in str(caught.value)
+    with pytest.raises(ValidationError):
+        JobCreateIn.model_validate({"title": "X", "grade": "cxo"})
+
+
+def test_create_refuses_publish_true_naming_the_new_flow() -> None:
+    """Loud during the rolling deploy: an old Create Job screen still sends
+    `publish: true`, and silently saving a draft it believes it published is
+    the mislabel this release removes."""
+    with pytest.raises(ValidationError) as caught:
+        JobCreateIn.model_validate(
+            {"title": "X", "grade": "cxo", "jd_markdown": JD, "publish": True}
+        )
+    assert "Publishing is a separate step" in str(caught.value)
+    assert JobCreateIn.model_validate(
+        {"title": "X", "grade": "cxo", "jd_markdown": JD, "publish": False}
+    ).publish is False
 
 
 # ── grade: required on create, four literals only ────────────────────────────
-
-def test_experience_years_accepts_legacy_numeric_ranges() -> None:
-    body = JobCreateIn.model_validate(
-        {
-            "title": "Backend Engineer",
-            "grade": "managerial",
-            "jd": {"experience_years": " 3 - 5 "},
-        }
-    )
-    assert body.jd.experience_years == "3-5"
-
-
-def test_experience_years_rejects_prose() -> None:
-    with pytest.raises(ValidationError):
-        JobCreateIn.model_validate(
-            {
-                "title": "Backend Engineer",
-                "grade": "managerial",
-                "jd": {"experience_years": "several"},
-            }
-        )
 
 
 @pytest.mark.parametrize(
     "grade", ["non_managerial", "managerial", "leadership", "cxo"]
 )
 def test_grade_accepts_the_four_contract_values(grade) -> None:
-    body = JobCreateIn.model_validate({"title": "X", "grade": grade, "jd": {}})
+    body = JobCreateIn.model_validate({"title": "X", "grade": grade, "jd_markdown": JD})
     assert body.grade == grade
 
 
 def test_grade_is_required_on_job_create() -> None:
     with pytest.raises(ValidationError):
-        JobCreateIn.model_validate({"title": "X", "jd": {}})
+        JobCreateIn.model_validate({"title": "X", "jd_markdown": JD})
 
 
 @pytest.mark.parametrize("bad", ["NON_MANAGERIAL", "senior", "", None, 3, "cxo "])
 def test_invalid_grade_is_rejected(bad) -> None:
     with pytest.raises(ValidationError):
-        JobCreateIn.model_validate({"title": "X", "grade": bad, "jd": {}})
+        JobCreateIn.model_validate({"title": "X", "grade": bad, "jd_markdown": JD})
 
 
-def test_jd_update_grade_is_optional_but_still_validated() -> None:
-    assert JDUpdateIn.model_validate({"jd": {}}).grade is None
-    assert JDUpdateIn.model_validate({"jd": {}, "grade": "cxo"}).grade == "cxo"
+def test_patch_takes_metadata_only_and_refuses_the_jd_loudly() -> None:
+    """One JD edit path (`PATCH /jobs/{id}/jd`). An old client sending the JD,
+    its sections or `level` to the metadata PATCH gets a 422, never a
+    silently ignored field."""
+    assert JobPatchIn.model_validate({"grade": "cxo"}).grade == "cxo"
+    for stale in ({"jd": {}}, {"jd_markdown": "## Role\n\nX"}, {"level": "Senior"}):
+        with pytest.raises(ValidationError):
+            JobPatchIn.model_validate(stale)
     with pytest.raises(ValidationError):
-        JDUpdateIn.model_validate({"jd": {}, "grade": "principal"})
+        JobPatchIn.model_validate({"grade": "principal"})
 
 
 def _job(**kwargs) -> Job:
@@ -356,19 +342,26 @@ def test_jd_and_compensation_mirrors_always_agree_with_canonical_columns() -> No
 
 
 @pytest.mark.asyncio
-async def test_create_job_publishes_immediately(monkeypatch) -> None:
+async def test_create_job_saves_a_draft_and_starts_nothing(monkeypatch) -> None:
     calls = _stub_create_deps(monkeypatch)
     session = _FakeSession()
-    out = await jobs_api.create_job(_job_create_body(), user=_user(), session=session)
+    user = _user()
+    out = await jobs_api.create_job(_job_create_body(), user=user, session=session)
 
-    assert out.status == JobStatus.ratified
-    assert out.ratified_at is not None
-    assert out.public_url == f"https://readypick.ai/apply/{out.id}"
-    # Matching is enqueued on publish (FR-4.2), and the publish was audited.
-    assert "matching" in calls
-    assert calls["audit"]["metadata"]["published"] is True
+    assert out.status == JobStatus.draft
+    assert out.ratified_at is None
+    assert out.public_url is None and out.public_application_url is None
+    job = session.added[0]
+    assert job.lifecycle_state == "DRAFT"
+    # Nothing is dispatched at creation: matching starts at publication and the
+    # skills draft at the first SWOT save.
+    assert calls["dispatched"] == []
+    assert calls["audit"]["action"] == "job_created"
+    assert calls["audit"]["new_state"] == {"lifecycle_state": "DRAFT"}
+    # The creator is assigned (the SCOPED cells read nothing else).
+    assert calls["assigned"] == (job.id, user.user_id, user.role)
     # The form's required grade is stored on the canonical column and echoed back.
-    assert session.added[0].assessment_grade == "non_managerial"
+    assert job.assessment_grade == "non_managerial"
     assert out.grade == "non_managerial"
 
 
@@ -376,12 +369,12 @@ async def test_create_job_publishes_immediately(monkeypatch) -> None:
 @pytest.mark.parametrize("role", [Role.hr_manager, Role.recruiter, Role.hiring_manager])
 async def test_all_three_staff_roles_can_create(monkeypatch, role) -> None:
     # require_capability is the gate (checked elsewhere); the handler itself is
-    # role-agnostic — every staff role drives the identical flat path.
+    # role-agnostic: every staff role drives the identical draft path.
     _stub_create_deps(monkeypatch)
     session = _FakeSession()
     out = await jobs_api.create_job(_job_create_body(), user=_user(role), session=session)
-    assert out.status == JobStatus.ratified
-    assert out.public_url is not None
+    assert out.status == JobStatus.draft
+    assert out.public_url is None
 
 
 # ── public (unauthenticated) published-job read ──────────────────────────────
@@ -405,7 +398,7 @@ class _PublicSession:
 @pytest.mark.asyncio
 async def test_public_read_returns_only_published(monkeypatch) -> None:
     published = Job(id=uuid.uuid4(), tenant_id=uuid.uuid4(), title="Data Eng",
-                    department="Eng", level="Senior",
+                    department="Eng",
                     jd_json={"role": "pipelines"}, status=JobStatus.ratified,
                     ratified_at=datetime.now(timezone.utc),
                     # Inside the 30-day active window: the public link is only
@@ -478,6 +471,7 @@ async def test_generate_jd_calls_service(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(jobs_api, "audit", _fake_audit)
+    _stub_create_deps(monkeypatch)
 
     async def _gen(brief: dict) -> dict:
         assert brief["title"] == "Backend Engineer"
@@ -520,6 +514,7 @@ async def test_generate_jd_503_when_the_agent_cannot_be_reached(monkeypatch) -> 
         raise agent_client.AgentInvokeError("readypick-jd-gen is not there")
 
     monkeypatch.setattr(jobs_api.agent_client, "generate_jd_document", _unreachable)
+    _stub_create_deps(monkeypatch)
     with pytest.raises(Exception) as ei:
         await jobs_api.generate_jd(_brief(), user=_user(), session=_FakeSession())
     assert getattr(ei.value, "status_code", None) == 503
@@ -542,7 +537,7 @@ def test_experience_band_rejects_min_above_max() -> None:
             {
                 "title": "Backend Engineer",
                 "grade": "managerial",
-                "jd": {},
+                "jd_markdown": JD,
                 "experience_min_years": 8,
                 "experience_max_years": 3,
             }
@@ -552,7 +547,7 @@ def test_experience_band_rejects_min_above_max() -> None:
 def test_experience_band_accepts_equal_bounds_and_blanks() -> None:
     equal = JobCreateIn.model_validate(
         {
-            "title": "X", "grade": "cxo", "jd": {},
+            "title": "X", "grade": "cxo", "jd_markdown": JD,
             "experience_min_years": 5, "experience_max_years": 5,
         }
     )
@@ -561,7 +556,7 @@ def test_experience_band_accepts_equal_bounds_and_blanks() -> None:
     # A blank string from an untouched form field is an absence, not a zero.
     blank = JobCreateIn.model_validate(
         {
-            "title": "X", "grade": "cxo", "jd": {},
+            "title": "X", "grade": "cxo", "jd_markdown": JD,
             "experience_min_years": "", "experience_max_years": "",
         }
     )
@@ -603,14 +598,6 @@ def test_generate_brief_drops_company_context_and_merges_legacy_requirements() -
     assert body.merged_skills() == ["Python", "Build APIs"]
 
 
-def test_reportees_is_gone_from_the_jd_schema() -> None:
-    jd = JDIn.model_validate({"role": "Own APIs", "reportees": 4})
-    assert not hasattr(jd, "reportees")
-    # Ignored rather than 422: a client mid-deploy still sending it must not
-    # have its job creation rejected.
-    assert jd.role == "Own APIs"
-
-
 # ── the reporting-to dropdown ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -628,52 +615,19 @@ async def test_reporting_to_options_are_stable_and_end_with_others() -> None:
 # ── the unified document on create / read ────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_create_with_publish_false_leaves_job_unpublished(monkeypatch) -> None:
-    calls = _stub_create_deps(monkeypatch)
-    session = _FakeSession()
-    body = JobCreateIn.model_validate(
-        {
-            "title": "Backend Engineer", "grade": "non_managerial", "jd": {},
-            "jd_markdown": "## Description\n\nBuild things.\n",
-            "publish": False,
-        }
-    )
-    out = await jobs_api.create_job(body, user=_user(), session=session)
-
-    assert out.ratified_at is None
-    assert out.public_url is None and out.public_application_url is None
-    assert calls["audit"]["metadata"]["published"] is False
-
-
-@pytest.mark.asyncio
 async def test_create_derives_jd_json_from_the_document(monkeypatch) -> None:
     _stub_create_deps(monkeypatch)
     session = _FakeSession()
     body = JobCreateIn.model_validate(
         {
             "title": "Backend Engineer", "grade": "non_managerial",
-            # Deliberately contradictory: the document must win, because it is
-            # what the candidate actually reads.
-            "jd": {"skills": ["StaleSkill"]},
             "jd_markdown": "## Skills\n\n- Python\n- Go\n\n## Role\n\nOwn APIs.\n",
-            "publish": False,
         }
     )
     await jobs_api.create_job(body, user=_user(), session=session)
     job = session.added[0]
     assert job.jd_json["skills"] == ["Python", "Go"]
     assert job.jd_json["role"] == "Own APIs."
-
-
-@pytest.mark.asyncio
-async def test_create_without_a_document_still_gets_one(monkeypatch) -> None:
-    # The pre-2026-07-28 per-section contract still works, and the job ends up
-    # with a canonical document rendered from those sections.
-    _stub_create_deps(monkeypatch)
-    session = _FakeSession()
-    out = await jobs_api.create_job(_job_create_body(), user=_user(), session=session)
-    assert "## Description" in (out.jd_markdown or "")
-    assert "Own APIs" in (out.jd_markdown or "")
 
 
 def test_jd_markdown_for_renders_legacy_jobs_rather_than_blanking_them() -> None:
@@ -717,12 +671,40 @@ def _stub_publish_deps(monkeypatch) -> dict:
     async def _can_see(session, user):
         return True
 
+    async def _fake_record(session, **kwargs):
+        calls["audit"] = kwargs
+
+    async def _finalized(session, job_id):
+        return jobs_api.rbac.Resource(
+            kind="job", resource_id=job_id, job_id=job_id, lifecycle_state="FINALIZED"
+        )
+
+    async def _allowed(session, principal, capability, resource=None):
+        return jobs_api.rbac.Authorization(
+            jobs_api.rbac.Decision.ALLOW, "allowed", jobs_api.caps.Invariant.ALLOW
+        )
+
+    async def _swot_saved_row(session, job):
+        return SimpleNamespace(status="edited")
+
+    async def _skills_saved(session, job_id):
+        return True
+
     monkeypatch.setattr(jobs_api, "audit", _fake_audit)
+    monkeypatch.setattr(jobs_api, "record_action", _fake_record)
     monkeypatch.setattr(jobs_api.fsm, "apply_direct_publish", _fake_publish)
     monkeypatch.setattr(jobs_api, "_can_see_pre_ratified", _can_see)
+    monkeypatch.setattr(jobs_api.rbac, "load_job_resource", _finalized)
+    monkeypatch.setattr(jobs_api.rbac, "authorize", _allowed)
+    # The SWOT and skills halves of the gate are real-table questions, pinned
+    # by `test_job_publish_gate.py`; here they answer "saved" so these tests
+    # stay about the JD half and the response.
+    monkeypatch.setattr(jobs_api.swot_analysis, "get", _swot_saved_row)
+    monkeypatch.setattr(jobs_api.swot_analysis, "is_saved", lambda row: row is not None)
+    monkeypatch.setattr(jobs_api.assessment_contract, "skills_saved", _skills_saved)
     monkeypatch.setattr(
-        jobs_api, "dispatch",
-        lambda *a, **k: calls["tasks"].append(a),
+        jobs_api, "dispatch_after_commit",
+        lambda session, name, **k: calls["tasks"].append((name, k.get("args"))),
     )
     monkeypatch.setattr(
         jobs_api, "get_settings",
@@ -746,8 +728,7 @@ def _draft_job(user: CurrentUser, **kwargs) -> Job:
 async def test_publish_returns_the_public_application_link(monkeypatch) -> None:
     calls = _stub_publish_deps(monkeypatch)
     user = _user()
-    job = _draft_job(user)
-    _satisfy_publication_gate(monkeypatch, job)
+    job = _draft_job(user, lifecycle_state="FINALIZED")
     out = await jobs_api.publish_job(job.id, user=user, session=_PublishSession(job))
 
     assert out.ratified_at is not None
@@ -756,6 +737,12 @@ async def test_publish_returns_the_public_application_link(monkeypatch) -> None:
     assert out.public_application_url == expected
     assert out.public_url == expected
     assert calls["audit"]["action"] == "job_published"
+    assert calls["audit"]["new_state"] == {"lifecycle_state": "PUBLISHED"}
+    # Matching and the JD index, both AFTER the commit.
+    assert calls["tasks"] == [
+        ("pickready.run_matching", [str(job.id)]),
+        ("pickready.index_document", ["jd", str(job.id)]),
+    ]
 
 
 @pytest.mark.asyncio

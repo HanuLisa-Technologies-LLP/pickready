@@ -15,7 +15,7 @@ layer, not a parallel one).
 
 It is NOT a test of the Part A pipeline running. It cannot be, and saying so
 precisely matters: `services/agents/identity.py` maps all six named agents
-onto the OLD runtime surfaces (`AGENT_JOB_SETUP`, `AGENT_RANKING`,
+onto the OLD runtime surfaces (`AGENT_SWOT`, `AGENT_SKILLS`, `AGENT_RANKING`,
 `AGENT_INTERVIEWER`, `AGENT_SCORING`, `AGENT_PPI_REPORT`), and no live path
 calls `services/hiring`, `services/miti` or `services/siddhi` yet. So what is
 proven here is that the authorization gate refuses an over-reaching agent
@@ -56,8 +56,9 @@ def _job(
     *,
     tenant: uuid.UUID = TENANT_A,
     job_id: uuid.UUID = JOB,
-    state: str = JobLifecycleState.IN_REVIEW.value,
+    state: str = JobLifecycleState.DRAFT.value,
     assignments: frozenset[tuple[str, str]] = ASSIGNMENTS,
+    skills_locked: bool = False,
 ) -> rbac.Resource:
     return rbac.Resource(
         kind="job",
@@ -66,6 +67,7 @@ def _job(
         job_id=job_id,
         lifecycle_state=state,
         assignments=assignments,
+        skills_locked=skills_locked,
     )
 
 
@@ -241,18 +243,27 @@ def test_an_agent_is_bound_to_its_principals_assigned_job() -> None:
 
 
 def test_an_agent_obeys_the_workflow_state_rules() -> None:
-    """RBAC 34: agents must not bypass workflow state. The criteria freeze at
-    finalization (22) applies to an agent exactly as to the human."""
+    """RBAC 34: agents must not bypass workflow state. The skills LOCK (D5,
+    a candidate has started) applies to an agent exactly as to the human, and
+    finalization alone no longer freezes anything."""
     principal = _principal(Role.hiring_manager, permissions.AGENT_SUTRA)
-    result = rbac.authorize_agent_action(
+    locked = rbac.authorize_agent_action(
+        principal,
+        permissions.AGENT_SUTRA,
+        caps.EDIT_MUST_HAVE_SKILLS,
+        _job(state=JobLifecycleState.PUBLISHED.value, skills_locked=True),
+        granted=True,
+    )
+    assert locked.decision is rbac.Decision.DENY
+    assert locked.reason == "skills_locked"
+    finalized = rbac.authorize_agent_action(
         principal,
         permissions.AGENT_SUTRA,
         caps.EDIT_MUST_HAVE_SKILLS,
         _job(state=JobLifecycleState.FINALIZED.value),
         granted=True,
     )
-    assert result.decision is rbac.Decision.DENY
-    assert result.reason == "criteria_frozen_after_finalization"
+    assert finalized.decision is rbac.Decision.ALLOW
 
 
 # ── An agent has no identity of its own ──────────────────────────────────────

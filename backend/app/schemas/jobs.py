@@ -1,5 +1,4 @@
-"""Job + approval FSM schemas (API_CONTRACT.md `/jobs`)."""
-import re
+"""Job schemas (API_CONTRACT.md `/jobs`)."""
 import uuid
 from datetime import datetime
 from typing import Literal
@@ -8,7 +7,7 @@ from pydantic import (
     BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator,
 )
 
-from app.models.enums import ApprovalDecision, JobStatus
+from app.models.enums import JobStatus
 from app.models.job import REPORTING_TO_OPTIONS
 from app.models.proctoring import DEFAULT_WARNING_POLICY, WARNING_POLICIES
 
@@ -19,37 +18,10 @@ from app.models.proctoring import DEFAULT_WARNING_POLICY, WARNING_POLICIES
 JobGrade = Literal["non_managerial", "managerial", "leadership", "cxo"]
 
 
-class JDIn(BaseModel):
-    """Structured JD fields (FR-3.1).
-
-    Still accepted and still stored on `jd_json`, but no longer the thing a
-    recruiter types: as of 2026-07-28 these sections are DERIVED by parsing
-    `jd_markdown`, the unified document that is now canonical. `reportees` was
-    removed entirely (client decision); an old client still sending it is
-    ignored rather than rejected, so nothing 422s mid-upgrade.
-    """
-    model_config = ConfigDict(extra="ignore")
-
-    description: str | None = None
-    reporting_to: str | None = None
-    role: str | None = None
-    responsibilities: list[str] | str | None = None
-    accountabilities: list[str] | str | None = None
-    education: str | None = None
-    skills: list[str] = []
-    experience_years: float | str | None = None
-
-    @field_validator("experience_years", mode="before")
-    @classmethod
-    def _experience_is_number_or_range(cls, value):
-        if not isinstance(value, str):
-            return value
-        value = value.strip()
-        if not value:
-            return None
-        if not re.fullmatch(r"\d+(?:\.\d+)?(?:\s*-\s*\d+(?:\.\d+)?)?", value):
-            raise ValueError("experience_years must be a number or numeric range")
-        return re.sub(r"\s*-\s*", "-", value)
+# `JDIn`, the per-section JD input, is DELETED (Vivekium release). The
+# document (`jd_markdown`) is the one canonical JD and its three writers are
+# now one (`PATCH /jobs/{id}/jd`); the sections on `jd_json` are derived from
+# it by `jd_generation.parse_jd_markdown`, never typed.
 
 
 #: Sanity bound on the experience band. 60 years is well past any real career
@@ -185,28 +157,53 @@ class AssessmentRetentionOut(BaseModel):
     dispute_reason: str | None = None
 
 
+#: The refusal a create call carrying `publish: true` gets. Server-authored so
+#: the screen renders it verbatim.
+PUBLISH_IS_SEPARATE_DETAIL = (
+    "Publishing is a separate step. Save the draft, finish the SWOT and "
+    "skills, then publish."
+)
+#: The refusal for a create call with no job description in it.
+JD_REQUIRED_DETAIL = (
+    "Write the job description before saving the job. Generate a draft or "
+    "type one."
+)
+
+
+def jd_body_is_empty(document: str | None) -> bool:
+    """Headings alone are not a job description. True when nothing but
+    headings and whitespace is left. The one test shared by create and
+    publish, so the two can never disagree about what "empty" means."""
+    body = "\n".join(
+        line for line in (document or "").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    return not body.strip()
+
+
 class JobCreateIn(ExperienceBandMixin):
+    """Create Job saves a DRAFT, always (Vivekium release).
+
+    The job goes live only through `POST /jobs/{id}/publish`, which checks the
+    JD, the saved SWOT and the saved skills. Two inputs are GONE: the free-text
+    `level` (the experience band and the grade replaced it on 2026-07-28, and
+    nothing reads it now) and the per-section `jd` (the document is the one
+    canonical JD; the sections are derived from it).
+    """
+
     title: str = Field(min_length=1, max_length=255)
     department: str | None = Field(default=None, max_length=255)
-    level: str | None = Field(default=None, max_length=100)
     requirement_period: str | None = Field(default=None, max_length=100)
     # REQUIRED (Create Job form dropdown). Anything outside the four literals → 422.
     grade: JobGrade
-    jd: JDIn
-    #: The unified JD document. Optional on create because the recruiter's flow
-    #: is generate -> edit -> publish: they may save a draft before the document
-    #: is finished. Publishing without one is what is refused (see
-    #: api/jobs.publish_job).
-    jd_markdown: str | None = None
-    #: Whether this create call also publishes.
-    #
-    # ASSUMPTION (2026-07-28): defaults to True so the established
-    # create-publishes-immediately contract (PRD v1.0 §4, flat staff model) is
-    # preserved for every existing caller. The new Create Job screen sends
-    # `publish: false`, writes the AI draft, lets the recruiter edit it, and
-    # then calls POST /jobs/{id}/publish explicitly, which is what the client
-    # asked for. Additive rather than a silent behaviour change.
-    publish: bool = True
+    #: The unified JD document, REQUIRED and never only headings. The
+    #: per-section `jd_json` is derived from it by the handler.
+    jd_markdown: str = Field(max_length=60000)
+    #: Kept in the schema only to refuse `true` LOUDLY. During a rolling deploy
+    #: an old Create Job screen still sends `publish: true`; silently saving a
+    #: draft it believes it published would be the mislabel this release
+    #: exists to remove, so it is a 422 naming the new flow.
+    publish: bool = False
     # Optional at creation: omit them and the job snapshots the company
     # profile's values (spec §3.2). Supplying one here is a per-job override
     # from the very first save.
@@ -230,6 +227,20 @@ class JobCreateIn(ExperienceBandMixin):
     def _policy_in_vocabulary(cls, value: str | None) -> str | None:
         return _valid_warning_policy(value)
 
+    @field_validator("publish")
+    @classmethod
+    def _publish_is_a_separate_step(cls, value: bool) -> bool:
+        if value:
+            raise ValueError(PUBLISH_IS_SEPARATE_DETAIL)
+        return value
+
+    @field_validator("jd_markdown")
+    @classmethod
+    def _jd_has_a_body(cls, value: str) -> str:
+        if jd_body_is_empty(value):
+            raise ValueError(JD_REQUIRED_DETAIL)
+        return value
+
 
 class JobOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -237,7 +248,6 @@ class JobOut(BaseModel):
     id: uuid.UUID
     title: str
     department: str | None
-    level: str | None
     status: JobStatus
     requirement_period: str | None
     created_by: uuid.UUID | None
@@ -360,7 +370,6 @@ class PublicJobOut(BaseModel):
     id: uuid.UUID
     title: str
     department: str | None
-    level: str | None
     jd_json: dict
     #: The canonical candidate-facing document. The public apply page renders
     #: this and falls back to the per-section `jd_json` only for jobs written
@@ -606,22 +615,6 @@ class PublishJobOut(JobOut):
     public_application_url: str = ""
 
 
-class ApproveIn(BaseModel):
-    decision: Literal["approved", "rejected"]
-    remarks: str | None = None
-
-
-class ApprovalOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    level: JobStatus
-    approver_user_id: uuid.UUID | None
-    decision: ApprovalDecision
-    remarks: str | None
-    decided_at: datetime
-
-
 class CompensationIn(BaseModel):
     compensation: dict
 
@@ -633,35 +626,33 @@ class CompensationIn(BaseModel):
         return v
 
 
-class JDUpdateIn(BaseModel):
-    jd: JDIn
-    title: str | None = Field(default=None, max_length=255)
-    department: str | None = Field(default=None, max_length=255)
-    level: str | None = Field(default=None, max_length=100)
-    # Optional grade change; omit to leave the job's grade untouched.
-    grade: JobGrade | None = None
-
-
 class JobPatchIn(ExperienceBandMixin):
-    """PARTIAL in-place JD edit (spec §3.1) — every field optional.
+    """PARTIAL edit of a job's METADATA (spec §3.1): every field optional.
 
     PATCH semantics, honestly implemented: a field that is ABSENT is left
     untouched. That distinction matters here because the three narrative
-    sections are inheritable — sending `about_company: null` explicitly clears
+    sections are inheritable: sending `about_company: null` explicitly clears
     the per-job override so the job falls back to the company profile, which is
     a different intent from not mentioning the field at all. `model_fields_set`
     is what tells the two apart, so the endpoint reads that rather than testing
     for None.
+
+    THE JOB DESCRIPTION IS NOT HERE (Vivekium release). It has ONE edit path,
+    `PATCH /jobs/{id}/jd`, which takes the document. This route used to take
+    the document AND the per-section `jd`, and `PUT /jobs/{id}/jd` a third
+    shape that left the document stale; three writers of one text is the shape
+    rule 5 forbids. `extra="forbid"` makes an old client sending `jd` or
+    `level` a loud 422 rather than a silently ignored field.
     """
+
+    model_config = ConfigDict(extra="forbid")
+
     title: str | None = Field(default=None, max_length=255)
     department: str | None = Field(default=None, max_length=255)
-    level: str | None = Field(default=None, max_length=100)
     requirement_period: str | None = Field(default=None, max_length=100)
+    #: Refused with 409 once the skills are locked: the grade decides the
+    #: question budget every candidate on the job receives (D5).
     grade: JobGrade | None = None
-    jd: JDIn | None = None
-    #: Editing the document here re-derives `jd_json` from it, same as
-    #: PATCH /jobs/{id}/jd. The document stays canonical either way.
-    jd_markdown: str | None = None
     about_company: str | None = Field(default=None, max_length=4000)
     work_life: str | None = Field(default=None, max_length=4000)
     benefits: str | None = Field(default=None, max_length=4000)
