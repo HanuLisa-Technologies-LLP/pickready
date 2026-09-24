@@ -268,6 +268,24 @@ export type ApprovalLevelsConfig = Record<
 
 // ---- Jobs ----
 
+/**
+ * GET /jobs/{id}/assessment-retention, and the body of both dispute routes.
+ *
+ * Dates only: no candidate detail and no count of assessed people, because
+ * the route exists precisely where assessment facts are withheld. `message`
+ * is the server's own sentence and is rendered verbatim.
+ */
+export interface AssessmentRetention {
+  state: "live" | "pending_deletion" | "purged";
+  closed_at: string | null;
+  purge_due_at: string | null;
+  purged_at: string | null;
+  dispute_open: boolean;
+  days_remaining: number | null;
+  message: string | null;
+  dispute_reason: string | null;
+}
+
 export interface JobJD {
   description: string;
   reporting_to: string;
