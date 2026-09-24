@@ -117,8 +117,10 @@ async def dashboard_summary(
 #
 # The client's daily working surface: eight columns over every candidate the
 # caller may see, plus the three panels the row's action columns open (Vivekium
-# Profile, Team Review, Stage), plus the two calibration surfaces D8 and
-# spec-doc6 §8.2 require.
+# Profile, Team Review, Stage). The two calibration read surfaces (the raw
+# D1-D5 view and the divergence queue) were DELETED in the Vivekium release:
+# one returned numbers to a client, the other had no screen. A divergence is
+# still RECORDED (`calibration.raise_divergence`), as audit data.
 #
 # EVERY ROUTE HERE IS AUTHORIZED BY DATA, NEVER BY A ROLE NAME
 # -------------------------------------------------------------
@@ -155,35 +157,18 @@ async def dashboard_summary(
 # overriding an affirmative grant: the grant is affirmative about the
 # CAPABILITY and silent about the SCOPE, and the scope rule comes from the
 # rows that do speak to it.
-#
-# ONE CAPABILITY IS REUSED, AND IT IS FLAGGED RATHER THAN HIDDEN
-# ----------------------------------------------------------------
-# The audited calibration view (D8) is "restricted to Super Admin and HR
-# Manager", which is exactly the population `INTEGRITY_DISPOSITION` already
-# encodes -- ALLOW for the HR Manager, ALLOW_AUDITED_EXCEPTION for the Super
-# Admin, DENY for everybody else. It is reused rather than duplicated because a
-# second capability with an identical cell set is a second thing to keep in
-# step, and `capabilities.py` is owned by other work this phase. A dedicated
-# `VIEW_CALIBRATION_INTERNALS` capability is the right long-term shape and is
-# reported as such; `test_dashboard_rbac_matrix.py` pins the exact role set
-# that reaches the route, so the day the two populations diverge, a test fails
-# rather than a screen leaking.
 
 import datetime as dt
 
-from fastapi import Body, HTTPException, Query, Request
+from fastapi import Body, HTTPException, Query
 from sqlalchemy import text as sql_text
 
 from app.models.hiring import ReviewDisposition
 from app.schemas.dashboard import (
-    CalibrationInternalsOut,
     DashboardControlsOut,
     DashboardPageOut,
     DashboardRowOut,
-    DivergenceListOut,
-    DivergenceOut,
     IntegrityDispositionIn,
-    OverrideRateOut,
     ReadyPickProfileOut,
     ReadyPickProfileRefOut,
     StageMoveIn,
@@ -206,7 +191,6 @@ DASHBOARD_CONTROLS: dict[str, str] = {
     "team_review": caps.ADD_TEAM_REVIEW_REMARK,
     "stage_move": caps.UPDATE_PIPELINE_STATUS,
     "integrity_disposition": caps.INTEGRITY_DISPOSITION,
-    "calibration": caps.INTEGRITY_DISPOSITION,
 }
 
 #: What the tooltip says when column 8's control is disabled. The
@@ -489,8 +473,7 @@ async def ready_pick_profile(
     """Column 6's slide-over panel: the evidence behind the score.
 
     NAMED per-dimension ratings, never raw D1-D5 numbers (spec-doc6 D8 / C2).
-    The raw numbers are `/calibration` below, which two roles reach and every
-    read of which is logged.
+    No route returns the raw numbers to a client.
 
     404 when no Vivekium Profile has been written. Not an empty panel: a
     panel with five blank dimensions is indistinguishable from a candidate the
@@ -515,49 +498,6 @@ async def ready_pick_profile(
     return ReadyPickProfileOut(evaluation_id=evaluation["id"], **{
         key: value for key, value in payload.items() if key != "artifact"
     })
-
-
-@router.get(
-    "/jobs/{job_id}/candidates/{link_id}/calibration",
-    response_model=CalibrationInternalsOut,
-)
-async def calibration_internals(
-    request: Request,
-    job_id: uuid.UUID,
-    link_id: uuid.UUID,
-    user: CurrentUser = Depends(
-        rbac.require_authorized(caps.INTEGRITY_DISPOSITION, job_id_param="job_id")
-    ),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> CalibrationInternalsOut:
-    """Raw D1-D5 numbers, evaluator outputs and aggregation internals.
-
-    spec-doc6 D8: internal engine state, not a product surface. Restricted to
-    Super Admin and HR Manager, and ALWAYS LOGGED WHEN VIEWED -- the audit row
-    is written before the payload is built, and `audit.record_action` raises on
-    failure so a read that could not be recorded does not commit.
-    """
-    link = await _link_or_404(session, job_id, link_id, user.tenant_id)
-    evaluation = await _latest_evaluation(session, link_id)
-    if evaluation is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    await calibration_service.log_calibration_view(
-        session,
-        tenant_id=user.tenant_id,
-        actor_user_id=user.user_id,
-        actor_role=getattr(user.role, "value", user.role),
-        evaluation_id=evaluation["id"],
-        job_id=job_id,
-        link_id=link_id,
-        candidate_id=link["candidate_id"],
-        # RBAC §7.5: the Super Admin's reach into another role's surface is an
-        # override, and an override is recorded AS one.
-        exceptional=caps.invariant_for(user.role, caps.INTEGRITY_DISPOSITION)
-        is Invariant.ALLOW_AUDITED_EXCEPTION,
-    )
-    payload = calibration_service.calibration_view(evaluation)
-    payload.pop("artifact", None)
-    return CalibrationInternalsOut(**payload)
 
 
 # ── Column 7: Team Review ────────────────────────────────────────────────────
@@ -981,41 +921,6 @@ async def integrity_disposition(
             hiring_pipeline.normalize(link["status"]), can_move=True, reason=None
         ).model_dump(),
     }
-
-
-# ── Divergence routing and the override rate (spec-doc6 §8.2) ────────────────
-
-
-@router.get("/calibration/divergences", response_model=DivergenceListOut)
-async def calibration_divergences(
-    job_id: uuid.UUID | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-    user: CurrentUser = Depends(require_capability(caps.INTEGRITY_DISPOSITION)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> DivergenceListOut:
-    """The Standards Board's queue: Team Review verdicts that disagreed.
-
-    MEASURE, NEVER NUDGE. This is a list and a rate, for the people who
-    maintain the scorecard. It carries no target, no threshold and no verdict
-    about any reviewer, and it is reachable only by the two roles that can act
-    on a calibration problem. A recruiter never sees their own override rate,
-    because a recruiter shown a deviation figure stops deviating and the signal
-    dies.
-
-    The reviewer's REMARK is deliberately absent. It belongs to its author and
-    is read on the Team Review panel, with their name attached.
-    """
-    rows = await calibration_service.divergences(
-        session, tenant_id=user.tenant_id, job_id=job_id, limit=limit, offset=offset
-    )
-    rate = await calibration_service.override_rate(
-        session, tenant_id=user.tenant_id, job_id=job_id
-    )
-    return DivergenceListOut(
-        divergences=[DivergenceOut(**row) for row in rows],
-        override_rate=OverrideRateOut(**rate.as_dict()),
-    )
 
 
 # ── Metric engine overview (Master Directive Part 2 section 3) ───────────────

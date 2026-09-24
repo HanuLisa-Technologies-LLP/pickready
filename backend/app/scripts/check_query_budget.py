@@ -44,7 +44,6 @@ BUDGETS: dict[str, int] = {
     "/api/v1/jobs/{job}/candidates": 8,
     "/api/v1/dashboard/summary": 8,
     "/api/v1/provider/customers?limit=25": 12,
-    "/api/v1/admin/tenants": 9,
     "/api/v1/portal/jobs": 13,
     "/api/v1/portal/applications": 9,
 }
@@ -52,7 +51,6 @@ BUDGETS: dict[str, int] = {
 #: Which identity each path needs.
 ACTOR: dict[str, str] = {
     "/api/v1/provider/customers?limit=25": "owner",
-    "/api/v1/admin/tenants": "owner",
     "/api/v1/portal/jobs": "candidate",
     "/api/v1/portal/applications": "candidate",
 }

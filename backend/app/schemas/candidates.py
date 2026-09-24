@@ -93,11 +93,6 @@ class LinkOut(BaseModel):
     status_remarks: str | None = None
 
 
-class GrantAccessOut(BaseModel):
-    link_id: uuid.UUID
-    hm_access_granted: bool = True
-
-
 class LinkArchiveOut(BaseModel):
     link_id: uuid.UUID
     archived: bool

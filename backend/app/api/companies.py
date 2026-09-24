@@ -58,12 +58,8 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.schemas.companies import (
     CompanyProfileResearchOut,
-    ApprovalLevelsIn,
-    ApprovalLevelsOut,
     CompanyProfileIn,
     CompanyProfileOut,
-    EmailTemplateIn,
-    EmailTemplateOut,
     InviteAcceptOut,
     PublicInviteOut,
     StaffCreateIn,
@@ -371,8 +367,9 @@ async def _ensure_invite_template(session: AsyncSession, tenant_id: uuid.UUID) -
     # ASSUMPTION: services/email_render.DEFAULT_TEMPLATES has no built-in
     # `staff_invite` entry, so rendering would raise inside the worker and the
     # invite email would never send. PRD §5 forbids *shipping fixed copy*, not
-    # having a starting point — this writes a bare v1 row the tenant can edit
-    # via PUT /companies/me/email-templates, and does nothing if one exists.
+    # having a starting point. This writes a bare v1 row and does nothing if
+    # one exists. (The company template editor that could change it was
+    # deleted in the Vivekium release, PLAN-p7 WP-B6: no screen called it.)
     """
     existing = (
         await session.execute(
@@ -1021,99 +1018,6 @@ async def update_staff_permissions(
         },
     )
     return await get_staff_permissions(staff_user.id, user=user, session=session)
-
-
-@router.put("/me/approval-levels", response_model=ApprovalLevelsOut)
-async def configure_approval_levels(
-    body: ApprovalLevelsIn,
-    user: CurrentUser = Depends(require_capability(caps.CONFIGURE_APPROVAL_LEVELS)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> ApprovalLevelsOut:
-    """FR-2.3: choose which of the 4 levels are mandatory and who approves
-    each active one. Approvers must be users of this tenant."""
-    for level, entry in body.config.items():
-        if entry.active:
-            approver = await session.get(User, entry.approver_user_id)
-            if approver is None or approver.tenant_id != user.tenant_id:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"approver for level '{level}' is not a user of this tenant",
-                )
-
-    company = await _get_company(session, user)
-    if company is None:
-        raise HTTPException(status_code=409, detail="Complete the company profile first")
-    company.approval_levels_config = {
-        level: entry.model_dump(mode="json") for level, entry in body.config.items()
-    }
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="approval_levels_configured", target_type="company",
-                target_id=company.id, metadata=company.approval_levels_config)
-    return ApprovalLevelsOut(config=body.config)
-
-
-@router.get("/me/email-templates", response_model=list[EmailTemplateOut])
-async def list_email_templates(
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_EMAIL_TEMPLATES)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> list[EmailTemplateOut]:
-    rows = (
-        await session.execute(
-            select(EmailTemplate)
-            .where(EmailTemplate.tenant_id == user.tenant_id, EmailTemplate.is_active.is_(True))
-            .order_by(EmailTemplate.name)
-        )
-    ).scalars().all()
-    return [EmailTemplateOut.model_validate(r) for r in rows]
-
-
-async def _upsert_template(
-    session: AsyncSession, user: CurrentUser, body: EmailTemplateIn
-) -> EmailTemplate:
-    """Templates are versioned (ESD §12): each save creates a new active
-    version and deactivates the previous one."""
-    latest = (
-        await session.execute(
-            select(EmailTemplate)
-            .where(EmailTemplate.tenant_id == user.tenant_id, EmailTemplate.name == body.name)
-            .order_by(EmailTemplate.version.desc())
-        )
-    ).scalars().first()
-    version = 1
-    if latest is not None:
-        version = latest.version + 1
-        latest.is_active = False
-    row = EmailTemplate(
-        tenant_id=user.tenant_id, name=body.name, subject=body.subject,
-        body=body.body, version=version, is_active=True,
-    )
-    session.add(row)
-    await session.flush()
-    await audit(session, tenant_id=user.tenant_id, actor_user_id=user.user_id,
-                action="email_template_saved", target_type="email_template",
-                target_id=row.id, metadata={"name": body.name, "version": version})
-    return row
-
-
-@router.post(
-    "/me/email-templates", response_model=EmailTemplateOut, status_code=status.HTTP_201_CREATED
-)
-async def create_email_template(
-    body: EmailTemplateIn,
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_EMAIL_TEMPLATES)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> EmailTemplateOut:
-    return EmailTemplateOut.model_validate(await _upsert_template(session, user, body))
-
-
-@router.put("/me/email-templates", response_model=EmailTemplateOut)
-async def update_email_template(
-    body: EmailTemplateIn,
-    user: CurrentUser = Depends(require_capability(caps.MANAGE_EMAIL_TEMPLATES)),
-    session: AsyncSession = Depends(get_tenant_db),
-) -> EmailTemplateOut:
-    return EmailTemplateOut.model_validate(await _upsert_template(session, user, body))
 
 
 # â”€â”€ Compliance & legal documents (Customer Portal side) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

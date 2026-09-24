@@ -162,22 +162,6 @@ export interface CustomerListResponse {
 
 // ---- Admin ----
 
-export interface Tenant {
-  id: string;
-  name: string;
-  domain: string;
-  spf_dkim_status?: string;
-  industry?: string | null;
-  culture?: string | null;
-  details?: string | null;
-  client_email?: string;
-  client_phone?: string;
-  client_name?: string | null;
-  client_status?: string | null;
-  staff_count?: number;
-  created_at?: string;
-}
-
 export interface TenantProfile {
   id: string;
   name: string;
@@ -189,12 +173,6 @@ export interface TenantProfile {
   client_name?: string | null;
   client_phone?: string | null;
   editable: boolean;
-}
-
-export interface PermissionEntry {
-  role: string;
-  capability: string;
-  allowed: boolean;
 }
 
 export interface AuditLogEntry {
@@ -985,7 +963,10 @@ export type CreditEventType =
   | "incomplete_assessment"
   | "no_show"
   | "old_profile_review"
-  | "adjustment";
+  | "adjustment"
+  // A credit lot reaching its expiry with sub-units left (2026-09-22, new
+  // grants only). The ledger has written it since then; the type had not.
+  | "expiry";
 
 export interface PricingPlan {
   id: string;

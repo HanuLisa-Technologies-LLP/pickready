@@ -804,7 +804,6 @@ CLOCK_SEAMS: tuple[_ClockSeam, ...] = (
     _ClockSeam("app.services.consent_lifecycle", "utcnow", False),
     _ClockSeam("app.services.projects.pipeline", "_now", False),
     _ClockSeam("app.services.provider_analytics", "_now", True),
-    _ClockSeam("app.services.reports.builders", "_now", False),
     _ClockSeam("app.services.swot_analysis", "_now", False),
 )
 

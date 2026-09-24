@@ -37,7 +37,6 @@ _PREFIX = f"pickready:{_VERSION}"
 # by how badly a stale read would read to a user.
 TTL_JOB_DESCRIPTION = 600      # 10 min — edited occasionally, read constantly
 TTL_COMPANY_PROFILE = 900      # 15 min
-TTL_PRICING_PLANS = 3600       # 1 hour — changes on a migration, not on a click
 TTL_CANDIDATE_PROFILE = 3600   # 1 hour — static between the candidate's edits
 TTL_SHORT = 60
 

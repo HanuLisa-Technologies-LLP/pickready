@@ -160,13 +160,13 @@ def test_the_web_search_breaker_counts_across_loops() -> None:
     """Three failures recorded in three separate loops open the breaker, which
     a fourth loop can read. On the old process-global client the second loop's
     INCR raised and was reduced to a warning, so the breaker never opened."""
-    asyncio.run(web_research.reset_breaker())
+    asyncio.run(web_research._clear_breaker())
     try:
         for _ in range(web_research._FAILURE_THRESHOLD):
             asyncio.run(web_research._record_failure())
         assert asyncio.run(web_research._breaker_retry_after()) > 0
     finally:
-        assert asyncio.run(web_research.reset_breaker()) is True
+        assert asyncio.run(web_research._clear_breaker()) is True
 
 
 def test_close_never_raises_and_forgets_the_client() -> None:

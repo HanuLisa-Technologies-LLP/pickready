@@ -25,7 +25,6 @@ import { usePermissions } from "@/lib/use-permissions";
 import { openCheckout, openOrderCheckout } from "@/lib/razorpay";
 import type {
   BillingOverview,
-  CreditEventType,
   CreditPack,
   CreditPacksResponse,
   CreditPurchaseRow,
@@ -34,6 +33,11 @@ import type {
   SubscribeResponse,
 } from "@/lib/types";
 import { PageHeader } from "@/components/app-shell";
+import { CancelSubscriptionDialog } from "@/components/billing/cancel-subscription-dialog";
+import {
+  CREDIT_EVENT_LABELS,
+  CreditStatement,
+} from "@/components/billing/credit-statement";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,16 +55,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/components/ui/toast";
-
-/** Human labels for ledger event types. A raw enum never reaches the page. */
-const EVENT_LABELS: Record<CreditEventType, string> = {
-  grant: "Monthly top up",
-  completed_assessment: "Assessment completed",
-  incomplete_assessment: "Assessment started, not finished",
-  no_show: "Invitation never opened",
-  old_profile_review: "Earlier applicant reviewed",
-  adjustment: "Adjustment",
-};
 
 /** How many of each event make one credit. Shown so the rate is never a mystery. */
 const EVENT_RATE: Record<string, string> = {
@@ -512,6 +506,23 @@ export default function BillingPage() {
                 ) : null}
               </DetailItem>
             </dl>
+            {/* Only the account's billing manager, only while there is a
+                live subscription to stop. A cancelled one has nothing left
+                to cancel, and the route would refuse it anyway. */}
+            {canManage &&
+            data.subscription.razorpay_subscription_id &&
+            data.subscription.status !== "cancelled" ? (
+              <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-border pt-5">
+                <p className="min-w-0 flex-1 text-sm">
+                  Cancelling stops renewal at the end of this billing period.
+                  Credits already in your pool stay yours.
+                </p>
+                <CancelSubscriptionDialog
+                  subscription={data.subscription}
+                  onCancelled={load}
+                />
+              </div>
+            ) : null}
           </Section>
 
           {/* ── Usage this month ───────────────────────────────────────── */}
@@ -536,7 +547,7 @@ export default function BillingPage() {
                     className="rounded-xl border border-border bg-surface p-4"
                   >
                     <p className="text-sm font-medium">
-                      {EVENT_LABELS[event]}
+                      {CREDIT_EVENT_LABELS[event]}
                     </p>
                     <p className="mt-2 text-2xl font-bold">
                       {toCredits(subunits, data.credits.subunits_per_credit)}
@@ -835,66 +846,18 @@ export default function BillingPage() {
           </Section>
           ) : null}
 
-          {/* ── Statement ──────────────────────────────────────────────── */}
+          {/* ── Credit statement ───────────────────────────────────────── */}
+          {/* Every credit movement, paged from GET /billing/ledger. The
+              overview carries only the newest rows, so its newest id is the
+              token that sends the statement back to page one when a purchase
+              or a verified checkout moves the ledger. */}
           <Section
-            title="Recent activity"
-            description="Every credit movement, newest first."
+            title="Credit statement"
+            description="Every credit movement on your account, newest first."
           >
-            {data.recent_ledger.length === 0 ? (
-              <p className="leading-7">
-                Nothing yet. Activity appears here as soon as your first
-                assessment invitation goes out.
-              </p>
-            ) : (
-              <>
-                <div className="hidden md:block">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>When</TableHead>
-                        <TableHead>What happened</TableHead>
-                        <TableHead className="text-right">Credits</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {data.recent_ledger.map((entry) => (
-                        <TableRow key={entry.id}>
-                          <TableCell>{formatDate(entry.created_at)}</TableCell>
-                          <TableCell>
-                            {EVENT_LABELS[entry.event_type] ?? entry.event_type}
-                          </TableCell>
-                          <TableCell className="text-right font-medium">
-                            {entry.subunits_delta > 0 ? "+" : ""}
-                            {entry.credits_delta}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-                <ul className="space-y-3 md:hidden">
-                  {data.recent_ledger.map((entry) => (
-                    <li
-                      key={entry.id}
-                      className="flex items-start justify-between gap-3 rounded-xl border border-border bg-surface p-4"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">
-                          {EVENT_LABELS[entry.event_type] ?? entry.event_type}
-                        </p>
-                        <p className="mt-1 text-xs">
-                          {formatDate(entry.created_at)}
-                        </p>
-                      </div>
-                      <span className="shrink-0 text-sm font-semibold">
-                        {entry.subunits_delta > 0 ? "+" : ""}
-                        {entry.credits_delta}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
+            <CreditStatement
+              refreshToken={data.recent_ledger[0]?.id ?? "empty"}
+            />
           </Section>
 
           {/* ── Purchase history (directive Part 5 sections 7.3, 7.4) ──── */}

@@ -29,7 +29,8 @@ role outside one customer organisation's own set.
 WHAT IT REUSES RATHER THAN REIMPLEMENTS
 -----------------------------------------
 The invite primitives in `app.models.invite`, the owner invariant, and the
-`pickready.send_email` task: the same ones `POST /admin/staff-invites` uses.
+`pickready.send_email` task: the same ones the company portal's staff invite
+(`POST /companies/me/staff`) uses.
 The one thing it deliberately does NOT do is print the join link. An invite
 token is a credential, and a credential in a CloudWatch log is a credential.
 The invitation goes by email, the way it does for every other invited account.

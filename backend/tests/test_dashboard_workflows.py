@@ -546,27 +546,46 @@ def test_workflow_three_team_calibration(caller: Caller, world: World) -> None:
     ).json()
     assert profile["overall_rating"] == rating.grade_for_percent(78.0)
 
-    # 4. The divergence reaches the Standards Board, and reaches nobody else.
-    assert (
-        caller.http.get(f"{BASE}/calibration/divergences").status_code == 403
-    ), "a recruiter must never be shown their own override rate"
-
-    _as(caller, world, Role.client)
-    board = caller.http.get(f"{BASE}/calibration/divergences").json()
-    entry = next(
-        item for item in board["divergences"] if item["link_id"] == str(link_id)
-    )
+    # 4. The divergence is RECORDED for the Standards Board, as audit data.
+    #    The queue route that listed it was deleted with the override-rate
+    #    metric (PLAN-p7 WP-B6): it had no screen. The record is what survives.
+    records = asyncio.run(_divergence_records(world, link_id))
+    assert len(records) == 1
+    entry = records[0]
     assert entry["verdict"] == team_review.VERDICT_REJECT
     assert entry["predicted_grade"] == rating.grade_for_percent(78.0)
     assert entry["outcome_assessment"] == calibration.ASSESSMENT_TOO_HIGH
-    assert entry["reviewer_user_id"] == str(world.users[Role.recruiter])
-    # The remark itself is NOT here. It belongs to its author and is read on
-    # the panel, with their name attached.
-    assert "remarks" not in entry
+    assert str(entry["recorded_by"]) == str(world.users[Role.recruiter])
+    assert (
+        caller.http.get(f"{BASE}/calibration/divergences").status_code == 404
+    ), "the deleted divergence queue answered"
 
-    # The metric carries counts and a rate. No target, no threshold, no verdict.
-    assert set(board["override_rate"]) == {"comparable", "diverged", "rate"}
-    assert board["override_rate"]["diverged"] >= 1
+
+async def _divergence_records(state: World, link_id) -> list[dict]:
+    """The calibration records a link's Team Reviews raised, read back from a
+    second connection."""
+    eng = engine()
+    try:
+        async with eng.connect() as conn:
+            await conn.execute(sa.text("SET app.bypass_rls = 'on'"))
+            result = await conn.execute(
+                sa.text(
+                    "SELECT cr.predicted_grade, cr.outcome_assessment, "
+                    "       cr.recorded_by, tr.rating AS verdict "
+                    "FROM calibration_records cr "
+                    "JOIN candidate_team_reviews tr ON tr.id = cr.team_review_id "
+                    "WHERE cr.tenant_id = :tenant AND cr.source = :source "
+                    "  AND tr.job_candidate_link_id = :link"
+                ),
+                {
+                    "tenant": state.tenant,
+                    "source": calibration.SOURCE_TEAM_REVIEW_DIVERGENCE,
+                    "link": link_id,
+                },
+            )
+            return [dict(row) for row in result.mappings().all()]
+    finally:
+        await eng.dispose()
 
 
 def test_nobody_edits_another_reviewers_remark(caller: Caller, world: World) -> None:
@@ -618,10 +637,7 @@ def test_a_reviewer_who_changes_their_mind_leaves_one_divergence_not_three(
             json={"verdict": verdict, "remarks": f"Verdict {verdict}."},
         )
 
-    _as(caller, world, Role.hr_manager)
-    board = caller.http.get(f"{BASE}/calibration/divergences").json()
-    for_link = [d for d in board["divergences"] if d["link_id"] == str(link_id)]
-    assert len(for_link) == 1
+    assert len(asyncio.run(_divergence_records(world, link_id))) == 1
 
     # And coming back into agreement withdraws it entirely. The machine graded
     # this candidate Moderately Matching, which `hold` agrees with.
@@ -630,36 +646,7 @@ def test_a_reviewer_who_changes_their_mind_leaves_one_divergence_not_three(
         f"{BASE}/jobs/{world.job}/candidates/{link_id}/team-review",
         json={"verdict": team_review.VERDICT_HOLD, "remarks": "On reflection, hold."},
     )
-    _as(caller, world, Role.hr_manager)
-    board = caller.http.get(f"{BASE}/calibration/divergences").json()
-    assert not [d for d in board["divergences"] if d["link_id"] == str(link_id)]
-
-
-def test_reading_the_calibration_internals_writes_an_audit_row(
-    caller: Caller, world: World
-) -> None:
-    """spec-doc6 D8: raw numbers are "always logged when viewed".
-
-    Asserted on the audit table rather than on a mock, and the Super Admin's
-    read is marked EXCEPTIONAL because RBAC §7.5 makes their reach into another
-    role's surface an override that has to be recorded as one.
-    """
-    link_id = world.links["Strong Assessed"]
-    _as(caller, world, Role.client)
-    view = caller.http.get(
-        f"{BASE}/jobs/{world.job}/candidates/{link_id}/calibration"
-    )
-    assert view.status_code == 200, view.text
-    body = view.json()
-    # The numbers D8 keeps off every other surface.
-    assert body["adjusted_composite"] == 88.0
-    assert body["raw_composite"] == 90.0
-    assert any(d["raw_score"] is not None for d in body["dimensions"])
-
-    rows = asyncio.run(_audit_rows(world, calibration.CALIBRATION_INTERNALS_VIEWED))
-    assert rows, "a raw-numbers read left no audit row"
-    assert rows[-1]["actor_role"] == Role.client.value
-    assert rows[-1]["exceptional"] is True
+    assert asyncio.run(_divergence_records(world, link_id)) == []
 
 
 async def _audit_rows(state: World, action: str) -> list[dict]:

@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 from app.models.enums import APPROVAL_CHAIN
 
@@ -157,51 +157,6 @@ class InviteAcceptOut(BaseModel):
     accepted: bool
     role: str
     company_name: str
-
-
-class ApprovalLevelEntry(BaseModel):
-    active: bool = False
-    approver_user_id: uuid.UUID | None = None
-
-    @model_validator(mode="after")
-    def _approver_required_when_active(self) -> "ApprovalLevelEntry":
-        if self.active and self.approver_user_id is None:
-            raise ValueError("an active level requires approver_user_id")
-        return self
-
-
-class ApprovalLevelsIn(BaseModel):
-    config: dict[str, ApprovalLevelEntry]
-
-    @model_validator(mode="after")
-    def _only_known_levels(self) -> "ApprovalLevelsIn":
-        valid = {s.value for s in APPROVAL_CHAIN}
-        unknown = set(self.config) - valid
-        if unknown:
-            raise ValueError(f"unknown approval levels: {sorted(unknown)}")
-        return self
-
-
-class ApprovalLevelsOut(BaseModel):
-    config: dict[str, ApprovalLevelEntry]
-
-
-class EmailTemplateIn(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
-    subject: str = Field(min_length=1, max_length=500)
-    body: str = Field(min_length=1)
-
-
-class EmailTemplateOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    name: str
-    subject: str
-    body: str
-    version: int
-    is_active: bool
-    created_at: datetime
 
 
 class CompanyProfileResearchOut(BaseModel):

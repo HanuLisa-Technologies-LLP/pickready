@@ -295,14 +295,12 @@ async def _job_detail_out(session: AsyncSession, job: Job) -> JobDetailOut:
 
 async def _can_see_pre_ratified(session: AsyncSession, user: CurrentUser) -> bool:
     """# ASSUMPTION: visibility of pre-ratified jobs is capability-derived,
-    not role-derived (claude.md rule 3): actors who create jobs or sit in the
-    approval chain see the whole lifecycle; everyone else (HR/Recruiter) sees
-    a job only once ratified (FR-3.4)."""
-    return (
-        await rbac.has_capability(session, user.tenant_id, user.role, caps.CREATE_JOB)
-        or await rbac.has_capability(session, user.tenant_id, user.role, caps.APPROVE_JOB)
-        or await rbac.has_capability(session, user.tenant_id, user.role, caps.CONFIGURE_APPROVAL_LEVELS)
-    )
+    not role-derived (claude.md rule 3). Whoever may create a job or publish a
+    draft must be able to read it before it is published; everyone else sees a
+    job only once ratified (FR-3.4)."""
+    return await rbac.has_capability(
+        session, user.tenant_id, user.role, caps.CREATE_JOB
+    ) or await rbac.has_capability(session, user.tenant_id, user.role, caps.PUBLISH_JOB)
 
 
 async def _get_visible_job(

@@ -225,8 +225,15 @@ def _breaker_redis():
     return _BREAKER_CLIENT.client()
 
 
-async def reset_breaker() -> bool:
-    """Manual reset path; automatic reset is Redis key expiry."""
+async def _clear_breaker() -> bool:
+    """Close the breaker after a successful search. True when the store
+    answered.
+
+    There is no manual reset any more: the BD portal's operator reset route
+    was deleted in the Vivekium release (PLAN-p7 WP-B6) because no screen
+    called it, and recovery is automatic twice over, by the keys' expiry after
+    the cooldown and by the first success after it.
+    """
     client = _breaker_redis()
     if client is None:
         return False
@@ -275,7 +282,7 @@ async def _record_failure() -> None:
 
 
 async def _record_success() -> None:
-    await reset_breaker()
+    await _clear_breaker()
 
 
 def _breaker_message(retry_after: int) -> str:

@@ -603,10 +603,6 @@ _PUBLIC_BY_DESIGN: dict[str, str] = {
     "/api/v1/employers": "the public employer directory search.",
     "/api/v1/employers/{slug}": "one public employer page with its careers list.",
     # Genuinely public, and each returns something already public.
-    "/api/v1/billing/config": (
-        "the Razorpay KEY ID, which is public by design. The Key Secret is "
-        "server-side only and never reaches the frontend."
-    ),
     "/api/v1/telemetry/landing-view": (
         "a rate-limited anonymous counter for the marketing page. It retains no "
         "visitor PII and returns 204."

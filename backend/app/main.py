@@ -38,7 +38,6 @@ from app.api import (
     portal,
     proctoring,
     provider,
-    reports,
     support,
     telemetry,
     verification,
@@ -233,7 +232,6 @@ app.include_router(bd.router, prefix=f"{API_PREFIX}/bd", tags=["bd"])
 # and a second prefix would just be a second URL for Razorpay's webhook to be
 # configured against by mistake.
 app.include_router(billing.router, prefix=f"{API_PREFIX}/billing", tags=["billing"])
-app.include_router(reports.router, prefix=f"{API_PREFIX}/reports", tags=["reports"])
 # In-product customer support (2026-09-10), which replaced a deleted
 # third-party sync (claude.md, 2026-09-10). Two routers, two audiences,
 # one write path: `router` is the customer's
